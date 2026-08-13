@@ -221,6 +221,20 @@ and `16b1833` is the counterexample that motivated this ADR. Until a
 diff-aware gate exists, §Decision 5's content hash is the detector, not
 the preventer.
 
+> **Decided 2026-08-13 by [ADR-0052](0052-release-obligation-enforcement.md).**
+> The follow-up this paragraph records is closed: enforcement is a
+> history-and-tag reconciliation check that derives release debt from
+> immutable history, covering `docs/host-parity-baseline.md`,
+> `data/plugin-set.json` and `data/schemas/**` by directory. It detects
+> rather than prevents, which ADR-0052 §Consequences states plainly and
+> justifies against the measurement that `main` carries no branch
+> protection, so a PR-time gate could not have blocked the merge either.
+> One correction to the paragraph above: `16b1833`'s baseline blob is
+> byte-identical to the blob at tag `plugin-runtime-v0.90.0`, so the
+> change did ship — 54.0h later, on an unrelated `feat`. The
+> counterexample is a divergence *window* closed by luck, not an asset
+> that never shipped.
+
 ## Consequences
 
 **Positive**
@@ -311,6 +325,23 @@ dual-authority problem that item 1 plus item 2 closes without new
 machinery. It remains the successor if the release obligation proves
 too costly in practice, and it is the better shape if the baseline ever
 needs to change faster than runtime can release.
+
+> **Re-judged 2026-08-13 by [ADR-0052](0052-release-obligation-enforcement.md)
+> §Decision 1 — still deferred.** Both clauses of the trigger stated
+> above have now been measured against one full exercise of the
+> obligation, and both come out negative. The release obligation costs
+> **0.13h — 0.3%** of a 51.84h loop, and a 4m48s median across all 163
+> release commits; the expensive ~23.09h belongs to a *different*
+> obligation (`sync-doc-versions.mjs:306`'s proof-coupled doc gate,
+> which fires on any runtime bump). And the baseline does not need to
+> change faster than runtime can *release* — runtime releases in six
+> minutes — but faster than **reviewed acceptance** can land, which D's
+> own design keeps. Granting D everything downstream of the refresh
+> merge for free still clears only 3 of 12 host-publish gaps, an 18.8%
+> freshness duty cycle against the measured 18.4%. ADR-0052
+> §Alternatives records a concrete design that satisfies §Decision 1
+> without shipping a changing pointer in the package, so the deferral
+> stays re-triggerable rather than becoming a dead end.
 
 ## References
 
