@@ -136,6 +136,17 @@ jobs:
       #
       # It reads git objects rather than the working tree, so the uncommitted
       # sync edits above cannot affect its verdict.
+      #
+      # `!cancelled()` is load-bearing, not decoration. A step condition that
+      # names only its own predicate still carries an implicit success(), so
+      # ANY earlier failure here — a failed evidence check, a non-fast-forward
+      # push — would SKIP this assertion. That is the one situation in which it
+      # most needs to run, and the skip would be silent: the tag already
+      # exists, and because release-please reports `releases_created` exactly
+      # once, the documented manual re-run above sees `false` and skips every
+      # gated step, so a plain retry goes green having asserted nothing. A
+      # GITHUB_TOKEN push triggers no workflow, so nothing downstream would
+      # catch it either.
       - name: Verify the release discharged its protected-asset obligations
-        if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
+        if: ${{ !cancelled() && (steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch') }}
         run: node scripts/check-release-obligation.mjs

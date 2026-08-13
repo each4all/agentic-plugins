@@ -288,12 +288,66 @@ re-litigated as gaps:
   is judged only on the protected paths it touches, and the directory pattern
   covers assets added later without an edit to the checker.
 
-One limit is real rather than dissolved, and is stated instead of hidden: a
-protected change that lands *after* a release commit but *before* its tag is
-cut reads as `release_in_flight` and passes, because at that moment it is
-indistinguishable from a normal in-flight release. It re-classifies as debt on
-the next run once the tag exists, since the tag is cut at the release commit
-and does not carry the later bytes.
+### Scope is decided by content, never by walking the commit graph
+
+The first implementation decided epoch scope the obvious way: list the commits
+in `<tag>..<ref>` that touched a protected path, and keep the ones descended
+from the epoch. Cross-host review disproved it by construction, and the
+reproduction is worth keeping because the reasoning looks sound until it runs.
+
+Path-limited `git rev-list` applies git's default history simplification. A
+merge that is TREESAME to one parent for the listed paths drops out in favour
+of the side-branch commit it came from. So: fork a side branch *before* the
+epoch, change a protected file on it, land the epoch on the integration
+branch, then merge. The merge is what introduced those bytes to the branch,
+but the list names only the side commit — which does not descend from the
+epoch — and the filter grandfathers a post-adoption change. `--show-pulls`
+restores the merge, but relying on it means the verdict depends on which
+commits git decides to attribute a change to.
+
+Both scope questions are therefore answered from **content**:
+
+- **Epoch scope** — the divergence is grandfathered only when the protected
+  tree is unchanged since the epoch *and* no release has been cut since. Equal
+  trees alone is not sufficient: reverting released bytes back to their
+  pre-release state reproduces the epoch's tree exactly while genuinely owing a
+  release, so the anchor tag must be unchanged too. Once a release goes by
+  without discharging the divergence, the amnesty is spent.
+- **In-flight scope** — a manifest advance excuses only the bytes the pending
+  tag will actually carry. release-please cuts that tag at the commit that
+  advanced the manifest, so comparing the protected tree there against the tree
+  at the ref settles it. A protected change landing after that commit is
+  provably unreleased *now*, not something to wait for the tag to reveal.
+
+The commit list survives as report only. Nothing reads it to reach a verdict.
+
+### Residual holes, stated rather than implied
+
+§Consequences claims tag immutability and complete history are "asserted
+rather than assumed". Complete history is asserted. Tag integrity is asserted
+only in part, and the difference matters:
+
+- **A tag must name the version its own commit set** — verified to hold across
+  all 139 runtime tags, and now enforced. Without it, tagging any commit
+  `plugin-runtime-v<anything-higher>` discharged every outstanding obligation,
+  because the digest at that tag was the debt's own tree.
+- **A tag force-moved *within* one version's window still passes.** Nothing in
+  a local clone can distinguish it from the original: git keeps no record of a
+  tag's previous target. Closing this needs an anchor outside the repository —
+  signed tags, or release SHAs recorded in the ADR-0049 evidence store — and
+  that is a decision of its own, not a line in this checker.
+- **A manifest advanced but never tagged sits in `release_in_flight`
+  indefinitely.** No local signal separates "tag in six minutes" from "tag
+  never", and §Alternatives C′ rejects thresholds on measurement. What bounds
+  it in practice is that the release workflow is itself red when it fails to
+  tag.
+
+The post-tag assertion in `release-please.yml` needs `!cancelled()`, not a bare
+condition. A step condition that names only its own predicate still carries an
+implicit `success()`, so any earlier failure in that job would skip the
+assertion — and because release-please reports `releases_created` exactly once,
+the documented manual re-run then skips every gated step and goes green having
+asserted nothing.
 
 ## Consequences
 
@@ -322,6 +376,25 @@ and does not carry the later bytes.
 - Main is honestly red for the duration of every legitimate refresh window —
   measured median 5.3h. That redness is intended, and it is a second
   standing red alongside the proof-coupled one.
+
+  **Measured against commits rather than against changes, the cost is larger
+  than that median suggests, and the implementation measured it rather than
+  inheriting the estimate.** Replaying the adopted check over the last 119
+  first-parent `main` commits with the epoch set far enough back to put every
+  commit in scope, **48 of them — 40.3% — classify as outstanding debt**, in 7
+  contiguous windows of 0.0, 0.0, 0.6, 12.9, 25.9, 33.9 and 53.9 hours. The
+  mean window, 18.2h, agrees with the 17.6h measured over all 38 baseline
+  changes; the median does not, because a window's cost is paid per CI run, not
+  per change, and the long windows contain the most commits. Three of the seven
+  open with a `docs: align runtime docs to …` post-release recovery — the
+  authoring form §Alternatives A was rejected for rejecting, here reappearing
+  as the dominant source of redness rather than of rejection.
+
+  This does not change the decision: with no branch protection, every candidate
+  detects rather than prevents, and A's own measurement was worse. It does mean
+  the operational claim to make is "main will be red a substantial fraction of
+  the time until baseline refreshes routinely carry a bump-inducing type", not
+  "main will be red for about five hours after a refresh".
 - The check cannot prove *causation*. A later unrelated runtime release
   legitimately clears the debt because it ships the bytes — which is exactly
   what `plugin-runtime-v0.90.0` did for `16b1833`. The check measures how long

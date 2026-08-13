@@ -98,16 +98,26 @@ export const TAG_PREFIX = 'plugin-runtime-v';
  * ADR-0052 §Decision 5 names "this ADR's implementing commit" as the epoch.
  * That commit's own sha cannot be known while it is being authored, so the
  * epoch is pinned to its immediate predecessor — the last ADR-0052 commit.
- * The two boundaries are equivalent because the implementing commit does not
- * itself touch a protected path, which `tests/scripts/test-release-obligation.mjs`
- * asserts rather than assumes.
+ * What makes the two boundaries equivalent is not that the implementing commit
+ * touches no protected path (an assertion about a moving branch, which goes
+ * permanently red the first time a legitimate refresh lands) but that the
+ * epoch itself classifies as `fulfilled`: the clause therefore grandfathers
+ * nothing. `tests/scripts/test-release-obligation.mjs` asserts that, and it
+ * stays true forever.
  *
- * The clause is inert once any post-epoch protected change exists, which is
- * what makes it a one-time grandfather rather than a standing exemption.
+ * Scope is decided by comparing the protected tree here against the tree at
+ * the epoch, never by asking which commits descend from it — see the comment
+ * on `protectedChangesInWindow` for the merge that defeated the graph-walking
+ * version. The clause is inert as soon as the tree moves.
  */
 export const ADOPTION_EPOCH = '84de4864463cfcec6cf7083b37863c717f3e4c1b';
 
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
+// Strict: SemVer forbids leading zeroes, so `01.0.0` is not a version. A
+// permissive pattern would let two spellings compare equal and make the
+// newest-tag anchor depend on enumeration order.
+const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+const RELEASE_MANIFEST = '.release-please-manifest.json';
 
 function git(repoRoot, args) {
   return execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -205,7 +215,7 @@ function jsonAtRef(repoRoot, ref, path) {
  * other gate would see.
  */
 export function releaseStateAt(repoRoot, ref) {
-  const manifest = jsonAtRef(repoRoot, ref, '.release-please-manifest.json');
+  const manifest = jsonAtRef(repoRoot, ref, RELEASE_MANIFEST);
   const claude = jsonAtRef(repoRoot, ref, `${RUNTIME_PACKAGE}/.claude-plugin/plugin.json`);
   const codex = jsonAtRef(repoRoot, ref, `${RUNTIME_PACKAGE}/.codex-plugin/plugin.json`);
   return {
@@ -215,17 +225,38 @@ export function releaseStateAt(repoRoot, ref) {
   };
 }
 
-/** Post-epoch commits in `sinceRef..ref` that touched a protected path. */
-export function protectedChangesInScope(repoRoot, { sinceRef, ref, epoch }) {
-  const commits = git(repoRoot, ['rev-list', `${sinceRef}..${ref}`, '--', ...PROTECTED_PATHS])
+/**
+ * Commits in `sinceRef..ref` that touched a protected path — REPORTING ONLY.
+ *
+ * No verdict depends on this list, and that separation is deliberate.
+ * Path-limited `rev-list` applies git's default history simplification, so a
+ * merge that first introduces a protected change to the integration branch
+ * can be omitted in favour of the side-branch commit it came from. An earlier
+ * revision of this file decided epoch scope by walking that list and asking
+ * whether each commit descended from the epoch, and a merge of a side branch
+ * forked BEFORE the epoch grandfathered bytes that entered main AFTER it —
+ * reproduced, not theorised. `--show-pulls` restores the introducing merge for
+ * the report; the verdict now compares content instead, which no simplification
+ * rule can perturb.
+ */
+export function protectedChangesInWindow(repoRoot, { sinceRef, ref }) {
+  return git(repoRoot, ['rev-list', '--show-pulls', `${sinceRef}..${ref}`, '--', ...PROTECTED_PATHS])
     .split('\n')
-    .filter(Boolean);
-  return commits
-    .filter((sha) => gitOk(repoRoot, ['merge-base', '--is-ancestor', epoch, sha]))
+    .filter(Boolean)
     .map((sha) => ({
       sha,
       subject: git(repoRoot, ['show', '-s', '--format=%s', sha]).trim(),
     }));
+}
+
+/** The newest commit in `sinceRef..ref` that rewrote the release-please manifest. */
+function newestManifestAdvance(repoRoot, { sinceRef, ref }) {
+  const out = git(repoRoot, ['rev-list', '--show-pulls', '-1', `${sinceRef}..${ref}`, '--', RELEASE_MANIFEST]).trim();
+  return out || null;
+}
+
+function isAncestor(repoRoot, a, b) {
+  return gitOk(repoRoot, ['merge-base', '--is-ancestor', a, b]);
 }
 
 /**
@@ -276,16 +307,44 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
   if (tags.length === 0) return fail(`no ${TAG_PREFIX}* tag is reachable from ${ref}`);
 
   const newestTag = tags[0];
+
+  // A tag must name the version its own commit set. Verified to hold across
+  // all 139 runtime tags at authoring time, so asserting it costs nothing
+  // today and refuses a whole class of corrupt anchor: a tag moved onto a
+  // commit from a different release, or fabricated at a version no release
+  // commit ever declared. Without it, tagging any commit
+  // `plugin-runtime-v<anything-higher>` discharges every outstanding
+  // obligation — reproduced against this checker before the assertion existed.
+  //
+  // It does NOT close tag mutability in general: a tag force-moved WITHIN one
+  // version's window still satisfies this. ADR-0052 §Consequences records that
+  // residual honestly rather than claiming immutability is proven.
+  const tagRelease = releaseStateAt(repoRoot, newestTag.name);
+  if (tagRelease.manifestVersion !== newestTag.version) {
+    return fail(
+      `${newestTag.name} points at a commit whose ${RELEASE_MANIFEST} declares `
+        + `${JSON.stringify(tagRelease.manifestVersion)} for ${RUNTIME_PACKAGE}, not ${newestTag.version} — `
+        + 'a release tag must name the version its own commit set; this one was moved or fabricated',
+    );
+  }
+  const tagEntries = protectedEntries(repoRoot, newestTag.name);
+  if (tagEntries.length === 0) {
+    return fail(
+      `${newestTag.name} carries no files under the protected pathspecs — the released tree cannot be `
+        + 'compared against, and treating "nothing released" as a match would pass everything',
+    );
+  }
+
   const release = releaseStateAt(repoRoot, head);
   if (!parseSemver(release.manifestVersion)) {
     return fail(
-      `.release-please-manifest.json at ${ref} does not carry a plain X.Y.Z version for `
+      `${RELEASE_MANIFEST} at ${ref} does not carry a plain X.Y.Z version for `
         + `${RUNTIME_PACKAGE} (got ${JSON.stringify(release.manifestVersion)})`,
     );
   }
 
   const headDigest = digestEntries(entries);
-  const tagDigest = digestEntries(protectedEntries(repoRoot, newestTag.name));
+  const tagDigest = digestEntries(tagEntries);
 
   const base = {
     ran: true,
@@ -318,17 +377,18 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
     };
   }
 
-  if (headDigest === tagDigest) {
-    return { ...base, state: 'fulfilled', failing: false, detail: `${newestTag.name} carries the protected tree at ${ref}` };
-  }
-
   const versionDelta = compareSemver(release.manifestVersion, newestTag.version);
 
-  // A released version that DECREASED, or was reused for different bytes, is
-  // the one rollback shape this design cannot express. Rolling a protected
-  // asset back is legitimate; doing it by reusing or lowering a version is
-  // not, because the released identity would then name two different trees.
-  // The rollback path is a forward patch carrying the restored bytes.
+  // Checked BEFORE the digest comparison, not after. A version decrease with
+  // an unchanged protected tree is still a decrease, and behind the
+  // `fulfilled` short-circuit this branch was unreachable in exactly that
+  // case — the original test passed only because its fixture happened to move
+  // the tree as well.
+  //
+  // Rolling a protected asset back is legitimate; doing it by reusing or
+  // lowering a version is not, because the released identity would then name
+  // two different trees. The rollback path is a forward patch carrying the
+  // restored bytes.
   if (versionDelta < 0) {
     return {
       ...base,
@@ -341,34 +401,90 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
     };
   }
 
-  const inScope = protectedChangesInScope(repoRoot, { sinceRef: newestTag.name, ref: head, epoch });
+  if (headDigest === tagDigest) {
+    return { ...base, state: 'fulfilled', failing: false, detail: `${newestTag.name} carries the protected tree at ${ref}` };
+  }
+
+  const inWindow = protectedChangesInWindow(repoRoot, { sinceRef: newestTag.name, ref: head });
 
   if (versionDelta > 0) {
     // A release commit is on this ref but its tag is not reachable yet. The
     // window is short — the median gap from the preceding main commit to the
-    // release commit is 4m48s across 163 releases — and it self-corrects: once
-    // the tag exists the versions are equal again and any protected change the
-    // tag did not carry re-classifies as debt on the very next run.
+    // release commit is 4m48s across 163 releases.
+    //
+    // In-flight is credible only for bytes the PENDING tag will actually
+    // carry. release-please cuts that tag at the commit that advanced the
+    // manifest, so a protected change landing after it is already provably
+    // unreleased — not a timing artifact, and not something to wait for the
+    // tag to reveal. Comparing the tree at that commit against the tree here
+    // decides it from content; an earlier revision passed unconditionally on
+    // `versionDelta > 0` and masked such changes for as long as the tag stayed
+    // uncut, which is indefinitely if the release workflow fails.
+    const advance = newestManifestAdvance(repoRoot, { sinceRef: newestTag.name, ref: head });
+    const pendingDigest = advance ? digestEntries(protectedEntries(repoRoot, advance)) : null;
+    if (advance && pendingDigest !== headDigest) {
+      return {
+        ...base,
+        state: 'outstanding_debt',
+        failing: true,
+        inScopeChanges: inWindow,
+        detail:
+          `${RUNTIME_PACKAGE} advanced to ${release.manifestVersion} at ${advance.slice(0, 7)}, but the protected `
+          + `tree moved again after it. The pending ${TAG_PREFIX}${release.manifestVersion} tag is cut at that `
+          + 'commit and will not carry the current bytes, so they owe a release of their own.',
+      };
+    }
     return {
       ...base,
       state: 'release_in_flight',
       failing: false,
-      inScopeChanges: inScope,
+      inScopeChanges: inWindow,
       detail:
         `${RUNTIME_PACKAGE} advanced to ${release.manifestVersion} at ${ref} but the newest reachable tag `
         + `is ${newestTag.name}; the tag has not been cut yet`,
     };
   }
 
-  if (inScope.length === 0) {
+  // Epoch scope, decided by CONTENT rather than by walking the commit graph.
+  //
+  // Two questions, in order. Does this ref predate adoption at all? If the
+  // epoch is not an ancestor, the ref is older history and nothing here is in
+  // scope. Otherwise: has the protected tree moved since the epoch? If it has
+  // not, whatever divergence exists was already present when the rule was
+  // adopted and is exactly what the grandfather clause is for. If it has, the
+  // change is post-epoch by definition — no matter which commit git's history
+  // simplification decides to attribute it to.
+  if (!isAncestor(repoRoot, epoch, head)) {
     return {
       ...base,
       state: 'pre_epoch_divergence',
       failing: false,
       inScopeChanges: [],
       detail:
-        `the protected tree at ${ref} differs from ${newestTag.name}, but no commit after the adoption `
-        + `epoch ${epoch.slice(0, 7)} touched a protected path — grandfathered by ADR-0052 §Decision 5`,
+        `${ref} predates the adoption epoch ${epoch.slice(0, 7)} (the epoch is not among its ancestors), `
+        + 'so ADR-0052 §Decision 5 does not reach it',
+    };
+  }
+  // Both halves are required. Equal trees alone is not enough: a tree can move
+  // away and come back, and a revert of released bytes back to their
+  // pre-release state reproduces the epoch's tree exactly while genuinely
+  // owing a release. Requiring the anchor tag to be unchanged too says what is
+  // actually meant — this is the same divergence, against the same release,
+  // that existed when the rule was adopted. Once a release goes by without
+  // discharging it, the amnesty is spent and it is live debt.
+  const epochDigest = digestEntries(protectedEntries(repoRoot, epoch));
+  const epochTags = reachableRuntimeTags(repoRoot, epoch).tags;
+  const epochAnchor = epochTags.length > 0 ? epochTags[0].name : null;
+  if (epochDigest === headDigest && epochAnchor === newestTag.name) {
+    return {
+      ...base,
+      state: 'pre_epoch_divergence',
+      failing: false,
+      inScopeChanges: [],
+      detail:
+        `the protected tree at ${ref} differs from ${newestTag.name}, but it is unchanged since the adoption `
+        + `epoch ${epoch.slice(0, 7)} and no release has been cut since — the divergence predates the rule `
+        + 'and is grandfathered',
     };
   }
 
@@ -376,11 +492,11 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
     ...base,
     state: 'outstanding_debt',
     failing: true,
-    inScopeChanges: inScope,
+    inScopeChanges: inWindow,
     detail:
       `${RUNTIME_PACKAGE} is released at ${newestTag.version} and stayed there, but the protected tree at `
-      + `${ref} differs from the one ${newestTag.name} carries. ${inScope.length} post-epoch commit(s) changed `
-      + 'a protected path without a release shipping the result.',
+      + `${ref} differs both from the one ${newestTag.name} carries and from the adoption epoch — a change `
+      + 'after adoption has not been shipped by a release.',
   };
 }
 
@@ -388,9 +504,18 @@ const invokedAsCLI = process.argv[1] && fileURLToPath(import.meta.url) === resol
 
 if (invokedAsCLI) {
   const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
+  // A flag given without a value is an error, never a silent fall back to the
+  // default: `--ref` with a typo'd argument would otherwise audit HEAD and
+  // report green for a ref nobody asked about.
   const argOf = (flag) => {
     const i = process.argv.indexOf(flag);
-    return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : undefined;
+    if (i === -1) return undefined;
+    const value = process.argv[i + 1];
+    if (!value || value.startsWith('--')) {
+      console.error(`✗ ${flag} requires a value`);
+      process.exit(1);
+    }
+    return value;
   };
   const result = classify(REPO_ROOT, { ref: argOf('--ref') ?? 'HEAD', epoch: argOf('--epoch') ?? ADOPTION_EPOCH });
 
