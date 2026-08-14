@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test';
-import { deepStrictEqual, ok, strictEqual, rejects } from 'node:assert/strict';
+import { deepStrictEqual, notStrictEqual, ok, strictEqual, rejects } from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -323,7 +323,12 @@ describe('runtime compat', () => {
       baseline: baseline(),
       runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
     });
-    for (const status of ['missing', 'unparseable']) {
+    // `unreadable` and `escaped` are the P2 additions, and they are the point
+    // of the loop rather than more of the same: this branch used to ENUMERATE
+    // `missing` and `unparseable`, so a third failure status would have fallen
+    // through to the drift comparison as though a version had been read. The
+    // list is now derived from "not resolved".
+    for (const status of ['missing', 'unparseable', 'unreadable', 'escaped']) {
       const out = await runCompat({
         command: 'check',
         repoRoot: root,
@@ -338,7 +343,76 @@ describe('runtime compat', () => {
       strictEqual(out.release_notes_required, false, `${status} must not demand release notes`);
       ok(out.drift_class.startsWith('baseline-'), `${status} must not be described as host drift`);
       for (const gap of out.host_gaps) strictEqual(gap.status, `baseline_${status}`);
+      // And the next step must be a REPAIR. `runtime:compat plan` was the old
+      // answer here — an action that cannot fix a package that will not read.
+      ok(
+        out.next_steps.every((step) => !step.startsWith('runtime:compat plan')),
+        `${status} must not route the operator to planning`,
+      );
+      ok(out.next_steps.some((step) => /Repair the packaged host-parity baseline/.test(step)), `${status} must name the repair`);
     }
+  });
+
+  it('CONTROL: a legacy snapshot with no provenance is still read, not called unusable', async () => {
+    // ADR-0051 §Decision 5 reads pre-provenance snapshots as legacy rather
+    // than retro-filling them. Deriving "unusable" from `status !== 'resolved'`
+    // would have swept those in — `null` is kept distinct on purpose, and this
+    // is the case that proves the derivation did not over-reach.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-baseline-legacy-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+    const out = await runCompat({
+      command: 'check',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: { claude: { version: '2.1.141' }, codex: { version: '0.130.0' } },
+    });
+    notStrictEqual(out.status, 'baseline_unusable');
+    strictEqual(out.drift_class, 'none');
+  });
+
+  it('does not report drift when the host runs exactly the baselined prerelease', async () => {
+    // Measured: `extractSemver` stripped the prerelease off the OBSERVED
+    // version while the resolver preserved it on the BASELINE version, and
+    // this function compares the two — so an install running precisely the
+    // baselined `0.147.0-rc.1` was reported as `version_changed`. One
+    // normalizer, used symmetrically, is what removes the false positive.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-prerelease-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.226 (Claude Code)', codex: 'codex-cli 0.147.0-rc.1' }),
+    });
+    const out = await runCompat({
+      command: 'check',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: {
+        claude: { version: '2.1.226' },
+        codex: { version: '0.147.0-rc.1' },
+        provenance: { source: 'package', path: '/pkg/docs/host-parity-baseline.md', status: 'resolved' },
+      },
+    });
+    strictEqual(out.drift_class, 'none');
+    // CONTROL: a genuinely different prerelease is still drift.
+    const drifted = await runCompat({
+      command: 'check',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: {
+        claude: { version: '2.1.226' },
+        codex: { version: '0.147.0-rc.2' },
+        provenance: { source: 'package', path: '/pkg/docs/host-parity-baseline.md', status: 'resolved' },
+      },
+    });
+    strictEqual(drifted.drift_class, 'host-version-changed');
   });
 
   it('rejects a dateless version pair — a baseline that cannot be aged is not a baseline', () => {

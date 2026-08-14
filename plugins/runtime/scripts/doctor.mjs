@@ -14,7 +14,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
-import { resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
+import { baselineFailure, normalizeVersion, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { getPromptCause } from './lib/permission-advisor-core.mjs';
@@ -1150,13 +1150,6 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
   };
 }
 
-function normalizeHostVersion(value) {
-  const text = String(value ?? '').trim();
-  if (!text) return null;
-  const match = text.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/);
-  return match?.[0] ?? text;
-}
-
 // Baseline freshness lives in doctor (frequently run) so host-version drift
 // surfaces without a manual runtime:compat run. cutover-audit reuses this
 // result rather than re-parsing the baseline (single source of truth).
@@ -1165,7 +1158,12 @@ async function buildHostParityBaseline({ claude, codex, pluginRoot }) {
   // repository made this check work only inside the agentic-plugins source
   // tree: from any consumer repository it reported `missing` and told the
   // operator to restore a file their project never contained.
-  const resolved = await resolveHostParityBaseline(pluginRoot ? { pluginRoot } : {});
+  //
+  // `pluginRoot === undefined` is "no override"; anything else is passed
+  // THROUGH, so an explicit empty override throws instead of being laundered
+  // into the packaged default. The old `pluginRoot ? {…} : {}` made a caller
+  // that meant to inspect a specific install silently inspect this one.
+  const resolved = await resolveHostParityBaseline(pluginRoot === undefined ? {} : { pluginRoot });
   // Gate freshness on a successful version probe. version.text carries
   // stderr/error_message when the probe failed (inspectCli), so a failed
   // claude/codex --version must not be normalized into a false current/stale
@@ -1176,28 +1174,37 @@ async function buildHostParityBaseline({ claude, codex, pluginRoot }) {
   const probesOk = claudeProbe === 'available' && codexProbe === 'available';
   const observedClaude = probesOk ? observedVersionText(claude?.version) : null;
   const observedCodex = probesOk ? observedVersionText(codex?.version) : null;
+  // One normalizer, from the module that owns the grammar. doctor's private
+  // copy required three components and FELL BACK TO THE RAW TEXT when nothing
+  // matched, so `banana` normalized to `banana` — a fourth answer to a
+  // question this repository had already answered three times.
   const normalizedObserved = {
-    claude: normalizeHostVersion(observedClaude),
-    codex: normalizeHostVersion(observedCodex),
+    claude: normalizeVersion(observedClaude),
+    codex: normalizeVersion(observedCodex),
   };
   const baseline = resolved.baseline;
+  // Both sides non-null explicitly. Comparing two nulls would call an
+  // unreadable probe "current"; the old code was saved from that only by
+  // `parseBaseline` guaranteeing a non-null baseline version, which is a
+  // property of a different module.
   const current = Boolean(probesOk && baseline
-    && normalizedObserved.claude === normalizeHostVersion(baseline.claude)
-    && normalizedObserved.codex === normalizeHostVersion(baseline.codex));
+    && normalizedObserved.claude && normalizedObserved.codex
+    && normalizedObserved.claude === normalizeVersion(baseline.claude)
+    && normalizedObserved.codex === normalizeVersion(baseline.codex));
+  // ADR-0051 §Decision 4 — visible failure. With no fallback source there is
+  // nothing to silently degrade through. Asking the resolver's own predicate
+  // rather than enumerating its statuses is what keeps a NEW failure from
+  // arriving here as `stale`: an integrity problem reported as a freshness
+  // problem sends the operator to refresh a baseline they cannot even read.
+  const failure = baselineFailure(resolved);
   let status;
   let nextAction;
   if (!probesOk) {
     status = 'unknown';
     nextAction = 'Probe host CLIs first — claude/codex --version did not return a usable version (one or both unavailable); cannot assess baseline freshness.';
-  } else if (resolved.status === 'missing') {
-    status = 'missing';
-    nextAction = `Reinstall or repair the runtime plugin — ${resolved.provenance.path} is not readable (${resolved.provenance.reason ?? 'unreadable'}).`;
-  } else if (resolved.status === 'unparseable') {
-    // ADR-0051 §Decision 4 — visible failure. With no fallback source there is
-    // nothing to silently degrade through, so a malformed baseline is reported
-    // as malformed rather than collapsed into `missing`.
-    status = 'unparseable';
-    nextAction = `Repair ${resolved.provenance.path} — it is present but carries no canonical "Observed on <date> with Claude Code \`x\`, Codex CLI \`y\`" header.`;
+  } else if (failure) {
+    status = failure.status;
+    nextAction = failure.operator_action;
   } else if (current) {
     status = 'current';
     nextAction = null;

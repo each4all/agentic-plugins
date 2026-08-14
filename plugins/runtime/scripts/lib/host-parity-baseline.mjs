@@ -33,6 +33,9 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readPluginManifestVersions } from './plugin-manifest.mjs';
+import { resolveContained } from './path-containment.mjs';
+
 export const BASELINE_RELATIVE_PATH = 'docs/host-parity-baseline.md';
 
 // The canonical grammar. A baseline states WHEN it was observed and WHICH
@@ -69,6 +72,41 @@ export function normalizeVersion(value) {
   // Returning the raw text when nothing matched made `banana` a version.
   // Nothing downstream can tell that apart from a real one, so it is null.
   return text.match(SEMVER_RE)?.[0] ?? null;
+}
+
+/**
+ * The COMPARISON form: the same token with prerelease and build metadata
+ * dropped.
+ *
+ * Two forms, one module, and that is the point. Four private normalizers had
+ * grown around this file — this one, `compat.mjs`'s `extractSemver`,
+ * `doctor.mjs`'s `normalizeHostVersion`, and the CI drift script's own copy —
+ * and they disagreed on prerelease suffixes, on build metadata, on four-part
+ * versions, and on whether `banana` is a version. Measured across ten inputs:
+ * four produced at least two different answers.
+ *
+ * The disagreement only becomes a BUG where the forms are compared against
+ * each other, and they were: `compat` matched a stripped observed version
+ * against an unstripped baseline version, so an install running exactly the
+ * baselined `0.147.0-rc.1` reported `version_changed`. Naming the two forms
+ * and putting them in one module is what removes the second implementation;
+ * deleting the test's KNOWN_DIVERGENCE entry alone would have removed only the
+ * evidence.
+ *
+ * Existing severity policy is unchanged, and the one place it is not identical
+ * is measured rather than asserted. The CI drift check compares by numeric
+ * position only, so `0.147.0-rc.1` and `0.147.0` are already the same release
+ * to it, and that is preserved. Across the fourteen inputs the two
+ * implementations were compared on, they differ on exactly one class: a
+ * FOUR-component string, where the old CI regex returned `1.2.3.4` and this
+ * returns `1.2.3`. `semverParts` slices to three components before any
+ * comparison, so no verdict changes; only the reported string would, for a
+ * release shape neither npm nor SemVer produces.
+ */
+export function releaseVersion(value) {
+  const normalized = normalizeVersion(value);
+  if (!normalized) return null;
+  return normalized.split(/[-+]/)[0];
 }
 
 /**
@@ -114,17 +152,61 @@ export function extractBaselineVersions(text) {
   };
 }
 
-async function readRuntimeVersion(pluginRoot) {
-  for (const manifest of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json']) {
-    try {
-      const raw = await readFile(resolve(pluginRoot, manifest), 'utf8');
-      const version = JSON.parse(raw)?.version;
-      if (typeof version === 'string' && version) return version;
-    } catch {
-      /* try the next manifest; a missing manifest is not a baseline failure */
-    }
+/**
+ * The complete status vocabulary, in one place so no consumer has to enumerate
+ * it — and so adding a sixth is a change to this list rather than a silent new
+ * value falling through five `if` ladders. Measured before it was written:
+ * every consumer had exactly the fall-through this exists to remove.
+ */
+export const BASELINE_STATUSES = Object.freeze([
+  'resolved',
+  'missing',
+  'unreadable',
+  'escaped',
+  'unparseable',
+]);
+
+const FAILURE_SUMMARIES = Object.freeze({
+  missing: 'the packaged baseline file is not present',
+  unreadable: 'the packaged baseline file is present but could not be read',
+  escaped: 'the packaged baseline path resolves OUTSIDE the runtime package',
+  unparseable: 'the packaged baseline file carries no canonical dated header',
+});
+
+/**
+ * The ONE integrity predicate. `null` when the baseline is usable; otherwise
+ * the failure, with an operator action.
+ *
+ * Every consumer asks THIS instead of listing statuses. That is the whole
+ * migration: before it, `doctor` enumerated two statuses and turned anything
+ * else into `stale` (a freshness verdict for an integrity failure),
+ * `dashboard` enumerated the same two and turned anything else into
+ * `available` with a null baseline, and `compat` enumerated them a third time
+ * so a new failure would have joined the drift comparison as though a version
+ * had been read. Three copies of one list is three chances to forget the
+ * fourth entry.
+ */
+export function baselineFailure(resolved) {
+  const status = resolved?.status ?? null;
+  if (status === 'resolved') return null;
+  if (!status || !BASELINE_STATUSES.includes(status)) {
+    // Fail CLOSED on a value this module does not know: an unrecognised status
+    // is itself an integrity problem, and treating it as usable is the exact
+    // direction that harms.
+    return {
+      status: status ?? 'unknown',
+      summary: 'the baseline resolver returned a status this reader does not recognise',
+      operator_action: 'Update the runtime plugin — the installed baseline reader and its caller disagree on the failure vocabulary.',
+    };
   }
-  return null;
+  const path = resolved?.provenance?.path ?? '<runtime package>/docs/host-parity-baseline.md';
+  const reason = resolved?.provenance?.reason ?? null;
+  const operatorAction = status === 'unparseable'
+    ? `Repair ${path} — it is present but carries no canonical "Observed on <date> with Claude Code \`x\`, Codex CLI \`y\`" header.`
+    : status === 'escaped'
+      ? `Reinstall the runtime plugin — ${path} resolves outside the package (${resolved?.provenance?.canonical_path ?? 'unknown target'}), so a file the package does not own would decide host-parity verdicts.`
+      : `Reinstall or repair the runtime plugin — ${path} could not be read (${reason ?? status}).`;
+  return { status, summary: FAILURE_SUMMARIES[status], operator_action: operatorAction };
 }
 
 /**
@@ -132,44 +214,81 @@ async function readRuntimeVersion(pluginRoot) {
  *
  * status:
  *   - `resolved`    — file read and header parsed
- *   - `missing`     — no readable file at the packaged path
- *   - `unparseable` — file present but no canonical dated header
+ *   - `missing`     — nothing at the packaged path (includes a broken symlink)
+ *   - `unreadable`  — present, but the path could not be walked or read
+ *   - `escaped`     — the path resolves outside the package root
+ *   - `unparseable` — read, but no canonical dated header
  *
- * `missing` and `unparseable` are deliberately distinct. They call for
- * different operator actions (a broken install versus a malformed document),
- * and with no fallback source either one is a hard stop rather than a quiet
- * downgrade.
+ * These are deliberately distinct because they call for different operator
+ * actions, and with no fallback source each one is a hard stop rather than a
+ * quiet downgrade. `unreadable` and `escaped` were split out of `missing`
+ * after measurement: a chmod-000 baseline reported "is not present" (an
+ * operator would reinstall a file that is already there), and a symlinked
+ * `docs/` made an arbitrary outside file the authority while still reporting
+ * `source: 'package'`.
+ *
+ * `pluginRoot` is REQUIRED to be a non-empty string when given. Omitting the
+ * key selects the package this module was loaded from; passing `''` or `null`
+ * used to be laundered into that same default by the callers, so a caller that
+ * meant to inspect a specific install silently inspected its own.
  */
 export async function resolveHostParityBaseline({ pluginRoot = defaultPluginRoot() } = {}) {
-  const path = resolve(pluginRoot, BASELINE_RELATIVE_PATH);
-  const runtimeVersion = await readRuntimeVersion(pluginRoot);
+  if (typeof pluginRoot !== 'string' || !pluginRoot.trim()) {
+    throw new TypeError('resolveHostParityBaseline: pluginRoot must be a non-empty string when provided; omit the key to use the packaged default');
+  }
+  const manifest = await readPluginManifestVersions(pluginRoot);
+  const located = await resolveContained(pluginRoot, BASELINE_RELATIVE_PATH);
+  const baseProvenance = {
+    source: 'package',
+    path: located.path,
+    // Both spellings travel, because they answer different questions: `path`
+    // is what an operator opens or edits, `canonical_path` is what was
+    // actually read. When they differ, the difference is itself the evidence —
+    // and it is the only place an `escaped` verdict can be substantiated.
+    canonical_path: located.canonicalPath ?? null,
+    runtime_version: manifest.version,
+    manifest: { status: manifest.status, ...manifest.manifests },
+    content_sha256: null,
+    reason: null,
+  };
 
-  let text;
-  try {
-    text = await readFile(path, 'utf8');
-  } catch (err) {
+  if (located.status !== 'ok') {
     return {
-      status: 'missing',
+      status: located.status,
       baseline: null,
-      provenance: {
-        source: 'package',
-        path,
-        runtime_version: runtimeVersion,
-        content_sha256: null,
-        reason: err?.code ?? 'unreadable',
-      },
+      provenance: { ...baseProvenance, reason: located.code ?? located.status },
     };
   }
 
-  const contentSha256 = createHash('sha256').update(text).digest('hex');
+  let bytes;
+  try {
+    // Read the CANONICAL path: the containment check above resolved the
+    // symlinks, and re-walking the caller's spelling would traverse them
+    // again — guarding one read while performing another.
+    bytes = await readFile(located.canonicalPath);
+  } catch (err) {
+    return {
+      status: err?.code === 'ENOENT' ? 'missing' : 'unreadable',
+      baseline: null,
+      provenance: { ...baseProvenance, reason: err?.code ?? 'unreadable' },
+    };
+  }
+
+  // Hash the BYTES, and decode the same buffer.
+  //
+  // `readFile(path, 'utf8')` then `update(text)` hashed a re-encoding, not the
+  // file: every invalid byte sequence decodes to U+FFFD, so two different
+  // files collide. Reproduced — `FF FE` and `FF FF` produced one hash. Content
+  // provenance whose whole job is telling two same-version installs apart must
+  // not have a collision class that a corrupt copy falls into.
+  //
+  // The BOM half of the original diagnosis was DISPROVED and is recorded so it
+  // is not re-fixed: a BOM survives the round trip and changes the hash either
+  // way.
+  const contentSha256 = createHash('sha256').update(bytes).digest('hex');
+  const text = bytes.toString('utf8');
   const parsed = parseBaseline(text);
-  const provenance = {
-    source: 'package',
-    path,
-    runtime_version: runtimeVersion,
-    content_sha256: contentSha256,
-    reason: null,
-  };
+  const provenance = { ...baseProvenance, content_sha256: contentSha256 };
 
   if (!parsed) {
     return { status: 'unparseable', baseline: null, provenance };

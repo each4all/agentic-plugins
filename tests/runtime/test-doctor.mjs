@@ -3410,6 +3410,61 @@ describe('runtime doctor', () => {
     strictEqual(unknown.host_parity_baseline.evidence.observed.claude, null);
     strictEqual(unknown.host_parity_baseline.evidence.probes.claude, 'unavailable');
   });
+
+  it('reports an INTEGRITY failure as itself, never as staleness (ADR-0051 P2)', async () => {
+    // The branch under test used to enumerate `missing` and `unparseable` and
+    // let anything else fall to the `current`/`stale` comparison. With
+    // `baseline === null` that comparison is always false, so a package whose
+    // baseline could not be READ or was resolved OUTSIDE the package reported
+    // `stale` — a freshness verdict, whose remediation is "refresh the
+    // baseline via runtime:compat". An operator cannot refresh a file the
+    // resolver refuses to open.
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-home-'));
+    const probes = {
+      'claude --version': okResult('2.1.161 (Claude Code)\n'),
+      'claude --help': okResult('Commands:\n  auth status\n  plugin list\n'),
+      'codex --version': okResult('codex-cli 0.136.0\n'),
+      'codex --help': okResult('Commands:\n  exec\n  plugin marketplace\n'),
+      'codex features list': okResult('hooks stable true\nplugin_hooks removed false\nplugins stable true\n'),
+    };
+    const runWithPackage = async (prepare) => {
+      const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-'));
+      await seedRepo(root);
+      const pkg = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-pkg-'));
+      await mkdir(join(pkg, 'docs'), { recursive: true });
+      await prepare(pkg);
+      return runDoctor({ repoRoot: root, pluginRoot: pkg, homeDir: home, runner: fakeRunner(probes) });
+    };
+
+    // A baseline that resolves outside the package — the status no ladder listed.
+    const escaped = await runWithPackage(async (pkg) => {
+      const outside = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-out-'));
+      await writeFile(join(outside, 'evil.md'), 'Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI `0.136.0`.\n');
+      await symlink(join(outside, 'evil.md'), join(pkg, 'docs', 'host-parity-baseline.md'));
+    });
+    strictEqual(escaped.host_parity_baseline.status, 'escaped');
+    notStrictEqual(escaped.host_parity_baseline.status, 'stale');
+    strictEqual(escaped.host_parity_baseline.evidence.baseline, null, 'an escaped file must not supply baseline values');
+    ok(escaped.host_parity_baseline.next_action.includes('Reinstall'));
+    ok(formatText(escaped).includes('baseline-freshness: escaped'));
+
+    // Present but unreadable — reported as absent before this, sending the
+    // operator to reinstall a file already on disk. A directory in the file's
+    // place gives EISDIR regardless of platform or uid.
+    const unreadable = await runWithPackage(async (pkg) => {
+      await mkdir(join(pkg, 'docs', 'host-parity-baseline.md'), { recursive: true });
+    });
+    strictEqual(unreadable.host_parity_baseline.status, 'unreadable');
+    notStrictEqual(unreadable.host_parity_baseline.status, 'missing');
+    ok(unreadable.host_parity_baseline.next_action.includes('EISDIR'));
+
+    // CONTROL: a healthy package is still `current`. Without this the branch
+    // could report a failure unconditionally and both cases above stay green.
+    const healthy = await runWithPackage(async (pkg) => {
+      await writeFile(join(pkg, 'docs', 'host-parity-baseline.md'), 'Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI `0.136.0`.\n');
+    });
+    strictEqual(healthy.host_parity_baseline.status, 'current');
+  });
 });
 
 // ADR-0034 — doctor uses `codex plugin list --json` as a host-native Codex

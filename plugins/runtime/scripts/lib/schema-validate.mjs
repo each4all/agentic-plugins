@@ -51,7 +51,9 @@
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+
+import { resolveContained } from './path-containment.mjs';
 
 // The keyword allowlist. Splitting constraints from annotations matters: an
 // annotation may appear anywhere and constrains nothing; a constraint MUST be
@@ -661,8 +663,23 @@ export const BOOTSTRAP_SCHEMA_FILES = PACKAGED_SCHEMA_FILES;
 export async function loadSchema(family, { pluginRoot } = {}) {
   const file = Object.hasOwn(PACKAGED_SCHEMA_FILES, family) ? PACKAGED_SCHEMA_FILES[family] : undefined;
   if (!file) throw new Error(`unknown schema family '${family}' (known: ${Object.keys(PACKAGED_SCHEMA_FILES).join(', ')})`);
-  const base = pluginRoot ? resolve(pluginRoot, 'data', 'schemas') : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'data', 'schemas');
-  const raw = await readFile(resolve(base, file), 'utf8');
+  // The same packaged-asset resolution the host-parity baseline uses, for the
+  // same reason. A constant relative path cannot escape LEXICALLY, so this had
+  // no containment check — measured on the baseline, it escapes anyway through
+  // a symlinked directory or leaf, and a schema read from outside the package
+  // would validate every bootstrap artifact against rules the package does not
+  // ship. `pluginRoot` is likewise required to be a real root when given: the
+  // old `pluginRoot ? … : <module-relative>` turned an empty override into the
+  // packaged default and validated against a different install than asked for.
+  if (pluginRoot !== undefined && (typeof pluginRoot !== 'string' || !pluginRoot.trim())) {
+    throw new TypeError('loadSchema: pluginRoot must be a non-empty string when provided; omit the key to use the packaged default');
+  }
+  const root = pluginRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const located = await resolveContained(root, join('data', 'schemas', file));
+  if (located.status !== 'ok') {
+    throw new Error(`schema ${file} could not be resolved inside the runtime package (${located.status}${located.code ? `: ${located.code}` : ''}) at ${located.path}`);
+  }
+  const raw = await readFile(located.canonicalPath, 'utf8');
   try {
     return JSON.parse(raw);
   } catch (err) {

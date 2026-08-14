@@ -25,7 +25,7 @@
 // ADR-0010 §5 bans cross-plugin imports. Its duplication is the architecture, not
 // an oversight.
 
-import { stat as defaultStat } from 'node:fs/promises';
+import { realpath as defaultRealpath, stat as defaultStat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
 // Is `child` the same path as `parent`, or inside it?
@@ -53,6 +53,80 @@ export function isUnder(child, parent) {
   const c = resolve(child);
   const p = resolve(parent);
   return c === p || c.startsWith(p + sep);
+}
+
+// Resolve a package-relative asset and prove it did not leave the package.
+//
+// The third question this module answers, and the one `isUnder` alone cannot:
+// runtime resolves several assets by joining a CONSTANT relative path onto a
+// package root — the host-parity baseline, `data/plugin-set.json`,
+// `data/schemas/**`. A constant relative path cannot escape lexically, so the
+// old readers did no containment check at all. Measured: it escapes anyway,
+// through the filesystem rather than through the string. A symlink at the leaf,
+// a symlinked `docs/`, or a symlinked manifest each made a file OUTSIDE the
+// package the authority for a runtime verdict, and all three resolved to
+// `status: resolved` with no trace in provenance.
+//
+// So containment must be asked CANONICALLY, of both sides:
+//
+//   - The root is realpath'd too, not just the leaf. A symlinked package root
+//     is the normal shape of a development checkout and of several install
+//     layouts; canonicalizing only the leaf would refuse those. That control
+//     case is pinned in the tests precisely because it is the over-correction
+//     this function invites.
+//   - `isUnder` gets canonical inputs. It already appends `sep` before the
+//     prefix test, so `/x/runtime-evil` is not inside `/x/runtime` — measured,
+//     because a bare `startsWith` says it is.
+//
+// The read then targets `canonicalPath`, not the caller's spelling. That is not
+// cosmetic: re-walking the original path would re-traverse the very symlinks
+// this function just resolved, so the check would guard a different read than
+// the one that happens.
+//
+// TWO LIMITS, stated rather than papered over:
+//
+//   - TOCTOU. Between the realpath and the caller's read, the canonical path
+//     itself can be replaced. Reading the canonical path narrows the window to
+//     that single node — the intermediate symlinks are already collapsed — but
+//     does not close it. Closing it needs an fd-anchored read (`openat` +
+//     `O_NOFOLLOW` per component), which Node does not expose portably. The
+//     threat this is proportionate to is a mis-packaged or locally-tampered
+//     install, not an attacker racing a doctor run.
+//   - HARDLINKS are invisible here. A hardlink inside the package to a file
+//     outside it has no symlink to resolve and is genuinely inside the tree by
+//     every filesystem answer available. Containment is a path predicate; it
+//     cannot see a second name for the same inode.
+//
+// Returns one of:
+//   { status: 'ok',         path, canonicalPath }
+//   { status: 'missing',    path, code }   nothing is there — includes a broken symlink
+//   { status: 'unreadable', path, code }   present, but the path could not be walked
+//   { status: 'escaped',    path, canonicalPath }
+//
+// `missing` wins over `escaped` when the leaf does not exist: nothing was read,
+// so there is no escape to report, only an incomplete package.
+export async function resolveContained(root, relativePath, { realpath = defaultRealpath } = {}) {
+  const path = resolve(root, relativePath);
+  let canonicalRoot;
+  try {
+    canonicalRoot = await realpath(root);
+  } catch (err) {
+    return err?.code === 'ENOENT'
+      ? { status: 'missing', path, code: 'ENOENT' }
+      : { status: 'unreadable', path, code: err?.code ?? 'error' };
+  }
+  let canonicalPath;
+  try {
+    canonicalPath = await realpath(path);
+  } catch (err) {
+    return err?.code === 'ENOENT'
+      ? { status: 'missing', path, code: 'ENOENT' }
+      : { status: 'unreadable', path, code: err?.code ?? 'error' };
+  }
+  if (!isUnder(canonicalPath, canonicalRoot)) {
+    return { status: 'escaped', path, canonicalPath };
+  }
+  return { status: 'ok', path, canonicalPath };
 }
 
 // Are these two paths the SAME directory? Asks the filesystem, because spelling

@@ -8,7 +8,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
-import { extractBaselineVersions, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
+import { extractBaselineVersions, normalizeVersion, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -195,7 +195,16 @@ export async function ingestReleaseNotes(options = {}) {
 
   for (const file of files) {
     const sourcePath = resolve(file);
-    const sourceText = await readFile(sourcePath, 'utf8');
+    // The mirror of the baseline's hash defect, in the one place it also
+    // bites: `copyFile` stores the ORIGINAL bytes while `sha256(sourceText)`
+    // hashed a UTF-8 re-encoding of them, so the recorded digest did not
+    // identify the stored file whenever the source was not valid UTF-8 — and
+    // `Buffer.byteLength(sourceText)` reported the re-encoded length for the
+    // same reason. (The URL branch below is NOT this shape and is left alone:
+    // it writes `fetched.body` itself, so the digest and the stored bytes come
+    // from the same string.)
+    const sourceBytes = await readFile(sourcePath);
+    const sourceText = sourceBytes.toString('utf8');
     if (!sourceText.trim()) throw new Error(`release notes file is empty: ${file}`);
     const id = noteId(sourcePath, idOffset + entries.length + 1);
     const target = resolve(notesDir, `${id}.md`);
@@ -205,8 +214,8 @@ export async function ingestReleaseNotes(options = {}) {
       kind: 'file',
       source: sourcePath,
       pointer: pointer(repoRoot, target),
-      bytes: Buffer.byteLength(sourceText, 'utf8'),
-      sha256: sha256(sourceText),
+      bytes: sourceBytes.byteLength,
+      sha256: sha256(sourceBytes),
       status: 'stored',
     });
   }
@@ -391,8 +400,15 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
   // hard stop, not an input to release-note planning. Folding it into
   // `no_baseline` produced `release_notes_required` and told the operator to
   // go fetch release notes, which cannot repair a broken package.
+  //
+  // DERIVED, not enumerated. Listing the failure statuses here made this the
+  // third copy of the vocabulary, and a status the list had not learned yet
+  // would have fallen through to the drift comparison as though a version had
+  // been read. `null` is kept distinct on purpose: ADR-0051 §Decision 5 reads
+  // pre-provenance snapshots as legacy rather than retro-filling them, so an
+  // absent status is "unknown provenance", not "unusable".
   const baselineStatus = baseline?.provenance?.status ?? null;
-  const baselineUnusable = baselineStatus === 'missing' || baselineStatus === 'unparseable';
+  const baselineUnusable = baselineStatus !== null && baselineStatus !== 'resolved';
   const hostGaps = ['claude', 'codex'].map((host) => {
     const observed = snapshot.hosts?.[host] ?? {};
     const baselineVersion = baseline?.[host]?.version ?? null;
@@ -411,9 +427,14 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
       version_text: observed.version_text ?? null,
     };
   });
-  const driftClass = classifyDrift(hostGaps);
+  const driftClass = classifyDrift(hostGaps, { baselineStatus });
   const releaseNoteCoverage = buildReleaseNoteCoverage({ hostGaps, releaseNotes });
-  const baselineBroken = driftClass === 'baseline-unreadable' || driftClass === 'baseline-malformed';
+  // The same fact, not a re-derivation from the string it produced. Round-
+  // tripping through `drift_class` meant every new failure status needed a
+  // matching entry in a second list — and `baseline-incomplete` shows why a
+  // prefix test could not stand in for one: it starts with `baseline-` and is
+  // NOT a broken baseline.
+  const baselineBroken = baselineUnusable;
   const releaseNotesRequired = !baselineBroken
     && driftClass !== 'none'
     && (releaseNotes.content_backed_count === 0 || releaseNoteCoverage.missing_required_hosts.length > 0);
@@ -441,9 +462,16 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
     release_notes: summarizeReleaseNotes(releaseNotes),
     release_note_coverage: releaseNoteCoverage,
     policy: compatibilityPolicy(),
-    next_steps: releaseNotesRequired
-      ? [`runtime:compat ingest-release-notes --run-id ${snapshot.run_id} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`]
-      : [`runtime:compat plan --run-id ${snapshot.run_id}`],
+    // A broken baseline gets a repair step, not a planning step. `overall`
+    // already refuses to call this drift; leaving the next step as
+    // `runtime:compat plan` handed the operator an action that cannot fix
+    // what is wrong, which is the same misdirection §Decision 4 removed from
+    // the status itself.
+    next_steps: baselineBroken
+      ? [`Repair the packaged host-parity baseline (${baselineStatus}) — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.`]
+      : releaseNotesRequired
+        ? [`runtime:compat ingest-release-notes --run-id ${snapshot.run_id} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`]
+        : [`runtime:compat plan --run-id ${snapshot.run_id}`],
   };
 }
 
@@ -495,11 +523,16 @@ function buildReleaseNoteCoverage({ hostGaps, releaseNotes }) {
   };
 }
 
-function classifyDrift(hostGaps) {
-  // Ordered first: an unreadable or malformed baseline is not a drift verdict
+function classifyDrift(hostGaps, { baselineStatus = null } = {}) {
+  // Ordered first: a baseline that could not be resolved is not a drift verdict
   // at all — nothing was compared — and it must not be describable as one.
-  if (hostGaps.some((gap) => gap.status === 'baseline_missing')) return 'baseline-unreadable';
-  if (hostGaps.some((gap) => gap.status === 'baseline_unparseable')) return 'baseline-malformed';
+  //
+  // The class is DERIVED from the resolver's status rather than matched
+  // against a list of two. The two it used to match were also mis-named:
+  // `baseline_missing` produced `baseline-unreadable`, which is now a distinct
+  // and different failure. Legacy artifacts keep whatever string they were
+  // written with; nothing re-derives a stored drift class.
+  if (baselineStatus !== null && baselineStatus !== 'resolved') return `baseline-${baselineStatus}`;
   if (hostGaps.some((gap) => gap.status === 'version_changed')) return 'host-version-changed';
   if (hostGaps.some((gap) => gap.status === 'host_unavailable')) return 'host-unavailable';
   if (hostGaps.some((gap) => gap.status === 'version_unknown' || gap.status === 'no_baseline')) return 'baseline-incomplete';
@@ -1058,17 +1091,24 @@ function firstLine(text) {
   return String(text ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] ?? '';
 }
 
+// `extractSemver` used to live here with its own regex. It stripped prerelease
+// suffixes while the baseline resolver preserved them, and `buildGapAnalysis`
+// compares the two against each other — so an install running EXACTLY the
+// baselined `0.147.0-rc.1` reported `version_changed`. One normalizer, from
+// the module that owns the grammar, is what removes that class of false drift.
 function extractSemver(value) {
-  const match = String(value ?? '').match(/[0-9]+(?:\.[0-9]+){1,3}/);
-  return match ? match[0] : null;
+  return normalizeVersion(value);
 }
 
 function sanitizeLine(value) {
   return String(value ?? '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) || null;
 }
 
+// Buffers hash as bytes; everything else keeps the previous string behavior.
+// A caller that HAS the bytes must be able to hash them — coercing a Buffer
+// through `String()` was what made a file's digest depend on a decode.
 function sha256(value) {
-  return createHash('sha256').update(String(value)).digest('hex');
+  return createHash('sha256').update(Buffer.isBuffer(value) ? value : String(value)).digest('hex');
 }
 
 function toIso(value) {

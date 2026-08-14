@@ -15,7 +15,22 @@ const CUTOVER_EVIDENCE_SCHEMA_VERSION = 'runtime-cutover-evidence-1.0';
 const DEFAULT_MAX_ARTIFACT_AGE_HOURS = 24;
 const DEFAULT_DOGFOOD_WINDOW_DAYS = 7;
 const CHECK_PASS = new Set(['satisfied', 'current', 'fresh', 'not-active']);
-const CHECK_UNREADY = new Set(['partial', 'blocked', 'stale', 'not-verified', 'missing', 'unknown']);
+// Unready is the COMPLEMENT of pass, not a second list.
+//
+// It was a second list, and the two had already drifted: doctor reports
+// `unparseable` for a malformed host-parity baseline (ADR-0051 §Decision 4)
+// and `unparseable` was in neither set — so the audit correctly refused to
+// call the cutover ready, and then dropped the one line telling the operator
+// what to repair. Reproduced before this change: `next_action` present,
+// `next_actions` empty.
+//
+// `manual` is the one status that is neither: it is a human step the audit
+// cannot verify, and `buildCutoverGateDetails` already excluded it with this
+// exact predicate. Two copies of one rule, one of them wrong, is the shape
+// this merge removes.
+function checkUnready(status) {
+  return !CHECK_PASS.has(status) && status !== 'manual';
+}
 const OMCC_ACTIVITY = new Set(['yes', 'no', 'unknown']);
 const FOOTER_STATES = new Set([
   'review-needed',
@@ -112,7 +127,7 @@ export async function runCutoverAudit(options = {}) {
     operator_verification: buildOperatorVerification({ checks, cutoverGate, readyCandidate, doctor }),
     checks,
     next_actions: checks
-      .filter((check) => CHECK_UNREADY.has(check.status))
+      .filter((check) => checkUnready(check.status))
       .map((check) => ({ id: check.id, next_action: check.next_action }))
       .filter((entry) => entry.next_action),
     limits: [
@@ -636,7 +651,7 @@ function buildCompletionAudit({ repoRoot, checks, cutoverGate }) {
       .filter((row) => row.status !== 'satisfied')
       .map((row) => ({ id: row.id, status: row.status, source: row.source, blocker: 'ADR-0012 condition is not fully satisfied' })),
     ...artifactChecklist
-      .filter((item) => !CHECK_PASS.has(item.status) && item.status !== 'manual')
+      .filter((item) => checkUnready(item.status))
       .map((item) => ({ id: item.id, status: item.status, source: item.source, blocker: item.covers })),
     ...gateChecklist
       .filter((item) => item.status !== 'satisfied')

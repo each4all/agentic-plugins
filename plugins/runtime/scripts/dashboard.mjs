@@ -42,7 +42,7 @@ import { RUNTIME_VERSION } from './version.mjs';
 // section can never disagree with `runtime:context entry-brief` (§7 "the
 // same arbiter output"). Sibling-script import, same shape as notify.mjs.
 import { entryBriefContext } from './context.mjs';
-import { resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
+import { baselineFailure, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { isClaimExpired, isLockStale, notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
 import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
@@ -404,31 +404,34 @@ export async function inspectSettingsRecency({ repoRoot }) {
 // `repoRoot` is still accepted so the pointer stays repo-relative when the
 // packaged path happens to sit inside the checkout; it is no longer the source.
 export async function readHostParityBaseline({ repoRoot, pluginRoot } = {}) {
-  const resolved = await resolveHostParityBaseline(pluginRoot ? { pluginRoot } : {});
+  // `undefined` is "no override"; an explicit falsy value is a caller bug and
+  // now throws, instead of being laundered into the packaged default and
+  // reporting on a different install than the caller asked about.
+  const resolved = await resolveHostParityBaseline(pluginRoot === undefined ? {} : { pluginRoot });
   const baselinePath = resolved.provenance.path;
   const provenance = { ...resolved.provenance, status: resolved.status };
-  if (resolved.status === 'missing') {
+  const asPointer = pointer(repoRoot ?? path.dirname(baselinePath), baselinePath);
+  // ONE branch, and it is the resolver's own predicate rather than a local
+  // list of its statuses. This function used to enumerate `missing` and
+  // `unparseable` and return `available` for everything else — so a third
+  // failure would have been rendered as an available baseline whose value is
+  // `null`, which is the one rendering that cannot be true. The failure's
+  // status and reason are carried verbatim; naming them here would be the
+  // fourth copy of the vocabulary.
+  const failure = baselineFailure(resolved);
+  if (failure) {
     return {
-      status: 'missing',
-      pointer: pointer(repoRoot ?? path.dirname(baselinePath), baselinePath),
+      status: failure.status,
+      pointer: asPointer,
       baseline: null,
-      reason: resolved.provenance.reason,
-      provenance,
-    };
-  }
-  if (resolved.status === 'unparseable') {
-    // Named `unparsed` here historically; ADR-0051 §Decision 4 makes the
-    // vocabulary uniform across readers.
-    return {
-      status: 'unparseable',
-      pointer: pointer(repoRoot ?? path.dirname(baselinePath), baselinePath),
-      baseline: null,
+      reason: resolved.provenance.reason ?? failure.status,
+      summary: failure.summary,
       provenance,
     };
   }
   return {
     status: 'available',
-    pointer: pointer(repoRoot ?? path.dirname(baselinePath), baselinePath),
+    pointer: asPointer,
     baseline: resolved.baseline,
     provenance,
   };

@@ -356,13 +356,18 @@ export async function inspectCompatRuns({ repoRoot }) {
 
   runs.sort((a, b) => b.selected_at_ms - a.selected_at_ms || b.run_id.localeCompare(a.run_id));
   const latest = runs[0];
-  const status = malformed > 0
+  // INVERTED so the fall-through is safe. This used to list the three
+  // attention-worthy per-run statuses and call everything else `available`, so
+  // a new per-run status — `baseline_unusable` is the one that arrived — would
+  // have been reported as a healthy compat state. Only `current` earns
+  // `available`; anything unrecognised needs attention.
+  const status = malformed > 0 || latest.status === 'baseline_unusable'
     ? 'blocked'
     : latest.status === 'release_notes_required'
       ? 'release_notes_required'
-      : ['snapshot_only', 'gap_analysis_ready', 'plan_ready'].includes(latest.status)
-        ? 'needs_attention'
-        : 'available';
+      : latest.status === 'current'
+        ? 'available'
+        : 'needs_attention';
   return {
     status,
     root,
@@ -401,19 +406,31 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
   const planInformationalOnly = plan.status === 'available'
     && plan.json?.actionable === false
     && gapOverall.status === 'current';
+  // Ordered ABOVE the plan and gap branches, because it outranks both.
+  // `baseline_unusable` is compat's terminal marker for "nothing was
+  // compared": the packaged baseline could not be read, parsed, or contained.
+  // Without this it reached `gap_analysis_ready` — and, when a plan artifact
+  // also existed, `plan_ready` — so a broken package was reported as analysis
+  // that is ready to act on, carrying `runtime:compat plan` as its next step.
+  // That is the same defect compat's own `buildGapAnalysis` fixed one layer
+  // down, repeated by its reader. The single string is compat's; nothing is
+  // re-derived here.
+  const baselineUnusable = gap.status === 'available' && gapOverall.status === 'baseline_unusable';
   const status = malformed.length > 0
     ? 'blocked'
-    : plan.status === 'available' && !planInformationalOnly
-      ? planStatus === 'blocked_release_notes_required'
-        ? 'release_notes_required'
-        : 'plan_ready'
-      : gap.status === 'available'
-        ? gapOverall.status === 'release_notes_required' || gapOverall.release_notes_required === true
+    : baselineUnusable
+      ? 'baseline_unusable'
+      : plan.status === 'available' && !planInformationalOnly
+        ? planStatus === 'blocked_release_notes_required'
           ? 'release_notes_required'
-          : gapOverall.status === 'current'
-            ? 'current'
-            : 'gap_analysis_ready'
-        : 'snapshot_only';
+          : 'plan_ready'
+        : gap.status === 'available'
+          ? gapOverall.status === 'release_notes_required' || gapOverall.release_notes_required === true
+            ? 'release_notes_required'
+            : gapOverall.status === 'current'
+              ? 'current'
+              : 'gap_analysis_ready'
+          : 'snapshot_only';
   return {
     run_id: sanitizeValue(snapshot.run_id) ?? runId,
     status,

@@ -19,7 +19,9 @@
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+
+import { resolveContained } from './path-containment.mjs';
 
 export const PLUGIN_SET_SCHEMA_VERSION = 'runtime-plugin-set-1.0';
 
@@ -50,15 +52,25 @@ function isPlainObject(value) {
  * root). Never reads `process.cwd()`.
  */
 export async function loadPluginSet({ pluginRoot } = {}) {
-  const path = pluginRoot
-    ? resolve(pluginRoot, 'data', 'plugin-set.json')
-    : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'data', 'plugin-set.json');
-  const raw = await readFile(path, 'utf8');
+  // Containment and a strict override, matching the host-parity baseline
+  // resolver — this is the same packaged-asset contract, and it had the same
+  // two holes. A symlinked `data/` made an outside file the plugin set (which
+  // decides what gets installed), and `pluginRoot: ''` silently read this
+  // module's own package instead of the one the caller named.
+  if (pluginRoot !== undefined && (typeof pluginRoot !== 'string' || !pluginRoot.trim())) {
+    throw new TypeError('loadPluginSet: pluginRoot must be a non-empty string when provided; omit the key to use the packaged default');
+  }
+  const root = pluginRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const located = await resolveContained(root, join('data', 'plugin-set.json'));
+  if (located.status !== 'ok') {
+    throw new Error(`plugin-set.json could not be resolved inside the runtime package (${located.status}${located.code ? `: ${located.code}` : ''}) at ${located.path}`);
+  }
+  const raw = await readFile(located.canonicalPath, 'utf8');
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`plugin-set.json is not valid JSON at ${path}: ${err.message}`);
+    throw new Error(`plugin-set.json is not valid JSON at ${located.path}: ${err.message}`);
   }
   return parsed;
 }
