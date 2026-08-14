@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, notStrictEqual, ok, strictEqual, rejects } from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -351,6 +352,72 @@ describe('runtime compat', () => {
       );
       ok(out.next_steps.some((step) => /Repair the packaged host-parity baseline/.test(step)), `${status} must name the repair`);
     }
+  });
+
+  it('plan is terminal on an unusable baseline too, not merely check', async () => {
+    // `check` refused to call it drift and `plan` went on to emit
+    // `status: planned`, `actionable: true`, and compatibility work steps for
+    // a comparison that never happened (cross-host review, reproduced).
+    // Terminal in one command and not the next is how the reader one layer up
+    // ended up reporting `plan_ready` over a broken package.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-unusable-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+    const unusable = {
+      claude: { version: null },
+      codex: { version: null },
+      provenance: { source: 'package', path: '/nowhere/docs/host-parity-baseline.md', status: 'escaped' },
+    };
+    const plan = await runCompat({ command: 'plan', repoRoot: root, runId: RUN_ID, baseline: unusable });
+    strictEqual(plan.status, 'blocked_baseline_unusable');
+    strictEqual(plan.actionable, false);
+    ok(plan.next_steps.some((step) => /Repair the packaged host-parity baseline/.test(step)));
+
+    // CONTROL: a resolvable baseline still plans.
+    const ok_ = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: {
+        claude: { version: '2.1.141' },
+        codex: { version: '0.130.0' },
+        provenance: { source: 'package', path: '/pkg/docs/host-parity-baseline.md', status: 'resolved' },
+      },
+    });
+    notStrictEqual(ok_.status, 'blocked_baseline_unusable');
+  });
+
+  it('stores the release-note bytes it hashed, not a second read of the source', async () => {
+    // `copyFile` reopened the path after `readFile`, so a source replaced
+    // between the two recorded one file's digest beside another file's bytes
+    // (cross-host review reproduced 8 of 11 under a swap fixture). The bytes
+    // were already in hand.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-note-bytes-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+    const notes = join(root, 'notes.md');
+    // Deliberately not valid UTF-8: a re-encoding would change these bytes.
+    await writeFile(notes, Buffer.concat([Buffer.from('# Codex CLI 0.130.0\n\n'), Buffer.from([0xff, 0xfe]), Buffer.from('\n')]));
+    const out = await runCompat({ command: 'ingest-release-notes', repoRoot: root, runId: RUN_ID, releaseNotesFiles: [notes] });
+    // The persisted index is the authority for the recorded digest — the
+    // command envelope is a summary of it.
+    const index = JSON.parse(await readFile(join(root, out.release_notes_pointer), 'utf8'));
+    const entry = index.notes.find((note) => note.kind === 'file');
+    const storedPath = join(root, entry.pointer);
+    const storedBytes = await readFile(storedPath);
+    strictEqual(entry.sha256, createHash('sha256').update(storedBytes).digest('hex'), 'the recorded digest must identify the STORED bytes');
+    strictEqual(entry.bytes, storedBytes.byteLength);
+    deepStrictEqual(storedBytes, await readFile(notes), 'and the stored bytes must be the source bytes');
   });
 
   it('CONTROL: a legacy snapshot with no provenance is still read, not called unusable', async () => {

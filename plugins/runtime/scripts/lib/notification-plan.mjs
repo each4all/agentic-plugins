@@ -53,6 +53,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { RUNTIME_VERSION } from '../version.mjs';
+import { resolveContainedSync } from './path-containment.mjs';
 import { readTextIfExists } from './state-readers.mjs';
 import { renderCodexTuiTableToml, tomlBasicString } from './toml.mjs';
 
@@ -553,7 +554,20 @@ export function renderCodexTuiNotificationsFragmentToml() {
 const RECEIVERS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'receivers');
 
 function readReceiverTemplate(templateBasename) {
-  return readFileSync(join(RECEIVERS_DIR, templateBasename), 'utf8');
+  // Canonical containment, like every other packaged asset (ADR-0051
+  // §Decision 2 as extended 2026-08-14). This is the higher-stakes half of
+  // that class: the rendered text is CODE offered to the operator for
+  // installation, so a receivers/ directory or template that resolves outside
+  // the package puts unowned content into something a person is about to run.
+  // A mis-packaged install — a build step that followed or created a symlink,
+  // a checkout sharing a directory — is the failure mode this catches; the
+  // package is supposed to be self-contained, and a hash over content it does
+  // not own identifies the wrong bytes.
+  const located = resolveContainedSync(RECEIVERS_DIR, templateBasename);
+  if (located.status !== 'ok') {
+    throw new Error(`receiver template ${templateBasename} could not be resolved inside the runtime package (${located.status}${located.code ? `: ${located.code}` : ''}) at ${located.path}`);
+  }
+  return readFileSync(located.canonicalPath, 'utf8');
 }
 
 // Replace a placeholder that must occur EXACTLY once — zero or duplicate

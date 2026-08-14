@@ -3464,6 +3464,30 @@ describe('runtime doctor', () => {
       await writeFile(join(pkg, 'docs', 'host-parity-baseline.md'), 'Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI `0.136.0`.\n');
     });
     strictEqual(healthy.host_parity_baseline.status, 'current');
+
+    // And a FAILED probe must not hide it. The two are independent facts and
+    // only one is about the hosts; ordering the probe gate first reported
+    // `unknown` for a package whose baseline resolves outside itself, with a
+    // remediation ("probe your CLIs") that would not have fixed either problem
+    // (cross-host review, reproduced).
+    const unavailable = async () => ({ ok: false, exit_code: null, stdout: '', stderr: 'not found', error_code: 'ENOENT' });
+    const repoRoot = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-'));
+    await seedRepo(repoRoot);
+    const pkg = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-pkg-'));
+    await mkdir(join(pkg, 'docs'), { recursive: true });
+    const outside = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-out-'));
+    await writeFile(join(outside, 'evil.md'), 'Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI `0.136.0`.\n');
+    await symlink(join(outside, 'evil.md'), join(pkg, 'docs', 'host-parity-baseline.md'));
+    const blindProbes = await runDoctor({ repoRoot, pluginRoot: pkg, homeDir: home, runner: unavailable });
+    strictEqual(blindProbes.host_parity_baseline.status, 'escaped');
+    notStrictEqual(blindProbes.host_parity_baseline.status, 'unknown');
+
+    // CONTROL: with the package intact, failed probes ARE the honest answer.
+    const intact = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-pkg-'));
+    await mkdir(join(intact, 'docs'), { recursive: true });
+    await writeFile(join(intact, 'docs', 'host-parity-baseline.md'), 'Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI `0.136.0`.\n');
+    const probeOnly = await runDoctor({ repoRoot, pluginRoot: intact, homeDir: home, runner: unavailable });
+    strictEqual(probeOnly.host_parity_baseline.status, 'unknown');
   });
 });
 

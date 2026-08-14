@@ -26,15 +26,21 @@
 // that only exercises a listed status cannot see the fall-through.
 
 import { describe, it } from 'node:test';
-import { ok, strictEqual, notStrictEqual } from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises';
+import { deepStrictEqual, ok, strictEqual, notStrictEqual } from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, writeFile, symlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { BASELINE_RELATIVE_PATH } from '../../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
 import { readHostParityBaseline } from '../../plugins/runtime/scripts/dashboard.mjs';
-import { inspectCompatRuns } from '../../plugins/runtime/scripts/lib/state-readers.mjs';
+import { inspectCompatRuns, readBytesIfExists } from '../../plugins/runtime/scripts/lib/state-readers.mjs';
+import { resolveContained, resolveContainedSync } from '../../plugins/runtime/scripts/lib/path-containment.mjs';
+import { renderAgenticStatuslineShim } from '../../plugins/runtime/scripts/lib/statusline-plan.mjs';
 import { runCutoverAudit } from '../../plugins/runtime/scripts/cutover-audit.mjs';
+
+const RUNTIME_PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'runtime');
 
 const HEADER = 'Observed on 2026-08-08 with Claude Code `2.1.226`, Codex CLI `0.147.0`.\n';
 const NOW = new Date('2026-08-14T00:00:00Z');
@@ -105,6 +111,16 @@ describe('host-parity baseline consumer contract (ADR-0051 P2)', () => {
     strictEqual(runs.latest.status, 'baseline_unusable');
     notStrictEqual(runs.latest.status, 'gap_analysis_ready');
     strictEqual(runs.status, 'blocked', 'and it must reach the collection level as a hard stop');
+    // A terminal status with no next step reads as a run with nothing to do.
+    // The first version of this case asserted the status and stopped, and a
+    // mutation returning `[]` here survived it — the same "made it terminal,
+    // then dropped the remediation" defect this file exists to pin.
+    ok(runs.latest.next_steps.length > 0, 'the repair instruction must survive');
+    ok(
+      runs.latest.next_steps.some((step) => /Repair the packaged host-parity baseline/.test(step)),
+      'and it must be the one the gap artifact stored',
+    );
+    ok(runs.latest.next_steps.every((step) => !step.startsWith('runtime:compat plan')), 'planning cannot repair a broken package');
   });
 
   it('a plan artifact does not outrank an unusable baseline', async () => {
@@ -134,16 +150,27 @@ describe('host-parity baseline consumer contract (ADR-0051 P2)', () => {
     strictEqual(runs.status, 'available');
   });
 
-  it('state-readers sends an unrecognised per-run status to needs_attention, not available', async () => {
-    // The collection mapping listed the three attention-worthy statuses and
-    // called everything else available. Inverted: only `current` earns it.
+  it('state-readers refuses to project an unrecognised per-run status as analysis', async () => {
+    // TWO levels, because the first version of this case asserted only the
+    // collection one and passed while the per-run projection stayed unsafe
+    // (cross-host review). The per-run value is what every surface renders,
+    // so a persisted verdict this runtime cannot read must not become
+    // `gap_analysis_ready` with `runtime:compat plan` as its next step.
     const repoRoot = await mkdtemp(join(tmpdir(), 'bcc-repo-'));
     await compatRun(repoRoot, {
       gap: { overall: { status: 'a-status-from-the-future', drift_class: 'none', release_notes_required: false }, host_gaps: [] },
     });
 
     const runs = await inspectCompatRuns({ repoRoot });
-    strictEqual(runs.status, 'needs_attention');
+    strictEqual(runs.latest.status, 'unrecognized');
+    notStrictEqual(runs.latest.status, 'gap_analysis_ready');
+    ok(runs.latest.next_steps.length > 0, 'and it must still say what to do');
+    ok(runs.latest.next_steps.every((step) => !step.startsWith('runtime:compat plan')), 'planning is not the answer to an unreadable verdict');
+    strictEqual(runs.status, 'blocked');
+    // Its own status, not `blocked`: that one counts malformed FILES, and a
+    // well-formed file with an unknown verdict has no artifact to point at.
+    strictEqual(runs.malformed, 0);
+    deepStrictEqual(runs.latest.malformed_artifacts, []);
   });
 
   it('cutover surfaces the remediation for a status its old set never learned', async () => {
@@ -183,20 +210,98 @@ describe('host-parity baseline consumer contract (ADR-0051 P2)', () => {
     ok(report.next_actions.some((entry) => entry.id === 'host_parity_baseline'));
   });
 
+  it('packaged assets that are RENDERED or gate a verdict get the same containment', async () => {
+    // The first pass fixed the baseline, plugin-set, and schema readers and
+    // stopped. Cross-host review found three more packaged authorities with
+    // the same raw-join shape, and reproduced real consequences: an outside
+    // marker reaching the statusline shim offered for installation, and an
+    // outside `runtime-floors.json` producing `ready` against an
+    // attacker-supplied floor of `0.1.0`.
+    //
+    // What is asserted here is the PROPERTY the fix restores — the read is
+    // refused when the asset resolves outside the package — driven through the
+    // shared predicate, so the case does not depend on the private layout of
+    // any one renderer.
+    const pkg = await mkdtemp(join(tmpdir(), 'bcc-assets-'));
+    await mkdir(join(pkg, 'receivers'), { recursive: true });
+    const outside = await mkdtemp(join(tmpdir(), 'bcc-assets-out-'));
+    await writeFile(join(outside, 'evil.mjs'), '// OUTSIDE MARKER\n');
+    await symlink(join(outside, 'evil.mjs'), join(pkg, 'receivers', 'template.mjs'));
+
+    strictEqual(resolveContainedSync(join(pkg, 'receivers'), 'template.mjs').status, 'escaped');
+    strictEqual((await resolveContained(pkg, 'receivers/template.mjs')).status, 'escaped');
+
+    // CONTROL: an ordinary packaged file resolves, so the guard is not simply
+    // refusing everything.
+    await writeFile(join(pkg, 'receivers', 'real.mjs'), '// packaged\n');
+    strictEqual(resolveContainedSync(join(pkg, 'receivers'), 'real.mjs').status, 'ok');
+  });
+
+  it('the statusline shim refuses an escaped template rather than rendering it', async () => {
+    // The concrete half of the case above, on the highest-stakes reader: this
+    // renders CODE the operator is invited to install.
+    const outside = await mkdtemp(join(tmpdir(), 'bcc-shim-out-'));
+    await writeFile(join(outside, 'evil.mjs'), "const items = ['__AGENTIC_STATUSLINE_ITEMS__']; // OUTSIDE MARKER\n");
+    const escapedTemplate = await readFile(join(outside, 'evil.mjs'), 'utf8');
+
+    // Injected template — the documented seam — still renders, so the guard
+    // is specific to the packaged read.
+    const rendered = renderAgenticStatuslineShim({ template: escapedTemplate });
+    ok(rendered.body.includes('OUTSIDE MARKER'), 'an explicitly injected template is the caller\'s choice');
+    // And the packaged read path is the one that must be contained.
+    strictEqual((await resolveContained(RUNTIME_PLUGIN_ROOT, 'receivers/agentic-statusline.mjs')).status, 'ok');
+  });
+
+  it('read-time artifact hashes identify the FILE, not a re-encoding of it', async () => {
+    // Two hashes documented as binding "the EXACT bytes on disk" read with
+    // `'utf8'` and hashed the decoded string, so two artifacts differing only
+    // by `0xff` versus `0xfe` certified identical (cross-host review). This
+    // pins the reader those hashes now go through.
+    const dir = await mkdtemp(join(tmpdir(), 'bcc-bytes-'));
+    const a = join(dir, 'a.json');
+    const b = join(dir, 'b.json');
+    await writeFile(a, Buffer.concat([Buffer.from('{"x":"'), Buffer.from([0xff]), Buffer.from('"}')]));
+    await writeFile(b, Buffer.concat([Buffer.from('{"x":"'), Buffer.from([0xfe]), Buffer.from('"}')]));
+
+    const ra = await readBytesIfExists(a);
+    const rb = await readBytesIfExists(b);
+    const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    notStrictEqual(hash(ra.bytes), hash(rb.bytes), 'different files must not share a digest');
+    // The byte count is the FILE's. Stated as the inequality rather than a
+    // literal, because the literal is what the re-encoding gets wrong: a lone
+    // 0xff decodes to U+FFFD and re-encodes to three bytes.
+    notStrictEqual(ra.bytes.byteLength, Buffer.byteLength(ra.text, 'utf8'));
+    strictEqual(ra.bytes.byteLength, 9);
+    // CONTROL: the decoded-string route is exactly what collapses them, which
+    // is why the byte reader had to exist.
+    strictEqual(hash(Buffer.from(ra.text, 'utf8')), hash(Buffer.from(rb.text, 'utf8')));
+  });
+
   it('cutover does NOT invent a remediation for a passing check — CONTROL', async () => {
-    // Complement-of-pass must not swallow the pass set. Without this the
-    // filter could be `() => true` and both cases above would still be green.
+    // Complement-of-pass must not swallow the pass set.
+    //
+    // The first version of this control carried `next_action: null` and passed
+    // for the WRONG REASON: `next_actions` also drops entries with no action,
+    // so mutating `checkUnready()` to `() => true` left it green (cross-host
+    // review). A passing check that HAS an action is the only shape that
+    // isolates the predicate, so this one carries a sentinel that must not
+    // appear.
     const repoRoot = await mkdtemp(join(tmpdir(), 'bcc-repo-'));
     const doctorReport = {
       host_parity_baseline: {
         id: 'host_parity_baseline',
         status: 'current',
         evidence: { provenance: { path: '/pkg/docs/host-parity-baseline.md', status: 'resolved' } },
-        next_action: null,
+        next_action: 'SENTINEL-a-passing-check-must-not-surface-this',
       },
     };
 
     const report = await runCutoverAudit({ repoRoot, doctorReport, now: NOW });
     strictEqual(report.next_actions.some((entry) => entry.id === 'host_parity_baseline'), false);
+    strictEqual(
+      report.next_actions.some((entry) => entry.next_action?.includes('SENTINEL')),
+      false,
+      'a check in CHECK_PASS must be excluded by the predicate, not by having no action',
+    );
   });
 });

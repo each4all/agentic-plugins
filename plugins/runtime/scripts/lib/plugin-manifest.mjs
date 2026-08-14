@@ -38,9 +38,11 @@
 // still attached to it.
 
 import { readFile } from 'node:fs/promises';
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-import { resolveContained } from './path-containment.mjs';
+import { resolveContained, resolveContainedSync } from './path-containment.mjs';
+import { isSemVer } from './semver.mjs';
 
 export const CLAUDE_MANIFEST_RELATIVE_PATH = '.claude-plugin/plugin.json';
 export const CODEX_MANIFEST_RELATIVE_PATH = '.codex-plugin/plugin.json';
@@ -54,11 +56,9 @@ const MANIFESTS = Object.freeze([
 // A manifest version must BE a version. `typeof === 'string' && length` let
 // `"banana"` through as `runtime_version`, while `normalizeVersion` one module
 // over rejects exactly that string — the package disagreeing with itself about
-// what a version is. `plugins/runtime/data`'s plugin-set validator keeps its
-// own copy of this shape for a different contract (declared plugin versions in
-// a data file); the two are not required to move together.
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-
+// what a version is. The shape predicate is `semver.mjs`'s, shared with the
+// plugin-set validator: the first version of this file carried a loose private
+// copy that accepted `01.2.3` and `1.2.3-01`, neither of which is SemVer.
 function classify(raw) {
   let parsed;
   try {
@@ -71,7 +71,7 @@ function classify(raw) {
   const trimmed = version.trim();
   // The raw value travels on rejection: an operator debugging a corrupt
   // install needs to see WHAT the manifest says, not just that it is wrong.
-  if (!SEMVER_RE.test(trimmed)) return { status: 'invalid', version: null, raw: trimmed };
+  if (!isSemVer(trimmed)) return { status: 'invalid', version: null, raw: trimmed };
   return { status: 'ok', version: trimmed };
 }
 
@@ -117,41 +117,29 @@ export async function readPluginManifestVersions(pluginRoot, { read = readFile }
  * Sync form — `version.mjs` computes `RUNTIME_VERSION` at module load, before
  * any async context exists, and every runtime command imports it.
  *
- * Containment is asked here too, with `realpathSync`. That is four extra
- * syscalls per process against a stamp that lands in every artifact; the
- * measured escape (a symlinked manifest reporting `99.99.99`) is the thing
- * being prevented.
+ * Containment is asked here too, through the SHARED synchronous predicate.
+ * That is four extra syscalls per process against a stamp that lands in every
+ * artifact; the measured escape (a symlinked manifest reporting `99.99.99`) is
+ * the thing being prevented. A private copy of the comparison lived here first
+ * and compared with a hard-coded `/`, which made every Windows manifest
+ * `escaped` — the reason there is now one implementation instead of two.
  */
-export function readPluginManifestVersionsSync(pluginRoot, { read = readFileSync, realpath = realpathSync } = {}) {
-  let canonicalRoot;
-  try {
-    canonicalRoot = realpath(pluginRoot);
-  } catch (err) {
-    const status = err?.code === 'ENOENT' ? 'absent' : 'unreadable';
-    return summarize(MANIFESTS.map(({ host }) => ({ host, status, version: null, path: null })));
-  }
+export function readPluginManifestVersionsSync(pluginRoot, { read = readFileSync, ...locateOptions } = {}) {
   const entries = [];
   for (const { host, relative } of MANIFESTS) {
-    const path = `${pluginRoot}/${relative}`;
-    let canonicalPath;
-    try {
-      canonicalPath = realpath(path);
-    } catch (err) {
-      entries.push({ host, status: err?.code === 'ENOENT' ? 'absent' : 'unreadable', version: null, path });
-      continue;
-    }
-    if (canonicalPath !== canonicalRoot && !canonicalPath.startsWith(`${canonicalRoot}/`)) {
-      entries.push({ host, status: 'escaped', version: null, path });
+    const located = resolveContainedSync(pluginRoot, relative, locateOptions);
+    if (located.status !== 'ok') {
+      entries.push({ host, status: located.status === 'missing' ? 'absent' : located.status, version: null, path: located.path });
       continue;
     }
     let raw;
     try {
-      raw = read(canonicalPath, 'utf8');
+      raw = read(located.canonicalPath, 'utf8');
     } catch (err) {
-      entries.push({ host, status: err?.code === 'ENOENT' ? 'absent' : 'unreadable', version: null, path });
+      entries.push({ host, status: err?.code === 'ENOENT' ? 'absent' : 'unreadable', version: null, path: located.path });
       continue;
     }
-    entries.push({ host, ...classify(raw), path });
+    entries.push({ host, ...classify(raw), path: located.path });
   }
   return summarize(entries);
 }

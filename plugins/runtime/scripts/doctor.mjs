@@ -39,6 +39,7 @@ import {
   machinePointer,
   pointer,
   readJsonIfExists,
+  readBytesIfExists,
   readTextIfExists,
   runIdTimestampMs,
   safeCount,
@@ -1199,12 +1200,19 @@ async function buildHostParityBaseline({ claude, codex, pluginRoot }) {
   const failure = baselineFailure(resolved);
   let status;
   let nextAction;
-  if (!probesOk) {
-    status = 'unknown';
-    nextAction = 'Probe host CLIs first — claude/codex --version did not return a usable version (one or both unavailable); cannot assess baseline freshness.';
-  } else if (failure) {
+  // Integrity is ordered ABOVE the probe gate, because the two are independent
+  // facts and only one of them is about the hosts. With unavailable CLIs and a
+  // baseline resolving outside the package, this reported `unknown` and told
+  // the operator to probe their CLIs — hiding a broken install behind a
+  // missing one, and behind a remediation that would not have fixed it either
+  // (cross-host review, reproduced). The probe failure is not lost: the claude
+  // and codex checks report it directly, which is where it belongs.
+  if (failure) {
     status = failure.status;
     nextAction = failure.operator_action;
+  } else if (!probesOk) {
+    status = 'unknown';
+    nextAction = 'Probe host CLIs first — claude/codex --version did not return a usable version (one or both unavailable); cannot assess baseline freshness.';
   } else if (current) {
     status = 'current';
     nextAction = null;
@@ -2143,8 +2151,12 @@ async function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifa
   // summary can differ from the written bytes (key order, whitespace, escaping) and would
   // certify a file that never existed. The producer cannot self-hash (the attestation lives
   // inside these bytes), so the hash is computed here, read-time (§8.2).
-  const rawArtifact = await readTextIfExists(artifactPath);
-  const artifactHash = rawArtifact.ok ? sha256(rawArtifact.text) : null;
+  // Read the BYTES, not a decoded string: `readTextIfExists` maps every
+  // invalid byte sequence to U+FFFD, so "the EXACT bytes on disk" was a
+  // re-encoding, and two artifacts differing only by `0xff` versus `0xfe`
+  // certified identical (cross-host review, reproduced).
+  const rawArtifact = await readBytesIfExists(artifactPath);
+  const artifactHash = rawArtifact.ok ? sha256(rawArtifact.bytes) : null;
   const pluginManagement = artifact.plugin_management ?? {};
   const pluginManagementSummary = pluginManagement.summary ?? {};
   const pluginCleanup = artifact.plugin_cleanup ?? {};

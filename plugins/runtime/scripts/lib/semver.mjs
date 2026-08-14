@@ -17,6 +17,22 @@
 // (equal-core prereleases compare 0) and build metadata (`+build`) never
 // orders — both unchanged from the numeric-only behavior.
 
+// The SemVer SHAPE, as the specification writes it: no leading zeroes in any
+// numeric identifier, prerelease and build identifiers as §9/§10 define them.
+//
+// One copy, in the module that already owns SemVer semantics runtime-internally.
+// There were two loose ones — `plugin-set.mjs`'s private `SEMVER_RE` and a
+// second added alongside the manifest reader — and both accepted `01.2.3` and
+// `1.2.3-01`, which the specification does not. That matters where the value is
+// reported as a version: a manifest saying `01.2.3` was classified `ok` and
+// stamped onto artifacts (cross-host review).
+const SEMVER_SHAPE_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+/** Is this string a complete, well-formed SemVer version? */
+export function isSemVer(value) {
+  return typeof value === 'string' && SEMVER_SHAPE_RE.test(value);
+}
+
 export function semverCompare(a, b) {
   // Build metadata (`+…`) strips FIRST: it may itself contain hyphens
   // (`1.0.0+build-5` is a clean release, SemVer §10), so splitting on `-`

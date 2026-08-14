@@ -28,7 +28,9 @@ import {
   releaseVersion,
   resolveHostParityBaseline,
 } from '../../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
-import { resolveContained } from '../../plugins/runtime/scripts/lib/path-containment.mjs';
+import { isUnder, resolveContained, resolveContainedSync } from '../../plugins/runtime/scripts/lib/path-containment.mjs';
+import { readPluginManifestVersions, readPluginManifestVersionsSync } from '../../plugins/runtime/scripts/lib/plugin-manifest.mjs';
+import { isSemVer } from '../../plugins/runtime/scripts/lib/semver.mjs';
 
 const HEADER = 'Observed on 2026-08-08 with Claude Code `2.1.226`, Codex CLI\n`0.147.0`, official docs.\n';
 
@@ -385,6 +387,123 @@ describe('host-parity baseline resolver (ADR-0051)', () => {
     // CONTROL: omitting the key is still the documented default.
     const resolved = await resolveHostParityBaseline();
     ok(BASELINE_STATUSES.includes(resolved.status));
+  });
+
+  // ── cross-host review of the first hardening pass ────────────────────────
+
+  it('CONTROL: containment compares IDENTITY when spellings disagree', async function () {
+    // macOS firmlinks give one directory two canonical spellings. A symlink
+    // written with the aliased spelling canonicalized outside a root spelled
+    // the plain way, and a legitimate package was refused — reproduced by
+    // cross-host review, with matching dev/ino on both spellings.
+    //
+    // Skipped where the alias does not exist (Linux CI), because a case that
+    // silently passes on a platform without firmlinks proves nothing. The
+    // generic identity path is covered by the escape control below on every
+    // platform.
+    const root = await mkdtemp(join('/private/tmp', 'hpb-firmlink-'));
+    const aliased = join('/System/Volumes/Data', root);
+    let aliasUsable = true;
+    try {
+      await realpath(aliased);
+    } catch {
+      aliasUsable = false;
+    }
+    if (!aliasUsable) return;
+    await mkdir(join(root, 'docs'), { recursive: true });
+    await mkdir(join(root, 'real'), { recursive: true });
+    await writeFile(join(root, 'real', 'b.md'), HEADER);
+    await symlink(join(aliased, 'real', 'b.md'), join(root, BASELINE_RELATIVE_PATH));
+
+    const located = await resolveContained(root, BASELINE_RELATIVE_PATH);
+    strictEqual(located.status, 'ok', 'two spellings of one inode are one directory');
+  });
+
+  it('a filesystem ROOT is a valid containment boundary', async () => {
+    // `'/' + sep` is `'//'`, so nothing was ever inside `/` — every filesystem
+    // root, drive root, and UNC share root failed the predicate.
+    strictEqual(isUnder('/etc/hosts', '/'), true);
+    const located = await resolveContained('/', 'etc/hosts');
+    strictEqual(located.status, 'ok');
+  });
+
+  it('the sync and async containment predicates are one implementation', async () => {
+    // A hand-rolled sync copy compared with a hard-coded `/`, so on Windows
+    // every valid manifest canonicalized to a `\`-separated path, failed
+    // containment, and every runtime command stamped `0.0.0-dev`. Rather than
+    // pin a platform this suite cannot run, pin that the two agree — a second
+    // implementation is what made them disagree.
+    const root = await fixturePackage({ baseline: HEADER });
+    const outside = await mkdtemp(join(tmpdir(), 'hpb-sync-out-'));
+    await writeFile(join(outside, 'evil.md'), HEADER);
+    await mkdir(join(root, 'esc'), { recursive: true });
+    await symlink(join(outside, 'evil.md'), join(root, 'esc', 'x.md'));
+
+    for (const relative of [BASELINE_RELATIVE_PATH, 'esc/x.md', 'nope.md']) {
+      const asyncResult = await resolveContained(root, relative);
+      const syncResult = resolveContainedSync(root, relative);
+      strictEqual(syncResult.status, asyncResult.status, `disagreement on ${relative}`);
+      strictEqual(syncResult.path, asyncResult.path);
+      strictEqual(syncResult.canonicalPath ?? null, asyncResult.canonicalPath ?? null);
+    }
+  });
+
+  it('the SYNC manifest reader goes through the shared predicate', async () => {
+    // `version.mjs` is this function's only caller, and nothing exercised it
+    // against a fixture package — so a mutation replacing the shared predicate
+    // with a hand-rolled `${root}/${relative}` (the exact shape whose
+    // hard-coded separator made every Windows manifest `escaped`) survived the
+    // suite. The verdict, not the wiring, is what this pins: an escaped
+    // manifest must be reported as escaped by BOTH readers.
+    const outside = await mkdtemp(join(tmpdir(), 'hpb-sync-manifest-'));
+    await writeFile(join(outside, 'plugin.json'), JSON.stringify({ version: '99.99.99' }));
+    const root = await fixturePackage({ baseline: HEADER, version: null, codexVersion: '0.90.1' });
+    await mkdir(join(root, '.claude-plugin'), { recursive: true });
+    await symlink(join(outside, 'plugin.json'), join(root, '.claude-plugin', 'plugin.json'));
+
+    const sync = readPluginManifestVersionsSync(root);
+    strictEqual(sync.manifests.claude.status, 'escaped');
+    strictEqual(sync.version, '0.90.1', 'the contained half still supplies a version');
+    notStrictEqual(sync.version, '99.99.99');
+
+    // And the two readers must agree — a second implementation is what made
+    // them able to disagree in the first place.
+    const asyncResult = await readPluginManifestVersions(root);
+    strictEqual(sync.status, asyncResult.status);
+    strictEqual(sync.version, asyncResult.version);
+    strictEqual(sync.manifests.claude.status, asyncResult.manifests.claude.status);
+    strictEqual(sync.manifests.codex.status, asyncResult.manifests.codex.status);
+
+    // CONTROL: an ordinary package still reads through cleanly.
+    const healthy = readPluginManifestVersionsSync(await fixturePackage({ baseline: HEADER, version: '0.90.1', codexVersion: '0.90.1' }));
+    strictEqual(healthy.status, 'ok');
+    strictEqual(healthy.version, '0.90.1');
+  });
+
+  it('the manifest shape predicate is SemVer, not a loose approximation', async () => {
+    // `01.2.3` and `1.2.3-01` are not SemVer, and a private regex accepted
+    // both — a manifest saying `01.2.3` was classified `ok` and stamped onto
+    // artifacts (cross-host review).
+    strictEqual(isSemVer('01.2.3'), false);
+    strictEqual(isSemVer('1.2.3-01'), false);
+    strictEqual(isSemVer('1.2.3'), true);
+    strictEqual(isSemVer('0.90.1-beta.1+build.5'), true);
+
+    const root = await fixturePackage({ baseline: HEADER, version: '01.2.3' });
+    const resolved = await resolveHostParityBaseline({ pluginRoot: root });
+    strictEqual(resolved.provenance.manifest.claude.status, 'invalid');
+    strictEqual(resolved.provenance.manifest.claude.raw, '01.2.3');
+  });
+
+  it('the identity form keeps build metadata that follows a prerelease', async () => {
+    // One `[-+]` alternative stopped at the first of the two, so
+    // `0.147.0-rc.1+build.5` and `…+build.6` were one token — a lossy
+    // "identity" form (cross-host review).
+    strictEqual(normalizeVersion('0.147.0-rc.1+build.5'), '0.147.0-rc.1+build.5');
+    notStrictEqual(normalizeVersion('0.147.0-rc.1+build.5'), normalizeVersion('0.147.0-rc.1+build.6'));
+    // And the comparison form still drops both halves, as SemVer precedence requires.
+    strictEqual(releaseVersion('0.147.0-rc.1+build.5'), '0.147.0');
+    strictEqual(releaseVersion('0.147.0-rc.1+build.5'), releaseVersion('0.147.0-rc.1+build.6'));
   });
 
   it('fails CLOSED on a status it does not recognise', async () => {

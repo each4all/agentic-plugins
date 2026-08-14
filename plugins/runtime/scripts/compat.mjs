@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from 'node:crypto';
-import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import { basename, dirname, resolve } from 'node:path';
@@ -213,7 +213,12 @@ export async function ingestReleaseNotes(options = {}) {
     if (!sourceText.trim()) throw new Error(`release notes file is empty: ${file}`);
     const id = noteId(sourcePath, idOffset + entries.length + 1);
     const target = resolve(notesDir, `${id}.md`);
-    await copyFile(sourcePath, target);
+    // Write the buffer that was HASHED, rather than re-reading the source.
+    // `copyFile` opened the path a second time, so a source replaced between
+    // the two reads recorded one file's digest beside another file's bytes —
+    // 8 of 11 ingests under a deterministic swap fixture (cross-host review).
+    // The bytes are already in hand; reopening bought nothing.
+    await writeFile(target, sourceBytes);
     entries.push({
       id,
       kind: 'file',
@@ -338,18 +343,28 @@ export async function planCompatibility(options = {}) {
   // from a plan that carries real update work — without it, running plan on
   // a current host pair would flip doctor/cutover compat state to
   // plan_ready/needs_attention forever (Review ensemble finding).
-  const actionable = gap.overall.release_notes_required
-    || gap.overall.drift_class !== 'none'
-    || surfaces.length > 0
-    || notificationWatch.some((row) => row.signal_detected);
+  // A baseline that could not be resolved is terminal for planning too. `check`
+  // already refuses to call it drift; `plan` went on to emit `status: planned`,
+  // `actionable: true`, and compatibility work steps for a comparison that
+  // never happened (cross-host review, reproduced). Making the status terminal
+  // in one command and not the next is how the reader one layer up ended up
+  // with `plan_ready` over a broken package.
+  const baselineUnusable = gap.overall.status === 'baseline_unusable';
+  const actionable = !baselineUnusable
+    && (gap.overall.release_notes_required
+      || gap.overall.drift_class !== 'none'
+      || surfaces.length > 0
+      || notificationWatch.some((row) => row.signal_detected));
   const plan = {
     schema_version: PLAN_SCHEMA,
     runtime_version: VERSION,
     run_id: selected.runId,
     created_at: toIso(options.now ?? new Date()),
-    status: gap.overall.release_notes_required
-      ? 'blocked_release_notes_required'
-      : 'planned',
+    status: baselineUnusable
+      ? 'blocked_baseline_unusable'
+      : gap.overall.release_notes_required
+        ? 'blocked_release_notes_required'
+        : 'planned',
     actionable,
     gap_pointer: pointer(repoRoot, gapPath),
     affected_surfaces: surfaces,
@@ -659,6 +674,9 @@ function renderPlanMarkdown(plan) {
 }
 
 function nextStepsForPlan(plan) {
+  if (plan.status === 'blocked_baseline_unusable') {
+    return ['Repair the packaged host-parity baseline — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.'];
+  }
   if (plan.status === 'blocked_release_notes_required') {
     return [`runtime:compat ingest-release-notes --run-id ${plan.run_id} --release-notes-file <path>`];
   }

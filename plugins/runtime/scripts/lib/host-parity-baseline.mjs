@@ -47,7 +47,14 @@ const HEADER_RE = /Observed on ([0-9]{4}-[0-9]{2}-[0-9]{2}) with Claude Code\s*`
 // script's own normalizer. An earlier three-component-only form made
 // `parseBaseline` accept `2.1` while `normalizeVersion` returned null for
 // it — the module disagreeing with itself.
-const SEMVER_RE = /\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/;
+// Prerelease and build metadata are SEPARATE optional groups, in that order.
+// A single `[-+]` alternative stopped at the first of the two, so
+// `0.147.0-rc.1+build.5` tokenized as `0.147.0-rc.1` and two builds of one
+// prerelease became one token — a lossy "identity" form (cross-host review).
+// Still deliberately permissive about the CORE (two components allowed, no
+// leading-zero rule): this reads observed CLI text, not a manifest. The strict
+// specification shape lives in `semver.mjs` and is what validates manifests.
+const SEMVER_RE = /\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/;
 // A version token must CONTAIN a version. Matching only the date and the
 // backtick structure let `Claude Code \`banana\`, Codex CLI \`potato\`` resolve —
 // a malformed baseline that cross-host review showed could reach a `current`

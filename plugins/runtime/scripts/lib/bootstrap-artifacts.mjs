@@ -503,8 +503,11 @@ async function readJsonSafe(path) {
   }
 }
 
-function sha256(text) {
-  return createHash('sha256').update(text).digest('hex');
+// Buffers hash as bytes; strings keep the previous behavior. The write side
+// hashes the STRING it is about to encode (exact by construction); the read
+// side must hash the bytes it found (a decode is not reversible).
+function sha256(value) {
+  return createHash('sha256').update(Buffer.isBuffer(value) ? value : String(value)).digest('hex');
 }
 
 // ---------------------------------------------------------------------------
@@ -1891,13 +1894,23 @@ export async function readBootstrapProofRecords({ homeDir, runId }) {
       errors.push(`${label}: ${stat.size} bytes exceeds the ${PROOF_FILE_MAX_BYTES}-byte evidence bound`);
       continue;
     }
-    let text;
+    // READ side, so the file's BYTES are the source of truth — unlike the
+    // write side above, where the string is what gets encoded and hashing it
+    // is exact. Reading with `'utf8'` and hashing the decoded string mapped
+    // every invalid byte sequence to U+FFFD, so this returned a digest and a
+    // byte count for a re-encoding rather than for the file. Measured: 386
+    // reported for a 384-byte record, and a sha256 that does not match the
+    // file's (cross-host review). The docstring above promises a
+    // `provider_proof_artifact_hash` link verifiable byte-for-byte; this is
+    // what makes that true.
+    let bytes;
     try {
-      text = await readFile(path, 'utf8');
+      bytes = await readFile(path);
     } catch (err) {
       errors.push(`${label}: unreadable (${err?.code ?? String(err)})`);
       continue;
     }
+    const text = bytes.toString('utf8');
     let record;
     try {
       record = JSON.parse(text);
@@ -1910,7 +1923,7 @@ export async function readBootstrapProofRecords({ homeDir, runId }) {
       errors.push(`${label}: ${verdict.errors.join('; ')}`);
       continue;
     }
-    records.push({ kind, record, sha256: sha256(text), bytes: Buffer.byteLength(text, 'utf8'), pointer: machinePointer(homeDir, path) });
+    records.push({ kind, record, sha256: sha256(bytes), bytes: bytes.byteLength, pointer: machinePointer(homeDir, path) });
   }
 
   if (errors.length > 0) return { ok: false, errors, records: null };

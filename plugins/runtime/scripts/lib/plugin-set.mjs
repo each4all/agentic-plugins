@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
 import { resolveContained } from './path-containment.mjs';
+import { isSemVer } from './semver.mjs';
 
 export const PLUGIN_SET_SCHEMA_VERSION = 'runtime-plugin-set-1.0';
 
@@ -39,7 +40,9 @@ export const PLUGIN_SET_HOSTS = Object.freeze(['claude', 'codex']);
 // path). Enforced here as a machine-readable invariant, not left to prose.
 export const MANDATORY_PLUGINS = Object.freeze(['runtime', 'companions']);
 
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+// The SemVer shape predicate is `semver.mjs`'s, not a private copy: this one
+// accepted `01.2.3`, which the specification does not, and a second loose copy
+// had already grown next to the manifest reader.
 
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -149,7 +152,7 @@ export function validatePluginSet(pluginSet) {
     }
 
     // minimum_version
-    if (p.minimum_version !== null && !(typeof p.minimum_version === 'string' && SEMVER_RE.test(p.minimum_version))) {
+    if (p.minimum_version !== null && !isSemVer(p.minimum_version)) {
       err(`plugins.${name}.minimum_version must be null or a semver string, got ${JSON.stringify(p.minimum_version)}`);
     }
   }
