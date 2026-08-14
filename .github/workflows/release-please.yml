@@ -121,3 +121,32 @@ jobs:
           else
             echo "No stage-doc drift; nothing to commit."
           fi
+
+      # ADR-0052 §Decision 5 — the post-tag assertion. Same reason the evidence
+      # check above runs inline: a push authenticated with GITHUB_TOKEN does not
+      # trigger workflows, so full-tests.yml never sees the release commit, and
+      # the release commit is precisely where a protected asset's obligation is
+      # either discharged or left outstanding.
+      #
+      # Deliberately LAST, and in its own step. An outstanding obligation is a
+      # statement about bytes that were already released; neither sync above can
+      # fix it, so failing before them would strand a catalog or stage-doc sync
+      # on a problem it cannot repair — the same failure-domain separation the
+      # two-commit split above exists for. Red here is the intended signal.
+      #
+      # It reads git objects rather than the working tree, so the uncommitted
+      # sync edits above cannot affect its verdict.
+      #
+      # `!cancelled()` is load-bearing, not decoration. A step condition that
+      # names only its own predicate still carries an implicit success(), so
+      # ANY earlier failure here — a failed evidence check, a non-fast-forward
+      # push — would SKIP this assertion. That is the one situation in which it
+      # most needs to run, and the skip would be silent: the tag already
+      # exists, and because release-please reports `releases_created` exactly
+      # once, the documented manual re-run above sees `false` and skips every
+      # gated step, so a plain retry goes green having asserted nothing. A
+      # GITHUB_TOKEN push triggers no workflow, so nothing downstream would
+      # catch it either.
+      - name: Verify the release discharged its protected-asset obligations
+        if: ${{ !cancelled() && (steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch') }}
+        run: node scripts/check-release-obligation.mjs

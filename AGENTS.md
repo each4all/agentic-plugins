@@ -237,6 +237,34 @@ tokens split into two classes, and the split is load-bearing:
   assertion until the proof exists — that red is the honest signal, not
   a defect to automate away.
 
+**Some `plugins/runtime` assets do not take effect until a release ships
+them**, and that obligation is now mechanically detected. `runtime` commands
+resolve `plugins/runtime/docs/host-parity-baseline.md`,
+`plugins/runtime/data/plugin-set.json` and `plugins/runtime/data/schemas/**`
+from the *installed* plugin, not from the repository, so editing them on
+`main` changes nothing anyone runs until a release is tagged
+([ADR-0051](docs/adr/0051-host-parity-baseline-source.md) §Decision 2,
+enforced by [ADR-0052](docs/adr/0052-release-obligation-enforcement.md)).
+`npm run validate:release-obligation` reconciles the protected tree against
+the newest reachable `plugin-runtime-v*` tag; it runs in `full-tests.yml`
+(which is why that job checks out at `fetch-depth: 0`) and again inside
+`release-please.yml` after the tag is cut, because a `GITHUB_TOKEN` push
+triggers no workflow.
+
+Two consequences for authors:
+
+- **`main` is expected to be red between a protected change and its
+  release**, exactly as it is for the proof-coupled assertion above. The
+  measured median window is 5.3h. Close it by landing a release — which
+  means a bump-inducing conventional type on the **squash subject**, since
+  that is what release-please routes on. The counterexample `16b1833` was
+  typed `docs:`, routed nothing, and left released and accepted bytes
+  disagreeing for 54 hours.
+- **Roll a protected asset back with a forward patch**, never by reusing or
+  lowering a version. A reused version would name two different trees, which
+  is the failure ADR-0051 exists to eliminate. The check fails closed on a
+  version regression rather than trying to interpret it.
+
 The doc-freshness gate is split along the same line so a token lag and
 a missing proof report different remedies. `npm run validate:doc-evidence`
 (gated by `tests/scripts/test-doc-evidence-consistency.mjs`) additionally
