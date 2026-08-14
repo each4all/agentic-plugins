@@ -415,6 +415,69 @@ describe('runtime compat', () => {
     strictEqual(drifted.drift_class, 'host-version-changed');
   });
 
+  it('counts a release note that names the observed prerelease as covering it', async () => {
+    // The MIRROR of the drift bug above, found by looking for the same defect
+    // elsewhere rather than by another review round: the note scanner had its
+    // own version pattern that dropped prerelease suffixes, while the observed
+    // version kept them, and coverage compares the two. A note explicitly
+    // naming `0.147.0-rc.1` did not cover an install running `0.147.0-rc.1`,
+    // so `release_notes_required` stayed true with no way to satisfy it.
+    const analysis = analyzeReleaseNote({
+      note: { id: 'n1', kind: 'file', source: 'x' },
+      text: 'Codex CLI 0.147.0-rc.1 release notes: hooks changed.',
+    });
+    ok(analysis.versions.includes('0.147.0-rc.1'), 'the scanner must speak the same grammar as the resolver');
+
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-note-prerelease-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.226 (Claude Code)', codex: 'codex-cli 0.147.0-rc.1' }),
+    });
+    const notes = join(root, 'notes.md');
+    await writeFile(notes, '# Codex CLI 0.147.0-rc.1\n\nhooks changed.\n');
+    await runCompat({ command: 'ingest-release-notes', repoRoot: root, runId: RUN_ID, releaseNotesFiles: [notes] });
+    const out = await runCompat({
+      command: 'check',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: {
+        claude: { version: '2.1.226' },
+        codex: { version: '0.146.0' },
+        provenance: { source: 'package', path: '/pkg/docs/host-parity-baseline.md', status: 'resolved' },
+      },
+    });
+    strictEqual(out.drift_class, 'host-version-changed');
+    strictEqual(out.release_notes_required, false, 'a note naming the observed prerelease covers it');
+
+    // CONTROL: a note for a DIFFERENT release still does not cover it —
+    // otherwise this passes with the comparison deleted entirely.
+    const other = await mkdtemp(join(tmpdir(), 'runtime-compat-note-other-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: other,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.226 (Claude Code)', codex: 'codex-cli 0.147.0-rc.1' }),
+    });
+    const otherNotes = join(other, 'notes.md');
+    await writeFile(otherNotes, '# Codex CLI 0.148.0\n\nsomething else.\n');
+    await runCompat({ command: 'ingest-release-notes', repoRoot: other, runId: RUN_ID, releaseNotesFiles: [otherNotes] });
+    const uncovered = await runCompat({
+      command: 'check',
+      repoRoot: other,
+      runId: RUN_ID,
+      baseline: {
+        claude: { version: '2.1.226' },
+        codex: { version: '0.146.0' },
+        provenance: { source: 'package', path: '/pkg/docs/host-parity-baseline.md', status: 'resolved' },
+      },
+    });
+    strictEqual(uncovered.release_notes_required, true, 'a note for a different release must not count');
+  });
+
   it('rejects a dateless version pair — a baseline that cannot be aged is not a baseline', () => {
     // ADR-0051 §Decision 4: one canonical grammar. compat used to accept this
     // form while doctor and dashboard required the dated header, so the same

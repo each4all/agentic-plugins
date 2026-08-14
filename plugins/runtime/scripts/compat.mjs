@@ -8,7 +8,12 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
-import { extractBaselineVersions, normalizeVersion, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
+import {
+  extractBaselineVersions,
+  normalizeVersion,
+  resolveHostParityBaseline,
+  scanVersionTokens,
+} from './lib/host-parity-baseline.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -498,6 +503,17 @@ function buildReleaseNoteCoverage({ hostGaps, releaseNotes }) {
   const hosts = {};
   for (const gap of hostGaps) {
     const required = gap.status === 'version_changed';
+    // Exact match, and that is now CORRECT rather than accidental: both sides
+    // speak one grammar. The scanner used to strip prerelease suffixes while
+    // the observed version kept them, so a note naming `0.147.0-rc.1` did not
+    // cover an install running it — an unsatisfiable demand, not a safe
+    // refusal.
+    //
+    // A looser release-form comparison (a `0.147.0` note covering a
+    // `0.147.0-rc.1` install) was written and then REMOVED: a mutation run
+    // showed nothing exercised it, and there is no measurement saying hosts
+    // publish that way. Failing closed on a genuinely different string is a
+    // defensible refusal; relaxing it without evidence is not a fix.
     const coveringNotes = required
       ? noteAnalyses
         .filter((note) => note.hosts.includes(gap.host) && note.versions.includes(gap.observed_version))
@@ -713,7 +729,7 @@ export function analyzeReleaseNote({ note, text }) {
   const hosts = [];
   if (/\bclaude(?:\s+code)?\b/i.test(body)) hosts.push('claude');
   if (/\bcodex(?:\s+cli)?\b/i.test(body)) hosts.push('codex');
-  const versions = [...new Set([...body.matchAll(/[0-9]+(?:\.[0-9]+){1,3}/g)].map((match) => match[0]))];
+  const versions = scanVersionTokens(body);
   const surfaces = classifyReleaseNoteSurfaces(lower);
   // Host-scoped signal detection: a note that names a host can only signal
   // that host's watch rows (a Claude note about notification_type must not

@@ -110,6 +110,23 @@ export function releaseVersion(value) {
 }
 
 /**
+ * Every version token mentioned in a block of prose, in the same grammar.
+ *
+ * The release-note scanner had a FIFTH copy of the pattern, and it was the
+ * mirror of the drift bug rather than a separate one: it dropped prerelease
+ * suffixes while the observed version kept them, and `buildReleaseNoteCoverage`
+ * compares the two — so a note that explicitly names `0.147.0-rc.1` did not
+ * count as covering an install running `0.147.0-rc.1`, and the operator was
+ * told to ingest notes they had already ingested, with no way to satisfy it.
+ * Failing closed is the safe direction; a demand that cannot be met is a dead
+ * end, not a refusal.
+ */
+export function scanVersionTokens(text) {
+  const pattern = new RegExp(SEMVER_RE.source, 'g');
+  return [...new Set([...String(text ?? '').matchAll(pattern)].map((match) => match[0]))];
+}
+
+/**
  * Parse the canonical dated header.
  *
  * Returns `null` when the text does not carry it. Callers distinguish "no
