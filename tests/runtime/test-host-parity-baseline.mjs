@@ -15,7 +15,7 @@ import { describe, it } from 'node:test';
 import { ok, strictEqual, notStrictEqual, rejects } from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 
 import {
@@ -391,40 +391,77 @@ describe('host-parity baseline resolver (ADR-0051)', () => {
 
   // ── cross-host review of the first hardening pass ────────────────────────
 
-  it('CONTROL: containment compares IDENTITY when spellings disagree', async function () {
-    // macOS firmlinks give one directory two canonical spellings. A symlink
+  it('CONTROL: containment compares IDENTITY when spellings disagree', async () => {
+    // macOS firmlinks give one directory two canonical spellings — `/private/tmp/x`
+    // and `/System/Volumes/Data/private/tmp/x` are one inode — so a symlink
     // written with the aliased spelling canonicalized outside a root spelled
-    // the plain way, and a legitimate package was refused — reproduced by
-    // cross-host review, with matching dev/ino on both spellings.
+    // the plain way, and a legitimate package was refused (cross-host review,
+    // reproduced on Darwin with matching dev/ino).
     //
-    // Skipped where the alias does not exist (Linux CI), because a case that
-    // silently passes on a platform without firmlinks proves nothing. The
-    // generic identity path is covered by the escape control below on every
-    // platform.
-    const root = await mkdtemp(join('/private/tmp', 'hpb-firmlink-'));
-    const aliased = join('/System/Volumes/Data', root);
-    let aliasUsable = true;
-    try {
-      await realpath(aliased);
-    } catch {
-      aliasUsable = false;
-    }
-    if (!aliasUsable) return;
-    await mkdir(join(root, 'docs'), { recursive: true });
-    await mkdir(join(root, 'real'), { recursive: true });
-    await writeFile(join(root, 'real', 'b.md'), HEADER);
-    await symlink(join(aliased, 'real', 'b.md'), join(root, BASELINE_RELATIVE_PATH));
+    // Driven through the INJECTED seams rather than a real firmlink, because
+    // the first version of this case built its fixture under a hard-coded
+    // `/private/tmp` and died on Linux CI — and had it merely skipped there,
+    // it would have proved nothing on the platform that actually runs the
+    // gate. The condition is what matters, so the condition is forced: two
+    // canonical spellings that disagree lexically and agree by dev/ino.
+    const SPELLING_A = '/alias-a/pkg';
+    const SPELLING_B = '/alias-b/pkg';
+    const oneInode = { dev: 1n, ino: 42n };
+    const realpathFake = async (target) => (String(target).includes('docs') ? `${SPELLING_B}/docs/host-parity-baseline.md` : SPELLING_A);
+    const statFake = async (target) => {
+      if (target === SPELLING_A || target === SPELLING_B) return oneInode;
+      return { dev: 1n, ino: 999n };
+    };
 
-    const located = await resolveContained(root, BASELINE_RELATIVE_PATH);
+    const located = await resolveContained(SPELLING_A, BASELINE_RELATIVE_PATH, { realpath: realpathFake, stat: statFake });
     strictEqual(located.status, 'ok', 'two spellings of one inode are one directory');
+    strictEqual(located.canonicalPath, `${SPELLING_B}/docs/host-parity-baseline.md`);
+
+    // CONTROL: the SAME lexical disagreement with a DIFFERENT inode must stay
+    // an escape. Without this the identity fallback could return true
+    // unconditionally and the case above would still be green.
+    const twoInodes = async (target) => (target === SPELLING_A ? oneInode : { dev: 1n, ino: 7n });
+    const escaped = await resolveContained(SPELLING_A, BASELINE_RELATIVE_PATH, { realpath: realpathFake, stat: twoInodes });
+    strictEqual(escaped.status, 'escaped');
+
+    // And a filesystem that will not answer leaves the refusal standing.
+    const refuses = async () => { throw Object.assign(new Error('nope'), { code: 'EACCES' }); };
+    const unanswered = await resolveContained(SPELLING_A, BASELINE_RELATIVE_PATH, { realpath: realpathFake, stat: refuses });
+    strictEqual(unanswered.status, 'escaped', 'an unanswerable identity question fails closed');
+
+    // The sync twin takes the same seams and must reach the same verdicts.
+    const syncRealpath = (target) => (String(target).includes('docs') ? `${SPELLING_B}/docs/host-parity-baseline.md` : SPELLING_A);
+    const syncOk = resolveContainedSync(SPELLING_A, BASELINE_RELATIVE_PATH, {
+      realpathSync: syncRealpath,
+      statSync: (target) => ((target === SPELLING_A || target === SPELLING_B) ? oneInode : { dev: 1n, ino: 999n }),
+    });
+    strictEqual(syncOk.status, 'ok');
+    const syncEscaped = resolveContainedSync(SPELLING_A, BASELINE_RELATIVE_PATH, {
+      realpathSync: syncRealpath,
+      statSync: (target) => (target === SPELLING_A ? oneInode : { dev: 1n, ino: 7n }),
+    });
+    strictEqual(syncEscaped.status, 'escaped');
   });
 
   it('a filesystem ROOT is a valid containment boundary', async () => {
     // `'/' + sep` is `'//'`, so nothing was ever inside `/` — every filesystem
     // root, drive root, and UNC share root failed the predicate.
-    strictEqual(isUnder('/etc/hosts', '/'), true);
-    const located = await resolveContained('/', 'etc/hosts');
+    //
+    // The fixture is created rather than borrowed: a case that reaches for
+    // `/etc/hosts` is asserting something about the machine, and this suite
+    // has already been bitten once by a path that exists on one platform and
+    // not the other.
+    const dir = await mkdtemp(join(tmpdir(), 'hpb-root-'));
+    const file = join(dir, 'inside.md');
+    await writeFile(file, HEADER);
+    const root = parse(file).root;
+
+    strictEqual(isUnder(file, root), true);
+    const located = await resolveContained(root, relative(root, file));
     strictEqual(located.status, 'ok');
+    // CONTROL: the boundary still refuses when it should. Nothing is outside
+    // the filesystem root, so the pair is checked one level down instead.
+    strictEqual(isUnder(join(dir, '..', 'hpb-root-sibling'), dir), false);
   });
 
   it('the sync and async containment predicates are one implementation', async () => {
