@@ -19,7 +19,10 @@
 
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+
+import { resolveContained } from './path-containment.mjs';
+import { isSemVer } from './semver.mjs';
 
 export const PLUGIN_SET_SCHEMA_VERSION = 'runtime-plugin-set-1.0';
 
@@ -37,7 +40,9 @@ export const PLUGIN_SET_HOSTS = Object.freeze(['claude', 'codex']);
 // path). Enforced here as a machine-readable invariant, not left to prose.
 export const MANDATORY_PLUGINS = Object.freeze(['runtime', 'companions']);
 
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+// The SemVer shape predicate is `semver.mjs`'s, not a private copy: this one
+// accepted `01.2.3`, which the specification does not, and a second loose copy
+// had already grown next to the manifest reader.
 
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -50,15 +55,25 @@ function isPlainObject(value) {
  * root). Never reads `process.cwd()`.
  */
 export async function loadPluginSet({ pluginRoot } = {}) {
-  const path = pluginRoot
-    ? resolve(pluginRoot, 'data', 'plugin-set.json')
-    : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'data', 'plugin-set.json');
-  const raw = await readFile(path, 'utf8');
+  // Containment and a strict override, matching the host-parity baseline
+  // resolver — this is the same packaged-asset contract, and it had the same
+  // two holes. A symlinked `data/` made an outside file the plugin set (which
+  // decides what gets installed), and `pluginRoot: ''` silently read this
+  // module's own package instead of the one the caller named.
+  if (pluginRoot !== undefined && (typeof pluginRoot !== 'string' || !pluginRoot.trim())) {
+    throw new TypeError('loadPluginSet: pluginRoot must be a non-empty string when provided; omit the key to use the packaged default');
+  }
+  const root = pluginRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const located = await resolveContained(root, join('data', 'plugin-set.json'));
+  if (located.status !== 'ok') {
+    throw new Error(`plugin-set.json could not be resolved inside the runtime package (${located.status}${located.code ? `: ${located.code}` : ''}) at ${located.path}`);
+  }
+  const raw = await readFile(located.canonicalPath, 'utf8');
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`plugin-set.json is not valid JSON at ${path}: ${err.message}`);
+    throw new Error(`plugin-set.json is not valid JSON at ${located.path}: ${err.message}`);
   }
   return parsed;
 }
@@ -137,7 +152,7 @@ export function validatePluginSet(pluginSet) {
     }
 
     // minimum_version
-    if (p.minimum_version !== null && !(typeof p.minimum_version === 'string' && SEMVER_RE.test(p.minimum_version))) {
+    if (p.minimum_version !== null && !isSemVer(p.minimum_version)) {
       err(`plugins.${name}.minimum_version must be null or a semver string, got ${JSON.stringify(p.minimum_version)}`);
     }
   }

@@ -51,6 +51,7 @@ import { fileURLToPath } from 'node:url';
 
 import { STATUSLINE_PRESET_AGENTIC_6 } from './machine-profile.mjs';
 import { substituteOnce } from './notification-plan.mjs';
+import { resolveContainedSync } from './path-containment.mjs';
 import { renderCodexTuiTableToml } from './toml.mjs';
 
 export { STATUSLINE_PRESET_AGENTIC_6 };
@@ -189,6 +190,19 @@ export function renderCodexStatusLineFragmentToml(policy = STATUSLINE_POLICY_AGE
 
 const RECEIVERS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'receivers');
 
+// Canonical containment, like every other packaged asset. This one renders
+// CODE the operator is invited to install, so a template resolving outside the
+// package would put content the package does not own into a script a person
+// then runs — reproduced by cross-host review with an outside marker reaching
+// the rendered shim.
+function readPackagedStatuslineTemplate() {
+  const located = resolveContainedSync(RECEIVERS_DIR, STATUSLINE_SHIM_BASENAME);
+  if (located.status !== 'ok') {
+    throw new Error(`statusline shim template could not be resolved inside the runtime package (${located.status}${located.code ? `: ${located.code}` : ''}) at ${located.path}`);
+  }
+  return readFileSync(located.canonicalPath, 'utf8');
+}
+
 function jsStringArrayLiteral(values) {
   if (!Array.isArray(values) || !values.every((item) => typeof item === 'string')) {
     throw new Error('statusline items literal requires an array of strings');
@@ -205,7 +219,7 @@ function jsStringArrayLiteral(values) {
  * semantics; see the machine-bootstrap contract's statusline section).
  */
 export function renderAgenticStatuslineShim({ policy = STATUSLINE_POLICY_AGENTIC_6, template = null } = {}) {
-  const source = template ?? readFileSync(join(RECEIVERS_DIR, STATUSLINE_SHIM_BASENAME), 'utf8');
+  const source = template ?? readPackagedStatuslineTemplate();
   const body = substituteOnce(
     source,
     "['__AGENTIC_STATUSLINE_ITEMS__']",
@@ -222,7 +236,7 @@ export function renderAgenticStatuslineShim({ policy = STATUSLINE_POLICY_AGENTIC
  * test fails loudly.
  */
 export function shimTemplateRendererIds({ template = null } = {}) {
-  const source = template ?? readFileSync(join(RECEIVERS_DIR, STATUSLINE_SHIM_BASENAME), 'utf8');
+  const source = template ?? readPackagedStatuslineTemplate();
   const match = source.match(/const RENDERERS = \{([\s\S]*?)\n\};/);
   if (!match) return [];
   return [...match[1].matchAll(/^ {2}'([a-z0-9-]+)':/gm)].map((m) => m[1]);

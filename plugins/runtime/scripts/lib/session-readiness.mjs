@@ -23,6 +23,7 @@ import os from 'node:os';
 import { join } from 'node:path';
 
 import { loadEntryBriefConfig, loadSessionConfig } from './runtime-config.mjs';
+import { resolveContained } from './path-containment.mjs';
 import { semverCompare } from './semver.mjs';
 
 // Contract §13 — the declaration file attention ships relative to its
@@ -144,7 +145,17 @@ async function discoverClaudePluginInstall(homeDir, pluginName, { preferredVersi
 // The floors document itself: absent (ENOENT-class) vs malformed (any other
 // read failure, bad JSON, wrong schema family, non-object floors) vs ok.
 async function readRuntimeFloorsDocument(attentionRoot) {
-  const path = join(attentionRoot, ATTENTION_RUNTIME_FLOORS_REL_PATH);
+  // Canonical containment, like every other packaged asset. This document sets
+  // the version FLOORS a readiness verdict is measured against, so a floors
+  // file resolving outside the attention package lets content the package does
+  // not own decide `ready` — reproduced by cross-host review with an outside
+  // floor of `0.1.0`. An escape is reported as `malformed` rather than a new
+  // status: from this reader's side the effect is the same (the document
+  // cannot be trusted), and the caller's vocabulary stays two-valued.
+  const located = await resolveContained(attentionRoot, ATTENTION_RUNTIME_FLOORS_REL_PATH);
+  if (located.status === 'missing') return { status: 'absent', floors: null };
+  if (located.status !== 'ok') return { status: 'malformed', floors: null };
+  const path = located.canonicalPath;
   let text;
   try {
     text = await readFile(path, 'utf8');

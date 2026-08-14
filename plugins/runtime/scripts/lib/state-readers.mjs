@@ -179,6 +179,26 @@ export async function readTextIfExists(path) {
   }
 }
 
+/**
+ * Same shape, but the BYTES survive.
+ *
+ * A caller that hashes what it read cannot use `readTextIfExists`: the decode
+ * maps every invalid byte sequence to U+FFFD, so two different files produce
+ * one digest. `doctor`'s settings `artifact_hash` — whose comment says it
+ * "binds the attestation to the EXACT settings.json bytes on disk" — did
+ * exactly that, and two artifacts differing only by `0xff` versus `0xfe`
+ * hashed the same (cross-host review). Text callers are unaffected and keep
+ * the function above.
+ */
+export async function readBytesIfExists(path) {
+  try {
+    const bytes = await readFile(path);
+    return { ok: true, path, bytes, text: bytes.toString('utf8') };
+  } catch (err) {
+    return { ok: false, path, reason: err.code ?? err.message };
+  }
+}
+
 export function parseFrontmatterBlock(text) {
   if (!text.startsWith('---\n')) return null;
   const end = text.indexOf('\n---\n', 4);
@@ -356,13 +376,18 @@ export async function inspectCompatRuns({ repoRoot }) {
 
   runs.sort((a, b) => b.selected_at_ms - a.selected_at_ms || b.run_id.localeCompare(a.run_id));
   const latest = runs[0];
-  const status = malformed > 0
+  // INVERTED so the fall-through is safe. This used to list the three
+  // attention-worthy per-run statuses and call everything else `available`, so
+  // a new per-run status — `baseline_unusable` is the one that arrived — would
+  // have been reported as a healthy compat state. Only `current` earns
+  // `available`; anything unrecognised needs attention.
+  const status = malformed > 0 || latest.status === 'baseline_unusable' || latest.status === 'unrecognized'
     ? 'blocked'
     : latest.status === 'release_notes_required'
       ? 'release_notes_required'
-      : ['snapshot_only', 'gap_analysis_ready', 'plan_ready'].includes(latest.status)
-        ? 'needs_attention'
-        : 'available';
+      : latest.status === 'current'
+        ? 'available'
+        : 'needs_attention';
   return {
     status,
     root,
@@ -401,19 +426,54 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
   const planInformationalOnly = plan.status === 'available'
     && plan.json?.actionable === false
     && gapOverall.status === 'current';
+  // Ordered ABOVE the plan and gap branches, because it outranks both.
+  // `baseline_unusable` is compat's terminal marker for "nothing was
+  // compared": the packaged baseline could not be read, parsed, or contained.
+  // Without this it reached `gap_analysis_ready` — and, when a plan artifact
+  // also existed, `plan_ready` — so a broken package was reported as analysis
+  // that is ready to act on, carrying `runtime:compat plan` as its next step.
+  // That is the same defect compat's own `buildGapAnalysis` fixed one layer
+  // down, repeated by its reader. The single string is compat's; nothing is
+  // re-derived here.
+  const baselineUnusable = gap.status === 'available' && gapOverall.status === 'baseline_unusable';
   const status = malformed.length > 0
     ? 'blocked'
-    : plan.status === 'available' && !planInformationalOnly
-      ? planStatus === 'blocked_release_notes_required'
-        ? 'release_notes_required'
-        : 'plan_ready'
-      : gap.status === 'available'
-        ? gapOverall.status === 'release_notes_required' || gapOverall.release_notes_required === true
+    : baselineUnusable
+      ? 'baseline_unusable'
+      : plan.status === 'available' && !planInformationalOnly
+        ? planStatus === 'blocked_release_notes_required'
           ? 'release_notes_required'
-          : gapOverall.status === 'current'
-            ? 'current'
-            : 'gap_analysis_ready'
-        : 'snapshot_only';
+          // A plan can also declare itself blocked on the baseline. The gap
+          // branch above normally catches that first; this keeps the two
+          // artifacts from disagreeing if only the plan carries the verdict.
+          : planStatus === 'blocked_baseline_unusable'
+            ? 'baseline_unusable'
+            : 'plan_ready'
+        : gap.status === 'available'
+          ? gapOverall.status === 'release_notes_required' || gapOverall.release_notes_required === true
+            ? 'release_notes_required'
+            : gapOverall.status === 'current'
+              ? 'current'
+              // Only compat's own vocabulary reaches `gap_analysis_ready`.
+              // This was the ELSE branch, so a persisted status this reader
+              // has never heard of — the very case the collection mapping
+              // below was hardened against — was projected as analysis ready
+              // to act on, with `runtime:compat plan` as its next step. The
+              // collection status stayed conservative and the per-run one did
+              // not, which is worse than either being wrong consistently:
+              // every surface that renders a run reads the per-run value.
+              // Reading an unrecognised artifact is a reason to stop.
+              //
+              // Its OWN status, not `blocked`: that value already means "a
+              // compat artifact on disk is malformed", and it feeds the
+              // malformed counter and the `malformed_artifacts` pointer list.
+              // A well-formed file carrying a verdict this runtime has never
+              // heard of is a different fact, and reusing `blocked` reported a
+              // malformed-artifact count with no artifact to point at.
+              : gapOverall.status === 'gap_analysis_ready'
+                ? 'gap_analysis_ready'
+                : 'unrecognized'
+          : 'snapshot_only';
   return {
     run_id: sanitizeValue(snapshot.run_id) ?? runId,
     status,
@@ -483,11 +543,22 @@ function emptyCompatReleaseNotes(repoRoot, runId) {
 }
 
 function compatNextSteps({ runId, status, gap, plan }) {
+  const storedGapSteps = Array.isArray(gap.json?.next_steps)
+    ? gap.json.next_steps.map((step) => sanitizeValue(step)).filter(Boolean)
+    : [];
   if (status === 'blocked') return ['Repair malformed runtime:compat artifacts, then rerun runtime:compat check.'];
   if (status === 'snapshot_only') return [`runtime:compat check --run-id ${runId}`];
+  // A terminal baseline failure carries the repair instruction the gap already
+  // stored. Falling through to the empty return dropped it — the reader made
+  // the status terminal and then discarded the only line saying what to do,
+  // which is exactly the defect just removed from cutover's next_actions.
+  if (status === 'baseline_unusable') {
+    return storedGapSteps.length > 0
+      ? storedGapSteps
+      : ['Repair the packaged host-parity baseline — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.'];
+  }
   if (status === 'release_notes_required') {
-    const steps = Array.isArray(gap.json?.next_steps) ? gap.json.next_steps : [];
-    return steps.length > 0 ? steps.map((step) => sanitizeValue(step)).filter(Boolean) : [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`];
+    return storedGapSteps.length > 0 ? storedGapSteps : [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`];
   }
   if (status === 'gap_analysis_ready') return [`runtime:compat plan --run-id ${runId}`];
   if (status === 'plan_ready') {
@@ -496,7 +567,9 @@ function compatNextSteps({ runId, status, gap, plan }) {
       : [];
     return steps.length > 0 ? steps : ['Review the runtime:compat update plan before changing compatibility-sensitive surfaces.'];
   }
-  return [];
+  // `unrecognized` and anything else land here. Silence is the wrong answer:
+  // a run with no next step reads as a run with nothing to do.
+  return [`runtime:compat check --run-id ${runId} — this run's recorded state (${status}) is not one this runtime recognises; re-run check with a runtime new enough to read it.`];
 }
 
 function summarizeConsensusArtifact({ repoRoot, runId, artifactPath, artifact }) {

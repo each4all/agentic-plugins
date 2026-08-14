@@ -12,6 +12,26 @@ Accepted (implemented 2026-08-10)
 > The decision itself — packaged copy as sole authority, changing it obliges a
 > release — is unchanged and, as it turns out, is the whole fix.
 
+> **Extended 2026-08-14 (post-acceptance hardening).** §Decision 4's failure
+> vocabulary grows from two verdicts to four — `missing`, `unreadable`,
+> `escaped`, `unparseable` — and §Decision 5's content hash is taken over the
+> file's BYTES rather than a UTF-8 re-encoding of them. Both were reproduced
+> against the accepted implementation before they were changed: a
+> present-but-unreadable baseline reported "not present", a symlinked `docs/`
+> or leaf made a file outside the package the authority while still reporting
+> `source: 'package'`, and two different invalid byte sequences produced one
+> content hash. The decisions are unchanged; this applies their stated
+> principles — visible failure, distinct operator actions, content-identifying
+> provenance — to cases the original two verdicts collapsed.
+>
+> The same pass makes every reader ask a shared predicate
+> (`baselineFailure`) instead of enumerating statuses, because the enumeration
+> was the real defect: five readers each listed the two they knew and gave
+> anything else a benign meaning. One review item from the same round was
+> **refuted** and is recorded rather than fixed — `provenance.reason` was
+> already surfaced by `doctor` and `dashboard`; what was wrong was the status
+> above it.
+
 ## Context
 
 `plugins/runtime/docs/host-parity-baseline.md` records the accepted
@@ -182,6 +202,15 @@ the source that is reviewed and released — never a runtime read.**
    which is precisely what makes single authority safe to parse
    strictly.
 
+   *Extended 2026-08-14.* The vocabulary is `resolved | missing |
+   unreadable | escaped | unparseable`, and readers ask
+   `baselineFailure()` rather than listing it. Splitting `unreadable`
+   and `escaped` out of `missing` follows from this item's own rule —
+   they call for different operator actions (fix permissions, reinstall
+   a mis-packaged install, restore a deleted file) — and the shared
+   predicate is what keeps a sixth verdict from arriving at five
+   readers as `stale` or `available`.
+
 5. **Provenance is recorded even with one source, and it is
    content-identifying.** A baseline value carries the resolved path,
    the runtime manifest version, the **content SHA-256**, and the
@@ -191,6 +220,19 @@ the source that is reviewed and released — never a runtime read.**
    before and after mutation. `compat`'s `remembered_baseline` and
    `doctor`'s host-parity evidence both carry it. Existing snapshots
    without the field are read as legacy and are not retro-filled.
+
+   *Extended 2026-08-14.* The hash is taken over the file's BYTES. A
+   UTF-8 decode maps every invalid byte sequence to U+FFFD, so hashing
+   the decoded string gave two different files one digest —
+   reproduced with `FF FE` and `FF FF` — a collision class in the one
+   field whose job is telling two same-version installs apart.
+   Provenance also carries `canonical_path` beside `path`: the
+   operator-facing spelling and the bytes actually read are different
+   questions, and their difference is the only evidence an `escaped`
+   verdict has. Manifest state travels too (`ok | partial |
+   disagreement | absent | unusable`), because a package whose two
+   manifests disagree reported one version on one surface and another
+   on the next, and said nothing.
 
 6. **Convergence is promised only where it holds.** `compat` binds the
    baseline into its snapshot (`compat.mjs:93`) and `check` / `plan`

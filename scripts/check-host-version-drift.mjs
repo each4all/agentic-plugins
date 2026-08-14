@@ -26,7 +26,7 @@ import https from 'node:https';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { extractBaselineVersions } from '../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
+import { extractBaselineVersions, releaseVersion } from '../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -42,13 +42,24 @@ const HOSTS = [
 
 // ── pure helpers ────────────────────────────────────────────────────────────
 
-// Mirror of compat.extractSemver — keep CI-policy parsing independent of the
-// runtime plugin while staying byte-identical so baseline and upstream
-// versions normalize the same way (e.g. `rust-v0.137.0` → `0.137.0`).
-export function normalizeVersion(value) {
-  const match = String(value ?? '').match(/[0-9]+(?:\.[0-9]+){1,3}/);
-  return match ? match[0] : null;
-}
+// The comparison form, from the module that owns the grammar — not a fourth
+// private copy.
+//
+// "Mirror of compat.extractSemver … staying byte-identical" is what the note
+// here used to say, and it was measurably untrue: the two had already diverged
+// from the resolver on prerelease suffixes, build metadata, and `banana`. A
+// comment cannot hold two regexes in step; an import can.
+//
+// This keeps CI's stripping POLICY (a prerelease normalizes to its base
+// release, because `semverParts` compares by numeric position anyway) while
+// removing the second implementation of it. The one measured behavioral
+// difference is a four-component input — `1.2.3.4` now normalizes to `1.2.3` —
+// which no npm or GitHub release produces and which `semverParts` already
+// truncated before any comparison.
+// Re-exported as a local binding, not a bare `export … from`: this module also
+// CALLS it (`semverParts`, the npm and GitHub latest-version readers), and a
+// re-export creates no local name.
+export const normalizeVersion = releaseVersion;
 
 function semverParts(value) {
   const normalized = normalizeVersion(value);

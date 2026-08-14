@@ -25,8 +25,9 @@
 // ADR-0010 §5 bans cross-plugin imports. Its duplication is the architecture, not
 // an oversight.
 
-import { stat as defaultStat } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { realpath as defaultRealpath, stat as defaultStat } from 'node:fs/promises';
+import { realpathSync as defaultRealpathSync, statSync as defaultStatSync } from 'node:fs';
+import { dirname, resolve, sep } from 'node:path';
 
 // Is `child` the same path as `parent`, or inside it?
 //
@@ -52,7 +53,188 @@ export function isUnder(child, parent) {
   if (!parent) return false;
   const c = resolve(child);
   const p = resolve(parent);
-  return c === p || c.startsWith(p + sep);
+  if (c === p) return true;
+  // A parent that ALREADY ends in the separator must not gain a second one:
+  // `'/' + sep` is `'//'`, and nothing starts with that, so `isUnder(x, '/')`
+  // was false for every x. Filesystem roots — `/`, `C:\`, a UNC share root —
+  // are the whole class this misses (cross-host review).
+  return c.startsWith(p.endsWith(sep) ? p : p + sep);
+}
+
+// Resolve a package-relative asset and prove it did not leave the package.
+//
+// The third question this module answers, and the one `isUnder` alone cannot:
+// runtime resolves several assets by joining a CONSTANT relative path onto a
+// package root — the host-parity baseline, `data/plugin-set.json`,
+// `data/schemas/**`. A constant relative path cannot escape lexically, so the
+// old readers did no containment check at all. Measured: it escapes anyway,
+// through the filesystem rather than through the string. A symlink at the leaf,
+// a symlinked `docs/`, or a symlinked manifest each made a file OUTSIDE the
+// package the authority for a runtime verdict, and all three resolved to
+// `status: resolved` with no trace in provenance.
+//
+// So containment must be asked CANONICALLY, of both sides:
+//
+//   - The root is realpath'd too, not just the leaf. A symlinked package root
+//     is the normal shape of a development checkout and of several install
+//     layouts; canonicalizing only the leaf would refuse those. That control
+//     case is pinned in the tests precisely because it is the over-correction
+//     this function invites.
+//   - `isUnder` gets canonical inputs. It already appends `sep` before the
+//     prefix test, so `/x/runtime-evil` is not inside `/x/runtime` — measured,
+//     because a bare `startsWith` says it is.
+//
+// The read then targets `canonicalPath`, not the caller's spelling. That is not
+// cosmetic: re-walking the original path would re-traverse the very symlinks
+// this function just resolved, so the check would guard a different read than
+// the one that happens.
+//
+// SPELLING IS NOT IDENTITY, and on the refusal path that difference matters.
+// macOS firmlinks give one directory two canonical spellings — `/private/tmp/x`
+// and `/System/Volumes/Data/private/tmp/x` are the same inode, and `realpath`
+// returns whichever the caller reached it through. A symlink written with the
+// aliased spelling therefore canonicalizes OUTSIDE a root spelled the plain
+// way, and a legitimate package was refused. Reproduced on Darwin, with
+// matching dev/ino on both spellings; bind mounts have the same shape.
+//
+// So a lexical miss is not the final answer: before refusing, the leaf's
+// ancestors are walked and compared to the root by dev/ino — the identity
+// question `sameDirectory` below already exists to answer. This runs ONLY when
+// the cheap comparison has already failed, so the common path stays two
+// syscalls, and it fails CLOSED: an ancestor the filesystem will not describe
+// leaves the verdict `escaped`.
+//
+// TWO LIMITS, stated rather than papered over:
+//
+//   - TOCTOU. Between the realpath and the caller's read, the resolved path can
+//     be replaced — and not only at the leaf: `canonicalPath` is a string, so
+//     the caller's read re-walks every ancestor, and swapping the `docs`
+//     directory for an outside symlink after the check returns outside bytes
+//     (reproduced). Reading the canonical path removes the symlinks this
+//     function already collapsed; it does not make the read fd-anchored.
+//     Closing the window needs `openat` + `O_NOFOLLOW` per component, which
+//     Node does not expose portably. The threat this is proportionate to is a
+//     mis-packaged or locally-tampered install, not an attacker racing a
+//     doctor run.
+//   - HARDLINKS are invisible here. A hardlink inside the package to a file
+//     outside it has no symlink to resolve and is genuinely inside the tree by
+//     every filesystem answer available. Containment is a path predicate; it
+//     cannot see a second name for the same inode.
+//
+// Returns one of:
+//   { status: 'ok',         path, canonicalPath }
+//   { status: 'missing',    path, code }   nothing is there — includes a broken symlink
+//   { status: 'unreadable', path, code }   present, but the path could not be walked
+//   { status: 'escaped',    path, canonicalPath }
+//
+// `missing` wins over `escaped` when the leaf does not exist: nothing was read,
+// so there is no escape to report, only an incomplete package.
+export async function resolveContained(root, relativePath, { realpath = defaultRealpath, stat = defaultStat } = {}) {
+  const path = resolve(root, relativePath);
+  let canonicalRoot;
+  try {
+    canonicalRoot = await realpath(root);
+  } catch (err) {
+    return err?.code === 'ENOENT'
+      ? { status: 'missing', path, code: 'ENOENT' }
+      : { status: 'unreadable', path, code: err?.code ?? 'error' };
+  }
+  let canonicalPath;
+  try {
+    canonicalPath = await realpath(path);
+  } catch (err) {
+    return err?.code === 'ENOENT'
+      ? { status: 'missing', path, code: 'ENOENT' }
+      : { status: 'unreadable', path, code: err?.code ?? 'error' };
+  }
+  if (isUnder(canonicalPath, canonicalRoot)) return { status: 'ok', path, canonicalPath };
+  if (await ancestorSharesIdentity(canonicalPath, canonicalRoot, stat)) {
+    return { status: 'ok', path, canonicalPath };
+  }
+  return { status: 'escaped', path, canonicalPath };
+}
+
+// Walk up from the leaf asking the filesystem, not the string, whether any
+// ancestor IS the root. Bounded by path depth and only reached after a lexical
+// miss. Any unanswerable step ends the walk as "not contained" — the fail-
+// closed direction, matching `sameDirectory`'s refusal to guess.
+async function ancestorSharesIdentity(canonicalPath, canonicalRoot, stat) {
+  let rootKey;
+  try {
+    rootKey = identityKey(await stat(canonicalRoot, { bigint: true }));
+  } catch {
+    return false;
+  }
+  if (rootKey === null) return false;
+  let current = dirname(canonicalPath);
+  let previous = null;
+  while (current !== previous) {
+    let key;
+    try {
+      key = identityKey(await stat(current, { bigint: true }));
+    } catch {
+      return false;
+    }
+    if (key !== null && key === rootKey) return true;
+    previous = current;
+    current = dirname(current);
+  }
+  return false;
+}
+
+/**
+ * Synchronous twin of `resolveContained`, for the one caller that has no async
+ * context: `version.mjs` computes `RUNTIME_VERSION` at module load and every
+ * runtime command imports it.
+ *
+ * It exists HERE rather than in that caller because the first version of this
+ * work put a hand-rolled copy in `plugin-manifest.mjs` — and the copy was
+ * wrong in the way a copy always is: it compared with a hard-coded `/`, so on
+ * Windows every valid manifest canonicalized to a `\`-separated path, failed
+ * containment, and every runtime command stamped `0.0.0-dev`. That was a P1
+ * from cross-host review, and merging the copy is the fix, not patching it.
+ */
+export function resolveContainedSync(root, relativePath, { realpathSync = defaultRealpathSync, statSync = defaultStatSync } = {}) {
+  const path = resolve(root, relativePath);
+  let canonicalRoot;
+  try {
+    canonicalRoot = realpathSync(root);
+  } catch (err) {
+    return err?.code === 'ENOENT'
+      ? { status: 'missing', path, code: 'ENOENT' }
+      : { status: 'unreadable', path, code: err?.code ?? 'error' };
+  }
+  let canonicalPath;
+  try {
+    canonicalPath = realpathSync(path);
+  } catch (err) {
+    return err?.code === 'ENOENT'
+      ? { status: 'missing', path, code: 'ENOENT' }
+      : { status: 'unreadable', path, code: err?.code ?? 'error' };
+  }
+  if (isUnder(canonicalPath, canonicalRoot)) return { status: 'ok', path, canonicalPath };
+  let rootKey;
+  try {
+    rootKey = identityKey(statSync(canonicalRoot, { bigint: true }));
+  } catch {
+    return { status: 'escaped', path, canonicalPath };
+  }
+  if (rootKey !== null) {
+    let current = dirname(canonicalPath);
+    let previous = null;
+    while (current !== previous) {
+      try {
+        if (identityKey(statSync(current, { bigint: true })) === rootKey) {
+          return { status: 'ok', path, canonicalPath };
+        }
+      } catch {
+        break;
+      }
+      previous = current;
+      current = dirname(current);
+    }
+  }
+  return { status: 'escaped', path, canonicalPath };
 }
 
 // Are these two paths the SAME directory? Asks the filesystem, because spelling
