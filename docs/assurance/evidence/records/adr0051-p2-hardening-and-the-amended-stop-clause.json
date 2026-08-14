@@ -1,0 +1,106 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "adr0051-p2-hardening-and-the-amended-stop-clause",
+  "evidence_loop": {
+    "label": "the ADR-0051 hardening arc, and the first loop to record a proof against a baseline it chose not to refresh",
+    "summary": "ADR-0051 §Out of scope admitted nothing enforced its release obligation. This loop closed that in three moves and then paid the cost of the third. ADR-0052 decided the enforcement by history/tag reconciliation and left Alternatives D deferred on measured grounds. The gate landed as CI. Then a six-item review of ADR-0051's accepted implementation was re-adjudicated by reproduction — five reproduced, one refuted and recorded rather than fixed — and a cross-host pass returned thirteen more findings, every one of which held. That hardening changed plugins/runtime, so it owed a release, and the release owed this recovery. The recovery is where the arc met its limit: Claude Code had moved five patches past the baseline, and the macro's instruction for exactly that case was to stop rather than record a current proof against a stale target. The owner amended it — record the proof, transcribe the staleness verbatim, and open a named follow-up so the stale baseline has an owner. That amendment is the loop's most consequential artifact, because halting would have left the proof-coupled assertions red with no owner either."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.90.2",
+      "tag": "plugin-runtime-v0.90.2",
+      "release_pr": 695,
+      "squash": "271c5aebc81e01380de81c9d64a2c4f355338f91",
+      "marketplace_sync": "dbcb983d2bb1c9783c99c485931fd38f3791f92a"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "110e17fcfd237e9afec747e0cab3eb9ad4629f68",
+      "pr_attested": 691,
+      "note": "ADR-0052, deciding the enforcement ADR-0051 §Out of scope deferred. Its subject carries no PR number, hence the attested field."
+    },
+    {
+      "sha": "daedb08ed1cca6d30388fffb7d684b62e151928f",
+      "pr": 693,
+      "note": "The gate itself: reconciles the protected tree against the newest reachable plugin-runtime tag, run in full-tests.yml at fetch-depth 0 and again inside release-please.yml because a GITHUB_TOKEN push triggers no workflow."
+    },
+    {
+      "sha": "84de4864463cfcec6cf7083b37863c717f3e4c1b",
+      "pr_attested": 692,
+      "note": "Corrects the ADR-0052 heading to name the adopted option. Subject carries no PR number."
+    }
+  ],
+  "hardening_commits": [
+    {
+      "sha": "aaf4744670387b0099976da10eced2b24916ae3f",
+      "pr_attested": 694,
+      "note": "The P2 hardening. Containment asked canonically of both sides, so a symlinked docs/, leaf or manifest can no longer make an outside file the authority while still reporting source 'package'; the content hash taken over bytes; one shared baselineFailure() predicate replacing five enumerations."
+    }
+  ],
+  "proofs": [
+    {
+      "run_id": "doctor-20260814T083045Z-bc4fc6",
+      "date": "2026-08-14",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:2e4ef6b5444ca4b83d56c82b66669ae983a65bd5832b63cd26526693da2ccddd",
+      "runtime_version": "0.90.2",
+      "installed": {
+        "claude": "0.90.2",
+        "codex": "0.90.2"
+      },
+      "host_cli": {
+        "claude": "2.1.232 (Claude Code)",
+        "codex": "codex-cli 0.147.0"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning with hard_failures empty; the single warning is 'latest compatibility check needs follow-up', which is this loop's own compat snapshot recording real host drift"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed in both directions"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed in both directions"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed in both directions"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; zero issues"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale; observed claude 2.1.232 against a baseline of 2.1.227 this release deliberately did not touch. provenance reads resolved / package / 0.90.2, content_sha256 a7fe6fa1412f7ab59c123c86fd27e7ec9fce92328fc61a1127722cf5d02b3379 — the byte-level hash this release introduced"
+        },
+        {
+          "key": "experience_parity",
+          "value": "partial 95%; satisfied 7, partial 1, not_verified 0, blocked 0. The one partial is runtime_handoff_artifacts, whose compat leg reads needs_attention after this loop's own snapshot"
+        },
+        {
+          "key": "workflow_continuity_storage",
+          "value": "satisfied, but only after a repair: it read blocked before the proof because a dead plan-verify handle from 2026-08-13 had been left non-terminal by the preceding subtask. Reconciled to orphaned first. This is the second occurrence of the same failure mode in this project's records"
+        },
+        {
+          "key": "attestation_not_restaled",
+          "value": "No /hooks re-attestation was required and none was written. runtime ships no hooks and the four attested plugins did not move, so settings-20260809T122130Z-c26a0c stayed current"
+        }
+      ]
+    }
+  ],
+  "install_method": "Owner-driven host-native update, verified by bytes rather than version label. Codex already carried 0.90.2; on Claude, `claude plugin marketplace update` pulled the release into the cache and the following `claude plugin update` reported it already current. Both caches then held an identical 117-file package, digest e19a62f0319a84fd099b157e004a4ed958dde5d8eebc9c04d47ef98f9a9804af.",
+  "narrative": "Three things outlive the version bump.\n\nFirst, the hardening found that the enumeration was the defect, not a missing case. Five readers each listed the two baseline statuses they knew and gave anything else a benign meaning: doctor turned an unlisted status into `stale` — a freshness verdict for an integrity failure — dashboard into `available`, and cutover's CHECK_UNREADY set never learned `unparseable`, so the audit refused readiness and then dropped the line saying what to repair. The repair is one shared predicate that fails closed on a status it does not recognise. Mirrors were hunted rather than assumed: three more packaged authorities resolved assets the same unsafe way, while the host-cache readers that share the shape but not the threat model were measured and left alone.\n\nSecond, the recovery hit the clause the macro had written for it, and the clause lost. ST2 and ST6 both carried the instruction that if Claude passed 2.1.227 the loop must not record a current proof against a stale target. Claude was at 2.1.232. Two facts decided an amendment rather than a quiet override. This release changed no packaged baseline, so the staleness is inherited, not created — and the previous loop had already recorded a stale proof under the same clause, which makes the literal reading one nobody has yet followed. And ADR-0052 measured why: a 7.03h detection lag plus a 22.15h loop against Claude's median 24.9h publish gap lands current in three of twelve publishes. What ADR-0052 does not do is authorise the override — it leaves ADR-0051 §Decision 1-8 untouched and left D deferred — so the authority is the owner's amendment of 2026-08-14, recorded in the macro, and it came with a condition: a named baseline follow-up, distinct from the ADR sha-corpus subtask that a first draft of this reasoning wrongly named as the follow-up. A cross-host review caught that before it reached any document.\n\nThird, the drift handed forward is not the previous kind. The last record could say the 2.1.228 changelog showed no plugin-CLI, hook or subagent change. The 2.1.228-2.1.232 range cannot: GitLab and `command` marketplace sources, `/plugin install` refreshing the marketplace first, server-supplied hooks for self-hosted runners, subagent forking on by default, and a plugin-cache fix for a plugin whose only version is a symlinked development checkout — the same control case this release pinned. The follow-up is a re-judgement of baseline rows.\n\nThree process findings will recur. The peer-run ledger blocked the proof until a dead handle from the previous subtask was reconciled; the 0.90.0 loop hit the identical failure, so settling belongs in the dispatch ritual, not in recovery. The runtime's two readers disagree about it: peer-runner checks whether the process is alive, state-readers decides staleness from updated_at alone against a 60s grace, so a healthy in-flight peer reports the ledger blocked — a doctor proof must not run while a peer is in flight, and this is the same two-readers-disagree shape this release removed, surviving one layer up. And `peer-runner sweep` reconciles orphans even without `--apply`, while its TTL prune is not citation-aware: of 75 runs it planned to delete, 8 are cited in ADR-0044/0045/0046/0047, this scorecard, and the packaged machine-bootstrap-contract.md. Pruning was suppressed rather than accepted.\n\nFinally, the note this store owes about itself. ADR-0049 set a withdrawal trigger: two consecutive release loops in which the store is authored while the renderer/migration follow-up ADR has not been opened. Measured now: this is the ninth record, the eight before it authored between 2026-07-28 and 2026-08-13, and no such follow-up ADR exists — the trigger met four times over. This record is authored because the loop requires one and skipping it silently is the failure ADR-0049 warned about, but with the trigger named rather than passed over. The reconciliation is an owner decision that does not belong to this recovery.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "baseline-release-obligation-first-exercise",
+      "note": "That loop first discharged the ADR-0051 obligation and produced the cost datum. This one supplies the enforcement that datum was gathered for, hardens the implementation the obligation protects, and inherits its stale baseline — recording against it under an owner amendment rather than halting."
+    }
+  ]
+}
