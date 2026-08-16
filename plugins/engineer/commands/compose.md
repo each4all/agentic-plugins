@@ -7,7 +7,7 @@ argument-hint: --profile=plan|code | (or natural-language composition target)
 
 $ARGUMENTS
 
-Use `TaskCreate` and `TaskUpdate` to track progress. The peer ensemble
+Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble
 runs automatically per
 `skills/_shared/references/ensemble-protocol.md` (Plan-verify point
 type — applies to both `plan` and `code` profiles per the section's

@@ -7,7 +7,7 @@ argument-hint: (fix description, finding reference, or critique scope)
 
 $ARGUMENTS
 
-Use `TaskCreate` and `TaskUpdate` to track progress. The peer ensemble
+Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble
 runs automatically per
 `skills/_shared/references/ensemble-protocol.md` (Refine-verify point
 type) — never ask the user whether to invoke the peer. When the
