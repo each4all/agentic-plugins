@@ -7,7 +7,7 @@ argument-hint: --profile=plan|canvas|validation-plan | (or natural-language plan
 
 $ARGUMENTS
 
-Use `TaskCreate` and `TaskUpdate` to track progress. The peer ensemble
+Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble
 runs automatically (Plan-verify point type) — never ask the user whether
 to invoke the peer, and never direct them to run companion CLIs manually.
 When the companions plugin or peer CLI is unavailable, the ensemble
