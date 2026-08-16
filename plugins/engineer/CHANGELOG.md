@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.5](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.4...plugin-engineer-v0.21.5) (2026-08-16)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** drop the withdrawn todo-tool dependency from command runbooks ([feeeafb](https://github.com/each4all/agentic-plugins/commit/feeeafb20fa23acaf4aa7026a16385a6c344d31a))
+
 ## [0.21.4](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.3...plugin-engineer-v0.21.4) (2026-08-08)
 
 
