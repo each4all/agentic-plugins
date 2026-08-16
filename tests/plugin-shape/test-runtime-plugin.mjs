@@ -462,7 +462,7 @@ describe('plugins/runtime settings surface', () => {
       // document whose header still read the previous release. A markdown table
       // cell cannot contain the raw newline this literal spans, so only the
       // header can satisfy it.
-      'Observed on 2026-08-11 with Claude Code `2.1.227`, Codex CLI\n`0.147.0`',
+      'Observed on 2026-08-16 with Claude Code `2.1.233`, Codex CLI\n`0.147.0`',
       'https://developers.openai.com/codex/subagents',
       'https://developers.openai.com/codex/hooks',
       'https://code.claude.com/docs/en/plugins',
