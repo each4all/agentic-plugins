@@ -9,7 +9,7 @@ $ARGUMENTS
 
 Dispatch one orchestrator macro subtask into the engineer plugin's command runbook, recording the immutable parent linkage (`AGENTIC_PARENT_WORKFLOW` + `AGENTIC_ORIGINATING_SUBTASK`) so engineer's terminal commit auto-writes back via `runStopArchive` per ADR-0019 §4. This is the **same-host default**; cross-host (`--peer`) remains trigger-deferred PR-F scope.
 
-Use `TaskCreate` / `TaskUpdate` to track progress across the five phases below. Each phase is a discrete bash snippet — execute them in order and **abort on any non-zero exit** unless the snippet's commentary explicitly handles the failure.
+Maintain one progress entry per phase across the five phases below and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. Each phase is a discrete bash snippet — execute them in order and **abort on any non-zero exit** unless the snippet's commentary explicitly handles the failure.
 
 Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root for this command. Fallback when unset: `$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -maxdepth 3 -name plugin.json | xargs -I{} dirname {} | xargs -I{} dirname {} | sort -V | tail -1)`.
 
