@@ -7,8 +7,9 @@ argument-hint: --profile=design-brief | (or natural-language design/UX topic)
 
 $ARGUMENTS
 
-Use `TaskCreate` to register each phase and `TaskUpdate` to advance
-status. The peer ensemble runs automatically per
+Maintain one progress entry per phase and advance its status as you go
+— use the host's task-tracking tools when the session exposes them,
+and keep an inline checklist when it does not. The peer ensemble runs automatically per
 `skills/investigate/references/design-brief-ensemble.md` (reference-scan
 point type) — never ask the user whether to invoke the peer, and never
 direct them to run companion CLIs manually. When the companions plugin or
