@@ -65,9 +65,13 @@ import { gitHistoryAvailable } from './check-doc-evidence.mjs';
  *
  * A DIRECTORY pattern rather than a file list, deliberately. An enumerated
  * list has to be kept in sync with `PACKAGED_SCHEMA_FILES`, and this
- * repository already has a live instance of that failure mode:
+ * repository had a live instance of that failure mode when this was written:
  * `check-doc-evidence.mjs`'s `EVIDENCE_DOCS` is a literal array that does not
- * expand globs. `plugins/runtime/data/schemas` therefore covers the next
+ * expand globs. That instance is now closed — its commit-sha check moved to a
+ * discovered corpus, and `EVIDENCE_DOCS` remains literal only for the two
+ * checks whose scope really is those three documents — but the reasoning
+ * stands on its own and the same directory pattern is why.
+ * `plugins/runtime/data/schemas` therefore covers the next
  * schema added without an edit here, and settles the one genuinely ambiguous
  * member — `runtime-plugin-set-1.0.json`, registered in
  * `PACKAGED_SCHEMA_FILES` but loaded today only by tests.

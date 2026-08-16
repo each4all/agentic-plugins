@@ -179,6 +179,13 @@ assumed.**
    repository already has a live instance of that failure mode —
    `check-doc-evidence.mjs`'s `EVIDENCE_DOCS` is a literal array that does not
    expand globs, which is one of the two reasons ADRs are not yet in its scope.
+
+   > Closed 2026-08-16, and the decision above is unchanged. The sha check
+   > moved to a discovered corpus (`discoverShaCorpus`), so ADRs are now in
+   > its scope; `EVIDENCE_DOCS` stays a literal array for the release-triple
+   > and proof-citation checks, where enumeration is a scope statement — those
+   > two read claims only the stage docs make, and measurement showed a wider
+   > corpus leaves them at `checked: 0` rather than covering more.
    Directory protection also settles the one genuinely ambiguous member:
    `runtime-plugin-set-1.0.json` is registered in `PACKAGED_SCHEMA_FILES`
    (`schema-validate.mjs:636`) but is loaded today only by tests, because

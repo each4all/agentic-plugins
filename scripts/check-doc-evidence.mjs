@@ -1,10 +1,20 @@
 #!/usr/bin/env node
-// Read-only consistency checks over the evidence claims in the stage docs.
+// Read-only consistency checks over the repository's evidence claims.
 // Companion to scripts/sync-doc-versions.mjs: that script DERIVES the
 // version tokens the freshness gate gates; this one CHECKS the claims the
 // gate cannot see.
 //
-// Why these three, and why read-only:
+// The checks do NOT share a corpus, and the split is the point. R1 and R2
+// read RELEASE claims — triples and current-proof records — which only the
+// three stage docs make, so they run on an enumerated list. R4 reads
+// COMMIT CITATIONS, which any document can carry and which are checkable
+// by identifier comparison alone, so it runs on a discovered corpus. They
+// were one list until it was measured: pointing all three at docs/adr/**
+// left R1 and R2 at `checked: 0` — vacuously green — while degrading R1's
+// coverage signal, and only R4 gained anything. See EVIDENCE_DOCS and
+// discoverShaCorpus for each corpus and its exclusions.
+//
+// Why these checks, and why read-only:
 //
 //   The doc-freshness gate in tests/plugin-shape/test-runtime-plugin.mjs
 //   compares version tokens to the manifest. It checks values in
@@ -39,26 +49,167 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { checkStore } from './lib/evidence-store.mjs';
 
+/**
+ * R1 + R2's corpus: the stage docs, ENUMERATED on purpose.
+ *
+ * These two checks verify claims about RELEASES — that a cited
+ * `(release PR, squash, tag, marketplace sync)` combination existed, and
+ * that the record presented as current cites the newest proof run. Only
+ * these three documents make such claims. Feeding them a wider corpus
+ * does not widen coverage; it was measured to do the opposite. Adding
+ * `docs/adr/**` as-is left R1 at `checked: 0` while raising its
+ * `unpairedTags` count from 9 to 22, and left R2 at `checked: 0` /
+ * `dateChecked: 0` — a vacuous pass plus a degraded coverage signal.
+ *
+ * So the enumeration here is a scope statement, not the drift
+ * ADR-0052 §Decision 2 warns about. R4's corpus, which genuinely should
+ * grow with the repository, is discovered instead — see
+ * `discoverShaCorpus`.
+ */
 export const EVIDENCE_DOCS = [
   'docs/ARCHITECTURE.md',
   'docs/DEVELOPMENT.md',
   'docs/assurance/omcc-cutover-scorecard.md',
 ];
 
-const RUNTIME_CHANGELOG = 'plugins/runtime/CHANGELOG.md';
+/**
+ * R4's corpus: DISCOVERED, not enumerated (ADR-0052 §Decision 2's
+ * directory-not-a-file-list rule, applied to the array that ADR named as
+ * the repository's live instance of the failure).
+ *
+ * A cited commit sha is checkable wherever it appears, so this corpus is
+ * every hand-authored markdown file that can carry one: everything under
+ * `docs/` recursively, plus the repository-root files. The scope is set by
+ * the DIRECTORY rule, and it decides two questions:
+ *
+ *   - The nine generated changelogs stay out. release-please writes those
+ *     links from the commits it has just released, so they cannot dangle
+ *     through an authoring error; gating them checks a tool against
+ *     itself. They are also 702 of the repository's 1147 citations, so
+ *     admitting them would make the changelog format — not the evidence
+ *     prose — the thing this check is most sensitive to. All nine sit
+ *     under `plugins/` or `companions/`, so today the directory rule alone
+ *     already excludes every one of them; `SHA_CORPUS_EXCLUDED_BASENAME`
+ *     covers the root or `docs/` changelog this repository does not
+ *     currently have, and is stated separately because that is a different
+ *     reason from "out of scope".
+ *
+ *   - `plugins/**` and `companions/**` authored docs stay out. Measured
+ *     across the 170 authored files they carry 3 citations, and 2 of those
+ *     are a prose
+ *     position number (`position 987654321`) rather than a sha. Admitting
+ *     them would force an "all-decimal tokens are not shas" rule, and that
+ *     rule is unsafe here: 4 of the 442 real citations in this corpus are
+ *     all-decimal, and 35 of the repository's 918 commits as of 2d6a667
+ *     (3.8%) have an all-decimal 7-character abbreviation. The third citation (`16b1833`
+ *     in `plugins/runtime/docs/host-parity-baseline.md`) is a fact
+ *     `AGENTS.md` already states and this corpus therefore already gates.
+ *     A future widening has to solve the decimal question first.
+ *
+ * Discovery goes through `git ls-files` rather than a filesystem walk so
+ * the corpus is what the repository contains rather than what one working
+ * tree happens to hold — the same machine-independence requirement that
+ * makes reachability judge from the integration branch below.
+ */
+export const SHA_CORPUS_DIRS = Object.freeze(['docs']);
+export const SHA_CORPUS_EXCLUDED_BASENAME = 'CHANGELOG.md';
+
+/**
+ * The membership rule, separate from the walk that applies it.
+ *
+ * Split out because the two clauses are not equally exercised by the real
+ * tree: the basename clause removes nothing today (every changelog is
+ * already outside the directory clause), so a test that asserts "no
+ * changelog is in the corpus" passes whether or not that clause exists.
+ * Testing the predicate on a constructed path is what makes the clause
+ * verifiable rather than decorative.
+ */
+export function isShaCorpusFile(file) {
+  if (!file.endsWith('.md')) return false;
+  if (basename(file) === SHA_CORPUS_EXCLUDED_BASENAME) return false;
+  return !file.includes('/') || SHA_CORPUS_DIRS.some((dir) => file.startsWith(`${dir}/`));
+}
+
+export function discoverShaCorpus(repoRoot) {
+  return git(repoRoot, ['ls-files', '-z']).split('\0')
+    .filter(Boolean)
+    .filter(isShaCorpusFile)
+    .sort();
+}
+
 const DOCTOR_ID = String.raw`doctor-(\d{4})(\d{2})(\d{2})T\d{6}Z-[0-9a-f]+`;
 const ANY_DOCTOR_ID = String.raw`doctor-\d{8}T\d{6}Z-[0-9a-f]+`;
 const DATE = String.raw`(\d{4}-\d{2}-\d{2})Z?`;
-// Either `abc1234` or a bare abc1234 delimited by punctuation/space. The
-// 7-40 bound keeps 64-hex plan hashes out; the bare alternative is
-// anchored on a preceding "#NNN " or whitespace so prose words cannot
-// match.
-const CITED_SHA = /`([0-9a-f]{7,40})`|(?:^|[\s(])([0-9a-f]{7,40})(?=[\s,.;)]|$)/g;
+// A content digest that a hard wrap has SPLIT, e.g. a 64-hex whole-tree
+// hash reflowed as `<49 hex> <15 hex>`. Masked so the short fragment
+// cannot read as a sha. The scorecard and DEVELOPMENT.md carry six such
+// digests (four and two); all six are unwrapped today, and an unwrapped
+// one needs no mask because `CITED_SHA`'s alphanumeric-neighbour rule
+// already rejects every window inside a run longer than 40.
+//
+// The shape is deliberately narrow: EXACTLY two whitespace-separated
+// pieces, one of them longer than any commit sha. A first version masked
+// any hex-and-whitespace code span totalling over 40 hex characters, which
+// silently swallowed real citations — `` `deadbee badcafe decafed cabbace
+// fadfade beeface` `` extracted nothing at all, and so did a span holding
+// two full 40-character shas (cross-host review finding). Where the two
+// readings are genuinely ambiguous the check now errs toward reporting: a
+// false finding is loud and one edit from fixed, a silent miss is the
+// failure this whole corpus change exists to close.
+const WRAPPED_DIGEST_SPAN = /`\s*([0-9a-f]+)\s+([0-9a-f]+)\s*`/g;
+// A commit in ANOTHER repository, cited as a repository-qualified link.
+// It is a real citation, but not a claim about THIS repository's history,
+// so resolving it locally is meaningless: measured, an external sha is
+// reported as unresolvable unless it happens to collide with a local
+// object, in which case it passes for the wrong reason (cross-host review
+// finding). Masked rather than allow-listed — being qualified by a
+// different owner/repo IS the exception grammar, so no reviewed list has
+// to be maintained. A bare external sha with no link still fails, which is
+// the intended pressure toward writing the qualified form.
+const EXTERNAL_COMMIT_URL = /https?:\/\/[^\s`)\]]*?\/([^/\s]+\/[^/\s]+)\/commit\/([0-9a-f]{7,40})/g;
+const THIS_REPO = 'each4all/agentic-plugins';
+// A cited sha is a hex run of 7-40 characters standing on its own. Three
+// neighbour classes disqualify it, and each one is a measured false
+// positive rather than a precaution:
+//
+//   [0-9A-Za-z] either side — the run is part of a longer word or token.
+//     "feedbac|k" (25 occurrences across the ADRs, because the English
+//     word begins with seven hex characters), "su|cceeded", and the date
+//     component of a run id, "…-20260505|T120000Z-…".
+//
+//   `-` on the LEFT — the run is the tail of a compound identifier: a
+//     workflow or peer run id (`plan-verify-20260526T012732Z-1a205273`)
+//     or a proof subject (`egress-proof-5f00461ebdc9`). This is the class
+//     that produced the "15 unresolved of 71" reading recorded against
+//     `docs/adr` — those 15 were run-id suffixes, not citations. Measured:
+//     0 real citations in this corpus have a `-` left neighbour; 22
+//     compound-identifier tails do. A markdown list item is unaffected —
+//     `- af620df` puts a space, not the hyphen, next to the run.
+//
+//   `…` either side — the run is a deliberately elided digest, as in
+//     `plan_hash sha256:63119f47…4131a` and `…23882a3a…`. Immediate
+//     adjacency only, so ADR-0049's `Codex 0.145.0 … af620df` — where a
+//     space separates the ellipsis from a real citation — still matches.
+//     U+2026 only: the ASCII spelling `...` is NOT excluded, and that is a
+//     decision rather than an oversight. Both candidate classes measure
+//     zero in this corpus — no hex run sits against `...`, and no commit
+//     RANGE (`16b1833^..16b1833`) is cited either — so a `..` guard would
+//     trade a hypothetical false positive for a hypothetical false
+//     negative on ranges, with nothing measured to prefer one. It stays
+//     uncovered until one of the two actually appears.
+//
+// What this rule REPLACED required a delimiter from a closed set on each
+// side (`^|[\s(]` before, `[\s,.;)]|$` after) or the whole code span to be
+// hex. That silently dropped nine real citations, six of them in the
+// already-gated scorecard: quote-wrapped (`§"28b5eb8 incident"`),
+// slash-separated lists (`123e9a0/e9d5a1c/1a3c5c6/0bdbdd5`), and shas at
+// either edge of a longer code span.
+const CITED_SHA = /(?<![0-9A-Za-z…-])([0-9a-f]{7,40})(?![0-9A-Za-z…])/g;
 // [pattern, dateComesFirst]. Closed set, exact-matched: these are the
 // constructions the stage docs actually use to bind a date to a proof
 // run id. Anything else mentioning a date near an id is prose, not a
@@ -105,9 +256,9 @@ export function gitHistoryAvailable(repoRoot) {
 // `docs` lets tests inject mutated document text while git and the
 // manifest still point at the real repository — the only way to prove a
 // check bites without fabricating a throwaway git history.
-function readDocs(repoRoot, docs) {
+function readDocs(repoRoot, docs, files) {
   if (docs) return docs;
-  return EVIDENCE_DOCS.map((file) => ({ file, text: readFileSync(resolve(repoRoot, file), 'utf8') }));
+  return files.map((file) => ({ file, text: readFileSync(resolve(repoRoot, file), 'utf8') }));
 }
 
 // Hard wraps split nearly every claim across lines. Read-only checks can
@@ -115,6 +266,27 @@ function readDocs(repoRoot, docs) {
 // offset must survive.
 function flatten(text) {
   return text.replace(/\n>? ?/g, ' ');
+}
+
+/**
+ * Every commit sha cited by a document, in order of appearance.
+ *
+ * Exported so the extractor can be audited directly against both its
+ * positive shapes and its negative controls, rather than only through the
+ * aggregate counts of a check — an aggregate cannot distinguish a rule
+ * that stopped matching from a document that stopped saying it.
+ */
+export function extractCitedShas(text) {
+  const blank = (s) => '~'.repeat(s.length);
+  const flat = flatten(text)
+    .replace(EXTERNAL_COMMIT_URL, (url, repo) => (repo === THIS_REPO ? url : blank(url)))
+    .replace(WRAPPED_DIGEST_SPAN, (span, head, tail) => (
+      // One digest split by a wrap, not a list: the pieces only make sense
+      // as one token if together they exceed a commit sha and one of them
+      // already does on its own.
+      head.length + tail.length > 40 && Math.max(head.length, tail.length) > 40 ? blank(span) : span
+    ));
+  return [...flat.matchAll(CITED_SHA)].map((m) => m[1]);
 }
 
 /**
@@ -176,7 +348,7 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
     releaseCommits.add((derefSha || objectSha).slice(0, 7));
   }
 
-  for (const { file, text } of readDocs(repoRoot, docs)) {
+  for (const { file, text } of readDocs(repoRoot, docs, EVIDENCE_DOCS)) {
     const flat = flatten(text);
     // Claims are matched from the tag outward in both directions,
     // because the prose puts the squash before the tag ("squash `X`, tag
@@ -340,7 +512,7 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
     /Latest installed proof:/g,
   ];
 
-  for (const { file, text } of readDocs(repoRoot, docs)) {
+  for (const { file, text } of readDocs(repoRoot, docs, EVIDENCE_DOCS)) {
     const flat = flatten(text);
     const allIds = [...flat.matchAll(new RegExp(DOCTOR_ID, 'g'))];
     if (allIds.length === 0) continue;
@@ -466,47 +638,57 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
 export function checkCommitShas(repoRoot, { docs = null } = {}) {
   const availability = gitHistoryAvailable(repoRoot);
   if (!availability.ok) {
-    return { ran: false, reason: availability.reason, findings: [], checked: 0, reachabilityBase: null };
+    return { ran: false, reason: availability.reason, findings: [], checked: 0, reachabilityBase: null, corpusFiles: [] };
   }
 
   const findings = [];
   let checked = 0;
 
-  // sha -> version, from the runtime changelog's per-version sections.
-  const changelog = readFileSync(resolve(repoRoot, RUNTIME_CHANGELOG), 'utf8');
-  const shaVersion = new Map();
-  const releasedVersions = new Set();
-  let currentSection = null;
-  for (const line of changelog.split('\n')) {
-    const header = line.match(/^## \[(\d+\.\d+\.\d+)\]/);
-    if (header) { currentSection = header[1]; releasedVersions.add(header[1]); continue; }
-    if (!currentSection) continue;
-    for (const m of line.matchAll(/\/commit\/([0-9a-f]{7,40})/g)) {
-      shaVersion.set(m[1].slice(0, 7), currentSection);
-    }
+  // The runtime changelog is NOT read here any more, and its absence is
+  // the point. It was parsed to build a sha -> version map for the
+  // attribution check, and a fail-closed guard refused to run when that
+  // map came out empty. Attribution was removed; the map went unread; the
+  // guard stayed. Harmless while this check covered three stage docs —
+  // actively wrong now that it covers every document in `docs/` and the
+  // root, because a formatting change in ONE package's generated
+  // changelog would disable commit-sha checking repository-wide
+  // (cross-host review finding). A guard must protect something that
+  // exists.
+
+  // The DISCOVERED corpus, not the enumerated stage-doc list — see
+  // `discoverShaCorpus`. Resolution and reachability are identifier
+  // comparisons, so every document that cites a sha can be held to them;
+  // only R1 and R2, which read release claims, need a narrower scope.
+  //
+  // Discovery reads the INDEX, so it can name a file the working tree no
+  // longer has — `rm doc.md` without `git rm` is enough. The enumerated
+  // list could not produce that state. Report it as a check that could not
+  // run rather than letting a bare ENOENT escape: the tree is mid-edit,
+  // which is a different thing from a dangling citation, and skipping the
+  // file silently would be the "reads as coverage" failure this module's
+  // availability guard exists to avoid.
+  const corpusFiles = docs ? docs.map(({ file }) => file) : discoverShaCorpus(repoRoot);
+  let documents;
+  try {
+    documents = readDocs(repoRoot, docs, corpusFiles);
+  } catch (err) {
+    return {
+      ran: false,
+      reason: `a discovered corpus file could not be read: ${err.message}`,
+      findings: [], checked: 0, reachabilityBase: null, corpusFiles,
+    };
   }
 
-  const documents = readDocs(repoRoot, docs);
-
   // Resolve every cited sha in one `cat-file --batch-check` rather than
-  // spawning git per sha; the real corpus is ~160 shas.
+  // spawning git per sha; the real corpus is ~160 unique shas.
   //
-  // The 7-40 bound is what keeps non-commit hex out: the scorecard also
-  // cites 64-hex plan/attempt hashes in backticks, and those cannot
-  // match because the closing backtick never lands inside the bound. A
-  // backticked hex token in this length range that is NOT a commit will
-  // be reported as unresolvable, which is intended — in these documents
-  // such a token is either a typo or something that should not have been
-  // written as a bare backticked sha.
-  // Backticked AND bare. The scorecard writes feature commits as
-  // "#641 af620df" without backticks — twelve shas appear ONLY in that
-  // form — so a backtick-only scan never checked them at all, while
-  // AGENTS.md promised every cited sha resolves (round-5 cross-host
-  // review finding). Resolution is identifier matching, so widening it
-  // strictly strengthens the gate.
-  const allShas = [...new Set(
-    documents.flatMap(({ text }) => [...flatten(text).matchAll(CITED_SHA)].map((m) => m[1] ?? m[2])),
-  )];
+  // A hex token in the 7-40 range that is NOT a commit is reported as
+  // unresolvable, which is intended — in these documents such a token is
+  // either a typo or something that should not have been written as a
+  // bare sha. Everything that is legitimately hex-shaped without being a
+  // citation is excluded by `CITED_SHA`'s neighbour rules or the
+  // `DIGEST_SPAN` mask rather than by hoping it falls outside the bound.
+  const allShas = [...new Set(documents.flatMap(({ text }) => extractCitedShas(text)))];
   // Reachability, not mere object existence. `cat-file` answers "is this
   // object in MY object store", which is machine-dependent and gave a
   // false green locally: docs/DEVELOPMENT.md cited `36b7ab1`, a
@@ -519,10 +701,18 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
   // history contains the PR's own branch commits — so a document citing
   // a sha from its own branch passed CI and then dangled the moment the
   // branch was squash-merged, which is precisely the defect this check
-  // exists to catch (round-2 cross-host review finding). Falling back to
-  // HEAD keeps the check usable in clones without a remote, and the base
-  // actually used is reported so a caller can tell which guarantee it got.
-  let reachabilityBase = 'HEAD';
+  // exists to catch (round-2 cross-host review finding).
+  //
+  // NO HEAD FALLBACK. An earlier version fell back to HEAD when neither
+  // integration ref existed, "to keep the check usable in clones without a
+  // remote", and reported the weaker base so a caller could notice. The
+  // CLI printed that note and still exited 0 — so in a feature-only clone
+  // the check went green on exactly the branch-local citation it exists to
+  // reject, which contradicts the guarantee AGENTS.md states
+  // (cross-host review finding). Fail closed instead: no integration
+  // branch means the question cannot be answered, not that the answer is
+  // yes.
+  let reachabilityBase = null;
   for (const candidate of ['origin/main', 'main']) {
     try {
       git(repoRoot, ['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]);
@@ -530,50 +720,53 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
       break;
     } catch { /* not present in this clone; try the next */ }
   }
-  const ancestorByPrefix = new Map();
-  for (const full of git(repoRoot, ['rev-list', reachabilityBase]).split('\n').filter(Boolean)) {
-    const prefix = full.slice(0, 7);
-    if (!ancestorByPrefix.has(prefix)) ancestorByPrefix.set(prefix, full);
+  if (reachabilityBase === null) {
+    return {
+      ran: false,
+      reason: 'neither origin/main nor main is present, so reachability from the integration branch cannot be judged',
+      findings: [], checked: 0, reachabilityBase: null, corpusFiles,
+    };
   }
+  // FULL commit identity, not a 7-character prefix. The reachable set is
+  // keyed by whole sha and each citation is resolved to its whole sha by
+  // git before the lookup, so the characters a citation writes past the
+  // seventh are compared rather than discarded. The prefix index this
+  // replaced had two defects that compounded: it truncated the citation
+  // to 7 characters, and it kept only the FIRST full sha per prefix, so
+  // even a prefix-aware comparison would have consulted an arbitrary
+  // member of a colliding pair. A full 40-character citation of an
+  // unreachable commit whose first 7 characters matched a reachable one
+  // therefore passed. No natural fixture exists — this repository has 0
+  // seven-character collisions across the 918 commits on all refs as of
+  // 2d6a667 — but a synthetic one is cheap and the test builds it: a
+  // birthday search over generated commit objects finds a colliding pair
+  // in ~26k objects and tens of milliseconds. An earlier revision of this
+  // comment called that infeasible by citing 16^7, which is the cost of
+  // hitting a CHOSEN prefix, not the cost of finding ANY collision.
+  const reachableCommits = new Set(git(repoRoot, ['rev-list', reachabilityBase]).split('\n').filter(Boolean));
 
   const objectType = new Map();
+  const resolvedSha = new Map();
   if (allShas.length > 0) {
     const batch = git(repoRoot, ['cat-file', '--batch-check'], `${allShas.join('\n')}\n`);
-    // Output is either "<full-sha> <type> <size>" or "<input> missing",
-    // one row per input in input order. Pair by index: the echoed name
-    // differs from the input for shas that resolved, so name-matching
-    // would silently drop every resolved sha.
+    // Output is "<full-sha> <type> <size>" for a resolved object, or
+    // "<input> missing" / "<input> ambiguous", one row per input in input
+    // order. Pair by index: the echoed name differs from the input for
+    // shas that resolved, so name-matching would silently drop every
+    // resolved sha.
     const rows = batch.split('\n').filter(Boolean);
     if (rows.length !== allShas.length) {
       throw new Error(`git cat-file --batch-check returned ${rows.length} rows for ${allShas.length} shas; refusing to pair them up`);
     }
     rows.forEach((line, i) => {
-      const type = line.split(' ')[1];
+      const [name, type] = line.split(' ');
       objectType.set(allShas[i], type === undefined ? 'missing' : type);
+      if (type === 'commit') resolvedSha.set(allShas[i], name);
     });
   }
 
-  // Fail closed: an unparseable or empty changelog silently disabled
-  // attribution entirely while still reporting ran:true and zero
-  // findings (round-4 cross-host review finding).
-  // The CURRENT version's section specifically must be present. Requiring
-  // only "some" sections let a single malformed `## 0.86.2` header drop
-  // that release's commits while older sections kept the guard satisfied,
-  // so a wrong attribution of one of those commits passed (round-5
-  // cross-host review finding).
-  const manifestVersion = JSON.parse(readFileSync(resolve(repoRoot, '.release-please-manifest.json'), 'utf8'))['plugins/runtime'];
-  if (releasedVersions.size === 0 || shaVersion.size === 0 || !releasedVersions.has(manifestVersion)) {
-    return {
-      ran: false,
-      reason: `${RUNTIME_CHANGELOG} is unusable: ${releasedVersions.size} version section(s), ${shaVersion.size} commit link(s), current version ${manifestVersion} ${releasedVersions.has(manifestVersion) ? 'present' : 'MISSING'}`,
-      findings: [], checked: 0, reachabilityBase,
-    };
-  }
-
   for (const { file, text } of documents) {
-    const flat = flatten(text);
-    for (const m of flat.matchAll(CITED_SHA)) {
-      const sha = m[1] ?? m[2];
+    for (const sha of extractCitedShas(text)) {
       checked += 1;
       const type = objectType.get(sha);
       if (type !== 'commit') {
@@ -583,16 +776,24 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
           sha,
           detail: type === 'missing' || type === undefined
             ? 'does not resolve to any object in this repository'
-            : `resolves to a ${type}, not a commit`,
+            // `cat-file --batch-check` answers "<input> ambiguous" rather
+            // than a type. No abbreviation in this repository is ambiguous
+            // today, but the collision fixture in the test suite produces
+            // one, so this branch is exercised rather than assumed —
+            // reporting it as "resolves to a undefined, not a commit"
+            // would send an author looking for the wrong problem.
+            : type === 'ambiguous'
+              ? 'is too short to name one object — git reports it as ambiguous'
+              : `resolves to a ${type}, not a commit`,
         });
         continue;
       }
       // Present in this clone but not in the branch's history: a
       // pre-squash branch commit whose branch was deleted, or an object
       // pulled in from a fork. Nobody else can resolve it, so citing it
-      // by backticked sha is a dangling reference even though it looks
-      // fine on the machine that wrote it.
-      if (!ancestorByPrefix.has(sha.slice(0, 7))) {
+      // by sha is a dangling reference even though it looks fine on the
+      // machine that wrote it.
+      if (!reachableCommits.has(resolvedSha.get(sha))) {
         findings.push({
           check: 'commit-sha',
           file,
@@ -604,7 +805,7 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
 
     }
   }
-  return { ran: true, reason: null, findings, checked, reachabilityBase };
+  return { ran: true, reason: null, findings, checked, reachabilityBase, corpusFiles };
 }
 
 /**
@@ -649,6 +850,10 @@ if (invokedAsCLI) {
         r.unverifiablePrNumbers ? `${r.unverifiablePrNumbers} PR number(s) not offline-verifiable (pre-squash-merge releases)` : null,
         r.dateChecked !== undefined ? `${r.dateChecked} id/date pair(s) incl. superseded` : null,
         r.unpairedTags ? `${r.unpairedTags} tag mention(s) not paired with a release PR` : null,
+        // Corpus size, so a discovery rule that silently stopped finding
+        // documents is visible in the report rather than only as a
+        // suspiciously round claim count.
+        r.corpusFiles ? `over ${r.corpusFiles.length} discovered file(s)` : null,
         r.reachabilityBase && r.reachabilityBase !== 'origin/main' ? `reachability base ${r.reachabilityBase} (weaker than origin/main)` : null,
         // The store reports how much of itself was actually verified. An
         // observed field whose doctor artifact is gone is `unverified`, and

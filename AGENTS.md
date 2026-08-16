@@ -272,8 +272,8 @@ checks what the freshness gate structurally cannot see: that the
 `(release PR, squash, tag)` triples cited in prose match real tags and
 release commits, that a record presented as current cites the newest
 proof run id whose citation phrase states a matching date, and that every
-cited commit sha — backticked or bare — resolves and is reachable from
-the integration branch. Checking which changelog version a sha *belongs*
+cited commit sha resolves and is reachable from the integration branch.
+Checking which changelog version a sha *belongs*
 to was attempted and removed: deciding that requires reading the
 sentence, not matching a pattern, and three attempts across three review
 rounds each failed in a different direction (host versions claiming
@@ -283,6 +283,33 @@ that remain compare identifiers, which is why they hold up; the date
 binding likewise uses a closed set of exact citation phrases rather than
 proximity, because measurement showed agreeing and disagreeing id/date
 distances interleave and no threshold separates them.
+
+**Those checks do not share a corpus, and the split is load-bearing.**
+The triple and proof-citation checks read claims about *releases*, which
+only the three stage docs make, so they run on an enumerated list —
+pointing them at `docs/adr/**` was measured to leave both at `checked: 0`,
+a vacuous pass, while degrading the triple check's coverage signal. The
+sha check reads *commit citations*, which any document can carry and which
+are decidable by identifier comparison alone, so it runs on a corpus
+**discovered** rather than enumerated: every markdown file under `docs/`
+plus the repository root, excluding generated changelogs. This is
+ADR-0052 §Decision 2's directory-not-a-file-list rule applied to the very
+array that ADR named as the repository's live instance of the failure.
+Two consequences worth knowing before editing prose:
+
+- **A commit sha anywhere in `docs/` or at the root is gated**, including
+  in ADRs and in superseded records — a citation does not stop needing to
+  resolve because the decision around it was revised. Draft and pre-squash
+  shas therefore still fail; cite the squash commit, not the branch commit
+  it replaced.
+- **Package docs (`plugins/**`, `companions/**`) are deliberately out of
+  scope**, and the reason is a measurement rather than tidiness: they
+  carry three citations across 171 files, two of which are a prose
+  position number, and admitting them would require an "all-decimal tokens
+  are not shas" rule — unsafe here, since 4 of the corpus's 442 real
+  citations are all-decimal and 35 of the repository's 918 commits have an
+  all-decimal 7-character abbreviation. A future widening has to solve
+  that first.
 Those checks need full git history plus tags and fail closed when it is
 absent, which is why `full-tests.yml` checks out with `fetch-depth: 0`.
 Cited proof run ids and dates are **never** rewritten by any script; see
