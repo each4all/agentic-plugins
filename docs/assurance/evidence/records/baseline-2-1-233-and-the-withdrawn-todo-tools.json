@@ -1,0 +1,124 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "baseline-2-1-233-and-the-withdrawn-todo-tools",
+  "evidence_loop": {
+    "label": "the named baseline follow-up, and the lap that found a defect instead of a rubber stamp",
+    "summary": "The 0.90.2 recovery recorded a proof against a baseline it chose not to refresh, and the owner amended its stop clause to open a named follow-up rather than halt. This is that follow-up, and its own start condition fired at once: planned against Claude 2.1.232, the re-measure found 2.1.233, so the target moved before the first edit. The owner retargeted and opened a separate subtask for the structural question. Retargeting proved load-bearing rather than tidy — 2.1.233 reverted two of 2.1.232's permission changes, so the planned version would have recorded two behaviors that no longer exist. Fourteen of eighteen prior refreshes had found no adoption work; this one broke that run. 2.1.233 withdrew the todo/task-tracking tools from current models while twenty command runbooks still instructed the agent to call them — observed live when /orchestrator:next issued that instruction into a session without the tools. A cross-host peer pass then corrected four judgments in the refresh itself, one of them after the first refutation of the peer was disproved by its own control."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.90.3",
+      "tag": "plugin-runtime-v0.90.3",
+      "release_pr": 699,
+      "squash": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "marketplace_sync": "e46256b1f3bcb7c452551447228b78e388152e49"
+    },
+    {
+      "package": "plugins/designer",
+      "version": "0.3.4",
+      "tag": "plugin-designer-v0.3.4",
+      "release_pr": 699,
+      "squash": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "marketplace_sync": "e46256b1f3bcb7c452551447228b78e388152e49"
+    },
+    {
+      "package": "plugins/engineer",
+      "version": "0.21.5",
+      "tag": "plugin-engineer-v0.21.5",
+      "release_pr": 699,
+      "squash": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "marketplace_sync": "e46256b1f3bcb7c452551447228b78e388152e49"
+    },
+    {
+      "package": "plugins/founder",
+      "version": "0.4.4",
+      "tag": "plugin-founder-v0.4.4",
+      "release_pr": 699,
+      "squash": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "marketplace_sync": "e46256b1f3bcb7c452551447228b78e388152e49"
+    },
+    {
+      "package": "plugins/orchestrator",
+      "version": "0.13.3",
+      "tag": "plugin-orchestrator-v0.13.3",
+      "release_pr": 699,
+      "squash": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "marketplace_sync": "e46256b1f3bcb7c452551447228b78e388152e49"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "2eea2b3dd95459d88dda915d4f39c4f2399e1eab",
+      "pr_attested": 698,
+      "note": "The refresh itself: header, Local CLI evidence, seven Parity Matrix rows, and the Version History row. Rebase-merged, so the subject carries no PR number — hence the attested field."
+    }
+  ],
+  "hardening_commits": [
+    {
+      "sha": "0cb184e5b0add96e6986be2da843d9bc97cb0c23",
+      "pr_attested": 698,
+      "note": "designer: six command runbooks lose the withdrawn-tool instruction."
+    },
+    {
+      "sha": "feeeafb20fa23acaf4aa7026a16385a6c344d31a",
+      "pr_attested": 698,
+      "note": "engineer: six command runbooks."
+    },
+    {
+      "sha": "e56392118a7b33addbffd16a83ce36779aa4f1a1",
+      "pr_attested": 698,
+      "note": "founder: six command runbooks."
+    },
+    {
+      "sha": "6abe4be44380702cd24e94a71d78311c971a5840",
+      "pr_attested": 698,
+      "note": "orchestrator: two command runbooks, plus the cross-plugin contract test that pins the twenty rewritten runbooks by name, sweeps every command/skill/agent-yaml/root-SKILL surface, and asserts the Parity Matrix prohibition rather than the presence of the opt-in token."
+    }
+  ],
+  "proofs": [
+    {
+      "run_id": "doctor-20260816T144610Z-154506",
+      "date": "2026-08-16",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:9a3f09a1c99d321c616ae5aef3af0c48dc6f453c940afbe966897e913e39a2ef",
+      "runtime_version": "0.90.3",
+      "installed": {
+        "claude": "installed/0.90.3",
+        "codex": "installed/0.90.3"
+      },
+      "host_cli": {
+        "claude": "2.1.233",
+        "codex": "0.147.0"
+      },
+      "readings": [
+        { "key": "overall", "value": "pass; hard_failures empty" },
+        { "key": "host_parity", "value": "pass" },
+        { "key": "host_parity_baseline", "value": "current — the staleness the 0.90.2 record carried is closed" },
+        { "key": "permission_proof", "value": "passed, both directions" },
+        { "key": "deep_peer_smoke", "value": "passed, both directions" },
+        { "key": "workflow_continuation_proof", "value": "passed, both directions" },
+        { "key": "experience_parity", "value": "partial 91% (6 satisfied, 2 partial, 0 blocked)" },
+        { "key": "plugin_management_followups", "value": "partial — Codex /hooks review required for designer, engineer, founder, orchestrator" },
+        { "key": "lifecycle_hook_continuity", "value": "partial — same operator action; ~/.codex/config.toml [hooks.state] is empty after the four persona bumps" },
+        { "key": "package_byte_identity", "value": "117 files, whole-tree digest 7cfbc4965451f2bdf11d246e67d46fbcacac78f64ebd9017dbaf457dee6523a8 identical in both host caches" },
+        { "key": "packaged_baseline_sha256", "value": "bdb6eeb7e5b343641905de877ac562057a7841f736c6cafd0ffa65f56fbc3285 in the Claude cache, the Codex cache and the repository alike" },
+        { "key": "post_install_compat", "value": "compat-20260816T144459Z-360191 status current, drift none" }
+      ]
+    }
+  ],
+  "install_method": "claude plugin marketplace update agentic-plugins, then claude plugin update <p>@agentic-plugins for all five; on Codex, codex plugin marketplace upgrade agentic-plugins carried all five without a per-plugin step. The marketplace update was kept, not dropped: 2.1.232's refresh-first change is scoped to the interactive /plugin install, not the non-slash update this ritual uses.",
+  "narrative": "Three things in this loop are worth more than the version bump. First, the start-of-work re-measure earned its place. The subtask required it and it fired, and retargeting from 2.1.232 to 2.1.233 was not cosmetic — 2.1.233 reverted two of 2.1.232's permission changes, so landing on the planned version would have written two nonexistent behaviors into a file whose whole purpose is to be true. Second, the refresh found real adoption work for the first time in fourteen rows. 2.1.233 withdrew the todo/task-tracking tools from current models, and twenty command runbooks across four personas still opened by instructing the agent to call them. That was not read out of a changelog: /orchestrator:next issued the instruction into the session doing this work, which had no such tool. The guard added for it pins the twenty runbooks by name with count and uniqueness asserted, requires the replacement in the $ARGUMENTS preamble rather than anywhere in the file, sweeps agent yaml and root-level SKILL.md as well as markdown, fails closed on any directory error but ENOENT, and asserts the prohibition rather than the presence of the opt-in token — the last of which fixed an assertion that had been weaker than its own failure message. Third, the cross-host peer pass corrected four judgments in the refresh, and the most instructive one is where the peer was doubted. Told that Codex carries an update_plan tracker, the first probe returned zero and looked like a refutation; the control refuted the probe instead, since plugin_hooks and recommended_plugins — both known present — also returned zero, because the resolved path was a 7 KB JS shim rather than the platform binary. Against the real binary the count is 43. A second self-correction followed the same shape: the mutation checking that the marker must live in the preamble appeared not to bite, and the fault was the mutation, which had replaced only the sentence's first line. Both are recorded because the lesson is the same one — an absence is evidence only when the control fires. The loop landed current, the first in three to do so, helped by a 42.8h quiet interval longer than any inter-patch gap in the window it refreshed across. What it does not close is the Codex hook attestation: all four hook-bearing persona packages bumped, [hooks.state] is empty, and both partials are that single operator action, deliberately not attested here on the operator's behalf.",
+  "relations": [
+    {
+      "type": "supersedes",
+      "record_id": "adr0051-p2-hardening-and-the-amended-stop-clause",
+      "note": "That loop's owner-amended stop clause opened this named follow-up; this record closes the staleness it recorded."
+    },
+    {
+      "type": "follows",
+      "record_id": "baseline-release-obligation-first-exercise",
+      "note": "The second baseline refresh to carry the ADR-0051 §Decision 2 release obligation, and the first of the two to land current."
+    }
+  ]
+}
