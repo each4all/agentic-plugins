@@ -7,7 +7,7 @@ argument-hint: --profile=usability|a11y|conversion|consistency | (default = all 
 
 $ARGUMENTS
 
-Use `TaskCreate` and `TaskUpdate` to track progress. The peer ensemble runs
+Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble runs
 automatically (Review point type) — never ask the user whether to invoke the
 peer, and never direct them to run companion CLIs manually. When the companions
 plugin or peer CLI is unavailable, the ensemble degrades silently to local-only.
