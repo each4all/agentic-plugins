@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.13.3](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.13.2...plugin-orchestrator-v0.13.3) (2026-08-16)
+
+
+### Bug Fixes
+
+* **plugin/orchestrator:** drop the withdrawn todo-tool dependency from command runbooks ([6abe4be](https://github.com/each4all/agentic-plugins/commit/6abe4be44380702cd24e94a71d78311c971a5840))
+
 ## [0.13.2](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.13.1...plugin-orchestrator-v0.13.2) (2026-08-08)
 
 

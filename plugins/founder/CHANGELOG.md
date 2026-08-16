@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.3...plugin-founder-v0.4.4) (2026-08-16)
+
+
+### Bug Fixes
+
+* **plugin/founder:** drop the withdrawn todo-tool dependency from command runbooks ([e563921](https://github.com/each4all/agentic-plugins/commit/e56392118a7b33addbffd16a83ce36779aa4f1a1))
+
 ## [0.4.3](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.2...plugin-founder-v0.4.3) (2026-08-08)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.3...plugin-designer-v0.3.4) (2026-08-16)
+
+
+### Bug Fixes
+
+* **plugin/designer:** drop the withdrawn todo-tool dependency from command runbooks ([0cb184e](https://github.com/each4all/agentic-plugins/commit/0cb184e5b0add96e6986be2da843d9bc97cb0c23))
+
 ## [0.3.3](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.2...plugin-designer-v0.3.3) (2026-08-08)
 
 
