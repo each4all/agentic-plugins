@@ -307,6 +307,18 @@ them. This ADR decides the policy; schema and code are a follow-up.**
       by exact string equality at `doctor.mjs:1987`, so this is a real choice
       with artifact-reading consequences), and the concrete code changes.
 
+      > **Resolved by [ADR-0054](0054-assurance-record-schema-and-rollout.md).**
+      > It settles all three, plus three questions this list treated as
+      > implementation detail and which turned out to be safety properties: where
+      > §Decision 11's floor lives, what §Decision 10's packaged comparator is,
+      > and by what mechanism §Decision 8's non-resurrection clause could hold.
+      > The doctor version does **not** bump — measured on the retained corpus, a
+      > bump makes every past artifact malformed while buying nothing the nested
+      > result version does not already provide. §Decision 8's mechanism is a
+      > release-history check rather than runtime-written state, because
+      > ADR-0052's checker proves byte promotion and not irreversible meaning;
+      > ADR-0054 also records the residual window that mechanism cannot close.
+
 **The failure mode this gate exists to prevent, stated so it cannot be traded
 away**: loosening the verdict risks missing a real contract change. Host
 surfaces this framework consumes — hooks, plugin manifest schema, permission
