@@ -170,10 +170,19 @@ against real version shapes it is unsuitable, but the first stated reason —
 that its strict `SEMVER_SHAPE_RE` rejects two-component versions like `2.1` —
 was wrong: `semverCompare` never calls `isSemVer` and pads missing components,
 so `semverCompare('2.1', '2.1.0')` is `0`. The reasons that hold are that it
-returns a *difference* rather than a sign (`99999999999999999999.0.0` against
-`2.1.233` yields `1e20`, with float precision collapsing distinct large
-versions), that it orders prerelease by presence only and never by identifier,
-and that `Number.parseInt(x, 10) || 0` silently maps unparseable text to `0`.
+returns a *difference* rather than a sign (a major component past
+`Number.MAX_SAFE_INTEGER` yields a magnitude around `1e20`, where float
+precision collapses distinct large versions), that it orders prerelease by
+presence only and never by identifier, and that `Number.parseInt(x, 10) || 0`
+silently maps unparseable text to `0`.
+
+That sentence originally carried the twenty-digit literal it describes, and the
+commit-sha gate correctly rejected it: an all-digit run of seven or more
+characters is indistinguishable from an abbreviated sha, and ADR-0052's scope
+note records why an "all-decimal tokens are not shas" exemption is unsafe here —
+four real citations in the corpus are all-decimal, and 35 of this repository's
+commits have an all-decimal seven-character abbreviation. The prose was the
+defect, not the gate.
 
 The same measurement produced the direction table this decision packages, and
 one result that was not expected:
