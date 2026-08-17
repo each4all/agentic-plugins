@@ -543,8 +543,13 @@ Four rules govern it, and none of them is a formatting preference:
 
 **Grammar.** Exactly one sentinel-delimited ` ```json ` fence appears below.
 Its content must be the **canonical serialization** of a
-`runtime-host-assurance-1.0` record — the key order the packaged schema
-declares, two-space indent, trailing newline. That is not tidiness: `JSON.parse`
+`runtime-host-assurance-1.0` record — two-space indent, trailing newline, and
+the key order the packaged schema derives. That order has two halves, and the
+second one is the easy mistake: keys the schema **names** appear in the order
+the schema declares them, while a dynamic map's keys — `packages`, whose entries
+the schema matches by pattern rather than by name — are **sorted**. So
+`attention` precedes `runtime` there regardless of which mattered more to the
+reviewer. That is not tidiness: `JSON.parse`
 resolves a duplicate key last-wins and says nothing, so a block whose bytes read
 `revoked` to a human could parse as `granted`. Requiring the bytes to equal the
 re-serialization of what they parsed to makes the shadowed member visible. The

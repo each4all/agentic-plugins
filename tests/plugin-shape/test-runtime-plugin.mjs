@@ -882,12 +882,33 @@ describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
       'data/schemas/runtime-session-entry-1.0.json',
       'data/schemas/runtime-session-note-1.0.json',
       'data/schemas/runtime-entry-brief-1.0.json',
+      // ADR-0053 §Decision 2 / ADR-0054 §Decision 2 — the host compatibility
+      // assurance record's structural schema, named by prose in
+      // docs/host-parity-baseline.md § Compatibility Assurance and therefore
+      // subject to the same cited-but-not-shipped drift this list closes.
+      'data/schemas/runtime-host-assurance-1.0.json',
     ]) {
       const schema = await readJSON(resolve(PLUGIN_ROOT, file));
       strictEqual(schema.additionalProperties, false, `${file} follows the closed-schema rule`);
       ok(Array.isArray(schema.required) && schema.required.includes('schema'), `${file} requires its schema id`);
     }
   });
+
+  // JUDGED HERE rather than deferred, because a later subtask that wanted a
+  // different document shape would have to touch a PROTECTED asset a second
+  // time (ADR-0052 release obligation).
+  //
+  // The assurance section gets NO prose-token assertion in this file, and that
+  // is deliberate. A `baseline.includes('## Compatibility Assurance')` check
+  // has the failure mode this file has already been bitten by twice: it is
+  // satisfiable by any sentence that happens to contain the phrase, and it
+  // says nothing about whether the record inside the section still parses. The
+  // real consistency — exactly one sentinel pair, a canonical block, a schema
+  // version the shipped reader accepts — is pinned BEHAVIOURALLY against the
+  // shipped bytes in tests/runtime/test-host-assurance-record.mjs, which fails
+  // if any of those drift. What is asserted here instead is the one fact that
+  // test cannot reach: that the schema file the section's prose names is
+  // actually packaged, in the same shape as its siblings.
 });
 
 describe('plugins/runtime repo documentation freshness', () => {
