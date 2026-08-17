@@ -21,6 +21,7 @@ import { test, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +30,7 @@ import {
   BASELINE_PATH,
   TAG_PREFIX,
   grantsAt,
+  main,
   parseSemver,
   reachableRuntimeTags,
   run,
@@ -187,18 +189,46 @@ describe('no disappearance — a removed grant leaves no tombstone (ADR-0054 §D
     assert.deepEqual(kinds(result), ['disappeared']);
   });
 
-  it('deleted at one release and restored at the next is still caught', async (t) => {
-    // Why every historical observation is compared against the TARGET rather
-    // than against its neighbour: a neighbour-wise check sees v0.92.0 -> HEAD as
-    // clean and misses that the record was gone in between with different
-    // content when it came back.
+  it('deleted at one release and restored EDITED reports both the gap and the edit', async (t) => {
     const dir = makeRepo(t);
     release(dir, { grants: [grant()], version: '0.91.0' });
     release(dir, { grants: [], version: '0.92.0', message: 'drop' });
     release(dir, { grants: [grant({ cohort: [{ claude: '2.1.240', codex: '0.147.0' }] })], message: 'restore, edited' });
     const result = await run({ repoRoot: dir });
     assert.equal(result.ok, false);
+    assert.deepEqual(kinds(result), ['disappeared', 'mutated']);
+  });
+
+  it('deleted at one release and restored UNCHANGED is still a violation', async (t) => {
+    // Cross-host review's first laundering case, and the one the original
+    // target-only comparison was structurally unable to see: nothing about HEAD
+    // is wrong, so only walking the sequence finds the release in which the
+    // record was gone. v0.92.0 is out in the world and a machine on it reads a
+    // record that does not carry this grant.
+    const dir = makeRepo(t);
+    release(dir, { grants: [grant()], version: '0.91.0' });
+    release(dir, { grants: [], version: '0.92.0', message: 'drop' });
+    release(dir, { grants: [grant()], version: '0.93.0', message: 'restore, unchanged' });
+    release(dir, { grants: [grant()], message: 'carry forward' });
+    const result = await run({ repoRoot: dir });
+    assert.equal(result.ok, false, 'a shipped gap is not erased by putting the record back');
+    assert.deepEqual(kinds(result), ['disappeared']);
+    assert.match(result.violations[0].detail, /absent at plugin-runtime-v0\.92\.0/);
+  });
+
+  it('an edit REVERTED before HEAD is still a violation', async (t) => {
+    // The mirror of the case above, and cross-host review's second: X -> Y -> X.
+    // A target-only comparison sees HEAD agreeing with v0.91.0 and reports clean,
+    // while v0.92.0 shipped a different reviewed cohort under the same id.
+    const dir = makeRepo(t);
+    release(dir, { grants: [grant()], version: '0.91.0' });
+    release(dir, { grants: [grant({ cohort: [{ claude: '2.1.240', codex: '0.147.0' }] })], version: '0.92.0', message: 'edit the cohort' });
+    release(dir, { grants: [grant()], version: '0.93.0', message: 'revert the edit' });
+    release(dir, { grants: [grant()], message: 'carry forward' });
+    const result = await run({ repoRoot: dir });
+    assert.equal(result.ok, false, 'a shipped mutation is not erased by reverting it');
     assert.deepEqual(kinds(result), ['mutated']);
+    assert.match(result.violations[0].detail, /differs at plugin-runtime-v0\.92\.0/);
   });
 
   it('CONTROL: a NEW grant id added at HEAD is not a violation', async (t) => {
@@ -419,29 +449,95 @@ describe('fail-closed on what it cannot read', () => {
     assert.equal(state.status, 'no-baseline');
     assert.deepEqual(state.grants, []);
   });
+
+  it('a record with DUPLICATE grant ids is refused, not certified', async (t) => {
+    // Cross-host review measured the gate certifying `[A, A]` as monotonic with
+    // grants_tracked=1 and target_grants=2 — two counts silently disagreeing
+    // because one map was first-wins and the other last-wins. Monotonicity is
+    // keyed by id, so a record with two of one id cannot be reasoned about.
+    const dir = makeRepo(t);
+    release(dir, { grants: [grant(), grant()], version: '0.91.0' });
+    release(dir, { grants: [grant()], message: 'dedupe' });
+    await assert.rejects(() => run({ repoRoot: dir }), /duplicate grant id\(s\) "host-pair-2026-08-16"/);
+  });
+
+  it('NO reachable release tags is indeterminate — the strongest verdict needs evidence', async (t) => {
+    // A full clone whose tags were never fetched. The shallow-clone guard does not
+    // catch it, and reporting `monotonic` from zero history is how a gate stops
+    // meaning anything. Cross-host review named the remaining authority gap.
+    const dir = makeRepo(t);
+    release(dir, { grants: [grant()], message: 'a record, but no release tag' });
+    const result = await run({ repoRoot: dir });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'indeterminate');
+    assert.equal(result.reason, 'no_release_tags');
+    // CONTROL: one tag is enough to make the same tree determinate, so the
+    // assertion above is about the missing tags and not about the fixture.
+    git(dir, ['tag', `${TAG_PREFIX}0.91.0`]);
+    assert.equal((await run({ repoRoot: dir })).status, 'monotonic');
+  });
 });
 
 describe('the CLI surface', () => {
-  it('exits non-zero and names the remedy on a violation', async (t) => {
+  it('returns exit code 1 and names the remedy on a violation', async (t) => {
+    // REWRITTEN after cross-host review found the exact mutation this file did
+    // not catch: deleting `process.exit(1)` left all 30 tests green. The previous
+    // version built a violating fixture and then invoked the CLEAN real
+    // repository, so it asserted exit 0 — it exercised the success path twice and
+    // the failure path never. `main()` is injectable precisely so the failing
+    // path can be driven against the fixture that actually violates.
     const dir = makeRepo(t);
     release(dir, { grants: [grant()], version: '0.91.0' });
-    release(dir, { grants: [], message: 'drop' });
-    // The script resolves its repo root from its OWN location, so the fixture is
-    // driven through `run()` for the verdict and through the CLI only for the
-    // exit-code and message contract, against the real repository.
-    let code = 0;
-    let stdout = '';
-    try {
-      stdout = execFileSync('node', [path.join(REPO_ROOT, 'scripts', 'check-assurance-monotonicity.mjs')], { encoding: 'utf8' });
-    } catch (err) {
-      code = err.status;
-    }
-    assert.equal(code, 0, 'the real repository passes');
-    assert.match(stdout, /✓ assurance-monotonicity: monotonic at HEAD/);
-    // The corpus size is PRINTED, so a vacuous green is visible to whoever reads
-    // CI output rather than looking like coverage it does not have.
-    assert.match(stdout, /tags_with_record=\d+/);
-    assert.match(stdout, /grants_tracked=\d+/);
+    release(dir, { grants: [], message: 'drop the grant' });
+    const out = [];
+    const errs = [];
+    const code = await main({ repoRoot: dir, log: (line) => out.push(line), logError: (line) => errs.push(line) });
+    assert.equal(code, 1, 'a violation must exit non-zero');
+    assert.deepEqual(out, [], 'nothing is written to stdout on failure');
+    const text = errs.join('\n');
+    assert.match(text, /✗ assurance-monotonicity: 1 violation\(s\)/);
+    assert.match(text, /\[disappeared\] grant "host-pair-2026-08-16"/);
+    assert.match(text, /reapproval_of.*Released meaning is not editable/s, 'the remedy names the only legitimate path');
+  });
+
+  it('returns exit code 1 on an indeterminate verdict, not a pass', async (t) => {
+    const dir = makeRepo(t);
+    release(dir, { grants: [grant()], message: 'no release tag' });
+    const errs = [];
+    const code = await main({ repoRoot: dir, log: () => {}, logError: (line) => errs.push(line) });
+    assert.equal(code, 1);
+    assert.match(errs.join('\n'), /no_release_tags/);
+  });
+
+  it('returns exit code 1 when the record cannot be read, rather than throwing', async (t) => {
+    const dir = makeRepo(t);
+    release(dir, { text: `${HEADER}\n${ASSURANCE_BEGIN_SENTINEL}\nnot a fence\n${ASSURANCE_END_SENTINEL}\n`, version: '0.91.0' });
+    release(dir, { grants: [grant()], message: 'fix it' });
+    const errs = [];
+    const code = await main({ repoRoot: dir, log: () => {}, logError: (line) => errs.push(line) });
+    assert.equal(code, 1);
+    assert.match(errs.join('\n'), /reads "unparseable"/);
+  });
+
+  it('returns exit code 0 on the real repository, and PRINTS the corpus size', async () => {
+    const out = [];
+    const code = await main({ repoRoot: REPO_ROOT, log: (line) => out.push(line), logError: (line) => out.push(line) });
+    assert.equal(code, 0, `the real repository passes (got: ${out.join(' | ')})`);
+    const text = out.join('\n');
+    assert.match(text, /✓ assurance-monotonicity: monotonic at HEAD/);
+    // The corpus size is printed, so today's vacuous green is visible to whoever
+    // reads CI output rather than looking like coverage it does not have.
+    assert.match(text, /tags_with_record=\d+/);
+    assert.match(text, /grants_tracked=\d+/);
+  });
+
+  it('the executable entry point is wired to main’s exit code (structural)', async () => {
+    // `main()` above is driven directly, so the one thing left untested by
+    // behaviour is that the CLI block actually uses its return value. Structural,
+    // because a subprocess run against the clean repository can only ever observe
+    // exit 0 and would not notice the wiring being dropped.
+    const source = await readFile(path.join(REPO_ROOT, 'scripts', 'check-assurance-monotonicity.mjs'), 'utf8');
+    assert.match(source, /process\.exit\(await main\(\{ repoRoot, ref: refArg \?\? 'HEAD' \}\)\)/);
   });
 
   it('is wired as an npm script so it is runnable the way the other gates are', async () => {

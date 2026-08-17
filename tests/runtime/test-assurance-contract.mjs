@@ -65,11 +65,19 @@ function record({ grant = {}, grants = null, top = {} } = {}) {
   return { schema: ASSURANCE_SCHEMA_VERSION, grants: grants ?? [{ ...base, ...grant }], ...top };
 }
 
-/** Installed facts that satisfy `record()`'s package bindings on both hosts. */
-function observed({ claude = {}, codex = {}, codexStatus = 'available' } = {}) {
+/**
+ * Installed facts that satisfy `record()`'s package bindings on both hosts.
+ *
+ * `claudeListStatus` is passed explicitly and is REQUIRED by `observePackages`:
+ * `parseClaudePluginList` parses whatever stdout it is handed, success or not, so
+ * the probe status is the only thing that distinguishes a clean list from a
+ * failed command that printed partial text.
+ */
+function observed({ claude = {}, codex = {}, codexStatus = 'available', claudeStatus = 'available' } = {}) {
   const claudeRow = (name, version) => ({ name, marketplace: 'agentic-plugins', version, scope: 'user', status: 'enabled', error: null, observations: 1, ambiguous: false });
   const codexRow = (name, version) => ({ name, marketplace: 'agentic-plugins', version, installed: true, enabled: true, status: 'enabled', error: null, observations: 1, ambiguous: false });
   return observePackages({
+    claudeListStatus: claudeStatus,
     claudePluginList: {
       attention: claudeRow('attention', '0.9.0'),
       runtime: claudeRow('runtime', '0.90.3'),
@@ -405,8 +413,9 @@ describe('package binding and its three invalidations (ADR-0053 §Decision 8)', 
 
   it('an ABSENT package invalidates', () => {
     const withoutRuntime = observePackages({
+      claudeListStatus: 'available',
       claudePluginList: { attention: { name: 'attention', version: '0.9.0', status: 'enabled', observations: 1, ambiguous: false } },
-      codexPluginList: observed().codex.packages ? { status: 'available', entries: { attention: { name: 'attention', version: '0.9.0', status: 'enabled', enabled: true, observations: 1, ambiguous: false } }, warnings: [] } : null,
+      codexPluginList: { status: 'available', entries: { attention: { name: 'attention', version: '0.9.0', status: 'enabled', enabled: true, observations: 1, ambiguous: false } }, warnings: [] },
     });
     const result = matchAssurance({ record: record(), hosts: HOSTS, observed: withoutRuntime, pluginSet: PLUGIN_SET, today: TODAY });
     strictEqual(result.state, 'unassured');
@@ -418,6 +427,7 @@ describe('package binding and its three invalidations (ADR-0053 §Decision 8)', 
     // counts a disabled Codex install toward `available`. This is that rule
     // made observable: the same install, disabled, must not cover.
     const disabled = observePackages({
+      claudeListStatus: 'available',
       claudePluginList: {
         attention: { name: 'attention', version: '0.9.0', status: 'enabled', observations: 1, ambiguous: false },
         runtime: { name: 'runtime', version: '0.90.3', status: 'enabled', observations: 1, ambiguous: false },
@@ -466,11 +476,26 @@ describe('package binding and its three invalidations (ADR-0053 §Decision 8)', 
       Object.values(PLUGIN_SET.plugins).every((entry) => entry.hosts.length === 2),
       'precondition: every shipped entry is dual-host, so the single-host path needs a fixture',
     );
+    // The fixture is narrowed CONSISTENTLY, and the first draft was not: setting
+    // `hosts: ['claude']` alone leaves `soft_requires: [{ name: 'runtime', hosts:
+    // ['claude','codex'] }]`, which `validatePluginSet` rejects ("requires on host
+    // codex that attention does not target"). That rejection is the plugin-set
+    // validation earning its new place in the matcher — the malformed fixture
+    // produced `unassured`, not a false positive.
     const claudeOnly = {
       ...PLUGIN_SET,
-      plugins: { ...PLUGIN_SET.plugins, attention: { ...PLUGIN_SET.plugins.attention, hosts: ['claude'] } },
+      plugins: {
+        ...PLUGIN_SET.plugins,
+        attention: {
+          ...PLUGIN_SET.plugins.attention,
+          hosts: ['claude'],
+          soft_requires: PLUGIN_SET.plugins.attention.soft_requires.map((edge) => ({ ...edge, hosts: edge.hosts.filter((host) => host === 'claude') })),
+        },
+      },
     };
+    deepStrictEqual(validatePluginSet(claudeOnly).errors, [], 'precondition: the narrowed fixture is a VALID plugin set');
     const codexMissingAttention = observePackages({
+      claudeListStatus: 'available',
       claudePluginList: {
         attention: { name: 'attention', version: '0.9.0', status: 'enabled', observations: 1, ambiguous: false },
         runtime: { name: 'runtime', version: '0.90.3', status: 'enabled', observations: 1, ambiguous: false },
@@ -681,14 +706,18 @@ describe('negative-wins (ADR-0053 §Decision 3)', () => {
     match(issuesIn(rec).join('\n'), /cannot predate what it re-approves/);
   });
 
-  it('a `granted` grant that something retires is a record error', () => {
+  it('superseding a grant that is still `granted` is a record error', () => {
+    // The reachable form of "this grant should have been retired". The rule that
+    // used to fire here ("has state granted but is retired by …") became
+    // unreachable once the edges were typed, and was removed rather than left as
+    // a guard that cannot fire.
     const rec = record({
       grants: [
         { ...record().grants[0], id: 'should-be-retired' },
         { ...record().grants[0], id: 'the-successor', supersedes: ['should-be-retired'], cohort: [{ claude: '2.1.999', codex: '0.147.0' }] },
       ],
     });
-    match(issuesIn(rec).join('\n'), /is retired by the-successor — mark it revoked or superseded/);
+    match(issuesIn(rec).join('\n'), /whose state is "granted" — mark the replaced grant "superseded"/);
   });
 
   it('a `superseded` grant with no successor is a revocation spelled wrong', () => {
@@ -819,6 +848,7 @@ describe('observePackages — list-authoritative, ambiguity preserved', () => {
 
   it('preserves Claude enablement as a TRISTATE', () => {
     const facts = observePackages({
+      claudeListStatus: 'available',
       claudePluginList: {
         good: { name: 'good', version: '1.0.0', status: 'enabled' },
         broken: { name: 'broken', version: '1.0.0', status: 'failed' },
@@ -831,7 +861,7 @@ describe('observePackages — list-authoritative, ambiguity preserved', () => {
   });
 
   it('reports a non-available Codex list as non-authoritative and carries the status', () => {
-    const facts = observePackages({ claudePluginList: {}, codexPluginList: { status: 'parse_error', entries: {} } });
+    const facts = observePackages({ claudeListStatus: 'available', claudePluginList: {}, codexPluginList: { status: 'parse_error', entries: {} } });
     strictEqual(facts.codex.authoritative, false);
     strictEqual(facts.codex.list_status, 'parse_error');
     deepStrictEqual(facts.codex.packages, {}, 'a non-authoritative list contributes no package facts');
@@ -839,9 +869,275 @@ describe('observePackages — list-authoritative, ambiguity preserved', () => {
 
   it('treats a Codex not_installed entry as absent', () => {
     const facts = observePackages({
+      claudeListStatus: 'available',
       claudePluginList: {},
       codexPluginList: { status: 'available', entries: { gone: { name: 'gone', version: null, status: 'not_installed', installed: false, enabled: null } } },
     });
     strictEqual(facts.codex.packages.gone.present, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The false-coverage paths found by adversarial review
+// ---------------------------------------------------------------------------
+//
+// Seven of these were reachable on the first version of this module. Two were
+// found in self-review and five by the cross-host peer, and every one produced a
+// literal `covered` — the single failure ADR-0053 exists to prevent. They are
+// grouped here rather than filed under the rule each belongs to, because what
+// they have in common is more instructive than what separates them: each was a
+// guard that existed and a second path around it.
+
+describe('closed false-coverage paths (adversarial review of the first version)', () => {
+  it('supersedes cannot launder a REVOCATION past the reapproval_of guard', () => {
+    // The worst of them. Both edge types went into one flat `retired` set, so
+    // naming a revoked grant in `supersedes` retired it — skipping every guard on
+    // the re-approval path (target must be revoked, date must not go backwards,
+    // at most one). ADR-0054 §Decision 8: a revoked grant "is never un-revoked,
+    // only replaced by a NEW id carrying reapproval_of".
+    const laundered = record({
+      grants: [
+        { ...record().grants[0], id: 'withdrawn-2026-08-10', state: 'revoked', reviewed_at: '2026-08-10' },
+        { ...record().grants[0], id: 'launderer-2026-08-16', supersedes: ['withdrawn-2026-08-10'] },
+      ],
+    });
+    match(issuesIn(laundered).join('\n'), /which is REVOKED — supersession never un-revokes/);
+    const result = matchIt(laundered);
+    strictEqual(result.state, 'unassured', 'a revocation is not retired by supersession');
+    // The REASON is the coherence gate, not negative-wins, and that is worth
+    // pinning rather than glossing: `matchAssurance` validates first, so a record
+    // carrying this edge never reaches the retirement logic at all. The typed-edge
+    // rule is what refuses it, and the message an author gets says so.
+    match(result.reasons.join('\n'), /the assurance record is not coherent/);
+    match(result.record_issues.join('\n'), /supersession never un-revokes/);
+    // CONTROL: the SAME pair with the correct edge type covers, so this is about
+    // the edge type and not about the fixture being unmatchable.
+    const proper = record({
+      grants: [
+        { ...record().grants[0], id: 'withdrawn-2026-08-10', state: 'revoked', reviewed_at: '2026-08-10' },
+        { ...record().grants[0], id: 'reapproved-2026-08-16', reapproval_of: 'withdrawn-2026-08-10' },
+      ],
+    });
+    deepStrictEqual(issuesIn(proper), []);
+    strictEqual(matchIt(proper).state, 'covered');
+  });
+
+  it('the retirement closure re-applies the edge rules (structural, and stated as UNREACHABLE)', async () => {
+    // Honest bookkeeping. `retirementClosure` checks the target's state before
+    // retiring it, which is belt-and-braces: `matchAssurance` validates the record
+    // first, so no `supersedes → revoked` edge can reach the closure and NO test
+    // can drive that branch. Rather than write a case that appears to cover it,
+    // the redundancy is asserted structurally and labelled — a guard that cannot
+    // fire must not be mistaken for one that is tested.
+    //
+    // It is kept rather than deleted because it is the second guard on the path
+    // that produced the worst defect adversarial review found, and because a
+    // future reordering of the validate-then-match sequence would make it
+    // load-bearing. The unreachable `granted`-is-retired branch was deleted on the
+    // opposite reasoning: nothing would ever make it reachable.
+    const source = await readFile(join(RUNTIME_ROOT, 'scripts', 'lib', 'assurance-contract.mjs'), 'utf8');
+    const closure = source.slice(source.indexOf('function retirementClosure'));
+    match(closure.slice(0, 900), /candidate\.state !== 'superseded'/, 'supersession steps only through superseded targets');
+    match(closure.slice(0, 900), /\?\.state === 'revoked'/, 'reapproval retires only a revoked target');
+  });
+
+  it('an UNKNOWN narrowing predicate key blocks — §Decision 3 via the semantic door', () => {
+    // ADR-0054 §Decision 3 pins the schema version exactly so a newer minor's
+    // narrowing key cannot be read as absent, and names an EXPIRY as the example.
+    // Enumerating only the three known keys reintroduced exactly that failure one
+    // layer down: `predicate: { expires_at }` was ignored and the grant covered.
+    for (const predicate of [{ expires_at: '2026-08-01' }, { safe_mode: true }, { session_cap: 5 }]) {
+      const scoped = record({ grant: { predicate } });
+      const key = Object.keys(predicate)[0];
+      match(issuesIn(scoped).join('\n'), new RegExp(`unrecognised key "${key}"`));
+      const result = matchIt(scoped);
+      strictEqual(result.state, 'unassured', `predicate.${key} must block`);
+      // As with the laundering case: the record is refused for incoherence, and
+      // the issue names the key. The matcher carries its own unknown-key branch
+      // too, but validate-then-match makes the validator's message the one an
+      // author sees — so that is the one asserted.
+      match(result.record_issues.join('\n'), new RegExp(`unrecognised key "${key}"`));
+    }
+  });
+
+  it('a non-object predicate blocks — an unreadable scope is not an absent one', () => {
+    for (const predicate of [['models'], 'models', 42]) {
+      const scoped = record({ grant: { predicate } });
+      match(issuesIn(scoped).join('\n'), /must be an object when present/);
+      strictEqual(matchIt(scoped).state, 'unassured');
+    }
+  });
+
+  it('a CONSUMED residual must name a consuming package, and it must be BOUND', () => {
+    // The reviewer's own record said `attention` consumes the surface while
+    // `packages` bound only `runtime`, so nothing ever checked attention's
+    // version — ADR-0053 §Decision 8 binds assurance to the code reviewed, and
+    // the record named that code.
+    const unbound = record({
+      grant: {
+        packages: { runtime: '0.90.3' },
+        residuals: [{ surface: 'Notification hook payload', consumption: 'consumed', disposition: 'probe-pending', consuming_package: 'attention' }],
+      },
+    });
+    match(issuesIn(unbound).join('\n'), /which grants\[0\]\.packages does not bind/);
+    strictEqual(matchIt(unbound).state, 'unassured');
+
+    const unnamed = record({
+      grant: { residuals: [{ surface: 'Notification hook payload', consumption: 'consumed', disposition: 'probe-pending' }] },
+    });
+    match(issuesIn(unnamed).join('\n'), /is consumed but names no consuming_package/);
+
+    // CONTROL: bound and named passes, and the binding is then enforced — the
+    // same grant fails once attention's observed version moves.
+    const bound = record({
+      grant: {
+        packages: { attention: '0.9.0', runtime: '0.90.3' },
+        residuals: [{ surface: 'Notification hook payload', consumption: 'consumed', disposition: 'probe-pending', consuming_package: 'attention' }],
+      },
+    });
+    deepStrictEqual(issuesIn(bound), []);
+    strictEqual(matchIt(bound).state, 'covered');
+    strictEqual(
+      matchAssurance({
+        record: bound, hosts: HOSTS, pluginSet: PLUGIN_SET, today: TODAY,
+        observed: observed({ claude: { attention: { name: 'attention', version: '0.9.1', status: 'enabled', observations: 1, ambiguous: false } } }),
+      }).state,
+      'unassured',
+      'the newly-bound package is actually checked',
+    );
+  });
+
+  it('a FAILED Claude list is not authoritative — parsing ran regardless of exit status', () => {
+    // The producer asymmetry: `parseCodexPluginList` carries a status because it
+    // parses a JSON envelope, while `parseClaudePluginList` is handed stdout
+    // whether or not the command succeeded. A failed `claude plugin list` that
+    // printed partial text produced entries indistinguishable from a clean probe's.
+    for (const claudeStatus of ['unknown', 'unavailable', 'failed', null]) {
+      const result = matchAssurance({
+        record: record(), hosts: HOSTS, pluginSet: PLUGIN_SET, today: TODAY,
+        observed: observed({ claudeStatus }),
+      });
+      strictEqual(result.state, 'unassured', `claude list status ${String(claudeStatus)} must not be authoritative`);
+      match(result.reasons.join('\n'), /claude: the installed-plugin list is not authoritative/);
+    }
+    // OMITTING the key is the same as a failed probe, which is why the parameter
+    // has no permissive default. (`undefined` cannot be tested through the
+    // fixture helper — a destructuring default swallows it — so it is driven
+    // against `observePackages` directly.)
+    strictEqual(
+      observePackages({ claudePluginList: { runtime: { name: 'runtime', version: '0.90.3', status: 'enabled' } } }).claude.authoritative,
+      false,
+      'no status supplied is not authoritative',
+    );
+    // CONTROL: the same entries WITH an available status cover, so this is about
+    // the status and not about the entries.
+    strictEqual(matchIt(record()).state, 'covered');
+  });
+
+  it('a MALFORMED plugin set blocks instead of making the package check vacuous', () => {
+    // `hosts: ['not-a-host']` filtered to `[]`, `evaluatePackages` then ran zero
+    // host checks, and an empty loop reported the binding satisfied.
+    const bogus = {
+      ...PLUGIN_SET,
+      plugins: { ...PLUGIN_SET.plugins, runtime: { ...PLUGIN_SET.plugins.runtime, hosts: ['not-a-host'] } },
+    };
+    const result = matchAssurance({ record: record(), hosts: HOSTS, observed: observed(), pluginSet: bogus, today: TODAY });
+    strictEqual(result.state, 'unassured');
+    match(result.reasons.join('\n'), /the supplied plugin set is not valid/);
+    ok(result.plugin_set_errors.length > 0, 'the underlying errors travel with the verdict');
+  });
+
+  it('a grant with no review PROVENANCE covers nothing', () => {
+    // The schema requires it; the semantic layer did not, so a matcher call that
+    // skipped structural validation reached `covered` on a grant nobody can be
+    // shown to have made.
+    for (const provenance of [undefined, {}, { kind: 'adr' }, { kind: 'adr', reference: '  ' }]) {
+      const rec = { schema: ASSURANCE_SCHEMA_VERSION, grants: [{ ...record().grants[0], review_provenance: provenance }] };
+      match(issuesIn(rec).join('\n'), /review_provenance must name the kind and reference/);
+      strictEqual(matchIt(rec).state, 'unassured');
+    }
+  });
+
+  it('absent `residuals` is refused — an empty array says "none", absence says nothing', () => {
+    const rec = { schema: ASSURANCE_SCHEMA_VERSION, grants: [{ ...record().grants[0], residuals: undefined }] };
+    match(issuesIn(rec).join('\n'), /residuals must be an array/);
+    strictEqual(matchIt(rec).state, 'unassured');
+  });
+});
+
+describe('supersession is a graph, not a single edge', () => {
+  it('a natural CHAIN covers — direct-edge-only called a correct record a contradiction', () => {
+    // C replaces B replaces A is how a third review gets authored. A direct-edge
+    // rule reported it as `granted` + `superseded` over one cohort, telling the
+    // author to fix a record that was already right.
+    const chain = record({
+      grants: [
+        { ...record().grants[0], id: 'gen1-2026-08-01', state: 'superseded', reviewed_at: '2026-08-01' },
+        { ...record().grants[0], id: 'gen2-2026-08-08', state: 'superseded', reviewed_at: '2026-08-08', supersedes: ['gen1-2026-08-01'] },
+        { ...record().grants[0], id: 'gen3-2026-08-16', reviewed_at: '2026-08-16', supersedes: ['gen2-2026-08-08'] },
+      ],
+    });
+    deepStrictEqual(issuesIn(chain), [], 'a chain of replacements is coherent');
+    const result = matchIt(chain);
+    strictEqual(result.state, 'covered');
+    strictEqual(result.grant_id, 'gen3-2026-08-16', 'the live generation is the one that covers');
+  });
+
+  it('but a chain whose ROOT is a revocation does not cover', () => {
+    // The chain must not become a second route around the reapproval guard: the
+    // walk only steps through `superseded` targets.
+    const rec = record({
+      grants: [
+        { ...record().grants[0], id: 'withdrawn', state: 'revoked', reviewed_at: '2026-08-01' },
+        { ...record().grants[0], id: 'mid', state: 'superseded', reviewed_at: '2026-08-08', supersedes: ['withdrawn'] },
+        { ...record().grants[0], id: 'live', reviewed_at: '2026-08-16', supersedes: ['mid'] },
+      ],
+    });
+    match(issuesIn(rec).join('\n'), /which is REVOKED — supersession never un-revokes/);
+    strictEqual(matchIt(rec).state, 'unassured');
+  });
+
+  it('a supersession CYCLE is refused and does not hang the walk', () => {
+    const cycle = record({
+      grants: [
+        { ...record().grants[0], id: 'ping', state: 'superseded', supersedes: ['pong'] },
+        { ...record().grants[0], id: 'pong', state: 'superseded', supersedes: ['ping'] },
+      ],
+    });
+    match(issuesIn(cycle).join('\n'), /contains a cycle through grant/);
+    strictEqual(matchIt(cycle).state, 'unassured');
+  });
+
+  it('a replacement cannot predate what it replaces', () => {
+    const backdated = record({
+      grants: [
+        { ...record().grants[0], id: 'newer-review', state: 'superseded', reviewed_at: '2026-08-16' },
+        { ...record().grants[0], id: 'older-successor', reviewed_at: '2026-08-01', supersedes: ['newer-review'] },
+      ],
+    });
+    match(issuesIn(backdated).join('\n'), /supersedes "newer-review" but was reviewed earlier/);
+  });
+
+  it('one grant cannot both supersede and re-approve the same id', () => {
+    const both = record({
+      grants: [
+        { ...record().grants[0], id: 'target', state: 'revoked', reviewed_at: '2026-08-01' },
+        { ...record().grants[0], id: 'confused', supersedes: ['target'], reapproval_of: 'target' },
+      ],
+    });
+    match(issuesIn(both).join('\n'), /both supersedes and re-approves/);
+    strictEqual(matchIt(both).state, 'unassured');
+  });
+
+  it('a revocation is restored ONCE, by one successor', () => {
+    const twice = record({
+      grants: [
+        { ...record().grants[0], id: 'gone', state: 'revoked', reviewed_at: '2026-08-01' },
+        { ...record().grants[0], id: 'restore-a', reapproval_of: 'gone' },
+        { ...record().grants[0], id: 'restore-b', reapproval_of: 'gone' },
+      ],
+    });
+    match(issuesIn(twice).join('\n'), /is re-approved by 2 grants/);
+    strictEqual(matchIt(twice).state, 'unassured');
   });
 });

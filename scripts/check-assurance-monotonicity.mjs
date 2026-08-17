@@ -193,7 +193,35 @@ export function grantsAt(repoRoot, ref, { label = ref, schema }) {
     err.code = 'UNREADABLE_RECORD';
     throw err;
   }
-  return { ref, label, status: 'resolved', grants: parsed.record.grants ?? [] };
+  const grants = parsed.record.grants ?? [];
+  // DUPLICATE IDS fail closed here, because every structure below is keyed by id
+  // and cross-host review measured the consequence: `[A, A]` certified as
+  // monotonic with `grants_tracked=1` and `target_grants=2`, the two counts
+  // silently disagreeing because one map was first-wins and the other last-wins.
+  // The runtime matcher rejects such a record, so this was the semantic gate
+  // certifying something the runtime would refuse.
+  //
+  // Only THIS rule is applied, not the whole semantic contract. Running
+  // `assuranceRecordIssues` over released history would mean that any future
+  // tightening of a coherence rule retroactively condemns tags already shipped,
+  // with no remedy — the one class of red this repository treats as a dead end
+  // rather than a signal. Duplicate ids are different: they are not a policy
+  // judgement but a precondition for this gate to be able to reason at all.
+  const seen = new Set();
+  const duplicates = [];
+  for (const grant of grants) {
+    if (seen.has(grant?.id)) duplicates.push(grant.id);
+    seen.add(grant?.id);
+  }
+  if (duplicates.length > 0) {
+    const err = new Error(
+      `the assurance record at ${label} declares duplicate grant id(s) ${[...new Set(duplicates)].map((id) => `"${id}"`).join(', ')}`
+      + ' — monotonicity is keyed by id, so a record with two of one id cannot be checked',
+    );
+    err.code = 'DUPLICATE_GRANT_ID';
+    throw err;
+  }
+  return { ref, label, status: 'resolved', grants };
 }
 
 /**
@@ -205,67 +233,91 @@ export function grantsAt(repoRoot, ref, { label = ref, schema }) {
  */
 export function violations({ history, target }) {
   const found = [];
-  const targetById = new Map(target.grants.map((grant) => [grant.id, grant]));
 
-  // Oldest observation of each id wins the identity comparison, so a mutation
-  // is attributed to the release where the content first differed rather than
-  // to whichever tag happens to be newest.
-  const historical = new Map();
-  for (const state of history) {
+  // ONE TIMELINE PER ID, over history AND the target in order.
+  //
+  // The first version compared each historical observation against the TARGET
+  // only, and cross-host review measured two launderings that shape cannot see:
+  //
+  //   v1 [A] -> v2 [] -> v3 [A unchanged] -> HEAD [A unchanged]      => clean
+  //   v1 [A cohort X] -> v2 [A cohort Y] -> v3 [A cohort X] -> HEAD  => clean
+  //
+  // Both shipped a release in which the record's meaning was different, and both
+  // ended at a target that agrees with the start. A target-only comparison is
+  // structurally unable to report them, because nothing about HEAD is wrong.
+  // Walking the sequence is what makes "never disappears" and "contents are
+  // immutable" statements about HISTORY rather than about the current tree.
+  //
+  // ⚠ THE COST IS STATED: a violation in released history is not repairable by
+  // editing, so this gate stays red until the repository decides what to do about
+  // it. That is deliberate and it is the house posture — the doc-freshness gate
+  // documents the same thing ("that red is the honest signal, not a defect to
+  // automate away"). It is affordable here because the corpus starts EMPTY: no
+  // released tag carries a record, so nothing is inherited and every future entry
+  // arrives through a CI run that would have caught it.
+  const timelines = new Map();
+  const sequence = [...history, target];
+  for (const state of sequence) {
     for (const grant of state.grants) {
-      if (!historical.has(grant.id)) historical.set(grant.id, { grant, label: state.label });
-      const seen = historical.get(grant.id);
-      // A state that moved between two HISTORICAL releases still has to satisfy
-      // the transition rule; recording the most negative one seen makes the
-      // target comparison below catch an un-revocation that happened entirely
-      // in the past and was then carried forward.
-      const permitted = permittedFrom(seen.grant.state);
-      if (!permitted.includes(grant.state)) {
-        found.push({
-          kind: 'historical-transition',
-          id: grant.id,
-          detail: `state went "${seen.grant.state}" (${seen.label}) -> "${grant.state}" (${state.label}), which is not a permitted transition`,
-        });
-      }
-      if (grant.state !== seen.grant.state && permitted.includes(grant.state)) {
-        // `seen.identity_found ?? seen` rather than `seen`: terminal absorption
-        // makes a second legal transition impossible, so this chain is at most
-        // one link deep today — but pinning the ROOT rather than the previous
-        // link means widening the transition table later cannot silently start
-        // comparing content against an already-transitioned copy.
-        historical.set(grant.id, { grant, label: state.label, identity_from: seen.identity_from ?? seen });
-      }
+      if (!timelines.has(grant.id)) timelines.set(grant.id, []);
+      timelines.get(grant.id).push({ grant, label: state.label });
     }
   }
 
-  for (const [id, { grant: past, label, identity_from }] of historical) {
-    const current = targetById.get(id);
-    if (!current) {
+  const labelIndex = new Map(sequence.map((state, index) => [state.label, index]));
+  for (const [id, observations] of timelines) {
+    const first = observations[0];
+
+    // (1) ABSENCE between two presences. A grant that vanished for one release
+    // and came back is a release in which it was gone, whatever the target says.
+    const presentAt = new Set(observations.map((observation) => labelIndex.get(observation.label)));
+    const firstIndex = labelIndex.get(first.label);
+    const lastIndex = labelIndex.get(observations[observations.length - 1].label);
+    for (let index = firstIndex + 1; index <= lastIndex; index += 1) {
+      if (presentAt.has(index)) continue;
       found.push({
         kind: 'disappeared',
         id,
-        detail: `present at ${label} and absent at ${target.label} — removing a grant leaves no tombstone, and ADR-0054 §Decision 8 requires one`,
+        detail: `present at ${first.label} and absent at ${sequence[index].label} — removing a grant leaves no tombstone, and ADR-0054 §Decision 8 requires one`,
       });
-      continue;
+      break;
     }
-    if (!permittedFrom(past.state).includes(current.state)) {
+    // Absent from the TARGET is the same violation, reported with the target's
+    // name because that is the one an author can still fix.
+    if (lastIndex !== labelIndex.get(target.label)) {
       found.push({
-        kind: 'transition',
+        kind: 'disappeared',
         id,
-        detail: `state "${past.state}" at ${label} became "${current.state}" at ${target.label} — a terminal state absorbs, and nothing returns to granted`,
+        detail: `present at ${observations[observations.length - 1].label} and absent at ${target.label} — removing a grant leaves no tombstone, and ADR-0054 §Decision 8 requires one`,
       });
     }
-    // Compare against the EARLIEST observation's content when a legal state
-    // transition moved the tracked record, so a permitted `granted -> revoked`
-    // cannot smuggle a cohort edit in with it.
-    const identityBase = identity_from?.grant ?? past;
-    const identityLabel = identity_from?.label ?? label;
-    if (grantIdentity(identityBase) !== grantIdentity(current)) {
+
+    // (2) STATE TRANSITIONS, pairwise along the timeline.
+    for (let i = 1; i < observations.length; i += 1) {
+      const from = observations[i - 1];
+      const to = observations[i];
+      if (permittedFrom(from.grant.state).includes(to.grant.state)) continue;
+      found.push({
+        kind: labelIndex.get(to.label) === labelIndex.get(target.label) ? 'transition' : 'historical-transition',
+        id,
+        detail: `state went "${from.grant.state}" (${from.label}) -> "${to.grant.state}" (${to.label}) — a terminal state absorbs, and nothing returns to granted`,
+      });
+    }
+
+    // (3) CONTENT, every observation against the FIRST one. Anchoring on the
+    // first is what catches an edit that travelled with a legal state transition
+    // and was then carried forward — a neighbour-wise comparison sees the
+    // carry-forward as clean, and a target-only comparison sees a reverted edit
+    // as clean.
+    const baseline = grantIdentity(first.grant);
+    for (const observation of observations.slice(1)) {
+      if (grantIdentity(observation.grant) === baseline) continue;
       found.push({
         kind: 'mutated',
         id,
-        detail: `content other than \`state\` differs from ${identityLabel} — grant contents are immutable; a changed review is a NEW id carrying reapproval_of`,
+        detail: `content other than \`state\` differs at ${observation.label} from ${first.label} — grant contents are immutable; a changed review is a NEW id carrying reapproval_of`,
       });
+      break;
     }
   }
 
@@ -290,6 +342,22 @@ export async function run({ repoRoot, ref = 'HEAD' } = {}) {
 
   const schema = await loadSchema(ASSURANCE_SCHEMA_FAMILY, { pluginRoot: resolve(repoRoot, RUNTIME_PACKAGE) });
   const tags = reachableRuntimeTags(repoRoot, ref);
+  // ZERO reachable tags is INDETERMINATE, not monotonic. With no release history
+  // there is nothing to compare against, and reporting the strongest possible
+  // verdict from the weakest possible evidence is how a gate stops meaning
+  // anything. It also covers the case a shallow-clone check misses — a full clone
+  // whose tags were never fetched (`git fetch` without `--tags`) — which
+  // cross-host review named as the remaining authority gap.
+  if (tags.length === 0) {
+    return {
+      ok: false,
+      status: 'indeterminate',
+      reason: 'no_release_tags',
+      summary: `no reachable ${TAG_PREFIX}* tags from ${ref} — release history is this gate's only authority, and it cannot be read`,
+      ref,
+      tags_examined: 0,
+    };
+  }
   const history = [];
   for (const tag of tags) {
     history.push(grantsAt(repoRoot, tag.name, { label: tag.name, schema }));
@@ -312,34 +380,52 @@ export async function run({ repoRoot, ref = 'HEAD' } = {}) {
   };
 }
 
-const invokedAsCLI = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
-if (invokedAsCLI) {
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const refArg = process.argv.slice(2).find((arg) => !arg.startsWith('-'));
+/**
+ * The CLI body, RETURNING an exit code rather than calling `process.exit`.
+ *
+ * Extracted because cross-host review found the one mutation the tests did not
+ * catch: deleting the `process.exit(1)` left all 30 monotonicity tests green. The
+ * test that claimed to cover it built a violating fixture and then invoked the
+ * clean real repository, so it asserted exit 0 and proved nothing about the
+ * failing path. An injectable body is testable against a violating fixture; a
+ * bare top-level block is not.
+ *
+ * `log`/`logError` are injected for the same reason — the remedy text is part of
+ * the contract, and a test that cannot read it cannot check it.
+ */
+export async function main({ repoRoot, ref = 'HEAD', log = console.log, logError = console.error } = {}) {
   let result;
   try {
-    result = await run({ repoRoot, ref: refArg ?? 'HEAD' });
+    result = await run({ repoRoot, ref });
   } catch (err) {
-    console.error(`✗ assurance-monotonicity: ${err.message}`);
-    process.exit(1);
+    logError(`✗ assurance-monotonicity: ${err.message}`);
+    return 1;
   }
   if (!result.ok && result.status === 'indeterminate') {
-    console.error(`✗ assurance-monotonicity: ${result.reason}`);
-    console.error(`  ${result.summary}`);
-    process.exit(1);
+    logError(`✗ assurance-monotonicity: ${result.reason}`);
+    logError(`  ${result.summary}`);
+    return 1;
   }
   if (!result.ok) {
-    console.error(`✗ assurance-monotonicity: ${result.violations.length} violation(s) at ${result.ref}`);
+    logError(`✗ assurance-monotonicity: ${result.violations.length} violation(s) at ${result.ref}`);
     for (const violation of result.violations) {
-      console.error(`  · [${violation.kind}] grant "${violation.id}": ${violation.detail}`);
+      logError(`  · [${violation.kind}] grant "${violation.id}": ${violation.detail}`);
     }
-    console.error('  Remedy: restore the removed record, or express the change as a NEW grant id');
-    console.error('  carrying `reapproval_of` (ADR-0054 §Decision 8). Released meaning is not editable.');
-    process.exit(1);
+    logError('  Remedy: restore the removed record, or express the change as a NEW grant id');
+    logError('  carrying `reapproval_of` (ADR-0054 §Decision 8). Released meaning is not editable.');
+    return 1;
   }
-  console.log(
+  log(
     `✓ assurance-monotonicity: ${result.status} at ${result.ref} `
     + `(tags=${result.tags_examined}, tags_with_record=${result.tags_with_record}, `
     + `grants_tracked=${result.grants_tracked}, target_grants=${result.target_grants})`,
   );
+  return 0;
+}
+
+const invokedAsCLI = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (invokedAsCLI) {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const refArg = process.argv.slice(2).find((arg) => !arg.startsWith('-'));
+  process.exit(await main({ repoRoot, ref: refArg ?? 'HEAD' }));
 }

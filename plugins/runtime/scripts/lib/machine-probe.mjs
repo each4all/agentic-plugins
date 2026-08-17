@@ -135,12 +135,24 @@ export async function probeMachineHostState({
 // {id, version, scope, enabled} (machine-bootstrap-contract.md §1.1, peer #4). Claude has
 // no `plugin list --json` in the executor registry, so its TEXT parse is normalized here
 // rather than switching to an unverified --json path; Codex `--json` already carries these.
+// The two ambiguity fields travel through this contract too. They were added to
+// the raw parsers first and stopped there, which cross-host review measured: the
+// normalized rows are what `bootstrap.mjs` serializes into its probe object, so
+// an ambiguous install was reported to the proof record as the single optimistic
+// row the parser retained. Carrying the fields does NOT by itself change any
+// readiness verdict — the consumers that must map ambiguity to unknown
+// (`resolveCodexInstallState`, bootstrap's step evaluation, and `settings.mjs`'s
+// own third parser) are recorded as a follow-up, because changing what those
+// report is a gate change and belongs with the doctor/cutover wiring subtask.
+// What this does is stop the fact from being destroyed before they can read it.
 function normalizeInstalledRows({ claudePluginList, codexPluginList }) {
   const claude = Object.values(claudePluginList).map((row) => ({
     id: row.name,
     version: row.version ?? null,
     scope: row.scope ?? null,
     enabled: row.status === 'enabled' ? true : row.status === 'failed' ? false : null,
+    ambiguous: row.ambiguous === true,
+    observations: Number.isInteger(row.observations) ? row.observations : 1,
   }));
   const codex = Object.values(codexPluginList.entries ?? {}).map((row) => ({
     id: row.name,
@@ -149,6 +161,8 @@ function normalizeInstalledRows({ claudePluginList, codexPluginList }) {
     // install, not a Claude scope); keep the key for shape parity, value null.
     scope: null,
     enabled: typeof row.enabled === 'boolean' ? row.enabled : null,
+    ambiguous: row.ambiguous === true,
+    observations: Number.isInteger(row.observations) ? row.observations : 1,
   }));
   return { claude, codex };
 }
@@ -930,10 +944,12 @@ async function inspectPluginCaches({ homeDir, codexHome }) {
     result.claude[name] = await scanVersionedManifestDir({
       baseDir: join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', name),
       manifestRel: join('.claude-plugin', 'plugin.json'),
+      pluginName: name,
     });
     result.codex[name] = await scanVersionedManifestDir({
       baseDir: join(codexHome, 'plugins', 'cache', 'agentic-plugins', name),
       manifestRel: join('.codex-plugin', 'plugin.json'),
+      pluginName: name,
     });
     result.codex_tmp_marketplace[name] = await readSingleManifest({
       manifestPath: join(
@@ -951,7 +967,16 @@ async function inspectPluginCaches({ homeDir, codexHome }) {
   return result;
 }
 
-async function scanVersionedManifestDir({ baseDir, manifestRel }) {
+// `pluginName` BINDS a manifest to the plugin it was asked about. Cross-host
+// review measured the gap: `manifest_name` was recorded and never checked, so a
+// cache directory under .../agentic-plugins/runtime/0.90.3/ whose manifest says
+// `{"name":"engineer"}` was admitted as a runtime install, and with the Codex
+// list unavailable a cutover version row could be satisfied from it.
+// `session-readiness.mjs`'s sibling scanner already refuses a name mismatch and
+// says why ("a manifest that names a different plugin is not an install of that
+// plugin"); this makes the two agree. The direction is strictly fail-closed —
+// a mismatched manifest was never a legitimate install.
+async function scanVersionedManifestDir({ baseDir, manifestRel, pluginName = null }) {
   let entries;
   try {
     entries = await readdir(baseDir, { withFileTypes: true });
@@ -964,6 +989,7 @@ async function scanVersionedManifestDir({ baseDir, manifestRel }) {
     const manifestPath = join(baseDir, entry.name, manifestRel);
     const manifest = await readJsonIfExists(manifestPath);
     if (!manifest.ok) continue;
+    if (pluginName !== null && manifest.json?.name !== pluginName) continue;
     const pluginRoot = dirname(dirname(manifestPath));
     versions.push({
       version_dir: entry.name,
