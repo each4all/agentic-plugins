@@ -316,3 +316,123 @@ test('CLI: --format json maps the error verdict to exit code 2', async () => {
     assert.equal(json.exitCode, 2);
   });
 });
+
+// ── the four-component truncation, END TO END (ADR-0054 §Decision 7) ─────────
+//
+// Cross-host review found these paths open after the comparator itself had been
+// fixed, and the reason they survived is worth keeping next to them: the fix
+// was proven by function IDENTITY (`compareSemver === compareReleaseCore`) and
+// by calling the comparator directly. Both were true while the values reaching
+// it had already been truncated by the readers, so the refusal was live code
+// that nothing could reach. Identity is not behavioural convergence, and a unit
+// test on the comparator cannot see a lossy hand-off upstream of it.
+
+test('runCheck: an UPSTREAM four-component version is refused, not truncated to current', async () => {
+  // Pre-fix: `1.2.3.4` normalized to `1.2.3`, matched the baseline exactly, and
+  // reported `current` with exit 0 — closing a real drift issue, because the
+  // scheduled workflow treats `current` as a full confirmation.
+  await withBaseline(baselineFixture('1.2.3', '0.147.0', '2026-06-03'), async (path) => {
+    const httpGet = async (url) => (url.includes('claude-code')
+      ? JSON.stringify({ latest: '1.2.3.4' })
+      : JSON.stringify({ latest: '0.147.0' }));
+    const r = await runCheck({ baselinePath: path, httpGet, now: new Date(Date.UTC(2026, 5, 5)) });
+    assert.equal(r.status, 'error');
+    assert.equal(r.exitCode, 2);
+    assert.match(r.reason, /unparseable/);
+  });
+});
+
+test('runCheck: a BASELINE four-component version is refused too — the mirror', async () => {
+  // `extractBaselineVersions` normalizes before `runCheck` sees it, so this
+  // side needed its own check against the raw header. Fixing only the upstream
+  // reader would have left the identical hole facing the other way.
+  await withBaseline(baselineFixture('1.2.3.4', '0.147.0', '2026-06-03'), async (path) => {
+    const httpGet = async (url) => (url.includes('claude-code')
+      ? JSON.stringify({ latest: '1.2.3' })
+      : JSON.stringify({ latest: '0.147.0' }));
+    const r = await runCheck({ baselinePath: path, httpGet, now: new Date(Date.UTC(2026, 5, 5)) });
+    assert.equal(r.status, 'error');
+    assert.equal(r.exitCode, 2);
+    assert.match(r.reason, /cannot compare/);
+  });
+});
+
+test('runCheck CONTROL: an ordinary drift still reports drift, not an error', async () => {
+  // The over-correction this pair invites — refusing versions the checker has
+  // always compared. Without this control, both cases above would pass on a
+  // checker that had simply stopped working.
+  await withBaseline(baselineFixture('2.1.233', '0.147.0', '2026-06-03'), async (path) => {
+    const httpGet = async (url) => (url.includes('claude-code')
+      ? JSON.stringify({ latest: '2.2.0' })
+      : JSON.stringify({ latest: '0.147.0' }));
+    const r = await runCheck({ baselinePath: path, httpGet, now: new Date(Date.UTC(2026, 5, 5)) });
+    assert.equal(r.status, 'drift');
+    assert.equal(r.exitCode, 1);
+  });
+});
+
+test('runCheck CONTROL: matching versions still report current with exit 0', async () => {
+  await withBaseline(baselineFixture('2.1.233', '0.147.0', '2026-06-03'), async (path) => {
+    const httpGet = async (url) => (url.includes('claude-code')
+      ? JSON.stringify({ latest: '2.1.233' })
+      : JSON.stringify({ latest: '0.147.0' }));
+    const r = await runCheck({ baselinePath: path, httpGet, now: new Date(Date.UTC(2026, 5, 5)) });
+    assert.equal(r.status, 'current');
+    assert.equal(r.exitCode, 0);
+  });
+});
+
+test('aggregate: an uncomparable pair is never `current` — the fallthrough is closed', () => {
+  // `driftSeverity` returns `unknown`, `unknown` was in none of the buckets,
+  // and the `else` declared it `current` with exit 0. Pre-existing (a malformed
+  // baseline version reached it the same way); what changed is that the
+  // truncation refusal gives it a reachable new entrance.
+  const r = aggregate(
+    [
+      { host: 'claude', baseline: '1.2.3', latest: '1.2.3.4', source: 'npm' },
+      { host: 'codex', baseline: '0.147.0', latest: '0.147.0', source: 'npm' },
+    ],
+    fresh,
+  );
+  assert.equal(r.hosts[0].severity, 'unknown');
+  assert.equal(r.hosts[0].direction, null);
+  assert.equal(r.status, 'uncomparable-version');
+  assert.equal(r.exitCode, 2);
+});
+
+test('aggregate: an uncomparable pair OVERRIDES a drift verdict but keeps its reason', () => {
+  // A check that could not be completed must not be reported as a completed
+  // one — but the drift it did observe is still evidence and stays in the
+  // report.
+  const r = aggregate(
+    [
+      { host: 'claude', baseline: '1.2.3', latest: '1.2.3.4', source: 'npm' },
+      { host: 'codex', baseline: '0.136.0', latest: '0.137.0', source: 'npm' },
+    ],
+    fresh,
+  );
+  assert.equal(r.status, 'uncomparable-version');
+  assert.equal(r.exitCode, 2);
+  assert.ok(r.reasons.some((x) => /minor drift/.test(x)), 'the observed drift is still reported');
+  assert.ok(r.reasons.some((x) => /not comparable/.test(x)));
+});
+
+test('BOTH registry readers refuse a four-component version — the GitHub mirror', async () => {
+  // Added because a mutation survived: the GitHub reader's comparability check
+  // was live code with no test reaching it. `runCheck` prefers npm and only
+  // falls back to GitHub when npm fails TRANSIENTLY, so the end-to-end cases
+  // above exercise the npm path exclusively and a broken GitHub reader stayed
+  // green. Both readers are asserted directly, and each with a control.
+  const npmBody = (v) => async () => JSON.stringify({ latest: v });
+  const ghBody = (v) => async () => JSON.stringify({ tag_name: v });
+
+  await assert.rejects(fetchNpmLatest('@x/y', { httpGet: npmBody('1.2.3.4') }), { code: 'SCHEMA' });
+  await assert.rejects(fetchGithubLatest('x/y', { httpGet: ghBody('1.2.3.4') }), { code: 'SCHEMA' });
+  await assert.rejects(fetchGithubLatest('x/y', { httpGet: ghBody('rust-v1.2.3.4') }), { code: 'SCHEMA' });
+
+  // CONTROLS — the forms each source actually publishes must still resolve, or
+  // the assertions above would pass on a reader that refused everything.
+  assert.equal(await fetchNpmLatest('@x/y', { httpGet: npmBody('2.1.233') }), '2.1.233');
+  assert.equal(await fetchGithubLatest('x/y', { httpGet: ghBody('rust-v0.137.0') }), '0.137.0');
+  assert.equal(await fetchGithubLatest('x/y', { httpGet: ghBody('0.147.0-rc.1') }), '0.147.0');
+});

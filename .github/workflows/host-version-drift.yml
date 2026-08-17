@@ -19,6 +19,13 @@ on:
       - 'scripts/check-host-version-drift.mjs'
       - 'tests/scripts/test-check-host-version-drift.mjs'
       - 'plugins/runtime/docs/host-parity-baseline.md'
+      # The checker's grammar and comparator are PACKAGED (ADR-0053 §Decision
+      # 10) and imported from here, so a change to them is a change to this
+      # gate. Without these two entries a comparator-only edit ran no drift
+      # diagnostic at all — full-tests still covered it, but the dedicated
+      # signal, which is the one an operator reads, stayed silent.
+      - 'plugins/runtime/scripts/lib/host-parity-baseline.mjs'
+      - 'tests/runtime/test-host-version-comparator.mjs'
       - '.github/workflows/host-version-drift.yml'
   push:
     branches: [main]
@@ -26,6 +33,13 @@ on:
       - 'scripts/check-host-version-drift.mjs'
       - 'tests/scripts/test-check-host-version-drift.mjs'
       - 'plugins/runtime/docs/host-parity-baseline.md'
+      # The checker's grammar and comparator are PACKAGED (ADR-0053 §Decision
+      # 10) and imported from here, so a change to them is a change to this
+      # gate. Without these two entries a comparator-only edit ran no drift
+      # diagnostic at all — full-tests still covered it, but the dedicated
+      # signal, which is the one an operator reads, stayed silent.
+      - 'plugins/runtime/scripts/lib/host-parity-baseline.mjs'
+      - 'tests/runtime/test-host-version-comparator.mjs'
       - '.github/workflows/host-version-drift.yml'
 
 permissions:

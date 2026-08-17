@@ -26,7 +26,13 @@ import https from 'node:https';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { extractBaselineVersions, releaseVersion } from '../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
+import {
+  compareReleaseCore,
+  extractBaselineVersions,
+  parseBaseline,
+  releaseCoreParts,
+  releaseVersion,
+} from '../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -51,34 +57,40 @@ const HOSTS = [
 // comment cannot hold two regexes in step; an import can.
 //
 // This keeps CI's stripping POLICY (a prerelease normalizes to its base
-// release, because `semverParts` compares by numeric position anyway) while
-// removing the second implementation of it. The one measured behavioral
-// difference is a four-component input — `1.2.3.4` now normalizes to `1.2.3` —
-// which no npm or GitHub release produces and which `semverParts` already
-// truncated before any comparison.
+// release, because the comparison is by numeric position anyway) while removing
+// the second implementation of it.
+//
+// The four-component note that used to close this comment said `1.2.3.4` "was
+// already truncated before any comparison", which was accurate and is no longer
+// the whole story: truncating it is precisely what makes it compare EXACTLY
+// equal to a real `1.2.3`, so the packaged comparator now refuses the class
+// outright and CI inherits that. `normalizeVersion` still reports `1.2.3` for
+// it, because it is the identity form and narrowing it would change what every
+// existing caller parses.
+//
 // Re-exported as a local binding, not a bare `export … from`: this module also
-// CALLS it (`semverParts`, the npm and GitHub latest-version readers), and a
-// re-export creates no local name.
+// CALLS it (the npm and GitHub latest-version readers), and a re-export creates
+// no local name.
 export const normalizeVersion = releaseVersion;
 
-function semverParts(value) {
-  const normalized = normalizeVersion(value);
-  if (!normalized) return null;
-  const parts = normalized.split('.').slice(0, 3).map((n) => Number.parseInt(n, 10));
-  while (parts.length < 3) parts.push(0);
-  return parts.some((n) => Number.isNaN(n)) ? null : parts;
-}
-
-// -1 if a<b, 0 if equal, 1 if a>b, null if either is unparseable.
-export function compareSemver(a, b) {
-  const pa = semverParts(a);
-  const pb = semverParts(b);
-  if (!pa || !pb) return null;
-  for (let i = 0; i < 3; i += 1) {
-    if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
-  }
-  return 0;
-}
+// The COMPARATOR, likewise from the module that owns the grammar — the second
+// half of the same removal (ADR-0053 §Decision 10, ADR-0054 §Decision 7).
+//
+// `normalizeVersion` was unified first and the comparison built on it was left
+// behind, so a private `semverParts` kept re-deriving the numeric form here.
+// That copy carried two defects the packaged one does not: `Number.parseInt`
+// collapsed distinct large components onto one float (measured — two twenty-
+// digit majors compared EQUAL), and it truncated a four-component version to
+// three, which reports `1.2.3.4` as exactly `1.2.3`.
+//
+// Both `compareSemver` and `driftSeverity` routed through that copy, so fixing
+// only the one this subtask names would have left the defect alive in its
+// mirror. `semverParts` is gone; `releaseCoreParts` is what both now use.
+//
+// Local bindings, not `export … from`: this module CALLS them, and a re-export
+// creates no local name.
+export const compareSemver = compareReleaseCore;
+const semverParts = releaseCoreParts;
 
 // Severity of the difference by position: 'major' | 'minor' | 'patch' |
 // 'current' | 'unknown'. Direction-agnostic (rollbacks classify by position).
@@ -149,6 +161,33 @@ export function aggregate(results, { staleDays, observedDate, now }) {
     exitCode = 1;
     reasons.push(`baseline observed ${ageDays}d ago (> ${staleDays}d window)`);
   }
+  // A version pair this checker cannot COMPARE is not a currency finding, and
+  // the fallthrough below used to make it one: `driftSeverity` returns
+  // `unknown`, `unknown` is in none of the buckets above, and the `else`
+  // declared it `current` with exit 0. Measured on a `1.2.3` baseline against a
+  // `1.2.3.4` upstream — `severity: unknown`, `direction: null`, `status:
+  // current`. The same fallthrough already swallowed a malformed baseline
+  // version, so this is pre-existing rather than introduced here; what changed
+  // is that the truncation refusal gives it a new and reachable way in.
+  //
+  // This file's own header has always promised the other behaviour: exit 2 for
+  // "a fatal upstream condition like a schema change / 404 / unparseable
+  // version — the gate fails loudly rather than going silently green". The code
+  // now does what the header says. Placed AFTER the drift and stale blocks so
+  // their reasons are still recorded, and overriding their exit code because a
+  // check that could not be completed must not be reported as a completed one.
+  const uncomparable = hosts.filter((h) => h.severity === 'unknown');
+  if (uncomparable.length) {
+    status = 'uncomparable-version';
+    exitCode = 2;
+    for (const h of uncomparable) {
+      reasons.push(
+        `${h.host} version pair is not comparable (baseline ${JSON.stringify(h.baseline)} vs latest ${JSON.stringify(h.latest)}) `
+          + '— refusing to report drift OR currency',
+      );
+    }
+  }
+
   if (!status) {
     if (unavailable.length === hosts.length) {
       status = 'source-unavailable';
@@ -235,8 +274,17 @@ export async function fetchNpmLatest(pkg, { httpGet = defaultHttpGet, timeoutMs 
   }
   const latest = json && json.latest;
   if (!latest) throw Object.assign(new Error('npm dist-tags: missing "latest"'), { code: 'SCHEMA' });
+  // Comparability, not mere extractability. `normalizeVersion` alone accepts
+  // `1.2.3.4` by silently dropping the tail, and the drop is irreversible: by
+  // the time the value reaches the comparator it IS `1.2.3` and compares
+  // exactly equal to a real `1.2.3`. Measured — upstream `1.2.3.4` against a
+  // `1.2.3` baseline reported `current`, exit 0, closing a real drift. The
+  // check therefore runs against the RAW text, which is the only place the
+  // truncation is still visible.
   const normalized = normalizeVersion(latest);
-  if (!normalized) throw Object.assign(new Error(`npm dist-tags: unparseable "${latest}"`), { code: 'SCHEMA' });
+  if (!normalized || releaseCoreParts(latest) === null) {
+    throw Object.assign(new Error(`npm dist-tags: unparseable "${latest}"`), { code: 'SCHEMA' });
+  }
   return normalized;
 }
 
@@ -254,8 +302,13 @@ export async function fetchGithubLatest(repo, { httpGet = defaultHttpGet, timeou
   // Prefer release.name (normalized, e.g. "0.137.0") over tag_name ("rust-v0.137.0").
   const raw = json && (json.name || json.tag_name);
   if (!raw) throw Object.assign(new Error('github releases: missing name/tag_name'), { code: 'SCHEMA' });
+  // Same comparability rule as the npm reader — the mirror, checked because
+  // fixing one registry path and leaving the other is how this defect class
+  // survives a fix.
   const normalized = normalizeVersion(raw);
-  if (!normalized) throw Object.assign(new Error(`github releases: unparseable "${raw}"`), { code: 'SCHEMA' });
+  if (!normalized || releaseCoreParts(raw) === null) {
+    throw Object.assign(new Error(`github releases: unparseable "${raw}"`), { code: 'SCHEMA' });
+  }
   return normalized;
 }
 
@@ -309,6 +362,23 @@ export async function runCheck({
   if (!observedDate) missing.push('observed-on date');
   if (missing.length) {
     return { status: 'error', exitCode: 2, reason: `baseline parse failed: ${missing.join(', ')}` };
+  }
+
+  // The BASELINE side of the same truncation hole, and it needs the raw header
+  // because `extractBaselineVersions` has already normalized: a baseline
+  // recording `1.2.3.4` arrives here as `1.2.3` and reports `current` against a
+  // genuine `1.2.3` upstream. `parseBaseline` is re-read rather than widening
+  // `extractBaselineVersions`, whose return shape compat's snapshot schema also
+  // consumes and which ADR-0053 §Decision 1 pins.
+  const rawHeader = parseBaseline(baselineText);
+  const uncomparable = ['claude', 'codex'].filter((host) => releaseCoreParts(rawHeader?.[host]) === null);
+  if (uncomparable.length) {
+    return {
+      status: 'error',
+      exitCode: 2,
+      reason: `baseline records a version this checker cannot compare (${uncomparable.join(', ')}) `
+        + '— a version whose extra components would be silently dropped is refused rather than truncated',
+    };
   }
 
   const baselineByHost = { claude: versions.claude.version, codex: versions.codex.version };
