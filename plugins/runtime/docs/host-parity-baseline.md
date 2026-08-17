@@ -541,8 +541,15 @@ Four rules govern it, and none of them is a formatting preference:
   and revocation is append-only: a revoked grant is never un-revoked, only
   replaced by a new id carrying `reapproval_of`.
 
-**Grammar.** Exactly one sentinel-delimited ` ```json ` fence appears below.
-Its content must be the **canonical serialization** of a
+**Grammar.** Exactly one sentinel-delimited ` ```json ` fence appears below, and
+both sentinels must be whole lines at the **top level** of this document. A
+sentinel quoted inside another fence, indented into a code block, or embedded in
+a line of prose is text about the record, not the record — which is what lets
+this section explain its own grammar without the example silently becoming the
+grant. The reverse also holds: a sentinel appearing inside the JSON, in a `note`
+or a residual `surface`, is data and changes nothing.
+
+The fence's content must be the **canonical serialization** of a
 `runtime-host-assurance-1.0` record — two-space indent, trailing newline, and
 the key order the packaged schema derives. That order has two halves, and the
 second one is the easy mistake: keys the schema **names** appear in the order
@@ -552,12 +559,22 @@ the schema matches by pattern rather than by name — are **sorted**. So
 reviewer. That is not tidiness: `JSON.parse`
 resolves a duplicate key last-wins and says nothing, so a block whose bytes read
 `revoked` to a human could parse as `granted`. Requiring the bytes to equal the
-re-serialization of what they parsed to makes the shadowed member visible. The
-schema version is pinned **exactly** — a newer minor is refused rather than read
-with its unknown keys ignored, because a narrowing key an older reader dropped
-would turn a restricted grant into a broad one
+re-serialization of what they parsed to makes the shadowed member visible. For
+the same reason this file must be valid UTF-8 throughout: an invalid byte
+decodes to U+FFFD, and two different files would then carry one record.
+
+The schema version is pinned **exactly** — a newer minor is refused rather than
+read with its unknown keys ignored, because a narrowing key an older reader
+dropped would turn a restricted grant into a broad one
 ([ADR-0054](../../../docs/adr/0054-assurance-record-schema-and-rollout.md)
-§Decision 3).
+§Decision 3). Package names and versions reuse the repository's existing
+grammars (`runtime-plugin-set-1.0`'s name pattern and `lib/semver.mjs`'s SemVer
+shape) so that every package runtime can observe is one a grant can name.
+
+**Integrity outranks this record.** If the `Observed on …` header above does not
+parse, or the file is missing, unreadable, or resolves outside the runtime
+package, then no assurance is read from it at all — a perfectly good record
+beside a broken baseline is *blocked*, never covered (ADR-0053 §Decision 3).
 
 Structure is checked by `data/schemas/runtime-host-assurance-1.0.json`; the
 rules a closed keyword subset provably cannot express — id uniqueness,
@@ -568,8 +585,16 @@ calendar validity — are checked in code (ADR-0054 §Decision 2).
 Every host therefore reads `unassured`, and readiness blocks. This is
 ADR-0054 §Decision 6's rollout: the gate's *failing* path is exercised by the
 real gate on real machines before any positive result is possible, rather than
-by a temporary interlock built to be deleted. The first grant lands with owner
-ratification once the matcher that would honor it exists.
+by a temporary interlock built to be deleted.
+
+The set stays empty for the whole of that release. §Decision 6 is specific
+about the sequence, and the specificity is the safety property: **R1** ships the
+reader, the semantic matcher, the comparator, the floor and both readiness gate
+paths with `grants: []`; **R2** ships one owner-ratified grant *and nothing
+else*. A grant landing in the same release as the matcher that honours it would
+put the positive and negative paths live in the same moment, leaving tests as
+the only thing between a matcher defect and a false `covered` — which is the
+alternative that decision explicitly rejected.
 
 <!-- BEGIN COMPATIBILITY ASSURANCE -->
 ```json

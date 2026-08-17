@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "runtime-host-assurance-1.0",
   "title": "Host compatibility assurance record",
-  "description": "ADR-0053 §Decision 2 / ADR-0054 §Decision 2 — the human-granted assurance fact carried in the packaged host-parity baseline. STRUCTURE ONLY. Every cross-record and cross-field rule (id uniqueness, negative-wins across duplicate/conflicting/superseded/revoked records, exact package-set equality, ambiguity, vacuous grants, residual coherence, calendar validity) is enforced by lib/assurance-contract.mjs, exactly as runtime-bootstrap-run-1.2 leaves kind exclusivity to lib/evidence-contract.mjs because the validator has no oneOf. Eight semantic cases were measured passing this schema; that is the boundary, not a gap in it. NOTE the `schema` pattern below is an EXACT pin, deliberately diverging from the bootstrap and session families' additive-forward-compat posture (ADR-0054 §Decision 3): a newer minor could add a NARROWING key, and an older reader that ignored it would turn absence of evidence into coverage.",
+  "description": "ADR-0053 §Decision 2 / ADR-0054 §Decision 2 — the human-granted assurance fact carried in the packaged host-parity baseline. STRUCTURE ONLY. Every cross-record and cross-field rule (id uniqueness, negative-wins across duplicate/conflicting/superseded/revoked records, exact package-set equality, ambiguity, vacuous grants, residual coherence, calendar validity) is enforced by lib/assurance-contract.mjs, exactly as runtime-bootstrap-run-1.2 leaves kind exclusivity to lib/evidence-contract.mjs because the validator has no oneOf. Eight semantic cases were measured passing this schema; that is the boundary, not a gap in it. NOTE the `schema` pattern below is an EXACT pin (ADR-0054 §Decision 3). Measured across the seven packaged schemas, exact pinning is the majority shape — four pin exactly and three use the family-wide `1\\.[0-9]+` form — so what is distinctive here is the REASON rather than the shape: the other four have simply never had a second minor, while this one exists to refuse a `1.1` that will eventually be written. A newer minor could add a NARROWING key, and an older reader that ignored it with a warning would turn absence of evidence into coverage. When this family reaches 1.1 the pin is BUMPED, never widened.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "grants"],
@@ -13,9 +13,9 @@
       "pattern": "^runtime-host-assurance-1\\.0$"
     },
     "grants": {
-      "description": "Append-only. An EMPTY array is the valid, meaningful state of a runtime that ships the gate before any grant exists (ADR-0054 §Decision 6 R1) — every host reads unassured and readiness blocks.",
+      "description": "Append-only. An EMPTY array is the valid, meaningful state of a runtime that ships the gate before any grant exists (ADR-0054 §Decision 6 R1) — every host reads unassured and readiness blocks. KNOWN LIMIT, stated rather than left to be discovered: because ADR-0054 §Decision 8 makes revocations and supersessions permanent, this array only ever grows, and maxItems is a hard authoring ceiling with no rollover policy behind it. The cap is the validator's own SCHEMA_MAX_ARRAY_ENTRIES rather than a number chosen here, so there is one bound to remember; reaching it requires a schema minor that decides how history is retired, and that decision belongs with the cross-tag monotonicity check that depends on the history.",
       "type": "array",
-      "maxItems": 64,
+      "maxItems": 256,
       "items": { "$ref": "#/$defs/grant" }
     }
   },
@@ -58,11 +58,11 @@
           "items": { "$ref": "#/$defs/hostTuple" }
         },
         "packages": {
-          "description": "ADR-0053 §Decision 8 — the consuming package set and the versions reviewed, because a runtime-packaged grant naming only host versions outlives the code it described. Absence of a package here means it was NOT reviewed, never that it is covered.",
+          "description": "ADR-0053 §Decision 8 — the consuming package set and the versions reviewed, because a runtime-packaged grant naming only host versions outlives the code it described. Absence of a package here means it was NOT reviewed, never that it is covered. Both grammars are the repository's existing authorities rather than new ones, because a grant must be able to name every package runtime can actually observe: the name pattern is runtime-plugin-set-1.0's `edge.name`, and the version pattern is lib/semver.mjs's SEMVER_SHAPE_RE — the same grammar plugin-set.mjs validates `minimum_version` with. Measured agreement with `isSemVer` on eight inputs, including the two directions a hand-written approximation got wrong: `0.91.0-rc.1` is representable and `01.2.3` is not.",
           "type": "object",
           "additionalProperties": false,
           "patternProperties": {
-            "^[a-z][a-z0-9-]{0,31}$": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+            "^[a-z][a-z0-9-]{0,63}$": { "type": "string", "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$" }
           }
         },
         "predicate": {
@@ -113,7 +113,7 @@
         "surface": { "type": "string", "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
         "consumption": { "type": "string", "enum": ["consumed", "unadopted"] },
         "disposition": { "type": "string", "enum": ["accepted-with-risk", "probe-pending", "not-applicable"] },
-        "consuming_package": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "consuming_package": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
         "note": { "type": "string", "maxLength": 1024 }
       }
     }

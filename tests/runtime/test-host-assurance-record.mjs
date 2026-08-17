@@ -140,12 +140,20 @@ describe('compatibility assurance record — the shipped asset (ADR-0054 §Decis
   });
 
   it('ships an EMPTY grant set — the R1 rollout state, asserted rather than assumed', async () => {
-    // ADR-0054 §Decision 6: R1 ships both gate paths with `grants: []` so the
-    // failing path is exercised by the real gate before any positive is
-    // possible. A grant appearing here without the semantic matcher that
-    // honours it is exactly the ordering this assertion exists to catch.
+    // ADR-0054 §Decision 6, read precisely: R1 ships the reader, the semantic
+    // matcher, the comparator, the floor and BOTH gate paths with `grants: []`;
+    // R2 ships one owner-ratified grant AND NOTHING ELSE. So the first grant
+    // does not land alongside the matcher — it lands a release later, after the
+    // real gate has been observed failing closed on real machines.
+    //
+    // ⚠ The macro plan's ST2B description says the first grant lands in ST2B,
+    // with the matcher. That contradicts §Decision 6 and it is the ADR that
+    // governs, because the reason is the safety property: shipping both paths
+    // live in one moment leaves tests as the only thing between a matcher
+    // defect and a false `covered`. Flagged here rather than silently resolved,
+    // since the sequencing is ST2B's to change. Cross-host review raised it.
     const resolved = await resolveAssuranceRecord({ pluginRoot: RUNTIME_ROOT });
-    deepStrictEqual(resolved.record.grants, [], 'the first grant lands with the matcher (ST2B), not with the reader');
+    deepStrictEqual(resolved.record.grants, [], 'R1 ships empty; the first grant is R2, alone');
   });
 
   it('the reader, the registry, and the schema file agree on ONE version string', async () => {
@@ -220,6 +228,45 @@ describe('compatibility assurance record — sentinel and fence grammar', () => 
     strictEqual(parse(doc(EMPTY_RECORD)).status, 'unparseable', 'raw JSON with no fence');
     strictEqual(parse(doc('```\n' + EMPTY_RECORD + '```')).status, 'unparseable', 'an unlabelled fence');
     strictEqual(parse(doc('```JSON\n' + EMPTY_RECORD + '```')).status, 'unparseable', 'a differently-cased info string');
+  });
+
+  it('a record QUOTED inside an outer fence is not the record', () => {
+    // The false positive cross-host review found, and the likeliest real one:
+    // this document explains its own grammar, so an author demonstrating it in
+    // a fenced example would have made a grant nobody granted authoritative.
+    const quoted = `${HEADER}\nHere is what a record looks like:\n\n~~~~markdown\n`
+      + `${ASSURANCE_BEGIN_SENTINEL}\n${fenced(GRANT_RECORD)}\n${ASSURANCE_END_SENTINEL}\n`
+      + `~~~~\n`;
+    strictEqual(parse(quoted).status, 'absent', 'a quoted example is not markup');
+
+    // CONTROL: the identical bytes WITHOUT the outer fence are the record, so
+    // the rejection is caused by the quoting and not by the example's content.
+    const live = `${HEADER}\n${ASSURANCE_BEGIN_SENTINEL}\n${fenced(GRANT_RECORD)}\n${ASSURANCE_END_SENTINEL}\n`;
+    strictEqual(parse(live).status, 'resolved');
+  });
+
+  it('a sentinel MENTIONED in prose or in a grant note leaves the real record readable', () => {
+    // The mirror of the case above, and the one that bites an honest author:
+    // before the fix, a `note` quoting the sentinel — or prose citing it in
+    // backticks — counted as a second marker and made the whole record
+    // `ambiguous`, with no edit short of censoring the word to fix it.
+    const noted = GRANT_RECORD.replace(
+      '      "residuals": [',
+      `      "note": "the block is delimited by ${ASSURANCE_BEGIN_SENTINEL}",\n      "residuals": [`,
+    );
+    // `note` sorts AFTER residuals in the schema's declared order, so place it
+    // there instead; this asserts the fixture is the canonical one.
+    const canonicalNoted = GRANT_RECORD.replace(
+      /\n {4}\}\n {2}\]\n\}\n$/,
+      `,\n      "note": "the block is delimited by ${ASSURANCE_BEGIN_SENTINEL}"\n    }\n  ]\n}\n`,
+    );
+    notStrictEqual(canonicalNoted, GRANT_RECORD, 'precondition: the note was inserted');
+    ok(canonicalNoted.includes(ASSURANCE_BEGIN_SENTINEL), 'precondition: the sentinel really is in the JSON');
+    strictEqual(parse(doc(fenced(canonicalNoted))).status, 'resolved', `a sentinel inside the fence is data (findings: ${JSON.stringify(parse(doc(fenced(canonicalNoted))).findings)})`);
+    ok(!noted.includes('__unused__'));
+
+    const cited = `${doc(fenced(EMPTY_RECORD))}\nThe block opens with \`${ASSURANCE_BEGIN_SENTINEL}\` on its own line.\n`;
+    strictEqual(parse(cited).status, 'resolved', 'an inline code span is prose, not markup');
   });
 
   it('a SECOND fence inside the region is refused rather than silently truncated', () => {
@@ -355,23 +402,80 @@ describe('compatibility assurance record — the EXACT version pin (ADR-0054 §D
     match(assuranceFailure(result).operator_action, /Update the runtime plugin/);
   });
 
-  it('an unknown MAJOR and a foreign family are refused the same way', () => {
-    for (const version of ['runtime-host-assurance-2.0', 'runtime-session-note-1.0', 'not-a-schema-version']) {
+  it('an unknown MAJOR of THIS family is unknown-schema; anything else is a defective record', () => {
+    // The remedies are opposite, so the classification has to be. "Update the
+    // runtime" is right only when the declaration is one this runtime cannot
+    // READ. A missing, mistyped, malformed, or foreign-family declaration is a
+    // record to REPAIR, and telling the operator to upgrade would send them
+    // after a fix that does not exist — measured: a block that simply omitted
+    // `schema` was told to update the plugin.
+    for (const version of ['runtime-host-assurance-2.0', 'runtime-host-assurance-1.1', 'runtime-host-assurance-0.9']) {
       const body = EMPTY_RECORD.replace(ASSURANCE_SCHEMA_VERSION, version);
       strictEqual(parse(doc(fenced(body))).status, 'unknown-schema', version);
     }
+    for (const version of ['runtime-session-note-1.0', 'not-a-schema-version', 'runtime-host-assurance-1']) {
+      const body = EMPTY_RECORD.replace(ASSURANCE_SCHEMA_VERSION, version);
+      strictEqual(parse(doc(fenced(body))).status, 'invalid', version);
+    }
+    strictEqual(parse(doc(fenced('{\n  "grants": []\n}\n'))).status, 'invalid', 'a MISSING declaration is a repair, not an upgrade');
+    strictEqual(parse(doc(fenced('{\n  "schema": 10,\n  "grants": []\n}\n'))).status, 'invalid', 'a mistyped declaration likewise');
+    match(assuranceFailure(parse(doc(fenced('{\n  "grants": []\n}\n')))).operator_action, /Repair the compatibility assurance block/);
   });
 
-  it('the declared version is WITHHELD from the finding', () => {
+  it('carries the finding COUNT, so a capped display is not a smaller problem', () => {
+    // The validator caps findings at 16 for display and returns the real count
+    // beside them. Keeping only the array reported "16 problems" for a record
+    // with twenty — the flood hidden rather than bounded.
+    const grant = (i) => `    {
+      "id": "grant-${String(i).padStart(3, '0')}",
+      "state": "not-a-state",
+      "reviewed_at": "2026-08-16",
+      "review_provenance": {
+        "kind": "adr",
+        "reference": "ADR-0054"
+      },
+      "cohort": [],
+      "packages": {},
+      "residuals": []
+    }`;
+    const many = `{\n  "schema": "${ASSURANCE_SCHEMA_VERSION}",\n  "grants": [\n${Array.from({ length: 20 }, (_, i) => grant(i)).join(',\n')}\n  ]\n}\n`;
+    const result = parse(doc(fenced(many)));
+    strictEqual(result.status, 'invalid');
+    strictEqual(result.finding_count, 20, 'the real count survives the display cap');
+    strictEqual(result.findings.length, 16, 'and the displayed list is still bounded');
+    strictEqual(result.findings_omitted, true);
+  });
+
+  it('bounds the RAW block, not only the object it parses to', () => {
+    // The advertised 64 KiB cap was a bound on the re-serialized document,
+    // which whitespace padding shrinks below — so it was not a bound on what
+    // this reader would accept as input.
+    const padded = EMPTY_RECORD.replace('{\n', `{${' '.repeat(70_000)}\n`);
+    const result = parse(doc(fenced(padded)));
+    strictEqual(result.status, 'unparseable');
+    match(result.findings[0], /over the \d+-byte cap/);
+  });
+
+  it('the declared version is WITHHELD on BOTH branches it can take', () => {
     // It is unclamped free content the moment it fails to be the one value this
     // reader accepts — the same rule `compareSchemaVersion` states for itself.
-    const smuggled = 'runtime-host-assurance-1.0-glpat-SECRETVALUE';
-    const body = EMPTY_RECORD.replace(`"${ASSURANCE_SCHEMA_VERSION}"`, `"${smuggled}"`);
-    const result = parse(doc(fenced(body)));
-    strictEqual(result.status, 'unknown-schema');
-    for (const finding of result.findings) {
-      doesNotMatch(finding, /SECRETVALUE/, 'the declared value does not cross the boundary');
+    // Both branches are covered because splitting the classification split the
+    // disclosure surface with it.
+    const unreadable = parse(doc(fenced(EMPTY_RECORD.replace(ASSURANCE_SCHEMA_VERSION, 'runtime-host-assurance-1.99'))));
+    strictEqual(unreadable.status, 'unknown-schema');
+    for (const finding of unreadable.findings) {
+      doesNotMatch(finding, /1\.99/, 'the declared value does not cross the boundary');
       match(finding, /reads exactly runtime-host-assurance-1\.0/, 'the EXPECTED value does, because it is the reader\'s own');
+    }
+
+    // A value shaped to smuggle content does not parse as a schema version at
+    // all, so it takes the `invalid` branch — where the validator's own
+    // disclosure invariant has to hold instead.
+    const smuggled = parse(doc(fenced(EMPTY_RECORD.replace(ASSURANCE_SCHEMA_VERSION, 'runtime-host-assurance-1.0-glpat-SECRETVALUE'))));
+    strictEqual(smuggled.status, 'invalid');
+    ok(smuggled.findings.length > 0, 'and it does produce a finding to inspect');
+    for (const finding of smuggled.findings) {
+      doesNotMatch(finding, /SECRETVALUE/, 'no observed scalar crosses the boundary on this branch either');
     }
   });
 });
@@ -468,19 +572,64 @@ describe('compatibility assurance record — integrity outranks assurance (ADR-0
     strictEqual(resolved.baseline_failure.status, 'escaped');
   });
 
-  it('a baseline whose HEADER is broken can still carry a readable record — and vice versa', async () => {
-    // The two grammars are separate facts (§Decision 1/3). A header failure is
-    // a FRESHNESS failure; it does not make the record unreadable, and the
-    // consumer that gates on assurance must be able to see both answers
-    // independently rather than inheriting one from the other.
+  it('a BROKEN HEADER blocks the record, however well the record itself reads', async () => {
+    // ADR-0053 §Decision 3, verbatim: "A parseable assurance section next to a
+    // broken or escaped baseline ... is blocked, never covered."
+    //
+    // An earlier version of this test asserted the OPPOSITE — that a readable
+    // record beside an unparseable header is `resolved`, on the reasoning that
+    // the two grammars are separate facts. They are separate facts, and that is
+    // why the PURE grammar still reports what the text says; but integrity
+    // outranks assurance at the resolver, which is the answer a gate uses.
+    // Cross-host review caught the inversion.
     const noHeader = doc(fenced(EMPTY_RECORD), { header: '# Host Parity Baseline\n\nno dated header here\n' });
     const root = await fixturePackage({ baseline: noHeader });
     strictEqual((await resolveHostParityBaseline({ pluginRoot: root })).status, 'unparseable');
-    strictEqual((await resolveAssuranceRecord({ pluginRoot: root })).status, 'resolved');
+    const resolved = await resolveAssuranceRecord({ pluginRoot: root });
+    strictEqual(resolved.status, 'baseline-unavailable', 'integrity outranks assurance');
+    strictEqual(resolved.record, null);
+    strictEqual(resolved.baseline_failure.status, 'unparseable');
+    ok(assuranceFailure(resolved), 'and it blocks');
 
+    // The pure grammar is unchanged, and stays the answer to a different
+    // question: what does this TEXT say.
+    strictEqual(parse(noHeader).status, 'resolved');
+
+    // The mirror direction, which the ST2 topic states explicitly: an
+    // unreadable assurance section is an ASSURANCE failure, not a freshness one.
     const noRecord = await fixturePackage({ baseline: `${HEADER}\nnothing else\n` });
     strictEqual((await resolveHostParityBaseline({ pluginRoot: noRecord })).status, 'resolved');
     strictEqual((await resolveAssuranceRecord({ pluginRoot: noRecord })).status, 'absent');
+  });
+
+  it('a file that is not valid UTF-8 has no well-defined record', async () => {
+    // The MIRROR of a bug this module already fixed one level up. Its own
+    // comment records why the provenance hash moved onto the bytes: "every
+    // invalid byte sequence decodes to U+FFFD, so two different files collide.
+    // Reproduced — FF FE and FF FF produced one hash." The block hash was
+    // computed from the DECODED text and inherited exactly that collision.
+    const block = `${ASSURANCE_BEGIN_SENTINEL}\n${fenced(EMPTY_RECORD)}\n${ASSURANCE_END_SENTINEL}\n`;
+    const mk = (bad) => Buffer.concat([
+      Buffer.from(`${HEADER}\nnote:`, 'utf8'),
+      Buffer.from([bad]),
+      Buffer.from(`\n\n${block}`, 'utf8'),
+    ]);
+    const [a, b] = [mk(0xFF), mk(0xFE)];
+    ok(!a.equals(b), 'precondition: the two files differ in their raw bytes');
+    strictEqual(a.toString('utf8'), b.toString('utf8'), 'precondition: and decode to ONE text');
+
+    for (const bytes of [a, b]) {
+      const root = await mkdtemp(join(tmpdir(), 'assurance-pkg-'));
+      await mkdir(join(root, 'docs'), { recursive: true });
+      await mkdir(join(root, '.claude-plugin'), { recursive: true });
+      await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '0.90.3' }));
+      await writeFile(join(root, 'docs', 'host-parity-baseline.md'), bytes);
+      const resolved = await resolveAssuranceRecord({ pluginRoot: root });
+      strictEqual(resolved.status, 'undecodable');
+      strictEqual(resolved.record, null);
+      strictEqual(resolved.block_sha256, null, 'no hash is published for content that is not well defined');
+      match(assuranceFailure(resolved).operator_action, /not valid UTF-8/);
+    }
   });
 
   it('refuses an explicit empty pluginRoot instead of reading its own package', async () => {
@@ -517,9 +666,23 @@ describe('compatibility assurance record — the failure vocabulary', () => {
     }
   });
 
-  it('parseAssuranceSection THROWS on a bad schema — that is a bug here, not data', () => {
+  it('parseAssuranceSection THROWS on a schema that is not THE schema', () => {
     throws(() => parseAssuranceSection(doc(fenced(EMPTY_RECORD)), {}), /must be the packaged/);
     throws(() => parseAssuranceSection(doc(fenced(EMPTY_RECORD)), { schema: null }), /must be the packaged/);
     throws(() => parseAssuranceSection(doc(fenced(EMPTY_RECORD)), { schema: [] }), /must be the packaged/);
+    // Identity, not shape. An object-shape guard admitted `{}`, and an empty
+    // schema constrains nothing — cross-host review showed a record missing its
+    // required `grants` resolving through it.
+    throws(() => parseAssuranceSection(doc(fenced('{\n  "schema": "runtime-host-assurance-1.0"\n}\n')), { schema: {} }), /must be the packaged/);
+    throws(() => parseAssuranceSection(doc(fenced(EMPTY_RECORD)), { schema: { ...SCHEMA, $id: 'runtime-session-note-1.0' } }), /must be the packaged/);
+  });
+
+  it('resolveAssuranceRecord takes NO schema override — the packaged one is the authority', async () => {
+    // The override existed and defeated this function's own stated guarantee
+    // that schema and baseline come from one install. Removed rather than
+    // documented, so there is no supported way to weaken it.
+    const root = await fixturePackage({ baseline: doc(fenced('{\n  "schema": "runtime-host-assurance-1.0"\n}\n')) });
+    const resolved = await resolveAssuranceRecord({ pluginRoot: root, schema: {} });
+    strictEqual(resolved.status, 'invalid', 'a record missing `grants` is invalid whatever the caller passes');
   });
 });
