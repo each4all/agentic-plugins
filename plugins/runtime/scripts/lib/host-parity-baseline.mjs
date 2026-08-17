@@ -461,7 +461,10 @@ export function assuranceFailure(resolved) {
   }
   const path = resolved?.provenance?.path ?? '<runtime package>/docs/host-parity-baseline.md';
   const operatorAction = status === 'absent'
-    ? `Update the runtime plugin — ${path} predates the compatibility assurance record (ADR-0053 §Decision 2), so this runtime cannot establish host coverage from it. Assurance is granted by review; no upgrade grants it by itself.`
+    // Two causes, one reading: a baseline that predates the record and one whose
+    // sentinels were altered are indistinguishable to any reader, so the action
+    // names both rather than asserting the more flattering one.
+    ? `Update the runtime plugin — ${path} carries no compatibility assurance record (ADR-0053 §Decision 2): it either predates the record or its sentinels were altered, and this runtime cannot establish host coverage from it either way. Assurance is granted by review; no upgrade grants it by itself.`
     : status === 'unknown-schema'
       ? `Update the runtime plugin — the assurance record in ${path} declares a schema version this runtime does not read (it reads exactly ${ASSURANCE_SCHEMA_VERSION}). Reading it anyway could treat a narrowing condition as absent, which is how absence of evidence becomes coverage.`
       : `Repair the compatibility assurance block in ${path} — it is present but ${ASSURANCE_SUMMARIES[status]}. It must be exactly one sentinel-delimited \`\`\`json fence whose content is the canonical serialization of a ${ASSURANCE_SCHEMA_VERSION} record.`;
@@ -488,14 +491,30 @@ function countOccurrences(haystack, needle) {
  * rather than a backtick in the data. Returns the body text with the trailing
  * newline `canonicalJson` also emits, or `null` when the region is not that
  * shape.
+ *
+ * CRLF is normalized rather than refused, and that is a correctness fix rather
+ * than a convenience. `HEADER_RE` already tolerates it (`\s*` matches `\r`), so
+ * a strict reader here would make ONE module disagree with itself about ONE
+ * file — measured: a CRLF copy of the shipped baseline parses its header and
+ * failed to parse its record. There is no `.gitattributes` forcing LF, so that
+ * copy is reachable, and the failure would have been fail-closed but
+ * unrepairable: every byte of the record is right and no edit fixes it. A
+ * demand that cannot be met is a dead end, not a refusal. Normalizing is
+ * lossless for what this grammar decides — a line ending cannot change which
+ * JSON keys exist or what order they are in — and it makes the record's content
+ * hash identical across checkout styles.
+ *
+ * The FENCE lines are compared with trailing whitespace trimmed, for the same
+ * dead-end reason and with the same safety argument: they carry no record data,
+ * so a trailing space in an info string cannot change what was parsed.
  */
 function extractFencedJson(region) {
-  const lines = region.split('\n');
+  const lines = region.split(/\r?\n/);
   while (lines.length > 0 && lines[0].trim() === '') lines.shift();
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
   if (lines.length < 2) return null;
-  if (lines[0] !== '```json') return null;
-  if (lines[lines.length - 1] !== '```') return null;
+  if (lines[0].trimEnd() !== '```json') return null;
+  if (lines[lines.length - 1].trimEnd() !== '```') return null;
   const body = lines.slice(1, -1);
   // A second fence inside the region. Canonical JSON never produces a line
   // starting with a backtick, so this is not a legitimate record being refused.
@@ -619,6 +638,14 @@ export function parseAssuranceSection(text, { schema } = {}) {
  * and baseline resolving from one installed package directory is what makes the
  * record and the rules that judge it atomic within a release (ADR-0054
  * §Separate PRs do not promise one release).
+ *
+ * ⚠ THROWS when the package is missing its own packaged schema, rather than
+ * returning a status. That is deliberate and is the house behaviour —
+ * `loadSchema` throws for every family, and an install that cannot find its own
+ * `data/schemas/**` is a corrupt package rather than a document this reader can
+ * report on. A caller that turns runtime faults into a check verdict (doctor)
+ * must wrap this call; a caller that would rather crash than mis-report is
+ * already correct.
  */
 export async function resolveAssuranceRecord({ pluginRoot = defaultPluginRoot(), schema } = {}) {
   if (typeof pluginRoot !== 'string' || !pluginRoot.trim()) {

@@ -155,7 +155,7 @@ describe('compatibility assurance record — the shipped asset (ADR-0054 §Decis
       `${ASSURANCE_SCHEMA_VERSION}.json`,
       'registry filename matches the $id',
     );
-    strictEqual(SCHEMA.properties.schema.pattern, `^${ASSURANCE_SCHEMA_VERSION.replace('.', '\\.')}$`, 'the schema pins its own version EXACTLY');
+    strictEqual(SCHEMA.properties.schema.pattern, `^${ASSURANCE_SCHEMA_VERSION.replaceAll('.', '\\.')}$`, 'the schema pins its own version EXACTLY');
   });
 
   it('does NOT change what the dated-header grammar parses (§Decision 1)', async () => {
@@ -239,6 +239,38 @@ describe('compatibility assurance record — sentinel and fence grammar', () => 
     // The strictness above must not make the grammar unauthorable — a markdown
     // writer's blank line after the sentinel is not a defect.
     strictEqual(parse(doc(`\n\n${fenced(EMPTY_RECORD)}\n\n`)).status, 'resolved');
+  });
+
+  it('a CRLF checkout reads the SAME record, because the header grammar already does', async () => {
+    // Measured before it was fixed: a CRLF copy of the shipped baseline parsed
+    // its dated header (HEADER_RE's `\s*` matches `\r`) and failed to parse its
+    // assurance record — one module disagreeing with itself about one file.
+    // There is no .gitattributes forcing LF, so that copy is reachable, and the
+    // failure was fail-closed but UNREPAIRABLE: every byte of the record right,
+    // no edit that fixes it.
+    const shipped = await readFile(SHIPPED_BASELINE, 'utf-8');
+    const crlf = shipped.replaceAll('\n', '\r\n');
+    notStrictEqual(crlf, shipped, 'precondition: the fixture actually converted');
+    deepStrictEqual(parseBaseline(crlf), parseBaseline(shipped), 'CONTROL: the header grammar was already tolerant');
+
+    const lfResult = parse(shipped);
+    const crlfResult = parse(crlf);
+    strictEqual(crlfResult.status, 'resolved');
+    deepStrictEqual(crlfResult.record, lfResult.record);
+    // And the identity of the record does not move with the checkout style,
+    // which is what lets ADR-0054 §Decision 8's cross-tag check compare
+    // contents rather than formatting.
+    strictEqual(crlfResult.block_sha256, lfResult.block_sha256);
+  });
+
+  it('trailing whitespace on a fence line does not make the record unreadable', () => {
+    // Same dead-end reasoning, same safety argument: the fence lines carry no
+    // record data, so tolerating a stray space cannot change what was parsed.
+    const padded = `\`\`\`json  \n${EMPTY_RECORD}\`\`\` `;
+    strictEqual(parse(doc(padded)).status, 'resolved');
+    // But the tolerance does NOT extend to the body — a space is still a byte.
+    const paddedBody = `\`\`\`json\n${EMPTY_RECORD.replace('\n}', ' \n}')}\`\`\``;
+    strictEqual(parse(doc(paddedBody)).status, 'noncanonical');
   });
 
   it('a JSON array or scalar at the root is unparseable, not invalid', () => {
