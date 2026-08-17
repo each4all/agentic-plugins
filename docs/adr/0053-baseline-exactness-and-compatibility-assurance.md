@@ -148,8 +148,20 @@ the split; implementation is a separate follow-up.**
 1. **Exactness keeps the computation and the grammar.** Strict normalized
    equality at `doctor.mjs:1191-1194` is correct for the question it answers and
    is not relaxed. The single baseline grammar and failure vocabulary
-   established by ADR-0051 §Decision 4 are not forked: no reader's parser
-   changes shape to accommodate this decision.
+   established by ADR-0051 §Decision 4 are not forked.
+
+   Stated precisely, because §Decision 2 does add content to the packaged
+   baseline and the two claims must not be read as contradicting each other:
+   the *dated-header* grammar — `HEADER_RE` and the `{date, claude, codex}`
+   shape `parseBaseline` returns — is unchanged, and every existing caller
+   keeps parsing exactly what it parses today. Assurance is a **separate
+   section with its own reader, added to the same single-source module**
+   (`plugins/runtime/scripts/lib/host-parity-baseline.mjs`), never a widening
+   of the header. That is an addition under ADR-0051 §Decision 4, not a fork:
+   what §Decision 4 forbids is four callers each inventing a grammar for the
+   same fact, and this adds one grammar for a new fact in the one place that
+   owns grammars. A reader that does not know the section must degrade to
+   exactness-only rather than fail — the follow-up owns that rule.
 
 2. **Assurance is a separate, human-granted verdict.** It records whether the
    host this machine runs is covered by accepted review, and it is never derived
@@ -247,9 +259,11 @@ Replace `current`/`stale` with grades such as `covered-no-contact` or
 where the verdict is computed: `doctor` holds two version strings and the parsed
 baseline, and "did this release touch a contract we consume" is precisely what
 ADR-0026 §3 placed behind human review. And it changes the baseline grammar,
-which twelve non-test readers and `tests/runtime/test-baseline-consumer-contract.mjs`
-share, reintroducing the forked-parser failure ADR-0051 §Decision 4 exists to
-prevent. The useful half of the proposal — recording what review concluded —
+which the four modules that import the parser — `compat.mjs`, `doctor.mjs`,
+`dashboard.mjs` and the CI-only `check-host-version-drift.mjs`, the same four
+whose disagreement ADR-0051 was written to end — share with
+`tests/runtime/test-baseline-consumer-contract.mjs`, reintroducing the
+forked-parser failure ADR-0051 §Decision 4 exists to prevent. The useful half of the proposal — recording what review concluded —
 survives in §Decision 2 without touching the version grammar.
 
 ### B′ — Patch-tolerance alignment with the CI drift gate
