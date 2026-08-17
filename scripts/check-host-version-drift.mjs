@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import {
   compareReleaseCore,
   extractBaselineVersions,
+  parseBaseline,
   releaseCoreParts,
   releaseVersion,
 } from '../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
@@ -160,6 +161,33 @@ export function aggregate(results, { staleDays, observedDate, now }) {
     exitCode = 1;
     reasons.push(`baseline observed ${ageDays}d ago (> ${staleDays}d window)`);
   }
+  // A version pair this checker cannot COMPARE is not a currency finding, and
+  // the fallthrough below used to make it one: `driftSeverity` returns
+  // `unknown`, `unknown` is in none of the buckets above, and the `else`
+  // declared it `current` with exit 0. Measured on a `1.2.3` baseline against a
+  // `1.2.3.4` upstream — `severity: unknown`, `direction: null`, `status:
+  // current`. The same fallthrough already swallowed a malformed baseline
+  // version, so this is pre-existing rather than introduced here; what changed
+  // is that the truncation refusal gives it a new and reachable way in.
+  //
+  // This file's own header has always promised the other behaviour: exit 2 for
+  // "a fatal upstream condition like a schema change / 404 / unparseable
+  // version — the gate fails loudly rather than going silently green". The code
+  // now does what the header says. Placed AFTER the drift and stale blocks so
+  // their reasons are still recorded, and overriding their exit code because a
+  // check that could not be completed must not be reported as a completed one.
+  const uncomparable = hosts.filter((h) => h.severity === 'unknown');
+  if (uncomparable.length) {
+    status = 'uncomparable-version';
+    exitCode = 2;
+    for (const h of uncomparable) {
+      reasons.push(
+        `${h.host} version pair is not comparable (baseline ${JSON.stringify(h.baseline)} vs latest ${JSON.stringify(h.latest)}) `
+          + '— refusing to report drift OR currency',
+      );
+    }
+  }
+
   if (!status) {
     if (unavailable.length === hosts.length) {
       status = 'source-unavailable';
@@ -246,8 +274,17 @@ export async function fetchNpmLatest(pkg, { httpGet = defaultHttpGet, timeoutMs 
   }
   const latest = json && json.latest;
   if (!latest) throw Object.assign(new Error('npm dist-tags: missing "latest"'), { code: 'SCHEMA' });
+  // Comparability, not mere extractability. `normalizeVersion` alone accepts
+  // `1.2.3.4` by silently dropping the tail, and the drop is irreversible: by
+  // the time the value reaches the comparator it IS `1.2.3` and compares
+  // exactly equal to a real `1.2.3`. Measured — upstream `1.2.3.4` against a
+  // `1.2.3` baseline reported `current`, exit 0, closing a real drift. The
+  // check therefore runs against the RAW text, which is the only place the
+  // truncation is still visible.
   const normalized = normalizeVersion(latest);
-  if (!normalized) throw Object.assign(new Error(`npm dist-tags: unparseable "${latest}"`), { code: 'SCHEMA' });
+  if (!normalized || releaseCoreParts(latest) === null) {
+    throw Object.assign(new Error(`npm dist-tags: unparseable "${latest}"`), { code: 'SCHEMA' });
+  }
   return normalized;
 }
 
@@ -265,8 +302,13 @@ export async function fetchGithubLatest(repo, { httpGet = defaultHttpGet, timeou
   // Prefer release.name (normalized, e.g. "0.137.0") over tag_name ("rust-v0.137.0").
   const raw = json && (json.name || json.tag_name);
   if (!raw) throw Object.assign(new Error('github releases: missing name/tag_name'), { code: 'SCHEMA' });
+  // Same comparability rule as the npm reader — the mirror, checked because
+  // fixing one registry path and leaving the other is how this defect class
+  // survives a fix.
   const normalized = normalizeVersion(raw);
-  if (!normalized) throw Object.assign(new Error(`github releases: unparseable "${raw}"`), { code: 'SCHEMA' });
+  if (!normalized || releaseCoreParts(raw) === null) {
+    throw Object.assign(new Error(`github releases: unparseable "${raw}"`), { code: 'SCHEMA' });
+  }
   return normalized;
 }
 
@@ -320,6 +362,23 @@ export async function runCheck({
   if (!observedDate) missing.push('observed-on date');
   if (missing.length) {
     return { status: 'error', exitCode: 2, reason: `baseline parse failed: ${missing.join(', ')}` };
+  }
+
+  // The BASELINE side of the same truncation hole, and it needs the raw header
+  // because `extractBaselineVersions` has already normalized: a baseline
+  // recording `1.2.3.4` arrives here as `1.2.3` and reports `current` against a
+  // genuine `1.2.3` upstream. `parseBaseline` is re-read rather than widening
+  // `extractBaselineVersions`, whose return shape compat's snapshot schema also
+  // consumes and which ADR-0053 §Decision 1 pins.
+  const rawHeader = parseBaseline(baselineText);
+  const uncomparable = ['claude', 'codex'].filter((host) => releaseCoreParts(rawHeader?.[host]) === null);
+  if (uncomparable.length) {
+    return {
+      status: 'error',
+      exitCode: 2,
+      reason: `baseline records a version this checker cannot compare (${uncomparable.join(', ')}) `
+        + '— a version whose extra components would be silently dropped is refused rather than truncated',
+    };
   }
 
   const baselineByHost = { claude: versions.claude.version, codex: versions.codex.version };

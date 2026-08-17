@@ -289,6 +289,17 @@ export function classifyHostPairRelation({ observed, reviewed } = {}) {
  * numeric component — the `1.2.3.4` class. Deliberately narrow: real baselines
  * carry labelled text (`2.1.197 (Claude Code)`, `codex-cli 0.142.4`,
  * `rust-v0.137.0`), and measurement confirms none of those is flagged.
+ *
+ * STATED RESIDUAL, not an oversight (cross-host review). Three malformed shapes
+ * still extract as `1.2.3` and can report exact: `1.2.3-`, `1.2.3+` (a
+ * prerelease or build marker with nothing after it, which the optional groups
+ * decline to match) and `1.2.3..4` (an empty component, so the next character
+ * after the match is a dot rather than a digit). None is a valid version in any
+ * scheme, none is a form either host prints, and widening the detector to catch
+ * them costs the property the CONTROL cases pin — that ordinary prose after a
+ * version (`2.1.233. See the note below.`) is not mistaken for a dropped
+ * component. Refusing them is a grammar-policy change, and it should be made
+ * deliberately rather than as a side effect of this one.
  */
 function readVersionToken(value) {
   const text = String(value ?? '').trim();
