@@ -647,6 +647,20 @@ export const PACKAGED_SCHEMA_FILES = Object.freeze({
   // same way: the arbiter self-validates its output against this family before
   // any surface renders it, and the S8 dashboard consumer validates through it.
   'runtime-entry-brief': 'runtime-entry-brief-1.0.json',
+  // ADR-0053 §Decision 2 / ADR-0054 §Decision 2 — the human-granted host
+  // compatibility assurance record carried in the packaged host-parity
+  // baseline. STRUCTURE only; lib/assurance-contract.mjs is the semantic half,
+  // the same split runtime-bootstrap-run-1.2 makes for the same missing oneOf.
+  //
+  // Its `schema` property is an EXACT pin, and that deliberately diverges from
+  // every family above (ADR-0054 §Decision 3). The forward-compat minor rule
+  // documented at the top of this file is right for additive bootstrap and
+  // session artifacts; for assurance a newer minor could add a NARROWING key —
+  // an expiry, a session cap, a stricter applicability condition — and an older
+  // reader that ignored it with a warning would report coverage the newer
+  // document withheld. That is ADR-0053 §Decision 5's "absence of evidence is
+  // never coverage", reached by accident.
+  'runtime-host-assurance': 'runtime-host-assurance-1.0.json',
 });
 
 // Deprecated alias — the pre-S2 name for the registry, kept so an external
