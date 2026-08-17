@@ -300,8 +300,17 @@ export function classifyHostPairRelation({ observed, reviewed } = {}) {
  * version (`2.1.233. See the note below.`) is not mistaken for a dropped
  * component. Refusing them is a grammar-policy change, and it should be made
  * deliberately rather than as a side effect of this one.
+ *
+ * EXPORTED because `lib/assurance-contract.mjs` needs exactly this pair — the
+ * token, and whether reading it dropped anything — for cohort membership, and
+ * ADR-0051 §Decision 4 keeps one grammar in one module. The alternative was a
+ * private `SEMVER_RE` copy plus a private truncation rule inside the matcher,
+ * which is the four-private-normalizers failure `releaseVersion`'s note records.
+ * What the matcher deliberately does NOT import is `classifyVersionRelation`:
+ * that answers the DIRECTION question, whose states ADR-0053 §Decision 9 forbids
+ * promoting to coverage, so membership shares the grammar and not the verdict.
  */
-function readVersionToken(value) {
+export function readVersionToken(value) {
   const text = String(value ?? '').trim();
   const match = text.match(SEMVER_RE);
   if (!match) return { token: null, truncated: false };

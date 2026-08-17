@@ -192,20 +192,51 @@ describe('machine host probe (machine-only seam)', () => {
   });
 
   describe('normalized-shape', () => {
-    it('normalizes Claude text rows and Codex json rows to the same {id,version,scope,enabled} shape', async () => {
+    it('normalizes Claude text rows and Codex json rows to the same {id,version,scope,enabled,ambiguous,observations} shape', async () => {
       const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
       const result = await probeMachineHostState({ homeDir: home, env: {}, runner: fakeRunner(baseProbeMap()) });
       ok(result.installed.claude.length > 0 && result.installed.codex.length > 0, 'both hosts report an installed row');
-      const KEYS = ['enabled', 'id', 'scope', 'version'];
+      // `ambiguous`/`observations` joined the contract shape deliberately: the raw
+      // parsers detect a duplicate install and this is the layer bootstrap reads,
+      // so dropping them here destroyed the fact before any consumer could see it.
+      // They do NOT reach a serialized artifact — `bootstrap.mjs`'s
+      // `pluginStatesFor` projects each row down to `{version, state}` — so the
+      // addition cannot invalidate a bootstrap-run record.
+      const KEYS = ['ambiguous', 'enabled', 'id', 'observations', 'scope', 'version'];
       for (const row of result.installed.claude) deepStrictEqual(Object.keys(row).sort(), KEYS, 'claude rows carry the contract shape');
       for (const row of result.installed.codex) deepStrictEqual(Object.keys(row).sort(), KEYS, 'codex rows carry the same shape');
       deepStrictEqual(
         result.installed.claude.find((r) => r.id === 'engineer'),
-        { id: 'engineer', version: '1.2.3', scope: 'user', enabled: true },
+        { id: 'engineer', version: '1.2.3', scope: 'user', enabled: true, ambiguous: false, observations: 1 },
       );
       const codexRow = result.installed.codex.find((r) => r.id === 'engineer');
       strictEqual(codexRow.enabled, true);
       strictEqual(codexRow.version, '1.2.3');
+    });
+
+    it('carries duplicate-install ambiguity into the normalized rows', async () => {
+      // The reason the two fields are in the shape at all, driven rather than
+      // asserted structurally. Without this the addition above would be a shape
+      // change no test connects to a behaviour.
+      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const result = await probeMachineHostState({
+        homeDir: home,
+        env: {},
+        runner: fakeRunner(baseProbeMap({
+          'codex plugin list --json': okResult(JSON.stringify({
+            installed: [
+              { name: 'engineer', marketplaceName: 'agentic-plugins', installed: true, enabled: true, version: '1.2.3' },
+              { name: 'engineer', marketplaceName: 'agentic-plugins', installed: true, enabled: false, version: '1.2.3' },
+            ],
+          })),
+        })),
+      });
+      const row = result.installed.codex.find((r) => r.id === 'engineer');
+      strictEqual(row.ambiguous, true, 'the normalized row keeps the ambiguity the parser found');
+      strictEqual(row.observations, 2);
+      // CONTROL: the Claude side of the same probe saw one install, so the flag is
+      // per-row rather than a global switch.
+      strictEqual(result.installed.claude.find((r) => r.id === 'engineer').ambiguous, false);
     });
   });
 
@@ -492,5 +523,189 @@ describe('machine host probe (machine-only seam)', () => {
     it('CANONICAL_MARKETPLACE is exported as the github each4all/agentic-plugins identity', () => {
       deepStrictEqual(CANONICAL_MARKETPLACE, { source: 'github', repo: 'each4all/agentic-plugins' });
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Duplicate-install ambiguity (ADR-0053 §Decision 5, via ADR-0054's matcher)
+  // -------------------------------------------------------------------------
+  //
+  // Both parsers used to COLLAPSE a repeated plugin name — Claude's by
+  // overwriting the map entry, Codex's by keeping the "strongest" install
+  // state. One defect in two places, and the pair is tested together for that
+  // reason: fixing one and leaving the mirror is exactly how a repaired hole
+  // stays open somewhere else.
+  //
+  // These drive the whole probe rather than the parsers directly, because the
+  // parsers are private and the fields have to survive the trip out.
+  describe('duplicate-install ambiguity is preserved, not collapsed', () => {
+    const claudeDuplicate = (a, b) => 'Installed plugins:\n\n'
+      + `  > runtime@agentic-plugins\n    Version: ${a.version}\n    Scope: user\n    Status: ${a.status}\n`
+      + `  > runtime@agentic-plugins\n    Version: ${b.version}\n    Scope: project\n    Status: ${b.status}\n`;
+
+    const codexDuplicate = (a, b) => JSON.stringify({
+      installed: [
+        { name: 'runtime', marketplaceName: 'agentic-plugins', installed: true, enabled: a.enabled, version: a.version },
+        { name: 'runtime', marketplaceName: 'agentic-plugins', installed: true, enabled: b.enabled, version: b.version },
+      ],
+    });
+
+    async function probe(overrides) {
+      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      return probeMachineHostState({ homeDir: home, env: {}, runner: fakeRunner(baseProbeMap(overrides)) });
+    }
+
+    it('CONTROL: a single install is one observation and is not ambiguous', async () => {
+      // Without this the ambiguity assertions below could pass against a parser
+      // that marks everything ambiguous, which would block every machine.
+      const result = await probe({});
+      strictEqual(result.claudePluginList.engineer.observations, 1);
+      strictEqual(result.claudePluginList.engineer.ambiguous, false);
+      strictEqual(result.codexPluginList.entries.engineer.observations, 1);
+      strictEqual(result.codexPluginList.entries.engineer.ambiguous, false);
+    });
+
+    it('Claude: two scopes at DIFFERENT versions is ambiguous', async () => {
+      const result = await probe({
+        'claude plugin list': okResult(claudeDuplicate({ version: '0.91.0', status: 'enabled' }, { version: '0.90.3', status: 'enabled' })),
+      });
+      strictEqual(result.claudePluginList.runtime.observations, 2);
+      strictEqual(result.claudePluginList.runtime.ambiguous, true);
+      // Last-wins is PRESERVED for the primary entry, so every existing
+      // consumer reads exactly what it read before the ambiguity field existed.
+      strictEqual(result.claudePluginList.runtime.version, '0.90.3');
+      strictEqual(result.claudePluginList.runtime.scope, 'project');
+    });
+
+    it('Claude: two scopes AGREEING is two observations and not ambiguous', async () => {
+      // Ambiguity is about the ANSWER, not the row count. Two rows agreeing
+      // leave "which version is active" with one answer, and over-blocking is a
+      // defect too.
+      const result = await probe({
+        'claude plugin list': okResult(claudeDuplicate({ version: '0.91.0', status: 'enabled' }, { version: '0.91.0', status: 'enabled' })),
+      });
+      strictEqual(result.claudePluginList.runtime.observations, 2);
+      strictEqual(result.claudePluginList.runtime.ambiguous, false);
+    });
+
+    it('Claude: same version, DISAGREEING status is ambiguous', async () => {
+      const result = await probe({
+        'claude plugin list': okResult(claudeDuplicate({ version: '0.91.0', status: 'enabled' }, { version: '0.91.0', status: 'failed' })),
+      });
+      strictEqual(result.claudePluginList.runtime.ambiguous, true);
+    });
+
+    it('Codex: the MIRROR — a duplicate whose enabled state differs is ambiguous', async () => {
+      // The Codex side resolved a disagreement OPTIMISTICALLY (an `enabled` row
+      // outranks the `disabled` row beside it), which is worse than last-wins
+      // for a coverage decision: ADR-0053 §Decision 8 makes "is disabled" an
+      // invalidation, so ranking it away discards the fact the matcher needs.
+      const result = await probe({
+        'codex plugin list --json': okResult(codexDuplicate({ version: '0.91.0', enabled: true }, { version: '0.91.0', enabled: false })),
+      });
+      strictEqual(result.codexPluginList.entries.runtime.observations, 2);
+      strictEqual(result.codexPluginList.entries.runtime.ambiguous, true);
+      // The pre-existing behaviour is untouched: the strongest state is still
+      // the kept entry, and the warning is still emitted.
+      strictEqual(result.codexPluginList.entries.runtime.status, 'enabled');
+      ok(
+        result.codexPluginList.warnings.some((warning) => /duplicate agentic-plugins entry for runtime/.test(warning)),
+        'the existing duplicate warning still fires',
+      );
+    });
+
+    it('Codex: a duplicate in full AGREEMENT is not ambiguous', async () => {
+      const result = await probe({
+        'codex plugin list --json': okResult(codexDuplicate({ version: '0.91.0', enabled: true }, { version: '0.91.0', enabled: true })),
+      });
+      strictEqual(result.codexPluginList.entries.runtime.observations, 2);
+      strictEqual(result.codexPluginList.entries.runtime.ambiguous, false);
+    });
+
+    it('the ambiguity reaches the assurance matcher as unassured', async () => {
+      // End to end, because the fields exist for exactly one consumer and a
+      // producer test alone would not show they are read. The grant is
+      // otherwise satisfiable — the ONLY difference between the two branches
+      // here is whether the two observed rows agree.
+      const { observePackages, matchAssurance } = await import('../../plugins/runtime/scripts/lib/assurance-contract.mjs');
+      const { loadPluginSet } = await import('../../plugins/runtime/scripts/lib/plugin-set.mjs');
+      const pluginSet = await loadPluginSet({ pluginRoot: resolve(dirname(MODULE_PATH), '..', '..') });
+      const grantRecord = {
+        schema: 'runtime-host-assurance-1.0',
+        grants: [{
+          id: 'ambiguity-probe',
+          state: 'granted',
+          reviewed_at: '2026-08-16',
+          review_provenance: { kind: 'adr', reference: 'ADR-0054' },
+          cohort: [{ claude: '2.1.140', codex: '0.137.0' }],
+          packages: { runtime: '0.91.0' },
+          residuals: [],
+        }],
+      };
+      const hosts = { claude: '2.1.140', codex: '0.137.0' };
+
+      const agreeing = await probe({
+        'claude plugin list': okResult(claudeDuplicate({ version: '0.91.0', status: 'enabled' }, { version: '0.91.0', status: 'enabled' })),
+        'codex plugin list --json': okResult(codexDuplicate({ version: '0.91.0', enabled: true }, { version: '0.91.0', enabled: true })),
+      });
+      strictEqual(
+        matchAssurance({
+          record: grantRecord, hosts, pluginSet, today: '2026-08-17',
+          observed: observePackages({ claudeListStatus: agreeing.claude.plugin.status, claudePluginList: agreeing.claudePluginList, codexPluginList: agreeing.codexPluginList }),
+        }).state,
+        'covered',
+        'CONTROL: agreeing duplicates leave a determinate answer',
+      );
+
+      const disagreeing = await probe({
+        'claude plugin list': okResult(claudeDuplicate({ version: '0.91.0', status: 'enabled' }, { version: '0.90.3', status: 'enabled' })),
+        'codex plugin list --json': okResult(codexDuplicate({ version: '0.91.0', enabled: true }, { version: '0.91.0', enabled: true })),
+      });
+      const blocked = matchAssurance({
+        record: grantRecord, hosts, pluginSet, today: '2026-08-17',
+        observed: observePackages({ claudeListStatus: disagreeing.claude.plugin.status, claudePluginList: disagreeing.claudePluginList, codexPluginList: disagreeing.codexPluginList }),
+      });
+      strictEqual(blocked.state, 'unassured');
+      ok(
+        blocked.reasons.some((reason) => /observed 2 times with differing facts/.test(reason)),
+        `the ambiguity is the stated reason (got: ${blocked.reasons.join(' | ')})`,
+      );
+    });
+  });
+});
+
+// A cache directory's manifest must NAME the plugin the directory claims.
+// Cross-host review found `manifest_name` recorded and never checked: a
+// .../agentic-plugins/runtime/<v>/ whose manifest says `{"name":"engineer"}` was
+// admitted as a runtime install, and with the Codex list unavailable a cutover
+// version row could be satisfied from it. `session-readiness.mjs`'s sibling
+// scanner already refused exactly this and says why, so the two now agree.
+describe('cache scan binds a manifest to the plugin it was asked about', () => {
+  async function homeWithClaudeCache(plugin, manifest) {
+    const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+    const dir = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', plugin, '0.90.3', '.claude-plugin');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'plugin.json'), JSON.stringify(manifest));
+    return home;
+  }
+
+  it('CONTROL: a matching manifest is admitted', async () => {
+    const home = await homeWithClaudeCache('runtime', { name: 'runtime', version: '0.90.3' });
+    const result = await probeMachineHostState({ homeDir: home, env: {}, runner: fakeRunner(baseProbeMap()) });
+    strictEqual(result.caches.claude.runtime.status, 'available');
+    strictEqual(result.caches.claude.runtime.latest.manifest_version, '0.90.3');
+  });
+
+  it('a manifest naming a DIFFERENT plugin is not an install of this one', async () => {
+    const home = await homeWithClaudeCache('runtime', { name: 'engineer', version: '0.90.3' });
+    const result = await probeMachineHostState({ homeDir: home, env: {}, runner: fakeRunner(baseProbeMap()) });
+    strictEqual(result.caches.claude.runtime.status, 'not_installed', 'a mis-named manifest is not a runtime install');
+    deepStrictEqual(result.caches.claude.runtime.versions, []);
+    strictEqual(result.caches.claude.runtime.latest, null);
+  });
+
+  it('a manifest with no name at all is likewise not an install', async () => {
+    const home = await homeWithClaudeCache('runtime', { version: '0.90.3' });
+    const result = await probeMachineHostState({ homeDir: home, env: {}, runner: fakeRunner(baseProbeMap()) });
+    strictEqual(result.caches.claude.runtime.status, 'not_installed');
   });
 });
