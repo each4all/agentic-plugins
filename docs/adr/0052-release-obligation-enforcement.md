@@ -253,7 +253,7 @@ assumed.**
      loop can actually keep up with.
 
      > **Closed by [ADR-0053](0053-baseline-exactness-and-compatibility-assurance.md)
-     > (proposed 2026-08-17): the patch-tolerance half is rejected on
+     > (accepted 2026-08-17): the patch-tolerance half is rejected on
      > measurement, the direction-aware half is adopted.** Measured across the
      > baseline's 19-row Version History, **17 of 18 Claude Code steps are
      > patch-position and none are minor or major** — the product has been

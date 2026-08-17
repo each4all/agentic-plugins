@@ -257,7 +257,7 @@ the source that is reviewed and released — never a runtime read.**
    becomes wrong and must be reconciled in the implementation PR.
 
 > **Amended by [ADR-0053](0053-baseline-exactness-and-compatibility-assurance.md)
-> (proposed 2026-08-17): the packaged baseline gains a compatibility-assurance
+> (accepted 2026-08-17): the packaged baseline gains a compatibility-assurance
 > section.** Items 1–8 above are unchanged and remain operative — the packaged
 > copy stays the sole authority, changing it still obliges a release, and the
 > grammar stays single-sourced. ADR-0053 adds a *new fact* rather than widening
