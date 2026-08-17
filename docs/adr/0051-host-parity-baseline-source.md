@@ -256,6 +256,23 @@ the source that is reviewed and released — never a runtime read.**
    source while reusing doctor's result. Under item 1 that label
    becomes wrong and must be reconciled in the implementation PR.
 
+> **Amended by [ADR-0053](0053-baseline-exactness-and-compatibility-assurance.md)
+> (accepted 2026-08-17): the packaged baseline gains a compatibility-assurance
+> section.** Items 1–8 above are unchanged and remain operative — the packaged
+> copy stays the sole authority, changing it still obliges a release, and the
+> grammar stays single-sourced. ADR-0053 adds a *new fact* rather than widening
+> an existing one: `HEADER_RE` and `parseBaseline`'s `{date, claude, codex}`
+> shape are untouched, and assurance is a separate section with its own reader
+> in this same module, which is an addition under item 4 rather than the fork
+> item 4 forbids. Two findings from that work bear directly on this ADR. Item 8's
+> reconciliation is broader than stated: exactness reaches cutover a second time
+> through `compat`'s exact-equality `drift_class` and the
+> `latest_compat_snapshot` check, so moving the checklist item alone changes
+> nothing. And the `status` field this ADR gave a failure vocabulary carries a
+> third class — `missing`/`unreadable`/`escaped`/`unparseable` plus probe
+> `unknown` — which ADR-0053 §Decision 3 makes an independent hard stop that
+> outranks any assurance grant.
+
 **Out of scope.** Enforcement of §Decision 2 is **prose only** and is
 recorded as an explicit follow-up: nothing in CI, release-please, or the
 validators fails when a packaged asset changes without a version change,

@@ -251,6 +251,25 @@ assumed.**
      — direction-aware, so a rollback still flags, which `compareSemver`
      already supports — would drop the obligation's firing rate to changes the
      loop can actually keep up with.
+
+     > **Closed by [ADR-0053](0053-baseline-exactness-and-compatibility-assurance.md)
+     > (accepted 2026-08-17): the patch-tolerance half is rejected on
+     > measurement, the direction-aware half is adopted.** Measured across the
+     > baseline's 19-row Version History, **17 of 18 Claude Code steps are
+     > patch-position and none are minor or major** — the product has been
+     > `2.1.x` throughout — so patch tolerance would not reduce noise on that
+     > host, it would remove the signal. The lap that motivated this bullet is
+     > the counterexample rather than the case for it: `2.1.232`→`2.1.233`
+     > withdrew `TaskCreate`/`TodoWrite` from current models while twenty
+     > command runbooks still called them, and it is patch-position, as are
+     > `2.1.233`'s permission revert and `2.1.232`'s background-spawn default.
+     > The companion 14-day window has never fired — **0 of 18 refresh
+     > intervals exceed 14 days**. Direction-awareness stands and is adopted as
+     > ADR-0053 §Decision 10, which also finds that ahead/behind is not enough
+     > (`same-precedence-nonexact` is reachable because `normalizeVersion`
+     > keeps prerelease/build while the comparison form drops it) and that
+     > `compareSemver` is **not** usable as-is: it lives in this repository's
+     > CI script, which an installed runtime cannot import.
    - **Cross-package scope.** Item 3's asset→owning-package registry, and the
      second tier of rendered distributed behavior
      (`receivers/codex-notify-shuttle.mjs`, `codex-notify-chain.mjs`,
