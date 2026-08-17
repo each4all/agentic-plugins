@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime-host-assurance-1.0",
+  "title": "Host compatibility assurance record",
+  "description": "ADR-0053 §Decision 2 / ADR-0054 §Decision 2 — the human-granted assurance fact carried in the packaged host-parity baseline. STRUCTURE ONLY. Every cross-record and cross-field rule (id uniqueness, negative-wins across duplicate/conflicting/superseded/revoked records, exact package-set equality, ambiguity, vacuous grants, residual coherence, calendar validity) is enforced by lib/assurance-contract.mjs, exactly as runtime-bootstrap-run-1.2 leaves kind exclusivity to lib/evidence-contract.mjs because the validator has no oneOf. Eight semantic cases were measured passing this schema; that is the boundary, not a gap in it. NOTE the `schema` pattern below is an EXACT pin (ADR-0054 §Decision 3). Measured across the seven packaged schemas, exact pinning is the majority shape — four pin exactly and three use the family-wide `1\\.[0-9]+` form — so what is distinctive here is the REASON rather than the shape: the other four have simply never had a second minor, while this one exists to refuse a `1.1` that will eventually be written. A newer minor could add a NARROWING key, and an older reader that ignored it with a warning would turn absence of evidence into coverage. When this family reaches 1.1 the pin is BUMPED, never widened.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "grants"],
+  "properties": {
+    "schema": {
+      "description": "Exact pin. `compareSchemaVersion` would accept a newer minor and forgive its unknown scalars; this pattern refuses it first.",
+      "type": "string",
+      "pattern": "^runtime-host-assurance-1\\.0$"
+    },
+    "grants": {
+      "description": "Append-only. An EMPTY array is the valid, meaningful state of a runtime that ships the gate before any grant exists (ADR-0054 §Decision 6 R1) — every host reads unassured and readiness blocks. KNOWN LIMIT, stated rather than left to be discovered: because ADR-0054 §Decision 8 makes revocations and supersessions permanent, this array only ever grows, and maxItems is a hard authoring ceiling with no rollover policy behind it. The cap is the validator's own SCHEMA_MAX_ARRAY_ENTRIES rather than a number chosen here, so there is one bound to remember; reaching it requires a schema minor that decides how history is retired, and that decision belongs with the cross-tag monotonicity check that depends on the history.",
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/grant" }
+    }
+  },
+  "$defs": {
+    "grant": {
+      "description": "One human review decision. A human authors the coverage predicate; runtime only evaluates membership in it (ADR-0053 §Decision 5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "reviewed_at", "review_provenance", "cohort", "packages", "residuals"],
+      "properties": {
+        "id": {
+          "description": "Immutable identity (ADR-0054 §Decision 8). A revoked grant is never un-revoked, only replaced by a NEW id carrying `reapproval_of`.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"
+        },
+        "state": {
+          "description": "`revoked` is the tombstone §Decision 8 requires to survive a package rollback: removing a positive grant outright is what the cross-tag monotonicity check refuses.",
+          "type": "string",
+          "enum": ["granted", "revoked", "superseded"]
+        },
+        "reviewed_at": {
+          "description": "Calendar validity (2026-13-45 is digit-shaped and not a date) is a semantic rule; this pattern fixes the shape only.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "review_provenance": {
+          "description": "ADR-0053 §Decision 2/5 — the durable identity of the accepted review. Never a version comparison, and never something runtime derives.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reference"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["adr", "evidence-record", "pull-request", "owner-attestation"] },
+            "reference": { "type": "string", "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" }
+          }
+        },
+        "cohort": {
+          "description": "ADR-0053 §Decision 7 — an explicit finite set of reviewed host TUPLES. Per-host lists are deliberately NOT expressible: an array of complete {claude, codex} tuples cannot be read as a Cartesian product, so independent per-host cohorts cannot silently authorize their combinations.",
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/hostTuple" }
+        },
+        "packages": {
+          "description": "ADR-0053 §Decision 8 — the consuming package set and the versions reviewed, because a runtime-packaged grant naming only host versions outlives the code it described. Absence of a package here means it was NOT reviewed, never that it is covered. Both grammars are the repository's existing authorities rather than new ones, because a grant must be able to name every package runtime can actually observe: the name pattern is runtime-plugin-set-1.0's `edge.name`, and the version pattern is lib/semver.mjs's SEMVER_SHAPE_RE — the same grammar plugin-set.mjs validates `minimum_version` with. Measured agreement with `isSemVer` on eight inputs, including the two directions a hand-written approximation got wrong: `0.91.0-rc.1` is representable and `01.2.3` is not.",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9-]{0,63}$": { "type": "string", "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$" }
+          }
+        },
+        "predicate": {
+          "description": "ADR-0053 §Decision 5 — extra conditions the reviewer scoped the grant to. Any key runtime cannot observe yields unassured; that judgement belongs to the semantic module, not here.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "models": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 128 } },
+            "integrations": { "type": "array", "maxItems": 8, "items": { "type": "string", "enum": ["terminal", "desktop", "vscode", "jetbrains", "web"] } },
+            "env_flags": { "type": "array", "maxItems": 16, "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}=[^\\u0000-\\u001f\\u007f]{0,64}$" } }
+          }
+        },
+        "residuals": {
+          "description": "ADR-0053 §Decision 6 — the open questions the reviewer accepted the host with. Without them assurance is strictly harder to satisfy than exactness and the treadmill merely relocates.",
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/residual" }
+        },
+        "supersedes": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" }
+        },
+        "reapproval_of": {
+          "description": "ADR-0054 §Decision 8 — the revoked id this grant re-approves. Recording it as a reference from a NEW id is what keeps revocation append-only.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"
+        },
+        "note": { "type": "string", "maxLength": 2048 }
+      }
+    },
+    "hostTuple": {
+      "description": "A reviewed host PAIR. The version grammar mirrors host-parity-baseline.mjs's SEMVER_RE — permissive about the core (two components allowed) because this records observed CLI text, strict about prerelease-then-build order because a single [-+] alternative is lossy.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claude", "codex"],
+      "properties": {
+        "claude": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$" },
+        "codex": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$" }
+      }
+    },
+    "residual": {
+      "description": "ADR-0053 §Decision 6 — a residual on a surface the baseline marks unadopted does not block; one on a CONSUMED surface is the reviewer's call and is recorded as such.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "consumption", "disposition"],
+      "properties": {
+        "surface": { "type": "string", "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+        "consumption": { "type": "string", "enum": ["consumed", "unadopted"] },
+        "disposition": { "type": "string", "enum": ["accepted-with-risk", "probe-pending", "not-applicable"] },
+        "consuming_package": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "note": { "type": "string", "maxLength": 1024 }
+      }
+    }
+  }
+}

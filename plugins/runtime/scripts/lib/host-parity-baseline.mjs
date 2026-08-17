@@ -35,6 +35,13 @@ import { fileURLToPath } from 'node:url';
 
 import { readPluginManifestVersions } from './plugin-manifest.mjs';
 import { resolveContained } from './path-containment.mjs';
+import {
+  SCHEMA_MAX_BYTES,
+  canonicalJson,
+  loadSchema,
+  parseSchemaVersion,
+  validateAgainstSchema,
+} from './schema-validate.mjs';
 
 export const BASELINE_RELATIVE_PATH = 'docs/host-parity-baseline.md';
 
@@ -260,6 +267,37 @@ export async function resolveHostParityBaseline({ pluginRoot = defaultPluginRoot
   if (typeof pluginRoot !== 'string' || !pluginRoot.trim()) {
     throw new TypeError('resolveHostParityBaseline: pluginRoot must be a non-empty string when provided; omit the key to use the packaged default');
   }
+  const read = await readPackagedBaseline(pluginRoot);
+  if (read.status !== 'ok') {
+    return { status: read.status, baseline: null, provenance: read.provenance };
+  }
+  const parsed = parseBaseline(read.text);
+  if (!parsed) {
+    return { status: 'unparseable', baseline: null, provenance: read.provenance };
+  }
+  return {
+    status: 'resolved',
+    baseline: parsed,
+    versions: {
+      claude: { version: normalizeVersion(parsed.claude) },
+      codex: { version: normalizeVersion(parsed.codex) },
+    },
+    provenance: read.provenance,
+  };
+}
+
+/**
+ * Read the packaged baseline ONCE, for every grammar in this module.
+ *
+ * `status` is `ok` plus the decoded text, or one of the integrity failures
+ * `resolveHostParityBaseline` documents — verbatim, because the dated header
+ * and the assurance section are two grammars over ONE file and a second read
+ * path is exactly the four-readers-disagreeing shape ADR-0051 removed. The
+ * provenance a caller receives is therefore identical whichever grammar it
+ * came for, including the content hash that tells two same-version installs
+ * apart.
+ */
+async function readPackagedBaseline(pluginRoot) {
   const manifest = await readPluginManifestVersions(pluginRoot);
   const located = await resolveContained(pluginRoot, BASELINE_RELATIVE_PATH);
   const baseProvenance = {
@@ -279,7 +317,7 @@ export async function resolveHostParityBaseline({ pluginRoot = defaultPluginRoot
   if (located.status !== 'ok') {
     return {
       status: located.status,
-      baseline: null,
+      text: null,
       provenance: { ...baseProvenance, reason: located.code ?? located.status },
     };
   }
@@ -293,7 +331,7 @@ export async function resolveHostParityBaseline({ pluginRoot = defaultPluginRoot
   } catch (err) {
     return {
       status: err?.code === 'ENOENT' ? 'missing' : 'unreadable',
-      baseline: null,
+      text: null,
       provenance: { ...baseProvenance, reason: err?.code ?? 'unreadable' },
     };
   }
@@ -310,21 +348,459 @@ export async function resolveHostParityBaseline({ pluginRoot = defaultPluginRoot
   // is not re-fixed: a BOM survives the round trip and changes the hash either
   // way.
   const contentSha256 = createHash('sha256').update(bytes).digest('hex');
-  const text = bytes.toString('utf8');
-  const parsed = parseBaseline(text);
-  const provenance = { ...baseProvenance, content_sha256: contentSha256 };
+  return {
+    status: 'ok',
+    text: bytes.toString('utf8'),
+    // The RAW bytes ride along beside the decoded text. `toString('utf8')` is
+    // lossy — every invalid sequence becomes U+FFFD — and the assurance reader
+    // needs to know that happened. The header reader deliberately does not look
+    // at this, because tightening it would change what an existing caller
+    // parses (ADR-0053 §Decision 1).
+    bytes,
+    provenance: { ...baseProvenance, content_sha256: contentSha256 },
+  };
+}
 
-  if (!parsed) {
-    return { status: 'unparseable', baseline: null, provenance };
+// ---------------------------------------------------------------------------
+// Compatibility assurance — ADR-0053 §Decision 2, encoded by ADR-0054 §Decision 1
+// ---------------------------------------------------------------------------
+//
+// A SECOND grammar over the SAME file, added here rather than anywhere else
+// because this module owns grammars (ADR-0051 §Decision 4). What §Decision 4
+// forbids is four callers each inventing a grammar for one fact; this adds one
+// grammar for a NEW fact in the one place that owns them. The dated header is
+// untouched: `HEADER_RE`, `parseBaseline` and its `{date, claude, codex}` shape
+// are exactly what they were, and every existing caller parses exactly what it
+// parsed before.
+//
+// The two grammars answer questions that must not be traded against each other
+// (ADR-0053 §Decision 3). A baseline whose header parses and whose assurance
+// section does not is a FRESHNESS success and an ASSURANCE failure, and vice
+// versa — so the assurance reader carries its own status vocabulary rather than
+// borrowing `BASELINE_STATUSES`, whose values name integrity facts about the
+// file. Integrity outranks both: when the file itself is missing, unreadable or
+// escaped, the assurance answer is `baseline-unavailable` and it delegates the
+// operator action to `baselineFailure` instead of inventing a second name for
+// one fact.
+//
+// THE EXTRACTED BLOCK IS WHAT IS VALIDATED, never the document: the shipped
+// baseline is ~90 KB against `SCHEMA_MAX_BYTES`'s 64 KiB, so validating the
+// file would fail on size alone and say nothing about the record.
+
+export const ASSURANCE_SCHEMA_FAMILY = 'runtime-host-assurance';
+
+/**
+ * The one version this reader reads, spelled out.
+ *
+ * ADR-0054 §Decision 3 — enforced HERE and not only by the schema's `pattern`,
+ * because the two produce different answers to "why". `compareSchemaVersion`
+ * accepts a newer minor and forgives its unknown scalars; the pattern would
+ * then reject the document as a generic constraint violation, which reads as a
+ * malformed record rather than as a runtime too old to be trusted with it. The
+ * distinction is the operator action.
+ *
+ * §Decision 3 describes exact pinning as diverging from "the bootstrap and
+ * session families", and that is half right — measured across the seven
+ * packaged schemas, FOUR already pin exactly (`runtime-session-capture`,
+ * `-entry`, `-note`, `runtime-entry-brief`) and three carry the family-wide
+ * `1\.[0-9]+` form (`agentic-machine-profile`, `runtime-bootstrap-run`,
+ * `runtime-plugin-set`). So the shape is the majority house style, not an
+ * exception, and repeating the ADR's sentence in code would teach a future
+ * author a history that is not there. What IS distinctive is the reason: those
+ * four have never had a second minor, so their pin has never had to refuse
+ * anything, while this one exists to refuse a `1.1` that will eventually be
+ * written — and refusing it is the point, because a narrowing key an older
+ * reader ignored turns a restricted grant into a broad one.
+ */
+export const ASSURANCE_SCHEMA_VERSION = 'runtime-host-assurance-1.0';
+
+// Sentinels, not a heading. A heading is prose that a refresh may reword; these
+// are a contract between the human author and the reader, and EXACTLY ONE pair
+// may appear — two records in one file is an ambiguity, and §Decision 3 resolves
+// ambiguity negative rather than picking the first.
+export const ASSURANCE_BEGIN_SENTINEL = '<!-- BEGIN COMPATIBILITY ASSURANCE -->';
+export const ASSURANCE_END_SENTINEL = '<!-- END COMPATIBILITY ASSURANCE -->';
+
+/**
+ * The complete assurance-read vocabulary, in one place for the same reason
+ * `BASELINE_STATUSES` is: so a consumer switches on THIS list instead of
+ * enumerating a private copy that forgets the next entry.
+ *
+ * None of the non-`resolved` values is a degraded positive. Every one of them
+ * means the record did not produce coverage (ADR-0053 §Decision 3: negative and
+ * unknown win over positive at every layer), and they are distinct only because
+ * they call for different operator actions.
+ */
+export const ASSURANCE_STATUSES = Object.freeze([
+  'resolved',
+  'absent',
+  'ambiguous',
+  'unparseable',
+  'unknown-schema',
+  'invalid',
+  'noncanonical',
+  'undecodable',
+  'baseline-unavailable',
+]);
+
+const ASSURANCE_SUMMARIES = Object.freeze({
+  absent: 'the packaged baseline carries no compatibility assurance section',
+  ambiguous: 'the packaged baseline carries more than one compatibility assurance block',
+  unparseable: 'the compatibility assurance block is present but does not parse',
+  'unknown-schema': 'the compatibility assurance block declares a schema version this runtime does not read',
+  invalid: 'the compatibility assurance block does not satisfy the packaged structural schema',
+  noncanonical: 'the compatibility assurance block is not in canonical form',
+  undecodable: 'the packaged baseline file contains bytes that are not valid UTF-8, so its record has no well-defined content',
+  'baseline-unavailable': 'the packaged baseline file itself is not usable, so no assurance record could be reached from it',
+});
+
+/**
+ * The ONE assurance predicate — `null` when the record is usable, otherwise the
+ * failure with an operator action. Mirrors `baselineFailure`, including its
+ * fail-CLOSED treatment of a status this reader does not recognise.
+ *
+ * `absent` is a failure here even though it is not a defect. An old baseline
+ * read by a new runtime yields unassured, and unassured blocks (ADR-0053
+ * §Decision 11) — reporting it as a usable record with no grants would be the
+ * fail-open direction.
+ */
+export function assuranceFailure(resolved) {
+  const status = resolved?.status ?? null;
+  if (status === 'resolved') return null;
+  if (!status || !ASSURANCE_STATUSES.includes(status)) {
+    return {
+      status: status ?? 'unknown',
+      summary: 'the assurance reader returned a status this consumer does not recognise',
+      operator_action: 'Update the runtime plugin — the installed assurance reader and its caller disagree on the failure vocabulary.',
+    };
+  }
+  if (status === 'baseline-unavailable') {
+    const underlying = resolved?.baseline_failure ?? null;
+    return {
+      status,
+      summary: ASSURANCE_SUMMARIES[status],
+      // Integrity outranks assurance, so the action is the INTEGRITY action —
+      // repairing the record is meaningless while the file it lives in cannot
+      // be read.
+      operator_action: underlying?.operator_action
+        ?? 'Reinstall or repair the runtime plugin — the packaged host-parity baseline could not be read.',
+    };
+  }
+  const path = resolved?.provenance?.path ?? '<runtime package>/docs/host-parity-baseline.md';
+  const operatorAction = status === 'absent'
+    // Two causes, one reading: a baseline that predates the record and one whose
+    // sentinels were altered are indistinguishable to any reader, so the action
+    // names both rather than asserting the more flattering one.
+    ? `Update the runtime plugin — ${path} carries no compatibility assurance record (ADR-0053 §Decision 2): it either predates the record or its sentinels were altered, and this runtime cannot establish host coverage from it either way. Assurance is granted by review; no upgrade grants it by itself.`
+    : status === 'unknown-schema'
+      ? `Update the runtime plugin — the assurance record in ${path} declares a schema version this runtime does not read (it reads exactly ${ASSURANCE_SCHEMA_VERSION}). Reading it anyway could treat a narrowing condition as absent, which is how absence of evidence becomes coverage.`
+      : status === 'undecodable'
+        ? `Repair the encoding of ${path} — it contains bytes that are not valid UTF-8. Decoding replaces each of them with U+FFFD, so two different files would read as one record; the content of an assurance record has to be well defined before it can be trusted.`
+        : `Repair the compatibility assurance block in ${path} — it is present but ${ASSURANCE_SUMMARIES[status]}. It must be exactly one sentinel-delimited \`\`\`json fence, at the top level of the document rather than quoted inside another fence, whose content is the canonical serialization of a ${ASSURANCE_SCHEMA_VERSION} record.`;
+  return { status, summary: ASSURANCE_SUMMARIES[status], operator_action: operatorAction };
+}
+
+/**
+ * Find the sentinel lines that are actually MARKUP, not text that looks like it.
+ *
+ * A raw substring scan was measured wrong in both directions, and the pair is a
+ * matched set rather than two bugs:
+ *
+ *   - FALSE POSITIVE. A record quoted as a worked example inside an outer
+ *     `~~~~markdown` fence resolved as the live record. This document explains
+ *     its own grammar, so an author demonstrating it is the likeliest way a
+ *     grant nobody granted becomes authoritative — the exact failure this whole
+ *     plane exists to prevent.
+ *   - FALSE NEGATIVE, its mirror. A grant whose `note` mentioned the sentinel,
+ *     or prose citing it in backticks, made the real record `ambiguous` — a
+ *     legitimate document that no edit short of censoring the word could fix.
+ *
+ * So a sentinel counts only when it is a whole line (trailing whitespace aside)
+ * at the top level of the document — never indented into a code block, never
+ * inside any fence, never a fragment of a larger line. Fence tracking is the
+ * CommonMark rule reduced to what this file can contain: three or more
+ * backticks or tildes open a block, and a run of at least that many of the SAME
+ * character closes it.
+ */
+function scanSentinelLines(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const begins = [];
+  const ends = [];
+  let fence = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (fence) {
+      const closer = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (closer && closer[1][0] === fence.char && closer[1].length >= fence.length) fence = null;
+      continue;
+    }
+    const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (opener) {
+      fence = { char: opener[1][0], length: opener[1].length };
+      continue;
+    }
+    // Column 0 exactly: four leading spaces would make it an indented code
+    // block, which is quoted content for the same reason a fence is.
+    const trimmed = line.trimEnd();
+    if (trimmed === ASSURANCE_BEGIN_SENTINEL) begins.push(i);
+    else if (trimmed === ASSURANCE_END_SENTINEL) ends.push(i);
+  }
+  return { lines, begins, ends };
+}
+
+/**
+ * The region between the sentinels must be exactly one fenced ```json block.
+ *
+ * Line-structural, not regex-greedy: a physical line equal to ``` cannot occur
+ * INSIDE a JSON string (JSON forbids a raw newline in one), so a fence line is
+ * always structural and "more than two of them" is unambiguously two blocks
+ * rather than a backtick in the data. Returns the body text with the trailing
+ * newline `canonicalJson` also emits, or `null` when the region is not that
+ * shape.
+ *
+ * CRLF is normalized rather than refused, and that is a correctness fix rather
+ * than a convenience. `HEADER_RE` already tolerates it (`\s*` matches `\r`), so
+ * a strict reader here would make ONE module disagree with itself about ONE
+ * file — measured: a CRLF copy of the shipped baseline parses its header and
+ * failed to parse its record. There is no `.gitattributes` forcing LF, so that
+ * copy is reachable, and the failure would have been fail-closed but
+ * unrepairable: every byte of the record is right and no edit fixes it. A
+ * demand that cannot be met is a dead end, not a refusal. Normalizing is
+ * lossless for what this grammar decides — a line ending cannot change which
+ * JSON keys exist or what order they are in — and it makes the record's content
+ * hash identical across checkout styles.
+ *
+ * The FENCE lines are compared with trailing whitespace trimmed, for the same
+ * dead-end reason and with the same safety argument: they carry no record data,
+ * so a trailing space in an info string cannot change what was parsed.
+ */
+function extractFencedJson(regionLines) {
+  const lines = [...regionLines];
+  while (lines.length > 0 && lines[0].trim() === '') lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+  if (lines.length < 2) return null;
+  if (lines[0].trimEnd() !== '```json') return null;
+  if (lines[lines.length - 1].trimEnd() !== '```') return null;
+  const body = lines.slice(1, -1);
+  // A second fence inside the region. Canonical JSON never produces a line
+  // starting with a backtick, so this is not a legitimate record being refused.
+  if (body.some((line) => line.startsWith('```'))) return null;
+  return `${body.join('\n')}\n`;
+}
+
+function assuranceResult(status, extra = {}) {
+  const result = { status, record: null, block_sha256: null, findings: [], finding_count: 0, findings_omitted: false, ...extra };
+  // Default the count to the array when a caller supplied findings but no
+  // count, so `finding_count` is never a silently smaller number than what is
+  // already visible.
+  if (extra.finding_count === undefined) result.finding_count = result.findings.length;
+  return result;
+}
+
+/**
+ * Parse the compatibility assurance record out of a baseline's text.
+ *
+ * SYNC and pure, like `parseBaseline` — the schema is injected rather than
+ * loaded, so this stays a grammar and the packaged-asset resolution lives in
+ * exactly one place (`resolveAssuranceRecord` below). A bad SCHEMA throws,
+ * because that is a bug here; a bad DOCUMENT never throws, because that is
+ * data.
+ *
+ * Returns `{ status, record, block_sha256, findings }`. `findings` are the
+ * validator's content-free diagnostics and obey its disclosure invariant: no
+ * observed scalar, no document-supplied key, and — in the `unknown-schema`
+ * branch — not the declared version string either, which is unclamped free
+ * content the moment it fails to be the one value this reader accepts.
+ */
+export function parseAssuranceSection(text, { schema } = {}) {
+  // Identity, not merely shape. An object-shape guard let `{ schema: {} }`
+  // through, and an empty schema constrains nothing — a record missing its
+  // required `grants` validated and resolved. The seam stays (this is the pure
+  // grammar, and tests inject), but injecting the WRONG schema is now a loud
+  // bug rather than a silently weakened gate.
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema) || schema.$id !== ASSURANCE_SCHEMA_VERSION) {
+    throw new TypeError(`parseAssuranceSection: schema must be the packaged ${ASSURANCE_SCHEMA_VERSION} schema object`);
+  }
+  const { lines, begins, ends } = scanSentinelLines(text);
+
+  if (begins.length === 0 && ends.length === 0) return assuranceResult('absent');
+  if (begins.length > 1 || ends.length > 1) {
+    return assuranceResult('ambiguous', {
+      findings: [`$: [error/assurance-ambiguous] found ${begins.length} begin and ${ends.length} end sentinel lines — exactly one block may appear, and choosing between two records is not a decision a reader may make`],
+    });
+  }
+  if (begins.length !== 1 || ends.length !== 1) {
+    return assuranceResult('unparseable', {
+      findings: [`$: [error/assurance-sentinel-unpaired] found ${begins.length} begin and ${ends.length} end sentinel lines — the block must be delimited by both`],
+    });
+  }
+  if (ends[0] <= begins[0]) {
+    return assuranceResult('unparseable', {
+      findings: ['$: [error/assurance-sentinel-order] the end sentinel precedes the begin sentinel'],
+    });
   }
 
+  const blockText = extractFencedJson(lines.slice(begins[0] + 1, ends[0]));
+  if (blockText === null) {
+    return assuranceResult('unparseable', {
+      findings: ['$: [error/assurance-fence] the sentinel-delimited region is not exactly one ```json fenced block'],
+    });
+  }
+  // Bound the INPUT, not only the parsed object. `validateAgainstSchema` caps
+  // the re-serialized document, which a block padded with whitespace shrinks
+  // below — so the advertised cap was not a bound on what this reader accepts.
+  const blockBytes = Buffer.byteLength(blockText, 'utf8');
+  if (blockBytes > SCHEMA_MAX_BYTES) {
+    return assuranceResult('unparseable', {
+      findings: [`$: [error/assurance-too-large] the fenced block is ${blockBytes} bytes, over the ${SCHEMA_MAX_BYTES}-byte cap — refused, not truncated`],
+    });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(blockText);
+  } catch {
+    // The exception text is NOT interpolated: a JSON.parse message quotes the
+    // offending input, and an unparseable block is unclamped free content.
+    return assuranceResult('unparseable', {
+      findings: ['$: [error/assurance-json] the fenced block is not valid JSON; the parser message is withheld because it quotes the input'],
+    });
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return assuranceResult('unparseable', {
+      findings: ['$: [error/assurance-json] the fenced block does not carry a JSON object at its root'],
+    });
+  }
+
+  // The EXACT pin, before any structural check (ADR-0054 §Decision 3) — but
+  // only for the case it actually names.
+  //
+  // Routing EVERY non-matching value here was measured wrong: a block that
+  // simply omits `schema` was told to "update the runtime plugin", when the
+  // record is what needs repairing and no upgrade would ever fix it. The two
+  // remedies are opposite, so the classification has to be too. A declaration
+  // this runtime cannot READ (right family, wrong version) is an upgrade; a
+  // declaration that is missing, mistyped, malformed, or from another family is
+  // a defective record and falls through to structural validation, which says
+  // so in the vocabulary a repair needs.
+  const declared = typeof parsed.schema === 'string' ? parseSchemaVersion(parsed.schema) : null;
+  if (declared !== null && declared.family === ASSURANCE_SCHEMA_FAMILY && parsed.schema !== ASSURANCE_SCHEMA_VERSION) {
+    return assuranceResult('unknown-schema', {
+      findings: [`$.schema: [error/assurance-schema-unreadable] this runtime reads exactly ${ASSURANCE_SCHEMA_VERSION}; the declared value is withheld because a version that did not match is not clamped by anything this runtime trusts`],
+      finding_count: 1,
+    });
+  }
+
+  const validation = validateAgainstSchema(parsed, schema, { readerVersion: ASSURANCE_SCHEMA_VERSION });
+  if (!validation.ok) {
+    // The COUNTS travel with the (display-capped) findings. Keeping only the
+    // array reported "16 problems" for a record with twenty, which is the flood
+    // hidden rather than bounded — the same reason `makeValidator` carries them.
+    return assuranceResult('invalid', {
+      findings: validation.errors,
+      finding_count: validation.error_count,
+      findings_omitted: validation.omitted,
+    });
+  }
+
+  // CANONICAL FORM, and it is load-bearing rather than tidiness (ADR-0054
+  // §Decision 1). `JSON.parse` resolves a duplicate key last-wins and says
+  // nothing, so `{"state":"revoked","state":"granted"}` would validate as a
+  // grant while a human reviewer reads the file and sees a revocation. Requiring
+  // the block to BE the canonical serialization of what was parsed makes that
+  // visible: the re-serialization drops the shadowed member and no longer
+  // matches the bytes on disk.
+  const canonical = canonicalJson(parsed, schema);
+  if (canonical !== blockText) {
+    return assuranceResult('noncanonical', {
+      findings: ['$: [error/assurance-noncanonical] the block is not byte-identical to the canonical serialization of what it parsed to — a duplicate key, a non-canonical key order, or stray whitespace'],
+    });
+  }
+
+  return assuranceResult('resolved', {
+    record: parsed,
+    // Over the CANONICAL bytes, so the identity of a record is its content and
+    // not its formatting. ADR-0054 §Decision 8's cross-tag monotonicity check
+    // compares record contents across releases; a hash that moved when someone
+    // re-indented the file would report every reflow as a mutation.
+    block_sha256: createHash('sha256').update(Buffer.from(canonical, 'utf8')).digest('hex'),
+  });
+}
+
+/**
+ * Resolve the assurance record from the packaged baseline — the answer to
+ * "does this INSTALL have assurance", which is not the same question
+ * `parseAssuranceSection` answers.
+ *
+ * The difference is ADR-0053 §Decision 3, and it is the whole reason this
+ * function exists rather than being a convenience wrapper. §Decision 3 says a
+ * parseable assurance section next to a broken or escaped baseline is
+ * **blocked, never covered** — integrity outranks assurance, and the two are
+ * not tradeable. So every integrity failure of the file, INCLUDING a dated
+ * header that does not parse, is `baseline-unavailable` here even when the
+ * record itself reads perfectly. The pure grammar above still reports what the
+ * text says, because that is a different question and a consumer sometimes
+ * needs it; this is the one a gate may use.
+ *
+ * The schema is loaded from the SAME `pluginRoot` and CANNOT be overridden.
+ * An override existed and was removed: it defeated this function's own stated
+ * guarantee, since `{ schema: {} }` constrains nothing and made a record
+ * missing its required members resolve. Reader, schema and baseline resolving
+ * from one installed package directory is what makes the record and the rules
+ * that judge it atomic within a release (ADR-0054 §Separate PRs do not promise
+ * one release).
+ *
+ * ⚠ TWO READS, not one. This and `resolveHostParityBaseline` share a read PATH,
+ * not a read. A consumer that needs both facts about ONE revision of the file
+ * must compare `provenance.content_sha256` across the two results and treat a
+ * difference as a failure — otherwise a file replaced between the calls yields
+ * a header from revision A and a record from revision B, both reporting
+ * `resolved`.
+ *
+ * ⚠ THROWS when the package is missing its own packaged schema, rather than
+ * returning a status. That is deliberate and is the house behaviour —
+ * `loadSchema` throws for every family, and an install that cannot find its own
+ * `data/schemas/**` is a corrupt package rather than a document this reader can
+ * report on. A caller that turns runtime faults into a check verdict (doctor)
+ * must wrap this call; a caller that would rather crash than mis-report is
+ * already correct.
+ */
+export async function resolveAssuranceRecord({ pluginRoot = defaultPluginRoot() } = {}) {
+  if (typeof pluginRoot !== 'string' || !pluginRoot.trim()) {
+    throw new TypeError('resolveAssuranceRecord: pluginRoot must be a non-empty string when provided; omit the key to use the packaged default');
+  }
+  const read = await readPackagedBaseline(pluginRoot);
+  const blocked = (status, failure) => ({
+    ...assuranceResult(status),
+    provenance: read.provenance,
+    baseline_failure: failure,
+  });
+
+  if (read.status !== 'ok') {
+    return blocked('baseline-unavailable', baselineFailure({ status: read.status, provenance: read.provenance }));
+  }
+  // The header, checked HERE and not left to a consumer to remember. §Decision
+  // 3 names `unparseable` in the integrity layer explicitly, and a reader that
+  // returned a usable record beside a broken baseline would be handing every
+  // future consumer the same chance to forget it.
+  if (parseBaseline(read.text) === null) {
+    return blocked('baseline-unavailable', baselineFailure({ status: 'unparseable', provenance: read.provenance }));
+  }
+  // The decode is LOSSY, and this is the one place that can still tell.
+  // `bytes.toString('utf8')` maps every invalid sequence to U+FFFD, so two
+  // different files collapse to one text — measured: raw `FF` and raw `FE`
+  // produced the same record AND the same block hash. This module already
+  // learned that lesson one level up, where the provenance hash was moved onto
+  // the bytes for exactly this reason; a content hash whose job is telling two
+  // records apart must not inherit the collision class its file-level sibling
+  // was fixed to avoid.
+  if (!Buffer.from(read.text, 'utf8').equals(read.bytes)) {
+    return blocked('undecodable', null);
+  }
+  const schema = await loadSchema(ASSURANCE_SCHEMA_FAMILY, { pluginRoot });
   return {
-    status: 'resolved',
-    baseline: parsed,
-    versions: {
-      claude: { version: normalizeVersion(parsed.claude) },
-      codex: { version: normalizeVersion(parsed.codex) },
-    },
-    provenance,
+    ...parseAssuranceSection(read.text, { schema }),
+    provenance: read.provenance,
+    baseline_failure: null,
   };
 }
