@@ -26,7 +26,12 @@ import https from 'node:https';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { extractBaselineVersions, releaseVersion } from '../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
+import {
+  compareReleaseCore,
+  extractBaselineVersions,
+  releaseCoreParts,
+  releaseVersion,
+} from '../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -51,34 +56,40 @@ const HOSTS = [
 // comment cannot hold two regexes in step; an import can.
 //
 // This keeps CI's stripping POLICY (a prerelease normalizes to its base
-// release, because `semverParts` compares by numeric position anyway) while
-// removing the second implementation of it. The one measured behavioral
-// difference is a four-component input — `1.2.3.4` now normalizes to `1.2.3` —
-// which no npm or GitHub release produces and which `semverParts` already
-// truncated before any comparison.
+// release, because the comparison is by numeric position anyway) while removing
+// the second implementation of it.
+//
+// The four-component note that used to close this comment said `1.2.3.4` "was
+// already truncated before any comparison", which was accurate and is no longer
+// the whole story: truncating it is precisely what makes it compare EXACTLY
+// equal to a real `1.2.3`, so the packaged comparator now refuses the class
+// outright and CI inherits that. `normalizeVersion` still reports `1.2.3` for
+// it, because it is the identity form and narrowing it would change what every
+// existing caller parses.
+//
 // Re-exported as a local binding, not a bare `export … from`: this module also
-// CALLS it (`semverParts`, the npm and GitHub latest-version readers), and a
-// re-export creates no local name.
+// CALLS it (the npm and GitHub latest-version readers), and a re-export creates
+// no local name.
 export const normalizeVersion = releaseVersion;
 
-function semverParts(value) {
-  const normalized = normalizeVersion(value);
-  if (!normalized) return null;
-  const parts = normalized.split('.').slice(0, 3).map((n) => Number.parseInt(n, 10));
-  while (parts.length < 3) parts.push(0);
-  return parts.some((n) => Number.isNaN(n)) ? null : parts;
-}
-
-// -1 if a<b, 0 if equal, 1 if a>b, null if either is unparseable.
-export function compareSemver(a, b) {
-  const pa = semverParts(a);
-  const pb = semverParts(b);
-  if (!pa || !pb) return null;
-  for (let i = 0; i < 3; i += 1) {
-    if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
-  }
-  return 0;
-}
+// The COMPARATOR, likewise from the module that owns the grammar — the second
+// half of the same removal (ADR-0053 §Decision 10, ADR-0054 §Decision 7).
+//
+// `normalizeVersion` was unified first and the comparison built on it was left
+// behind, so a private `semverParts` kept re-deriving the numeric form here.
+// That copy carried two defects the packaged one does not: `Number.parseInt`
+// collapsed distinct large components onto one float (measured — two twenty-
+// digit majors compared EQUAL), and it truncated a four-component version to
+// three, which reports `1.2.3.4` as exactly `1.2.3`.
+//
+// Both `compareSemver` and `driftSeverity` routed through that copy, so fixing
+// only the one this subtask names would have left the defect alive in its
+// mirror. `semverParts` is gone; `releaseCoreParts` is what both now use.
+//
+// Local bindings, not `export … from`: this module CALLS them, and a re-export
+// creates no local name.
+export const compareSemver = compareReleaseCore;
+const semverParts = releaseCoreParts;
 
 // Severity of the difference by position: 'major' | 'minor' | 'patch' |
 // 'current' | 'unknown'. Direction-agnostic (rollbacks classify by position).

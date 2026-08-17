@@ -113,14 +113,188 @@ export function normalizeVersion(value) {
  * to it, and that is preserved. Across the fourteen inputs the two
  * implementations were compared on, they differ on exactly one class: a
  * FOUR-component string, where the old CI regex returned `1.2.3.4` and this
- * returns `1.2.3`. `semverParts` slices to three components before any
- * comparison, so no verdict changes; only the reported string would, for a
- * release shape neither npm nor SemVer produces.
+ * returns `1.2.3`.
+ *
+ * ⚠ CORRECTION (ADR-0054, measured). This note used to end "so no verdict
+ * changes; only the reported string would". That was true of the drift
+ * severity it was written about and FALSE of the exactness verdict the
+ * assurance plane needs: truncating `1.2.3.4` to `1.2.3` makes it compare
+ * exactly equal to a genuine `1.2.3`. The identity form above is unchanged,
+ * because every existing caller parses it and ADR-0053 §Decision 1 forbids
+ * narrowing it; the refusal lives in `releaseCoreParts`, which is what every
+ * COMPARISON now goes through. Kept rather than rewritten so the class is not
+ * re-derived as harmless a third time.
  */
 export function releaseVersion(value) {
   const normalized = normalizeVersion(value);
   if (!normalized) return null;
   return normalized.split(/[-+]/)[0];
+}
+
+// ---------------------------------------------------------------------------
+// The packaged comparator — ADR-0053 §Decision 10, shaped by ADR-0054 §Decision 7
+// ---------------------------------------------------------------------------
+//
+// §Decision 10 requires the comparator to be PACKAGED, and measured why: this
+// module exported `releaseVersion` but no comparison function, while
+// `compareSemver` lived in `scripts/check-host-version-drift.mjs` — a repo-only
+// CI script an installed runtime cannot import. So the two halves of one
+// question lived on opposite sides of the package boundary.
+//
+// `lib/semver.mjs` is deliberately NOT reused, and the reason is not the one
+// first written down. Its `semverCompare` never calls `isSemVer` and pads
+// missing components, so it does read `2.1`. What disqualifies it is that it
+// returns a DIFFERENCE rather than a sign — a component past
+// `Number.MAX_SAFE_INTEGER` yields a magnitude where float precision collapses
+// distinct versions — that it orders prerelease by presence alone, and that
+// `Number.parseInt(x, 10) || 0` maps unparseable text to `0`. It answers a
+// different question, about manifests, with a strict specification grammar.
+// This one reads observed host CLI text.
+//
+// ⚠ THE STATES ARE EVIDENCE, NEVER SAFETY (ADR-0053 §Decision 9). Nothing here
+// may be promoted to coverage. Semver position, keyword silence and elapsed
+// time were each measured incapable of predicting a real contract change: 17 of
+// 18 Claude Code steps are patch-position, and the single lap that produced
+// real adoption work was patch-position too. This code RECORDS direction. Only
+// a human grant, matched by the assurance plane, produces coverage.
+
+/**
+ * The three core components as normalized digit STRINGS, or `null`.
+ *
+ * Strings rather than numbers, because `Number.parseInt` is where the existing
+ * CI comparator loses: two distinct twenty-digit majors parse to one float and
+ * compare equal. Leading zeros are stripped so `01` and `1` are one value.
+ *
+ * Returns `null` for a token this grammar cannot represent FAITHFULLY, which
+ * includes one case `normalizeVersion` accepts: a four-or-more-component
+ * version. `SEMVER_RE` matches the first three components of `1.2.3.4` and
+ * silently drops the rest, so `normalizeVersion` reports it as `1.2.3` and it
+ * would compare EXACTLY equal to a genuine `1.2.3`. `releaseVersion`'s note
+ * used to say this class changes no verdict; for an exactness verdict it does,
+ * and this is the reader where that matters. Refusing it tightens rather than
+ * relaxes exactness, so it is consistent with ADR-0053 §Decision 1.
+ *
+ * `normalizeVersion` itself is UNCHANGED — it is the identity form every
+ * existing caller already parses, and narrowing it would break the §Decision 1
+ * invariant. The two answer different questions and the difference is confined
+ * to this class.
+ */
+export function releaseCoreParts(value) {
+  const read = readVersionToken(value);
+  if (!read.token || read.truncated) return null;
+  const core = read.token.split(/[-+]/)[0].split('.');
+  while (core.length < 3) core.push('0');
+  if (core.length > 3) return null;
+  // Strip leading zeros without emptying the string.
+  return core.map((part) => part.replace(/^0+(?=\d)/, ''));
+}
+
+/**
+ * Order two versions by their release core: `-1 | 0 | 1`, or `null` when either
+ * side is not a version this grammar can represent.
+ *
+ * A SIGN, not a difference. Prerelease and build metadata are outside the core
+ * by construction, so `0.147.0-rc.1` and `0.147.0` order equal — which is why
+ * `same-precedence-nonexact` has to exist as a state rather than being folded
+ * into `exact`.
+ */
+export function compareReleaseCore(left, right) {
+  const a = releaseCoreParts(left);
+  const b = releaseCoreParts(right);
+  if (!a || !b) return null;
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] === b[i]) continue;
+    // Digit strings with leading zeros already stripped: longer is larger, and
+    // equal length compares lexicographically. Exact at any magnitude, with no
+    // float in the path.
+    if (a[i].length !== b[i].length) return a[i].length < b[i].length ? -1 : 1;
+    return a[i] < b[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * The complete single-host relation vocabulary (ADR-0053 §Decision 10).
+ *
+ * `ahead` and `behind` are deliberately not one word: "the host moved past the
+ * last review" and "this machine is behind the reviewed baseline" call for
+ * different operator actions. `same-precedence-nonexact` exists because
+ * exactness and precedence genuinely disagree — `normalizeVersion` preserves
+ * prerelease and build metadata while the comparison form drops them.
+ */
+export const VERSION_RELATION_STATES = Object.freeze([
+  'exact',
+  'ahead',
+  'behind',
+  'same-precedence-nonexact',
+  'unparseable',
+]);
+
+/**
+ * Relate an OBSERVED version to a REVIEWED one.
+ *
+ * `ahead` means the observed machine is ahead of the reviewed core
+ * (ADR-0054 §Decision 7). Exactness is token identity in the `normalizeVersion`
+ * form — never precedence — so a prerelease is never silently equal to its
+ * release.
+ */
+export function classifyVersionRelation({ observed, reviewed } = {}) {
+  const o = readVersionToken(observed);
+  const r = readVersionToken(reviewed);
+  if (!o.token || !r.token || o.truncated || r.truncated) {
+    return { state: 'unparseable', exact: false, core_order: null };
+  }
+  const order = compareReleaseCore(o.token, r.token);
+  if (order === null) return { state: 'unparseable', exact: false, core_order: null };
+  if (o.token === r.token) return { state: 'exact', exact: true, core_order: 0 };
+  if (order === 0) return { state: 'same-precedence-nonexact', exact: false, core_order: 0 };
+  return { state: order > 0 ? 'ahead' : 'behind', exact: false, core_order: order };
+}
+
+/** The pair vocabulary — the single-host states plus the one only a pair has. */
+export const HOST_PAIR_RELATION_STATES = Object.freeze([
+  ...VERSION_RELATION_STATES,
+  'mixed-direction',
+]);
+
+/**
+ * Relate an observed `{claude, codex}` pair to a reviewed one.
+ *
+ * `mixed-direction` is its own state because one host ahead while the other is
+ * behind is not "drifted" in any single direction, and an operator action that
+ * assumed one direction would be wrong for the other host. Unknown outranks
+ * everything: if either host is unreadable the pair is `unparseable`, because a
+ * pair verdict computed from one known half is a guess.
+ */
+export function classifyHostPairRelation({ observed, reviewed } = {}) {
+  const hosts = {};
+  for (const host of ['claude', 'codex']) {
+    hosts[host] = classifyVersionRelation({ observed: observed?.[host], reviewed: reviewed?.[host] });
+  }
+  const states = Object.values(hosts).map((h) => h.state);
+  let state;
+  if (states.includes('unparseable')) state = 'unparseable';
+  else if (states.includes('ahead') && states.includes('behind')) state = 'mixed-direction';
+  else if (states.includes('ahead')) state = 'ahead';
+  else if (states.includes('behind')) state = 'behind';
+  else if (states.includes('same-precedence-nonexact')) state = 'same-precedence-nonexact';
+  else state = 'exact';
+  return { state, hosts };
+}
+
+/**
+ * The version token in a string, plus whether extracting it DROPPED anything.
+ *
+ * `truncated` is true when the match is immediately followed by another dotted
+ * numeric component — the `1.2.3.4` class. Deliberately narrow: real baselines
+ * carry labelled text (`2.1.197 (Claude Code)`, `codex-cli 0.142.4`,
+ * `rust-v0.137.0`), and measurement confirms none of those is flagged.
+ */
+function readVersionToken(value) {
+  const text = String(value ?? '').trim();
+  const match = text.match(SEMVER_RE);
+  if (!match) return { token: null, truncated: false };
+  return { token: match[0], truncated: /^\.\d/.test(text.slice(match.index + match[0].length)) };
 }
 
 /**
