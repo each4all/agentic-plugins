@@ -24,6 +24,7 @@
     "validate:artifacts": "node scripts/validate-artifacts.mjs",
     "validate:doc-evidence": "node scripts/check-doc-evidence.mjs",
     "validate:release-obligation": "node scripts/check-release-obligation.mjs",
+    "validate:assurance-monotonicity": "node scripts/check-assurance-monotonicity.mjs",
     "validate:evidence-store": "node scripts/check-evidence-store.mjs",
     "check:host-drift": "node scripts/check-host-version-drift.mjs",
     "sync:companions": "node scripts/sync-companion-bundles.mjs",

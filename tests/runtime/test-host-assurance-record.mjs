@@ -146,12 +146,15 @@ describe('compatibility assurance record — the shipped asset (ADR-0054 §Decis
     // does not land alongside the matcher — it lands a release later, after the
     // real gate has been observed failing closed on real machines.
     //
-    // ⚠ The macro plan's ST2B description says the first grant lands in ST2B,
-    // with the matcher. That contradicts §Decision 6 and it is the ADR that
-    // governs, because the reason is the safety property: shipping both paths
-    // live in one moment leaves tests as the only thing between a matcher
-    // defect and a false `covered`. Flagged here rather than silently resolved,
-    // since the sequencing is ST2B's to change. Cross-host review raised it.
+    // RESOLVED (owner decision, 2026-08-17). This note used to flag that the
+    // macro plan's ST2B description put the first grant in ST2B, with the
+    // matcher, contradicting §Decision 6. The owner resolved it in the ADR's
+    // favour and ST2B landed the matcher with `grants: []` intact, so the
+    // sequencing question is closed rather than open. The assertion stays,
+    // because what it guards outlives the question: R1 must reach real machines
+    // with no positive possible. Its limit is stated too — it cannot tell an
+    // EARLY grant from the intended R2 one, so it is a backstop and the
+    // ordering is still kept by a human.
     const resolved = await resolveAssuranceRecord({ pluginRoot: RUNTIME_ROOT });
     deepStrictEqual(resolved.record.grants, [], 'R1 ships empty; the first grant is R2, alone');
   });

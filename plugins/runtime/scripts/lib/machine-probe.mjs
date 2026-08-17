@@ -467,6 +467,17 @@ function parseCodexFeatureList(result) {
 
 function parseClaudePluginList(stdout) {
   const result = {};
+  // Ambiguity is PRESERVED rather than collapsed (ADR-0053 §Decision 5, via
+  // ADR-0054's assurance matcher). Keying by name silently overwrote a repeated
+  // plugin, and a repeat is reachable rather than hypothetical: Claude installs
+  // are SCOPED, so the same plugin can appear once at user scope and once at
+  // project scope, at different versions and enablement. Last-wins then reports
+  // one of the two as THE answer, and a consumer asking "which version of this
+  // package is active" cannot tell it was guessing. The primary entry stays
+  // last-wins so every existing consumer reads exactly what it read before; the
+  // ambiguity travels beside it, for the one consumer whose verdict depends on
+  // there being a single answer.
+  const observations = new Map();
   const lines = stdout.split(/\r?\n/);
   let current = null;
   for (const raw of lines) {
@@ -483,6 +494,8 @@ function parseClaudePluginList(stdout) {
       };
       if (current.marketplace === 'agentic-plugins') {
         result[current.name] = current;
+        if (!observations.has(current.name)) observations.set(current.name, []);
+        observations.get(current.name).push(current);
       }
       continue;
     }
@@ -495,7 +508,37 @@ function parseClaudePluginList(stdout) {
     }
     if (/^Error:/i.test(line)) current.error = redactSecrets(line.replace(/^Error:\s*/i, ''));
   }
+  // Attached AFTER the field lines are parsed: the rows are mutated in place as
+  // the scan proceeds, so deciding agreement any earlier would compare records
+  // that are not finished yet.
+  for (const [name, rows] of observations) {
+    result[name].observations = rows.length;
+    result[name].ambiguous = installAmbiguity(rows.map((row) => ({ version: row.version, enabled: row.status })));
+  }
   return result;
+}
+
+/**
+ * Do repeated observations of ONE package disagree about the facts a coverage
+ * decision reads?
+ *
+ * Ambiguity is about the ANSWER, not the row count, and the distinction is
+ * load-bearing in both directions. Two rows agreeing on version and enablement
+ * leave "which version is active" with one answer, so calling that ambiguous
+ * would block a machine whose state is in fact determinate — over-blocking is a
+ * defect too, and ADR-0053 §Decision 6 exists because a gate stricter than the
+ * one it replaces relocates the treadmill rather than removing it. Two rows
+ * DISAGREEING leave no answer runtime may pick, which is exactly §Decision 5's
+ * ambiguous match.
+ *
+ * Compared as observed text, deliberately: `0.91.0` and `0.91.0+build.2` are
+ * different installs, and normalizing them to one before this comparison would
+ * be the collapse this function exists to detect.
+ */
+function installAmbiguity(facts) {
+  if (facts.length < 2) return false;
+  const distinct = new Set(facts.map((fact) => JSON.stringify([fact.version ?? null, fact.enabled ?? null])));
+  return distinct.size > 1;
 }
 
 // Parse `codex plugin list --json` into a sanitized, Claude-comparable installed
@@ -526,6 +569,15 @@ function parseCodexPluginList(pluginListResult) {
   if (!parsed || !Array.isArray(parsed.installed)) return degraded('malformed');
   const entries = {};
   const warnings = [];
+  // The Codex MIRROR of the Claude collapse above, and it is one defect in two
+  // places rather than two defects: this side kept the "strongest" of a
+  // duplicate pair, which is worse than last-wins for a coverage decision
+  // because it resolves a disagreement in the OPTIMISTIC direction — an
+  // `enabled` row beats the `disabled` row beside it. ADR-0053 §Decision 8
+  // makes "is disabled" an invalidation, so ranking it away is precisely the
+  // fact the matcher must not lose. The warning and the kept entry stay as they
+  // were; the counted observations travel beside them.
+  const observations = new Map();
   for (const raw of parsed.installed) {
     if (!raw || typeof raw.name !== 'string' || raw.marketplaceName !== 'agentic-plugins') continue;
     const installed = raw.installed === true;
@@ -544,12 +596,18 @@ function parseCodexPluginList(pluginListResult) {
       auth_policy: typeof raw.authPolicy === 'string' ? raw.authPolicy : null,
       error: null,
     };
+    if (!observations.has(raw.name)) observations.set(raw.name, []);
+    observations.get(raw.name).push(candidate);
     if (entries[raw.name]) {
       warnings.push(`duplicate agentic-plugins entry for ${raw.name}; kept strongest install state`);
       entries[raw.name] = pickStrongerCodexEntry(entries[raw.name], candidate);
     } else {
       entries[raw.name] = candidate;
     }
+  }
+  for (const [name, rows] of observations) {
+    entries[name].observations = rows.length;
+    entries[name].ambiguous = installAmbiguity(rows.map((row) => ({ version: row.version, enabled: row.status })));
   }
   return { status: 'available', entries, warnings };
 }
