@@ -15,7 +15,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -302,26 +302,33 @@ describe('a peer run stamped in the future is stale, not eternally fresh', () =>
   // could sit forever and never be counted in `stale_non_terminal`.
   async function ledgerFor(updatedAt) {
     const root = await mkdtemp(join(tmpdir(), 'st5-peer-runs-'));
-    const dir = join(root, '.agentic-plugins', 'state', 'engineer', 'peer-runs', 'run-1');
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, 'handle.json'), JSON.stringify({
-      run_id: 'run-1',
-      plugin: 'engineer',
-      status: 'running',
-      kind: 'ensemble',
-      peer_host: 'claude',
-      model: 'm',
-      effort: 'high',
-      updated_at: updatedAt,
-    }));
-    return inspectWorkflowNamespace({
-      repoRoot: root,
-      plugin: 'engineer',
-      legacyNamespace: 'agentic-engineer',
-      expectedPlugin: 'engineer',
-      now: new Date('2026-08-18T00:00:00.000Z'),
-      staleGraceMs: 60 * 60 * 1000,
-    });
+    try {
+      const dir = join(root, '.agentic-plugins', 'state', 'engineer', 'peer-runs', 'run-1');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'handle.json'), JSON.stringify({
+        run_id: 'run-1',
+        plugin: 'engineer',
+        status: 'running',
+        kind: 'ensemble',
+        peer_host: 'claude',
+        model: 'm',
+        effort: 'high',
+        updated_at: updatedAt,
+      }));
+      return await inspectWorkflowNamespace({
+        repoRoot: root,
+        plugin: 'engineer',
+        legacyNamespace: 'agentic-engineer',
+        expectedPlugin: 'engineer',
+        now: new Date('2026-08-18T00:00:00.000Z'),
+        staleGraceMs: 60 * 60 * 1000,
+      });
+    } finally {
+      // Cleaned up rather than left for the OS: this is the only test in the
+      // file that writes outside its own process, and a suite that litters
+      // `tmpdir()` is a variable in every timing-sensitive test that runs after it.
+      await rm(root, { recursive: true, force: true });
+    }
   }
 
   it('CONTROL: a recent non-terminal run is not stale', async () => {
