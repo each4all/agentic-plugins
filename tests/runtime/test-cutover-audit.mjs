@@ -849,6 +849,110 @@ describe('runtime cutover audit', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// ST5 — the audit of the assembled assurance plane measured three gaps HERE,
+// in the consumer ADR-0053 §Decision 4 makes the gate. All three were
+// mutation-measured as surviving before these tests existed.
+// ---------------------------------------------------------------------------
+
+describe('ST5: the runtime floor gate is an answer about this machine', () => {
+  const floorCheck = (report) => report.checks.find((check) => check.id === 'assurance_runtime_floor');
+
+  it('the hard floor check is PRESENT in the checks array', async () => {
+    // Deleting `checkAssuranceRuntimeFloor(doctor),` from the array was measured
+    // to break no test, while deleting its sibling `checkHostParityAssurance`
+    // broke six. ADR-0054 §Decision 5 requires the check to exist, so its
+    // existence is what this asserts — by identity, not by count.
+    const root = await seedRepo({ scorecardStatus: 'satisfied', conditionStatus: 'satisfied' });
+    const report = await runCutoverAudit({ repoRoot: root, now: NOW, doctorReport: doctorReport() });
+    ok(floorCheck(report), 'assurance_runtime_floor must be one of the cutover checks');
+    strictEqual(floorCheck(report).status, 'satisfied');
+  });
+
+  it('a floor verdict that names NO floor and NO host is unknown, never satisfied', async () => {
+    // `evaluateRuntimeFloor` returns exactly this when the packaged plugin set
+    // declares no `plugins.runtime.minimum_version`. A truthy `satisfied` test
+    // reported the check whose job is "both hosts run an assurance-capable
+    // runtime" as satisfied having evaluated neither host.
+    const root = await seedRepo({ scorecardStatus: 'satisfied', conditionStatus: 'satisfied' });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport({
+        hostParityAssurance: assuranceWithFloor({ floor: null, satisfied: true, hosts: {}, unsatisfied: [] }),
+      }),
+    });
+    strictEqual(floorCheck(report).status, 'unknown');
+    strictEqual(report.ready_candidate, false);
+  });
+
+  it('a floor verdict missing ONE host row is unknown too', async () => {
+    const root = await seedRepo({ scorecardStatus: 'satisfied', conditionStatus: 'satisfied' });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport({
+        hostParityAssurance: assuranceWithFloor({
+          floor: '0.91.0',
+          satisfied: true,
+          hosts: { claude: { satisfied: true, reason: null, version: '0.91.0', detail: null } },
+          unsatisfied: [],
+        }),
+      }),
+    });
+    strictEqual(floorCheck(report).status, 'unknown');
+  });
+
+  it('CONTROL: a genuinely unsatisfied floor still reports blocked, not unknown', async () => {
+    const root = await seedRepo({ scorecardStatus: 'satisfied', conditionStatus: 'satisfied' });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport({
+        hostParityAssurance: assuranceWithFloor({
+          floor: '0.91.0',
+          satisfied: false,
+          hosts: {
+            claude: { satisfied: true, reason: null, version: '0.91.0', detail: null },
+            codex: { satisfied: false, reason: 'below-floor', version: '0.90.3', detail: null },
+          },
+          unsatisfied: ['codex'],
+        }),
+      }),
+    });
+    strictEqual(floorCheck(report).status, 'blocked');
+  });
+});
+
+describe('ST5: live coverage must name the grant that covers it', () => {
+  it('a covered assurance result with no grant id does not make the compat snapshot ready', async () => {
+    // The third copy of one predicate. `compat.mjs` and cutover's own
+    // `projectRecordedAssurance` sibling both refuse this; the readiness path
+    // did too, and nothing tested it.
+    const root = await seedRepo({ scorecardStatus: 'satisfied', conditionStatus: 'satisfied' });
+    const assurance = doctorReport().host_parity_assurance;
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport({
+        hostParityAssurance: {
+          ...assurance,
+          evidence: { ...assurance.evidence, grant_id: null },
+        },
+      }),
+    });
+    const compatCheck = report.checks.find((check) => check.id === 'latest_compat_snapshot');
+    ok(compatCheck.status !== 'fresh' && compatCheck.status !== 'satisfied',
+      `a covered verdict naming no grant must not read as ready (got ${compatCheck.status})`);
+    strictEqual(report.ready_candidate, false);
+  });
+});
+
+function assuranceWithFloor(runtimeFloor) {
+  const base = doctorReport().host_parity_assurance;
+  return { ...base, evidence: { ...base.evidence, runtime_floor: runtimeFloor } };
+}
+
 async function seedRepo({
   scorecardStatus,
   conditionStatus,

@@ -74,6 +74,12 @@ const SEMVER_RE = /\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/;
 // existing valid documents.
 const VERSION_TOKEN_RE = SEMVER_RE;
 
+// Residue that means the extracted token DROPPED something (see `readVersionToken`).
+// `.4` / `..4` — a further dotted component, empty or not. `-` / `+` — a prerelease or
+// build marker the optional groups declined because nothing valid followed it.
+// Deliberately NOT `.` followed by anything else: `2.1.233. See the note below.` is prose.
+const TOKEN_RESIDUE_RE = /^(?:\.[.\d]|[-+])/;
+
 /** Package root of the runtime plugin this module was loaded from. */
 export function defaultPluginRoot() {
   // lib/ -> scripts/ -> <plugin root>
@@ -314,7 +320,7 @@ export function readVersionToken(value) {
   const text = String(value ?? '').trim();
   const match = text.match(SEMVER_RE);
   if (!match) return { token: null, truncated: false };
-  return { token: match[0], truncated: /^\.\d/.test(text.slice(match.index + match[0].length)) };
+  return { token: match[0], truncated: TOKEN_RESIDUE_RE.test(text.slice(match.index + match[0].length)) };
 }
 
 /**
@@ -335,6 +341,41 @@ export function scanVersionTokens(text) {
 }
 
 /**
+ * The document with the assurance region blanked out, line-for-line.
+ *
+ * ADR-0053 §Decision 1 states that the dated-header grammar is untouched and
+ * "every existing caller keeps parsing exactly what it parses today". That is
+ * true of `HEADER_RE` itself and false of the DOCUMENT once §Decision 2 adds a
+ * section to it: the regex has no anchor, and the new section is an
+ * author-controlled free-text region the regex predates. ST5's audit
+ * reproduced the consequence — a document with NO dated header, carrying
+ * header-shaped text in the schema-VALID field `review_provenance.reference`,
+ * returned `{date: '2099-01-01', claude: '9.9.9', codex: '9.9.9'}`.
+ *
+ * Blanking the region rather than amending `HEADER_RE` is what keeps §Decision
+ * 1: the grammar does not change, the text it is applied to stops including a
+ * region that did not exist when the property was asserted. Line count is
+ * preserved so any future offset-based caller sees the same geometry.
+ *
+ * An UNTERMINATED begin blanks to end of document. That is the conservative
+ * direction and not an edge case to be clever about: an unterminated region is
+ * exactly where a header would be hiding, and the assurance reader separately
+ * refuses the document for the same defect.
+ */
+function withoutAssuranceRegion(text) {
+  const raw = String(text ?? '');
+  const { lines, begins, ends } = scanSentinelLines(raw);
+  if (begins.length === 0) return raw;
+  const masked = [...lines];
+  for (const begin of begins) {
+    const end = ends.find((candidate) => candidate > begin);
+    const stop = end === undefined ? masked.length - 1 : end;
+    for (let i = begin; i <= stop; i += 1) masked[i] = '';
+  }
+  return masked.join('\n');
+}
+
+/**
  * Parse the canonical dated header.
  *
  * Returns `null` when the text does not carry it. Callers distinguish "no
@@ -342,7 +383,7 @@ export function scanVersionTokens(text) {
  * inconsistencies ADR-0051 §Decision 4 removes.
  */
 export function parseBaseline(text) {
-  const match = String(text ?? '').match(HEADER_RE);
+  const match = withoutAssuranceRegion(text).match(HEADER_RE);
   if (!match) return null;
   const [, date, claude, codex] = match;
   // Both halves of the grammar, not just the shape: a header whose version
@@ -715,12 +756,27 @@ export function assuranceFailure(resolved) {
  * CommonMark rule reduced to what this file can contain: three or more
  * backticks or tildes open a block, and a run of at least that many of the SAME
  * character closes it.
+ *
+ * RAW HTML IS THE MIRROR OF THE FENCE CASE, and it was open until ST5's audit
+ * reproduced it: a record inside `<pre>` or `<script>` resolved as the live
+ * record while the same record inside a ```` fence, an indented block or a
+ * blockquote was correctly refused. Markdown renders those containers'
+ * contents literally for exactly the reason a fence does, so a worked example
+ * written in raw HTML is quoted content by the same rule — and this document
+ * explains its own grammar, which is what makes worked examples likely here.
+ * The reduction is CommonMark HTML block type 1: a line opening `<pre`,
+ * `<script`, `<style` or `<textarea` (case-insensitively) starts a literal
+ * block, and a line containing the matching close tag ends it. Type 1 is the
+ * only HTML block kind whose content is literal AND whose delimiters are
+ * unambiguous line-wise; the other six types end at a blank line, which would
+ * make the rule depend on paragraph structure this file has no reason to model.
  */
 function scanSentinelLines(text) {
   const lines = String(text ?? '').split(/\r?\n/);
   const begins = [];
   const ends = [];
   let fence = null;
+  let htmlBlock = null;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     if (fence) {
@@ -728,9 +784,20 @@ function scanSentinelLines(text) {
       if (closer && closer[1][0] === fence.char && closer[1].length >= fence.length) fence = null;
       continue;
     }
+    if (htmlBlock) {
+      if (new RegExp(`</${htmlBlock}\\s*>`, 'i').test(line)) htmlBlock = null;
+      continue;
+    }
     const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line);
     if (opener) {
       fence = { char: opener[1][0], length: opener[1].length };
+      continue;
+    }
+    const htmlOpener = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i.exec(line);
+    if (htmlOpener) {
+      htmlBlock = htmlOpener[1].toLowerCase();
+      // A one-line container closes on its own line, exactly as CommonMark does.
+      if (new RegExp(`</${htmlBlock}\\s*>`, 'i').test(line)) htmlBlock = null;
       continue;
     }
     // Column 0 exactly: four leading spaces would make it an indented code

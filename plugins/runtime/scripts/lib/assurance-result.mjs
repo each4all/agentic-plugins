@@ -449,6 +449,10 @@ export function evaluateAssurance({
         })),
         review_provenance: match.review_provenance ?? null,
         reviewed_at: match.reviewed_at ?? null,
+        // Installed framework packages the grant did not name. Empty is the
+        // meaningful common case; non-empty says a reviewer bound less than
+        // this machine runs (ADR-0054 §Decision 2, see `unboundPackages`).
+        unbound_packages: match.unbound_packages ?? [],
       },
     });
   }

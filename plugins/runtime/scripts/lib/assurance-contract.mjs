@@ -621,6 +621,20 @@ function unassured(reasons, extra = {}) {
  * install that is correctly absent, and an author would be pushed to work
  * around the check.
  */
+/**
+ * Framework packages INSTALLED on either host that this grant does not name.
+ *
+ * Evidence, never a verdict — see the note at the `covered` return. Sorted so
+ * two runs of the same machine produce the same artifact bytes.
+ */
+function unboundPackages({ grant, observed, pluginSet }) {
+  const named = new Set(Object.keys(grant?.packages ?? {}));
+  const declared = Object.keys(pluginSet?.plugins ?? {});
+  const unbound = declared.filter((name) => !named.has(name)
+    && HOSTS.some((host) => observed?.[host]?.packages?.[name]?.present === true));
+  return Object.freeze(unbound.sort());
+}
+
 function hostsForPackage(pluginSet, name) {
   const declared = pluginSet?.plugins?.[name]?.hosts;
   if (!Array.isArray(declared) || declared.length === 0) return null;
@@ -853,6 +867,24 @@ export function matchAssurance({ record, hosts = null, observed = null, pluginSe
     state: 'covered',
     grant_id: winner.grant.id,
     reasons: Object.freeze([]),
+    // WHAT THE GRANT DID NOT NAME, carried with the positive.
+    //
+    // ADR-0054 §Decision 2 lists "exact package-set equality" among the rules
+    // this module holds. It holds exact VERSION equality for every package the
+    // grant names; it holds nothing about a package the grant omits, and ST5's
+    // audit measured the consequence — a grant naming only `runtime` returned
+    // `covered` with `attention` installed at an unreviewed version, disabled,
+    // and ambiguous, in three separate runs.
+    //
+    // Deciding WHICH packages a grant is obliged to name is a policy question
+    // this subtask deliberately does not answer: requiring every installed
+    // plugin would make assurance strictly harder to satisfy than exactness,
+    // which is the treadmill ADR-0053 §Decision 6 exists to avoid, and the
+    // authoritative "consuming set" is exactly what ADR-0054 §Decision 9 fenced
+    // off as a follow-up. What is landed here is the difference between silent
+    // and visible: an operator reading a `covered` verdict can see which
+    // installed framework packages no reviewer bound.
+    unbound_packages: unboundPackages({ grant: winner.grant, observed, pluginSet }),
     // The residuals travel WITH the positive, because ADR-0053 §Decision 6
     // grants with recorded residuals and a consumer that reported `covered`
     // without them would drop the reviewer's own caveats.

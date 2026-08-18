@@ -74,6 +74,16 @@ import { lstat, readdir, readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { projectGapFamily, READY_COMPAT_STATUSES } from './compat-artifacts.mjs';
 import { sanitizeValue } from './permission-sanitize.mjs';
+import { elapsedMsSince } from './clock.mjs';
+
+// A beyond-skew future mtime yields `null` — "this file establishes no age" —
+// instead of the clamp's 0, which reported the oldest artifact as brand new
+// and so made an inventory sweep skip it.
+function ageMinutesOrNull(nowMs, thenMs) {
+  if (thenMs === null || thenMs === undefined) return null;
+  const elapsed = elapsedMsSince(nowMs, thenMs);
+  return elapsed === null ? null : Math.floor(elapsed / 60000);
+}
 
 // $CODEX_HOME resolution — the ONE canonical form (the `collectUsageRecordSources`
 // precedent). `~/.codex` is the default, never a hardcode (machine-bootstrap-contract.md
@@ -926,7 +936,7 @@ async function inspectArtifactFamily({ pointerFor, root, family, nowMs, retentio
     bytes: totals.bytes,
     oldest_mtime: totals.oldest_mtime_ms === null ? null : new Date(totals.oldest_mtime_ms).toISOString(),
     newest_mtime: totals.newest_mtime_ms === null ? null : new Date(totals.newest_mtime_ms).toISOString(),
-    oldest_age_minutes: totals.oldest_mtime_ms === null ? null : Math.max(0, Math.floor((nowMs - totals.oldest_mtime_ms) / 60000)),
+    oldest_age_minutes: ageMinutesOrNull(nowMs, totals.oldest_mtime_ms),
     attention,
   };
 }
