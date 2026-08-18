@@ -145,6 +145,32 @@ The source-backed parity matrix for Claude expectations that do not port
 directly to Codex is documented in
 [`docs/host-parity-baseline.md`](docs/host-parity-baseline.md).
 
+Doctor reports the host-parity baseline as **three separate facts** rather than
+one verdict (ADR-0053 §Decision 3, ADR-0054). *Integrity* — is the packaged
+baseline present, readable, inside the package, and headed by a canonical dated
+line — outranks the other two and is never expressible as a freshness answer.
+*Exactness* is the unchanged strict normalized comparison of that header against
+the observed host versions, now recorded alongside the drift direction so "the
+host moved past the last review" and "this machine is behind the reviewed
+baseline" stop sharing one word. *Assurance* — carried as a
+`runtime-host-assurance-1.0` record inside the packaged baseline and answered as
+a nested `runtime-host-assurance-result-1.0` result — reports whether a human
+reviewer accepted this host pair against this installed code. It is granted only
+by review and only ever matched mechanically: a version match, an upgrade, or
+elapsed time never produce `covered`, and a broken baseline, an unknown record
+schema, an unreadable host version, an ambiguous or non-authoritative
+installed-plugin list, a disabled package, or a package at a version the review
+did not name all resolve to `blocked` or `unassured`. The doctor report schema
+deliberately does **not** bump for this — the assurance answer carries its own
+version, so the retained proof corpus stays readable and a report predating the
+section reads `legacy-unassured`: readable, never malformed, never covered.
+`runtime:dashboard` reports the same plane as three distinct rows and never
+claims the current machine's assurance, because it performs no live host probe.
+**As of this release the assurance result is reported and not yet gated**;
+readiness, experience parity, and the cutover audit still key on exactness, and
+no grant has been authored yet — the packaged record ships with an empty grant
+set on purpose, so every host reads `unassured`.
+
 Permission proof execution requires the separate `--execute-permission-proof` flag in addition to `--permission-proof`. The executor invokes each available companion through `companions/contract.md` JSON-envelope mode with the resolved model/effort inputs and no doctor-injected sandbox, approval, permission-mode, or host-native policy relaxation flags. Doctor output records only execution status, exit codes, peer host/model metadata, duration, stdout byte count, stdout SHA-256, and sanitized operator-action class. Permission, sandbox, and child-process auth failures are reported as `operator_action_required` with `operator_action_kind` values such as `permission_required`, `sandbox_blocked`, or `auth_required`; they are operator preconditions, not runtime implementation failures. Raw peer stdout, prompt bodies, host secrets, and account details are not printed into the main report. `--permission-proof-timeout-ms <n>` bounds each companion process. This proves companion invocation under current host permission defaults; it does not authorize future writes or broader tool use.
 
 Deep peer smoke execution requires the separate `--execute-deep-peer-smoke` flag in addition to `--deep-peer-smoke`. The executor invokes each available companion through `companions/contract.md` JSON-envelope mode with the resolved model/effort inputs and no host session persistence beyond the companion behavior. Doctor output records only execution status, exit codes, peer host/model metadata, duration, stdout byte count, stdout SHA-256, and the same sanitized operator-action class when the companion is blocked by host preconditions. Raw peer stdout, prompt bodies, host secrets, and account details are not printed into the main report. `--deep-peer-smoke-timeout-ms <n>` bounds each companion process. This executor does not mutate host-native config/auth/secrets/sandbox state and does not claim Codex plugin-hook parity.

@@ -14,7 +14,10 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
-import { baselineFailure, normalizeVersion, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
+import { baselineFailure, classifyHostPairRelation, normalizeVersion, readVersionToken, resolveAssuranceRecord, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
+import { observePackages } from './lib/assurance-contract.mjs';
+import { evaluateAssurance } from './lib/assurance-result.mjs';
+import { loadPluginSet } from './lib/plugin-set.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { getPromptCause } from './lib/permission-advisor-core.mjs';
@@ -199,7 +202,23 @@ export async function runDoctor({
     observedCodexHookConfig: machine.codexHookConfig,
   });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList, codexPluginHooks });
-  const hostParityBaseline = await buildHostParityBaseline({ claude, codex, pluginRoot });
+  // Destructured EXPLICITLY into two names. Assigning the whole
+  // `{baseline, assurance}` pair to `hostParityBaseline` would have dropped
+  // `.status` off the section `cutover-audit.mjs:562` reads and changed its
+  // verdict silently (cross-host review) — the one shape this refactor could
+  // break without any test noticing.
+  const { baseline: hostParityBaseline, assurance: hostParityAssurance } = await buildHostParityFacts({
+    claude,
+    codex,
+    pluginRoot,
+    claudePluginList,
+    // The Claude installed-plugin list arrives from the SAME probe the parser
+    // consumed (`machine.claude.plugin`), so its success status travels with
+    // its text rather than being inferred downstream.
+    claudeListStatus: machine.claude?.plugin?.status ?? null,
+    codexPluginList,
+    now,
+  });
   const settingsRuns = await inspectSettingsRuns({
     repoRoot: resolvedRepoRoot,
     // The currency mirror needs the SAME inputs the producer bound against: the strictly
@@ -428,6 +447,12 @@ export async function runDoctor({
     codex_plugin_hooks: codexPluginHooks,
     host_parity: hostParity,
     host_parity_baseline: hostParityBaseline,
+    // ADR-0054 §Decision 4 — a nested, separately versioned result inside a
+    // report whose own `runtime-doctor-1.0` does NOT bump. Reporting only in
+    // this slice: readiness, experience parity, `overall` and the cutover audit
+    // all still key on exactness, and this is the seat ADR-0053 §Decision 4's
+    // gate move will take.
+    host_parity_assurance: hostParityAssurance,
     companions: companion,
     model_effort: modelEffort,
     settings_runs: settingsRuns,
@@ -1154,7 +1179,29 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
 // Baseline freshness lives in doctor (frequently run) so host-version drift
 // surfaces without a manual runtime:compat run. cutover-audit reuses this
 // result rather than re-parsing the baseline (single source of truth).
-async function buildHostParityBaseline({ claude, codex, pluginRoot }) {
+//
+// ADR-0053 §Decision 3 splits what used to be one verdict into THREE facts over
+// TWO report sections, and the split is the point: integrity outranks the other
+// two, exactness answers "does the packaged evidence describe this machine",
+// and assurance answers "is this machine covered by accepted review". Only the
+// third is what readiness actually needs, and until this slice no such fact
+// existed — `readyCandidate` substituted "the strings match" for "a human
+// accepted this host".
+//
+// ⚠ REPORTING ONLY in this slice. `report.host_parity_assurance` is attached
+// and rendered; nothing reads it. It is deliberately absent from
+// `summarizeOverall`, from `readiness`, from `experience_parity`, and from
+// `cutover-audit`'s `checks` — ADR-0053 §Decision 4 moves the gates, and
+// separating the two means a matcher defect and a gate change cannot land in
+// one release.
+//
+// ONE READ feeds both sections. `resolveHostParityBaseline` and
+// `resolveAssuranceRecord` share a read PATH and not a read, and the module
+// says so: a consumer needing both facts about one revision must compare
+// `provenance.content_sha256` and treat a difference as a failure. Resolving
+// the header here and handing it down is half of that; the hash comparison
+// inside `evaluateAssurance` is the other half.
+async function buildHostParityFacts({ claude, codex, pluginRoot, claudePluginList, claudeListStatus, codexPluginList, now }) {
   // ADR-0051 §Decision 1 — the packaged copy, not repoRoot. Reading the
   // repository made this check work only inside the agentic-plugins source
   // tree: from any consumer repository it reported `missing` and told the
@@ -1164,12 +1211,19 @@ async function buildHostParityBaseline({ claude, codex, pluginRoot }) {
   // THROUGH, so an explicit empty override throws instead of being laundered
   // into the packaged default. The old `pluginRoot ? {…} : {}` made a caller
   // that meant to inspect a specific install silently inspect this one.
-  const resolved = await resolveHostParityBaseline(pluginRoot === undefined ? {} : { pluginRoot });
+  const resolveOpts = pluginRoot === undefined ? {} : { pluginRoot };
+  const resolved = await resolveHostParityBaseline(resolveOpts);
+
   // Gate freshness on a successful version probe. version.text carries
   // stderr/error_message when the probe failed (inspectCli), so a failed
   // claude/codex --version must not be normalized into a false current/stale
   // verdict — without a real observed version, freshness is 'unknown', not a
   // baseline-staleness signal.
+  //
+  // Computed ONCE for both sections. Two sections each deriving "what did we
+  // observe" would be two chances to disagree, and a report whose exactness
+  // line and assurance line named different host versions would be unreadable
+  // in exactly the case that matters.
   const claudeProbe = claude?.version?.status ?? null;
   const codexProbe = codex?.version?.status ?? null;
   const probesOk = claudeProbe === 'available' && codexProbe === 'available';
@@ -1179,15 +1233,107 @@ async function buildHostParityBaseline({ claude, codex, pluginRoot }) {
   // copy required three components and FELL BACK TO THE RAW TEXT when nothing
   // matched, so `banana` normalized to `banana` — a fourth answer to a
   // question this repository had already answered three times.
-  const normalizedObserved = {
-    claude: normalizeVersion(observedClaude),
-    codex: normalizeVersion(observedCodex),
+  //
+  // BOTH forms travel. Exactness needs the normalized one; membership and
+  // direction need the RAW one, because `normalizeVersion` keeps the first
+  // three components and so erases the `1.2.3.4` truncation signal — measured
+  // end to end, a machine reporting `1.2.3.4` reaches `covered` against a human
+  // grant for `1.2.3` when the normalized form is handed to the matcher
+  // (cross-host review).
+  const probe = {
+    claude_probe: claudeProbe,
+    codex_probe: codexProbe,
+    probes_ok: probesOk,
+    observed: { claude: observedClaude, codex: observedCodex },
+    normalized_observed: {
+      claude: normalizeVersion(observedClaude),
+      codex: normalizeVersion(observedCodex),
+    },
   };
+
+  // The two packaged readers that THROW rather than returning a status, wrapped
+  // here because doctor turns runtime faults into check verdicts. The rethrow
+  // is not decoration: both readers raise `TypeError` for an empty or null
+  // `pluginRoot` override, which is a CALLER bug, and swallowing it would turn
+  // a programmer error into a package verdict and hide it (cross-host review).
+  let record = null;
+  let recordFault = null;
+  try {
+    record = await resolveAssuranceRecord(resolveOpts);
+  } catch (err) {
+    if (err instanceof TypeError) throw err;
+    recordFault = sanitizeValue(err?.message) ?? 'unknown error';
+  }
+  let pluginSet = null;
+  let pluginSetFault = null;
+  try {
+    pluginSet = await loadPluginSet(resolveOpts);
+  } catch (err) {
+    if (err instanceof TypeError) throw err;
+    pluginSetFault = sanitizeValue(err?.message) ?? 'unknown error';
+  }
+
+  // NOT `summarizePluginStatus`, and ADR-0054 §Decision 9 rules it out by name:
+  // its `codexListInstalled` counts `decision === 'disabled'` toward
+  // `available`, and "is disabled" is one of the three conditions ADR-0053
+  // §Decision 8 requires to invalidate a grant. Reusing the coarse status would
+  // make that invalidation structurally unable to fire.
+  //
+  // `claudeListStatus` is passed explicitly because `parseClaudePluginList` is
+  // handed stdout whether or not the command SUCCEEDED, so a failed
+  // `claude plugin list` that printed partial text yields entries
+  // indistinguishable from a clean probe's. Omitting it yields
+  // `authoritative: false`, which blocks — the fail-closed direction.
+  const packageObservation = observePackages({ claudePluginList, claudeListStatus, codexPluginList });
+
+  return {
+    baseline: buildHostParityBaseline({ resolved, probe }),
+    assurance: evaluateAssurance({
+      resolvedBaseline: resolved,
+      record,
+      recordFault,
+      pluginSet,
+      pluginSetFault,
+      probe,
+      packageObservation,
+      // The INJECTED date, not the wall clock. `assuranceRecordIssues` rejects
+      // a future `reviewed_at`, and reading the clock here would let one report
+      // carry a `generated_at` and a coverage verdict decided on different days.
+      today: (now instanceof Date ? now : new Date()).toISOString().slice(0, 10),
+    }),
+  };
+}
+
+/**
+ * Layers 1 and 2 — integrity, then exactness. PURE: the one read happened above.
+ *
+ * The exactness COMPUTATION is unchanged by this slice, deliberately and by
+ * decision (ADR-0053 §Decision 1): strict normalized equality is correct for
+ * the question it answers, and relaxing it was rejected on measurement — 17 of
+ * 18 Claude Code steps are patch-position and the single lap that produced real
+ * adoption work is one of them, so a patch-tolerant verdict would have graded
+ * the `2.1.233` tool withdrawal as not worth reporting.
+ *
+ * What is ADDED is `evidence.direction`, and it is evidence ONLY (§Decision 10).
+ * No branch below reads it, and the assurance matcher deliberately does not
+ * import the comparator, so a future change to what `exact` means there cannot
+ * silently widen what is covered.
+ */
+function buildHostParityBaseline({ resolved, probe }) {
+  const { claude_probe: claudeProbe, codex_probe: codexProbe, probes_ok: probesOk } = probe;
+  const { claude: observedClaude, codex: observedCodex } = probe.observed;
+  const normalizedObserved = probe.normalized_observed;
   const baseline = resolved.baseline;
   // Both sides non-null explicitly. Comparing two nulls would call an
   // unreadable probe "current"; the old code was saved from that only by
   // `parseBaseline` guaranteeing a non-null baseline version, which is a
   // property of a different module.
+  // Did reading either observed version DROP a component? The four-component
+  // class, decided once and consumed by the ladder below — deliberately not
+  // also anded into `current`, where a mutation proved it redundant: the ladder
+  // answers `unknown` before `current` is ever consulted, and a second copy
+  // five lines away is noise rather than defence.
+  const truncatedObserved = ['claude', 'codex'].some((host) => readVersionToken(probe.observed[host]).truncated);
   const current = Boolean(probesOk && baseline
     && normalizedObserved.claude && normalizedObserved.codex
     && normalizedObserved.claude === normalizeVersion(baseline.claude)
@@ -1213,6 +1359,36 @@ async function buildHostParityBaseline({ claude, codex, pluginRoot }) {
   } else if (!probesOk) {
     status = 'unknown';
     nextAction = 'Probe host CLIs first — claude/codex --version did not return a usable version (one or both unavailable); cannot assess baseline freshness.';
+  } else if (truncatedObserved) {
+    // The FOUR-COMPONENT false-exact, closed here because the preceding subtask
+    // routed it to this one by name (`docs/follow-ups.md`) after finding it
+    // while single-sourcing the comparator, and because leaving it would ship a
+    // report that contradicts itself on adjacent lines — measured: `1.2.3.4`
+    // against a `1.2.3` baseline reported `baseline-freshness: current` beside
+    // `baseline-direction: unparseable`.
+    //
+    // `SEMVER_RE` matches the first three components, so `normalizeVersion`
+    // turns `1.2.3.4` into `1.2.3` and any equality over the result calls it
+    // EXACTLY equal to a genuine `1.2.3`. Refusing a truncated token is the
+    // same rule ADR-0054 §Decision 7 states for the membership path —
+    // "requiring the observed token's component count to match" — applied to
+    // the same two strings.
+    //
+    // A TIGHTENING, and therefore compatible with ADR-0053 §Decision 1's
+    // "strict normalized equality … is not relaxed": it can only refuse a
+    // version that was previously admitted, never admit one that was refused.
+    // The direction of the old error is why it matters — reporting a version as
+    // MORE equal than it is, is fail-OPEN for an exactness gate. No host has
+    // ever printed a four-component version, so the practical blast radius is
+    // zero; the self-contradiction it removes is the point.
+    //
+    // NOT `stale`, whose remediation names a runtime upgrade or a baseline
+    // refresh — neither of which is the problem. A host that printed a version
+    // this grammar has to truncate is an unreadable observation, and `unknown`
+    // is what the probe gate one branch up already calls one.
+    status = 'unknown';
+    nextAction = 'Probe host CLIs first — a host reported a version with more components than this grammar reads (e.g. `1.2.3.4`), '
+      + 'so comparing it against the packaged baseline would drop a component and report a match that was never observed.';
   } else if (current) {
     status = 'current';
     nextAction = null;
@@ -1235,6 +1411,22 @@ async function buildHostParityBaseline({ claude, codex, pluginRoot }) {
       observed: { claude: observedClaude, codex: observedCodex },
       normalized_observed: normalizedObserved,
       probes: { claude: claudeProbe, codex: codexProbe },
+      // ADR-0053 §Decision 10 — recorded, never consulted. "The host moved past
+      // the last review" and "this machine is behind the reviewed baseline" are
+      // distinct states with distinct operator actions and stop sharing one
+      // word here; `same-precedence-nonexact` and `mixed-direction` exist
+      // because exactness and precedence genuinely disagree, and because one
+      // host ahead while the other is behind is not "drifted" in any single
+      // direction.
+      //
+      // Over RAW observed text rather than the normalized form, for the reason
+      // the assurance path uses raw: the normalized form cannot report
+      // `1.2.3.4` as unparseable, and evidence that quietly called a
+      // four-component version exact would agree with the bug it sits beside.
+      direction: classifyHostPairRelation({
+        observed: probe.observed,
+        reviewed: baseline ? { claude: baseline.claude, codex: baseline.codex } : null,
+      }),
       provenance: { ...resolved.provenance, status: resolved.status },
     },
     next_action: nextAction,
@@ -5655,6 +5847,34 @@ export function formatText(report) {
   lines.push(`- baseline-freshness: ${report.host_parity_baseline.status}${report.host_parity_baseline.status === 'current' ? '' : ` (observed claude=${report.host_parity_baseline.evidence.observed.claude ?? 'unknown'}, codex=${report.host_parity_baseline.evidence.observed.codex ?? 'unknown'}; baseline=${report.host_parity_baseline.evidence.baseline ? `${report.host_parity_baseline.evidence.baseline.claude}/${report.host_parity_baseline.evidence.baseline.codex} @ ${report.host_parity_baseline.evidence.baseline.date}` : 'missing'})`}`);
   if (report.host_parity_baseline.next_action) {
     lines.push(`  next: ${report.host_parity_baseline.next_action}`);
+  }
+  // THREE facts, three lines (ADR-0053 §Decision 3). Folding assurance into the
+  // freshness line would repeat, in the renderer, the substitution this whole
+  // plane exists to remove: a reader who saw one verdict took "the strings
+  // match" for "a human accepted this host".
+  const direction = report.host_parity_baseline.evidence.direction;
+  lines.push(`- baseline-direction: ${direction?.state ?? 'unknown'} (claude=${direction?.hosts?.claude?.state ?? 'unknown'}, codex=${direction?.hosts?.codex?.state ?? 'unknown'})`);
+  const assurance = report.host_parity_assurance;
+  if (!assurance) {
+    // Said out loud rather than skipped. A missing section is unreachable from
+    // `runDoctor`, so silence here would only ever hide a caller handing
+    // `formatText` a report from before this slice — and rendering nothing for
+    // an absent fact is the fall-through shape this section is fixing.
+    lines.push('- assurance: unavailable (this report predates the compatibility assurance section)');
+  } else {
+    const grant = assurance.evidence?.grant_id;
+    const residuals = assurance.evidence?.residuals ?? [];
+    lines.push(`- assurance: ${assurance.status}${grant ? `; grant=${grant}` : ''}${assurance.evidence?.record_status ? `; record=${assurance.evidence.record_status}` : ''}`);
+    // The reviewer's own caveats travel with the positive (§Decision 6). A
+    // `covered` line without them would drop exactly the part of the review
+    // that says what was NOT settled.
+    for (const residual of residuals) {
+      lines.push(`  residual: ${residual.surface ?? 'unnamed surface'} (${residual.consumption ?? 'unknown consumption'}; ${residual.disposition ?? 'no disposition'})`);
+    }
+    for (const reason of (assurance.evidence?.reasons ?? []).slice(0, 4)) {
+      lines.push(`  reason: ${reason}`);
+    }
+    if (assurance.next_action) lines.push(`  next: ${assurance.next_action}`);
   }
   lines.push('');
   lines.push('Model / Effort');
