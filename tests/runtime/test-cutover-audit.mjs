@@ -120,6 +120,45 @@ describe('runtime cutover audit', () => {
     strictEqual(fallbackReport.ready_candidate, false);
   });
 
+  it('a covered result with NO grant id is refused, not trusted', async () => {
+    // ⚠ ADDED BECAUSE A MUTATION SURVIVED. Dropping the grant-id requirement from
+    // the assurance check turned no test red, even though a `covered` result
+    // without one is a shape the producer cannot emit: it is a corrupt report or
+    // one from a producer this audit does not read, and both are non-coverage.
+    // This is the single most dangerous mutation on this plane — it converts an
+    // unreadable report into a readiness pass.
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const audit = async (assuranceOverride) => runCutoverAudit({
+      repoRoot: root, now: NOW,
+      doctorReport: doctorReport({ hostParityAssurance: assuranceOverride }),
+      footerState: 'closed', footerReason: 'closed', omccDevActive: 'no',
+    });
+    const statusOf = (report) => report.checks.find((check) => check.id === 'host_parity_assurance').status;
+
+    const forged = await audit({
+      status: 'covered',
+      evidence: { normalized_observed: { claude: '2.1.143', codex: '0.130.0' }, runtime_floor: { floor: '0.91.0', satisfied: true, hosts: {}, unsatisfied: [] } },
+      next_action: null,
+    });
+    strictEqual(statusOf(forged), 'blocked');
+    strictEqual(forged.ready_candidate, false);
+    ok(forged.next_actions.some((entry) => entry.id === 'host_parity_assurance' && /the producer cannot emit/.test(entry.next_action)));
+
+    // CONTROL — the same result WITH a grant id is satisfied, so the refusal is
+    // about the missing id and not about the fixture being rejected wholesale.
+    const genuine = await audit({
+      status: 'covered',
+      evidence: { grant_id: 'fixture-grant', normalized_observed: { claude: '2.1.143', codex: '0.130.0' }, runtime_floor: { floor: '0.91.0', satisfied: true, hosts: {}, unsatisfied: [] } },
+      next_action: null,
+    });
+    strictEqual(statusOf(genuine), 'satisfied');
+  });
+
   it('the compat gate refuses each new condition independently — and admits the reviewed host', async () => {
     // ⚠ ONE CASE PER CONDITION. Migrating the fixture so the suite goes green
     // proves the gate can PASS; it proves nothing about what it refuses, and a

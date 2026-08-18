@@ -484,9 +484,51 @@ function probes({ claudeList = null, codexList = null, claudeListOk = true, clau
   };
 }
 
-async function assuranceRun({ pkg, probeMap } = {}) {
+async function assuranceRun({ pkg, probeMap, compatRun = null, seedSiblingRuns = false } = {}) {
   const repoRoot = await mkdtemp(join(tmpdir(), 'bcc-assurance-repo-'));
   const homeDir = await mkdtemp(join(tmpdir(), 'bcc-assurance-home-'));
+  // `runtime_handoff_artifacts` reads settings AND consensus AND compat, and
+  // treats a `missing` collection as partial. A case that varies only compat must
+  // therefore seed the other two, or both arms are partial for a reason neither
+  // is about and the comparison proves nothing.
+  if (seedSiblingRuns) {
+    const settingsDir = join(repoRoot, '.agentic-plugins/runs/settings', 'settings-20260818T000000Z-aaaaaa');
+    await mkdir(settingsDir, { recursive: true });
+    await writeFile(join(settingsDir, 'settings.json'), JSON.stringify({
+      schema_version: 'runtime-settings-1.0', run_id: 'settings-20260818T000000Z-aaaaaa',
+      created_at: '2026-08-18T00:00:00Z', status: 'planned',
+    }));
+    const consensusDir = join(repoRoot, '.agentic-plugins/runs/consensus', 'consensus-20260818T000000Z-aaaaaa');
+    await mkdir(consensusDir, { recursive: true });
+    await writeFile(join(consensusDir, 'consensus.json'), JSON.stringify({
+      schema_version: 'runtime-consensus-1.0', run_id: 'consensus-20260818T000000Z-aaaaaa',
+      created_at: '2026-08-18T00:00:00Z', status: 'passed', summary: {}, failures: [],
+    }));
+  }
+  // A REAL compat artifact when a case needs one. Passing a synthetic
+  // `compat_runs` object would not reach doctor at all — it reads the artifacts —
+  // so the override would have been silently ignored and the case would have
+  // asserted against an empty collection instead of the state it names.
+  if (compatRun) {
+    const runId = 'compat-20260818T000000Z-aaaaaa';
+    const dir = join(repoRoot, '.agentic-plugins/runs/compat', runId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'snapshot.json'), JSON.stringify({
+      schema_version: 'runtime-compat-snapshot-1.1', run_id: runId,
+      created_at: '2026-08-18T00:00:00Z', updated_at: '2026-08-18T00:00:00Z', hosts: {},
+    }));
+    await writeFile(join(dir, 'gap-analysis.json'), JSON.stringify({
+      schema_version: 'runtime-compat-gap-1.1', run_id: runId,
+      overall: {
+        status: compatRun.status,
+        drift_class: compatRun.drift_class ?? 'none',
+        release_notes_required: false,
+        assurance: compatRun.status === 'legacy_unassured' ? null : { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'g' } },
+        assurance_state: compatRun.status === 'legacy_unassured' ? 'legacy' : 'readable',
+      },
+      host_gaps: [], next_steps: ['stored step'],
+    }));
+  }
   return runDoctor({ repoRoot, homeDir, pluginRoot: pkg, runner: fakeRunner(probeMap ?? probes()), now: ASSURANCE_NOW, env: { PATH: '/usr/bin:/bin' } });
 }
 
@@ -798,6 +840,71 @@ describe('host-parity assurance consumer contract (ADR-0053 §Decision 3, ADR-00
 });
 
 describe('assurance is REPORTED, not yet gated — the ST3/ST4 scope fence (ADR-0053 §Decision 4)', () => {
+  it('experience parity carries a LIVE assurance criterion, and it moves with the verdict', async () => {
+    // READINESS PATH 2. Cutover requires 100% experience parity separately from
+    // its own checks, so a gate that moved only in `cutover-audit` would leave an
+    // assured host blocked here — and a REVOKED grant would leave this path green,
+    // because every other criterion reads RECORDED compat state.
+    //
+    // ⚠ THIS CASE EXISTS BECAUSE ADDING THE CRITERION BROKE NOTHING. Nine criteria
+    // where there were eight, a total weight moved from 120 to 130, and the whole
+    // suite stayed green — which means nothing was watching it, and an
+    // accidentally deleted criterion would also have stayed green.
+    const parityOf = (report) => report.experience_parity.criteria.find((row) => row.id === 'host_compatibility_assurance');
+
+    const covered = await assuranceRun({ pkg: await assurancePackage() });
+    strictEqual(covered.host_parity_assurance.status, 'covered', 'precondition');
+    strictEqual(parityOf(covered).status, 'satisfied');
+    strictEqual(parityOf(covered).earned_weight, parityOf(covered).weight);
+
+    const unassured = await assuranceRun({
+      pkg: await assurancePackage({ record: assuranceRecord([grant({ cohort: [{ claude: '9.9.9', codex: '9.9.9' }] })]) }),
+    });
+    strictEqual(unassured.host_parity_assurance.status, 'unassured');
+    // `not_verified`, not `blocked`: nothing is broken and §Decision 5 says the
+    // resolution is review, not repair. It still costs score, because
+    // §Decision 11 says unassured blocks readiness.
+    strictEqual(parityOf(unassured).status, 'not_verified');
+    ok(parityOf(unassured).earned_weight < parityOf(unassured).weight);
+    notStrictEqual(covered.experience_parity.score_percent, unassured.experience_parity.score_percent);
+
+    // The criterion is counted in the denominator, so a future deletion changes
+    // the total rather than silently improving the score.
+    strictEqual(covered.experience_parity.criteria.length, 9);
+    strictEqual(covered.experience_parity.weight.total, unassured.experience_parity.weight.total);
+  });
+
+  it('an unassured host does NOT also lose the artifact-readability criterion — one fact, charged once', async () => {
+    // The compat collection reports `needs_attention` for two very different
+    // reasons: artifacts that need attention, and artifacts that are perfectly
+    // readable and simply report that nobody reviewed this host pair. Charging
+    // the second here as well would cost an unassured host twice and send an
+    // operator looking for a corrupt file that does not exist.
+    //
+    // ⚠ THE CRITERION READS THREE COLLECTIONS, and the first draft of this case
+    // seeded only compat — so settings and consensus were `missing`, both cases
+    // were `partial` for a reason neither was about, and the CONTROL would have
+    // passed against a narrowing that did nothing. The confound is removed rather
+    // than asserted around.
+    const handoffOf = (report) => report.experience_parity.criteria.find((row) => row.id === 'runtime_handoff_artifacts').status;
+
+    const assuranceCaused = await assuranceRun({
+      pkg: await assurancePackage({ record: assuranceRecord([]) }),
+      compatRun: { status: 'unassured' },
+      seedSiblingRuns: true,
+    });
+    strictEqual(handoffOf(assuranceCaused), 'satisfied');
+
+    // CONTROL — a collection that needs attention for a REAL artifact reason
+    // still costs this criterion, so the narrowing did not delete it.
+    const artifactCaused = await assuranceRun({
+      pkg: await assurancePackage({ record: assuranceRecord([]) }),
+      compatRun: { status: 'gap_analysis_ready', drift_class: 'host-version-changed' },
+      seedSiblingRuns: true,
+    });
+    strictEqual(handoffOf(artifactCaused), 'partial');
+  });
+
   it('flipping assurance from covered to unassured now MOVES the cutover gate — the ST3 fence, lifted', async () => {
     // ⚠ THIS ASSERTION WAS INVERTED ON PURPOSE, and the fence it replaces is
     // recorded rather than deleted.

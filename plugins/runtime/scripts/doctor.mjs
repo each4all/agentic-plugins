@@ -395,6 +395,7 @@ export async function runDoctor({
     workflowContinuationProof: workflowContinuationProofSection,
   });
   const experienceParity = buildExperienceParity({
+    hostParityAssurance,
     readinessMatrix,
     pluginCommandSurface,
     codexPluginHooks,
@@ -2634,6 +2635,7 @@ function buildReadinessMatrix({
 }
 
 function buildExperienceParity({
+  hostParityAssurance,
   readinessMatrix,
   pluginCommandSurface,
   codexPluginHooks,
@@ -2657,6 +2659,13 @@ function buildExperienceParity({
     buildWorkflowContinuityExperienceCriterion(ledgers),
     buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommandSurface }),
     buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, compatRuns }),
+    // READINESS PATH 2 (ADR-0053 §Decision 4). Cutover requires 100% experience
+    // parity separately from its own checks, so a gate that moved only in
+    // `cutover-audit` would still leave an assured host blocked here — and,
+    // worse, a REVOKED grant would leave this path green while the other one
+    // refused, because everything below reads RECORDED compat state and nothing
+    // read the live verdict.
+    buildHostAssuranceExperienceCriterion(hostParityAssurance),
   ];
   const totalWeight = criteria.reduce((sum, item) => sum + item.weight, 0);
   const earnedWeight = criteria.reduce((sum, item) => sum + item.earned_weight, 0);
@@ -2689,6 +2698,56 @@ function buildExperienceParity({
       'Codex hook review/trust state is not host-verifiable here; /hooks remains an explicit operator check unless a current runtime:settings operator attestation artifact is present.',
     ],
   };
+}
+
+/**
+ * Live compatibility assurance as an experience-parity criterion.
+ *
+ * ⚠ THE LIVE SECTION, NOT THE RECORDED COMPAT RUN. `runtime_handoff_artifacts`
+ * below consumes `compatRuns`, which is persisted state: a grant revoked after
+ * the last `compat check` would leave it reporting `assured` indefinitely. This
+ * criterion reads the verdict doctor computed in THIS run, so a revocation, a
+ * changed packaged baseline or a changed installed package moves parity the
+ * moment it happens.
+ *
+ * NEGATIVE WINS, and `unknown` counts as negative: a report shape this code
+ * cannot read is not evidence of coverage (ADR-0053 §Decision 3).
+ */
+function buildHostAssuranceExperienceCriterion(assurance) {
+  const base = {
+    id: 'host_compatibility_assurance',
+    label: 'This host pair is covered by accepted compatibility review',
+    weight: 15,
+  };
+  const status = assurance?.status ?? null;
+  if (status === 'covered' && typeof assurance?.evidence?.grant_id === 'string') {
+    return parityCriterion({
+      ...base,
+      status: 'satisfied',
+      evidence: `grant=${assurance.evidence.grant_id}`,
+      next_step: null,
+    });
+  }
+  if (status === 'unassured') {
+    return parityCriterion({
+      ...base,
+      // `not_verified` rather than `blocked`: nothing is broken, and ADR-0053
+      // §Decision 5 is explicit that the resolution is a human review rather
+      // than an operator repair. It still costs score, because §Decision 11 says
+      // unassured blocks readiness.
+      status: 'not_verified',
+      evidence: `assurance=unassured${assurance?.evidence?.direction?.state ? `; direction=${assurance.evidence.direction.state}` : ''}`,
+      next_step: assurance?.next_action
+        ?? 'Assurance is granted by human review of this host pair against this installed code (ADR-0053 §Decision 5).',
+    });
+  }
+  return parityCriterion({
+    ...base,
+    status: 'blocked',
+    evidence: `assurance=${status ?? 'absent'}`,
+    next_step: assurance?.next_action
+      ?? 'Re-run runtime:doctor — the compatibility assurance result is absent or unreadable, so coverage cannot be established.',
+  });
 }
 
 function buildHostPluginExperienceCriterion(readinessMatrix) {
@@ -2919,7 +2978,21 @@ function buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, 
     });
   }
   const missing = [settingsRuns.status, consensusRuns.status, compatRuns.status].some((value) => value === 'missing');
-  const needsAttention = ['empty', 'needs_attention'].includes(compatRuns.status);
+  // ⚠ THIS CRITERION IS ABOUT READABILITY, and after ADR-0053 §Decision 4 the
+  // collection status has two very different causes behind one word. A compat
+  // collection is `needs_attention` when its artifacts need attention — and also
+  // when they are perfectly readable and simply report that nobody has reviewed
+  // this host pair.
+  //
+  // The second cause belongs to `host_compatibility_assurance`, which reads the
+  // LIVE verdict. Counting it here too would charge one fact twice: an unassured
+  // host would lose score for coverage AND for artifact readability, and an
+  // operator reading "artifacts are readable for handoff — partial" would go
+  // looking for a corrupt file that does not exist.
+  const ASSURANCE_CAUSED = new Set(['unassured', 'legacy_unassured', 'assured']);
+  const attentionIsAssurance = compatRuns.status === 'needs_attention'
+    && ASSURANCE_CAUSED.has(compatRuns.latest?.status);
+  const needsAttention = ['empty', 'needs_attention'].includes(compatRuns.status) && !attentionIsAssurance;
   return parityCriterion({
     id: 'runtime_handoff_artifacts',
     label: 'Runtime execution and compatibility artifacts are readable for handoff and comparison',
