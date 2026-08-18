@@ -9,6 +9,10 @@ $ARGUMENTS
 
 Record Claude Code and Codex CLI version snapshots under ADR-0026, compare them to the remembered runtime host-parity baseline, attach explicit release-note artifacts, require content-backed notes to cover changed host/version pairs, and plan compatibility updates. This command does not fetch release-note URLs by default, install host CLIs, mutate host config, or update plugins.
 
+Per ADR-0053 §Decision 4, `snapshot` additionally **observes** compatibility assurance for the host pair it just probed and freezes that verdict into the snapshot; `check` projects the frozen verdict and never re-evaluates it, so a remembered snapshot is never retroactively granted assurance. Readiness is classified from that verdict — `current`, `assured` (drift a reviewer accepted), `unassured`, `assurance_blocked`, `legacy_unassured` — while drift keeps being recorded as evidence in `drift_class`.
+
+Assurance is granted by human review recorded in the packaged host-parity baseline (§Decision 2). This command evaluates whether the machine is a member of an existing grant; it can neither create, widen, nor promote one.
+
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RUNTIME_ROOT="${CLAUDE_PLUGIN_ROOT:-}"

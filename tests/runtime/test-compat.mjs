@@ -42,7 +42,7 @@ describe('runtime compat', () => {
     ok(report.next_steps.includes(`runtime:compat check --run-id ${RUN_ID}`));
 
     const snapshot = await readJson(join(root, report.snapshot_pointer));
-    strictEqual(snapshot.schema_version, 'runtime-compat-snapshot-1.0');
+    strictEqual(snapshot.schema_version, 'runtime-compat-snapshot-1.1');
     strictEqual(snapshot.policy.adr, 'ADR-0026');
     strictEqual(report.policy.adr_pointer, 'docs/adr/0026-runtime-compatibility-drift-and-release-notes.md');
     strictEqual(snapshot.hosts.claude.probes.help.stdout_bytes > 0, true);
@@ -83,7 +83,7 @@ describe('runtime compat', () => {
     ok(formatText(report).includes('policy: ADR-0026'));
 
     const gap = await readJson(join(root, report.gap_pointer));
-    strictEqual(gap.schema_version, 'runtime-compat-gap-1.0');
+    strictEqual(gap.schema_version, 'runtime-compat-gap-1.1');
     strictEqual(gap.policy.changed_version_rule.includes('changed host version'), true);
     strictEqual(gap.next_steps[0], `runtime:compat ingest-release-notes --run-id ${RUN_ID} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`);
   });

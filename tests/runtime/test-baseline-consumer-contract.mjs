@@ -72,7 +72,19 @@ async function compatRun(repoRoot, { gap, plan } = {}) {
     created_at: '2026-08-14T00:00:00Z',
     hosts: {},
   }));
-  if (gap) await writeFile(join(dir, 'gap-analysis.json'), JSON.stringify({ schema_version: 'runtime-compat-gap-1.1', run_id: runId, ...gap }));
+  // ADR-0053 §Decision 4 — a `1.1` artifact CARRIES an assurance result; the
+  // reader refuses one that declares the schema and omits the section, because a
+  // truncated write is not history. The default is `covered` so these fixtures
+  // keep meaning "a healthy compat run"; a case that wants otherwise overrides
+  // `overall.assurance` explicitly.
+  if (gap) {
+    const overall = gap.overall === undefined
+      ? undefined
+      : { assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } }, ...gap.overall };
+    await writeFile(join(dir, 'gap-analysis.json'), JSON.stringify({
+      schema_version: 'runtime-compat-gap-1.1', run_id: runId, ...gap, ...(overall === undefined ? {} : { overall }),
+    }));
+  }
   if (plan) await writeFile(join(dir, 'plan.json'), JSON.stringify({ schema_version: 'runtime-compat-plan-1.1', run_id: runId, ...plan }));
   return runId;
 }

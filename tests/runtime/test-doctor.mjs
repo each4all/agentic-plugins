@@ -2143,7 +2143,7 @@ describe('runtime doctor', () => {
       },
     });
     await writeJson(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'gap-analysis.json'), {
-      schema_version: 'runtime-compat-gap-1.0',
+      schema_version: 'runtime-compat-gap-1.1',
       runtime_version: RUNTIME_VERSION,
       run_id: runId,
       created_at: '2026-05-16T00:01:00.000Z',
@@ -2152,6 +2152,10 @@ describe('runtime doctor', () => {
         status: 'release_notes_required',
         drift_class: 'host-version-changed',
         release_notes_required: true,
+        // This case is about release-note evidence, not about coverage, so the
+        // assurance result is present and positive — otherwise the fixture would
+        // be exercising the assurance ladder while claiming to test drift.
+        assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } },
       },
       host_gaps: [
         { host: 'claude', status: 'version_changed', observed_version: '2.1.150', baseline_version: '2.1.141' },
@@ -2216,12 +2220,15 @@ describe('runtime doctor', () => {
       },
     });
     await writeJson(join(runDir, 'gap-analysis.json'), {
-      schema_version: 'runtime-compat-gap-1.0',
+      schema_version: 'runtime-compat-gap-1.1',
       runtime_version: RUNTIME_VERSION,
       run_id: runId,
       created_at: '2026-07-21T00:01:00.000Z',
       updated_at: '2026-07-21T00:01:00.000Z',
-      overall: { status: 'current', drift_class: 'none', release_notes_required: false },
+      // ADR-0047 §5's contract is that a non-actionable standing-watch plan does
+      // not flip compat state. That is orthogonal to coverage, so the fixture
+      // carries a positive assurance result and keeps testing the plan rule.
+      overall: { status: 'current', drift_class: 'none', release_notes_required: false, assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } } },
       host_gaps: [
         { host: 'claude', status: 'matches', observed_version: '2.1.215', baseline_version: '2.1.215' },
         { host: 'codex', status: 'matches', observed_version: '0.144.6', baseline_version: '0.144.6' },

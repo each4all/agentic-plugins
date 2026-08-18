@@ -14,10 +14,9 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
-import { baselineFailure, classifyHostPairRelation, normalizeVersion, readVersionToken, resolveAssuranceRecord, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
+import { baselineFailure, classifyHostPairRelation, normalizeVersion, readVersionToken } from './lib/host-parity-baseline.mjs';
 import { observePackages } from './lib/assurance-contract.mjs';
-import { evaluateAssurance } from './lib/assurance-result.mjs';
-import { loadPluginSet } from './lib/plugin-set.mjs';
+import { buildAssuranceProbe, resolveHostAssuranceFacts } from './lib/host-assurance-facts.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { getPromptCause } from './lib/permission-advisor-core.mjs';
@@ -1202,105 +1201,35 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
 // the header here and handing it down is half of that; the hash comparison
 // inside `evaluateAssurance` is the other half.
 async function buildHostParityFacts({ claude, codex, pluginRoot, claudePluginList, claudeListStatus, codexPluginList, now }) {
-  // ADR-0051 §Decision 1 — the packaged copy, not repoRoot. Reading the
-  // repository made this check work only inside the agentic-plugins source
-  // tree: from any consumer repository it reported `missing` and told the
-  // operator to restore a file their project never contained.
+  // ONE composition, shared with `compat`. It used to live here privately, and a
+  // cross-host Plan-verify review on the compat slice measured what a second
+  // caller would cost: `evaluateAssurance` needs the resolved baseline, the
+  // record and the fault its reader throws, the plugin set and its fault, raw
+  // and normalized versions, both probe statuses, the package observation and an
+  // injected date — roughly a hundred lines to reproduce, which is the
+  // four-private-copies failure ADR-0051 §Decision 4 forbids.
   //
-  // `pluginRoot === undefined` is "no override"; anything else is passed
-  // THROUGH, so an explicit empty override throws instead of being laundered
-  // into the packaged default. The old `pluginRoot ? {…} : {}` made a caller
-  // that meant to inspect a specific install silently inspect this one.
-  const resolveOpts = pluginRoot === undefined ? {} : { pluginRoot };
-  const resolved = await resolveHostParityBaseline(resolveOpts);
-
-  // Gate freshness on a successful version probe. version.text carries
-  // stderr/error_message when the probe failed (inspectCli), so a failed
-  // claude/codex --version must not be normalized into a false current/stale
-  // verdict — without a real observed version, freshness is 'unknown', not a
-  // baseline-staleness signal.
-  //
-  // Computed ONCE for both sections. Two sections each deriving "what did we
-  // observe" would be two chances to disagree, and a report whose exactness
-  // line and assurance line named different host versions would be unreadable
-  // in exactly the case that matters.
-  const claudeProbe = claude?.version?.status ?? null;
-  const codexProbe = codex?.version?.status ?? null;
-  const probesOk = claudeProbe === 'available' && codexProbe === 'available';
-  const observedClaude = probesOk ? observedVersionText(claude?.version) : null;
-  const observedCodex = probesOk ? observedVersionText(codex?.version) : null;
-  // One normalizer, from the module that owns the grammar. doctor's private
-  // copy required three components and FELL BACK TO THE RAW TEXT when nothing
-  // matched, so `banana` normalized to `banana` — a fourth answer to a
-  // question this repository had already answered three times.
-  //
-  // BOTH forms travel. Exactness needs the normalized one; membership and
-  // direction need the RAW one, because `normalizeVersion` keeps the first
-  // three components and so erases the `1.2.3.4` truncation signal — measured
-  // end to end, a machine reporting `1.2.3.4` reaches `covered` against a human
-  // grant for `1.2.3` when the normalized form is handed to the matcher
-  // (cross-host review).
-  const probe = {
-    claude_probe: claudeProbe,
-    codex_probe: codexProbe,
-    probes_ok: probesOk,
-    observed: { claude: observedClaude, codex: observedCodex },
-    normalized_observed: {
-      claude: normalizeVersion(observedClaude),
-      codex: normalizeVersion(observedCodex),
-    },
-  };
-
-  // The two packaged readers that THROW rather than returning a status, wrapped
-  // here because doctor turns runtime faults into check verdicts. The rethrow
-  // is not decoration: both readers raise `TypeError` for an empty or null
-  // `pluginRoot` override, which is a CALLER bug, and swallowing it would turn
-  // a programmer error into a package verdict and hide it (cross-host review).
-  let record = null;
-  let recordFault = null;
-  try {
-    record = await resolveAssuranceRecord(resolveOpts);
-  } catch (err) {
-    if (err instanceof TypeError) throw err;
-    recordFault = sanitizeValue(err?.message) ?? 'unknown error';
-  }
-  let pluginSet = null;
-  let pluginSetFault = null;
-  try {
-    pluginSet = await loadPluginSet(resolveOpts);
-  } catch (err) {
-    if (err instanceof TypeError) throw err;
-    pluginSetFault = sanitizeValue(err?.message) ?? 'unknown error';
-  }
-
-  // NOT `summarizePluginStatus`, and ADR-0054 §Decision 9 rules it out by name:
-  // its `codexListInstalled` counts `decision === 'disabled'` toward
-  // `available`, and "is disabled" is one of the three conditions ADR-0053
-  // §Decision 8 requires to invalidate a grant. Reusing the coarse status would
-  // make that invalidation structurally unable to fire.
-  //
-  // `claudeListStatus` is passed explicitly because `parseClaudePluginList` is
-  // handed stdout whether or not the command SUCCEEDED, so a failed
-  // `claude plugin list` that printed partial text yields entries
-  // indistinguishable from a clean probe's. Omitting it yields
-  // `authoritative: false`, which blocks — the fail-closed direction.
-  const packageObservation = observePackages({ claudePluginList, claudeListStatus, codexPluginList });
-
+  // `resolved` and `probe` come BACK out because the exactness section below
+  // must be derived from the same read and the same observation. Two sections
+  // each deriving "what did we observe" would be two chances to disagree, and a
+  // report whose exactness line and assurance line named different host versions
+  // would be unreadable in exactly the case that matters.
+  const probe = buildAssuranceProbe({
+    claudeProbe: claude?.version?.status ?? null,
+    codexProbe: codex?.version?.status ?? null,
+    claudeText: observedVersionText(claude?.version),
+    codexText: observedVersionText(codex?.version),
+  });
+  const facts = await resolveHostAssuranceFacts({
+    pluginRoot,
+    probe,
+    packageObservation: observePackages({ claudePluginList, claudeListStatus, codexPluginList }),
+    // The INJECTED date, not the wall clock.
+    today: (now instanceof Date ? now : new Date()).toISOString().slice(0, 10),
+  });
   return {
-    baseline: buildHostParityBaseline({ resolved, probe }),
-    assurance: evaluateAssurance({
-      resolvedBaseline: resolved,
-      record,
-      recordFault,
-      pluginSet,
-      pluginSetFault,
-      probe,
-      packageObservation,
-      // The INJECTED date, not the wall clock. `assuranceRecordIssues` rejects
-      // a future `reviewed_at`, and reading the clock here would let one report
-      // carry a `generated_at` and a coverage verdict decided on different days.
-      today: (now instanceof Date ? now : new Date()).toISOString().slice(0, 10),
-    }),
+    baseline: buildHostParityBaseline({ resolved: facts.resolved, probe: facts.probe }),
+    assurance: facts.assurance,
   };
 }
 
