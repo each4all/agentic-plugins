@@ -35,7 +35,10 @@ import { readFile, stat } from 'node:fs/promises';
 import { homedir, hostname as osHostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { comparePrereleaseAware } from './lib/runtime-floor.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
+
+export { comparePrereleaseAware };
 import {
   BOOTSTRAP_RUN_SCHEMA_VERSION,
   BOOTSTRAP_TERMINAL_RUN_STATUSES,
@@ -279,48 +282,17 @@ export function parseBootstrapArgs(argv) {
 }
 
 // ---------------------------------------------------------------------------
-// Prerelease-aware semver floors (§13): SemVer §11 identifier ranking
-// (1.0.0-alpha < 1.0.0-beta; numeric identifiers compare as JS numbers —
-// lossy only above 2^53, far beyond real release ids), which the shared
-// semverCompare deliberately omits — its prerelease tie-break ranks a
-// release above its own prereleases but never identifiers against each other
+// The prerelease-aware floor comparator MOVED to `lib/runtime-floor.mjs`
+// (ADR-0054 §Decision 5). Three callers need it — this file, the assurance
+// ladder and the cutover gate — and two of them are libraries, so keeping it in
+// a command module would have made a library import a command.
+//
+// The move also HARDENED it, and the hardening is why the import is not a
+// no-op: the parse here was a prefix regex with no end anchor, so against a
+// `0.91.0` floor the strings `0.91.0junk` and `0.91.0.1` compared EQUAL and
+// `01.91.0` compared ABOVE. A floor exists to refuse versions; a parse that
+// accepts malformed text as satisfying one is the defect it cannot have.
 // ---------------------------------------------------------------------------
-
-export function comparePrereleaseAware(a, b) {
-  const parse = (v) => {
-    const m = String(v).match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
-    if (!m) return null;
-    return { nums: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ?? null };
-  };
-  const pa = parse(a);
-  const pb = parse(b);
-  if (!pa || !pb) return null;
-  for (let i = 0; i < 3; i += 1) {
-    if (pa.nums[i] !== pb.nums[i]) return pa.nums[i] < pb.nums[i] ? -1 : 1;
-  }
-  // Equal cores: a prerelease sorts BELOW its release (SemVer §11).
-  if (pa.pre === null && pb.pre === null) return 0;
-  if (pa.pre === null) return 1;
-  if (pb.pre === null) return -1;
-  const as = pa.pre.split('.');
-  const bs = pb.pre.split('.');
-  for (let i = 0; i < Math.max(as.length, bs.length); i += 1) {
-    const x = as[i];
-    const y = bs[i];
-    if (x === undefined) return -1;
-    if (y === undefined) return 1;
-    const xn = /^\d+$/.test(x);
-    const yn = /^\d+$/.test(y);
-    if (xn && yn) {
-      if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1;
-    } else if (xn !== yn) {
-      return xn ? -1 : 1;
-    } else if (x !== y) {
-      return x < y ? -1 : 1;
-    }
-  }
-  return 0;
-}
 
 // ---------------------------------------------------------------------------
 // §5 probe serialization — raw machine probe → the run manifest's probe object

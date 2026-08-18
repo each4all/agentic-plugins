@@ -492,10 +492,31 @@ export async function planCompatibility(options = {}) {
       ? 'blocked_legacy_unassured'
       : null;
   const terminal = baselineUnusable || assuranceTerminal !== null;
+  // ⚠ A REVIEWED DRIFT IS NOT OUTSTANDING WORK, and this is where that belongs
+  // rather than in the reader. An `assured` gap is drift a human examined and
+  // accepted, and the release-note requirement exists to make an operator
+  // justify drift — a grant naming this pair already did both. Leaving them in
+  // the actionability test made every assured host emit an actionable plan, so
+  // its first `compat plan` run demoted it permanently.
+  //
+  // `surfaces` and a detected notification-watch signal are NOT dropped: a grant
+  // covers the host pair a reviewer looked at, not a payload variant observed
+  // afterwards, so those stay outstanding work on a covered host.
+  const driftReviewed = gap.overall.status === 'assured';
+  // `classifySurfaces` derives `host-version-baseline` from `drift_class` alone,
+  // so on a reviewed drift that entry is the SAME fact the grant covers. It stays
+  // in `affected_surfaces` — it is genuinely an affected surface and the plan
+  // should say so — but it must not be what makes the plan actionable, or the
+  // drift re-enters actionability through the surface list after being removed
+  // from the drift test directly. Measured: without this the assured host still
+  // emitted `actionable: true`.
+  const unreviewedSurfaces = driftReviewed
+    ? surfaces.filter((surface) => surface !== 'host-version-baseline')
+    : surfaces;
   const actionable = !terminal
-    && (gap.overall.release_notes_required
-      || gap.overall.drift_class !== 'none'
-      || surfaces.length > 0
+    && ((!driftReviewed && gap.overall.release_notes_required)
+      || (!driftReviewed && gap.overall.drift_class !== 'none')
+      || unreviewedSurfaces.length > 0
       || notificationWatch.some((row) => row.signal_detected));
   const plan = {
     schema_version: PLAN_SCHEMA,
@@ -506,7 +527,11 @@ export async function planCompatibility(options = {}) {
       ? 'blocked_baseline_unusable'
       : assuranceTerminal !== null
         ? assuranceTerminal
-        : gap.overall.release_notes_required
+        // Same rule as `actionable` above, and it has to be here too: the plan's
+        // STATUS is what the reader projects, so narrowing only actionability
+        // left an assured host reporting `blocked_release_notes_required` — told
+        // to go fetch notes justifying a drift a reviewer had already accepted.
+        : (!driftReviewed && gap.overall.release_notes_required)
           ? 'blocked_release_notes_required'
           : 'planned',
     actionable,

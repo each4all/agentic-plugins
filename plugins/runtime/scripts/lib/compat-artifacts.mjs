@@ -128,19 +128,39 @@ export function projectGapFamily(gapJson) {
         + 'snapshots are never retroactively granted assurance)',
     };
   }
-  const section = gapJson?.overall?.assurance;
-  if (section === undefined || section === null) {
-    // The section is REQUIRED from `1.1` on, so its absence THERE is an
-    // incomplete write rather than history. Collapsing the two would let a
-    // truncated `1.1` artifact read as "predates the section" — asserting a
-    // history for a document that does not have one, which is the same
-    // mis-statement `NO_RECORDED_ASSURANCE` exists to prevent one plane up.
+  // ⚠ `assurance_state` DECIDES, NOT `assurance`. The first version of this
+  // function asked whether the RESULT object was present, and cross-host review
+  // measured the contradiction that produced: checking a pre-decision snapshot
+  // writes a `1.1` gap whose result is legitimately `null` (there is no verdict
+  // to record for a run that predates the record), and this reader then called
+  // that artifact incomplete. The producer said `legacy_unassured` and the same
+  // bytes read back `unrecognized` — a run this runtime had just written,
+  // refused by the runtime that wrote it.
+  //
+  // The `1.1` contract is therefore: `overall.assurance_state` is REQUIRED and
+  // names which of the three cases this run is; `overall.assurance` carries the
+  // result object and is null exactly when the state is `legacy`. A missing or
+  // unknown state is still an incomplete write, and still refused.
+  const state = gapJson?.overall?.assurance_state;
+  if (state === 'legacy') {
+    return {
+      kind: 'legacy',
+      schema,
+      reason: 'the recorded gap analysis was computed from a snapshot taken before the assurance record existed, '
+        + 'so it establishes no coverage and cannot be re-checked into any (ADR-0053 §Decision 4). Take a fresh snapshot.',
+    };
+  }
+  if (state !== 'readable' && state !== 'unreadable') {
     return {
       kind: 'unrecognized',
       schema,
-      reason: 'the recorded gap analysis declares a schema that requires an assurance result and carries none — '
-        + 're-run runtime:compat check; the artifact is incomplete, not historical',
+      reason: 'the recorded gap analysis declares a schema that requires an assurance state and carries none this '
+        + 'runtime reads — re-run runtime:compat check; the artifact is incomplete, not historical',
     };
   }
+  // `unreadable` reaches here deliberately: the run IS readable as an artifact,
+  // and its own `overall.status` already carries `assurance_blocked`. Refusing
+  // the whole artifact would replace a specific repair instruction with a
+  // generic upgrade one.
   return { kind: 'readable', schema, reason: null };
 }

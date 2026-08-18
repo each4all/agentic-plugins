@@ -25,6 +25,10 @@ import { runCompat } from '../../plugins/runtime/scripts/compat.mjs';
 import { canonicalJson, loadSchema } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 
 const RUNTIME_PLUGIN_ROOT = new URL('../../plugins/runtime/', import.meta.url).pathname;
+// The installed runtime the fixtures report is the ADR-0054 §Decision 5 FLOOR,
+// not an arbitrary value: below it the floor refuses the machine as an integrity
+// failure one step above membership, so an older fixture would report `blocked`
+// in every case that means to exercise coverage.
 const RUN_ID = 'compat-20260516T000000Z-abcdef';
 const NOW = new Date('2026-08-18T00:00:00.000Z');
 // The pair the fixtures observe. It is NOT this machine's pair — a fixture that
@@ -56,9 +60,9 @@ const ok0 = (stdout = '') => ({ ok: true, exit_code: 0, stdout, stderr: '', erro
  * the wrong reason.
  */
 function hostRunner({ claudeListOk = true, codexListOk = true } = {}) {
-  const claudeText = 'Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.90.3\n    Scope: user\n    Status: enabled\n';
+  const claudeText = 'Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.91.0\n    Scope: user\n    Status: enabled\n';
   const codexJson = JSON.stringify({
-    installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.90.3', installed: true, enabled: true }],
+    installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.91.0', installed: true, enabled: true }],
   });
   return async (command, args) => {
     const key = `${command} ${args.join(' ')}`;
@@ -83,7 +87,7 @@ const grant = (patch = {}) => ({
   reviewed_at: '2026-08-16',
   review_provenance: { kind: 'adr', reference: 'ADR-0054' },
   cohort: [{ claude: OBSERVED.claude, codex: OBSERVED.codex }],
-  packages: { runtime: '0.90.3' },
+  packages: { runtime: '0.91.0' },
   residuals: [],
   ...patch,
 });
@@ -93,7 +97,7 @@ async function fixturePackage({ grants = [], header = null } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'compat-assurance-pkg-'));
   await mkdir(join(root, 'docs'), { recursive: true });
   await mkdir(join(root, '.claude-plugin'), { recursive: true });
-  await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.90.3' }));
+  await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.91.0' }));
   // The REAL `data/`: the schema decides whether a record validates and the
   // plugin set decides which hosts a package binding must hold on, so a fixture
   // copy of either would test rules the shipped package does not have.
@@ -107,7 +111,7 @@ async function fixturePackage({ grants = [], header = null } = {}) {
 
 async function repo() {
   const root = await mkdtemp(join(tmpdir(), 'compat-assurance-repo-'));
-  await writeFile(join(root, '.release-please-manifest.json'), JSON.stringify({ 'plugins/runtime': '0.90.3' }));
+  await writeFile(join(root, '.release-please-manifest.json'), JSON.stringify({ 'plugins/runtime': '0.91.0' }));
   return root;
 }
 
@@ -144,7 +148,9 @@ async function snapshotAndCheck({ root, pluginRoot, baseline: base = baseline(),
 
 // ---------------------------------------------------------------------------
 describe('compat artifact family projection is fail-closed and schema-decided', () => {
-  const gapOf = (schema, extra = {}) => ({ schema_version: schema, overall: { status: 'current', ...extra } });
+  // `assurance_state` is what the 1.1 contract requires; `assurance` is the
+  // result and is null exactly when the state is `legacy`.
+  const gapOf = (schema, extra = {}) => ({ schema_version: schema, overall: { status: 'current', assurance_state: 'readable', ...extra } });
 
   it('CONTROL: the shipped schema carrying a section is readable', () => {
     strictEqual(projectGapFamily(gapOf(COMPAT_GAP_SCHEMA, { assurance: { status: 'covered' } })).kind, 'readable');
@@ -171,8 +177,18 @@ describe('compat artifact family projection is fail-closed and schema-decided', 
     strictEqual(projectGapFamily(gapOf('runtime-compat-gap-2.0')).kind, 'unrecognized');
   });
 
-  it('a shipped-schema artifact MISSING its required section is incomplete, not historical', () => {
-    strictEqual(projectGapFamily(gapOf(COMPAT_GAP_SCHEMA)).kind, 'unrecognized');
+  it('a shipped-schema artifact MISSING its required state is incomplete, not historical', () => {
+    const bare = { schema_version: COMPAT_GAP_SCHEMA, overall: { status: 'current' } };
+    strictEqual(projectGapFamily(bare).kind, 'unrecognized');
+    strictEqual(projectGapFamily({ schema_version: COMPAT_GAP_SCHEMA, overall: { status: 'current', assurance_state: 'future' } }).kind, 'unrecognized');
+  });
+
+  it('a shipped-schema artifact declaring `legacy` is history, and its null result is CORRECT', () => {
+    // The producer writes exactly this for a pre-decision snapshot. An earlier
+    // draft asked whether the RESULT object was present and called this shape
+    // incomplete, so the runtime refused a run it had just written.
+    const legacy = { schema_version: COMPAT_GAP_SCHEMA, overall: { status: 'legacy_unassured', assurance: null, assurance_state: 'legacy' } };
+    strictEqual(projectGapFamily(legacy).kind, 'legacy');
   });
 
   it('a non-string or absent schema is refused rather than coerced', () => {
@@ -235,7 +251,10 @@ describe('compat observes assurance and NEVER grants it', () => {
     strictEqual(gap.overall.status, 'assurance_blocked');
     // The evaluator's own repair line survives into the artifact — a blocked
     // state with a generic next step is the defect this stored field prevents.
-    ok(gap.next_steps[0].includes('installed-plugin listing'), gap.next_steps[0]);
+    // The line now comes from the ADR-0054 §Decision 5 floor, which also decides
+    // from the installed-plugin listing and is ordered above membership; it names
+    // the same thing to repair.
+    ok(gap.next_steps[0].includes('installed-plugin list was not authoritative'), gap.next_steps[0]);
   });
 
   it('a drifted pair with no grant keeps its planning state rather than borrowing a new one', async () => {
@@ -300,6 +319,71 @@ describe('a remembered snapshot is never retroactively granted assurance', () =>
     const check = await runCompat({ command: 'check', ...common });
     strictEqual(check.status, 'legacy_unassured', 'a package that grants must not rescue a pre-decision snapshot');
     ok(check.next_steps[0].includes('runtime:compat snapshot'), check.next_steps[0]);
+  });
+
+  it('ROUND TRIP: what check reports is what re-reading the artifact reports', async () => {
+    // ⚠ THE CHECK THIS SUITE ORIGINALLY LACKED, and the gap was not theoretical:
+    // cross-host review measured the producer reporting `legacy_unassured` while
+    // the very same bytes read back `unrecognized / blocked` — a run this runtime
+    // had just written, refused by the runtime that wrote it. Every case above
+    // tested one side or the other; none crossed the boundary, so a contradiction
+    // between them was invisible to all 32 of them.
+    const root = await repo();
+    const pluginRoot = await fixturePackage({ grants: [grant()] });
+    const isolatedHome = await mkdtemp(join(tmpdir(), 'compat-assurance-home-'));
+    const common = {
+      repoRoot: root, runId: RUN_ID, now: NOW, baseline: baseline(), runner: hostRunner(), pluginRoot,
+      homeDir: isolatedHome, codexHome: join(isolatedHome, '.codex'), env: {},
+    };
+    await runCompat({ command: 'snapshot', ...common });
+
+    // Case 1 — the fresh, covered run.
+    const fresh = await runCompat({ command: 'check', ...common });
+    strictEqual((await inspectCompatRuns({ repoRoot: root })).latest.status, fresh.status);
+
+    // Case 2 — the pre-decision snapshot, which is where the contradiction was.
+    const snapPath = join(root, `.agentic-plugins/runs/compat/${RUN_ID}/snapshot.json`);
+    const snap = await readJson(snapPath);
+    delete snap.host_assurance;
+    await writeFile(snapPath, `${JSON.stringify(snap, null, 2)}\n`);
+    const legacy = await runCompat({ command: 'check', ...common });
+    strictEqual(legacy.status, 'legacy_unassured');
+    strictEqual((await inspectCompatRuns({ repoRoot: root })).latest.status, legacy.status);
+
+    // Case 3 — the unreadable frozen result.
+    const snap2 = await readJson(snapPath);
+    snap2.host_assurance = { schema_version: 'runtime-host-assurance-result-9.9', status: 'covered' };
+    await writeFile(snapPath, `${JSON.stringify(snap2, null, 2)}\n`);
+    const blocked = await runCompat({ command: 'check', ...common });
+    strictEqual(blocked.status, 'assurance_blocked');
+    strictEqual((await inspectCompatRuns({ repoRoot: root })).latest.status, blocked.status);
+  });
+
+  it('an advisory plan never demotes a run the gap already called ready', async () => {
+    // An assured host drifts by definition, so its plan is `actionable` and the
+    // informational carve-out cannot save it. Measured before the fix: one
+    // `compat plan` run moved an `assured` host to `plan_ready / needs_attention`
+    // permanently. The ADR-0047 §5 protection was keyed on the literal `current`
+    // and so never reached the status this plane added.
+    const root = await repo();
+    const pluginRoot = await fixturePackage({ grants: [grant()] });
+    const isolatedHome = await mkdtemp(join(tmpdir(), 'compat-assurance-home-'));
+    const common = {
+      repoRoot: root, runId: RUN_ID, now: NOW, baseline: driftedBaseline(), runner: hostRunner(), pluginRoot,
+      homeDir: isolatedHome, codexHome: join(isolatedHome, '.codex'), env: {},
+    };
+    await runCompat({ command: 'snapshot', ...common });
+    strictEqual((await runCompat({ command: 'check', ...common })).status, 'assured');
+    const before = await inspectCompatRuns({ repoRoot: root });
+    strictEqual(before.latest.status, 'assured');
+
+    await runCompat({ command: 'plan', ...common });
+    const after = await inspectCompatRuns({ repoRoot: root });
+    strictEqual(after.latest.status, 'assured', 'an advisory plan must not demote a ready run');
+    strictEqual(after.status, 'available');
+    // CONTROL: a run the gap did NOT call ready still reaches plan_ready, so the
+    // fix narrowed the plan branch rather than deleting it.
+    ok(after.latest.next_steps.length > 0);
   });
 
   it('an UNREADABLE frozen result blocks rather than degrading to legacy', async () => {
@@ -396,7 +480,7 @@ describe('state-readers project every new status without falling through', () =>
     }));
     await writeFile(join(dir, 'gap-analysis.json'), JSON.stringify({
       schema_version: COMPAT_GAP_SCHEMA, run_id: RUN_ID,
-      overall: { status: 'current', drift_class: 'none', release_notes_required: false, assurance: { status: 'covered' } },
+      overall: { status: 'current', drift_class: 'none', release_notes_required: false, assurance: { status: 'covered' }, assurance_state: 'readable' },
       host_gaps: [], next_steps: ['stored step'],
       ...gapPatch,
     }));
@@ -416,7 +500,7 @@ describe('state-readers project every new status without falling through', () =>
   for (const row of expectations) {
     it(`${row.status} projects to ${row.run} / ${row.collection}`, async () => {
       const out = await runWithGap({
-        overall: { status: row.status, drift_class: 'none', release_notes_required: false, assurance: { status: 'covered' } },
+        overall: { status: row.status, drift_class: 'none', release_notes_required: false, assurance: { status: 'covered' }, assurance_state: 'readable' },
       });
       strictEqual(out.latest.status, row.run);
       strictEqual(out.status, row.collection);
@@ -430,7 +514,7 @@ describe('state-readers project every new status without falling through', () =>
     for (const status of COMPAT_GAP_STATUSES) {
       const patch = status === 'legacy_unassured'
         ? { schema_version: 'runtime-compat-gap-1.0', overall: { status, drift_class: 'none', release_notes_required: false } }
-        : { overall: { status, drift_class: 'none', release_notes_required: false, assurance: { status: 'covered' } } };
+        : { overall: { status, drift_class: 'none', release_notes_required: false, assurance: { status: 'covered' }, assurance_state: 'readable' } };
       const out = await runWithGap(patch);
       ok(out.latest.status !== 'unrecognized', `${status} fell through to unrecognized`);
     }
@@ -465,7 +549,7 @@ describe('state-readers project every new status without falling through', () =>
     }));
     await writeFile(join(dir, 'gap-analysis.json'), JSON.stringify({
       schema_version: COMPAT_GAP_SCHEMA, run_id: RUN_ID,
-      overall: { status: 'assurance_blocked', drift_class: 'none', release_notes_required: false, assurance: { status: 'blocked' } },
+      overall: { status: 'assurance_blocked', drift_class: 'none', release_notes_required: false, assurance: { status: 'blocked' }, assurance_state: 'unreadable' },
       host_gaps: [], next_steps: ['stored repair step'],
     }));
     await writeFile(join(dir, 'plan.json'), JSON.stringify({

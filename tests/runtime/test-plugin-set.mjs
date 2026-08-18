@@ -144,12 +144,23 @@ describe('plugin-set — hook_bearing equals effective registration (TESTED mand
 });
 
 describe('plugin-set — floors + edges', () => {
-  it('carries the two verified floors and null elsewhere', async () => {
+  it('carries the three verified floors and null elsewhere', async () => {
     const set = await loadPluginSet();
     assert.equal(set.plugins.companions.minimum_version, '0.3.0');
     assert.equal(set.plugins.engineer.minimum_version, '0.7.0');
+    // ADR-0054 §Decision 5 — the assurance floor, and the reason this assertion
+    // moved rather than being relaxed. Its old message said the floor should be
+    // null "(no documented incompatibility)", which was true until the
+    // incompatibility was documented: below this version a host cannot read the
+    // compatibility assurance record at all, so readiness is not claimable.
+    //
+    // The value is the FIRST RELEASED READER version, so it must equal the
+    // version the R1 release actually cuts. A release that lands on a different
+    // version leaves this pinned value naming a release that does not exist.
+    assert.equal(set.plugins.runtime.minimum_version, '0.91.0');
+    const floored = new Set(['companions', 'engineer', 'runtime']);
     for (const name of Object.keys(set.plugins)) {
-      if (name === 'companions' || name === 'engineer') continue;
+      if (floored.has(name)) continue;
       assert.equal(set.plugins[name].minimum_version, null, `${name} floor should be null (no documented incompatibility)`);
     }
   });

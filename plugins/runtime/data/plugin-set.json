@@ -64,7 +64,7 @@
       "hard_requires": [],
       "soft_requires": [],
       "hook_bearing": { "claude": false, "codex": false },
-      "minimum_version": null
+      "minimum_version": "0.91.0"
     }
   }
 }

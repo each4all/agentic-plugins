@@ -76,15 +76,33 @@ describe('runtime cutover audit', () => {
       footerReason: 'closed',
       omccDevActive: 'no',
     });
-    const staleCheck = staleReport.checks.find((check) => check.id === 'host_parity_baseline');
-    strictEqual(staleCheck.status, 'stale');
-    strictEqual(staleReport.ready_candidate, false);
-    ok(staleReport.next_actions.some((entry) => entry.id === 'host_parity_baseline' && entry.next_action.includes('runtime:compat')));
+    // ADR-0053 §Decision 4 — exactness is still passed through verbatim, but into
+    // `observations`, which reports and does not gate. A stale baseline beside a
+    // covered assurance result is therefore VISIBLE and no longer blocking: that
+    // is the whole point of splitting one verdict into three, and the case is
+    // kept rather than deleted so the relocation is asserted rather than assumed.
+    const staleObservation = staleReport.observations.find((entry) => entry.id === 'host_parity_baseline');
+    strictEqual(staleObservation.status, 'stale');
+    strictEqual(staleReport.checks.some((check) => check.id === 'host_parity_baseline'), false);
+    strictEqual(staleReport.ready_candidate, true, 'a stale baseline no longer blocks once a human grant covers the pair');
+
+    // And the gate it moved to still blocks when assurance is absent.
+    const unassuredReport = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport({ hostParityAssurance: { status: 'unassured', evidence: {}, next_action: 'Await review.' } }),
+      footerState: 'closed',
+      footerReason: 'closed',
+      omccDevActive: 'no',
+    });
+    strictEqual(unassuredReport.ready_candidate, false);
+    ok(unassuredReport.next_actions.some((entry) => entry.id === 'host_parity_assurance'));
 
     // older doctor shape (no host_parity_baseline) → fallback points at re-running
     // doctor (NOT a deleted baseline file), stays 'missing', still blocks readiness
     const olderShape = doctorReport();
     delete olderShape.host_parity_baseline;
+    delete olderShape.host_parity_assurance;
     const fallbackReport = await runCutoverAudit({
       repoRoot: root,
       now: NOW,
@@ -93,10 +111,101 @@ describe('runtime cutover audit', () => {
       footerReason: 'closed',
       omccDevActive: 'no',
     });
-    const fallbackCheck = fallbackReport.checks.find((check) => check.id === 'host_parity_baseline');
+    // The older-shape fallback moved with the check: an assurance section absent
+    // from the report is `missing` and points at re-running doctor, NOT at a
+    // deleted file — the same distinction the exactness fallback drew.
+    const fallbackCheck = fallbackReport.checks.find((check) => check.id === 'host_parity_assurance');
     strictEqual(fallbackCheck.status, 'missing');
     ok(fallbackCheck.next_action.includes('Re-run runtime:doctor'));
     strictEqual(fallbackReport.ready_candidate, false);
+  });
+
+  it('the compat gate refuses each new condition independently — and admits the reviewed host', async () => {
+    // ⚠ ONE CASE PER CONDITION. Migrating the fixture so the suite goes green
+    // proves the gate can PASS; it proves nothing about what it refuses, and a
+    // condition nothing exercises is a condition that can be deleted without a
+    // test turning red.
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const audit = async (overrides) => runCutoverAudit({
+      repoRoot: root, now: NOW, doctorReport: doctorReport(overrides),
+      footerState: 'closed', footerReason: 'closed', omccDevActive: 'no',
+    });
+    const compatCheck = (report) => report.checks.find((check) => check.id === 'latest_compat_snapshot');
+    const base = {
+      status: 'available',
+      malformed: 0,
+      latest: {
+        run_id: 'compat-20260516T073000Z-abc123',
+        status: 'current',
+        drift_class: 'none',
+        selected_at: '2026-05-16T07:30:00.000Z',
+        host_gaps: [
+          { host: 'claude', observed_version: '2.1.143' },
+          { host: 'codex', observed_version: '0.130.0' },
+        ],
+      },
+    };
+
+    // CONTROL — the reviewed host with drift is ADMITTED. Without this, every
+    // refusal below would pass against a gate hard-wired to block.
+    const assured = await audit({
+      compatRuns: { ...base, latest: { ...base.latest, status: 'assured', drift_class: 'host-version-changed' } },
+    });
+    strictEqual(compatCheck(assured).status, 'fresh', 'a reviewed drift must reach the gate, or ADR-0053 §Decision 4 changed nothing');
+    strictEqual(assured.ready_candidate, true);
+
+    // COLLECTION INTEGRITY — one malformed historical artifact blocks, even
+    // though the NEWEST run is perfect.
+    const corrupt = await audit({ compatRuns: { ...base, status: 'blocked', malformed: 1 } });
+    strictEqual(compatCheck(corrupt).status, 'blocked');
+    ok(/malformed/.test(compatCheck(corrupt).evidence.reason), compatCheck(corrupt).evidence.reason);
+
+    // IDENTITY BINDING — a fresh, ready, intact run that observed a DIFFERENT
+    // machine. Both facts are true; they are not about the same host pair.
+    const otherMachine = await audit({
+      compatRuns: {
+        ...base,
+        latest: { ...base.latest, host_gaps: [{ host: 'claude', observed_version: '9.9.9' }, { host: 'codex', observed_version: '0.130.0' }] },
+      },
+    });
+    strictEqual(compatCheck(otherMachine).status, 'blocked');
+    strictEqual(compatCheck(otherMachine).evidence.identity_bound, false);
+
+    // DUPLICATE ROWS — the artifact cannot say which observation it made.
+    const duplicated = await audit({
+      compatRuns: {
+        ...base,
+        latest: {
+          ...base.latest,
+          host_gaps: [
+            { host: 'claude', observed_version: '2.1.143' },
+            { host: 'claude', observed_version: '2.1.144' },
+            { host: 'codex', observed_version: '0.130.0' },
+          ],
+        },
+      },
+    });
+    strictEqual(compatCheck(duplicated).status, 'blocked');
+    ok(/exactly one is required/.test(compatCheck(duplicated).evidence.reason));
+
+    // LIVE COVERAGE — no stored bit. The recorded run is fresh, intact, ready and
+    // bound; the grant was revoked since. The live negative must win.
+    const revoked = await audit({
+      compatRuns: base,
+      hostParityAssurance: {
+        status: 'unassured',
+        evidence: { normalized_observed: { claude: '2.1.143', codex: '0.130.0' } },
+        next_action: 'Await review.',
+      },
+    });
+    strictEqual(compatCheck(revoked).status, 'blocked');
+    strictEqual(compatCheck(revoked).evidence.live_covered, false);
+    ok(/not currently covered/.test(compatCheck(revoked).evidence.reason));
   });
 
   it('builds a prompt-to-artifact completion audit checklist on request', async () => {
@@ -863,8 +972,35 @@ function doctorReport(overrides = {}) {
     },
     next_action: null,
   };
+  // ADR-0053 §Decision 4 — readiness keys on ASSURANCE, so a fixture report that
+  // omits the section blocks every case here on a fact none of them are about.
+  // Default is a covered grant with a satisfied ADR-0054 §Decision 5 floor; a case
+  // that means to exercise the gate overrides it.
+  const hostParityAssurance = overrides.hostParityAssurance ?? {
+    schema_version: 'runtime-host-assurance-result-1.0',
+    id: 'host_parity_assurance',
+    label: 'Host compatibility assurance',
+    status: 'covered',
+    evidence: {
+      grant_id: 'fixture-grant',
+      record_status: 'resolved',
+      reasons: [],
+      normalized_observed: { claude: '2.1.143', codex: '0.130.0' },
+      runtime_floor: {
+        floor: '0.91.0',
+        satisfied: true,
+        hosts: {
+          claude: { satisfied: true, reason: null, version: '0.91.0', detail: null },
+          codex: { satisfied: true, reason: null, version: '0.91.0', detail: null },
+        },
+        unsatisfied: [],
+      },
+    },
+    next_action: null,
+  };
   return {
     host_parity_baseline: hostParityBaseline,
+    host_parity_assurance: hostParityAssurance,
     clis: {
       claude: { version: { text: '2.1.143 (Claude Code)' } },
       codex: { version: { text: 'codex-cli 0.130.0' } },
@@ -876,12 +1012,22 @@ function doctorReport(overrides = {}) {
         codex: { latest: { manifest_version: version } },
       },
     }])),
-    compat_runs: {
+    // ADR-0053 §Decision 4 — the compat gate now also requires collection
+    // integrity and an identity binding between the RECORDED observation and the
+    // live host pair, so the fixture carries both. Without the `host_gaps` rows a
+    // recorded run cannot be bound to this machine and correctly blocks.
+    compat_runs: overrides.compatRuns ?? {
+      status: 'available',
+      malformed: 0,
       latest: {
         run_id: 'compat-20260516T073000Z-abc123',
         status: 'current',
         drift_class: 'none',
         selected_at: '2026-05-16T07:30:00.000Z',
+        host_gaps: [
+          { host: 'claude', status: 'matches', observed_version: '2.1.143', baseline_version: '2.1.143' },
+          { host: 'codex', status: 'matches', observed_version: '0.130.0', baseline_version: '0.130.0' },
+        ],
       },
     },
     consensus_runs: {

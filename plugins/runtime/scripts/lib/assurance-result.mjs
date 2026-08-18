@@ -48,6 +48,7 @@ import {
 } from './host-parity-baseline.mjs';
 import { matchAssurance } from './assurance-contract.mjs';
 import { validatePluginSet } from './plugin-set.mjs';
+import { describeFloorFailure, evaluateRuntimeFloor } from './runtime-floor.mjs';
 import { sanitizeValue } from './permission-sanitize.mjs';
 
 const HOSTS = Object.freeze(['claude', 'codex']);
@@ -240,6 +241,7 @@ export function evaluateAssurance({
       record_content_sha256: null,
       block_sha256: null,
       package_observation: null,
+      runtime_floor: null,
       provenance: null,
       ...evidence,
     },
@@ -339,7 +341,56 @@ export function evaluateAssurance({
     });
   }
 
-  // 7/8 — MEMBERSHIP, and nothing else. `matchAssurance` reads no file, spawns
+  // 7 — THE FLOOR (ADR-0054 §Decision 5). A host whose installed runtime predates
+  // the reader cannot read the assurance record at all, so no coverage claim
+  // about that host pair has a reader behind it.
+  //
+  // ORDERED HERE by CAUSALITY, and the position was corrected by measurement. It
+  // cannot precede step 4, because the floor VALUE is read from the plugin set
+  // that step validates — an unvalidated set is not a source for a refusal. It
+  // also cannot precede step 6: the floor is decided from the installed-plugin
+  // LISTING, and a host whose CLI did not run produces no listing, so an earlier
+  // floor answered a failed `--version` probe with "the installed-plugin list was
+  // not authoritative" — true, downstream, and not the thing to fix. Measured on
+  // the probe-failure case before the move.
+  //
+  // ⚠ UNCONDITIONAL, unlike step 7's package check. Step 7 is conditioned on a
+  // grant applying, on the principle that an operator must not be told to repair
+  // a probe that changed no verdict — and the floor is the case where that
+  // principle does not hold. Below the floor, no future grant could help either,
+  // because the host still could not read it. ADR-0054 §Decision 5 states the
+  // consequence as accepted rather than regrettable: a `0.90.x` install reads as
+  // not satisfied even for an operator who never runs cutover, and that is the
+  // honest meaning of a floor once assurance is the policy.
+  //
+  // BOTH HOSTS' INSTALLED runtime, never the executing process's — the process
+  // running this code is not evidence about either install.
+  const floorVerdict = evaluateRuntimeFloor({
+    floor: pluginSet?.plugins?.runtime?.minimum_version ?? null,
+    packageObservation,
+  });
+  if (!floorVerdict.satisfied) {
+    return result('blocked', {
+      next_action: describeFloorFailure(floorVerdict),
+      evidence: {
+        record_status: record.status,
+        record_content_sha256: recordSha,
+        runtime_floor: floorVerdict,
+      },
+    });
+  }
+  // The SATISFIED verdict travels too. A consumer that must gate on the floor
+  // separately — ADR-0054 §Decision 5 requires a hard cutover check — would
+  // otherwise have to recompute it from `checkPluginVersions`, which accepts a
+  // cache fallback, or from the readiness matrix, which can label cache-only
+  // evidence installed. Neither is the raw observation this verdict was built
+  // from, and two sources for one fact is how they come to disagree.
+  //
+  // `null` therefore means "not evaluated" — an integrity step above returned
+  // first — and never "satisfied".
+  const floorEvidence = { runtime_floor: floorVerdict };
+
+  // 8/9 — MEMBERSHIP, and nothing else. `matchAssurance` reads no file, spawns
   // no process, derives no grant, and has no path that turns absence of
   // evidence into coverage; every input is handed to it here.
   const match = matchAssurance({
@@ -366,6 +417,7 @@ export function evaluateAssurance({
   });
 
   const observation = {
+    ...floorEvidence,
     record_status: record.status,
     record_content_sha256: recordSha,
     block_sha256: record.block_sha256 ?? null,
@@ -401,7 +453,18 @@ export function evaluateAssurance({
     });
   }
 
-  // 7 — a grant APPLIED and the installed facts could not be read
+  // 8 — a grant APPLIED and the installed facts could not be read
+  //
+  // ⚠ SECOND GUARD, and labelled rather than left to look tested — the same
+  // treatment this module already gives the raw-versus-normalized input. With a
+  // floor DECLARED this branch is unreachable, and that is measured rather than
+  // assumed: `authoritative` is a HOST-level flag, step 7 requires authority on
+  // both hosts, so any input that would reach here has already been refused one
+  // step above. It stays for the configuration where `minimum_version` is null —
+  // the shipped state before ADR-0054 §Decision 5's value landed, and the state a
+  // mis-authored package could reintroduce — because in that configuration this
+  // is the only thing standing between a non-authoritative listing and a
+  // membership answer computed from it.
   // authoritatively. Decided on the structured fields rather than on the reason
   // text: `candidate_grant_ids` is non-empty only when a grant's cohort named
   // this pair, and `authoritative` is the producer's own flag.
