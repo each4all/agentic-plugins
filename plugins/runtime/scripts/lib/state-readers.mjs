@@ -72,6 +72,7 @@
 
 import { lstat, readdir, readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { projectGapFamily, READY_COMPAT_STATUSES } from './compat-artifacts.mjs';
 import { sanitizeValue } from './permission-sanitize.mjs';
 
 // $CODEX_HOME resolution — the ONE canonical form (the `collectUsageRecordSources`
@@ -381,11 +382,25 @@ export async function inspectCompatRuns({ repoRoot }) {
   // a new per-run status — `baseline_unusable` is the one that arrived — would
   // have been reported as a healthy compat state. Only `current` earns
   // `available`; anything unrecognised needs attention.
-  const status = malformed > 0 || latest.status === 'baseline_unusable' || latest.status === 'unrecognized'
+  //
+  // `assurance_blocked` joins the blocking set for the same reason
+  // `baseline_unusable` did: it is an INTEGRITY failure, not a readiness answer,
+  // and ADR-0053 §Decision 3 puts integrity above both other layers.
+  //
+  // `available` is decided from the SHARED ready list rather than from a literal,
+  // so the producer's positive vocabulary and the consumer's cannot drift apart —
+  // the failure this reader's own comment describes, repeated one release later
+  // for a second status. `legacy_unassured` and `unassured` deliberately fall
+  // through to `needs_attention`: they are not malformed and not broken, they are
+  // simply not covered, and §Decision 11 says unassured blocks.
+  const status = malformed > 0
+    || latest.status === 'baseline_unusable'
+    || latest.status === 'assurance_blocked'
+    || latest.status === 'unrecognized'
     ? 'blocked'
     : latest.status === 'release_notes_required'
       ? 'release_notes_required'
-      : latest.status === 'current'
+      : READY_COMPAT_STATUSES.includes(latest.status)
         ? 'available'
         : 'needs_attention';
   return {
@@ -436,11 +451,33 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
   // down, repeated by its reader. The single string is compat's; nothing is
   // re-derived here.
   const baselineUnusable = gap.status === 'available' && gapOverall.status === 'baseline_unusable';
+  // ADR-0053 §Decision 4 — the FAMILY, checked before any persisted status is
+  // read. Measured before it was written: a gap artifact declaring a schema this
+  // runtime has never heard of read as `available / current`, because nothing
+  // below validates the family and every branch switches on the stored string.
+  // An unread narrowing field is how a restricted verdict becomes an
+  // unrestricted one, so an unknown family is refused rather than consumed.
+  const family = gap.status === 'available' ? projectGapFamily(gap.json) : null;
+  const unrecognizedFamily = family?.kind === 'unrecognized';
+  const legacyFamily = family?.kind === 'legacy';
+  // The assurance-integrity states outrank the plan for the same reason
+  // `baseline_unusable` does: a plan cannot be acted on when the verdict behind
+  // it could not be read. Without this, an existing plan artifact turned a
+  // blocked run into `plan_ready`.
+  const assuranceBlocked = gap.status === 'available' && gapOverall.status === 'assurance_blocked';
   const status = malformed.length > 0
     ? 'blocked'
-    : baselineUnusable
-      ? 'baseline_unusable'
-      : plan.status === 'available' && !planInformationalOnly
+    : unrecognizedFamily
+      ? 'unrecognized'
+      : baselineUnusable
+        ? 'baseline_unusable'
+        : assuranceBlocked
+          ? 'assurance_blocked'
+          // History, and it cannot be planned away — the only honest next step is
+          // a fresh snapshot, so a plan artifact must not mask it either.
+          : legacyFamily
+            ? 'legacy_unassured'
+            : plan.status === 'available' && !planInformationalOnly
         ? planStatus === 'blocked_release_notes_required'
           ? 'release_notes_required'
           // A plan can also declare itself blocked on the baseline. The gap
@@ -472,7 +509,18 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
               // malformed-artifact count with no artifact to point at.
               : gapOverall.status === 'gap_analysis_ready'
                 ? 'gap_analysis_ready'
-                : 'unrecognized'
+                // Reviewed by nobody — readable, drift-free, and covered by no
+                // grant. ADR-0053 §Decision 11: "unassured blocks". Carried as
+                // its own value rather than folded into `gap_analysis_ready`,
+                // whose next step is a plan that would have nothing to plan.
+                : gapOverall.status === 'unassured'
+                  ? 'unassured'
+                  // Drift a human reviewed and accepted. Positive for readiness,
+                  // while `drift_class` keeps reporting the drift as evidence —
+                  // §Decision 4 moves the classification, not the evidence.
+                  : gapOverall.status === 'assured'
+                    ? 'assured'
+                    : 'unrecognized'
           : 'snapshot_only';
   return {
     run_id: sanitizeValue(snapshot.run_id) ?? runId,
@@ -556,6 +604,33 @@ function compatNextSteps({ runId, status, gap, plan }) {
     return storedGapSteps.length > 0
       ? storedGapSteps
       : ['Repair the packaged host-parity baseline — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.'];
+  }
+  // The producer stores the EVALUATOR's own repair instruction for these, and it
+  // names the specific failure — a corrupt package, a straddled read, an
+  // unreadable host probe. Re-deriving a generic line would discard the one field
+  // whose job is telling those apart, which is the defect this function already
+  // fixed once for `baseline_unusable`.
+  if (status === 'assurance_blocked') {
+    return storedGapSteps.length > 0
+      ? storedGapSteps
+      : ['Re-run runtime:doctor and reinstall the runtime plugin — the recorded compatibility assurance result could not be read.'];
+  }
+  if (status === 'legacy_unassured') {
+    return storedGapSteps.length > 0
+      ? storedGapSteps
+      : ['runtime:compat snapshot — this run predates the compatibility assurance record, and a remembered snapshot is never retroactively granted assurance (ADR-0053 §Decision 4).'];
+  }
+  if (status === 'unassured') {
+    return storedGapSteps.length > 0
+      ? storedGapSteps
+      : ['Assurance is granted by human review of this host pair against this installed code (ADR-0053 §Decision 5); until a release carries a grant naming this pair, readiness stays ungranted.'];
+  }
+  // `assured` is drift a human accepted. There is nothing to do about it, but
+  // silence is still wrong — the drift is real and stays worth seeing.
+  if (status === 'assured') {
+    return storedGapSteps.length > 0
+      ? storedGapSteps
+      : [`Host versions drifted from the reviewed baseline and a grant covers this pair; no action required. runtime:compat plan --run-id ${runId} for the advisory sequence.`];
   }
   if (status === 'release_notes_required') {
     return storedGapSteps.length > 0 ? storedGapSteps : [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`];

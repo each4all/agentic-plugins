@@ -9,16 +9,34 @@ import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
 import {
+  COMPAT_GAP_SCHEMA,
+  COMPAT_SNAPSHOT_SCHEMA,
+  projectGapFamily,
+} from './lib/compat-artifacts.mjs';
+import {
+  ASSURANCE_RESULT_SCHEMA_VERSION,
+  ASSURANCE_RESULT_STATUSES,
+} from './lib/assurance-result.mjs';
+import {
+  buildAssuranceProbe,
+  observeMachinePackages,
+  resolveHostAssuranceFacts,
+} from './lib/host-assurance-facts.mjs';
+import {
   extractBaselineVersions,
   normalizeVersion,
   resolveHostParityBaseline,
   scanVersionTokens,
 } from './lib/host-parity-baseline.mjs';
+import { probeMachineHostState } from './lib/machine-probe.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
-const SNAPSHOT_SCHEMA = 'runtime-compat-snapshot-1.0';
-const GAP_SCHEMA = 'runtime-compat-gap-1.0';
+// ADR-0053 §Decision 4 — the vocabulary lives in `lib/compat-artifacts.mjs`
+// because the consumer needs it too and cannot import this file: state-readers
+// -> compat -> doctor -> state-readers is a cycle.
+const SNAPSHOT_SCHEMA = COMPAT_SNAPSHOT_SCHEMA;
+const GAP_SCHEMA = COMPAT_GAP_SCHEMA;
 const RELEASE_NOTES_SCHEMA = 'runtime-compat-release-notes-1.0';
 const PLAN_SCHEMA = 'runtime-compat-plan-1.1';
 const LATEST_SCHEMA = 'runtime-compat-latest-1.0';
@@ -88,16 +106,22 @@ export async function createSnapshot(options = {}) {
   const observedAt = toIso(now);
   const runId = options.runId ? validateRunId(options.runId) : makeRunId(now);
   const runDir = compatRunDir(repoRoot, runId);
-  await mkdir(resolve(runDir, 'release-notes'), { recursive: true });
 
   const runner = options.runner ?? runCommand;
   const timeoutMs = positiveInt(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, '--timeout-ms', MAX_TIMEOUT_MS);
+  // GATHER BEFORE CREATING THE DIRECTORY (cross-host review). The run directory
+  // used to be created first, so a runner that rejected — or a packaged read
+  // that threw — left an EMPTY run behind. `inspectCompatRuns` counts a run
+  // whose `snapshot.json` will not parse as malformed, and `malformed > 0`
+  // blocks the WHOLE collection, so one failed probe poisoned every compat
+  // consumer until an operator deleted the directory by hand.
   const [claude, codex] = await Promise.all([
     observeHost('claude', { repoRoot, runner, timeoutMs }),
     observeHost('codex', { repoRoot, runner, timeoutMs }),
   ]);
   const baseline = options.baseline ?? await loadBaselineVersions();
   const pluginVersions = await readPluginVersions(repoRoot);
+  const assurance = await observeAssurance({ repoRoot, claude, codex, runner, timeoutMs, now, options });
 
   const snapshot = {
     schema_version: SNAPSHOT_SCHEMA,
@@ -109,10 +133,26 @@ export async function createSnapshot(options = {}) {
     hosts: { claude, codex },
     remembered_baseline: baseline,
     plugin_versions: pluginVersions,
+    // ADR-0053 §Decision 4 — FROZEN HERE, and this is the whole point of putting
+    // the evaluation in `snapshot` rather than in `check`.
+    //
+    // A remembered snapshot is never retroactively granted assurance. If `check`
+    // evaluated against the THEN-INSTALLED record, re-running it on a six-week-old
+    // snapshot after a release shipped a grant would turn that old observation
+    // into `covered` — coverage awarded to a machine state nobody reviewed,
+    // arriving through the one command an operator runs casually.
+    //
+    // It also keeps ONE moment in one artifact: drift is computed from the host
+    // versions recorded here, so an assurance verdict computed at a different
+    // moment would put two observations of two machines into one file. `doctor`
+    // states the same rule for its own two sections and computes the observed
+    // pair once for both.
+    host_assurance: assurance,
     policy: compatibilityPolicy(),
     artifacts: [],
     limits: compatLimits(),
   };
+  await mkdir(resolve(runDir, 'release-notes'), { recursive: true });
   const snapshotPath = resolve(runDir, 'snapshot.json');
   await writeJson(snapshotPath, snapshot);
   await writeLatest(repoRoot, {
@@ -136,6 +176,95 @@ export async function createSnapshot(options = {}) {
       `runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`,
     ],
     limits: snapshot.limits,
+  };
+}
+
+/**
+ * OBSERVE the machine's assurance and freeze it into the snapshot.
+ *
+ * ⚠ THIS GRANTS NOTHING, and the boundary is ADR-0053 §Decision 2: `runtime:compat`
+ * may assemble evidence; it may not grant acceptance. Every positive verdict here
+ * comes from `matchAssurance` matching a HUMAN-authored grant that named this host
+ * pair, reached only through the shared `evaluateAssurance` ladder. There is no
+ * branch in this file that produces `covered`, and none that promotes a candidate
+ * into an active grant — ADR-0054 §Decision 9 keeps the candidate-assembly half of
+ * §Decision 2 a `may` and out of scope, so it is deliberately not built.
+ *
+ * WHY THE MACHINE PROBE AND NOT COMPAT'S OWN SIX COMMANDS. Membership needs the
+ * installed-plugin listings, and `observePackages` reports a missing listing as
+ * NON-authoritative. Measured on the shipped ladder: with no listing at all and a
+ * grant that names the pair, the result is `blocked` carrying "Repair the
+ * installed-plugin listing on claude and codex" — an instruction to repair a probe
+ * compat never ran, and it would fire on exactly the day a grant first ships.
+ *
+ * ⚠ EVERY ENVIRONMENT INPUT IS THREADED, not defaulted (cross-host review).
+ * `probeMachineHostState` otherwise reads the real home directory, the real
+ * `process.env` and the real `CODEX_HOME`, so a test that injects only a runner
+ * would still inspect the developer's own caches — hermetic by accident, and only
+ * until someone's machine differs.
+ *
+ * The probe is skipped entirely when `assuranceProbe: false` is passed, which is
+ * how a caller that already knows the answer (or a test pinning the ladder) avoids
+ * paying for 16 host commands.
+ */
+async function observeAssurance({ repoRoot, claude, codex, runner, timeoutMs, now, options = {} }) {
+  // The explicit override wins, and `null` is a legitimate override meaning "do
+  // not observe" — distinguished from "not supplied" so a caller can suppress the
+  // probe without the value being laundered into a default.
+  if (options.hostAssurance !== undefined) return options.hostAssurance;
+
+  const probe = buildAssuranceProbe({
+    // compat's own probe statuses, expressed in the vocabulary the shared builder
+    // expects. `observeHost` reports `available` when the command RAN at all, so
+    // a version it could not parse is `null` here and step 6 of the ladder refuses
+    // it rather than letting it arrive as a membership miss.
+    claudeProbe: claude?.version ? 'available' : null,
+    codexProbe: codex?.version ? 'available' : null,
+    // RAW text, never `observed.version`. `extractSemver` has already dropped the
+    // trailing components of a four-component version, and the ladder's truncation
+    // guard is the thing that stops `1.2.3.4` reaching `covered` against a grant
+    // for `1.2.3`.
+    claudeText: claude?.version_text ?? null,
+    codexText: codex?.version_text ?? null,
+  });
+
+  let machine = null;
+  let probeFault = null;
+  if (options.assuranceProbe !== false) {
+    try {
+      machine = await probeMachineHostState({
+        cwd: repoRoot,
+        runner,
+        timeoutMs,
+        ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }),
+        ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
+        ...(options.env === undefined ? {} : { env: options.env }),
+      });
+    } catch (error) {
+      // A failed listing is NON-coverage, never a thrown snapshot. The ladder
+      // already knows what to do with a missing observation; losing the whole
+      // snapshot to it would be the atomicity defect this function was moved
+      // above `mkdir` to avoid.
+      probeFault = sanitizeLine(error?.message) ?? 'unknown error';
+    }
+  }
+
+  const facts = await resolveHostAssuranceFacts({
+    pluginRoot: options.pluginRoot ?? PLUGIN_ROOT,
+    probe,
+    packageObservation: machine === null ? null : observeMachinePackages(machine),
+    // INJECTED. `assuranceRecordIssues` rejects a `reviewed_at` in the future, so
+    // reading the clock here would let one artifact carry a `created_at` and a
+    // coverage verdict decided on different days.
+    today: (now instanceof Date ? now : new Date()).toISOString().slice(0, 10),
+  });
+
+  return {
+    ...facts.assurance,
+    // Recorded so a reader can tell "no grant named this pair" from "the listing
+    // could not be taken", which have different operator actions even though both
+    // are non-coverage.
+    probe_fault: probeFault,
   };
 }
 
@@ -350,7 +479,20 @@ export async function planCompatibility(options = {}) {
   // in one command and not the next is how the reader one layer up ended up
   // with `plan_ready` over a broken package.
   const baselineUnusable = gap.overall.status === 'baseline_unusable';
-  const actionable = !baselineUnusable
+  // The assurance-integrity states are terminal for planning for exactly the
+  // reason `baseline_unusable` is: a compatibility plan is work to do about a
+  // comparison, and when the comparison could not be made or its verdict cannot
+  // be read, emitting `planned` with update steps hands the operator work that
+  // cannot fix what is wrong. `legacy_unassured` joins them because its only
+  // honest next step is a FRESH snapshot — planning off a remembered one is how
+  // a stale observation would keep producing current-looking work.
+  const assuranceTerminal = gap.overall.status === 'assurance_blocked'
+    ? 'blocked_assurance'
+    : gap.overall.status === 'legacy_unassured'
+      ? 'blocked_legacy_unassured'
+      : null;
+  const terminal = baselineUnusable || assuranceTerminal !== null;
+  const actionable = !terminal
     && (gap.overall.release_notes_required
       || gap.overall.drift_class !== 'none'
       || surfaces.length > 0
@@ -362,9 +504,11 @@ export async function planCompatibility(options = {}) {
     created_at: toIso(options.now ?? new Date()),
     status: baselineUnusable
       ? 'blocked_baseline_unusable'
-      : gap.overall.release_notes_required
-        ? 'blocked_release_notes_required'
-        : 'planned',
+      : assuranceTerminal !== null
+        ? assuranceTerminal
+        : gap.overall.release_notes_required
+          ? 'blocked_release_notes_required'
+          : 'planned',
     actionable,
     gap_pointer: pointer(repoRoot, gapPath),
     affected_surfaces: surfaces,
@@ -458,15 +602,11 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
   const releaseNotesRequired = !baselineBroken
     && driftClass !== 'none'
     && (releaseNotes.content_backed_count === 0 || releaseNoteCoverage.missing_required_hosts.length > 0);
-  const overallStatus = baselineBroken
-    // Terminal and distinct: nothing was compared, so neither `current` nor a
-    // gap-analysis verdict is honest here.
-    ? 'baseline_unusable'
-    : releaseNotesRequired
-      ? 'release_notes_required'
-      : driftClass === 'none'
-        ? 'current'
-        : 'gap_analysis_ready';
+  // PROJECTED, never re-evaluated. The verdict was frozen when the snapshot was
+  // taken; reading the installed record again here is the retroactive-assurance
+  // path §Decision 4 forbids.
+  const assurance = projectSnapshotAssurance(snapshot);
+  const overallStatus = readinessStatus({ baselineBroken, assurance, releaseNotesRequired, driftClass });
   return {
     schema_version: GAP_SCHEMA,
     runtime_version: VERSION,
@@ -477,6 +617,15 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
       status: overallStatus,
       drift_class: driftClass,
       release_notes_required: releaseNotesRequired,
+      // The WHOLE evidence object, not four scalars (cross-host review). Dropping
+      // `next_action` would strip `assurance_blocked` of the only line saying how
+      // to repair it — the same defect §Decision 4 removed from the baseline
+      // status itself — and a consumer that must later gate on this fact needs the
+      // recorded evidence, not a status string it would have to re-derive.
+      assurance: assurance.state === 'legacy'
+        ? null
+        : assurance.evidence,
+      assurance_state: assurance.state,
     },
     host_gaps: hostGaps,
     release_notes: summarizeReleaseNotes(releaseNotes),
@@ -487,11 +636,7 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
     // `runtime:compat plan` handed the operator an action that cannot fix
     // what is wrong, which is the same misdirection §Decision 4 removed from
     // the status itself.
-    next_steps: baselineBroken
-      ? [`Repair the packaged host-parity baseline (${baselineStatus}) — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.`]
-      : releaseNotesRequired
-        ? [`runtime:compat ingest-release-notes --run-id ${snapshot.run_id} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`]
-        : [`runtime:compat plan --run-id ${snapshot.run_id}`],
+    next_steps: gapNextSteps({ overallStatus, baselineStatus, assurance, runId: snapshot.run_id }),
   };
 }
 
@@ -552,6 +697,115 @@ function buildReleaseNoteCoverage({ hostGaps, releaseNotes }) {
     hosts,
     rule: 'Changed host versions require content-backed release notes mentioning both the changed host and observed version, unless the accepted baseline has already been refreshed.',
   };
+}
+
+/**
+ * The stored next step, per readiness state.
+ *
+ * Every state gets one. Silence is the wrong answer here for the same reason it
+ * is wrong in the reader: a run with no next step reads as a run with nothing to
+ * do, and three of these states are exactly the ones an operator must act on.
+ */
+function gapNextSteps({ overallStatus, baselineStatus, assurance, runId }) {
+  if (overallStatus === 'baseline_unusable') {
+    return [`Repair the packaged host-parity baseline (${baselineStatus}) — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.`];
+  }
+  if (overallStatus === 'assurance_blocked') {
+    // The EVALUATOR's own instruction wherever it exists. It names the specific
+    // repair — a corrupt package, a straddled read, an unreadable host probe —
+    // and re-deriving a generic line here would discard the one field whose job
+    // is telling those apart.
+    const recorded = typeof assurance.evidence?.next_action === 'string' ? assurance.evidence.next_action : null;
+    return [recorded ?? 'Re-run runtime:doctor and reinstall the runtime plugin — the recorded compatibility assurance result could not be read.'];
+  }
+  if (overallStatus === 'legacy_unassured') {
+    return [`runtime:compat snapshot — this run predates the compatibility assurance record, and a remembered snapshot is never retroactively granted assurance (ADR-0053 §Decision 4). Take a fresh snapshot, then runtime:compat check.`];
+  }
+  if (overallStatus === 'release_notes_required') {
+    return [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`];
+  }
+  if (overallStatus === 'unassured') {
+    return ['Assurance is granted by human review of this host pair against this installed code — not by a version match, an upgrade, or elapsed time. Until a release carries a grant naming this pair, readiness stays ungranted (ADR-0053 §Decision 5).'];
+  }
+  return [`runtime:compat plan --run-id ${runId}`];
+}
+
+/**
+ * Read the assurance verdict the SNAPSHOT froze. FAIL-CLOSED.
+ *
+ * Four outcomes, and none of them re-runs the ladder:
+ *
+ *   no section          -> `legacy_unassured` — a snapshot taken before the
+ *                          decision. It can never become covered; the operator
+ *                          takes a FRESH snapshot, they do not re-check this one.
+ *   unreadable section  -> `blocked` — a result this runtime does not read.
+ *                          Upgrade; re-running check rewrites the same bytes.
+ *   `covered` w/o grant  -> `blocked` — the producer cannot emit it, so the
+ *                          artifact is corrupt or from a producer this reader
+ *                          does not understand. Both are non-coverage.
+ *   a producer status   -> carried verbatim.
+ */
+function projectSnapshotAssurance(snapshot) {
+  const section = snapshot?.host_assurance;
+  if (section === undefined || section === null) {
+    return { state: 'legacy', status: null, grant_id: null, evidence: null };
+  }
+  const readable = section.schema_version === ASSURANCE_RESULT_SCHEMA_VERSION
+    && ASSURANCE_RESULT_STATUSES.includes(section.status)
+    && !(section.status === 'covered' && typeof section.evidence?.grant_id !== 'string');
+  if (!readable) {
+    return { state: 'unreadable', status: null, grant_id: null, evidence: section };
+  }
+  return {
+    state: 'readable',
+    status: section.status,
+    grant_id: section.evidence?.grant_id ?? null,
+    evidence: section,
+  };
+}
+
+/**
+ * The readiness ladder (ADR-0053 §Decision 4). ORDERED, and the order is the
+ * decision rather than a style.
+ *
+ * Integrity first (§Decision 3: negative and unknown beat positive at every
+ * layer), then history, then coverage, then the planning states.
+ *
+ * ⚠ `current` NOW REQUIRES COVERAGE, and it is the one narrowing here. ADR-0053
+ * §Decision 11 says it in one line — "a new reader against an old baseline or an
+ * old recorded artifact yields unassured, and unassured blocks" — and ADR-0054
+ * §Decision 6 names the consequence as the POINT of the rollout: R1 ships with
+ * `grants: []`, so every host reads `unassured` and readiness blocks, which is
+ * how the negative path gets exercised by the real gate on real machines instead
+ * of by a simulation of it.
+ *
+ * ⚠ COVERAGE OUTRANKS THE RELEASE-NOTE REQUIREMENT, deliberately. The
+ * requirement exists to make an operator justify drift with content-backed
+ * evidence; a human grant naming this exact pair IS that justification, already
+ * reviewed. Ordering it below would hand the operator homework a reviewer has
+ * already done.
+ *
+ * DRIFT IS UNTOUCHED. `classifyDrift` keeps its whole vocabulary and a non-exact
+ * host stays visibly `drifted` — §Decision 4 keeps drift as evidence and moves
+ * only the readiness classification.
+ */
+function readinessStatus({ baselineBroken, assurance, releaseNotesRequired, driftClass }) {
+  // Nothing was compared. Neither a readiness verdict nor a gap verdict is honest.
+  if (baselineBroken) return 'baseline_unusable';
+  // An unreadable frozen result is an integrity failure of THIS artifact, and it
+  // is ordered above history because a snapshot that carries a section this
+  // runtime cannot read is not a snapshot that predates the section.
+  if (assurance.state === 'unreadable') return 'assurance_blocked';
+  if (assurance.status === 'blocked') return 'assurance_blocked';
+  // Readable, and it predates the decision. Never retroactively granted.
+  if (assurance.state === 'legacy') return 'legacy_unassured';
+  if (assurance.status === 'covered') return driftClass === 'none' ? 'current' : 'assured';
+  if (releaseNotesRequired) return 'release_notes_required';
+  // Reviewed by nobody. `gap_analysis_ready` keeps its meaning — there is drift
+  // and a plan can be built — while a machine with no drift and no grant gets its
+  // own state rather than borrowing `current`, which would be exactness standing
+  // in for assurance.
+  return driftClass === 'none' ? 'unassured' : 'gap_analysis_ready';
 }
 
 function classifyDrift(hostGaps, { baselineStatus = null } = {}) {
@@ -919,7 +1173,9 @@ function hostSummary(hosts) {
 
 function compatLimits() {
   return [
-    'runtime:compat records host-version and release-note artifacts only; it does not install, update, authenticate, or mutate host CLIs.',
+    'runtime:compat records host-version, release-note, and compatibility-assurance observation artifacts only; it does not install, update, authenticate, or mutate host CLIs.',
+    'Compatibility assurance is GRANTED BY HUMAN REVIEW recorded in the packaged host-parity baseline (ADR-0053 §Decision 2). runtime:compat evaluates whether this machine is a member of an existing grant; it never creates, widens, or promotes one.',
+    'The assurance verdict is frozen when the snapshot is taken. Re-running check on a remembered snapshot projects that frozen verdict and never re-evaluates it, so a snapshot is never retroactively granted assurance (ADR-0053 §Decision 4).',
     'Release-note URL fetch is not automatic. Provide --release-notes-file or explicit --release-notes-url with --fetch-release-notes-url for content-backed planning.',
     'Raw command help output and release-note bodies stay in artifacts; main-session output is limited to metadata, hashes, gaps, and pointers.',
   ];

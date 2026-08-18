@@ -26,6 +26,22 @@ node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" plan (-
    - Treat `release_notes_required` as a blocker for detailed compatibility planning.
    - Treat a missing changed-host/version coverage row as still requiring release
      notes, even when another content-backed note was stored.
+   - Readiness keys on **assurance**, not on exact version equality (ADR-0053
+     §Decision 4). Drift is still recorded as evidence — a non-exact host stays
+     visibly `drifted` in `drift_class` — but the readiness status is:
+     - `current` — no drift, and a human grant covers this host pair.
+     - `assured` — drift is present, and a human grant covers this pair anyway.
+       No action; the drift stays visible.
+     - `unassured` — no grant names this pair. Assurance is granted by review,
+       never by a version match, an upgrade, or elapsed time (§Decision 5), so
+       the only resolution is a release that carries a grant.
+     - `assurance_blocked` — integrity: the packaged record, the plugin set, the
+       host probe, or the recorded verdict could not be read. Surface the stored
+       `next_steps` line; it names the specific repair.
+     - `legacy_unassured` — the run predates the assurance record. It can never
+       be re-checked into coverage; take a **fresh** snapshot.
+   - Never describe `runtime:compat` as granting assurance. It evaluates
+     membership in a human-authored grant and cannot create or widen one.
    - Do not fetch URLs unless `--fetch-release-notes-url` is explicitly present.
    - Do not mutate Claude/Codex config, auth, sandbox, approvals, or plugin installs from this surface.
 
