@@ -20,6 +20,18 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.91.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.90.3...plugin-runtime-v0.91.0) (2026-08-18)
+
+
+### Features
+
+* **plugin/runtime:** both readiness paths gate on assurance, and the minimum runtime floor ([70e0461](https://github.com/each4all/agentic-plugins/commit/70e0461d7ebc94ac9e48e31d9a7bf45d5d54e03d))
+* **plugin/runtime:** compat observes assurance, freezes it, and every reader validates the family ([6651c5c](https://github.com/each4all/agentic-plugins/commit/6651c5cf6a24e89818a2c3f01897e44f82b71ddf))
+* **plugin/runtime:** doctor reports integrity, exactness and assurance as three facts ([c535c1a](https://github.com/each4all/agentic-plugins/commit/c535c1ae97fd8f0e5dd9a3c66a2e2479332561c4))
+* **plugin/runtime:** packaged host-version comparator and direction vocabulary ([79003cc](https://github.com/each4all/agentic-plugins/commit/79003cc49b7d8d7b6ec71f1f599d7ac744634d70))
+* **plugin/runtime:** the assurance record — schema, baseline section, and structural reader ([e8f6d2b](https://github.com/each4all/agentic-plugins/commit/e8f6d2b79d49ec7b6ca9e865cd642da4734d2997))
+* **plugin/runtime:** the assurance semantic matcher — membership, bindings, negative-wins, and a tombstone gate ([b8ad2b3](https://github.com/each4all/agentic-plugins/commit/b8ad2b328186fac63aadfca7995b10373b19f2c7))
+
 ## [0.90.3](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.90.2...plugin-runtime-v0.90.3) (2026-08-16)
 
 
