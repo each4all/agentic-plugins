@@ -17,6 +17,7 @@ import {
 import {
   ASSURANCE_RESULT_SCHEMA_VERSION,
   ASSURANCE_RESULT_STATUSES,
+  isGrantId,
 } from './lib/assurance-result.mjs';
 import {
   buildAssuranceProbe,
@@ -824,7 +825,7 @@ function projectSnapshotAssurance(snapshot) {
   }
   const readable = section.schema_version === ASSURANCE_RESULT_SCHEMA_VERSION
     && ASSURANCE_RESULT_STATUSES.includes(section.status)
-    && !(section.status === 'covered' && typeof section.evidence?.grant_id !== 'string');
+    && !(section.status === 'covered' && !isGrantId(section.evidence?.grant_id));
   if (!readable) {
     return { state: 'unreadable', status: null, grant_id: null, evidence: section };
   }

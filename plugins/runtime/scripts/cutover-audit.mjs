@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { runDoctor } from './doctor.mjs';
 import { describeFloorFailure } from './lib/runtime-floor.mjs';
 import { elapsedMsSince } from './lib/clock.mjs';
+import { isGrantId } from './lib/assurance-result.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -1012,7 +1013,7 @@ function checkHostParityAssurance(doctor) {
     direction: section.evidence?.direction?.state ?? null,
     reasons: Array.isArray(section.evidence?.reasons) ? section.evidence.reasons.slice(0, 4) : [],
   };
-  if (section.status === 'covered' && typeof section.evidence?.grant_id === 'string') {
+  if (section.status === 'covered' && isGrantId(section.evidence?.grant_id)) {
     return { ...base, status: 'satisfied', evidence, next_action: null };
   }
   if (section.status === 'covered') {
@@ -1208,12 +1209,19 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
   const runs = doctor.compat_runs ?? null;
   const latest = runs?.latest ?? null;
   const ageHours = latest?.selected_at ? ageHoursSince(latest.selected_at, now) : null;
+  // "we cannot read this artifact's age" and "this artifact is too old" are both
+  // not-fresh and take DIFFERENT operator actions, so they are tracked apart.
+  // Cross-host review of the first fix caught the consequence of collapsing
+  // them: a run stamped in 2099 stays NEWEST by selection, so telling the
+  // operator to take a fresh snapshot names an action that cannot clear the
+  // gate — the artifact or the clock has to be repaired first.
+  const ageUnreadable = Boolean(latest?.selected_at) && ageHours === null;
   const fresh = ageHours !== null && ageHours <= maxArtifactAgeHours;
   const collectionOk = runs?.status === 'available' && (runs?.malformed ?? 0) === 0;
   const recordedReady = latest?.status === 'current' || latest?.status === 'assured';
 
   const assurance = doctor.host_parity_assurance ?? null;
-  const liveCovered = assurance?.status === 'covered' && typeof assurance?.evidence?.grant_id === 'string';
+  const liveCovered = assurance?.status === 'covered' && isGrantId(assurance?.evidence?.grant_id);
   const liveObserved = assurance?.evidence?.normalized_observed ?? null;
 
   // The recorded pair, from the host rows the run stored. Exactly one row per
@@ -1261,9 +1269,11 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
           ? identityFault
           : !liveCovered
             ? 'this machine is not currently covered by a compatibility assurance grant'
-            : !fresh
-              ? 'the newest recorded run is older than the freshness window'
-              : null;
+            : ageUnreadable
+              ? `the newest recorded run is stamped ${latest.selected_at}, which is not a readable age from here`
+              : !fresh
+                ? 'the newest recorded run is older than the freshness window'
+                : null;
   return {
     id: 'latest_compat_snapshot',
     label: 'Latest compatibility run is assured, intact, and describes this machine',
@@ -1285,7 +1295,12 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
     },
     next_action: status === 'fresh'
       ? null
-      : `${reason}. Run runtime:compat snapshot and runtime:compat check for the current host pair, repairing any malformed artifacts first; assurance itself is granted by review, not by re-running compat.`,
+      : ageUnreadable
+        // A fresh run does NOT clear this one: selection is by recorded
+        // timestamp, so the future-dated artifact stays newest.
+        ? `${reason}. Repair the machine clock or delete the mis-stamped artifact `
+          + `(${latest?.run_id ?? 'the newest compat run'}) — a new snapshot will not clear this, because the newest run is chosen by its recorded timestamp.`
+        : `${reason}. Run runtime:compat snapshot and runtime:compat check for the current host pair, repairing any malformed artifacts first; assurance itself is granted by review, not by re-running compat.`,
   };
 }
 

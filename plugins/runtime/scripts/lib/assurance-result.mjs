@@ -114,6 +114,30 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Is this a grant id a human review could actually have written?
+ *
+ * ONE PREDICATE FOR FIVE READERS. `covered` implies "a grant covers this pair",
+ * and five places asked that question as `typeof grant_id === 'string'` —
+ * `projectRecordedAssurance` here, `compat`'s frozen-snapshot projection, both
+ * of `cutover-audit`'s readiness reads, and `doctor`'s experience criterion.
+ * Measured in ST5's audit: `''` and `'   '` passed all five, so a report
+ * claiming coverage while naming no grant reached `satisfied`, `fresh`,
+ * `live_covered`, full experience weight, and `covered` respectively.
+ *
+ * The rule is not invented here — it is `runtime-host-assurance-1.0.json`'s own
+ * `grant.id` pattern, which is exactly what makes a blank id as unemittable as
+ * an absent one, and therefore exactly as much a sign of a forged or truncated
+ * report. Duplicated as a literal rather than read from the schema because
+ * every one of these five readers must work on a RECORDED artifact without
+ * loading the packaged schema; the pairing is asserted by test instead.
+ */
+const GRANT_ID_RE = /^[a-z0-9][a-z0-9-]{2,63}$/;
+
+export function isGrantId(value) {
+  return typeof value === 'string' && GRANT_ID_RE.test(value);
+}
+
 /** Is this observed version text something the membership grammar can use? */
 function usableVersion(value) {
   const read = readVersionToken(value);
@@ -460,15 +484,24 @@ export function evaluateAssurance({
   // 8 — a grant APPLIED and the installed facts could not be read
   //
   // ⚠ SECOND GUARD, and labelled rather than left to look tested — the same
-  // treatment this module already gives the raw-versus-normalized input. With a
-  // floor DECLARED this branch is unreachable, and that is measured rather than
-  // assumed: `authoritative` is a HOST-level flag, step 7 requires authority on
-  // both hosts, so any input that would reach here has already been refused one
-  // step above. It stays for the configuration where `minimum_version` is null —
-  // the shipped state before ADR-0054 §Decision 5's value landed, and the state a
-  // mis-authored package could reintroduce — because in that configuration this
-  // is the only thing standing between a non-authoritative listing and a
-  // membership answer computed from it.
+  // treatment this module already gives the raw-versus-normalized input.
+  //
+  // ITS ORIGINAL JUSTIFICATION IS NOW VOID, and saying so is the point of
+  // rewriting this note rather than leaving it. It used to read "unreachable
+  // with a floor DECLARED; it stays for the configuration where
+  // `minimum_version` is null". ST5's audit removed that configuration:
+  // `evaluateRuntimeFloor` no longer reports a missing floor as satisfied, so
+  // step 7 runs `evaluateHostFloor` for BOTH hosts in every configuration and
+  // `authoritative` is the first thing it requires. A second refusal was added
+  // at the same time inside `matchAssurance`, so `candidate_grant_ids` cannot be
+  // populated from a non-authoritative listing either.
+  //
+  // The branch is therefore dead by TWO independent gates rather than one. It is
+  // kept, not deleted, for the reason this module keeps its other second guards:
+  // it is the last thing between a non-authoritative listing and a membership
+  // answer computed from it, and a future reordering of the ladder is exactly
+  // what would restore the hole. What must not happen is this note going stale
+  // again — a guard whose stated reason has been falsified reads as tested.
   // authoritatively. Decided on the structured fields rather than on the reason
   // text: `candidate_grant_ids` is non-empty only when a grant's cohort named
   // this pair, and `authoritative` is the producer's own flag.
@@ -542,7 +575,7 @@ export function projectRecordedAssurance(report) {
   if (!isPlainObject(section)
     || section.schema_version !== ASSURANCE_RESULT_SCHEMA_VERSION
     || !ASSURANCE_RESULT_STATUSES.includes(section.status)
-    || (section.status === 'covered' && typeof section.evidence?.grant_id !== 'string')) {
+    || (section.status === 'covered' && !isGrantId(section.evidence?.grant_id))) {
     return {
       status: 'unreadable',
       grant_id: null,
@@ -554,6 +587,14 @@ export function projectRecordedAssurance(report) {
     status: section.status,
     grant_id: sanitizeValue(section.evidence?.grant_id) ?? null,
     direction: sanitizeValue(section.evidence?.direction?.state) ?? null,
+    // Carried, not dropped: the dashboard reads this projection, and a `covered`
+    // row that hides which installed packages no reviewer bound is the same
+    // silence the field was added to break.
+    unbound_packages: Object.freeze(
+      (Array.isArray(section.evidence?.unbound_packages) ? section.evidence.unbound_packages : [])
+        .map((name) => sanitizeValue(name))
+        .filter(Boolean),
+    ),
     reason: null,
   };
 }

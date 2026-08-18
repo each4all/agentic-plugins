@@ -15,6 +15,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -26,7 +28,16 @@ import {
   readVersionToken,
 } from '../../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
 import { matchAssurance } from '../../plugins/runtime/scripts/lib/assurance-contract.mjs';
+import { evaluateAssurance, isGrantId, projectRecordedAssurance } from '../../plugins/runtime/scripts/lib/assurance-result.mjs';
 import { FUTURE_SKEW_TOLERANCE_MS, elapsedMsSince } from '../../plugins/runtime/scripts/lib/clock.mjs';
+import { comparePrereleaseAware } from '../../plugins/runtime/scripts/lib/runtime-floor.mjs';
+import { inspectWorkflowNamespace } from '../../plugins/runtime/scripts/lib/state-readers.mjs';
+
+// ADR-0054 §Decision 5 sets the floor to "the first released reader version".
+// That is a historical fact, not a moving target: it is the release that first
+// carried `parseAssuranceSection`, so the floor may rise above it and may never
+// fall below it.
+const FIRST_RELEASED_READER = '0.91.0';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RUNTIME_ROOT = join(REPO_ROOT, 'plugins', 'runtime');
@@ -281,6 +292,211 @@ describe('a covered verdict names the installed packages no reviewer bound', () 
 });
 
 // ---------------------------------------------------------------------------
+// SECOND WAVE — what the first round of fixes MISSED, found by re-review
+// ---------------------------------------------------------------------------
+
+describe('a peer run stamped in the future is stale, not eternally fresh', () => {
+  // The mirror the `Math.max(0, …)` sweep could not find, because there is no
+  // clamp here to grep for — just an unbounded subtraction. A postdated
+  // `updated_at` made `now - updatedAt` negative, so a non-terminal peer run
+  // could sit forever and never be counted in `stale_non_terminal`.
+  async function ledgerFor(updatedAt) {
+    const root = await mkdtemp(join(tmpdir(), 'st5-peer-runs-'));
+    const dir = join(root, '.agentic-plugins', 'state', 'engineer', 'peer-runs', 'run-1');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'handle.json'), JSON.stringify({
+      run_id: 'run-1',
+      plugin: 'engineer',
+      status: 'running',
+      kind: 'ensemble',
+      peer_host: 'claude',
+      model: 'm',
+      effort: 'high',
+      updated_at: updatedAt,
+    }));
+    return inspectWorkflowNamespace({
+      repoRoot: root,
+      plugin: 'engineer',
+      legacyNamespace: 'agentic-engineer',
+      expectedPlugin: 'engineer',
+      now: new Date('2026-08-18T00:00:00.000Z'),
+      staleGraceMs: 60 * 60 * 1000,
+    });
+  }
+
+  it('CONTROL: a recent non-terminal run is not stale', async () => {
+    const ledger = await ledgerFor('2026-08-17T23:30:00.000Z');
+    assert.equal(ledger.peer_runs.non_terminal, 1);
+    assert.equal(ledger.peer_runs.stale_non_terminal, 0);
+  });
+
+  it('CONTROL: an old non-terminal run is stale', async () => {
+    const ledger = await ledgerFor('2026-08-01T00:00:00.000Z');
+    assert.equal(ledger.peer_runs.stale_non_terminal, 1);
+  });
+
+  it('a FUTURE non-terminal run is stale too — an unreadable age is not a fresh one', async () => {
+    const ledger = await ledgerFor('2099-01-01T00:00:00.000Z');
+    assert.equal(ledger.peer_runs.non_terminal, 1);
+    assert.equal(ledger.peer_runs.stale_non_terminal, 1);
+  });
+});
+
+describe('exactly one dated header, and quoted ones do not count', () => {
+  const real = 'Observed on 2026-08-16 with Claude Code `2.1.233`, Codex CLI `0.147.0`.';
+  const stale = 'Observed on 2020-01-01 with Claude Code `1.0.0`, Codex CLI `0.1.0`.';
+
+  it('CONTROL: one header parses', () => {
+    assert.deepEqual(parseBaseline(real), { date: '2026-08-16', claude: '2.1.233', codex: '0.147.0' });
+  });
+
+  it('a stale header ABOVE the canonical one is refused, not preferred by position', () => {
+    // `HEADER_RE` is unanchored and the reader took the FIRST match, so a stale
+    // line left above the real one silently won — and both the exactness verdict
+    // and the direction evidence then named a pair nobody observed.
+    assert.equal(parseBaseline(`${stale}\n\n${real}`), null);
+    assert.equal(parseBaseline(`${real}\n\n${stale}`), null);
+  });
+
+  it('a header that exists ONLY as a quoted example is not a header', () => {
+    assert.equal(parseBaseline(`# doc\n\n\`\`\`\n${real}\n\`\`\`\n`), null);
+    assert.equal(parseBaseline(`# doc\n\n<pre>\n${real}\n</pre>\n`), null);
+  });
+
+  it('CONTROL: a quoted example beside the real header leaves the real one readable', () => {
+    // This document explains its own grammar, so worked examples are expected.
+    // Counting them would make the shipped file ambiguous against itself.
+    assert.deepEqual(
+      parseBaseline(`\`\`\`\n${stale}\n\`\`\`\n\n${real}`),
+      { date: '2026-08-16', claude: '2.1.233', codex: '0.147.0' },
+    );
+  });
+});
+
+describe('a missing floor cannot reach covered on ANY readiness surface', () => {
+  // The first fix hardened only `cutover-audit`'s check. Four independent
+  // reviews converged on the mirror: `doctor`'s experience-parity criterion and
+  // `compat`'s readinessStatus both key on `assurance.status` alone and never
+  // read `evidence.runtime_floor`, so two of three surfaces stayed open. The
+  // structural repair is that a missing floor cannot produce `covered` at all —
+  // which is why this test drives the LADDER, not a consumer.
+  const SHA = 'a'.repeat(64);
+  const ladder = (pluginSet) => evaluateAssurance({
+    resolvedBaseline: { status: 'resolved', baseline: { date: '2026-08-16', claude: '2.1.234', codex: '0.147.0' }, provenance: { content_sha256: SHA } },
+    record: {
+      status: 'resolved',
+      record: { schema: 'runtime-host-assurance-1.0', grants: [grant()] },
+      provenance: { content_sha256: SHA },
+      block_sha256: 'b'.repeat(64),
+    },
+    pluginSet,
+    probe: {
+      probes_ok: true,
+      observed: { claude: '2.1.234', codex: '0.147.0' },
+      normalized_observed: { claude: '2.1.234', codex: '0.147.0' },
+      claude_probe: 'available',
+      codex_probe: 'available',
+    },
+    packageObservation: { claude: hostFacts(), codex: hostFacts() },
+    today: '2026-08-18',
+  });
+  const withFloor = (floor) => ({
+    ...PLUGIN_SET,
+    plugins: { ...PLUGIN_SET.plugins, runtime: { ...PLUGIN_SET.plugins.runtime, minimum_version: floor } },
+  });
+
+  it('CONTROL: the shipped floor reaches covered', () => {
+    assert.equal(ladder(PLUGIN_SET).status, 'covered');
+  });
+
+  it('a declared null floor blocks, and names the package rather than an upgrade', () => {
+    const result = ladder(withFloor(null));
+    assert.equal(result.status, 'blocked');
+    assert.match(result.next_action, /minimum_version/);
+    assert.doesNotMatch(result.next_action, /null or newer/);
+  });
+});
+
+describe('a covered verdict must name a grant a review could have written', () => {
+  // Five readers asked this as `typeof grant_id === 'string'`. Measured: '' and
+  // '   ' passed all five, so a report claiming coverage while naming no grant
+  // reached satisfied / fresh / live_covered / full experience weight / covered.
+  // The schema pins grant ids, which is exactly what makes a blank one as
+  // unemittable as an absent one.
+  const recorded = (grantId) => projectRecordedAssurance({
+    host_parity_assurance: {
+      schema_version: 'runtime-host-assurance-result-1.0',
+      status: 'covered',
+      evidence: { grant_id: grantId },
+    },
+  });
+
+  for (const blank of ['', '   ', '\t', 'ab', 'GRANT-1', '-leading-dash', 'x'.repeat(65)]) {
+    it(`refuses ${JSON.stringify(blank)}`, () => {
+      assert.equal(isGrantId(blank), false);
+      assert.equal(recorded(blank).status, 'unreadable');
+    });
+  }
+
+  for (const real of ['host-pair-2026-08-16', 'abc', 'a1-b2-c3']) {
+    it(`CONTROL: accepts ${JSON.stringify(real)}`, () => {
+      assert.equal(isGrantId(real), true);
+      assert.equal(recorded(real).status, 'covered');
+    });
+  }
+
+  it('the predicate matches the packaged schema\'s own grant.id pattern', () => {
+    // The literal is duplicated in code because five readers must work on a
+    // RECORDED artifact without loading the packaged schema. This is the
+    // assertion that keeps the two spellings from drifting.
+    const schemaPattern = SCHEMA.$defs.grant.properties.id.pattern;
+    for (const sample of ['host-pair-2026-08-16', 'abc', '', 'ab', 'GRANT-1', '-x', 'x'.repeat(65)]) {
+      assert.equal(isGrantId(sample), new RegExp(schemaPattern).test(sample), sample);
+    }
+  });
+});
+
+describe('membership refuses a non-authoritative listing on EITHER host', () => {
+  // `evaluatePackages` demanded authority only on the hosts a NAMED package
+  // declares, so a grant binding a single-host package returned covered with the
+  // other host's plugin list unread — the pair verdict from one known half that
+  // the version check already refuses.
+  const soloSet = () => {
+    const set = JSON.parse(JSON.stringify(PLUGIN_SET));
+    set.plugins.solo = {
+      bundles: [...PLUGIN_SET.plugins.runtime.bundles],
+      hosts: ['claude'],
+      hard_requires: [],
+      soft_requires: [],
+      hook_bearing: { claude: false, codex: false },
+      minimum_version: null,
+    };
+    return set;
+  };
+  const soloGrant = grant({ id: 'solo-grant', packages: { solo: '1.0.0' } });
+  const claude = { authoritative: true, list_status: 'available', packages: { solo: { present: true, enabled: true, version: '1.0.0', ambiguous: false } } };
+  const run = (codex) => matchAssurance({
+    record: { schema: 'runtime-host-assurance-1.0', grants: [soloGrant] },
+    hosts: { claude: '2.1.234', codex: '0.147.0' },
+    observed: { claude, codex },
+    pluginSet: soloSet(),
+    today: '2026-08-18',
+  });
+
+  it('CONTROL: both listings authoritative reaches covered', () => {
+    assert.equal(run({ authoritative: true, list_status: 'available', packages: {} }).state, 'covered');
+  });
+
+  for (const status of ['parse_error', 'unavailable', 'failed']) {
+    it(`a ${status} listing on the host the grant does not name still refuses`, () => {
+      const result = run({ authoritative: false, list_status: status, packages: {} });
+      assert.equal(result.state, 'unassured');
+      assert.match(result.reasons.join(' '), /not authoritative on .*codex/);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // The floor is a policy value, not a convention
 // ---------------------------------------------------------------------------
 
@@ -292,7 +508,25 @@ describe('the packaged plugin set declares a runtime floor', () => {
   // `evaluateRuntimeFloor` return satisfied with no host evaluated.
   it('runtime.minimum_version is a non-null semver, not merely some value', () => {
     const floor = PLUGIN_SET.plugins?.runtime?.minimum_version;
-    assert.equal(typeof floor, 'string', 'a null runtime floor silently disables the ADR-0054 §Decision 5 gate');
+    assert.equal(typeof floor, 'string', 'a null runtime floor disables the ADR-0054 §Decision 5 gate at its producer');
     assert.match(floor, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  });
+
+  it('the floor never drops below the first released reader version', () => {
+    // A non-null-semver assertion constrains the SHAPE and not the DIRECTION,
+    // and lowering is the surviving half of the floor-null finding: `"0.1.0"`
+    // passes validation, is evaluated, and is vacuously satisfied by every
+    // install — with real host rows attached, which reads more convincing than
+    // the null case rather than less. `check-release-obligation` proves the
+    // floor's BYTES were released and `check-assurance-monotonicity` proves the
+    // GRANTS' meaning is irreversible; nothing proves the FLOOR's meaning is,
+    // and that cross-tag gate is recorded as a follow-up. This is the cheap
+    // half: the floor may only ever rise from the version ADR-0054 §Decision 5
+    // names, so the bound is permanent and never needs relaxing.
+    const floor = PLUGIN_SET.plugins?.runtime?.minimum_version;
+    assert.ok(
+      comparePrereleaseAware(floor, FIRST_RELEASED_READER) >= 0,
+      `the floor ${floor} is below ${FIRST_RELEASED_READER}, the first runtime that could read the assurance record`,
+    );
   });
 });

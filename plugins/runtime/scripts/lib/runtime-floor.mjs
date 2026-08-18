@@ -135,12 +135,31 @@ export function evaluateHostFloor({ observation, authoritative, floor }) {
  * array would otherwise silently reduce how many hosts must satisfy the floor,
  * which is a way for a package defect to widen coverage.
  *
- * A `null` floor means no floor is declared and every host trivially satisfies
- * it — the shipped state before ADR-0054 §Decision 5's value lands.
+ * ⚠ A `null` FLOOR IS NOT SATISFIED, and this reversed in ST5's audit. It used
+ * to return `{satisfied: true, hosts: {}}` — "no floor is declared, so every host
+ * trivially satisfies it" — which was the pre-§Decision 5 shipped state read
+ * forward into a world where the floor IS the policy. Four independent reviews
+ * converged on the same measurement: a declared `plugins.runtime.minimum_version:
+ * null` (which `validatePluginSet` accepts) made this return a satisfied verdict
+ * with ZERO hosts evaluated, ladder step 7 passed it, and `covered` then reached
+ * all three readiness surfaces — `doctor`'s experience-parity criterion and
+ * `compat`'s `readinessStatus` both key on `assurance.status` alone and never
+ * look at `runtime_floor`, so hardening only the cutover check left two of three
+ * open. Refusing here is what makes ONE value close all three, and is why the fix
+ * is not at the consumers: a fourth consumer would repeat it.
+ *
+ * `no-floor-declared` is deliberately its own reason rather than reusing
+ * `floor-unparseable`: the operator action differs — one is a corrupt package to
+ * reinstall, the other is a package that shipped without the policy value at all.
  */
 export function evaluateRuntimeFloor({ floor, packageObservation }) {
   if (floor === null || floor === undefined) {
-    return { floor: null, satisfied: true, hosts: {}, unsatisfied: [] };
+    return {
+      floor: null,
+      satisfied: false,
+      hosts: Object.fromEntries(FLOOR_HOSTS.map((h) => [h, { satisfied: false, reason: 'no-floor-declared', version: null, detail: null }])),
+      unsatisfied: [...FLOOR_HOSTS],
+    };
   }
   // A floor the PACKAGE declares but this runtime cannot parse is a corrupt
   // package, not a satisfied floor. `validatePluginSet` already rejects this
@@ -169,7 +188,16 @@ export function evaluateRuntimeFloor({ floor, packageObservation }) {
 /** One operator line naming every host that failed and why. */
 export function describeFloorFailure(verdict) {
   if (verdict.satisfied) return null;
+  // A missing floor is a PACKAGE defect, not an install to upgrade. Falling
+  // through to the shared sentence would tell the operator to "install runtime
+  // null or newer", which names no action they can take.
+  if (verdict.floor === null || verdict.floor === undefined) {
+    return 'Reinstall or repair the runtime plugin — its packaged plugin set declares no `plugins.runtime.minimum_version`, '
+      + 'so the minimum assurance-capable runtime cannot be checked on either host. A floor that evaluates no host satisfies '
+      + 'nothing, and readiness is not claimable without one (ADR-0054 §Decision 5).';
+  }
   const REASONS = {
+    'no-floor-declared': 'the packaged plugin set declares no minimum runtime version, so there is no floor to evaluate — a floor that evaluates no host satisfies nothing (ADR-0054 §Decision 5)',
     'list-not-authoritative': 'the installed-plugin list was not authoritative (a cache-sourced answer is evidence about disk, not about what the host loads)',
     'not-installed': 'runtime is not installed',
     disabled: 'runtime is installed but disabled',

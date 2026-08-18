@@ -1220,7 +1220,13 @@ export async function scanPeerRuns(dir, expectedPlugin, now, staleGraceMs) {
     const status = typeof handle.json.status === 'string' ? handle.json.status : 'unknown';
     const terminal = TERMINAL_PEER_RUN_STATUSES.has(status);
     const updatedAt = parseDateMs(handle.json.updated_at);
-    const stale = !terminal && updatedAt !== null && now.getTime() - updatedAt > staleGraceMs;
+    // A beyond-skew FUTURE `updated_at` is stale, not fresh. The unclamped
+    // subtraction made a postdated handle permanently non-stale, so a
+    // non-terminal peer run could sit forever and never be counted — the mirror
+    // of the freshness clamp ST5 fixed in cutover, in the direction a clamp
+    // would not have shown (there is no `Math.max(0, …)` here to grep for).
+    const elapsed = updatedAt === null ? null : elapsedMsSince(now.getTime(), updatedAt);
+    const stale = !terminal && updatedAt !== null && (elapsed === null || elapsed > staleGraceMs);
     const issues = validatePeerRunHandle(handle.json, {
       expectedPlugin,
       status,

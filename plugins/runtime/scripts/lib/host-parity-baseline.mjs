@@ -365,12 +365,47 @@ export function scanVersionTokens(text) {
 function withoutAssuranceRegion(text) {
   const raw = String(text ?? '');
   const { lines, begins, ends } = scanSentinelLines(raw);
-  if (begins.length === 0) return raw;
   const masked = [...lines];
   for (const begin of begins) {
     const end = ends.find((candidate) => candidate > begin);
     const stop = end === undefined ? masked.length - 1 : end;
     for (let i = begin; i <= stop; i += 1) masked[i] = '';
+  }
+  // QUOTED CONTENT IS NOT THE HEADER EITHER, and this is the same rule
+  // `scanSentinelLines` applies to the sentinels — a header shown as a worked
+  // example inside a fence is an example. Fences and literal HTML blocks only:
+  // an indented code block needs a preceding blank line to be one, and
+  // mis-reading an indented prose line as quoted would silently hide a real
+  // header, which is the wrong direction for a reader whose absence is an
+  // integrity failure.
+  let fence = null;
+  let htmlBlock = null;
+  for (let i = 0; i < masked.length; i += 1) {
+    const line = masked[i];
+    if (fence) {
+      const closer = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      masked[i] = '';
+      if (closer && closer[1][0] === fence.char && closer[1].length >= fence.length) fence = null;
+      continue;
+    }
+    if (htmlBlock) {
+      const closes = new RegExp(`</${htmlBlock}\\s*>`, 'i').test(line);
+      masked[i] = '';
+      if (closes) htmlBlock = null;
+      continue;
+    }
+    const opener = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (opener) {
+      fence = { char: opener[1][0], length: opener[1].length };
+      masked[i] = '';
+      continue;
+    }
+    const htmlOpener = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i.exec(line);
+    if (htmlOpener) {
+      htmlBlock = htmlOpener[1].toLowerCase();
+      if (new RegExp(`</${htmlBlock}\\s*>`, 'i').test(line)) htmlBlock = null;
+      masked[i] = '';
+    }
   }
   return masked.join('\n');
 }
@@ -383,8 +418,18 @@ function withoutAssuranceRegion(text) {
  * inconsistencies ADR-0051 §Decision 4 removes.
  */
 export function parseBaseline(text) {
-  const match = withoutAssuranceRegion(text).match(HEADER_RE);
-  if (!match) return null;
+  // EXACTLY ONE, and this replaced "the first one". `HEADER_RE` is unanchored,
+  // so a stale header left above the canonical one silently WON — measured in
+  // ST5's audit: a file carrying `2020-01-01 / 1.0.0 / 0.1.0` above the real
+  // line parsed as the stale pair, and both the exactness verdict and the
+  // direction evidence then named a host pair nobody observed. Two headers is
+  // not a document this grammar can read, and ADR-0051 §Decision 4's whole
+  // point is that there is one answer, so ambiguity is refused rather than
+  // resolved by position.
+  const readable = withoutAssuranceRegion(text);
+  const matches = [...readable.matchAll(new RegExp(HEADER_RE.source, 'gm'))];
+  if (matches.length !== 1) return null;
+  const match = matches[0];
   const [, date, claude, codex] = match;
   // Both halves of the grammar, not just the shape: a header whose version
   // slots hold arbitrary text is malformed, and saying so is the whole point

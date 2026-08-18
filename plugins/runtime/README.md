@@ -166,10 +166,22 @@ version, so the retained proof corpus stays readable and a report predating the
 section reads `legacy-unassured`: readable, never malformed, never covered.
 `runtime:dashboard` reports the same plane as three distinct rows and never
 claims the current machine's assurance, because it performs no live host probe.
-**As of this release the assurance result is reported and not yet gated**;
-readiness, experience parity, and the cutover audit still key on exactness, and
-no grant has been authored yet — the packaged record ships with an empty grant
-set on purpose, so every host reads `unassured`.
+**The assurance result GATES**: `runtime:cutover`'s readiness checks and the
+experience-parity score both key on it, and exactness moved to an observation
+channel that reports without gating. No grant has been authored yet — the
+packaged record ships with an empty grant set on purpose (ADR-0054 §Decision 6's
+R1), so every host reads `unassured` and readiness blocks. That is the negative
+path being exercised by the real gate on real machines, not a gap.
+
+> Corrected 2026-08-18. Through `plugin-runtime-v0.91.0` this paragraph said the
+> result was "reported and not yet gated" and that the three consumers "still key
+> on exactness". That was written for the slice before the gate moved and shipped
+> unrevised alongside the commit that moved it, while `skills/doctor/SKILL.md`
+> and `skills/cutover/SKILL.md` in the same package said the opposite. An
+> operator whose cutover was blocked could read this and conclude the block was a
+> bug. Recorded rather than silently replaced, because a shipped document that
+> contradicted its own package is the kind of thing a reader deserves to see
+> named.
 
 Permission proof execution requires the separate `--execute-permission-proof` flag in addition to `--permission-proof`. The executor invokes each available companion through `companions/contract.md` JSON-envelope mode with the resolved model/effort inputs and no doctor-injected sandbox, approval, permission-mode, or host-native policy relaxation flags. Doctor output records only execution status, exit codes, peer host/model metadata, duration, stdout byte count, stdout SHA-256, and sanitized operator-action class. Permission, sandbox, and child-process auth failures are reported as `operator_action_required` with `operator_action_kind` values such as `permission_required`, `sandbox_blocked`, or `auth_required`; they are operator preconditions, not runtime implementation failures. Raw peer stdout, prompt bodies, host secrets, and account details are not printed into the main report. `--permission-proof-timeout-ms <n>` bounds each companion process. This proves companion invocation under current host permission defaults; it does not authorize future writes or broader tool use.
 

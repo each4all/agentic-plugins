@@ -493,7 +493,9 @@ describe('runtime cutover audit', () => {
     strictEqual(report.status, 'not-ready');
     strictEqual(parity.status, 'partial');
     strictEqual(parity.evidence.status, 'partial');
-    strictEqual(parity.evidence.score_percent, 91);
+    // 92, not 91: the ninth criterion ST5 restored to this fixture raises both
+    // the numerator and the denominator (120/130 rather than 105/115).
+    strictEqual(parity.evidence.score_percent, 92);
     strictEqual(parity.evidence.recorded_doctor_proof.status, 'reusable');
     strictEqual(
       parity.evidence.recorded_doctor_proof.applied_criteria.join(','),
@@ -502,7 +504,7 @@ describe('runtime cutover audit', () => {
     ok(!parity.evidence.unresolved_criteria.some((entry) => entry.id === 'bidirectional_peer_execution'));
     ok(!parity.evidence.next_actions.some((entry) => entry.id === 'engineer_workflow_continuation_execution'));
     const text = formatText(report);
-    ok(text.includes('experience parity: status=partial; score=91%; manual-followups=1'));
+    ok(text.includes('experience parity: status=partial; score=92%; manual-followups=1'));
     ok(text.includes('recorded proof applied: bidirectional_peer_execution, engineer_workflow_continuation_execution; run=doctor-20260516T073000Z-abc123'));
   });
 
@@ -1087,11 +1089,22 @@ function doctorReport(overrides = {}) {
     orchestrator: '0.7.2',
     runtime: '0.35.0',
   };
+  // ⚠ NINE criteria and a 130 total, matching what `buildExperienceParity`
+  // actually emits — pinned on the producer side at
+  // `test-baseline-consumer-contract.mjs`'s "criteria.length === 9". ST5's audit
+  // found this fixture still at the pre-`70e0461` eight/115 shape, which made
+  // every `ready_candidate === true` assertion in this file rest on an input no
+  // `runDoctor` can produce: if `host_compatibility_assurance` regressed, the
+  // real score would drop and `checkObservedExperienceParity` would refuse
+  // readiness, and no test here could see it. The neighbouring `compat_runs`
+  // fixture WAS updated in this plane; the update stopped at the field the new
+  // check needed.
   const experienceParity = overrides.experienceParity ?? {
     status: 'ready',
     score_percent: 100,
     manual_followup_count: 0,
-    counts: { satisfied: 8, partial: 0, not_verified: 0, blocked: 0 },
+    weight: { earned: 130, total: 130 },
+    counts: { satisfied: 9, partial: 0, not_verified: 0, blocked: 0 },
     criteria: [
       { id: 'host_plugin_availability', status: 'satisfied' },
       { id: 'plugin_management_followups', status: 'satisfied' },
@@ -1101,6 +1114,7 @@ function doctorReport(overrides = {}) {
       { id: 'workflow_continuity_storage', status: 'satisfied' },
       { id: 'lifecycle_hook_continuity', status: 'satisfied' },
       { id: 'runtime_handoff_artifacts', status: 'satisfied' },
+      { id: 'host_compatibility_assurance', status: 'satisfied' },
     ],
     next_actions: [],
   };
@@ -1189,11 +1203,15 @@ function doctorReport(overrides = {}) {
 function blockedExperienceParity() {
   return {
     status: 'blocked',
-    score_percent: 65,
+    score_percent: 69,
     manual_followup_count: 1,
-    weight: { earned: 75, total: 115 },
-    counts: { satisfied: 4, partial: 2, not_verified: 0, blocked: 2 },
+    weight: { earned: 90, total: 130 },
+    counts: { satisfied: 5, partial: 2, not_verified: 0, blocked: 2 },
     criteria: [
+      // Satisfied here deliberately: this fixture exercises proof REUSE on the
+      // two blocked proof criteria, so the ninth criterion is present for the
+      // denominator's sake and is not what the case is about.
+      { id: 'host_compatibility_assurance', status: 'satisfied', weight: 15, earned_weight: 15 },
       { id: 'host_plugin_availability', status: 'satisfied', weight: 15, earned_weight: 15 },
       { id: 'plugin_management_followups', status: 'partial', weight: 10, earned_weight: 6 },
       { id: 'bidirectional_companion_contract', status: 'satisfied', weight: 15, earned_weight: 15 },

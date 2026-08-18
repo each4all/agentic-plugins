@@ -681,10 +681,14 @@ function evaluatePackages({ grant, observed, pluginSet }) {
     }
     for (const host of hosts) {
       const hostFacts = observed?.[host];
-      if (!hostFacts?.authoritative) {
-        reasons.push(`${host}: the installed-plugin list is not authoritative (${hostFacts?.list_status ?? 'unavailable'}) — a cache-sourced answer is evidence about disk, not about what the host loads`);
-        continue;
-      }
+      // NO PER-HOST AUTHORITY CHECK HERE. There used to be one, and it was the
+      // WEAKER of the two: it demanded authority only on the hosts a NAMED
+      // package declares, so a grant binding a single-host package reached
+      // `covered` with the other host's listing unread (measured, ST5).
+      // `matchAssurance` now refuses a non-authoritative listing on EITHER host
+      // before any grant is considered, which subsumes this branch completely —
+      // so it is removed rather than kept as a second guard that cannot fire.
+      // Two copies of one rule, one of them weaker, is how the gap opened.
       const entry = hostFacts.packages?.[name];
       if (!entry?.present) {
         reasons.push(`${host}: package "${name}" is absent, so the reviewed code is not what is installed`);
@@ -801,6 +805,29 @@ export function matchAssurance({ record, hosts = null, observed = null, pluginSe
     || readVersionToken(hosts?.[host]).truncated);
   if (unreadable.length > 0) {
     return unassured([`observed host version unreadable for ${unreadable.join(', ')} — a pair verdict computed from one known half is a guess`]);
+  }
+  // BOTH LISTINGS AUTHORITATIVE, before any grant is considered.
+  //
+  // This function's own header claims it "has no path that turns absence of
+  // evidence into coverage", and ST5's audit measured that claim false:
+  // `evaluatePackages` demands authority only on the hosts a NAMED package
+  // declares, so a grant binding a single-host package returned `covered` while
+  // the other host's `plugin list` was a parse error — the pair verdict computed
+  // from one known half that the check above refuses for VERSIONS and did not
+  // refuse for PACKAGES. The two halves of "which host pair is this" have to
+  // fail the same way.
+  //
+  // Every framework package is dual-host today, which is why this was latent
+  // rather than live; ADR-0053 §Decision 7's whole point is that a per-host
+  // answer is not a pair answer, so the shape is refused rather than the
+  // instance.
+  const nonAuthoritative = HOSTS.filter((host) => observed?.[host]?.authoritative !== true);
+  if (nonAuthoritative.length > 0) {
+    return unassured([
+      `the installed-plugin list is not authoritative on ${nonAuthoritative.join(', ')} `
+      + `(${nonAuthoritative.map((host) => `${host}=${observed?.[host]?.list_status ?? 'unavailable'}`).join(', ')}) `
+      + '— whether the reviewed packages are the ones installed cannot be established, and a cache-sourced answer is evidence about disk, not about what the host loads',
+    ]);
   }
 
   const applying = record.grants

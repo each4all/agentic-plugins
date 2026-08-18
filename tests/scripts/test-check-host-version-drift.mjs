@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { test } from 'node:test';
+import { describe, it, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -435,4 +435,50 @@ test('BOTH registry readers refuse a four-component version — the GitHub mirro
   assert.equal(await fetchNpmLatest('@x/y', { httpGet: npmBody('2.1.233') }), '2.1.233');
   assert.equal(await fetchGithubLatest('x/y', { httpGet: ghBody('rust-v0.137.0') }), '0.137.0');
   assert.equal(await fetchGithubLatest('x/y', { httpGet: ghBody('0.147.0-rc.1') }), '0.147.0');
+});
+
+describe('ST5: a baseline dated ahead of the clock is not fresh', () => {
+  // Measured: `now - observedDate` was unbounded, so a future header produced a
+  // NEGATIVE age, `stale` was permanently false, the gate reported `current`
+  // with exit 0 — and `host-version-drift.yml` closes the tracking issue on
+  // `current`. The only staleness gate on the packaged baseline went quiet.
+  const results = [
+    { host: 'claude', baseline: '2.1.233', latest: '2.1.233' },
+    { host: 'codex', baseline: '0.147.0', latest: '0.147.0' },
+  ];
+  const now = new Date('2026-08-18T00:00:00.000Z');
+  const run = (observedDate) => aggregate(results, { staleDays: 14, observedDate, now });
+
+  it('CONTROL: a recent observation is current with a readable age', () => {
+    const out = run(new Date('2026-08-16T00:00:00.000Z'));
+    assert.equal(out.status, 'current');
+    assert.equal(out.stale, false);
+    assert.equal(out.age_days, 2);
+    assert.equal(out.exitCode, 0);
+  });
+
+  it('CONTROL: a genuinely old observation is stale', () => {
+    const out = run(new Date('2026-07-19T00:00:00.000Z'));
+    assert.equal(out.status, 'stale');
+    assert.equal(out.stale, true);
+    assert.equal(out.exitCode, 1);
+  });
+
+  it('a FUTURE observation is stale with an unreadable age, never current', () => {
+    const out = run(new Date('2099-01-01T00:00:00.000Z'));
+    assert.equal(out.stale, true);
+    assert.equal(out.age_days, null);
+    assert.notEqual(out.status, 'current');
+    assert.equal(out.exitCode, 1);
+    assert.ok(
+      out.reasons.some((reason) => /dated ahead of the clock/.test(reason)),
+      `the operator line must name the cause: ${JSON.stringify(out.reasons)}`,
+    );
+  });
+
+  it('CONTROL: drift within the skew bound is still age 0, not a refusal', () => {
+    const out = run(new Date(now.getTime() + 30_000));
+    assert.equal(out.age_days, 0);
+    assert.equal(out.stale, false);
+  });
 });
