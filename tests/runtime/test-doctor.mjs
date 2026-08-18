@@ -2155,7 +2155,7 @@ describe('runtime doctor', () => {
         // This case is about release-note evidence, not about coverage, so the
         // assurance result is present and positive — otherwise the fixture would
         // be exercising the assurance ladder while claiming to test drift.
-        assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } },
+        assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } }, assurance_state: 'readable',
       },
       host_gaps: [
         { host: 'claude', status: 'version_changed', observed_version: '2.1.150', baseline_version: '2.1.141' },
@@ -2228,7 +2228,7 @@ describe('runtime doctor', () => {
       // ADR-0047 §5's contract is that a non-actionable standing-watch plan does
       // not flip compat state. That is orthogonal to coverage, so the fixture
       // carries a positive assurance result and keeps testing the plan rule.
-      overall: { status: 'current', drift_class: 'none', release_notes_required: false, assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } } },
+      overall: { status: 'current', drift_class: 'none', release_notes_required: false, assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } }, assurance_state: 'readable' },
       host_gaps: [
         { host: 'claude', status: 'matches', observed_version: '2.1.215', baseline_version: '2.1.215' },
         { host: 'codex', status: 'matches', observed_version: '0.144.6', baseline_version: '0.144.6' },

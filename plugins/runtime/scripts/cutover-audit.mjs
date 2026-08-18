@@ -8,6 +8,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runDoctor } from './doctor.mjs';
+import { describeFloorFailure } from './lib/runtime-floor.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -43,6 +44,11 @@ const FOOTER_STATES = new Set([
 const CUTOVER_CANDIDATE_GATE = [
   'ADR-0012 conditions 1-4 satisfied',
   'omcc replacement scorecard has no partial/missing rows',
+  // ADR-0053 §Decision 4 / ADR-0054 §Decision 5 — named here because this list
+  // is the audit's own explanation of what it gates on. A hard check absent from
+  // it is a blocker the operator cannot see coming.
+  'host compatibility assurance is granted for this host pair',
+  'both hosts run an assurance-capable runtime (the ADR-0054 floor)',
   'observed runtime experience parity is ready and 100%',
   'at least one week of omcc-dev-free dogfood evidence',
   'latest completion footer is closed',
@@ -101,7 +107,8 @@ export async function runCutoverAudit(options = {}) {
     checkScorecardRequirements({ repoRoot, text: scorecardText }),
     checkLegacyPatternMap({ repoRoot, text: legacyPatternText }),
     checkObservedExperienceParity(doctor),
-    checkHostParityBaseline(doctor),
+    checkHostParityAssurance(doctor),
+    checkAssuranceRuntimeFloor(doctor),
     checkPluginVersions({ repoRoot, manifest, doctor }),
     checkCompatFreshness({ doctor, now, maxArtifactAgeHours }),
     await checkConsensusAndContext({ repoRoot, doctor, now, maxArtifactAgeHours }),
@@ -110,7 +117,8 @@ export async function runCutoverAudit(options = {}) {
     checkOmccActivity({ options, latestEvidence }),
   ];
   const readyCandidate = checks.every((check) => CHECK_PASS.has(check.status));
-  const cutoverGate = buildCutoverGateDetails(checks);
+  const observations = [observeHostParityBaseline(doctor)];
+  const cutoverGate = buildCutoverGateDetails(checks, observations);
   const proofExecutionRequested = Boolean(
     options.executePermissionProof
       || options.executeDeepPeerSmoke
@@ -126,10 +134,26 @@ export async function runCutoverAudit(options = {}) {
     cutover_gate: cutoverGate,
     operator_verification: buildOperatorVerification({ checks, cutoverGate, readyCandidate, doctor }),
     checks,
+    // ⚠ NO SILENT BLOCKER. `checkUnready` being the complement of pass makes every
+    // new status unready, which is necessary and NOT sufficient: this list then
+    // dropped any entry whose `next_action` was absent, so a blocking check with
+    // no remediation still vanished — the audit refusing readiness and printing
+    // nothing to fix, which is the exact incident recorded at the top of this
+    // file, surviving one layer down.
+    //
+    // A conservative fallback is used instead of a filter. It is deliberately
+    // generic: a specific instruction invented here would be a guess, while
+    // naming the check and telling the operator where to look is always true.
     next_actions: checks
       .filter((check) => checkUnready(check.status))
-      .map((check) => ({ id: check.id, next_action: check.next_action }))
-      .filter((entry) => entry.next_action),
+      .map((check) => ({
+        id: check.id,
+        next_action: check.next_action
+          ?? `Resolve "${check.label ?? check.id}" (status ${check.status}) — this check blocks readiness and reported no remediation of its own; inspect its evidence in this report.`,
+      })),
+    // Exactness travels here rather than in `checks`, because everything in
+    // `checks` gates readiness (ADR-0053 §Decision 4 moved the gate off it).
+    observations,
     limits: [
       proofExecutionRequested
         ? 'This audit does not install, uninstall, update, authenticate, mutate host config, mutate git state, or delete artifacts; explicit proof flags can invoke bounded peer/workflow commands without relaxing host permissions.'
@@ -140,13 +164,16 @@ export async function runCutoverAudit(options = {}) {
     ],
   };
   if (options.completionAudit) {
-    report.completion_audit = buildCompletionAudit({ repoRoot, checks, cutoverGate });
+    report.completion_audit = buildCompletionAudit({ repoRoot, checks, cutoverGate, observations });
   }
   return report;
 }
 
-function buildCutoverGateDetails(checks) {
-  const byId = new Map(checks.map((check) => [check.id, check]));
+function buildCutoverGateDetails(checks, observations = []) {
+  // Observations join the lookup, and only the lookup. They carry the facts the
+  // checklist reports — exactness is one — while staying out of `checks`, where
+  // every entry gates readiness (ADR-0053 §Decision 4).
+  const byId = new Map([...observations, ...checks].map((entry) => [entry.id, entry]));
   return {
     candidate_required: CUTOVER_CANDIDATE_GATE,
     final_required: CUTOVER_FINAL_GATE,
@@ -516,8 +543,10 @@ function checkScorecardRequirements({ repoRoot, text }) {
   };
 }
 
-function buildCompletionAudit({ repoRoot, checks, cutoverGate }) {
-  const byId = new Map(checks.map((check) => [check.id, check]));
+function buildCompletionAudit({ repoRoot, checks, cutoverGate, observations = [] }) {
+  // Observations join the lookup for the same reason they do in the gate details:
+  // the checklist REPORTS exactness, while `checks` is the set that gates.
+  const byId = new Map([...observations, ...checks].map((entry) => [entry.id, entry]));
   const scorecard = byId.get('omcc_replacement_scorecard');
   const adrConditions = byId.get('adr0012_conditions');
   const requirements = (scorecard?.evidence?.requirements ?? []).map((row) => ({
@@ -557,6 +586,13 @@ function buildCompletionAudit({ repoRoot, checks, cutoverGate }) {
       covers: 'D1-D20 legacy omcc-dev pattern disposition and active-dependency blockers',
     }),
     checklistItem({
+      id: 'host-parity-assurance',
+      kind: 'file',
+      status: byId.get('host_parity_assurance')?.status,
+      source: '<runtime package>/docs/host-parity-baseline.md § COMPATIBILITY ASSURANCE',
+      covers: 'Human-granted acceptance of this host pair against this installed code, and the ADR-0054 minimum assurance-capable runtime floor',
+    }),
+    checklistItem({
       id: 'host-parity-baseline',
       kind: 'file',
       status: byId.get('host_parity_baseline')?.status,
@@ -566,7 +602,10 @@ function buildCompletionAudit({ repoRoot, checks, cutoverGate }) {
       // actually resolved, falling back to the packaged-relative form.
       source: byId.get('host_parity_baseline')?.evidence?.provenance?.path
         ?? '<runtime package>/docs/host-parity-baseline.md',
-      covers: 'Remembered Claude Code and Codex CLI behavior/version baseline',
+      // REPORTED, not gated (ADR-0053 §Decision 4). The prose says so, because a
+      // checklist row that reads like a gate is how an operator learns the wrong
+      // thing about what blocks them.
+      covers: 'Remembered Claude Code and Codex CLI behavior/version baseline — exactness, reported and not gated since ADR-0053 §Decision 4',
     }),
     checklistItem({
       id: 'runtime-doctor-proof',
@@ -935,18 +974,125 @@ function applyReusableDoctorProofToExperienceParity({ experience, recordedProof 
   };
 }
 
-function checkHostParityBaseline(doctor) {
-  // Reuse doctor's host_parity_baseline freshness — single source of truth.
-  // doctor is always present here (cutover-audit calls runDoctor), so the
-  // fallback only guards against an older doctor report shape. It stays
-  // 'missing' (conservatively blocks readiness) but points at the real cause —
-  // a stale doctor shape, NOT a deleted baseline file.
+/**
+ * READINESS PATH 1 (ADR-0053 §Decision 4) — assurance, not exactness.
+ *
+ * ⚠ WHAT CHANGED AND WHY IT IS A REPLACEMENT. This check used to return doctor's
+ * `host_parity_baseline` verbatim, which made EXACTNESS — "the packaged baseline
+ * names the versions this machine runs" — the thing readiness keyed on. ADR-0053
+ * §Decision 1 keeps that computation and §Decision 4 moves the gate off it:
+ * readiness must key on whether a human accepted this host pair.
+ *
+ * §Alternatives C-min is the warning this obeys: dropping the exactness check
+ * WITHOUT substituting assurance would not fix the gate, it would remove it.
+ * Exactness is not deleted — it moves to `observations`, a channel that reports
+ * and does not gate — because every entry in `checks` gates readiness.
+ *
+ * The section is VALIDATED rather than trusted. Returning doctor's object
+ * verbatim would let an unknown status reach `CHECK_PASS.has(status)`, and only
+ * `covered` may map to a pass. A `covered` result with no grant id cannot come
+ * from the producer, so it is a corrupt or unread report, and both are refusals.
+ */
+function checkHostParityAssurance(doctor) {
+  const base = { id: 'host_parity_assurance', label: 'Host compatibility assurance (human-granted)' };
+  const section = doctor.host_parity_assurance;
+  if (!section || typeof section !== 'object') {
+    return {
+      ...base,
+      status: 'missing',
+      evidence: {},
+      next_action: 'Re-run runtime:doctor — host_parity_assurance is absent from the doctor report (older doctor shape; current shape required).',
+    };
+  }
+  const evidence = {
+    status: section.status ?? null,
+    grant_id: section.evidence?.grant_id ?? null,
+    record_status: section.evidence?.record_status ?? null,
+    direction: section.evidence?.direction?.state ?? null,
+    reasons: Array.isArray(section.evidence?.reasons) ? section.evidence.reasons.slice(0, 4) : [],
+  };
+  if (section.status === 'covered' && typeof section.evidence?.grant_id === 'string') {
+    return { ...base, status: 'satisfied', evidence, next_action: null };
+  }
+  if (section.status === 'covered') {
+    return {
+      ...base,
+      status: 'blocked',
+      evidence,
+      next_action: 'Re-run runtime:doctor — the recorded assurance result reports coverage with no grant id, which the producer cannot emit, so it is corrupt or from a producer this audit does not read.',
+    };
+  }
+  // `unassured` and `blocked` keep their own names. Collapsing them would lose
+  // the operator action: one is repaired, the other is reviewed.
+  const status = section.status === 'blocked' ? 'blocked' : section.status === 'unassured' ? 'unassured' : 'unknown';
+  // ⚠ NO INVENTED ACTION FOR A STATUS THIS AUDIT DOES NOT KNOW. The fallback
+  // below is the REVIEW instruction, which is the right answer for `unassured`
+  // and the wrong one for a status from a newer producer: telling an operator to
+  // wait for a human review when the real problem is that this audit cannot read
+  // the report would send them to wait for something that changes nothing.
+  //
+  // For an unknown status the action is deliberately left absent, and the
+  // report-level no-silent-blocker invariant names the check instead. That is
+  // also what keeps the invariant REACHABLE rather than a guard every caller
+  // pre-empts.
+  const nextAction = section.next_action
+    ?? (status === 'unknown'
+      ? null
+      : 'Assurance is granted by human review of this host pair against this installed code (ADR-0053 §Decision 5); until a release carries a grant naming this pair, readiness is not claimable.');
+  return { ...base, status, evidence, next_action: nextAction };
+}
+
+/**
+ * READINESS PATH 1b (ADR-0054 §Decision 5) — the minimum assurance-capable runtime.
+ *
+ * A HARD check, and a separate one rather than a clause inside the assurance
+ * check, because the two failures have different repairs: a floor failure is
+ * fixed by installing or enabling a plugin, an assurance miss is resolved by
+ * review. It reads the verdict the assurance evaluator already computed from the
+ * RAW installed observation — not `checkPluginVersions`, which accepts a cache
+ * fallback, and not the readiness matrix, which can label cache-only evidence
+ * installed. Two sources for one fact is how they come to disagree.
+ *
+ * `runtime_floor: null` means the evaluator returned before reaching the floor,
+ * so the answer is `unknown` — never `satisfied`.
+ */
+function checkAssuranceRuntimeFloor(doctor) {
+  const base = { id: 'assurance_runtime_floor', label: 'Both hosts run an assurance-capable runtime' };
+  const verdict = doctor.host_parity_assurance?.evidence?.runtime_floor ?? null;
+  if (verdict === null) {
+    return {
+      ...base,
+      status: 'unknown',
+      evidence: {},
+      next_action: 'Re-run runtime:doctor — the assurance evaluation stopped before the runtime floor was reached, so whether both hosts run an assurance-capable runtime is unknown. Resolve the assurance integrity failure first.',
+    };
+  }
+  const evidence = {
+    floor: verdict.floor ?? null,
+    unsatisfied_hosts: verdict.unsatisfied ?? [],
+    claude: verdict.hosts?.claude ?? null,
+    codex: verdict.hosts?.codex ?? null,
+  };
+  if (verdict.satisfied) return { ...base, status: 'satisfied', evidence, next_action: null };
+  return { ...base, status: 'blocked', evidence, next_action: describeFloorFailure(verdict) };
+}
+
+/**
+ * Exactness, REPORTED and not gated (ADR-0053 §Decision 1 + §Decision 4).
+ *
+ * It stays in the report because doctor computes it, the completion audit's
+ * checklist names it, and an operator comparing a drifted host against the
+ * reviewed baseline needs to see it. It stays OUT of `checks` because every
+ * entry there gates readiness, and gating on it is exactly what §Decision 4
+ * moved away from.
+ */
+function observeHostParityBaseline(doctor) {
   return doctor.host_parity_baseline ?? {
     id: 'host_parity_baseline',
-    label: 'Host parity baseline freshness',
+    label: 'Host parity baseline freshness (reported, not gated)',
     status: 'missing',
     evidence: {},
-    next_action: 'Re-run runtime:doctor — host_parity_baseline is absent from the doctor report (older doctor shape; current shape required).',
+    next_action: null,
   };
 }
 
@@ -999,26 +1145,118 @@ function checkPluginVersions({ repoRoot, manifest, doctor }) {
   };
 }
 
+/**
+ * READINESS PATH 1c — the recorded compat run, keyed on ASSURANCE rather than on
+ * exact version equality (ADR-0053 §Decision 4).
+ *
+ * Four things must hold, and each was a way a positive answer could have been
+ * wrong rather than a way to be strict:
+ *
+ *   COLLECTION INTEGRITY. This read only `compat_runs.latest`, while state
+ *   readers mark the WHOLE collection blocked when any retained artifact is
+ *   malformed. A corrupt historical artifact beside a healthy newest one passed
+ *   here and was caught, if at all, by experience parity — a different check,
+ *   for a different reason, by accident.
+ *
+ *   A READY RECORDED STATUS. `current` and `assured` both mean the recorded run
+ *   found the machine covered; `assured` additionally means the drift was
+ *   reviewed. Keying on `status === 'current' && drift_class === 'none'` refused
+ *   the reviewed host this whole plane exists to admit.
+ *
+ *   IDENTITY BINDING. The recorded run observed SOME host pair; live assurance
+ *   describes THIS one. Without binding them, a fresh snapshot of pair A beside
+ *   live coverage of pair B passes — two true facts about two machines, read as
+ *   one (cross-host review).
+ *
+ *   LIVE COVERAGE. ⚠ NO STORED BIT. A grant can be revoked, and the packaged
+ *   baseline can change, between the snapshot and this audit. `runCutoverAudit`
+ *   runs doctor live, so the coverage question is re-asked here rather than read
+ *   out of the artifact. The artifact's own frozen verdict is the right answer to
+ *   compat's question — "was the machine THAT snapshot observed covered" — and
+ *   the wrong answer to this one.
+ */
 function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
-  const latest = doctor.compat_runs?.latest ?? null;
+  const runs = doctor.compat_runs ?? null;
+  const latest = runs?.latest ?? null;
   const ageHours = latest?.selected_at ? ageHoursSince(latest.selected_at, now) : null;
   const fresh = ageHours !== null && ageHours <= maxArtifactAgeHours;
-  const current = latest?.status === 'current' && latest?.drift_class === 'none';
+  const collectionOk = runs?.status === 'available' && (runs?.malformed ?? 0) === 0;
+  const recordedReady = latest?.status === 'current' || latest?.status === 'assured';
+
+  const assurance = doctor.host_parity_assurance ?? null;
+  const liveCovered = assurance?.status === 'covered' && typeof assurance?.evidence?.grant_id === 'string';
+  const liveObserved = assurance?.evidence?.normalized_observed ?? null;
+
+  // The recorded pair, from the host rows the run stored. Exactly one row per
+  // host is required: a missing row cannot be compared, and duplicates mean the
+  // artifact cannot say which observation it made.
+  const rows = Array.isArray(latest?.host_gaps) ? latest.host_gaps : [];
+  const rowFor = (host) => rows.filter((row) => row?.host === host);
+  const recordedPair = {};
+  let identityFault = null;
+  for (const host of ['claude', 'codex']) {
+    const matched = rowFor(host);
+    if (matched.length !== 1) {
+      identityFault = identityFault ?? `the recorded run carries ${matched.length} ${host} observations; exactly one is required to bind it to this machine`;
+      continue;
+    }
+    recordedPair[host] = matched[0].observed_version ?? null;
+  }
+  if (identityFault === null) {
+    for (const host of ['claude', 'codex']) {
+      const recorded = recordedPair[host];
+      const live = liveObserved?.[host] ?? null;
+      if (recorded === null || live === null || recorded !== live) {
+        identityFault = `the recorded run observed ${host} ${recorded ?? 'nothing'} while this machine reports ${live ?? 'nothing'}; the recorded evidence does not describe this host pair`;
+        break;
+      }
+    }
+  }
+  const identityBound = identityFault === null;
+
+  const ready = Boolean(latest) && collectionOk && recordedReady && identityBound && liveCovered;
+  const status = !latest
+    ? 'missing'
+    : ready && fresh
+      ? 'fresh'
+      : ready
+        ? 'stale'
+        : 'blocked';
+  const reason = !latest
+    ? 'no runtime:compat run has been recorded'
+    : !collectionOk
+      ? `the recorded compat collection is ${runs?.status ?? 'unreadable'} with ${runs?.malformed ?? 0} malformed artifact(s)`
+      : !recordedReady
+        ? `the newest recorded run reports ${latest.status}`
+        : !identityBound
+          ? identityFault
+          : !liveCovered
+            ? 'this machine is not currently covered by a compatibility assurance grant'
+            : !fresh
+              ? 'the newest recorded run is older than the freshness window'
+              : null;
   return {
     id: 'latest_compat_snapshot',
-    label: 'Latest compatibility snapshot freshness',
-    status: latest ? current && fresh ? 'fresh' : current ? 'stale' : 'blocked' : 'missing',
+    label: 'Latest compatibility run is assured, intact, and describes this machine',
+    status,
     evidence: {
       run_id: latest?.run_id ?? null,
       status: latest?.status ?? null,
       drift_class: latest?.drift_class ?? null,
+      collection_status: runs?.status ?? null,
+      malformed: runs?.malformed ?? null,
+      recorded_pair: recordedPair,
+      live_pair: liveObserved,
+      identity_bound: identityBound,
+      live_covered: liveCovered,
       selected_at: latest?.selected_at ?? null,
       age_hours: ageHours,
       max_age_hours: maxArtifactAgeHours,
+      reason,
     },
-    next_action: latest && current && fresh
+    next_action: status === 'fresh'
       ? null
-      : 'Run runtime:compat snapshot and runtime:compat check, ingest release notes if drift appears.',
+      : `${reason}. Run runtime:compat snapshot and runtime:compat check for the current host pair, repairing any malformed artifacts first; assurance itself is granted by review, not by re-running compat.`,
   };
 }
 

@@ -45,6 +45,25 @@ node "<runtime-plugin-root>/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" 
 3. Present the report as readiness evidence only.
    - Do not claim final cutover unless the user explicitly declares it.
    - Treat unknown footer state or omcc-dev activity as not verified.
+   - Readiness keys on **assurance**, not on exact host-version equality
+     (ADR-0053 §Decision 4). Three checks carry it, and their repairs differ:
+     - `host_parity_assurance` — is this host pair covered by accepted human
+       review? `unassured` is not a defect to fix; it resolves only when a
+       release carries a grant naming this pair (§Decision 5).
+     - `assurance_runtime_floor` — do **both hosts'** installed runtimes meet
+       the ADR-0054 §Decision 5 minimum? A cache-only listing, unknown
+       enablement, a disabled package or an unparseable version all block, and
+       each host is judged independently.
+     - `latest_compat_snapshot` — is the newest recorded compat run intact,
+       assured, and describing *this* machine? A malformed historical artifact
+       blocks the whole collection, and a run that observed a different host
+       pair does not count as evidence about this one.
+   - `host_parity_baseline` (exactness) is now reported under `observations`
+     and does **not** gate. A stale or drifted baseline beside a covered grant
+     is visible and no longer blocking — say so rather than presenting it as a
+     blocker.
+   - Never present assurance as something the audit can grant. It reports
+     membership in a human-authored grant and can neither create nor widen one.
    - Use proof execution flags only when the operator wants current
      peer/workflow evidence; they invoke the same bounded executors as
      `runtime:doctor` and do not relax host permissions or trust hooks.

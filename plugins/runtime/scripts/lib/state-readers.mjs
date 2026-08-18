@@ -438,9 +438,16 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
   // watch plan run would flip doctor/dashboard/cutover compat state to
   // plan_ready/needs_attention. Older plans without the field keep today's
   // plan-presence-wins behavior.
+  //
+  // The gap side is the READY SET, not the literal `current`. Keyed on the
+  // literal, this protection did not reach `assured` — the status ADR-0053
+  // §Decision 4 added for drift a human reviewed — so a routine standing-watch
+  // plan flipped a reviewed host to `plan_ready / needs_attention`, which is the
+  // very failure this carve-out exists to prevent, reappearing one release later
+  // for the second ready status.
   const planInformationalOnly = plan.status === 'available'
     && plan.json?.actionable === false
-    && gapOverall.status === 'current';
+    && READY_COMPAT_STATUSES.includes(gapOverall.status);
   // Ordered ABOVE the plan and gap branches, because it outranks both.
   // `baseline_unusable` is compat's terminal marker for "nothing was
   // compared": the packaged baseline could not be read, parsed, or contained.
@@ -487,7 +494,14 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
             ? 'baseline_unusable'
             : 'plan_ready'
         : gap.status === 'available'
-          ? gapOverall.status === 'release_notes_required' || gapOverall.release_notes_required === true
+          // The persisted `status` is the producer's decided verdict; the
+          // `release_notes_required` FLAG is evidence that travels beside it.
+          // Reading the flag first meant an `assured` run — where compat already
+          // decided a human grant outranks the release-note requirement —
+          // projected `release_notes_required`, re-deciding one layer up a
+          // question the producer had answered.
+          ? (gapOverall.status === 'release_notes_required'
+              || (gapOverall.release_notes_required === true && !READY_COMPAT_STATUSES.includes(gapOverall.status)))
             ? 'release_notes_required'
             : gapOverall.status === 'current'
               ? 'current'

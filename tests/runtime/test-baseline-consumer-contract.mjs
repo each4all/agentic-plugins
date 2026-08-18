@@ -80,7 +80,7 @@ async function compatRun(repoRoot, { gap, plan } = {}) {
   if (gap) {
     const overall = gap.overall === undefined
       ? undefined
-      : { assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } }, ...gap.overall };
+      : { assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } }, assurance_state: 'readable', ...gap.overall };
     await writeFile(join(dir, 'gap-analysis.json'), JSON.stringify({
       schema_version: 'runtime-compat-gap-1.1', run_id: runId, ...gap, ...(overall === undefined ? {} : { overall }),
     }));
@@ -204,10 +204,37 @@ describe('host-parity baseline consumer contract (ADR-0051 P2)', () => {
       },
     };
 
-    const report = await runCutoverAudit({ repoRoot, doctorReport, now: NOW });
-    const surfaced = report.next_actions.find((entry) => entry.id === 'host_parity_baseline');
+    // Re-anchored to the ASSURANCE check: ADR-0053 §Decision 4 moved exactness
+    // out of `checks` into the non-gating `observations` channel, so the
+    // complement rule this case exists to prove now lives on the status set that
+    // actually gates. The rule is unchanged; the check it guards is the new one.
+    const report = await runCutoverAudit({
+      repoRoot,
+      doctorReport: { ...doctorReport, host_parity_assurance: { status: 'a-status-no-set-has-learned', evidence: {}, next_action: 'Repair the packaged record.' } },
+      now: NOW,
+    });
+    const surfaced = report.next_actions.find((entry) => entry.id === 'host_parity_assurance');
     ok(surfaced, 'an unready check must carry its next action into next_actions');
-    strictEqual(surfaced.next_action, doctorReport.host_parity_baseline.next_action);
+    strictEqual(surfaced.next_action, 'Repair the packaged record.');
+    strictEqual(report.ready_candidate, false);
+    // Exactness still travels, in the channel that does not gate.
+    ok(report.observations.some((entry) => entry.id === 'host_parity_baseline'));
+  });
+
+  it('a blocking check with NO remediation of its own is still named — no silent blocker', async () => {
+    // `checkUnready` being the complement makes every new status unready, which
+    // is necessary and NOT sufficient: `next_actions` used to drop any entry
+    // whose `next_action` was absent, so the audit refused readiness and printed
+    // nothing to fix — the same incident this file records, one layer down.
+    const repoRoot = await mkdtemp(join(tmpdir(), 'bcc-repo-'));
+    const report = await runCutoverAudit({
+      repoRoot,
+      doctorReport: { host_parity_assurance: { status: 'a-status-no-set-has-learned', evidence: {} } },
+      now: NOW,
+    });
+    const surfaced = report.next_actions.find((entry) => entry.id === 'host_parity_assurance');
+    ok(surfaced, 'a blocking check must appear in next_actions even with no next_action of its own');
+    ok(/blocks readiness and reported no remediation/.test(surfaced.next_action), surfaced.next_action);
     strictEqual(report.ready_candidate, false);
   });
 
@@ -222,8 +249,26 @@ describe('host-parity baseline consumer contract (ADR-0051 P2)', () => {
       },
     };
 
-    const report = await runCutoverAudit({ repoRoot, doctorReport, now: NOW });
-    ok(report.next_actions.some((entry) => entry.id === 'host_parity_baseline'));
+    // An escaped baseline is an INTEGRITY failure, and ADR-0053 §Decision 3 ranks
+    // integrity above both other layers — so in a real run it reaches the audit
+    // through assurance, whose step 1 is `baselineFailure`. Re-anchored there:
+    // exactness no longer gates, but the escape still blocks and is still named.
+    const report = await runCutoverAudit({
+      repoRoot,
+      doctorReport: {
+        ...doctorReport,
+        host_parity_assurance: {
+          status: 'blocked',
+          evidence: { record_status: 'baseline-unavailable' },
+          next_action: 'Reinstall the runtime plugin — the baseline resolves outside the package.',
+        },
+      },
+      now: NOW,
+    });
+    ok(report.next_actions.some((entry) => entry.id === 'host_parity_assurance'));
+    strictEqual(report.ready_candidate, false);
+    // And the escape is still visible as reported exactness.
+    strictEqual(report.observations.find((entry) => entry.id === 'host_parity_baseline')?.status, 'escaped');
   });
 
   it('packaged assets that are RENDERED or gate a verdict get the same containment', async () => {
@@ -356,7 +401,7 @@ function grant(patch = {}) {
     reviewed_at: '2026-08-16',
     review_provenance: { kind: 'adr', reference: 'ADR-0054' },
     cohort: [{ claude: OBSERVED.claude, codex: OBSERVED.codex }],
-    packages: { runtime: '0.90.3' },
+    packages: { runtime: '0.91.0' },
     residuals: [],
     ...patch,
   };
@@ -380,7 +425,7 @@ async function assurancePackage({ header = ASSURED_HEADER, record = assuranceRec
   const root = await mkdtemp(join(tmpdir(), 'bcc-assurance-pkg-'));
   await mkdir(join(root, 'docs'), { recursive: true });
   await mkdir(join(root, '.claude-plugin'), { recursive: true });
-  await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.90.3' }));
+  await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.91.0' }));
   if (withData) await cp(join(RUNTIME_PLUGIN_ROOT, 'data'), join(root, 'data'), { recursive: true });
   // The block must be BYTE-IDENTICAL to the canonical serialization of what it
   // parses to, or the reader reports `noncanonical`. Using the shipped
@@ -397,14 +442,21 @@ const okResult = (stdout = '') => ({ ok: true, exit_code: 0, stdout, stderr: '',
 const fakeRunner = (map) => async (command, args) => map[`${command} ${args.join(' ')}`]
   ?? ({ ok: false, exit_code: null, stdout: '', stderr: '', error_code: 'ENOENT', error_message: `spawn ${command} ENOENT`, timed_out: false });
 
-/** Host probes that observe OBSERVED and report `runtime 0.90.3` enabled on both hosts. */
+/**
+ * Host probes that observe OBSERVED and report `runtime 0.91.0` enabled on both hosts.
+ *
+ * The version is the ADR-0054 §Decision 5 FLOOR, not an arbitrary fixture value:
+ * below it a host cannot read the assurance record at all, so a fixture on an
+ * older version would exercise the floor refusal in every case that means to
+ * exercise membership.
+ */
 function probes({ claudeList = null, codexList = null, claudeListOk = true, claudeVersion = null } = {}) {
   // MEASURED, not guessed: `parseClaudePluginList`'s leading `\S?` consumes one
   // non-space character — the `>` marker real output carries — so a fixture
   // without it parses the plugin name as `untime`, the CONTROL fails, and every
   // departure then passes for the wrong reason. This is the house fixture shape
   // (tests/runtime/test-machine-probe.mjs).
-  const claudeText = claudeList ?? 'Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.90.3\n    Scope: user\n    Status: enabled\n'
+  const claudeText = claudeList ?? 'Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.91.0\n    Scope: user\n    Status: enabled\n'
     // `attention` is installed in every fixture even though most grants bind
     // only `runtime`: the matcher infers nothing about packages a grant does
     // not name, so the extra row is inert for those cases and lets the residual
@@ -413,7 +465,7 @@ function probes({ claudeList = null, codexList = null, claudeListOk = true, clau
     + '  > attention@agentic-plugins\n    Version: 0.9.0\n    Scope: user\n    Status: enabled\n';
   const codexJson = codexList ?? JSON.stringify({
     installed: [
-      { name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.90.3', installed: true, enabled: true },
+      { name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.91.0', installed: true, enabled: true },
       { name: 'attention', marketplaceName: 'agentic-plugins', version: '0.9.0', installed: true, enabled: true },
     ],
   });
@@ -432,9 +484,51 @@ function probes({ claudeList = null, codexList = null, claudeListOk = true, clau
   };
 }
 
-async function assuranceRun({ pkg, probeMap } = {}) {
+async function assuranceRun({ pkg, probeMap, compatRun = null, seedSiblingRuns = false } = {}) {
   const repoRoot = await mkdtemp(join(tmpdir(), 'bcc-assurance-repo-'));
   const homeDir = await mkdtemp(join(tmpdir(), 'bcc-assurance-home-'));
+  // `runtime_handoff_artifacts` reads settings AND consensus AND compat, and
+  // treats a `missing` collection as partial. A case that varies only compat must
+  // therefore seed the other two, or both arms are partial for a reason neither
+  // is about and the comparison proves nothing.
+  if (seedSiblingRuns) {
+    const settingsDir = join(repoRoot, '.agentic-plugins/runs/settings', 'settings-20260818T000000Z-aaaaaa');
+    await mkdir(settingsDir, { recursive: true });
+    await writeFile(join(settingsDir, 'settings.json'), JSON.stringify({
+      schema_version: 'runtime-settings-1.0', run_id: 'settings-20260818T000000Z-aaaaaa',
+      created_at: '2026-08-18T00:00:00Z', status: 'planned',
+    }));
+    const consensusDir = join(repoRoot, '.agentic-plugins/runs/consensus', 'consensus-20260818T000000Z-aaaaaa');
+    await mkdir(consensusDir, { recursive: true });
+    await writeFile(join(consensusDir, 'consensus.json'), JSON.stringify({
+      schema_version: 'runtime-consensus-1.0', run_id: 'consensus-20260818T000000Z-aaaaaa',
+      created_at: '2026-08-18T00:00:00Z', status: 'passed', summary: {}, failures: [],
+    }));
+  }
+  // A REAL compat artifact when a case needs one. Passing a synthetic
+  // `compat_runs` object would not reach doctor at all — it reads the artifacts —
+  // so the override would have been silently ignored and the case would have
+  // asserted against an empty collection instead of the state it names.
+  if (compatRun) {
+    const runId = 'compat-20260818T000000Z-aaaaaa';
+    const dir = join(repoRoot, '.agentic-plugins/runs/compat', runId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'snapshot.json'), JSON.stringify({
+      schema_version: 'runtime-compat-snapshot-1.1', run_id: runId,
+      created_at: '2026-08-18T00:00:00Z', updated_at: '2026-08-18T00:00:00Z', hosts: {},
+    }));
+    await writeFile(join(dir, 'gap-analysis.json'), JSON.stringify({
+      schema_version: 'runtime-compat-gap-1.1', run_id: runId,
+      overall: {
+        status: compatRun.status,
+        drift_class: compatRun.drift_class ?? 'none',
+        release_notes_required: false,
+        assurance: compatRun.status === 'legacy_unassured' ? null : { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'g' } },
+        assurance_state: compatRun.status === 'legacy_unassured' ? 'legacy' : 'readable',
+      },
+      host_gaps: [], next_steps: ['stored step'],
+    }));
+  }
   return runDoctor({ repoRoot, homeDir, pluginRoot: pkg, runner: fakeRunner(probeMap ?? probes()), now: ASSURANCE_NOW, env: { PATH: '/usr/bin:/bin' } });
 }
 
@@ -478,7 +572,7 @@ describe('host-parity assurance consumer contract (ADR-0053 §Decision 3, ADR-00
     const pkg = await mkdtemp(join(tmpdir(), 'bcc-assurance-escaped-'));
     await mkdir(join(pkg, 'docs'), { recursive: true });
     await mkdir(join(pkg, '.claude-plugin'), { recursive: true });
-    await writeFile(join(pkg, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.90.3' }));
+    await writeFile(join(pkg, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.91.0' }));
     await cp(join(RUNTIME_PLUGIN_ROOT, 'data'), join(pkg, 'data'), { recursive: true });
     await symlink(join(outside, 'evil.md'), join(pkg, BASELINE_RELATIVE_PATH));
 
@@ -505,11 +599,20 @@ describe('host-parity assurance consumer contract (ADR-0053 §Decision 3, ADR-00
     // SCOPED, so one plugin legitimately appears twice at different versions;
     // the primary entry stays last-wins for every existing consumer, and this
     // is the one consumer whose verdict depends on there being a single answer.
+    //
+    // ⚠ THE AMBIGUITY IS ON `attention`, NOT `runtime`, and that is required
+    // rather than incidental. ADR-0054 §Decision 5's floor refuses an ambiguous
+    // `runtime` observation as an INTEGRITY failure one step earlier, so a
+    // fixture that made `runtime` ambiguous would report `blocked` and this case
+    // would silently stop testing membership at all. Binding a second package in
+    // the grant keeps the membership path exercised on a package the floor does
+    // not govern.
     const report = await assuranceRun({
-      pkg: await assurancePackage(),
+      pkg: await assurancePackage({ record: assuranceRecord([grant({ packages: { runtime: '0.91.0', attention: '0.9.0' } })]) }),
       probeMap: probes({
-        claudeList: 'Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.90.2\n    Scope: project\n    Status: enabled\n'
-          + '  > runtime@agentic-plugins\n    Version: 0.90.3\n    Scope: user\n    Status: enabled\n',
+        claudeList: 'Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.91.0\n    Scope: user\n    Status: enabled\n'
+          + '  > attention@agentic-plugins\n    Version: 0.8.0\n    Scope: project\n    Status: enabled\n'
+          + '  > attention@agentic-plugins\n    Version: 0.9.0\n    Scope: user\n    Status: enabled\n',
       }),
     });
     strictEqual(report.host_parity_assurance.status, 'unassured');
@@ -523,17 +626,47 @@ describe('host-parity assurance consumer contract (ADR-0053 §Decision 3, ADR-00
     // action is what differs, so doctor lifts it.
     const report = await assuranceRun({ pkg: await assurancePackage(), probeMap: probes({ claudeListOk: false }) });
     strictEqual(report.host_parity_assurance.status, 'blocked');
-    strictEqual(report.host_parity_assurance.evidence.package_observation.claude.authoritative, false);
-    ok(/Repair the installed-plugin listing on claude/.test(report.host_parity_assurance.next_action));
+    // The BLOCK is unchanged; the step that produces it moved. ADR-0054
+    // §Decision 5's floor also decides from the installed-plugin listing and is
+    // ordered above membership, so an unreadable listing is now refused as a
+    // floor-unresolvable rather than as a membership lift. Both name the listing
+    // as the thing to repair, which is what the operator needs.
+    ok(/installed-plugin list was not authoritative/.test(report.host_parity_assurance.next_action), report.host_parity_assurance.next_action);
+    strictEqual(report.host_parity_assurance.evidence.runtime_floor.hosts.claude.reason, 'list-not-authoritative');
   });
 
-  it('a non-authoritative list does NOT block when no grant applies — CONTROL for the lift above', async () => {
-    // The complement, and it is the half that keeps the rule honest. With no
-    // grant naming this pair the package facts were never consulted, so telling
-    // the operator to repair a probe that changed no verdict would be wrong.
-    // This is also the shipped R1 state on every machine: `grants: []`.
+  it('a non-authoritative list blocks even with NO grant — the floor overrides the membership-only rule', async () => {
+    // ⚠ THIS ASSERTION WAS INVERTED BY ADR-0054 §Decision 5, deliberately, and
+    // the superseded rule is recorded rather than deleted.
+    //
+    // It used to assert `unassured`, on the principle that with no grant naming
+    // this pair the package facts were never consulted, so instructing a repair
+    // that changed no verdict would be wrong. That principle still governs step
+    // 8 — the membership lift — and its CONTROL lives there.
+    //
+    // It does NOT govern the floor. §Decision 5 lists "a cache-only fallback" as
+    // blocking by name, and the reason it must: below the floor a host cannot
+    // read the assurance record at all, so no FUTURE grant could rescue the
+    // machine either. An unreadable listing means the floor is unresolved, and
+    // unresolved is not satisfied. This is also the shipped R1 state's harshest
+    // edge — `grants: []` plus an unreadable listing blocks — and §Decision 5
+    // states that cost as accepted.
     const report = await assuranceRun({ pkg: await assurancePackage({ record: assuranceRecord([]) }), probeMap: probes({ claudeListOk: false }) });
+    strictEqual(report.host_parity_assurance.status, 'blocked');
+    strictEqual(report.host_parity_assurance.evidence.runtime_floor.hosts.claude.reason, 'list-not-authoritative');
+  });
+
+  it('CONTROL: a clean listing with no grant is unassured, not blocked', async () => {
+    // The floor's complement. Without this, every case above would pass against
+    // an implementation that blocked unconditionally — which is exactly what a
+    // floor mis-wired to ignore its inputs would look like.
+    const report = await assuranceRun({ pkg: await assurancePackage({ record: assuranceRecord([]) }) });
     strictEqual(report.host_parity_assurance.status, 'unassured');
+    // The SATISFIED floor verdict is carried, not omitted: `null` means "not
+    // evaluated" (an integrity step returned first) and must never be readable
+    // as "satisfied" by a consumer that gates on the floor separately.
+    strictEqual(report.host_parity_assurance.evidence.runtime_floor.satisfied, true);
+    deepStrictEqual(report.host_parity_assurance.evidence.runtime_floor.unsatisfied, []);
     ok(report.host_parity_assurance.evidence.reasons.some((reason) => /no grant names the host pair/.test(reason)));
   });
 
@@ -545,11 +678,16 @@ describe('host-parity assurance consumer contract (ADR-0053 §Decision 3, ADR-00
     const report = await assuranceRun({
       pkg: await assurancePackage(),
       probeMap: probes({
-        codexList: JSON.stringify({ installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.90.3', installed: true, enabled: false }] }),
+        codexList: JSON.stringify({ installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.91.0', installed: true, enabled: false }] }),
       }),
     });
-    strictEqual(report.host_parity_assurance.status, 'unassured');
-    ok(report.host_parity_assurance.evidence.reasons.some((reason) => /disabled/.test(reason)));
+    // The verdict moved from `unassured` to `blocked` and the point is unchanged:
+    // a DISABLED runtime is seen. ADR-0054 §Decision 5 names "a disabled package"
+    // as blocking, and it is ordered above membership, so the disabled install is
+    // now an integrity refusal rather than a membership miss. §Decision 9's
+    // bypass is what makes either verdict possible at all.
+    strictEqual(report.host_parity_assurance.status, 'blocked');
+    strictEqual(report.host_parity_assurance.evidence.runtime_floor.hosts.codex.reason, 'disabled');
     // The proof that this case tests the BYPASS rather than restating the
     // matcher: the coarse status this code refuses to use says otherwise.
     strictEqual(report.plugins.runtime.status, 'available');
@@ -686,7 +824,7 @@ describe('host-parity assurance consumer contract (ADR-0053 §Decision 3, ADR-00
           // record incoherent, which is the semantic contract doing its job
           // (ADR-0053 §Decision 8 ties a consumed surface to a reviewed
           // version). So this case exercises the multi-package binding too.
-          packages: { runtime: '0.90.3', attention: '0.9.0' },
+          packages: { runtime: '0.91.0', attention: '0.9.0' },
           residuals: [{ surface: 'Notification hook payload on Desktop', consumption: 'consumed', disposition: 'probe-pending', consuming_package: 'attention' }],
         })]),
       }),
@@ -702,10 +840,86 @@ describe('host-parity assurance consumer contract (ADR-0053 §Decision 3, ADR-00
 });
 
 describe('assurance is REPORTED, not yet gated — the ST3/ST4 scope fence (ADR-0053 §Decision 4)', () => {
-  it('flipping assurance from covered to unassured changes NOTHING else in the report or the cutover audit', async () => {
-    // Stated as a test rather than a comment, because the failure mode of a
-    // fence nobody checks is that it moved. The two packages differ ONLY in the
-    // grant's cohort, so every other input to every other verdict is identical.
+  it('experience parity carries a LIVE assurance criterion, and it moves with the verdict', async () => {
+    // READINESS PATH 2. Cutover requires 100% experience parity separately from
+    // its own checks, so a gate that moved only in `cutover-audit` would leave an
+    // assured host blocked here — and a REVOKED grant would leave this path green,
+    // because every other criterion reads RECORDED compat state.
+    //
+    // ⚠ THIS CASE EXISTS BECAUSE ADDING THE CRITERION BROKE NOTHING. Nine criteria
+    // where there were eight, a total weight moved from 120 to 130, and the whole
+    // suite stayed green — which means nothing was watching it, and an
+    // accidentally deleted criterion would also have stayed green.
+    const parityOf = (report) => report.experience_parity.criteria.find((row) => row.id === 'host_compatibility_assurance');
+
+    const covered = await assuranceRun({ pkg: await assurancePackage() });
+    strictEqual(covered.host_parity_assurance.status, 'covered', 'precondition');
+    strictEqual(parityOf(covered).status, 'satisfied');
+    strictEqual(parityOf(covered).earned_weight, parityOf(covered).weight);
+
+    const unassured = await assuranceRun({
+      pkg: await assurancePackage({ record: assuranceRecord([grant({ cohort: [{ claude: '9.9.9', codex: '9.9.9' }] })]) }),
+    });
+    strictEqual(unassured.host_parity_assurance.status, 'unassured');
+    // `not_verified`, not `blocked`: nothing is broken and §Decision 5 says the
+    // resolution is review, not repair. It still costs score, because
+    // §Decision 11 says unassured blocks readiness.
+    strictEqual(parityOf(unassured).status, 'not_verified');
+    ok(parityOf(unassured).earned_weight < parityOf(unassured).weight);
+    notStrictEqual(covered.experience_parity.score_percent, unassured.experience_parity.score_percent);
+
+    // The criterion is counted in the denominator, so a future deletion changes
+    // the total rather than silently improving the score.
+    strictEqual(covered.experience_parity.criteria.length, 9);
+    strictEqual(covered.experience_parity.weight.total, unassured.experience_parity.weight.total);
+  });
+
+  it('an unassured host does NOT also lose the artifact-readability criterion — one fact, charged once', async () => {
+    // The compat collection reports `needs_attention` for two very different
+    // reasons: artifacts that need attention, and artifacts that are perfectly
+    // readable and simply report that nobody reviewed this host pair. Charging
+    // the second here as well would cost an unassured host twice and send an
+    // operator looking for a corrupt file that does not exist.
+    //
+    // ⚠ THE CRITERION READS THREE COLLECTIONS, and the first draft of this case
+    // seeded only compat — so settings and consensus were `missing`, both cases
+    // were `partial` for a reason neither was about, and the CONTROL would have
+    // passed against a narrowing that did nothing. The confound is removed rather
+    // than asserted around.
+    const handoffOf = (report) => report.experience_parity.criteria.find((row) => row.id === 'runtime_handoff_artifacts').status;
+
+    const assuranceCaused = await assuranceRun({
+      pkg: await assurancePackage({ record: assuranceRecord([]) }),
+      compatRun: { status: 'unassured' },
+      seedSiblingRuns: true,
+    });
+    strictEqual(handoffOf(assuranceCaused), 'satisfied');
+
+    // CONTROL — a collection that needs attention for a REAL artifact reason
+    // still costs this criterion, so the narrowing did not delete it.
+    const artifactCaused = await assuranceRun({
+      pkg: await assurancePackage({ record: assuranceRecord([]) }),
+      compatRun: { status: 'gap_analysis_ready', drift_class: 'host-version-changed' },
+      seedSiblingRuns: true,
+    });
+    strictEqual(handoffOf(artifactCaused), 'partial');
+  });
+
+  it('flipping assurance from covered to unassured now MOVES the cutover gate — the ST3 fence, lifted', async () => {
+    // ⚠ THIS ASSERTION WAS INVERTED ON PURPOSE, and the fence it replaces is
+    // recorded rather than deleted.
+    //
+    // ST3 asserted that flipping assurance changed NOTHING — the scope fence
+    // that let a matcher defect and a gate change land in separate releases. ST4
+    // is the release that moves the gate (ADR-0053 §Decision 4), so the fence
+    // must come down here or it would be asserting the absence of this slice's
+    // whole purpose.
+    //
+    // What is UNCHANGED is still asserted below, and that half matters more now
+    // than it did before: exactness, readiness and `overall` must stay off
+    // assurance, or "the gate moved" would quietly mean "everything moved".
+    // The two packages differ ONLY in the grant's cohort, so every other input to
+    // every other verdict is identical.
     const covered = await assuranceRun({ pkg: await assurancePackage() });
     const unassured = await assuranceRun({
       pkg: await assurancePackage({ record: assuranceRecord([grant({ cohort: [{ claude: '9.9.9', codex: '9.9.9' }] })]) }),
@@ -725,13 +939,24 @@ describe('assurance is REPORTED, not yet gated — the ST3/ST4 scope fence (ADR-
     const repoRoot = await mkdtemp(join(tmpdir(), 'bcc-assurance-fence-'));
     const coveredAudit = await runCutoverAudit({ repoRoot, doctorReport: covered, now: NOW });
     const unassuredAudit = await runCutoverAudit({ repoRoot, doctorReport: unassured, now: NOW });
-    strictEqual(coveredAudit.ready_candidate, unassuredAudit.ready_candidate);
-    deepStrictEqual(
-      coveredAudit.checks.map((check) => `${check.id}=${check.status}`),
-      unassuredAudit.checks.map((check) => `${check.id}=${check.status}`),
-    );
-    // And the new section is not a check at all yet.
-    strictEqual(coveredAudit.checks.some((check) => check.id === 'host_parity_assurance'), false);
+    // THE GATE MOVED: assurance is now a check, and its verdict differs.
+    const statusOf = (audit, id) => audit.checks.find((check) => check.id === id)?.status ?? null;
+    strictEqual(statusOf(coveredAudit, 'host_parity_assurance'), 'satisfied');
+    strictEqual(statusOf(unassuredAudit, 'host_parity_assurance'), 'unassured');
+    // An unassured host is not ready, and it is told why. ADR-0053 §Decision 11:
+    // "unassured blocks".
+    strictEqual(unassuredAudit.ready_candidate, false);
+    ok(unassuredAudit.next_actions.some((entry) => entry.id === 'host_parity_assurance' && entry.next_action));
+
+    // AND THE REST DID NOT MOVE. Every other check keeps its verdict across the
+    // flip — the gate was relocated, not widened.
+    const withoutAssurance = (audit) => audit.checks
+      .filter((check) => check.id !== 'host_parity_assurance')
+      .map((check) => `${check.id}=${check.status}`);
+    deepStrictEqual(withoutAssurance(coveredAudit), withoutAssurance(unassuredAudit));
+    // Exactness is still reported, and still not a gate.
+    strictEqual(coveredAudit.checks.some((check) => check.id === 'host_parity_baseline'), false);
+    ok(coveredAudit.observations.some((entry) => entry.id === 'host_parity_baseline'));
   });
 });
 
@@ -740,7 +965,7 @@ describe('the assurance ladder as a pure function (ADR-0054 §Decision 4)', () =
   // found the concrete case: the only seam into the doctor builder is
   // `pluginRoot`, so swapping the packaged file between its two reads is a
   // race. As a pure function over injected resolver output it is one call.
-  const provenance = (sha) => ({ path: '/pkg/docs/host-parity-baseline.md', content_sha256: sha, runtime_version: '0.90.3' });
+  const provenance = (sha) => ({ path: '/pkg/docs/host-parity-baseline.md', content_sha256: sha, runtime_version: '0.91.0' });
   const baselineOk = (sha = 'a'.repeat(64)) => ({
     status: 'resolved',
     baseline: { date: '2026-08-16', claude: OBSERVED.claude, codex: OBSERVED.codex },
@@ -761,8 +986,8 @@ describe('the assurance ladder as a pure function (ADR-0054 §Decision 4)', () =
     normalized_observed: { claude: OBSERVED.claude, codex: OBSERVED.codex },
   };
   const observationOk = {
-    claude: { authoritative: true, list_status: 'available', packages: { runtime: { present: true, version: '0.90.3', enabled: true, ambiguous: false, observations: 1, source: 'list' } } },
-    codex: { authoritative: true, list_status: 'available', packages: { runtime: { present: true, version: '0.90.3', enabled: true, ambiguous: false, observations: 1, source: 'list' } } },
+    claude: { authoritative: true, list_status: 'available', packages: { runtime: { present: true, version: '0.91.0', enabled: true, ambiguous: false, observations: 1, source: 'list' } } },
+    codex: { authoritative: true, list_status: 'available', packages: { runtime: { present: true, version: '0.91.0', enabled: true, ambiguous: false, observations: 1, source: 'list' } } },
   };
   const evaluate = (over = {}) => evaluateAssurance({
     resolvedBaseline: baselineOk(),

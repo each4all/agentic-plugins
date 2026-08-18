@@ -42,6 +42,14 @@ node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" plan (-
        be re-checked into coverage; take a **fresh** snapshot.
    - Never describe `runtime:compat` as granting assurance. It evaluates
      membership in a human-authored grant and cannot create or widen one.
+   - The verdict is **frozen when the snapshot is taken**. `check` projects it
+     and never re-evaluates, so a remembered run is never retroactively granted
+     assurance (ADR-0053 §Decision 4). A run that predates the record reports
+     `legacy_unassured`, and the only resolution is a *fresh* snapshot.
+   - `runtime:cutover` asks a different question — "is this machine covered
+     **now**" — and re-matches against live facts rather than reading the frozen
+     bit, so a grant revoked after the snapshot cannot survive as a stale
+     positive. Both answers are correct; they are answers to different questions.
    - Do not fetch URLs unless `--fetch-release-notes-url` is explicitly present.
    - Do not mutate Claude/Codex config, auth, sandbox, approvals, or plugin installs from this surface.
 

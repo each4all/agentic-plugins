@@ -32,6 +32,7 @@ describe('runtime compat', () => {
         claude: '2.1.141 (Claude Code)',
         codex: 'codex-cli 0.130.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
 
     strictEqual(report.command, 'snapshot');
@@ -64,6 +65,7 @@ describe('runtime compat', () => {
         claude: '2.1.150 (Claude Code)',
         codex: 'codex-cli 0.130.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
 
     const report = await runCompat({
@@ -106,6 +108,7 @@ describe('runtime compat', () => {
         claude: '2.1.150 (Claude Code)',
         codex: 'codex-cli 0.130.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
 
     const ingest = await runCompat({
@@ -166,6 +169,7 @@ describe('runtime compat', () => {
         claude: '2.1.150 (Claude Code)',
         codex: 'codex-cli 0.130.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     await runCompat({
       command: 'ingest-release-notes',
@@ -208,6 +212,7 @@ describe('runtime compat', () => {
         claude: '2.1.150 (Claude Code)',
         codex: 'codex-cli 0.130.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     await runCompat({
       command: 'ingest-release-notes',
@@ -238,6 +243,7 @@ describe('runtime compat', () => {
         claude: '2.1.150 (Claude Code)',
         codex: 'codex-cli 0.130.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
 
     const ingest = await runCompat({
@@ -323,6 +329,7 @@ describe('runtime compat', () => {
       runId: RUN_ID,
       baseline: baseline(),
       runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     // `unreadable` and `escaped` are the P2 additions, and they are the point
     // of the loop rather than more of the same: this branch used to ENUMERATE
@@ -367,6 +374,7 @@ describe('runtime compat', () => {
       runId: RUN_ID,
       baseline: baseline(),
       runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     const unusable = {
       claude: { version: null },
@@ -404,6 +412,7 @@ describe('runtime compat', () => {
       runId: RUN_ID,
       baseline: baseline(),
       runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     const notes = join(root, 'notes.md');
     // Deliberately not valid UTF-8: a re-encoding would change these bytes.
@@ -432,6 +441,7 @@ describe('runtime compat', () => {
       runId: RUN_ID,
       baseline: baseline(),
       runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     const out = await runCompat({
       command: 'check',
@@ -456,6 +466,7 @@ describe('runtime compat', () => {
       runId: RUN_ID,
       baseline: baseline(),
       runner: fakeRunner({ claude: '2.1.226 (Claude Code)', codex: 'codex-cli 0.147.0-rc.1' }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     const out = await runCompat({
       command: 'check',
@@ -502,6 +513,7 @@ describe('runtime compat', () => {
       runId: RUN_ID,
       baseline: baseline(),
       runner: fakeRunner({ claude: '2.1.226 (Claude Code)', codex: 'codex-cli 0.147.0-rc.1' }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     const notes = join(root, 'notes.md');
     await writeFile(notes, '# Codex CLI 0.147.0-rc.1\n\nhooks changed.\n');
@@ -528,6 +540,7 @@ describe('runtime compat', () => {
       runId: RUN_ID,
       baseline: baseline(),
       runner: fakeRunner({ claude: '2.1.226 (Claude Code)', codex: 'codex-cli 0.147.0-rc.1' }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     const otherNotes = join(other, 'notes.md');
     await writeFile(otherNotes, '# Codex CLI 0.148.0\n\nsomething else.\n');
@@ -565,6 +578,7 @@ describe('runtime compat', () => {
         claude: '2.1.141 (Claude Code)',
         codex: 'codex-cli 0.130.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
 
     const plan = await runCompat({
@@ -629,6 +643,7 @@ describe('runtime compat', () => {
         claude: '2.1.198 (Claude Code)',
         codex: 'codex-cli 0.130.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
 
     const blockedPlan = await runCompat({
@@ -687,6 +702,7 @@ describe('runtime compat', () => {
         claude: '2.1.141 (Claude Code)',
         codex: 'codex-cli 0.145.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
     const ingest = await runCompat({
       command: 'ingest-release-notes',
@@ -766,6 +782,7 @@ describe('runtime compat', () => {
         claude: '2.1.198 (Claude Code)',
         codex: 'codex-cli 0.130.0',
       }),
+      hostAssurance: NEUTRAL_ASSURANCE,
     });
 
     const first = await runCompat({
@@ -808,6 +825,31 @@ function baseline() {
     codex: { version: '0.130.0' },
   };
 }
+
+/**
+ * A neutral frozen assurance result for the drift/release-note cases.
+ *
+ * ⚠ INJECTED RATHER THAN PROBED, and the reason is hermeticity rather than
+ * speed. Without it `createSnapshot` probes the real machine: these tests supply
+ * only a `runner`, so `probeMachineHostState` reads the developer's own home
+ * directory and `CODEX_HOME`, and the runner's generic help text parses as an
+ * EMPTY plugin list — which the ADR-0054 §Decision 5 floor correctly refuses as
+ * "runtime not installed". Every drift assertion below would then be measuring
+ * a floor refusal.
+ *
+ * `unassured` is the neutral value: it is what the shipped empty grant set
+ * produces, and it does not move the readiness ladder for a drifted pair, so the
+ * release-note and gap behaviour these cases assert stays exactly as before.
+ */
+const NEUTRAL_ASSURANCE = Object.freeze({
+  schema_version: 'runtime-host-assurance-result-1.0',
+  id: 'host_parity_assurance',
+  label: 'Host compatibility assurance',
+  status: 'unassured',
+  evidence: { grant_id: null, reasons: ['no grant names the host pair — injected fixture'] },
+  next_action: 'Assurance is granted by human review of this host pair (ADR-0053 §Decision 5).',
+  probe_fault: null,
+});
 
 function fakeRunner(versions) {
   return async (command, args) => {
