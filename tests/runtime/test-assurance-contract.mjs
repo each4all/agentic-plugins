@@ -1018,7 +1018,12 @@ describe('closed false-coverage paths (adversarial review of the first version)'
         observed: observed({ claudeStatus }),
       });
       strictEqual(result.state, 'unassured', `claude list status ${String(claudeStatus)} must not be authoritative`);
-      match(result.reasons.join('\n'), /claude: the installed-plugin list is not authoritative/);
+      // The refusal moved UP a layer in ST5's audit: it is now a pair-level gate
+      // ahead of any grant, not a per-named-package one, because the per-package
+      // form only checked the hosts a package declares and so let a single-host
+      // binding through. The assertion still pins the host by name and the
+      // reason by meaning — only the layer that emits it changed.
+      match(result.reasons.join('\n'), /not authoritative on .*claude/);
     }
     // OMITTING the key is the same as a failed probe, which is why the parameter
     // has no permissive default. (`undefined` cannot be tested through the

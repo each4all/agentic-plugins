@@ -621,6 +621,20 @@ function unassured(reasons, extra = {}) {
  * install that is correctly absent, and an author would be pushed to work
  * around the check.
  */
+/**
+ * Framework packages INSTALLED on either host that this grant does not name.
+ *
+ * Evidence, never a verdict — see the note at the `covered` return. Sorted so
+ * two runs of the same machine produce the same artifact bytes.
+ */
+function unboundPackages({ grant, observed, pluginSet }) {
+  const named = new Set(Object.keys(grant?.packages ?? {}));
+  const declared = Object.keys(pluginSet?.plugins ?? {});
+  const unbound = declared.filter((name) => !named.has(name)
+    && HOSTS.some((host) => observed?.[host]?.packages?.[name]?.present === true));
+  return Object.freeze(unbound.sort());
+}
+
 function hostsForPackage(pluginSet, name) {
   const declared = pluginSet?.plugins?.[name]?.hosts;
   if (!Array.isArray(declared) || declared.length === 0) return null;
@@ -667,10 +681,14 @@ function evaluatePackages({ grant, observed, pluginSet }) {
     }
     for (const host of hosts) {
       const hostFacts = observed?.[host];
-      if (!hostFacts?.authoritative) {
-        reasons.push(`${host}: the installed-plugin list is not authoritative (${hostFacts?.list_status ?? 'unavailable'}) — a cache-sourced answer is evidence about disk, not about what the host loads`);
-        continue;
-      }
+      // NO PER-HOST AUTHORITY CHECK HERE. There used to be one, and it was the
+      // WEAKER of the two: it demanded authority only on the hosts a NAMED
+      // package declares, so a grant binding a single-host package reached
+      // `covered` with the other host's listing unread (measured, ST5).
+      // `matchAssurance` now refuses a non-authoritative listing on EITHER host
+      // before any grant is considered, which subsumes this branch completely —
+      // so it is removed rather than kept as a second guard that cannot fire.
+      // Two copies of one rule, one of them weaker, is how the gap opened.
       const entry = hostFacts.packages?.[name];
       if (!entry?.present) {
         reasons.push(`${host}: package "${name}" is absent, so the reviewed code is not what is installed`);
@@ -788,6 +806,29 @@ export function matchAssurance({ record, hosts = null, observed = null, pluginSe
   if (unreadable.length > 0) {
     return unassured([`observed host version unreadable for ${unreadable.join(', ')} — a pair verdict computed from one known half is a guess`]);
   }
+  // BOTH LISTINGS AUTHORITATIVE, before any grant is considered.
+  //
+  // This function's own header claims it "has no path that turns absence of
+  // evidence into coverage", and ST5's audit measured that claim false:
+  // `evaluatePackages` demands authority only on the hosts a NAMED package
+  // declares, so a grant binding a single-host package returned `covered` while
+  // the other host's `plugin list` was a parse error — the pair verdict computed
+  // from one known half that the check above refuses for VERSIONS and did not
+  // refuse for PACKAGES. The two halves of "which host pair is this" have to
+  // fail the same way.
+  //
+  // Every framework package is dual-host today, which is why this was latent
+  // rather than live; ADR-0053 §Decision 7's whole point is that a per-host
+  // answer is not a pair answer, so the shape is refused rather than the
+  // instance.
+  const nonAuthoritative = HOSTS.filter((host) => observed?.[host]?.authoritative !== true);
+  if (nonAuthoritative.length > 0) {
+    return unassured([
+      `the installed-plugin list is not authoritative on ${nonAuthoritative.join(', ')} `
+      + `(${nonAuthoritative.map((host) => `${host}=${observed?.[host]?.list_status ?? 'unavailable'}`).join(', ')}) `
+      + '— whether the reviewed packages are the ones installed cannot be established, and a cache-sourced answer is evidence about disk, not about what the host loads',
+    ]);
+  }
 
   const applying = record.grants
     .map((grant, index) => ({ grant, index }))
@@ -853,6 +894,24 @@ export function matchAssurance({ record, hosts = null, observed = null, pluginSe
     state: 'covered',
     grant_id: winner.grant.id,
     reasons: Object.freeze([]),
+    // WHAT THE GRANT DID NOT NAME, carried with the positive.
+    //
+    // ADR-0054 §Decision 2 lists "exact package-set equality" among the rules
+    // this module holds. It holds exact VERSION equality for every package the
+    // grant names; it holds nothing about a package the grant omits, and ST5's
+    // audit measured the consequence — a grant naming only `runtime` returned
+    // `covered` with `attention` installed at an unreviewed version, disabled,
+    // and ambiguous, in three separate runs.
+    //
+    // Deciding WHICH packages a grant is obliged to name is a policy question
+    // this subtask deliberately does not answer: requiring every installed
+    // plugin would make assurance strictly harder to satisfy than exactness,
+    // which is the treadmill ADR-0053 §Decision 6 exists to avoid, and the
+    // authoritative "consuming set" is exactly what ADR-0054 §Decision 9 fenced
+    // off as a follow-up. What is landed here is the difference between silent
+    // and visible: an operator reading a `covered` verdict can see which
+    // installed framework packages no reviewer bound.
+    unbound_packages: unboundPackages({ grant: winner.grant, observed, pluginSet }),
     // The residuals travel WITH the positive, because ADR-0053 §Decision 6
     // grants with recorded residuals and a consumer that reported `covered`
     // without them would drop the reviewer's own caveats.

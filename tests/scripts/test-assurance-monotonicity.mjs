@@ -19,7 +19,7 @@
 
 import { test, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -531,11 +531,31 @@ describe('the CLI surface', () => {
     assert.match(text, /grants_tracked=\d+/);
   });
 
-  it('the executable entry point is wired to main’s exit code (structural)', async () => {
-    // `main()` above is driven directly, so the one thing left untested by
-    // behaviour is that the CLI block actually uses its return value. Structural,
-    // because a subprocess run against the clean repository can only ever observe
-    // exit 0 and would not notice the wiring being dropped.
+  it('the executable entry point actually RUNS when the file is executed', async () => {
+    // REWRITTEN by ST5's audit. The previous version asserted that the SOURCE
+    // TEXT contained the `process.exit(await main(...))` call, and that is
+    // container-wider matching: wrapping the guard as
+    // `if (false && invokedAsCLI)` leaves the text intact, so the assertion
+    // passed while `npm run validate:assurance-monotonicity` exited 0 having
+    // checked nothing. Measured — that mutation survived the whole suite.
+    //
+    // Its own note argued a subprocess "can only ever observe exit 0" against a
+    // clean repository and so could not notice. True of the exit code and false
+    // of the OUTPUT: a disabled entry point prints nothing, and the success line
+    // is what distinguishes "ran and passed" from "did not run". No violating
+    // fixture is needed, which matters because the checker resolves its own
+    // repository root and cannot be pointed at one.
+    const result = spawnSync(process.execPath, [path.join(REPO_ROOT, 'scripts', 'check-assurance-monotonicity.mjs')], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    });
+    assert.equal(result.status, 0, `the gate must pass on the real repository (stderr: ${result.stderr})`);
+    assert.match(
+      `${result.stdout}${result.stderr}`,
+      /✓ assurance-monotonicity: monotonic at HEAD/,
+      'an entry point that does not run exits 0 in silence — the printed verdict is the proof it ran',
+    );
+    // And it still uses main's return value rather than exiting 0 unconditionally.
     const source = await readFile(path.join(REPO_ROOT, 'scripts', 'check-assurance-monotonicity.mjs'), 'utf8');
     assert.match(source, /process\.exit\(await main\(\{ repoRoot, ref: refArg \?\? 'HEAD' \}\)\)/);
   });

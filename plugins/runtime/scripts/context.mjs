@@ -7,6 +7,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
 import { fileURLToPath } from 'node:url';
 
 import { canonicalJson, loadSchema, validateAgainstSchema } from './lib/schema-validate.mjs';
+import { FUTURE_SKEW_TOLERANCE_MS } from './lib/clock.mjs';
 import { loadEntryBriefConfig, loadSessionConfig } from './lib/runtime-config.mjs';
 import {
   NOTE_CONTENT_MAX_BYTES,
@@ -40,7 +41,8 @@ const RISK_LEVELS = new Set(['green', 'yellow', 'red']);
 // write and the read-only `status --slot` inspection.
 const NOTE_SCHEMA_ID = 'runtime-session-note-1.0';
 export const NOTE_FOLD_WINDOW_MS = 24 * 60 * 60 * 1000; // contract §4 — reported here as a diagnostic; enforced by the publisher
-const FUTURE_SKEW_TOLERANCE_MS = 60 * 1000; // contract §4 — one uniform bound for fold-window arithmetic
+// contract §4's uniform bound, now single-sourced in lib/clock.mjs so the three
+// age computations ST5 measured cannot drift from the one that was already right.
 const NOTE_HOSTS = new Set(['claude', 'codex']);
 // ADR-0031 bounded workflow projection (session-level continue-vs-fresh
 // preflight). The owning plugin (engineer/founder/designer L3 /

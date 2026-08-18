@@ -74,6 +74,16 @@ import { lstat, readdir, readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { projectGapFamily, READY_COMPAT_STATUSES } from './compat-artifacts.mjs';
 import { sanitizeValue } from './permission-sanitize.mjs';
+import { elapsedMsSince } from './clock.mjs';
+
+// A beyond-skew future mtime yields `null` — "this file establishes no age" —
+// instead of the clamp's 0, which reported the oldest artifact as brand new
+// and so made an inventory sweep skip it.
+function ageMinutesOrNull(nowMs, thenMs) {
+  if (thenMs === null || thenMs === undefined) return null;
+  const elapsed = elapsedMsSince(nowMs, thenMs);
+  return elapsed === null ? null : Math.floor(elapsed / 60000);
+}
 
 // $CODEX_HOME resolution — the ONE canonical form (the `collectUsageRecordSources`
 // precedent). `~/.codex` is the default, never a hardcode (machine-bootstrap-contract.md
@@ -926,7 +936,7 @@ async function inspectArtifactFamily({ pointerFor, root, family, nowMs, retentio
     bytes: totals.bytes,
     oldest_mtime: totals.oldest_mtime_ms === null ? null : new Date(totals.oldest_mtime_ms).toISOString(),
     newest_mtime: totals.newest_mtime_ms === null ? null : new Date(totals.newest_mtime_ms).toISOString(),
-    oldest_age_minutes: totals.oldest_mtime_ms === null ? null : Math.max(0, Math.floor((nowMs - totals.oldest_mtime_ms) / 60000)),
+    oldest_age_minutes: ageMinutesOrNull(nowMs, totals.oldest_mtime_ms),
     attention,
   };
 }
@@ -1210,7 +1220,13 @@ export async function scanPeerRuns(dir, expectedPlugin, now, staleGraceMs) {
     const status = typeof handle.json.status === 'string' ? handle.json.status : 'unknown';
     const terminal = TERMINAL_PEER_RUN_STATUSES.has(status);
     const updatedAt = parseDateMs(handle.json.updated_at);
-    const stale = !terminal && updatedAt !== null && now.getTime() - updatedAt > staleGraceMs;
+    // A beyond-skew FUTURE `updated_at` is stale, not fresh. The unclamped
+    // subtraction made a postdated handle permanently non-stale, so a
+    // non-terminal peer run could sit forever and never be counted — the mirror
+    // of the freshness clamp ST5 fixed in cutover, in the direction a clamp
+    // would not have shown (there is no `Math.max(0, …)` here to grep for).
+    const elapsed = updatedAt === null ? null : elapsedMsSince(now.getTime(), updatedAt);
+    const stale = !terminal && updatedAt !== null && (elapsed === null || elapsed > staleGraceMs);
     const issues = validatePeerRunHandle(handle.json, {
       expectedPlugin,
       status,

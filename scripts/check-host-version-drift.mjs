@@ -33,6 +33,7 @@ import {
   releaseCoreParts,
   releaseVersion,
 } from '../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
+import { elapsedMsSince } from '../plugins/runtime/scripts/lib/clock.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -126,8 +127,17 @@ export function parseObservedDate(text) {
 //     NOT 'current' (we could not confirm the unavailable host — do not let a
 //     downstream consumer close a drift issue on a half-check).
 export function aggregate(results, { staleDays, observedDate, now }) {
-  const ageDays = Math.floor((now.getTime() - observedDate.getTime()) / 86_400_000);
-  const stale = ageDays > staleDays;
+  // A FUTURE observation date does not make the baseline fresh — it makes its
+  // age unreadable. Measured in ST5's audit: this was `now - observedDate` with
+  // no bound, so a header dated ahead of the clock produced a NEGATIVE age,
+  // `stale` was permanently false, and the only staleness gate on the packaged
+  // baseline went quiet — while `host-version-drift.yml` closes the tracking
+  // issue on `current`. Beyond the skew bound the age is `null`, which is
+  // reported as `stale` because "we cannot tell how old this is" is exactly
+  // what the staleness window exists to escalate.
+  const elapsedMs = elapsedMsSince(now.getTime(), observedDate.getTime());
+  const ageDays = elapsedMs === null ? null : Math.floor(elapsedMs / 86_400_000);
+  const stale = ageDays === null || ageDays > staleDays;
 
   const hosts = results.map((r) => {
     if (r.latest == null) {
@@ -159,7 +169,9 @@ export function aggregate(results, { staleDays, observedDate, now }) {
   if (stale) {
     status = status ? 'drift+stale' : 'stale';
     exitCode = 1;
-    reasons.push(`baseline observed ${ageDays}d ago (> ${staleDays}d window)`);
+    reasons.push(ageDays === null
+      ? `baseline header is dated ahead of the clock, so its age cannot be read (repair the header date or the machine clock)`
+      : `baseline observed ${ageDays}d ago (> ${staleDays}d window)`);
   }
   // A version pair this checker cannot COMPARE is not a currency finding, and
   // the fallthrough below used to make it one: `driftSeverity` returns

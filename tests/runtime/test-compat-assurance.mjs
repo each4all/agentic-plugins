@@ -147,6 +147,118 @@ async function snapshotAndCheck({ root, pluginRoot, baseline: base = baseline(),
 }
 
 // ---------------------------------------------------------------------------
+// ST5 — the audit of the assembled plane measured three gaps in compat's
+// OBSERVATION half. The projection half below was already correct; these are
+// its producer-side mirrors.
+// ---------------------------------------------------------------------------
+
+describe('ST5: a FAILED version probe is not a reading of the host', () => {
+  // `observeHost` fills `.version` from stdout OR stderr regardless of exit
+  // status, and the probe status was derived from that field. So a
+  // `claude --version` that exits non-zero after printing version-shaped text
+  // arrived as `available`, and the ladder permitted coverage from a probe that
+  // failed — while doctor's symmetric path preserved the command status.
+  const failingVersion = (host) => async (command, args) => {
+    const base = hostRunner();
+    if (args[0] === '--version' && command === host) {
+      return { ok: false, exit_code: 1, stdout: `${OBSERVED_TEXT[host]}\n`, stderr: 'boom', error_code: null, timed_out: false };
+    }
+    return base(command, args);
+  };
+
+  it('CONTROL: with both probes succeeding the fixture grant covers', async () => {
+    const { gap } = await snapshotAndCheck({ root: await repo(), pluginRoot: await fixturePackage({ grants: [grant()] }) });
+    strictEqual(gap.overall.assurance.status, 'covered');
+  });
+
+  for (const host of ['claude', 'codex']) {
+    it(`a non-zero ${host} --version that still prints a version blocks, never covers`, async () => {
+      const { gap } = await snapshotAndCheck({
+        root: await repo(),
+        pluginRoot: await fixturePackage({ grants: [grant()] }),
+        runner: failingVersion(host),
+      });
+      strictEqual(gap.overall.assurance.status, 'blocked');
+      ok(!READY_COMPAT_STATUSES.includes(gap.overall.status),
+        `a failed probe must not reach a ready status (got ${gap.overall.status})`);
+    });
+  }
+});
+
+describe('ST5: the snapshot FAMILY decides whether its assurance section is read', () => {
+  // `lib/compat-artifacts.mjs` already applies this rule to the GAP artifact,
+  // and its comment records the measurement that forced it: "a `1.0` artifact
+  // carrying a hand-added assurance block read as `readable`, so an edited
+  // legacy file could inject a `covered` verdict". The READER side was fixed and
+  // the PRODUCER side was not — re-running `check` over a doctored SNAPSHOT
+  // minted a fresh, protected-looking 1.1 gap saying `current`.
+  async function checkOverDoctoredSnapshot(patch) {
+    const root = await repo();
+    const pluginRoot = await fixturePackage({ grants: [grant()] });
+    const isolatedHome = await mkdtemp(join(tmpdir(), 'compat-assurance-home-'));
+    const common = {
+      repoRoot: root,
+      runId: RUN_ID,
+      now: NOW,
+      baseline: baseline(),
+      runner: hostRunner(),
+      pluginRoot,
+      homeDir: isolatedHome,
+      codexHome: join(isolatedHome, '.codex'),
+      env: {},
+    };
+    await runCompat({ command: 'snapshot', ...common });
+    const snapshotPath = join(root, `.agentic-plugins/runs/compat/${RUN_ID}/snapshot.json`);
+    const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8'));
+    await writeFile(snapshotPath, JSON.stringify({ ...snapshot, ...patch }, null, 2));
+    await runCompat({ command: 'check', ...common });
+    return readJson(join(root, `.agentic-plugins/runs/compat/${RUN_ID}/gap-analysis.json`));
+  }
+
+  it('CONTROL: the shipped family with a genuine covered section reaches current', async () => {
+    const gap = await checkOverDoctoredSnapshot({});
+    strictEqual(gap.overall.assurance_state, 'readable');
+    strictEqual(gap.overall.status, 'current');
+  });
+
+  it('a PRE-DECISION 1.0 snapshot carrying a covered block is legacy, never coverage', async () => {
+    const gap = await checkOverDoctoredSnapshot({ schema_version: 'runtime-compat-snapshot-1.0' });
+    strictEqual(gap.overall.assurance_state, 'legacy');
+    strictEqual(gap.overall.status, 'legacy_unassured');
+    ok(!READY_COMPAT_STATUSES.includes(gap.overall.status));
+  });
+
+  it('an UNKNOWN future family is unreadable, not legacy — a narrowing field would go unread', async () => {
+    const gap = await checkOverDoctoredSnapshot({ schema_version: 'runtime-compat-snapshot-1.2' });
+    strictEqual(gap.overall.assurance_state, 'unreadable');
+    ok(!READY_COMPAT_STATUSES.includes(gap.overall.status));
+  });
+});
+
+describe('ST5: the assurance machine probe never runs inside the repository', () => {
+  it('the plugin listings are probed from a NEUTRAL directory', async () => {
+    // `lib/machine-probe.mjs` states the invariant in its header — "host CLIs
+    // never run inside the caller's repository, so a repo-local plugin scope
+    // cannot leak into a machine answer". doctor.mjs and bootstrap.mjs both pass
+    // tmpdir(); compat passed repoRoot, and compat's frozen assurance therefore
+    // could describe a machine state the two gating consumers cannot see.
+    const root = await repo();
+    const seen = [];
+    const base = hostRunner();
+    const recordingRunner = async (command, args, options = {}) => {
+      seen.push({ key: `${command} ${args.join(' ')}`, cwd: options.cwd ?? null });
+      return base(command, args, options);
+    };
+    await snapshotAndCheck({ root, pluginRoot: await fixturePackage({ grants: [grant()] }), runner: recordingRunner });
+    const listings = seen.filter((call) => call.key.includes('plugin list'));
+    ok(listings.length > 0, 'the fixture must actually probe the plugin listings');
+    for (const call of listings) {
+      ok(call.cwd !== root, `${call.key} must not be probed from the repository root`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe('compat artifact family projection is fail-closed and schema-decided', () => {
   // `assurance_state` is what the 1.1 contract requires; `assurance` is the
   // result and is null exactly when the state is `legacy`.

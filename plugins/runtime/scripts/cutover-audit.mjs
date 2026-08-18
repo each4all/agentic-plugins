@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 import { runDoctor } from './doctor.mjs';
 import { describeFloorFailure } from './lib/runtime-floor.mjs';
+import { elapsedMsSince } from './lib/clock.mjs';
+import { isGrantId } from './lib/assurance-result.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -1011,7 +1013,7 @@ function checkHostParityAssurance(doctor) {
     direction: section.evidence?.direction?.state ?? null,
     reasons: Array.isArray(section.evidence?.reasons) ? section.evidence.reasons.slice(0, 4) : [],
   };
-  if (section.status === 'covered' && typeof section.evidence?.grant_id === 'string') {
+  if (section.status === 'covered' && isGrantId(section.evidence?.grant_id)) {
     return { ...base, status: 'satisfied', evidence, next_action: null };
   }
   if (section.status === 'covered') {
@@ -1056,6 +1058,12 @@ function checkHostParityAssurance(doctor) {
  * `runtime_floor: null` means the evaluator returned before reaching the floor,
  * so the answer is `unknown` — never `satisfied`.
  */
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+const FLOOR_REQUIRED_HOSTS = Object.freeze(['claude', 'codex']);
+
 function checkAssuranceRuntimeFloor(doctor) {
   const base = { id: 'assurance_runtime_floor', label: 'Both hosts run an assurance-capable runtime' };
   const verdict = doctor.host_parity_assurance?.evidence?.runtime_floor ?? null;
@@ -1073,7 +1081,29 @@ function checkAssuranceRuntimeFloor(doctor) {
     claude: verdict.hosts?.claude ?? null,
     codex: verdict.hosts?.codex ?? null,
   };
-  if (verdict.satisfied) return { ...base, status: 'satisfied', evidence, next_action: null };
+  // THE VERDICT MUST BE SHAPED LIKE AN ANSWER BEFORE IT CAN BE A PASS. ST5's
+  // audit measured the composition this refuses: `evaluateRuntimeFloor` returns
+  // `{floor: null, satisfied: true, hosts: {}}` when the packaged plugin set
+  // declares no `plugins.runtime.minimum_version`, and a truthy `satisfied` test
+  // then reported the check whose whole job is "both hosts run an
+  // assurance-capable runtime" as SATISFIED having evaluated NEITHER host.
+  // `satisfied === true` alone would not close it; the floor value and the two
+  // host rows are what make the verdict about this machine (ADR-0054 §Decision 5).
+  const shaped = verdict.satisfied === true
+    && typeof verdict.floor === 'string'
+    && isPlainObject(verdict.hosts)
+    && FLOOR_REQUIRED_HOSTS.every((host) => isPlainObject(verdict.hosts[host]));
+  if (shaped) return { ...base, status: 'satisfied', evidence, next_action: null };
+  if (verdict.satisfied === true) {
+    return {
+      ...base,
+      status: 'unknown',
+      evidence,
+      next_action: 'Reinstall or repair the runtime plugin — the floor verdict reports satisfied but does not name a floor '
+        + 'or does not carry a row for each host, so it is not an answer about this machine. A floor that evaluates no host '
+        + 'satisfies nothing (ADR-0054 §Decision 5).',
+    };
+  }
   return { ...base, status: 'blocked', evidence, next_action: describeFloorFailure(verdict) };
 }
 
@@ -1179,12 +1209,19 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
   const runs = doctor.compat_runs ?? null;
   const latest = runs?.latest ?? null;
   const ageHours = latest?.selected_at ? ageHoursSince(latest.selected_at, now) : null;
+  // "we cannot read this artifact's age" and "this artifact is too old" are both
+  // not-fresh and take DIFFERENT operator actions, so they are tracked apart.
+  // Cross-host review of the first fix caught the consequence of collapsing
+  // them: a run stamped in 2099 stays NEWEST by selection, so telling the
+  // operator to take a fresh snapshot names an action that cannot clear the
+  // gate — the artifact or the clock has to be repaired first.
+  const ageUnreadable = Boolean(latest?.selected_at) && ageHours === null;
   const fresh = ageHours !== null && ageHours <= maxArtifactAgeHours;
   const collectionOk = runs?.status === 'available' && (runs?.malformed ?? 0) === 0;
   const recordedReady = latest?.status === 'current' || latest?.status === 'assured';
 
   const assurance = doctor.host_parity_assurance ?? null;
-  const liveCovered = assurance?.status === 'covered' && typeof assurance?.evidence?.grant_id === 'string';
+  const liveCovered = assurance?.status === 'covered' && isGrantId(assurance?.evidence?.grant_id);
   const liveObserved = assurance?.evidence?.normalized_observed ?? null;
 
   // The recorded pair, from the host rows the run stored. Exactly one row per
@@ -1232,9 +1269,11 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
           ? identityFault
           : !liveCovered
             ? 'this machine is not currently covered by a compatibility assurance grant'
-            : !fresh
-              ? 'the newest recorded run is older than the freshness window'
-              : null;
+            : ageUnreadable
+              ? `the newest recorded run is stamped ${latest.selected_at}, which is not a readable age from here`
+              : !fresh
+                ? 'the newest recorded run is older than the freshness window'
+                : null;
   return {
     id: 'latest_compat_snapshot',
     label: 'Latest compatibility run is assured, intact, and describes this machine',
@@ -1256,7 +1295,12 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
     },
     next_action: status === 'fresh'
       ? null
-      : `${reason}. Run runtime:compat snapshot and runtime:compat check for the current host pair, repairing any malformed artifacts first; assurance itself is granted by review, not by re-running compat.`,
+      : ageUnreadable
+        // A fresh run does NOT clear this one: selection is by recorded
+        // timestamp, so the future-dated artifact stays newest.
+        ? `${reason}. Repair the machine clock or delete the mis-stamped artifact `
+          + `(${latest?.run_id ?? 'the newest compat run'}) — a new snapshot will not clear this, because the newest run is chosen by its recorded timestamp.`
+        : `${reason}. Run runtime:compat snapshot and runtime:compat check for the current host pair, repairing any malformed artifacts first; assurance itself is granted by review, not by re-running compat.`,
   };
 }
 
@@ -1522,9 +1566,13 @@ function normalizeLegacyPatternStatus(value) {
 }
 
 function ageHoursSince(iso, now) {
-  const timestamp = Date.parse(iso);
-  if (!Number.isFinite(timestamp)) return null;
-  return Math.max(0, (now.getTime() - timestamp) / 3600000);
+  // `null` for unparseable AND for beyond-skew-future, because callers read
+  // `null` as "not fresh" and both are "this artifact establishes no age".
+  // The clamp this replaced made a postdated artifact read as age 0 — the
+  // freshest value there is — so a 2099 timestamp satisfied the freshness
+  // gate indefinitely (measured, ST5).
+  const elapsed = elapsedMsSince(now.getTime(), Date.parse(iso));
+  return elapsed === null ? null : elapsed / 3600000;
 }
 
 function relativePointer(repoRoot, path) {

@@ -137,11 +137,28 @@ describe('the floor is evaluated for BOTH hosts, independently', () => {
     deepStrictEqual(verdict.unsatisfied, ['codex']);
   });
 
-  it('a null floor is trivially satisfied; an unparseable floor is not', () => {
-    // `null` is the shipped state before §Decision 5's value landed. An
-    // unparseable floor is a corrupt package, and "unparseable therefore fine"
-    // is the wrong direction for a refusal.
-    strictEqual(evaluateRuntimeFloor({ floor: null, packageObservation: list('0.1.0') }).satisfied, true);
+  it('a MISSING floor is not satisfied, and neither is an unparseable one', () => {
+    // REVERSED by ST5's audit. `null` used to be "trivially satisfied" — the
+    // pre-§Decision 5 shipped state read forward into a world where the floor IS
+    // the policy. Measured: a declared `minimum_version: null` (which
+    // validatePluginSet accepts) returned satisfied with ZERO hosts evaluated,
+    // ladder step 7 passed, and `covered` reached all three readiness surfaces,
+    // two of which never look at runtime_floor at all. Refusing HERE is what
+    // makes one value close all three.
+    for (const absent of [null, undefined]) {
+      const verdict = evaluateRuntimeFloor({ floor: absent, packageObservation: list('9.9.9') });
+      strictEqual(verdict.satisfied, false, `floor ${String(absent)} must not satisfy`);
+      // Both hosts must be NAMED. A verdict that refuses while evaluating no
+      // host is the shape the cutover check had to learn to reject.
+      deepStrictEqual(verdict.unsatisfied, ['claude', 'codex']);
+      strictEqual(verdict.hosts.claude.reason, 'no-floor-declared');
+      strictEqual(verdict.hosts.codex.reason, 'no-floor-declared');
+      // Its own operator line, because "install runtime null or newer" names no
+      // action anyone can take.
+      const line = describeFloorFailure(verdict);
+      ok(line.includes('minimum_version'), line);
+      ok(!line.includes('null or newer'), line);
+    }
     const bad = evaluateRuntimeFloor({ floor: '0.91', packageObservation: list('9.9.9') });
     strictEqual(bad.satisfied, false);
     strictEqual(bad.hosts.claude.reason, 'floor-unparseable');

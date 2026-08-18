@@ -46,6 +46,7 @@ import { assuranceFailure, baselineFailure, resolveAssuranceRecord, resolveHostP
 import { assuranceRecordIssues } from './lib/assurance-contract.mjs';
 import { NO_RECORDED_ASSURANCE, projectRecordedAssurance } from './lib/assurance-result.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
+import { elapsedMsSince } from './lib/clock.mjs';
 import { isClaimExpired, isLockStale, notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
 import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
 import { NOTIFY_KEY_DEFAULTS } from './lib/runtime-config.mjs';
@@ -1012,7 +1013,11 @@ export async function buildDashboardReport({
 function ageMinutes(nowMs, isoOrMs) {
   const ms = typeof isoOrMs === 'number' ? isoOrMs : Date.parse(isoOrMs ?? '');
   if (!Number.isFinite(ms) || ms <= 0) return null;
-  return Math.max(0, Math.floor((nowMs - ms) / 60000));
+  // A beyond-skew future timestamp is `null` — `formatAge` renders that as
+  // "age unknown" rather than the "0m ago" the clamp used to produce, which
+  // displayed a postdated artifact as the most recent thing on the dashboard.
+  const elapsed = elapsedMsSince(nowMs, ms);
+  return elapsed === null ? null : Math.floor(elapsed / 60000);
 }
 
 function formatAge(nowMs, isoOrMs) {

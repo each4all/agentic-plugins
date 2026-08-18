@@ -17,6 +17,7 @@ import { RUNTIME_VERSION } from './version.mjs';
 import { baselineFailure, classifyHostPairRelation, normalizeVersion, readVersionToken } from './lib/host-parity-baseline.mjs';
 import { observePackages } from './lib/assurance-contract.mjs';
 import { buildAssuranceProbe, resolveHostAssuranceFacts } from './lib/host-assurance-facts.mjs';
+import { isGrantId } from './lib/assurance-result.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { getPromptCause } from './lib/permission-advisor-core.mjs';
@@ -448,10 +449,13 @@ export async function runDoctor({
     host_parity: hostParity,
     host_parity_baseline: hostParityBaseline,
     // ADR-0054 §Decision 4 — a nested, separately versioned result inside a
-    // report whose own `runtime-doctor-1.0` does NOT bump. Reporting only in
-    // this slice: readiness, experience parity, `overall` and the cutover audit
-    // all still key on exactness, and this is the seat ADR-0053 §Decision 4's
-    // gate move will take.
+    // report whose own `runtime-doctor-1.0` does NOT bump. ⚠ THIS GATES. The
+    // note that stood here said "reporting only in this slice"; `70e0461` took
+    // the seat it predicted and the note was not revised, so for one release the
+    // module's own header licensed a maintainer to treat the computation as
+    // inert. Live readers: `experience_parity`'s ninth criterion below, and
+    // `cutover-audit`'s `checks`. `summarizeOverall` and `readiness` genuinely
+    // do not read it, and that half remains accurate.
     host_parity_assurance: hostParityAssurance,
     companions: companion,
     model_effort: modelEffort,
@@ -1188,12 +1192,21 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
 // existed — `readyCandidate` substituted "the strings match" for "a human
 // accepted this host".
 //
-// ⚠ REPORTING ONLY in this slice. `report.host_parity_assurance` is attached
-// and rendered; nothing reads it. It is deliberately absent from
-// `summarizeOverall`, from `readiness`, from `experience_parity`, and from
-// `cutover-audit`'s `checks` — ADR-0053 §Decision 4 moves the gates, and
-// separating the two means a matcher defect and a gate change cannot land in
-// one release.
+// ⚠ THIS GATES — and correcting this note is itself an ST5 finding, raised
+// independently by four reviews. It used to read "REPORTING ONLY in this slice
+// … nothing reads it … deliberately absent from `summarizeOverall`, from
+// `readiness`, from `experience_parity`, and from `cutover-audit`'s `checks`".
+// The last two clauses stopped being true at `70e0461`, which wired
+// `experience_parity`'s ninth criterion and both cutover checks; the note was
+// written one commit earlier and never revised, while its co-located twin in
+// `cutover-audit.mjs` was. The risk is not cosmetic: the next author to tidy
+// this file inherits "nothing reads it" as a licensed premise and can remove
+// both readiness paths in a change that reviews as reporting-only.
+//
+// Still accurate: `summarizeOverall` and `readiness` do not read it. The
+// separation ADR-0053 §Decision 4 wanted — a matcher defect and a gate change
+// not landing in one release — was achieved by the R1/R2 split, not by this
+// section staying inert.
 //
 // ONE READ feeds both sections. `resolveHostParityBaseline` and
 // `resolveAssuranceRecord` share a read PATH and not a read, and the module
@@ -2720,7 +2733,7 @@ function buildHostAssuranceExperienceCriterion(assurance) {
     weight: 15,
   };
   const status = assurance?.status ?? null;
-  if (status === 'covered' && typeof assurance?.evidence?.grant_id === 'string') {
+  if (status === 'covered' && isGrantId(assurance?.evidence?.grant_id)) {
     return parityCriterion({
       ...base,
       status: 'satisfied',
@@ -5872,6 +5885,15 @@ export function formatText(report) {
     // that says what was NOT settled.
     for (const residual of residuals) {
       lines.push(`  residual: ${residual.surface ?? 'unnamed surface'} (${residual.consumption ?? 'unknown consumption'}; ${residual.disposition ?? 'no disposition'})`);
+    }
+    // WHAT THE GRANT DID NOT NAME, on the operator's line rather than only in
+    // the JSON. Cross-host review of the first fix caught this: the list was
+    // added to the result object and rendered nowhere, so the only mitigation
+    // for a still-`covered` partial package binding was invisible on both
+    // normal operator surfaces. `covered` is precisely when it needs saying.
+    const unbound = assurance.evidence?.unbound_packages ?? [];
+    if (unbound.length > 0) {
+      lines.push(`  unbound: ${unbound.join(', ')} — installed here and named by no grant, so no reviewer bound ${unbound.length === 1 ? 'it' : 'them'}`);
     }
     for (const reason of (assurance.evidence?.reasons ?? []).slice(0, 4)) {
       lines.push(`  reason: ${reason}`);

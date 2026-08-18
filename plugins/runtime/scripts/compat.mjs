@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import { basename, dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
@@ -16,6 +17,7 @@ import {
 import {
   ASSURANCE_RESULT_SCHEMA_VERSION,
   ASSURANCE_RESULT_STATUSES,
+  isGrantId,
 } from './lib/assurance-result.mjs';
 import {
   buildAssuranceProbe,
@@ -36,6 +38,10 @@ const VERSION = RUNTIME_VERSION;
 // because the consumer needs it too and cannot import this file: state-readers
 // -> compat -> doctor -> state-readers is a cycle.
 const SNAPSHOT_SCHEMA = COMPAT_SNAPSHOT_SCHEMA;
+// Families that PREDATE the assurance section. Enumerated rather than derived as
+// "anything that is not current", because those are two different answers: a known
+// older family is history (`legacy`), an unknown one is unread (`unreadable`).
+const KNOWN_LEGACY_SNAPSHOT_SCHEMAS = Object.freeze(['runtime-compat-snapshot-1.0']);
 const GAP_SCHEMA = COMPAT_GAP_SCHEMA;
 const RELEASE_NOTES_SCHEMA = 'runtime-compat-release-notes-1.0';
 const PLAN_SCHEMA = 'runtime-compat-plan-1.1';
@@ -218,12 +224,28 @@ async function observeAssurance({ repoRoot, claude, codex, runner, timeoutMs, no
     // expects. `observeHost` reports `available` when the command RAN at all, so
     // a version it could not parse is `null` here and step 6 of the ladder refuses
     // it rather than letting it arrive as a membership miss.
-    claudeProbe: claude?.version ? 'available' : null,
-    codexProbe: codex?.version ? 'available' : null,
+    // THE COMMAND RESULT DECIDES, never the presence of a parsed version.
+    // `observeHost` fills `.version` from stdout OR stderr regardless of exit
+    // status, so a `claude --version` that exits non-zero — or times out — after
+    // printing version-shaped text used to arrive here as `available`, and the
+    // ladder then permitted coverage from a probe that FAILED. ADR-0053
+    // §Decision 3 puts an unreadable host probe in the integrity layer; a probe
+    // that did not succeed is not a reading of the host (measured, ST5; doctor's
+    // symmetric path already preserved the command status).
+    claudeProbe: claude?.probes?.version?.ok ? 'available' : null,
+    codexProbe: codex?.probes?.version?.ok ? 'available' : null,
     // RAW text, never `observed.version`. `extractSemver` has already dropped the
     // trailing components of a four-component version, and the ladder's truncation
     // guard is the thing that stops `1.2.3.4` reaching `covered` against a grant
     // for `1.2.3`.
+    // NOT withheld here on failure, deliberately. `buildAssuranceProbe` already
+    // drops the observed text when either probe is not `available`, and its own
+    // note says why — "a failed `--version` carries stderr or an error message in
+    // its text, so normalizing it would manufacture an observed version out of a
+    // diagnostic". A second copy of that rule at this call site was written and
+    // then removed during ST5: it made the two lines JOINTLY load-bearing, so
+    // either could be deleted with a green suite, which is the shape of defect
+    // this subtask exists to find rather than to add.
     claudeText: claude?.version_text ?? null,
     codexText: codex?.version_text ?? null,
   });
@@ -233,7 +255,13 @@ async function observeAssurance({ repoRoot, claude, codex, runner, timeoutMs, no
   if (options.assuranceProbe !== false) {
     try {
       machine = await probeMachineHostState({
-        cwd: repoRoot,
+        // NEUTRAL cwd — never the caller's repository (machine-bootstrap-contract §1.1).
+        // `repoRoot` was passed here, which is the ONE call site of three that broke the
+        // seam's stated invariant: `doctor.mjs` and `bootstrap.mjs` both pass `tmpdir()`.
+        // A repo-local project-scoped plugin install would otherwise enter compat's
+        // package facts and therefore its frozen assurance, so compat could describe a
+        // machine state that doctor and cutover — the two that gate — cannot see.
+        cwd: tmpdir(),
         runner,
         timeoutMs,
         ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }),
@@ -771,13 +799,33 @@ function gapNextSteps({ overallStatus, baselineStatus, assurance, runId }) {
  *   a producer status   -> carried verbatim.
  */
 function projectSnapshotAssurance(snapshot) {
+  // ⚠ THE SNAPSHOT FAMILY DECIDES FIRST, NEVER THE SECTION'S PRESENCE — the
+  // exact rule `lib/compat-artifacts.mjs` already applies to the GAP artifact,
+  // whose comment records why: "a `1.0` artifact carrying a hand-added assurance
+  // block read as `readable`, so an edited legacy file could inject a `covered`
+  // verdict into a plane whose whole purpose is that only a human grant produces
+  // one". The READER side was fixed there and the PRODUCER side here was not, so
+  // re-running `check` over a doctored snapshot minted a fresh, protected-looking
+  // `1.1` gap saying `current` (measured, ST5).
+  //
+  // A pre-decision snapshot is history and history is `legacy` regardless of what
+  // has been written into it (ADR-0053 §Decision 4 — remembered snapshots are
+  // never retroactively granted assurance). An UNKNOWN future family is
+  // `unreadable`, not legacy: a narrowing field this reader does not understand
+  // is how absence of evidence becomes coverage.
+  const family = snapshot?.schema_version ?? null;
+  if (family !== SNAPSHOT_SCHEMA) {
+    return KNOWN_LEGACY_SNAPSHOT_SCHEMAS.includes(family)
+      ? { state: 'legacy', status: null, grant_id: null, evidence: null }
+      : { state: 'unreadable', status: null, grant_id: null, evidence: { schema_version: family } };
+  }
   const section = snapshot?.host_assurance;
   if (section === undefined || section === null) {
     return { state: 'legacy', status: null, grant_id: null, evidence: null };
   }
   const readable = section.schema_version === ASSURANCE_RESULT_SCHEMA_VERSION
     && ASSURANCE_RESULT_STATUSES.includes(section.status)
-    && !(section.status === 'covered' && typeof section.evidence?.grant_id !== 'string');
+    && !(section.status === 'covered' && !isGrantId(section.evidence?.grant_id));
   if (!readable) {
     return { state: 'unreadable', status: null, grant_id: null, evidence: section };
   }
