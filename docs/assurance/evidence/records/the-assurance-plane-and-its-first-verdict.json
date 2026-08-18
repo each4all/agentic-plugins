@@ -1,0 +1,147 @@
+{
+ "schema": "evidence-record-1.0",
+ "record_id": "the-assurance-plane-and-its-first-verdict",
+ "evidence_loop": {
+  "label": "the assurance plane, and the first verdict it returned",
+  "summary": "ADR-0053 separated three facts the baseline had collapsed into one word: whether the observed host tuple matches exactly, whether a human reviewer accepted this host pair against this installed code, and whether the record is structurally intact. ADR-0054 settled the three questions it deferred — the record schema, the doctor report version (measured: it does NOT bump, because bumping makes every retained artifact malformed while buying nothing the nested result version already provides), and where the minimum runtime floor lives. Eight slices built the plane bottom-up: record schema and reader, packaged comparator and direction vocabulary, the semantic matcher, doctor's three-layer verdict, compat's frozen observation, and both readiness paths gating on assurance. An adversarial audit then enumerated the reachable false-assurance paths and closed them, including the mirrors the first fix left. This record is authored for the first recorded proof in which that verdict is operator-visible, and it is a REFUSAL: ADR-0054 rollout R1 ships no grants, so every host reads unassured and assurance-dependent readiness is gated shut."
+ },
+ "package_releases": [
+  {
+   "package": "plugins/runtime",
+   "version": "0.91.0",
+   "tag": "plugin-runtime-v0.91.0",
+   "release_pr": 704,
+   "squash": "47bc9c9a24b5bf8aac18970afedf3d5ee30c763a",
+   "marketplace_sync": "361952c9dceb0f9f39558ccf97d126d38c9a7134"
+  },
+  {
+   "package": "plugins/runtime",
+   "version": "0.91.1",
+   "tag": "plugin-runtime-v0.91.1",
+   "release_pr": 711,
+   "squash": "48f50d2d23c2208beaf220c3798ef62ca8977eea",
+   "marketplace_sync": "024ec4246038a4ce54b166bb62b5bd4838c7be36"
+  }
+ ],
+ "feature_commits": [
+  {
+   "sha": "38e59bbdaed4f4b5b265b845e6d68cf95e8c413a",
+   "pr_attested": 701,
+   "note": "ADR-0053. Splits the baseline's single freshness word into exactness, assurance and integrity, and states the failure mode so it cannot be traded away: loosening the verdict risks missing a real contract change in a host surface this framework consumes. Deferred three questions to a follow-up."
+  },
+  {
+   "sha": "48db4f3751c3e02287b02a92151227d4b226586b",
+   "pr": 702,
+   "note": "ADR-0054. Settles all three deferred questions plus three the list had treated as implementation detail and which turned out to be safety properties: where the floor lives, what the packaged comparator is, and how the non-resurrection clause holds. The doctor version deliberately does NOT bump."
+  },
+  {
+   "sha": "e8f6d2b79d49ec7b6ca9e865cd642da4734d2997",
+   "pr_attested": 703,
+   "note": "The assurance record: schema, baseline section, and structural reader. Lands with no active grant by design — the reader must be shippable before anything it reads exists."
+  },
+  {
+   "sha": "79003cc49b7d8d7b6ec71f1f599d7ac744634d70",
+   "pr_attested": 705,
+   "note": "Packaged host-version comparator and direction vocabulary, so a drift can be reported as ahead/behind/exact rather than only as changed. Single-sourced into CI."
+  },
+  {
+   "sha": "b8ad2b328186fac63aadfca7995b10373b19f2c7",
+   "pr_attested": 706,
+   "note": "The semantic matcher — membership, cohort, package binding, negative-wins, tombstone gate. Still no grant: matching is separated from granting so the matcher can be reviewed before it can ever return a positive."
+  },
+  {
+   "sha": "c535c1ae97fd8f0e5dd9a3c66a2e2479332561c4",
+   "pr_attested": 707,
+   "note": "Doctor reports integrity, exactness and assurance as three facts rather than one, with the report schema migration and the consumer contract. Not yet a gate."
+  },
+  {
+   "sha": "6651c5cf6a24e89818a2c3f01897e44f82b71ddf",
+   "pr_attested": 708,
+   "note": "Compat OBSERVES assurance at snapshot time and freezes the verdict into the snapshot; check projects it and never re-evaluates, so a remembered snapshot can never be retroactively granted assurance."
+  },
+  {
+   "sha": "70e0461d7ebc94ac9e48e31d9a7bf45d5d54e03d",
+   "pr_attested": 709,
+   "note": "Both readiness paths gate on assurance, and the minimum runtime floor. This is the commit that makes the refusal reachable by an operator."
+  }
+ ],
+ "hardening_commits": [
+  {
+   "sha": "4ee876459c90513a8004fc5c51e7e7688b919316",
+   "pr_attested": 710,
+   "note": "Adversarial audit of the assembled plane: enumerates the reachable false-assurance paths and closes them, including the mirrors the first fix left. The mirror clause is the finding — a fix that covered one of two duplicated paths would have shipped the other."
+  }
+ ],
+ "proofs": [
+  {
+   "run_id": "doctor-20260818T115259Z-e7c325",
+   "date": "2026-08-18",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:4aed7392e19d977da2a5c646891a051332c2ce22f55370e2d1b82cafdfbdf336",
+   "runtime_version": "0.91.1",
+   "installed": {
+    "claude": "0.91.1",
+    "codex": "0.91.1"
+   },
+   "host_cli": {
+    "claude": "2.1.234 (Claude Code)",
+    "codex": "codex-cli 0.147.0"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "warning; hard_failures empty; one warning — latest compatibility check requires release notes"
+    },
+    {
+     "key": "permission_proof",
+     "value": "passed; executed both directions"
+    },
+    {
+     "key": "deep_peer_smoke",
+     "value": "passed; executed both directions"
+    },
+    {
+     "key": "workflow_continuation_proof",
+     "value": "passed; executed"
+    },
+    {
+     "key": "host_parity",
+     "value": "pass; issues 0; differences 2 (both informational)"
+    },
+    {
+     "key": "host_parity_baseline",
+     "value": "stale; direction ahead (claude ahead, codex exact); baseline 2.1.233/0.147.0 @ 2026-08-16 vs observed 2.1.234/0.147.0"
+    },
+    {
+     "key": "host_compatibility_assurance",
+     "value": "unassured; record resolved; no grant names the host pair claude 2.1.234 / codex 0.147.0"
+    },
+    {
+     "key": "experience_parity",
+     "value": "blocked 82% 106/130; satisfied 7, partial 0, not_verified 1, blocked 1, manual follow-ups 0"
+    },
+    {
+     "key": "parity_denominator_change",
+     "value": "total weight 115 -> 130; the ninth criterion host_compatibility_assurance is new in this release"
+    },
+    {
+     "key": "installed_byte_identity",
+     "value": "both caches hold an identical 124-file package (whole-tree digest 56f82e71); baseline 3ad3afa1, plugin-set e0ed72ef, schemas aggregate a53b9327 match across both caches, tag v0.91.1 and repo f24727b"
+    },
+    {
+     "key": "baseline_hash_cross_check",
+     "value": "the independently measured baseline hash 3ad3afa1 equals the value doctor records as host_parity_baseline.provenance.content_sha256"
+    }
+   ]
+  }
+ ],
+ "install_method": "No install was performed by this loop: both hosts were already on 0.91.1 when the recovery began, having been updated by the operator after release. The installed state rests on the doctor read plus the four-way byte comparison recorded under readings; no runtime:settings --execute-plugin-management executor artifact was produced.",
+ "narrative": "Authored in the post-release position ADR-0049 requires: the tags, squashes, marketplace-sync shas, proof run id and artifact hash exist only after the implementation PRs merged, release-please cut #704 and #711, the catalog syncs landed (marketplace 361952c then 024ec42, stage-doc e8a9b44 then f24727b — the latter also the repository state the byte comparison used), and the proof was re-recorded against the installed 0.91.1.\n\nThe reading that matters is a REFUSAL, and it is the designed outcome rather than a defect. ADR-0053 §Decision 6 asked for the gate's rejection path to be observed on a real machine; this proof is that observation. Precisely: the verdict became operator-REACHABLE in 0.91.0, which carried 70e0461 (both readiness paths gating), and 0.91.1 added the hardening — so this is the first RECORDED PROOF of the refusal, not the first release containing it. ADR-0054 rollout R1 ships an empty grant list by owner decision (2026-08-17), so the matcher can only return unassured. Scope the consequence: assurance-DEPENDENT readiness is gated shut, while the bidirectional execution proofs in this same run all pass. The next step doctor prints is deliberately not an action the operator can take alone — assurance is granted by human review of this host pair against this installed code, not by a version match, an upgrade, or elapsed time. The first grant is a separate forward-patch loop; it could not have ridden along here even in principle, because this recovery is forbidden from editing the protected baseline the grant would live in.\n\nThe parity number moved in two directions at once and must not be read as a single trend. Earned weight went UP, 105/115 to 106/130: the previous loop's two partials were one operator action (a Codex /hooks review after all four hook-bearing packages bumped), and that action was completed on 2026-08-16 as settings-20260816T233407Z-4f23d9 — after that loop's proof was taken, which is why the stage docs carried a 91% 6/8 reading that the machine had already moved past. Both criteria now read satisfied with zero manual follow-ups. The percentage nonetheless FELL to 82% because the denominator grew: host_compatibility_assurance is a ninth criterion introduced by this very release, and it is worth 15 of which an unassured host earns 6. A record that reported only the percentage would have described this release as a regression when what actually happened is that a new fact started being measured.\n\nThree items stay open and they are INDEPENDENT — an earlier draft chained them into one remedy, which the cross-host review refuted against doctor's own recorded next steps. (1) runtime_handoff_artifacts is blocked, and doctor's next step for it is content-backed release-note ingestion, nothing more; it is this loop's own measurement, since the mandated re-measurement found Claude had moved 2.1.233 to 2.1.234. (2) host_parity_baseline is stale/ahead; refreshing the packaged baseline is protected-asset work that would start a new release obligation. (3) host_compatibility_assurance is unassured; clearing it needs human review plus a released grant. Only (2) and (3) are forward-release work. This is a stale landing but NOT a consecutive run of them — the preceding 0.90.3 proof recorded the baseline current. It is consistent with ADR-0052's modelled 3-of-12 result, whose denominator is PUBLISH intervals, not loops.\n\nOne scope note for the next author: the proof-coupled tokens could not be synced until this narrative existed, because sync-doc-versions refuses to bump a version sitting beside a stale proof citation. That ordering worked as designed — the refusal names the run id it expects. Measured caveat: that check is bump-time only, so once the version already matches it no longer re-verifies the citation; the standing guard is validate:doc-evidence.",
+ "relations": [
+  {
+   "type": "follows",
+   "record_id": "baseline-2-1-233-and-the-withdrawn-todo-tools",
+   "note": "The immediately preceding release loop. Its proof is the one this record's proof supersedes in the stage docs, and its recorded operator follow-up (the Codex /hooks re-attestation) is the one this proof observes as completed."
+  }
+ ]
+}
