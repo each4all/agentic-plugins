@@ -139,24 +139,68 @@ describe('compatibility assurance record — the shipped asset (ADR-0054 §Decis
     ok(/^[0-9a-f]{64}$/.test(resolved.block_sha256), 'the record carries a content hash of its canonical bytes');
   });
 
-  it('ships an EMPTY grant set — the R1 rollout state, asserted rather than assumed', async () => {
-    // ADR-0054 §Decision 6, read precisely: R1 ships the reader, the semantic
+  it('ships EXACTLY ONE grant — the R2 rollout state, pinned BY IDENTITY', async () => {
+    // ADR-0054 §Decision 6, read precisely: R1 shipped the reader, the semantic
     // matcher, the comparator, the floor and BOTH gate paths with `grants: []`;
-    // R2 ships one owner-ratified grant AND NOTHING ELSE. So the first grant
-    // does not land alongside the matcher — it lands a release later, after the
-    // real gate has been observed failing closed on real machines.
+    // R2 ships one owner-ratified grant AND NOTHING ELSE.
     //
-    // RESOLVED (owner decision, 2026-08-17). This note used to flag that the
-    // macro plan's ST2B description put the first grant in ST2B, with the
-    // matcher, contradicting §Decision 6. The owner resolved it in the ADR's
-    // favour and ST2B landed the matcher with `grants: []` intact, so the
-    // sequencing question is closed rather than open. The assertion stays,
-    // because what it guards outlives the question: R1 must reach real machines
-    // with no positive possible. Its limit is stated too — it cannot tell an
-    // EARLY grant from the intended R2 one, so it is a backstop and the
-    // ordering is still kept by a human.
+    // This REPLACES R1's `deepStrictEqual(grants, [])`. That assertion did its
+    // job — the negative path was observed on a real machine in the `0.91.1`
+    // proof — and deleting it outright would leave the first immutable grant
+    // unpinned, which is the one thing §Decision 8 cannot recover from: once
+    // released, a grant's contents cannot be edited, only superseded by a new
+    // id. So the guard is transitioned rather than removed.
+    //
+    // Pinned BY IDENTITY rather than by count. A bare `length === 1` would let
+    // a DIFFERENT first grant pass — a widened cohort, a swapped provenance, an
+    // extra bound package — and each of those changes what the machine reports
+    // `covered` for.
     const resolved = await resolveAssuranceRecord({ pluginRoot: RUNTIME_ROOT });
-    deepStrictEqual(resolved.record.grants, [], 'R1 ships empty; the first grant is R2, alone');
+    strictEqual(resolved.record.grants.length, 1, 'R2 ships one grant, alone');
+    const [grant] = resolved.record.grants;
+    strictEqual(grant.id, 'claude-2-1-234-235-codex-0-147-0', 'the first grant id is immutable');
+    strictEqual(grant.state, 'granted');
+    strictEqual(grant.reviewed_at, '2026-08-19');
+    deepStrictEqual(
+      grant.cohort,
+      [{ claude: '2.1.234', codex: '0.147.0' }, { claude: '2.1.235', codex: '0.147.0' }],
+      'two tuples: the machine moved mid-review and both deltas were reviewed',
+    );
+    strictEqual(grant.review_provenance.kind, 'owner-attestation');
+    ok(
+      grant.review_provenance.reference.startsWith('docs/assurance/grant-reviews/owner-ratification-first-grant.md@'),
+      'provenance points at the ratified owner decision, pinned to a commit',
+    );
+    strictEqual(
+      grant.predicate,
+      undefined,
+      'ADR-0053 §Decision 5: every key `predicate` permits is unobservable, so any non-empty predicate would yield `unassured`',
+    );
+  });
+
+  it('binds the seven reviewed consumers, and every consumed residual names one of them', async () => {
+    // The owner chose the consuming set by hand (`follow-ups.md`: requiring
+    // every installed plugin relocates the treadmill ADR-0053 §Decision 6
+    // exists to prevent). This pins WHICH seven, because the choice is a review
+    // judgement and not derivable from the machine.
+    const resolved = await resolveAssuranceRecord({ pluginRoot: RUNTIME_ROOT });
+    const [grant] = resolved.record.grants;
+    deepStrictEqual(
+      Object.keys(grant.packages).sort(),
+      ['attention', 'companions', 'designer', 'engineer', 'founder', 'orchestrator', 'runtime'],
+      'image is deliberately unbound and must surface in `unbound_packages` instead',
+    );
+    // `assurance-contract.mjs` enforces that a consumed residual's package is
+    // bound; asserting it here pins the pairing the owner actually recorded,
+    // which the contract cannot know.
+    for (const residual of grant.residuals) {
+      if (residual.consumption !== 'consumed') continue;
+      ok(
+        Object.hasOwn(grant.packages, residual.consuming_package),
+        `consumed residual names ${residual.consuming_package}, which packages must bind`,
+      );
+    }
+    strictEqual(grant.residuals.length, 11);
   });
 
   it('the reader, the registry, and the schema file agree on ONE version string', async () => {
