@@ -581,26 +581,132 @@ rules a closed keyword subset provably cannot express — id uniqueness,
 negative-wins, exact package-set equality, vacuous grants, residual coherence,
 calendar validity — are checked in code (ADR-0054 §Decision 2).
 
-**The grant set is currently empty, and that is the intended shipped state.**
-Every host therefore reads `unassured`, and readiness blocks. This is
-ADR-0054 §Decision 6's rollout: the gate's *failing* path is exercised by the
-real gate on real machines before any positive result is possible, rather than
-by a temporary interlock built to be deleted.
+**The set carries exactly one grant, and that is the R2 shipped state.**
+R1 shipped the reader, the semantic matcher, the comparator, the floor and both
+readiness gate paths with `grants: []`, so every host read `unassured` and
+readiness blocked — the gate's *failing* path exercised by the real gate on
+real machines rather than by a temporary interlock built to be deleted. That
+negative path was observed on this repository's own machine in the
+`0.91.1` doctor proof.
 
-The set stays empty for the whole of that release. §Decision 6 is specific
-about the sequence, and the specificity is the safety property: **R1** ships the
-reader, the semantic matcher, the comparator, the floor and both readiness gate
-paths with `grants: []`; **R2** ships one owner-ratified grant *and nothing
-else*. A grant landing in the same release as the matcher that honours it would
-put the positive and negative paths live in the same moment, leaving tests as
-the only thing between a matcher defect and a false `covered` — which is the
-alternative that decision explicitly rejected.
+**R2 — this release — ships one owner-ratified grant and nothing else**, which
+is what puts the positive path under the same real gate. §Decision 6's
+sequencing is the safety property: a grant landing in the same release as the
+matcher that honours it would put both paths live in the same moment, leaving
+tests as the only thing between a matcher defect and a false `covered`.
+
+The grant below names two host tuples because the machine updated from
+`2.1.234` to `2.1.235` *during* the review, and both deltas were reviewed
+rather than one being granted unexercisably. Its review is
+[the ratified owner decision](../../../docs/assurance/grant-reviews/owner-ratification-first-grant.md),
+which cites
+[the verified brief](../../../docs/assurance/grant-reviews/claude-2.1.234-2.1.235-codex-0.147.0.md).
+`image` is deliberately left unbound and appears in `unbound_packages` on the
+positive verdict: it dispatches its companion synchronously and does not
+consume the background-notification channel this delta changed.
 
 <!-- BEGIN COMPATIBILITY ASSURANCE -->
 ```json
 {
   "schema": "runtime-host-assurance-1.0",
-  "grants": []
+  "grants": [
+    {
+      "id": "claude-2-1-234-235-codex-0-147-0",
+      "state": "granted",
+      "reviewed_at": "2026-08-19",
+      "review_provenance": {
+        "kind": "owner-attestation",
+        "reference": "docs/assurance/grant-reviews/owner-ratification-first-grant.md@da7b8d9"
+      },
+      "cohort": [
+        {
+          "claude": "2.1.234",
+          "codex": "0.147.0"
+        },
+        {
+          "claude": "2.1.235",
+          "codex": "0.147.0"
+        }
+      ],
+      "packages": {
+        "attention": "0.9.0",
+        "companions": "0.4.0",
+        "designer": "0.3.4",
+        "engineer": "0.21.5",
+        "founder": "0.4.4",
+        "orchestrator": "0.13.3",
+        "runtime": "0.91.2"
+      },
+      "residuals": [
+        {
+          "surface": "Notification hook payload on Claude Desktop and VS Code: 2.1.233 fixed delivery to hosts where the sensor never fired, and the source describes no notification_type behaviour there",
+          "consumption": "consumed",
+          "disposition": "probe-pending",
+          "consuming_package": "attention"
+        },
+        {
+          "surface": "Result collection from backgrounded native Claude subagents, which 2.1.232 made the default for non-teammate Agent spawns",
+          "consumption": "consumed",
+          "disposition": "probe-pending",
+          "consuming_package": "engineer"
+        },
+        {
+          "surface": "Agent teams under the 2.1.233 todo-tool withdrawal: whether a team on an affected model still receives the shared task list",
+          "consumption": "unadopted",
+          "disposition": "not-applicable"
+        },
+        {
+          "surface": "Non-slash claude plugin update path: the manual marketplace update remains a required recovery step until that path is directly measured",
+          "consumption": "consumed",
+          "disposition": "probe-pending",
+          "consuming_package": "runtime"
+        },
+        {
+          "surface": "The Claude transcript scanner resolves ~/.claude/projects unconditionally while honouring CODEX_HOME on the Codex side, so a per-session Claude config directory is misread",
+          "consumption": "consumed",
+          "disposition": "accepted-with-risk",
+          "consuming_package": "runtime"
+        },
+        {
+          "surface": "AUTH_REGEX does not match the Anthropic-profile expiry wording family, so an expired profile classifies as peer_run_error exit 1 rather than the contract peer_unauthenticated exit 3",
+          "consumption": "consumed",
+          "disposition": "accepted-with-risk",
+          "consuming_package": "companions"
+        },
+        {
+          "surface": "Background-task notification delivery moved inside system-reminder tags; the engineer investigate runbook waits on that channel",
+          "consumption": "consumed",
+          "disposition": "probe-pending",
+          "consuming_package": "engineer"
+        },
+        {
+          "surface": "Background-task notification delivery moved inside system-reminder tags; the designer investigate runbook waits on that channel",
+          "consumption": "consumed",
+          "disposition": "probe-pending",
+          "consuming_package": "designer"
+        },
+        {
+          "surface": "Background-task notification delivery moved inside system-reminder tags; the founder investigate runbook waits on that channel",
+          "consumption": "consumed",
+          "disposition": "probe-pending",
+          "consuming_package": "founder"
+        },
+        {
+          "surface": "Background-task notification delivery moved inside system-reminder tags; the orchestrator Plan-verify runbook waits on that channel",
+          "consumption": "consumed",
+          "disposition": "probe-pending",
+          "consuming_package": "orchestrator"
+        },
+        {
+          "surface": "Trust boundary: assurance is a readiness verdict on an operator-controlled machine, not an attestation against a hostile local root — a PATH shim can forge host versions and plugin lists, and AGENTIC_COMPANIONS_ROOT can override the companion bundle",
+          "consumption": "consumed",
+          "disposition": "accepted-with-risk",
+          "consuming_package": "runtime"
+        }
+      ],
+      "note": "First grant under ADR-0054 Decision 6 R2. Reviewed against the brief at docs/assurance/grant-reviews/claude-2.1.234-2.1.235-codex-0.147.0.md, whose negative claims were independently re-verified and corrected before ratification. The cohort names two tuples because the machine updated from 2.1.234 to 2.1.235 during the review and both deltas were reviewed. image is deliberately unbound: it dispatches the companion synchronously and does not consume the background-notification channel this delta changed."
+    }
+  ]
 }
 ```
 <!-- END COMPATIBILITY ASSURANCE -->

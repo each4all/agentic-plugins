@@ -134,8 +134,24 @@ test('the real repository is monotonic, over a corpus that is currently EMPTY', 
   // R2 adds the first grant, `tags_with_record` starts climbing and this
   // assertion becomes a real regression guard — which is why it asserts the
   // number rather than ignoring it.
-  assert.equal(result.grants_tracked, 0, 'no released tag carries a grant yet (ADR-0054 §Decision 6 R1)');
-  assert.equal(result.target_grants, 0, 'and HEAD ships grants: [] — the R1 rollout state');
+  // TRANSITIONED for R2. R1's assertion was `grants_tracked === 0 &&
+  // target_grants === 0`; HEAD now ships the first grant, so the second half is
+  // false and the first half is *about to become* false — `grants_tracked`
+  // climbs to 1 the moment the R2 tag is cut.
+  //
+  // Both sides of that release are valid states of this repository, and an
+  // assertion that pinned either number alone would turn main red at the tag
+  // for no defect. What actually has to hold across the boundary is the
+  // relation: released history can never carry MORE distinct grants than HEAD
+  // does, because §Decision 8 makes records append-only and forbids a positive
+  // grant vanishing without a tombstone. Before the tag that reads 0 <= 1;
+  // after it, 1 <= 1; and a released grant disappearing from HEAD reads 1 <= 0
+  // and fails, which is the regression this guard exists for.
+  assert.ok(
+    result.grants_tracked <= result.target_grants,
+    `released history carries ${result.grants_tracked} distinct grant(s) but HEAD ships ${result.target_grants} — a released grant cannot vanish from HEAD without a tombstone (ADR-0054 §Decision 8)`,
+  );
+  assert.equal(result.target_grants, 1, 'HEAD ships exactly the first grant — R2 is one grant and nothing else');
 });
 
 test('reachable tags are version-ordered and reject non-SemVer names', () => {
