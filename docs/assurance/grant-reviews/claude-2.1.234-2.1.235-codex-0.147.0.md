@@ -13,7 +13,7 @@
 > CORRECTION note rather than deleted, because what a control missed is itself
 > evidence about how this brief was built.
 
-# Grant review brief — claude 2.1.234 / codex 0.147.0
+# Grant review brief — claude 2.1.234 and 2.1.235 / codex 0.147.0
 
 Prepared for the ADR-0053 §Decision 5 human review that the first assurance
 grant requires. Runtime cannot produce this judgement; this document only
@@ -36,8 +36,14 @@ instead, or re-authenticate the profile
 ```
 
 Present in `~/.local/share/claude/versions/2.1.234`, absent from `2.1.233`
-(delta control). Both binaries carry `Please run /login` 25 times, so the
-extraction method is sound. Fed to the real classifier, the new wording yields
+(delta control). Both binaries carry the matching `Please run /login` wording
+**32 times**, so the extraction method is sound.
+
+> **CORRECTION (2026-08-19, cross-host reader).** This said "25 times". That
+> number came from `grep -c`, which counts matching *lines*, not occurrences;
+> `grep -o | wc -l` reports 32 in each of `2.1.233`, `2.1.234` and `2.1.235`.
+> The control's purpose — showing the extraction works — is met either way, but
+> the figure was wrong. Fed to the real classifier, the new wording yields
 `status=peer_error / exit=1 / kind=peer_run_error`, while
 `companions/contract.md` §5.4 requires expired authentication to be
 `companion_error / 3 / peer_unauthenticated`. Control: `Invalid API key ·
@@ -66,6 +72,12 @@ plugins/founder/skills/investigate/SKILL.md:161   (same)
 plugins/engineer/skills/_shared/references/ensemble-protocol.md:122
 ```
 
+> **CORRECTION (2026-08-19, cross-host reader).** That list is short by one
+> package. Counting runbooks that launch `peer-runner.mjs run` in the
+> background: designer 8, engineer 10, founder 10, **orchestrator 5**, image 0,
+> runtime 0. `orchestrator`'s own Plan-verify command is one of them, so this
+> residual binds four consuming packages, not three.
+
 **A control this verification itself got wrong, recorded because it is the same
 failure this brief exists to catch.** The verifier's first pass measured
 `grep -rn 'system-reminder' plugins/ companions/ scripts/` → **0 hits** and
@@ -91,6 +103,16 @@ every key `predicate` accepts is unobservable, so scoping with
 (`UNOBSERVABLE_PREDICATE_KEYS`, verified by
 `node --test --test-name-pattern='unobservable predicates are unassured'`).
 
+**HOST MOVED DURING THIS VERIFICATION (2026-08-19).** The machine is now on
+claude `2.1.235`; the `2.1.234` binary was replaced at 05:58 local time while
+this subtask was running. The reviewed pair is no longer the installed pair, so
+a grant naming only `{2.1.234, 0.147.0}` cannot report `covered` on this
+machine. This is the failure mode ADR-0052 measured and the 2026-08-16 baseline
+row recorded — reproduced here inside a single working session rather than
+across the 2.2-day plateau the planning assumed. Measured: the auth gap
+persists in `2.1.235` (both expired-profile variants present, `Please run
+/login` still 32).
+
 **What survived verification.** The §2 quantitative table was re-derived with an
 independent extractor and **every one of its seven counts is correct**
 (§2 note). §1's "51 changelog lines" is correct (nonEmpty=51, bullets=51). All
@@ -106,7 +128,11 @@ the sufficiency of "three lines survive" (§3).
 
 ## 1. Scope
 
-- **Host tuple under review**: claude `2.1.234` / codex `0.147.0`
+- **Host tuples under review**: claude `2.1.234` / codex `0.147.0`, **and**
+  claude `2.1.235` / codex `0.147.0`. The second was added on 2026-08-19 when
+  the machine updated mid-review (§0, §8); both are reviewed here, so a cohort
+  may name either or both. Neither is a range: §Decision 7 requires explicit
+  complete tuples.
 - **Against installed**: runtime `0.91.1`; packages attention 0.9.0,
   companions 0.4.0, designer 0.3.4, engineer 0.21.5, founder 0.4.4, image
   0.2.0, orchestrator 0.13.3.
@@ -237,8 +263,15 @@ teammates.
   > vocabulary". Re-measured: `subagent_type` appears 3 times but only one
   > (`agent-taxonomy.md:39`) is an invocation template — the others are a
   > reference line and baseline evidence prose. A case-insensitive
-  > `agent[- ]team|teammate` search returns **11** matches, not two, all of them
-  > prose in `host-parity-baseline.md`. A production search for
+  > `agent[- ]team|teammate` search returns **11** matches, not two.
+  >
+  > **CORRECTION TO THE CORRECTION (2026-08-19).** This first said all 11 were
+  > prose in `host-parity-baseline.md`. That came from reading a `head`-truncated
+  > listing. The actual distribution is `host-parity-baseline.md` 8,
+  > `follow-ups.md` 2, and `plugins/runtime/scripts/compat.mjs` 1 — and the last
+  > is **code**, a keyword matcher. The original brief's phrasing ("prose … plus
+  > a compat keyword matcher") was therefore closer to right than this
+  > correction's first attempt was. A production search for
   > `TeamCreate|TeamDelete|ListAgents|SendMessage|CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`
   > outside runtime docs returns nothing. The conclusion holds; the counts did
   > not.
@@ -246,10 +279,14 @@ teammates.
 **3.4 — (NEW, V1) The authentication classifier misses the Anthropic-profile
 wording family.** Judgement: this is a defect in `companions`, pre-existing and
 widened by 2.1.234. Grant it as an accepted-with-risk residual, or fix the
-classifier before granting. Note the consequence is a *misclassified* error —
-`peer_run_error` instead of `peer_unauthenticated` — which still surfaces the
-stderr summary, so the operator sees a failure either way; what is lost is the
-typed signal callers branch on.
+classifier before granting. **CORRECTED (2026-08-19).** An earlier draft of this line said the misclassified
+error "still surfaces the stderr summary, so the operator sees a failure either
+way". Measured against the real classifier, that understates the cost: the
+summary itself changes. The matched case emits `claude reports missing or
+expired authentication`; the missed case emits the generic `peer exited with
+code 1`, and the original wording survives only in `error.detail`, which the
+text output mode does not expose. So what is lost is the typed signal callers
+branch on **and** the human-readable reason.
 
 **3.5 — (NEW, V2) Background-task notification delivery moved inside
 `<system-reminder>` tags.** Judgement: three personas' investigate runbooks wait
@@ -363,3 +400,84 @@ asking what the runbooks *wait for* rather than what they *parse*. Recorded
 because it is the sharper lesson: a control can be methodologically sound and
 still measure the wrong thing, and the defence against that is a second reader
 who does not share the first one's frame.
+
+
+## 8. Retarget — the claude 2.1.235 delta (added 2026-08-19)
+
+The machine updated to `2.1.235` while §0's verification was running, so the
+pair the brief was written against stopped being the pair installed. Rather
+than grant a tuple this machine cannot exercise, the review was extended to
+cover the newer pair as well. The owner chose this over granting the stale
+tuple, keeping a rolled-back `2.1.234` environment, or deferring.
+
+**Source.** `runtime:compat` snapshot `compat-20260819T005445Z-7338c9`, with
+content-backed ingest of the Claude Code `CHANGELOG.md` through explicit
+`--fetch-release-notes-url` (the local `~/.claude/cache/changelog.md` predates
+the release and carries no `2.1.235` entry). The entry has **19** lines.
+
+### 8.1 Surface counts — same extractor as §2
+
+| Surface | Lines in 2.1.235 |
+| --- | --- |
+| Hooks | **0** |
+| Plugin manifest | **0** |
+| Marketplace | **0** |
+| Sandbox | **0** |
+| Tool availability (`--allowed-tools`) | **0** |
+| Authentication | **0** |
+| Permission model | 2 |
+| Subagent / teammate | 1 |
+| Background delivery | 2 |
+
+The five zeros are the surfaces that carried this framework's contract risk in
+the `2.1.234` review; none of them moves in `2.1.235`.
+
+### 8.2 What needed judging, and what it measured to
+
+- **Entry 6 — the `Agent` tool no longer advertises a general-purpose default
+  where that agent is unavailable; an omitted `subagent_type` now errors with
+  the available list.** This is the one line that touches a surface
+  `plugins/engineer` actually consumes. **Measured not to reach it**: every
+  `Agent(` call site in `plugins/*/skills` and `plugins/*/commands` names
+  `subagent_type` (control: a search for `Agent(` occurrences *without*
+  `subagent_type` returns zero). The change only alters behaviour for an
+  omitted argument this framework never omits.
+- **Entries 5 and 12 — permission-dialog fixes.** Entry 5 fixes Shift+Tab in
+  the permission prompt's comment field approving the edit and granting
+  session-wide edit permission; entry 12 makes dialog text and "don't ask
+  again" match what a grant would actually cover. Both are safe-direction fixes
+  to the interactive surface that §V3 established is in scope for the 57
+  command runbooks. Neither changes a contract the framework encodes.
+- **Entries 11 and 18 — background/Remote Control.** Entry 11 improves memory
+  and CPU while cloud sessions (`/ultrareview`, `/autofix-pr`) run in the
+  background; this framework runs neither. Entry 18 is a Remote Control
+  gateway check. Neither touches the between-turn background-task notification
+  channel §V2 identified — that delivery change was `2.1.234`'s entry 49 and is
+  unchanged here.
+- **Entry 17 — `SendMessage` refuses oversized cross-session messages up
+  front.** Measured not to reach this framework: `SendMessage` appears only in
+  `host-parity-baseline.md` prose and `ListAgents` not at all.
+- **Entry 10 — the expanded task list (`ctrl+t`).** Touches the todo/task
+  tooling `2.1.233` withdrew, which this repository already adapted to by
+  rewriting twenty runbooks. No further adoption.
+
+### 8.3 The authentication residual persists
+
+The §V1 gap is **not** closed by `2.1.235`. Measured against the installed
+binary: both expired-profile wordings are still present, and the matching
+`Please run /login` wording still occurs 32 times.
+
+```
+2.1.233  please-run-login=32  old-expired-variant=2  new-expired-variant=0
+2.1.234  please-run-login=32  old-expired-variant=2  new-expired-variant=2
+2.1.235  please-run-login=32  old-expired-variant=2  new-expired-variant=2
+```
+
+So residual 6 carries across both reviewed tuples unchanged.
+
+### 8.4 Net effect on the decision
+
+No residual is added, removed, or re-dispositioned by the `2.1.235` delta, and
+no §3 judgement changes. The retarget's only substantive effect is that the
+cohort may now name a tuple this machine can actually exercise — which is what
+makes an R2 positive-path observation possible at all.
