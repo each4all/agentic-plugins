@@ -1,0 +1,121 @@
+{
+ "schema": "evidence-record-1.0",
+ "record_id": "the-first-grant-and-the-cohort-it-missed",
+ "evidence_loop": {
+  "label": "the first assurance grant, and the cohort miss it met",
+  "summary": "ADR-0054 rollout R2 ships the first non-empty assurance grant. Four commits carried it: a grant review brief for the observed host pair, an adversarial verification that re-ran the brief's controls and corrected four of its negative claims, the owner's ratification (retargeted mid-review when Claude moved 2.1.234 to 2.1.235, so the cohort names both tuples), and the grant itself together with the two R1 tests that asserted the grant set was empty. The proof recorded afterwards is the first ever taken against a shipped, non-empty grant set — and it is still a refusal, a different one. Codex moved 0.147.0 to 0.148.0 after ratification and Claude moved on to 2.1.237 during the recovery, so the machine falls outside every cohort tuple. R1 exercised the empty-set refusal; this is the cohort-miss refusal, reachable only once a grant exists. record_status reads resolved, which is the load-bearing detail: the reader, the integrity check, the canonical-bytes comparison and package resolution all worked, and only the cohort match failed."
+ },
+ "package_releases": [
+  {
+   "package": "plugins/runtime",
+   "version": "0.91.2",
+   "tag": "plugin-runtime-v0.91.2",
+   "release_pr": 717,
+   "squash": "95e5b048b55e26cc599a780fca7d1e4aba2dd7a4",
+   "marketplace_sync": "b92cc1d49b62be60d950dde74137b81729aff75b"
+  }
+ ],
+ "feature_commits": [
+  {
+   "sha": "f9af71167b1e2f978e6e8fd4202d62dc9d7278b3",
+   "pr": 713,
+   "note": "The grant review brief for claude 2.1.234 / codex 0.147.0. Authored UNVERIFIED by design: its header requires the reader to re-run the controls, because every claim in its evidence sections is a negative one and the author had already argued the refusal was working as designed."
+  },
+  {
+   "sha": "120525883942b166107ab79fddb34caf24367d80",
+   "pr": 714,
+   "note": "Adversarial verification. Four negative claims fell to re-run controls and are kept as corrections: a confused companion-argv description; a false 'nothing resolves per-project transcript paths' (permission-usage-sources scans ~/.claude/projects); a control on the wrong source; a duplicated row."
+  },
+  {
+   "sha": "da7b8d9c739316ac8e5ecaacd6fef1a9cb2c76a3",
+   "pr": 715,
+   "note": "Owner ratification, the loop's only user judgement point. Retargeted after Claude moved 2.1.234 to 2.1.235 mid-review, so the cohort names two tuples. The document exists so review_provenance cites something real — runtime checks only that the reference is non-empty, never that the review happened."
+  },
+  {
+   "sha": "592fa1acc4e86949fdb8df69dd4f594e1aec9949",
+   "pr": 716,
+   "note": "The grant, written as canonical bytes into the packaged baseline's sentinel fence, plus transition of the two R1 tests asserting an empty grant set. Replaced, not deleted — pinning the first grant's id as identity. Names runtime 0.91.2, the version its own release would cut."
+  }
+ ],
+ "hardening_commits": [],
+ "proofs": [
+  {
+   "run_id": "doctor-20260820T041120Z-c4c83e",
+   "date": "2026-08-20",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:e70da8c20d0750076bf48cb6233987b4ec6a8da8e1b9e4402f440b630b38e45a",
+   "runtime_version": "0.91.2",
+   "installed": {
+    "claude": "0.91.2",
+    "codex": "0.91.2"
+   },
+   "host_cli": {
+    "claude": "2.1.237 (Claude Code)",
+    "codex": "codex-cli 0.148.0"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "warning; hard_failures empty; one warning — latest compatibility check needs follow-up"
+    },
+    {
+     "key": "permission_proof",
+     "value": "passed; executed both directions"
+    },
+    {
+     "key": "deep_peer_smoke",
+     "value": "passed; executed both directions"
+    },
+    {
+     "key": "workflow_continuation_proof",
+     "value": "passed; executed"
+    },
+    {
+     "key": "host_parity",
+     "value": "pass; issues 0; differences 2 (both informational — codex_plugin_command_partial_parity, host_permission_model_differs)"
+    },
+    {
+     "key": "host_parity_baseline",
+     "value": "stale; direction ahead on BOTH hosts; baseline 2.1.233/0.147.0 @ 2026-08-16 vs observed 2.1.237/0.148.0"
+    },
+    {
+     "key": "host_compatibility_assurance",
+     "value": "unassured; record_status resolved; grant claude-2-1-234-235-codex-0-147-0 names {2.1.234, 0.147.0} and {2.1.235, 0.147.0}; observed claude 2.1.237 / codex 0.148.0 is in neither — a COHORT MISS, distinct from R1's empty-set refusal"
+    },
+    {
+     "key": "experience_parity",
+     "value": "partial 81% 105/130; satisfied 5, partial 3, not_verified 1, blocked 0, manual follow-ups 1"
+    },
+    {
+     "key": "blocked_criterion_closed",
+     "value": "runtime_handoff_artifacts 0/15 to 9/15 via content-backed release notes for both hosts (claude from its changelog cache, codex from the rust-v0.148.0 page). Closure needed NO assurance coverage: doctor will not bill one unassured fact twice. Partial, not satisfied — the notes fired a watch."
+    },
+    {
+     "key": "parity_direction_split",
+     "value": "earned 106/130 to 105/130 while status improved blocked to partial: a blocked criterion worth 0 became a partial worth 9, while this release staled the Codex /hooks attestation the predecessor observed as closed, turning two satisfied criteria into partials. Execution did not regress."
+    },
+    {
+     "key": "host_movement_cadence",
+     "value": "from retained compat snapshots: claude 18 versions at median 2.1d apart (min 0.5d), codex 7 at median 10.2d; this loop's brief-to-install round trip was 10.8h. The treadmill does not structurally defeat a grant — this one lost to a codex step arriving 17d after its predecessor."
+    },
+    {
+     "key": "installed_byte_identity",
+     "value": "both host caches hold an identical 0.91.2 package — 124 files, whole-tree digest 4365588804c00b0d4d872894b81fc9b1d9c78a93a9387698d70e4b1f46a5ed1a"
+    },
+    {
+     "key": "baseline_hash_cross_check",
+     "value": "86fdf17e4418884f01b67785eeaaacc74923a8a01efa238f514bf270da600843 in the Claude cache, the Codex cache, the plugin-runtime-v0.91.2 tag and the repository at da60fd3 — the value doctor records as host_parity_baseline.provenance.content_sha256"
+    }
+   ]
+  }
+ ],
+ "install_method": "The operator installed 0.91.2 on both hosts after the release; the Claude cache mtime reads 2026-08-19T06:48:26Z. This recovery performed no install of its own and produced no runtime:settings --execute-plugin-management artifact. The installed state rests on the doctor read plus the four-way byte comparison under readings, not on the version string.",
+ "narrative": "Authored in the post-release position ADR-0049 requires: the tag, squash, marketplace-sync sha, proof run id and artifact hash exist only after the implementation PRs merged, release-please cut #717, the catalog sync landed (b92cc1d) and the stage-doc sync followed (da60fd3, also the repository state the byte comparison used), and the proof was re-recorded against the installed 0.91.2.\n\nThe reading that matters is again a REFUSAL, and it is a different one from R1's. R1 shipped an empty grant set, so every host read unassured for the same trivial reason: nothing to match against. R2 ships a grant and the machine still reads unassured — the grant names claude 2.1.234 or 2.1.235 with codex 0.147.0, and the machine reads claude 2.1.237 with codex 0.148.0. That is a cohort miss, a second and genuinely separate negative path that only becomes reachable once a grant exists at all. The distinction is visible in the artifact rather than only in prose: record_status reads resolved, so the reader parsed the record, integrity passed, canonical bytes matched, package resolution succeeded, and the ONLY failure was cohort membership.\n\nIt is neither a matcher defect nor a grant-authoring error, and separating those two was the explicit instruction this loop carried into its final subtask. The matcher declined to extend a review to a version nobody reviewed, which is what ADR-0053 Decision 5 requires. Decision 7 permits a cohort to name only tuples actually reviewed — no ranges, no wildcards, no future versions — so no foresight at authoring time could have covered 0.148.0. The grant did what a correct grant does, and the host moved out from under it.\n\nThe cause is measured rather than asserted, because asserting it was the easy error. Claude has taken 18 distinct versions at a median 2.1 days apart and Codex 7 at a median 10.2 days, while this loop's brief-to-install round trip was 10.8 hours. A lap four to twenty times shorter than the movement it races is not structurally doomed; this one lost to a Codex step that arrived 17 days after its predecessor and landed inside the window. That is why this record does not recommend widening the matcher, shortening the review, or treating cohort exactness as the problem. The remedy is a new review and a new grant under a new id, never an edit to the released one.\n\nThe recovery's own headline is separate from the assurance verdict and must not be folded into it: the predecessor's one BLOCKED criterion closed. runtime_handoff_artifacts moved 0/15 to 9/15 once content-backed release notes existed for both hosts, and it closed WITHOUT assurance coverage. That surprised the session performing it, which had predicted covered was the only path; the code says otherwise and says why in a comment — charging one unassured fact to both the coverage criterion and the readability one bills it twice and sends an operator hunting for a corrupt file that does not exist. It stops at partial for an honest reason: ingesting the Codex notes fired the standing codex-notify-payload-variants watch, so the compat plan is genuinely actionable.\n\nThe parity number moved in two directions at once and must be read that way. Earned weight fell 106/130 to 105/130 while status improved from blocked to partial, because a blocked criterion worth 0 became a partial worth 9 at the same time as this release staled the Codex /hooks attestation the previous record observed as closed. Every bidirectional execution proof passes; nothing regressed in execution.\n\nOne process note worth preserving. The first attempt at this proof exited 0 and recorded all three proofs as blocked, because the Claude CLI probe returned ETIMEDOUT inside it while the same probe succeeded from the shell moments earlier and later. The exit code was not evidence, and the artifact had to be read to discover it. The re-run passed all three cleanly.",
+ "relations": [
+  {
+   "type": "follows",
+   "record_id": "the-assurance-plane-and-its-first-verdict",
+   "note": "The immediately preceding loop, which built the verdict this one exercises. Its proof is the one this record's proof supersedes in the stage docs, and its single blocked criterion is closed here. Together they are ADR-0053 Decision 6's two rejection paths: the empty set, then the cohort miss."
+  }
+ ]
+}
