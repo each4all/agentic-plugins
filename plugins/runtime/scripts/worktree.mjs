@@ -106,8 +106,32 @@ async function inspectGit({ repoRoot, runner, timeoutMs, baseRef, branch, worktr
   const [head, branchName, statusShort, porcelain, base, branchRef, worktreesRaw, pathInfo] = await Promise.all([
     runGit({ repoRoot, runner, timeoutMs, args: ['rev-parse', 'HEAD'] }),
     runGit({ repoRoot, runner, timeoutMs, args: ['rev-parse', '--abbrev-ref', 'HEAD'] }),
-    runGit({ repoRoot, runner, timeoutMs, args: ['status', '--short', '--branch'] }),
-    runGit({ repoRoot, runner, timeoutMs, args: ['status', '--porcelain=v1'] }),
+    // drift-digest: --untracked-files=normal so untracked files are seen even under a
+    // user's status.showUntrackedFiles=no (without it such a tree hashes/classifies as
+    // CLEAN). `normal` — not `all` — is deliberate and measured: it overrides the config
+    // exactly the same way, but keeps git's directory collapsing, so the output bytes are
+    // IDENTICAL to the historical default-config behaviour (`?? sub/`). `all` would expand
+    // each untracked dir into its files, changing every digest and dirty_count (measured:
+    // an untracked dir of 3 files counts 1 under normal, 3 under all) and paying a full
+    // recursive walk on huge untracked trees.
+    // Pinning the mode also makes the digest MACHINE-INDEPENDENT: a user configured
+    // `all` previously produced per-file entries, so the same tree digested
+    // differently per machine. Dirty/clean is unaffected either way (both
+    // non-empty); only listing granularity narrows for those users.
+    runGit({ repoRoot, runner, timeoutMs, args: ['status', '--short', '--branch', '--untracked-files=normal'] }),
+    // drift-digest: --untracked-files=normal so untracked files are seen even under a
+    // user's status.showUntrackedFiles=no (without it such a tree hashes/classifies as
+    // CLEAN). `normal` — not `all` — is deliberate and measured: it overrides the config
+    // exactly the same way, but keeps git's directory collapsing, so the output bytes are
+    // IDENTICAL to the historical default-config behaviour (`?? sub/`). `all` would expand
+    // each untracked dir into its files, changing every digest and dirty_count (measured:
+    // an untracked dir of 3 files counts 1 under normal, 3 under all) and paying a full
+    // recursive walk on huge untracked trees.
+    // Pinning the mode also makes the digest MACHINE-INDEPENDENT: a user configured
+    // `all` previously produced per-file entries, so the same tree digested
+    // differently per machine. Dirty/clean is unaffected either way (both
+    // non-empty); only listing granularity narrows for those users.
+    runGit({ repoRoot, runner, timeoutMs, args: ['status', '--porcelain=v1', '--untracked-files=normal'] }),
     runGit({ repoRoot, runner, timeoutMs, args: ['rev-parse', '--verify', baseRef] }),
     runGit({ repoRoot, runner, timeoutMs, args: ['show-ref', '--verify', `refs/heads/${branch}`] }),
     runGit({ repoRoot, runner, timeoutMs, args: ['worktree', 'list', '--porcelain'] }),

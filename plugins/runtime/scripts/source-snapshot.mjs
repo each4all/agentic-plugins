@@ -86,7 +86,14 @@ async function observeGitSnapshot(repoRoot, observedAt) {
     }
     let dirty = null;
     try {
-      dirty = Boolean((await execGit(repoRoot, ['status', '--porcelain'])).trim());
+      // drift-digest: --untracked-files=normal so untracked files are seen even under a
+      // user's status.showUntrackedFiles=no (without it such a tree hashes/classifies as
+      // CLEAN). `normal` — not `all` — is deliberate and measured: it overrides the config
+      // exactly the same way, but keeps git's directory collapsing, so the output bytes are
+      // IDENTICAL to the historical default-config behaviour (`?? sub/`). `all` would expand
+      // each untracked dir into its files, changing every digest and dirty_count and paying
+      // a full recursive walk on huge untracked trees.
+      dirty = Boolean((await execGit(repoRoot, ['status', '--porcelain', '--untracked-files=normal'])).trim());
     } catch {
       dirty = null;
     }
@@ -137,7 +144,8 @@ export async function resolveGitTopLevel(startDir) {
 //     detached HEAD ⇒ empty output ⇒ null.
 //   - head: short form; unborn HEAD / non-hex output ⇒ null.
 //   - status digest + dirty count: sha256 hex over the
-//     `git status --porcelain=v1 -z` output with the entry count; output past
+//     `git status --porcelain=v1 -z --untracked-files=normal` output with the
+//     entry count; output past
 //     the probe byte cap (maxBuffer) or a probe error ⇒ BOTH null — a null
 //     digest is "unknown", never "clean".
 export async function observeSessionGitFacts(repoRoot) {
@@ -203,7 +211,14 @@ async function probeCurrentBranch(repoRoot) {
 // non-UTF-8 filenames (contract §6: sha256 over the command output);
 // NUL positions are byte-identical, so the entry counter is unaffected.
 function probeStatusPorcelain(repoRoot) {
-  return execGit(repoRoot, ['--no-optional-locks', 'status', '--porcelain=v1', '-z'], { encoding: 'latin1' });
+  // drift-digest: --untracked-files=normal so untracked files are seen even under a
+  // user's status.showUntrackedFiles=no (without it such a tree hashes/classifies as
+  // CLEAN). `normal` — not `all` — is deliberate and measured: it overrides the config
+  // exactly the same way, but keeps git's directory collapsing, so the output bytes are
+  // IDENTICAL to the historical default-config behaviour (`?? sub/`). `all` would expand
+  // each untracked dir into its files, changing every digest and dirty_count and paying
+  // a full recursive walk on huge untracked trees.
+  return execGit(repoRoot, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=normal'], { encoding: 'latin1' });
 }
 
 // porcelain v1 -z: each entry is `XY PATH\0`, and a rename/copy entry carries

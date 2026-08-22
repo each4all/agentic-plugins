@@ -249,7 +249,7 @@ discipline), each under the §4 budget, on the publisher's hot path:
   (non-git cwd produces nothing).
 - branch: `git branch --show-current`; detached HEAD ⇒ `branch: null`.
 - head: short form; unborn HEAD ⇒ `head_short: null`.
-- status digest: sha256 hex over `git status --porcelain=v1 -z` output;
+- status digest: sha256 hex over `git status --porcelain=v1 -z --untracked-files=normal` output;
   output beyond the probe byte cap, or a probe error ⇒ `status_digest:
   null` AND `dirty_count: null` — **unknown, never clean**.
 
