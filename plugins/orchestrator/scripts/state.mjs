@@ -1878,36 +1878,31 @@ export function findBlockedByCycle(subtasks) {
   if (retired === deps.size) return null;
   const residue = [];
   for (const [id, n] of indegree) if (n > 0) residue.push(id);
-  // Extract one explicit cycle: DFS along blocked_by edges inside the
-  // residue until a grey (on-path) node repeats. The residue always
-  // contains at least one cycle (Kahn leaves nodes behind iff one exists),
-  // so the walk terminates with a chain. Plans are tens of subtasks;
-  // recursion depth is bounded by the residue size.
+  // Extract one explicit cycle without recursion. Every residue node keeps
+  // at least one dependency inside the residue (that is exactly why Kahn
+  // could not retire it), so following the first in-residue dependency from
+  // any residue node must revisit some node within |residue| steps, and the
+  // path from that node's first visit back to it is a cycle. Iterative,
+  // O(|residue|), deterministic (insertion order) — and bounded for a plan
+  // of any size: a recursive DFS here overflowed the call stack on a
+  // ~5,000-subtask ring (peer finding), which would have replaced the
+  // actionable diagnostic with a RangeError. The `undefined` guard keeps the
+  // helper total if it is ever handed an inconsistent graph; the formatter
+  // then falls back to listing the residue.
   const residueSet = new Set(residue);
-  const colour = new Map(); // 0 white (default) / 1 grey / 2 black
+  const firstVisit = new Map(); // id → index in `path`
   const path = [];
-  const walk = (id) => {
-    colour.set(id, 1);
-    path.push(id);
-    for (const dep of deps.get(id)) {
-      if (!residueSet.has(dep)) continue;
-      const c = colour.get(dep) ?? 0;
-      if (c === 1) return [...path.slice(path.indexOf(dep)), dep];
-      if (c === 0) {
-        const found = walk(dep);
-        if (found) return found;
-      }
+  let cur = residue[0];
+  while (cur !== undefined && !firstVisit.has(cur)) {
+    firstVisit.set(cur, path.length);
+    path.push(cur);
+    let next;
+    for (const dep of deps.get(cur)) {
+      if (residueSet.has(dep)) { next = dep; break; }
     }
-    path.pop();
-    colour.set(id, 2);
-    return null;
-  };
-  let cycle = null;
-  for (const id of residue) {
-    if ((colour.get(id) ?? 0) !== 0) continue;
-    cycle = walk(id);
-    if (cycle) break;
+    cur = next;
   }
+  const cycle = cur === undefined ? null : [...path.slice(firstVisit.get(cur)), cur];
   return { cycle, residue };
 }
 
@@ -1917,14 +1912,32 @@ export function findBlockedByCycle(subtasks) {
 // validates on parse (ADR-0018 §sub-1 closed schema), the file has to be
 // repaired or retired by hand before any command — including the archive
 // CLI, which parses first — will touch it again.
+//
+// Every id is rendered through JSON.stringify: validateSubtasks only requires
+// ids to be non-empty strings, and this text reaches CLI stderr verbatim, so
+// a newline or ANSI/OSC byte in an id must arrive escaped, not interpreted
+// (peer finding). The stuck-subtask listing is capped so a pathological plan
+// cannot turn the diagnostic into a dump; the cap is stated, not silent.
+const CYCLE_RESIDUE_LIST_CAP = 24;
+
 function formatBlockedByCycleError({ cycle, residue }, { persisted = false } = {}) {
-  const chain = (cycle ?? [...residue, residue[0]]).map((id) => JSON.stringify(id)).join(' -> ');
+  const q = (id) => JSON.stringify(id);
+  const chainIds = cycle ?? [...residue, residue[0]];
+  const chain = chainIds.map(q).join(' -> ');
+  const selfReference = chainIds.length === 2 && chainIds[0] === chainIds[1];
+  const shown = residue.slice(0, CYCLE_RESIDUE_LIST_CAP).map(q).join(', ');
+  const more = residue.length > CYCLE_RESIDUE_LIST_CAP
+    ? ` (+${residue.length - CYCLE_RESIDUE_LIST_CAP} more)`
+    : '';
   const head =
     `plan.subtasks blocked_by cycle detected: ${chain} ` +
-    `(X -> Y reads "X is blocked_by Y"). blocked_by must be acyclic — no subtask on a ` +
-    `cycle can ever have every predecessor completed, so /orchestrator:next would report ` +
-    `in_progress_or_blocked forever. Subtasks on or behind the cycle (never dispatchable): ` +
-    `${residue.join(', ')}. `;
+    (selfReference
+      ? `(self-reference: ${q(chainIds[0])} is blocked_by itself). `
+      : `(X -> Y reads "X is blocked_by Y"). `) +
+    `blocked_by must be acyclic — a cycle has no member that can be dispatched first, so ` +
+    `dispatch can never reach any of its members (before this check the symptom was ` +
+    `next-ready answering in_progress_or_blocked forever). Subtasks on or behind a cycle ` +
+    `(none dispatchable until it is broken): ${shown}${more}. `;
   if (!persisted) {
     return (
       head +
@@ -2091,11 +2104,6 @@ function validateSubtasks(
   for (let idx = 0; idx < subtasks.length; idx++) {
     const e = subtasks[idx];
     for (const dep of e.blocked_by) {
-      if (dep === e.id) {
-        throw new Error(
-          `plan.subtasks[${idx}] self-reference in blocked_by: ${JSON.stringify(e.id)} depends on itself`,
-        );
-      }
       if (!ids.has(dep)) {
         throw new Error(
           `plan.subtasks[${idx}].blocked_by references unknown subtask id ${JSON.stringify(dep)}`,
@@ -2103,14 +2111,17 @@ function validateSubtasks(
       }
     }
   }
-  // blocked_by must be a DAG. The loop above rejects 1-cycles (self-reference)
-  // and dangling ids; this walk rejects every longer cycle (mutual A<->B,
-  // A->B->C->A, ...). Measured 2026-08-22: before it, a mutual and a 3-cycle
-  // both passed plan-set and `next-ready` then answered in_progress_or_blocked
-  // on every call — a silent deadlock, because no subtask on a cycle can ever
-  // have all predecessors completed. The walk runs on the read boundary too,
-  // so a cyclic plan that is already on disk surfaces on its first read
-  // instead of wedging dispatch forever.
+  // blocked_by must be a DAG. Unknown ids are rejected first (graph identity
+  // has to be closed before the graph is walked); the walk then rejects every
+  // cycle — self-reference (a 1-cycle, reported with that word so the
+  // diagnostic stays recognisable), mutual A<->B, and longer. Measured
+  // 2026-08-22: before it, only the 1-cycle was caught; a mutual and a
+  // 3-cycle both passed plan-set and `next-ready` then answered
+  // in_progress_or_blocked on every call — a silent deadlock, because a
+  // cycle has no member that can be dispatched first. The walk runs on the
+  // read boundary too, so a cyclic plan that is already on disk surfaces on
+  // its first read (with repair/retire guidance for every cycle length,
+  // 1-cycles included) instead of wedging dispatch forever.
   const cycle = findBlockedByCycle(subtasks);
   if (cycle) {
     throw new Error(formatBlockedByCycleError(cycle, { persisted }));

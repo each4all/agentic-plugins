@@ -89,7 +89,7 @@ Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blo
 
 ### Ensemble dispatch (Plan-verify point type)
 
-Build the Plan-verify prompt per `$CLAUDE_PLUGIN_ROOT/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol). The `<grounding_rules>` section MUST include the schema 1.1 constraints so peer-emitted plan revisions don't bypass validation: every subtask requires `verb` (canonical 6-verb whitelist: investigate / frame / decide / compose / critique / refine) AND `branch` (git ref-format), plus `id` (unique) / `blocked_by` (array) / `status` (`pending|blocked|in_progress|completed|deferred|abandoned`) per ADR-0019 §2.
+Build the Plan-verify prompt per `$CLAUDE_PLUGIN_ROOT/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol). The `<grounding_rules>` section MUST include the schema 1.1 constraints so peer-emitted plan revisions don't bypass validation: every subtask requires `verb` (canonical 6-verb whitelist: investigate / frame / decide / compose / critique / refine) AND `branch` (git ref-format), plus `id` (unique) / `blocked_by` (array of existing ids forming a DAG — self-reference, mutual `A<->B`, and longer cycles are rejected) / `status` (`pending|blocked|in_progress|completed|deferred|abandoned`) per ADR-0019 §2.
 
 ```bash
 PROMPT_FILE="$(mktemp -t orchestrator-plan-prompt.XXXXXX).xml"

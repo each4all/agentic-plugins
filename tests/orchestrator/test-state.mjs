@@ -537,7 +537,7 @@ describe('subtasks validation', () => {
         ok(/blocked_by cycle detected/.test(err.message), err.message);
         ok(err.message.includes('"A" -> "B" -> "C" -> "A"'), `cycle not named in order: ${err.message}`);
         // Downstream-of-cycle subtask is listed as stuck, but not as a cycle member.
-        ok(/never dispatchable\): A, B, C, D\./.test(err.message), `residue not listed: ${err.message}`);
+        ok(/until it is broken\): "A", "B", "C", "D"\./.test(err.message), `residue not listed: ${err.message}`);
         return true;
       });
     });
@@ -656,6 +656,161 @@ describe('subtasks validation', () => {
     const found = findBlockedByCycle(cyclic);
     deepStrictEqual(found.cycle, ['A', 'B', 'A']);
     deepStrictEqual([...found.residue].sort(), ['A', 'B', 'tail']);
+  });
+
+  // Peer-review additions (Plan-verify/Review ensemble on the first cut):
+  // persisted 1-cycles bypassed the persisted-aware diagnostic, a recursive
+  // DFS overflowed the stack on a long ring, raw ids reached stderr, and the
+  // CLI contracts were untested.
+  it('surfaces a persisted self-cycle (1-cycle) on read with the same repair/archive guidance', async () => {
+    await withTmpRepo('subtask-selfcycle-on-disk', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+        ],
+      });
+      const text = await readFile(filePath, 'utf8');
+      await writeFile(filePath, text.replace('blocked_by: []', 'blocked_by: ["A"]'));
+      await rejects(() => readWorkflow(filePath), (err) => {
+        ok(/blocked_by cycle detected: "A" -> "A" \(self-reference: "A" is blocked_by itself\)/.test(err.message), err.message);
+        ok(/already persisted/.test(err.message), `on-disk context missing: ${err.message}`);
+        ok(/edit the workflow file/.test(err.message), `repair guidance missing: ${err.message}`);
+        return true;
+      });
+    });
+  });
+
+  it('names one cycle and lists every stuck subtask when two disjoint cycles coexist', async () => {
+    await withTmpRepo('subtask-two-cycles', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: ['B'], status: 'blocked' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+          { id: 'C', verb: 'compose', branch: 'feat/c', blocked_by: ['D'], status: 'blocked' },
+          { id: 'D', verb: 'critique', branch: 'feat/d', blocked_by: ['C'], status: 'blocked' },
+          { id: 'E', verb: 'refine', branch: 'feat/e', blocked_by: ['D'], status: 'blocked' },
+        ],
+      }), (err) => {
+        ok(err.message.includes('"A" -> "B" -> "A"'), err.message);
+        ok(/until it is broken\): "A", "B", "C", "D", "E"\./.test(err.message), `residue: ${err.message}`);
+        return true;
+      });
+    });
+  });
+
+  it('escapes control characters in subtask ids inside the cycle diagnostic', async () => {
+    await withTmpRepo('subtask-cycle-evil-id', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      const evil = 'A\n\u001b[31mRED\u001b[0m'; // newline + ANSI colour sequence
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: evil, verb: 'compose', branch: 'feat/a', blocked_by: ['B'], status: 'blocked' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: [evil], status: 'blocked' },
+        ],
+      }), (err) => {
+        ok(/blocked_by cycle detected/.test(err.message), err.message);
+        ok(!err.message.includes('\u001b'), 'raw ESC byte leaked into the diagnostic');
+        ok(!err.message.includes('\n'), 'raw newline leaked into the diagnostic');
+        ok(err.message.includes(JSON.stringify(evil)), 'escaped id missing');
+        return true;
+      });
+    });
+  });
+
+  it('extracts the cycle iteratively — a 5,000-subtask ring yields the chain, not a stack overflow', () => {
+    const n = 5000;
+    const ring = Array.from({ length: n }, (_, i) => ({ id: `s${i}`, blocked_by: [`s${(i + 1) % n}`] }));
+    const found = findBlockedByCycle(ring);
+    ok(found && Array.isArray(found.cycle), 'ring must be detected as cyclic');
+    strictEqual(found.cycle.length, n + 1);
+    strictEqual(found.cycle[0], 's0');
+    strictEqual(found.cycle[n], 's0');
+    strictEqual(found.residue.length, n);
+  });
+
+  it('caps the stuck-subtask listing in the diagnostic and states the remainder', async () => {
+    await withTmpRepo('subtask-cycle-cap', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      const n = 200;
+      const ring = Array.from({ length: n }, (_, i) => ({
+        id: `s${i}`, verb: 'compose', branch: `feat/s${i}`, blocked_by: [`s${(i + 1) % n}`], status: 'blocked',
+      }));
+      await rejects(() => setPlan({ workflowPath: filePath, host: 'claude', subtasks: ring }), (err) => {
+        ok(/blocked_by cycle detected: "s0" -> "s1" -> /.test(err.message), err.message);
+        ok(err.message.includes(` (+${n - 24} more).`), `cap remainder missing: ${err.message.slice(-200)}`);
+        return true;
+      });
+    });
+  });
+
+  it('plan-set CLI exits 1 with the cycle diagnostic (write-boundary contract)', async () => {
+    await withTmpRepo('subtask-cycle-cli-plan-set', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      const jsonPath = join(root, 'subtasks.json');
+      await writeFile(jsonPath, JSON.stringify([
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: ['B'], status: 'blocked' },
+        { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+      ]));
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'plan-set', '--workflow-path', filePath, '--host', 'claude',
+        '--subtasks-json-file', jsonPath,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 1, `stdout: ${cp.stdout} stderr: ${cp.stderr}`);
+      ok(cp.stderr.includes('state.mjs plan-set: plan.subtasks blocked_by cycle detected: "A" -> "B" -> "A"'), cp.stderr);
+      ok(cp.stderr.includes('re-run plan-set'), cp.stderr);
+      const { frontmatter } = await readWorkflow(filePath);
+      deepStrictEqual(frontmatter.plan.subtasks, []);
+    });
+  });
+
+  it('archive CLI refuses a persisted cyclic file (documented limit — retire it by hand)', async () => {
+    await withTmpRepo('subtask-cycle-cli-archive', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        ],
+      });
+      const text = await readFile(filePath, 'utf8');
+      await writeFile(filePath, text.replace('blocked_by: []', 'blocked_by: ["B"]'));
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'archive', '--workflow-path', filePath, '--host', 'claude', '--repo-root', root,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 1, `stdout: ${cp.stdout} stderr: ${cp.stderr}`);
+      ok(cp.stderr.includes('blocked_by cycle detected'), cp.stderr);
+      ok(cp.stderr.includes('sibling archive/ directory by hand'), cp.stderr);
+      // Nothing moved: the file is still the live one.
+      ok((await readFile(filePath, 'utf8')).includes('blocked_by: ["B"]'));
+    });
   });
 
   it('rejects invalid status', async () => {

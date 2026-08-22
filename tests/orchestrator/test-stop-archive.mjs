@@ -365,6 +365,49 @@ describe('runMacroStopArchiveAll — branch-agnostic per-macro iteration', () =>
     });
   });
 
+  it('isolates a persisted cyclic macro: it reports read-failed with the cycle diagnostic while a healthy terminal macro still archives', async () => {
+    // validateSubtasks rejects blocked_by cycles on every parse. A cyclic
+    // macro left on disk by a pre-check writer (or a hand edit) must not
+    // take the Stop hook's evaluation of unrelated macros down with it:
+    // the per-macro read is caught (read-failed), the iteration continues,
+    // and the diagnostic reaches the hook's stderr so the operator sees why
+    // that one file stays live.
+    await withTmpRepo('all-cyclic-isolation', async (root) => {
+      const healthyPath = await bootstrapMacro(root, {
+        branch: 'main',
+        subtasks: [{ id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'deferred' }],
+        terminal: { phase: 'finalized', marker: true },
+      });
+      const cyclicPath = await bootstrapMacro(root, {
+        branch: 'other',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        ],
+      });
+      const text = await readFile(cyclicPath, 'utf8');
+      ok(text.includes('blocked_by: []'), 'fixture precondition');
+      await writeFile(cyclicPath, text.replace('blocked_by: []', 'blocked_by: ["B"]'));
+
+      const chunks = [];
+      const results = await runMacroStopArchiveAll({
+        repoRoot: root,
+        host: 'claude',
+        stderr: { write: (s) => { chunks.push(String(s)); } },
+      });
+      strictEqual(results.length, 2, 'both macros evaluated');
+      strictEqual(results.filter((r) => r.archived).length, 1, 'healthy macro archived');
+      const readFailed = results.find((r) => r.archived === false && r.reason === 'read-failed');
+      ok(readFailed, `cyclic macro must surface as read-failed: ${JSON.stringify(results)}`);
+      const err = chunks.join('');
+      ok(err.includes('blocked_by cycle detected: "A" -> "B" -> "A"'), `diagnostic missing from hook stderr: ${err}`);
+      ok(err.includes('already persisted'), `on-disk guidance missing from hook stderr: ${err}`);
+      const live = await readdir(join(root, WORKFLOW_DIR_REL));
+      deepStrictEqual(live, [macroIdFromPath(cyclicPath) + '.md'], 'only the cyclic macro stays live');
+      void healthyPath;
+    });
+  });
+
   it('returns empty array when no macros exist', async () => {
     await withTmpRepo('all-empty', async (root) => {
       const results = await runMacroStopArchiveAll({ repoRoot: root, host: 'claude' });
