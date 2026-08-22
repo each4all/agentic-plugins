@@ -45,7 +45,19 @@ export function gitTopLevel(cwd) {
 
 export function gitStatusDigest(repoRoot) {
   try {
-    const raw = execSync('git status --porcelain=v1 -z', {
+    // drift-digest: --untracked-files=normal so untracked files are seen even under a
+    // user's status.showUntrackedFiles=no (without it such a tree hashes/classifies as
+    // CLEAN). `normal` — not `all` — is deliberate and measured: it overrides the config
+    // exactly the same way, but keeps git's directory collapsing, so the output bytes are
+    // IDENTICAL to the historical default-config behaviour (`?? sub/`). `all` would expand
+    // each untracked dir into its files, changing every digest and dirty_count (measured:
+    // an untracked dir of 3 files counts 1 under normal, 3 under all) and paying a full
+    // recursive walk on huge untracked trees.
+    // Pinning the mode also makes the digest MACHINE-INDEPENDENT: a user configured
+    // `all` previously produced per-file entries, so the same tree digested
+    // differently per machine. Dirty/clean is unaffected either way (both
+    // non-empty); only listing granularity narrows for those users.
+    const raw = execSync('git status --porcelain=v1 -z --untracked-files=normal', {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'ignore'],
     });

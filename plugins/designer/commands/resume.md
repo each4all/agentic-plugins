@@ -64,7 +64,7 @@ FIND_RC=$?
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" >/tmp/designer-resume-read.json
 CURRENT_BRANCH="$(git branch --show-current)"
 CURRENT_HEAD="$(git rev-parse HEAD)"
-CURRENT_DIGEST="$(git status --porcelain=v1 -z | shasum -a 256 | cut -d' ' -f1)"
+CURRENT_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
 ```
 
 Classify: **clean** when current branch+HEAD+digest match the workflow's
