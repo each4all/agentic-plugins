@@ -90,7 +90,7 @@ Subtask validation runs at the write boundary (schema 1.1):
 - `id` non-empty + unique within the plan
 - `verb` (REQUIRED) — one of `investigate | frame | decide | compose | critique | refine`
 - `branch` (REQUIRED) — must pass git ref-format (no spaces, no leading `.`, no `..`, no `~ ^ : ? * [ \\`, no trailing `/` or `.lock`, no `@{`, not `HEAD`, not `-`-prefixed); branch values MUST be unique across subtasks (dispatch keys engineer workflows by branch); branches MUST NOT have a parent/child path-prefix relationship across subtasks (e.g., `feat/api` and `feat/api/db` cannot coexist — git stores refs as path components, so one ref cannot be both a leaf and a parent directory)
-- `blocked_by` references existing ids only (no unknown id, no self-cycle)
+- `blocked_by` references existing ids only and forms a DAG (no unknown id, no cycles — self-reference, mutual `A<->B`, and longer cycles are all rejected with the cycle members named; a cyclic plan can never yield a ready subtask, and the same validator surfaces an already-persisted cyclic plan on read with repair guidance instead of deadlocking `/orchestrator:next`)
 - `status` is one of `pending | blocked | in_progress | completed | deferred | abandoned`
 - optional fields (`label`, `profile`, `topic`, `engineer_workflow_id`, `commit`, `pr_url`, `closed_at`) are string-or-null
 

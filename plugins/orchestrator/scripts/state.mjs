@@ -1682,7 +1682,10 @@ function validateFrontmatter(fm) {
   if (!Array.isArray(fm.plan.subtasks)) {
     throw new Error('plan.subtasks must be an array');
   }
-  validateSubtasks(fm.plan.subtasks, fm.schema, fm.git_baseline?.branch ?? null);
+  // Read boundary — `persisted: true` switches the cycle diagnostic to
+  // on-disk repair/retire guidance (the plan cannot be fixed by re-sending
+  // a payload; the file itself has to change).
+  validateSubtasks(fm.plan.subtasks, fm.schema, fm.git_baseline?.branch ?? null, { persisted: true });
 
   // host_history list-of-objects
   if (!Array.isArray(fm.host_history)) {
@@ -1827,9 +1830,134 @@ function validateNestedShape(fm, key, expectedKeys) {
   }
 }
 
+// Kahn / topological walk over `plan.subtasks[*].blocked_by`, edges
+// deduplicated first. Returns `null` when the dependency graph is acyclic;
+// otherwise `{ cycle, residue }` where `cycle` is one concrete cycle as an
+// id chain with the first id repeated at the end (X followed by Y reads
+// "X is blocked_by Y") and `residue` is every subtask the walk could not
+// retire — the cycle members plus everything transitively blocked_by them,
+// i.e. exactly the subtasks that can never become ready.
+//
+// Duplicate edges are collapsed before counting: a repeated blocked_by entry
+// (`['A', 'A']`) is the same dependency stated twice, not a second one.
+// Deduplicating up front keeps the in-degree and the adjacency list derived
+// from one edge set, so a duplicate can never inflate one side without the
+// other (an in-degree of 2 against a single retire signal would leave `B`
+// stuck above zero after `A` retires and false-positive an acyclic plan).
+// Unknown dependency ids are ignored here (validateSubtasks rejects them
+// before this walk runs), so the helper is total on any id/blocked_by list.
+// Exported for tests; validateSubtasks is the only production caller.
+export function findBlockedByCycle(subtasks) {
+  const deps = new Map(); // id → Set<dep id> (deduplicated, known ids only)
+  for (const e of subtasks) {
+    deps.set(e.id, new Set(Array.isArray(e.blocked_by) ? e.blocked_by : []));
+  }
+  const indegree = new Map(); // id → number of distinct known deps
+  const dependents = new Map(); // dep id → ids that are blocked_by it
+  for (const [id, set] of deps) {
+    let n = 0;
+    for (const dep of set) {
+      if (!deps.has(dep)) continue;
+      n += 1;
+      if (!dependents.has(dep)) dependents.set(dep, []);
+      dependents.get(dep).push(id);
+    }
+    indegree.set(id, n);
+  }
+  const queue = [];
+  for (const [id, n] of indegree) if (n === 0) queue.push(id);
+  let retired = 0;
+  for (let qi = 0; qi < queue.length; qi += 1) {
+    retired += 1;
+    for (const dependent of dependents.get(queue[qi]) ?? []) {
+      const n = indegree.get(dependent) - 1;
+      indegree.set(dependent, n);
+      if (n === 0) queue.push(dependent);
+    }
+  }
+  if (retired === deps.size) return null;
+  const residue = [];
+  for (const [id, n] of indegree) if (n > 0) residue.push(id);
+  // Extract one explicit cycle without recursion. Every residue node keeps
+  // at least one dependency inside the residue (that is exactly why Kahn
+  // could not retire it), so following the first in-residue dependency from
+  // any residue node must revisit some node within |residue| steps, and the
+  // path from that node's first visit back to it is a cycle. Iterative,
+  // O(|residue|), deterministic (insertion order) — and bounded for a plan
+  // of any size: a recursive DFS here overflowed the call stack on a
+  // ~5,000-subtask ring (peer finding), which would have replaced the
+  // actionable diagnostic with a RangeError. The `undefined` guard keeps the
+  // helper total if it is ever handed an inconsistent graph; the formatter
+  // then falls back to listing the residue.
+  const residueSet = new Set(residue);
+  const firstVisit = new Map(); // id → index in `path`
+  const path = [];
+  let cur = residue[0];
+  while (cur !== undefined && !firstVisit.has(cur)) {
+    firstVisit.set(cur, path.length);
+    path.push(cur);
+    let next;
+    for (const dep of deps.get(cur)) {
+      if (residueSet.has(dep)) { next = dep; break; }
+    }
+    cur = next;
+  }
+  const cycle = cur === undefined ? null : [...path.slice(firstVisit.get(cur)), cur];
+  return { cycle, residue };
+}
+
+// Diagnostic for a cyclic plan. `persisted` selects the remedy: at the
+// write boundary (plan-set) the caller can simply fix the payload; on the
+// read boundary the cycle is already on disk, and because every reader
+// validates on parse (ADR-0018 §sub-1 closed schema), the file has to be
+// repaired or retired by hand before any command — including the archive
+// CLI, which parses first — will touch it again.
+//
+// Every id is rendered through JSON.stringify: validateSubtasks only requires
+// ids to be non-empty strings, and this text reaches CLI stderr verbatim, so
+// a newline or ANSI/OSC byte in an id must arrive escaped, not interpreted
+// (peer finding). The stuck-subtask listing is capped so a pathological plan
+// cannot turn the diagnostic into a dump; the cap is stated, not silent.
+const CYCLE_RESIDUE_LIST_CAP = 24;
+
+function formatBlockedByCycleError({ cycle, residue }, { persisted = false } = {}) {
+  const q = (id) => JSON.stringify(id);
+  const chainIds = cycle ?? [...residue, residue[0]];
+  const chain = chainIds.map(q).join(' -> ');
+  const selfReference = chainIds.length === 2 && chainIds[0] === chainIds[1];
+  const shown = residue.slice(0, CYCLE_RESIDUE_LIST_CAP).map(q).join(', ');
+  const more = residue.length > CYCLE_RESIDUE_LIST_CAP
+    ? ` (+${residue.length - CYCLE_RESIDUE_LIST_CAP} more)`
+    : '';
+  const head =
+    `plan.subtasks blocked_by cycle detected: ${chain} ` +
+    (selfReference
+      ? `(self-reference: ${q(chainIds[0])} is blocked_by itself). `
+      : `(X -> Y reads "X is blocked_by Y"). `) +
+    `blocked_by must be acyclic — a cycle has no member that can be dispatched first, so ` +
+    `dispatch can never reach any of its members (before this check the symptom was ` +
+    `next-ready answering in_progress_or_blocked forever). Subtasks on or behind a cycle ` +
+    `(none dispatchable until it is broken): ${shown}${more}. `;
+  if (!persisted) {
+    return (
+      head +
+      `Break the cycle by removing one blocked_by edge among the cycle members, then re-run plan-set.`
+    );
+  }
+  return (
+    head +
+    `This plan is already persisted (written before cycle validation existed, or edited by hand), ` +
+    `and every reader of this file — next-ready, resume, subtask-update, archive — fails closed on ` +
+    `it until it is repaired. Repair: edit the workflow file's blocked_by entries to remove one edge ` +
+    `among the cycle members. Or retire it: move the file out of the active workflows/ home into its ` +
+    `sibling archive/ directory by hand (the archive CLI parses, and therefore rejects, this file too) ` +
+    `and run /orchestrator:plan afresh.`
+  );
+}
+
 // ADR-0018 §sub-1 + ADR-0019 §2 plan.subtasks[*] validation:
 //   - id non-empty unique
-//   - blocked_by → existing id, no self-cycle
+//   - blocked_by → existing id, acyclic (no self-, mutual, or longer cycle)
 //   - status enum (1.1 adds deferred / abandoned)
 //   - optional fields are string-or-null
 //   - 1.1: verb (canonical 6-verb whitelist) + branch (git ref-format) REQUIRED
@@ -1839,7 +1967,17 @@ function validateNestedShape(fm, key, expectedKeys) {
 // per ADR-0019 §1 branch precondition. The default `'1.1'` is for
 // callers that don't have schema context (e.g., setPlan when emitting
 // a fresh plan); validateFrontmatter passes the actual fm.schema.
-function validateSubtasks(subtasks, schemaVersion = SCHEMA_VERSION, macroBranch = null) {
+//
+// `persisted` marks the read boundary (validateFrontmatter on parse): the
+// same invariants run there, but a violation means the bad plan is already
+// on disk, so the cycle diagnostic switches from "fix the payload" to
+// repair/retire guidance for the file.
+function validateSubtasks(
+  subtasks,
+  schemaVersion = SCHEMA_VERSION,
+  macroBranch = null,
+  { persisted = false } = {},
+) {
   const requiredKeys =
     SUBTASK_REQUIRED_KEYS_BY_SCHEMA[schemaVersion]
     ?? SUBTASK_REQUIRED_KEYS_BY_SCHEMA['1.1'];
@@ -1966,17 +2104,27 @@ function validateSubtasks(subtasks, schemaVersion = SCHEMA_VERSION, macroBranch 
   for (let idx = 0; idx < subtasks.length; idx++) {
     const e = subtasks[idx];
     for (const dep of e.blocked_by) {
-      if (dep === e.id) {
-        throw new Error(
-          `plan.subtasks[${idx}] self-reference in blocked_by: ${JSON.stringify(e.id)} depends on itself`,
-        );
-      }
       if (!ids.has(dep)) {
         throw new Error(
           `plan.subtasks[${idx}].blocked_by references unknown subtask id ${JSON.stringify(dep)}`,
         );
       }
     }
+  }
+  // blocked_by must be a DAG. Unknown ids are rejected first (graph identity
+  // has to be closed before the graph is walked); the walk then rejects every
+  // cycle — self-reference (a 1-cycle, reported with that word so the
+  // diagnostic stays recognisable), mutual A<->B, and longer. Measured
+  // 2026-08-22: before it, only the 1-cycle was caught; a mutual and a
+  // 3-cycle both passed plan-set and `next-ready` then answered
+  // in_progress_or_blocked on every call — a silent deadlock, because a
+  // cycle has no member that can be dispatched first. The walk runs on the
+  // read boundary too, so a cyclic plan that is already on disk surfaces on
+  // its first read (with repair/retire guidance for every cycle length,
+  // 1-cycles included) instead of wedging dispatch forever.
+  const cycle = findBlockedByCycle(subtasks);
+  if (cycle) {
+    throw new Error(formatBlockedByCycleError(cycle, { persisted }));
   }
 }
 
@@ -2476,7 +2624,8 @@ export async function commitEnsemble({
 //
 // Atomic write of plan.{decision?, architecture?, subtasks[]} under the
 // per-file lock + atomicWrite ownership-token recheck. Validates subtask
-// id uniqueness, blocked_by → existing id (no self-cycle), and status enum.
+// id uniqueness, blocked_by → existing id + acyclic (self-, mutual, and
+// longer cycles all rejected), and status enum.
 
 export async function setPlan({
   workflowPath,

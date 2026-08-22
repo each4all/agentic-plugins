@@ -59,6 +59,7 @@ const {
   commitEnsemble,
   setPlan,
   updateSubtask,
+  findBlockedByCycle,
   // ADR-0019 PR-E exports — populated by T5 GREEN. Tests that use these
   // before T5 fails with "X is not a function" / "undefined" — that's
   // the intended RED state.
@@ -482,6 +483,333 @@ describe('subtasks validation', () => {
           { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: ['A'], status: 'pending' },
         ],
       }), /self-reference/);
+    });
+  });
+
+  // blocked_by must be a DAG — measured 2026-08-22: before the central
+  // cycle walk, a mutual A<->B cycle and a 3-cycle both passed plan-set
+  // (rc=0) and `next-ready` then answered in_progress_or_blocked on every
+  // call (silent deadlock). The two controls below (acyclic, and acyclic
+  // with a duplicated edge) pin the walk's negative space so the guard
+  // cannot be satisfied by rejecting everything.
+  it('rejects a mutual blocked_by 2-cycle (A<->B) at plan-set, naming both members', async () => {
+    await withTmpRepo('subtask-2cycle', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: ['B'], status: 'blocked' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        ],
+      }), (err) => {
+        ok(/blocked_by cycle detected/.test(err.message), err.message);
+        ok(err.message.includes('"A" -> "B" -> "A"'), `cycle not named in order: ${err.message}`);
+        ok(/re-run plan-set/.test(err.message), `write-boundary remedy missing: ${err.message}`);
+        return true;
+      });
+      // The rejected plan must not have landed.
+      const { frontmatter } = await readWorkflow(filePath);
+      deepStrictEqual(frontmatter.plan.subtasks, []);
+    });
+  });
+
+  it('rejects a 3-cycle (A->B->C->A) at plan-set, naming the cycle in order', async () => {
+    await withTmpRepo('subtask-3cycle', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: ['B'], status: 'blocked' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['C'], status: 'blocked' },
+          { id: 'C', verb: 'refine', branch: 'feat/c', blocked_by: ['A'], status: 'blocked' },
+          // D hangs behind the cycle: not a member, but never dispatchable.
+          { id: 'D', verb: 'compose', branch: 'feat/d', blocked_by: ['C'], status: 'blocked' },
+        ],
+      }), (err) => {
+        ok(/blocked_by cycle detected/.test(err.message), err.message);
+        ok(err.message.includes('"A" -> "B" -> "C" -> "A"'), `cycle not named in order: ${err.message}`);
+        // Downstream-of-cycle subtask is listed as stuck, but not as a cycle member.
+        ok(/until it is broken\): "A", "B", "C", "D"\./.test(err.message), `residue not listed: ${err.message}`);
+        return true;
+      });
+    });
+  });
+
+  it('accepts duplicate blocked_by edges in an acyclic plan (dedupe control — no false positive)', async () => {
+    await withTmpRepo('subtask-dup-edge', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+          // Same edge twice — a repeated dependency, not a second one.
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A', 'A'], status: 'blocked' },
+          { id: 'C', verb: 'refine', branch: 'feat/c', blocked_by: ['A', 'B', 'A'], status: 'blocked' },
+        ],
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks.length, 3);
+      // The duplicate is deduplicated for detection only — the plan is
+      // stored as authored.
+      deepStrictEqual(frontmatter.plan.subtasks[1].blocked_by, ['A', 'A']);
+    });
+  });
+
+  it('accepts an acyclic diamond plan (control) and next-ready resolves its root', async () => {
+    await withTmpRepo('subtask-acyclic-control', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+          { id: 'C', verb: 'refine', branch: 'feat/c', blocked_by: ['A'], status: 'blocked' },
+          { id: 'D', verb: 'compose', branch: 'feat/d', blocked_by: ['B', 'C'], status: 'blocked' },
+        ],
+      });
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'next-ready', '--workflow-path', filePath,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0, `stderr: ${cp.stderr}`);
+      strictEqual(JSON.parse(cp.stdout.trim()).ready.id, 'A');
+    });
+  });
+
+  it('surfaces an already-persisted cyclic plan on read and in next-ready with repair/archive guidance (no silent deadlock)', async () => {
+    await withTmpRepo('subtask-cycle-on-disk', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        ],
+      });
+      // Control — acyclic on disk: next-ready resolves A.
+      let cp = spawnSync(process.execPath, [
+        STATE_MJS, 'next-ready', '--workflow-path', filePath,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0, `stderr: ${cp.stderr}`);
+      strictEqual(JSON.parse(cp.stdout.trim()).ready.id, 'A');
+
+      // Persist a cycle behind the validator's back — the shape a plan
+      // written by a pre-fix writer, or a hand edit, leaves on disk.
+      const text = await readFile(filePath, 'utf8');
+      ok(text.includes('blocked_by: []'), 'fixture precondition: A has an empty blocked_by line');
+      await writeFile(filePath, text.replace('blocked_by: []', 'blocked_by: ["B"]'));
+
+      // Read path (parseWorkflowFile → validateFrontmatter → validateSubtasks)
+      // surfaces the cycle with on-disk repair guidance.
+      await rejects(() => readWorkflow(filePath), (err) => {
+        ok(/blocked_by cycle detected/.test(err.message), err.message);
+        ok(err.message.includes('"A" -> "B" -> "A"'), `cycle not named: ${err.message}`);
+        ok(/already persisted/.test(err.message), `on-disk context missing: ${err.message}`);
+        ok(/archive\//.test(err.message), `archive guidance missing: ${err.message}`);
+        ok(/edit the workflow file/.test(err.message), `repair guidance missing: ${err.message}`);
+        return true;
+      });
+
+      // next-ready fails closed with the same diagnostic instead of the
+      // former in_progress_or_blocked-forever answer.
+      cp = spawnSync(process.execPath, [
+        STATE_MJS, 'next-ready', '--workflow-path', filePath,
+      ], { encoding: 'utf8' });
+      ok(cp.status !== 0, 'next-ready must not report a ready/blocked verdict on a cyclic plan');
+      ok(cp.stderr.includes('blocked_by cycle detected'), `stderr: ${cp.stderr}`);
+      ok(!cp.stdout.includes('in_progress_or_blocked'), `silent-deadlock verdict leaked: ${cp.stdout}`);
+    });
+  });
+
+  it('findBlockedByCycle: null on a DAG; names one cycle plus the stuck residue otherwise', () => {
+    const dag = [
+      { id: 'A', blocked_by: [] },
+      { id: 'B', blocked_by: ['A', 'A'] },
+      { id: 'C', blocked_by: ['A', 'B'] },
+    ];
+    strictEqual(findBlockedByCycle(dag), null);
+    const cyclic = [
+      { id: 'root', blocked_by: [] },
+      { id: 'A', blocked_by: ['root', 'B'] },
+      { id: 'B', blocked_by: ['A'] },
+      { id: 'tail', blocked_by: ['B'] },
+    ];
+    const found = findBlockedByCycle(cyclic);
+    deepStrictEqual(found.cycle, ['A', 'B', 'A']);
+    deepStrictEqual([...found.residue].sort(), ['A', 'B', 'tail']);
+  });
+
+  // Peer-review additions (Plan-verify/Review ensemble on the first cut):
+  // persisted 1-cycles bypassed the persisted-aware diagnostic, a recursive
+  // DFS overflowed the stack on a long ring, raw ids reached stderr, and the
+  // CLI contracts were untested.
+  it('surfaces a persisted self-cycle (1-cycle) on read with the same repair/archive guidance', async () => {
+    await withTmpRepo('subtask-selfcycle-on-disk', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+        ],
+      });
+      const text = await readFile(filePath, 'utf8');
+      await writeFile(filePath, text.replace('blocked_by: []', 'blocked_by: ["A"]'));
+      await rejects(() => readWorkflow(filePath), (err) => {
+        ok(/blocked_by cycle detected: "A" -> "A" \(self-reference: "A" is blocked_by itself\)/.test(err.message), err.message);
+        ok(/already persisted/.test(err.message), `on-disk context missing: ${err.message}`);
+        ok(/edit the workflow file/.test(err.message), `repair guidance missing: ${err.message}`);
+        return true;
+      });
+    });
+  });
+
+  it('names one cycle and lists every stuck subtask when two disjoint cycles coexist', async () => {
+    await withTmpRepo('subtask-two-cycles', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: ['B'], status: 'blocked' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+          { id: 'C', verb: 'compose', branch: 'feat/c', blocked_by: ['D'], status: 'blocked' },
+          { id: 'D', verb: 'critique', branch: 'feat/d', blocked_by: ['C'], status: 'blocked' },
+          { id: 'E', verb: 'refine', branch: 'feat/e', blocked_by: ['D'], status: 'blocked' },
+        ],
+      }), (err) => {
+        ok(err.message.includes('"A" -> "B" -> "A"'), err.message);
+        ok(/until it is broken\): "A", "B", "C", "D", "E"\./.test(err.message), `residue: ${err.message}`);
+        return true;
+      });
+    });
+  });
+
+  it('escapes control characters in subtask ids inside the cycle diagnostic', async () => {
+    await withTmpRepo('subtask-cycle-evil-id', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      const evil = 'A\n\u001b[31mRED\u001b[0m'; // newline + ANSI colour sequence
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: evil, verb: 'compose', branch: 'feat/a', blocked_by: ['B'], status: 'blocked' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: [evil], status: 'blocked' },
+        ],
+      }), (err) => {
+        ok(/blocked_by cycle detected/.test(err.message), err.message);
+        ok(!err.message.includes('\u001b'), 'raw ESC byte leaked into the diagnostic');
+        ok(!err.message.includes('\n'), 'raw newline leaked into the diagnostic');
+        ok(err.message.includes(JSON.stringify(evil)), 'escaped id missing');
+        return true;
+      });
+    });
+  });
+
+  it('extracts the cycle iteratively — a 5,000-subtask ring yields the chain, not a stack overflow', () => {
+    const n = 5000;
+    const ring = Array.from({ length: n }, (_, i) => ({ id: `s${i}`, blocked_by: [`s${(i + 1) % n}`] }));
+    const found = findBlockedByCycle(ring);
+    ok(found && Array.isArray(found.cycle), 'ring must be detected as cyclic');
+    strictEqual(found.cycle.length, n + 1);
+    strictEqual(found.cycle[0], 's0');
+    strictEqual(found.cycle[n], 's0');
+    strictEqual(found.residue.length, n);
+  });
+
+  it('caps the stuck-subtask listing in the diagnostic and states the remainder', async () => {
+    await withTmpRepo('subtask-cycle-cap', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      const n = 200;
+      const ring = Array.from({ length: n }, (_, i) => ({
+        id: `s${i}`, verb: 'compose', branch: `feat/s${i}`, blocked_by: [`s${(i + 1) % n}`], status: 'blocked',
+      }));
+      await rejects(() => setPlan({ workflowPath: filePath, host: 'claude', subtasks: ring }), (err) => {
+        ok(/blocked_by cycle detected: "s0" -> "s1" -> /.test(err.message), err.message);
+        ok(err.message.includes(` (+${n - 24} more).`), `cap remainder missing: ${err.message.slice(-200)}`);
+        return true;
+      });
+    });
+  });
+
+  it('plan-set CLI exits 1 with the cycle diagnostic (write-boundary contract)', async () => {
+    await withTmpRepo('subtask-cycle-cli-plan-set', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      const jsonPath = join(root, 'subtasks.json');
+      await writeFile(jsonPath, JSON.stringify([
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: ['B'], status: 'blocked' },
+        { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+      ]));
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'plan-set', '--workflow-path', filePath, '--host', 'claude',
+        '--subtasks-json-file', jsonPath,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 1, `stdout: ${cp.stdout} stderr: ${cp.stderr}`);
+      ok(cp.stderr.includes('state.mjs plan-set: plan.subtasks blocked_by cycle detected: "A" -> "B" -> "A"'), cp.stderr);
+      ok(cp.stderr.includes('re-run plan-set'), cp.stderr);
+      const { frontmatter } = await readWorkflow(filePath);
+      deepStrictEqual(frontmatter.plan.subtasks, []);
+    });
+  });
+
+  it('archive CLI refuses a persisted cyclic file (documented limit — retire it by hand)', async () => {
+    await withTmpRepo('subtask-cycle-cli-archive', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'test',
+      });
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        ],
+      });
+      const text = await readFile(filePath, 'utf8');
+      await writeFile(filePath, text.replace('blocked_by: []', 'blocked_by: ["B"]'));
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'archive', '--workflow-path', filePath, '--host', 'claude', '--repo-root', root,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 1, `stdout: ${cp.stdout} stderr: ${cp.stderr}`);
+      ok(cp.stderr.includes('blocked_by cycle detected'), cp.stderr);
+      ok(cp.stderr.includes('sibling archive/ directory by hand'), cp.stderr);
+      // Nothing moved: the file is still the live one.
+      ok((await readFile(filePath, 'utf8')).includes('blocked_by: ["B"]'));
     });
   });
 
