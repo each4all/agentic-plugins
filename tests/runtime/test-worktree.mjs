@@ -160,8 +160,8 @@ function fakeGitRunner({
     }
     if (key === 'rev-parse HEAD') return okResult('1111111111111111111111111111111111111111\n');
     if (key === 'rev-parse --abbrev-ref HEAD') return okResult(`${branch}\n`);
-    if (key === 'status --short --branch') return okResult(`## ${branch}...origin/${branch}\n${dirtyLines.join('\n')}\n`);
-    if (key === 'status --porcelain=v1') return okResult(dirtyLines.length ? `${dirtyLines.join('\n')}\n` : '');
+    if (key === 'status --short --branch --untracked-files=normal') return okResult(`## ${branch}...origin/${branch}\n${dirtyLines.join('\n')}\n`);
+    if (key === 'status --porcelain=v1 --untracked-files=normal') return okResult(dirtyLines.length ? `${dirtyLines.join('\n')}\n` : '');
     if (key === 'rev-parse --verify origin/main') {
       return baseResolves ? okResult('2222222222222222222222222222222222222222\n') : failResult('fatal: Needed a single revision\n');
     }

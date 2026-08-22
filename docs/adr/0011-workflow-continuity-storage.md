@@ -165,7 +165,7 @@ repo_root: <absolute path from git rev-parse --show-toplevel>
 git_baseline:
   branch: <branch name at workflow start>
   head: <full SHA at workflow start>
-  status_digest: <sha256 hex of `git status --porcelain=v1 -z` at start>
+  status_digest: <sha256 hex of `git status --porcelain=v1 -z --untracked-files=normal` at start>
 current_phase: <free-form short phase label>
 next_action: <one-sentence imperative>
 tasks: []                                  # empty at bootstrap; updated from TaskCreate/TaskUpdate IDs+states
@@ -189,6 +189,19 @@ last_snapshot:                             # most recent automatic mechanical sn
 
 <free-form Markdown — phase boundaries, decisions, references>
 ```
+
+> **Amendment 2026-08-22 (drift-digest)** — the digest command carries
+> `--untracked-files=normal` explicitly. Without it the command honours the
+> user's `status.showUntrackedFiles`, so on a machine configured `no` a tree
+> whose only change is untracked files reports an empty blob and digests to the
+> clean-tree value — the continuity gate then reads a dirty tree as clean.
+> `normal` rather than `all` is deliberate: both override the config, but
+> `normal` preserves git's directory collapsing, so the digest bytes stay
+> identical to the historical default-config output (and stay comparable
+> across machines whose configs differ). A pre-existing baseline captured on a
+> machine configured `all` may compare unequal once, reported as drift; accept
+> the current tree to re-baseline.
+
 
 **Field rules**:
 
