@@ -76,8 +76,10 @@ The Stage 2 self-development plugin ([`engineer`](../../plugins/),
 once added in Phase 4 Deliverable C — see
 [ADR-0010](0010-plugin-boundary-policy.md) for naming) needs durable
 workflow state to survive context boundaries on both hosts: Claude
-Code (PreCompact mid-session, Stop at session end) and Codex CLI
-(Stop at session end; no PreCompact equivalent per
+Code (PreCompact mid-session, Stop at session end *(amended 2026-08-23 —
+Stop fires at every turn end, not at session end; see Amendments)*) and Codex CLI
+(Stop at session end *(likewise amended 2026-08-23 — per turn, and only
+once `/hooks`-trusted)*; no PreCompact equivalent per
 [ADR-0001](0001-hexagonal-architecture.md) §"What is host-neutral
 vs host-specific" — the table row "Continuity mechanism | ADAPTER |
 PreCompact (Claude) vs Stop-based (Codex)").
@@ -189,6 +191,23 @@ last_snapshot:                             # most recent automatic mechanical sn
 
 <free-form Markdown — phase boundaries, decisions, references>
 ```
+
+> **Amendment 2026-08-23 (Stop fires per turn, not per session)** — every
+> "session end" reading of the `Stop` hook in this ADR is wrong, in §Context's
+> host summary and in §4's hook-contract table on both host rows. `Stop` fires
+> at the end of **each assistant turn**, so a terminal write is evaluated for
+> auto-archive at that turn's boundary, not when the session closes. The
+> distinction is load-bearing rather than pedantic: an author who reads "session
+> end" will set `terminal_marker: true` expecting a later, deliberate close, and
+> the workflow is gone one turn later. Note also what `Stop` guarantees — it
+> evaluates the archive gates; whether the file actually moves depends on those
+> gates (marker, terminal phase, HEAD movement, no active children; for a macro,
+> every subtask terminal instead of HEAD movement). On Codex the hook is real but
+> trust-gated per [ADR-0030](0030-codex-plugin-hooks-removal-stage-aware-migration.md),
+> so until `/hooks` trust it does not fire at all and no evaluation happens. The
+> per-invocation statement of this contract lives in each persona's
+> `skills/_shared/references/session-handoff.md` § Archive timing. Body text
+> below remains as written for historical record and carries inline pointers.
 
 > **Amendment 2026-08-22 (drift-digest)** — the digest command carries
 > `--untracked-files=normal` explicitly. Without it the command honours the
@@ -370,9 +389,9 @@ now; each installs `PreCompact`, `Stop` and `SessionStart`. See
 | Host | Hook event | What the hook writes |
 |------|-----------|------------------------|
 | Claude Code | `PreCompact` (mid-session, before context auto-compaction) | Update `last_snapshot` + `updated_at` + append `host_history` entry with `event: snapshot` |
-| Claude Code | `Stop` (session end) | Same as above with `event: snapshot` |
+| Claude Code | `Stop` (session end) *(amended 2026-08-23 — fires at every turn end, not session end; see [Amendments](#) at the top of this ADR)* | Same as above with `event: snapshot` |
 | Claude Code | `SessionStart` (new session begins) *(amended 2026-08-08 — the hook is registered `matcher: "compact"` and fires post-compact, never on an arbitrary new session; see [Amendments](0022-engineer-meta-skill-category.md#amendments))* | Read active workflow file, inject one-line summary into the session header (does not modify file) |
-| Codex CLI | `Stop` (session end) *(amended 2026-08-08 — this table's Codex column is no longer one row: Codex registers `PreCompact`, `Stop` and `SessionStart` too, from `a881eb7`; see [Amendments](0022-engineer-meta-skill-category.md#amendments))* | Same shape: update `last_snapshot` + `updated_at` + append `host_history` entry |
+| Codex CLI | `Stop` (session end) *(amended 2026-08-23 — fires per turn, not per session, and only once `/hooks`-trusted; amended 2026-08-08 — this table's Codex column is no longer one row: Codex registers `PreCompact`, `Stop` and `SessionStart` too, from `a881eb7`; see [Amendments](0022-engineer-meta-skill-category.md#amendments))* | Same shape: update `last_snapshot` + `updated_at` + append `host_history` entry |
 
 Hook implementations live in
 `plugins/engineer/adapters/{claude,codex}/hooks/` and use the
