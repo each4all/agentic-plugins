@@ -344,7 +344,7 @@ Main-session output intentionally omits raw peer output. It reports artifact poi
 
 ## Worktree behavior
 
-Worktree planning is read-only. The command inspects `git worktree list --porcelain`, current branch/detached state, `git status --porcelain=v1`, base-ref resolution, candidate branch availability, and candidate worktree path availability. It then emits a suggested `git worktree add -b <branch> <path> <base>` command with `execute=false`.
+Worktree planning is read-only. The command inspects `git worktree list --porcelain`, current branch/detached state, `git status --porcelain=v1 --untracked-files=normal`, base-ref resolution, candidate branch availability, and candidate worktree path availability. It then emits a suggested `git worktree add -b <branch> <path> <base>` command with `execute=false`.
 
 `runtime:worktree` never creates branches, adds or removes worktrees, commits, pushes, opens PRs, or mutates runtime context. It recommends a dedicated worktree for non-trivial follow-up when the current checkout is on `main`, dirty, detached, or already sharing work with other worktrees. Blockers such as an unresolved base ref, existing target branch, or occupied target path must be resolved before running the suggested command manually.
 
