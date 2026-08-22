@@ -85,7 +85,7 @@ Follow the plan skill's command-invoked mode at `$CLAUDE_PLUGIN_ROOT/skills/plan
   # — populated by /orchestrator:next + /orchestrator:done (ADR-0019 PR-D)
 ```
 
-Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blocked_by → existing id only, no self-cycle, status enum, verb in canonical 6-verb whitelist, branch passes git ref-format gate per ADR-0019 §1: no spaces, no leading `.`, no `..`, no `~ ^ : ? * [ \\`, no trailing `/` or `.lock`, branches unique across subtasks, no parent/child path-prefix relationship between any two subtask branches — e.g., `feat/api` and `feat/api/db` cannot coexist; pick siblings like `feat/api/db` + `feat/api/auth` instead).
+Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blocked_by → existing id only and acyclic — self-reference, mutual `A<->B`, and longer cycles are all rejected with the cycle members named, because a subtask on a cycle can never become ready and `/orchestrator:next` would otherwise wait forever; the same validator runs on every read, so a cyclic plan that is already on disk fails closed with repair guidance instead of deadlocking dispatch — status enum, verb in canonical 6-verb whitelist, branch passes git ref-format gate per ADR-0019 §1: no spaces, no leading `.`, no `..`, no `~ ^ : ? * [ \\`, no trailing `/` or `.lock`, branches unique across subtasks, no parent/child path-prefix relationship between any two subtask branches — e.g., `feat/api` and `feat/api/db` cannot coexist; pick siblings like `feat/api/db` + `feat/api/auth` instead).
 
 ### Ensemble dispatch (Plan-verify point type)
 
