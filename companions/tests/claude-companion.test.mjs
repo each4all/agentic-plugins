@@ -396,6 +396,47 @@ describe('AUTH_REGEX', () => {
     assert.equal(AUTH_REGEX.test('connection reset by peer'), false);
   });
 
+  // Captured verbatim from the installed Claude Code CLI 2.1.239 binary
+  // (2026-08-22). The two Anthropic-profile rows say neither "please" nor
+  // "not logged in", which is why they slipped past the classifier (R2
+  // review residual 6: expired profile → peer_run_error / exit 1).
+  const CLAUDE_2_1_239_AUTH_ROWS = [
+    'Anthropic profile login expired · Re-authenticate your Anthropic profile',
+    'Anthropic profile login expired · Run /login to use your claude.ai account instead, or re-authenticate the profile',
+    'Login expired · Please run /login',
+    'OAuth token revoked · Please run /login',
+    'Not logged in · Run /login', // CLAUDE_CODE_REMOTE variant — no "Please"
+  ];
+
+  it('matches the Anthropic-profile expiry family and sibling rows (captured from 2.1.239)', () => {
+    for (const row of CLAUDE_2_1_239_AUTH_ROWS) {
+      assert.ok(AUTH_REGEX.test(row), `expected auth match: ${row}`);
+    }
+  });
+
+  it('does not match the still-valid-login warning or non-auth API-error rows from the same capture', () => {
+    // A warning emitted while the login is still valid — "expires", not
+    // "expired" — can sit on stderr next to an unrelated non-zero exit and
+    // MUST NOT flip the classification to peer_unauthenticated.
+    assert.equal(AUTH_REGEX.test('Your login expires in 3 days · run /login to renew'), false);
+    // Non-auth rows of the same error table.
+    assert.equal(AUTH_REGEX.test('Prompt is too long'), false);
+    assert.equal(AUTH_REGEX.test('Credit balance is too low'), false);
+    // Normal peer content that merely talks about expiry — including the
+    // exact contiguous phrase "login expired" (peer-review reproduction:
+    // stdout is part of the haystack, so a bare `login expired` alternative
+    // flipped an unrelated non-zero exit to peer_unauthenticated).
+    assert.equal(AUTH_REGEX.test('the customer login expired yesterday'), false);
+    assert.equal(AUTH_REGEX.test('Refresh the token before it expires; expired tokens are rejected upstream.'), false);
+    assert.equal(AUTH_REGEX.test('The session expired after 30 minutes of inactivity.'), false);
+    // Captured rows deliberately left out (invalid ≠ missing/expired; the
+    // Bedrock/Vertex rows are ambiguous between the two) — pinned so that
+    // widening them is an explicit decision, not drift.
+    assert.equal(AUTH_REGEX.test('Invalid API key · Fix external API key'), false);
+    assert.equal(AUTH_REGEX.test('AWS credentials expired or invalid'), false);
+    assert.equal(AUTH_REGEX.test('Google Cloud credentials expired or invalid'), false);
+  });
+
   it('does not match codex-only auth wordings (copy-paste regression guard)', () => {
     // codex-companion's AUTH_REGEX matches `not signed in`, `please run codex
     // login`, etc. The claude regex MUST be host-specific and NOT pick up
@@ -405,6 +446,62 @@ describe('AUTH_REGEX', () => {
     assert.equal(AUTH_REGEX.test('You are not signed in.'), false);
     assert.equal(AUTH_REGEX.test('Please run `codex login` to authenticate.'), false);
     assert.equal(AUTH_REGEX.test('Please use codex auth before continuing'), false);
+    // codex 0.148.0's live unauthenticated wording is an HTTP 401 line;
+    // claude's CLI speaks in its own rows ("Invalid API key · …"), so the
+    // claude regex must not learn the codex 401 anchor by copy-paste —
+    // neither the terminal line nor the module-level WebSocket line.
+    assert.equal(AUTH_REGEX.test('ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses'), false);
+    assert.equal(AUTH_REGEX.test('2026-08-22T09:55:07.648566Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses'), false);
+  });
+});
+
+describe('classifyResult — Anthropic-profile expiry wording (2.1.233+)', () => {
+  const baseInvocation = { spawnError: null, signal: null, stdout: '', stderr: '' };
+
+  it('exit 1 + "Anthropic profile login expired · Run /login …" on stdout → companion_error / 3 / peer_unauthenticated', () => {
+    const r = classifyResult({
+      ...baseInvocation,
+      exitCode: 1,
+      stdout: 'Anthropic profile login expired · Run /login to use your claude.ai account instead, or re-authenticate the profile\n',
+    });
+    assert.equal(r.status, STATUS.COMPANION_ERROR);
+    assert.equal(r.exit_code, EXIT_PEER_INFRA);
+    assert.equal(r.error.kind, ERROR_KIND.UNAUTH);
+    assert.match(r.error.message, /missing or expired authentication/);
+  });
+
+  it('exit 1 + "Anthropic profile login expired · Re-authenticate your Anthropic profile" on stderr → peer_unauthenticated', () => {
+    const r = classifyResult({
+      ...baseInvocation,
+      exitCode: 1,
+      stderr: 'Anthropic profile login expired · Re-authenticate your Anthropic profile',
+    });
+    assert.equal(r.exit_code, EXIT_PEER_INFRA);
+    assert.equal(r.error.kind, ERROR_KIND.UNAUTH);
+  });
+
+  it('exit 1 + the still-valid-login warning on stderr stays peer_run_error / 1', () => {
+    const r = classifyResult({
+      ...baseInvocation,
+      exitCode: 1,
+      stderr: 'Your login expires in 3 days · run /login to renew',
+    });
+    assert.equal(r.status, STATUS.PEER_ERROR);
+    assert.equal(r.exit_code, EXIT_PEER_RUN_ERROR);
+    assert.equal(r.error.kind, ERROR_KIND.PEER_RUN);
+  });
+
+  it('exit 1 + partial stdout saying "login expired" about something else stays peer_run_error / 1', () => {
+    // Peer-review reproduction against the first cut's bare `login expired`.
+    const r = classifyResult({
+      ...baseInvocation,
+      exitCode: 1,
+      stdout: 'Summary: the customer login expired yesterday, so the report skipped that account.\n',
+      stderr: 'Error: stream disconnected before completion',
+    });
+    assert.equal(r.status, STATUS.PEER_ERROR);
+    assert.equal(r.exit_code, EXIT_PEER_RUN_ERROR);
+    assert.equal(r.error.kind, ERROR_KIND.PEER_RUN);
   });
 });
 

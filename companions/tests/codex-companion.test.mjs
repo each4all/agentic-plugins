@@ -16,6 +16,7 @@ import os from 'node:os';
 
 import {
   AUTH_REGEX,
+  AUTH_STDERR_REGEX,
   CONTRACT_VERSION,
   CompanionMisuseError,
   ERROR_KIND,
@@ -474,6 +475,60 @@ describe('AUTH_REGEX', () => {
     assert.equal(AUTH_REGEX.test('connection reset by peer'), false);
   });
 
+  // Captured live 2026-08-22 from codex-cli 0.148.0: `codex exec` with an
+  // empty CODEX_HOME (no credentials) and again with an invalid
+  // OPENAI_API_KEY prints none of the "not signed in" / "please run codex
+  // login" wordings — it attempts the API, logs module-level WebSocket
+  // lines, falls back to HTTPS, and exits 1 on a top-level "ERROR:" line.
+  // Before AUTH_STDERR_REGEX a missing credential therefore classified as
+  // peer_run_error / exit 1 (mirror of the claude-side R2 residual 6).
+  const CODEX_0_148_0_WEBSOCKET_LINE = '2026-08-22T09:55:07.648566Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses';
+  const CODEX_0_148_0_FALLBACK_WARNING = 'warning: Falling back from WebSockets to HTTPS transport. unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: wss://api.openai.com/v1/responses, cf-ray: a2f100485c29d1cd-ICN';
+  const CODEX_0_148_0_TERMINAL_LINE = 'ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a2f100813f66ea13-ICN, request id: req_0f76ada3dc404b7ca3f7e6433eabac29';
+
+  it('AUTH_STDERR_REGEX matches only the terminal top-level 401 line of codex 0.148.0, not the module-level or warning lines', () => {
+    assert.ok(AUTH_STDERR_REGEX.test(CODEX_0_148_0_TERMINAL_LINE));
+    // Embedded after other stderr lines (line-start anchor via "\n").
+    assert.ok(AUTH_STDERR_REGEX.test(`ERROR: Reconnecting... 5/5\n${CODEX_0_148_0_TERMINAL_LINE}`));
+    // CRLF stderr still anchors at line start.
+    assert.ok(AUTH_STDERR_REGEX.test(`ERROR: Reconnecting... 5/5\r\n${CODEX_0_148_0_TERMINAL_LINE}`));
+    // Preliminary lines alone are not the verdict — the run may still fall
+    // back to a different terminal failure.
+    assert.equal(AUTH_STDERR_REGEX.test(CODEX_0_148_0_WEBSOCKET_LINE), false);
+    assert.equal(AUTH_STDERR_REGEX.test(CODEX_0_148_0_FALLBACK_WARNING), false);
+    // A terminal line quoted mid-line (not at line start) is not the verdict either.
+    assert.equal(AUTH_STDERR_REGEX.test('Summary: the run logged "ERROR: unexpected status 401 Unauthorized" before recovering.'), false);
+    // The human-facing regex never learned the 401 lines.
+    assert.equal(AUTH_REGEX.test(CODEX_0_148_0_TERMINAL_LINE), false);
+    assert.equal(AUTH_REGEX.test(CODEX_0_148_0_WEBSOCKET_LINE), false);
+  });
+
+  it('matches the binary-observed "please re-run `codex login`" wording', () => {
+    assert.ok(AUTH_REGEX.test('ChatGPT account ID not available, please re-run `codex login`'));
+  });
+
+  it('does not match non-auth transport/status lines, generic 401 prose, or the informational login status line', () => {
+    // Same diagnostic shape, non-auth status — a rate limit or server error
+    // must stay peer_run_error.
+    assert.equal(AUTH_STDERR_REGEX.test('ERROR: unexpected status 429 Too Many Requests, url: https://api.openai.com/v1/responses'), false);
+    assert.equal(AUTH_STDERR_REGEX.test('ERROR: unexpected status 500 Internal Server Error, url: https://api.openai.com/v1/responses'), false);
+    assert.equal(AUTH_STDERR_REGEX.test('ERROR: Reconnecting... 2/5'), false);
+    assert.equal(AUTH_STDERR_REGEX.test('stream disconnected before completion: connection reset'), false);
+    // Peer-review reproductions against the first cut's generic anchors.
+    for (const prose of [
+      'the proxy returned HTTP error: 401 Unauthorized',
+      'the example contains Missing bearer or basic authentication',
+      'The upstream returned 401 Unauthorized for the stale token, so we refreshed it.',
+    ]) {
+      assert.equal(AUTH_REGEX.test(prose), false, `AUTH_REGEX must not match: ${prose}`);
+      assert.equal(AUTH_STDERR_REGEX.test(prose), false, `AUTH_STDERR_REGEX must not match: ${prose}`);
+    }
+    // Informational status line in the 0.148.0 binary — "run codex login"
+    // without "please" is NOT a failure, which is why the bare phrase is
+    // deliberately not an alternative.
+    assert.equal(AUTH_REGEX.test('API key configured (run codex login to use ChatGPT)'), false);
+  });
+
   it('does not match claude-only auth wordings (copy-paste regression guard)', () => {
     // claude-companion's AUTH_REGEX matches `not authenticated`, `please run
     // claude login`, etc. The codex regex MUST be host-specific and NOT pick
@@ -483,6 +538,56 @@ describe('AUTH_REGEX', () => {
     assert.equal(AUTH_REGEX.test('Please use claude auth before continuing'), false);
     assert.equal(AUTH_REGEX.test('You are not authenticated.'), false);
     assert.equal(AUTH_REGEX.test('Sign in via not authentication failure'), false);
+    // claude 2.1.233+ Anthropic-profile expiry rows belong to the claude regex.
+    assert.equal(AUTH_REGEX.test('Anthropic profile login expired · Re-authenticate your Anthropic profile'), false);
+    assert.equal(AUTH_REGEX.test('Login expired · Please run /login'), false);
+  });
+});
+
+describe('classifyResult — codex 0.148.0 live unauthenticated stderr', () => {
+  const baseInvocation = { spawnError: null, signal: null, stdout: '', stderr: '' };
+  const TERMINAL_401 = 'ERROR: unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a2f1011a286aea93-ICN, request id: req_4e04c494c456484cb6806f7572972d4d';
+  const WEBSOCKET_401 = '2026-08-22T09:55:32.382648Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses';
+
+  it('exit 1 + the real stderr tail (reconnects, then the terminal 401 line) → companion_error / 3 / peer_unauthenticated', () => {
+    const r = classifyResult({
+      ...baseInvocation,
+      exitCode: 1,
+      stderr: [WEBSOCKET_401, 'ERROR: Reconnecting... 5/5', TERMINAL_401].join('\n'),
+    });
+    assert.equal(r.status, STATUS.COMPANION_ERROR);
+    assert.equal(r.exit_code, EXIT_PEER_INFRA);
+    assert.equal(r.error.kind, ERROR_KIND.UNAUTH);
+    assert.match(r.error.message, /missing or expired authentication/);
+  });
+
+  it('the terminal 401 line on STDOUT only does not classify (stderr-only anchor)', () => {
+    const r = classifyResult({ ...baseInvocation, exitCode: 1, stdout: `${TERMINAL_401}\n`, stderr: 'Error: stream disconnected before completion' });
+    assert.equal(r.status, STATUS.PEER_ERROR);
+    assert.equal(r.exit_code, EXIT_PEER_RUN_ERROR);
+    assert.equal(r.error.kind, ERROR_KIND.PEER_RUN);
+  });
+
+  it('a preliminary WebSocket 401 followed by a terminal 429 stays peer_run_error / 1 (peer-review ordering case)', () => {
+    const r = classifyResult({
+      ...baseInvocation,
+      exitCode: 1,
+      stderr: [WEBSOCKET_401, 'warning: Falling back from WebSockets to HTTPS transport. unexpected status 401 Unauthorized: Unknown error, url: wss://api.openai.com/v1/responses', 'ERROR: unexpected status 429 Too Many Requests, url: https://api.openai.com/v1/responses'].join('\n'),
+    });
+    assert.equal(r.status, STATUS.PEER_ERROR);
+    assert.equal(r.exit_code, EXIT_PEER_RUN_ERROR);
+    assert.equal(r.error.kind, ERROR_KIND.PEER_RUN);
+  });
+
+  it('exit 1 + a 429 on the transport line stays peer_run_error / 1', () => {
+    const r = classifyResult({
+      ...baseInvocation,
+      exitCode: 1,
+      stderr: 'ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 429 Too Many Requests, url: wss://api.openai.com/v1/responses',
+    });
+    assert.equal(r.status, STATUS.PEER_ERROR);
+    assert.equal(r.exit_code, EXIT_PEER_RUN_ERROR);
+    assert.equal(r.error.kind, ERROR_KIND.PEER_RUN);
   });
 });
 
