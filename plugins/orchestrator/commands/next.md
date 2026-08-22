@@ -208,7 +208,7 @@ esac
 
 ```bash
 # Step 1: clean-worktree check — BEFORE any git switch.
-if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]; then
   echo "✗ Working tree not clean — commit, stash, or revert before /orchestrator:next dispatches." >&2
   echo "  (engineer's Phase 0 status_digest capture is meaningful only on a clean tree.)" >&2
   exit 1
