@@ -2919,7 +2919,7 @@ export function evaluateCleanBaseline({
 }
 
 /**
- * CLI wrapper: run `git status --porcelain=v1` under `repoRoot`, then
+ * CLI wrapper: run `git status --porcelain=v1 --untracked-files=normal` under `repoRoot`, then
  * delegate to `evaluateCleanBaseline`. Returns the same shape as the
  * pure function plus a `git_present` flag so the bash caller can
  * distinguish "no overlap" from "git missing → probe blind".
@@ -2934,7 +2934,19 @@ export function runCleanBaselineCheck({ repoRoot, acceptCurrentTree = false } = 
     // ADR-0028 PR4 N4-quoted — `-z` returns paths verbatim (no quoting
     // around spaces / quotes / tabs) and separates entries with NUL.
     // The parser in evaluateCleanBaseline consumes that wire format.
-    statusPorcelain = execFileSync('git', ['status', '--porcelain=v1', '-z'], {
+    // drift-digest: --untracked-files=normal so untracked files are seen even under a
+    // user's status.showUntrackedFiles=no (without it such a tree hashes/classifies as
+    // CLEAN). `normal` — not `all` — is deliberate and measured: it overrides the config
+    // exactly the same way, but keeps git's directory collapsing, so the output bytes are
+    // IDENTICAL to the historical default-config behaviour (`?? sub/`). `all` would expand
+    // each untracked dir into its files, changing every digest and dirty_count (measured:
+    // an untracked dir of 3 files counts 1 under normal, 3 under all) and paying a full
+    // recursive walk on huge untracked trees.
+    // Pinning the mode also makes the digest MACHINE-INDEPENDENT: a user configured
+    // `all` previously produced per-file entries, so the same tree digested
+    // differently per machine. Dirty/clean is unaffected either way (both
+    // non-empty); only listing granularity narrows for those users.
+    statusPorcelain = execFileSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
