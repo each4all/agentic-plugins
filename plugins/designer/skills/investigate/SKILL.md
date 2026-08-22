@@ -244,6 +244,15 @@ command writes the investigation results to its
 workflow file. This skill itself does not write workflow state — it hands
 findings to the invoking command, which owns the write.
 
+That write is terminal, and on Claude the Stop hook fires at **every turn end**,
+so the archive gates are evaluated at the end of **that same turn**, not at
+session close — the workflow archives then if they all pass, and otherwise stays
+marked for a later Stop. Clearing the marker (`--terminal-marker false`, with
+set-terminal's full flag set) works only before that Stop fires. On Codex the hook
+runs only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
+waits. Full contract: `skills/_shared/references/session-handoff.md`
+§ Archive timing.
+
 When invoked standalone (no parent workflow command), no workflow file
 write occurs.
 
