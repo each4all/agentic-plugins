@@ -279,6 +279,15 @@ state — **only when Phase 4 converged**:
 # ADR-0029 §1 / completion-output contract §2 — write the COMPACT form
 # (selected_next + one-line why + next_command) into --next-action; the
 # code-emitted footer surfaces it verbatim as "recommended next work".
+# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
+# archive gates are evaluated at the end of THIS turn, not at session close;
+# if a gate fails the workflow stays marked and a later Stop re-evaluates it.
+# Clearing the marker with `--terminal-marker false` works only before that
+# Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
+# --terminal-phase), and does not restore the previous phase or next_action.
+# On Codex the Stop hook runs only once the operator has trusted the plugin
+# hooks (`/hooks`), so evaluation waits for that. Full contract:
+# skills/_shared/references/session-handoff.md § Archive timing.
 node "<plugin-root>/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --terminal-phase summary-complete --terminal-marker true \
