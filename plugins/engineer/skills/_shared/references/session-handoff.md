@@ -26,6 +26,40 @@ user toward substantial next work**:
 
 It is not emitted on a trivial reversible step.
 
+## Archive timing — Claude same-turn Stop vs Codex
+
+`state.mjs set-terminal --terminal-marker true` is **not** a deferred marker on
+Claude. The Stop hook fires at **every turn end**, so the archive gates — terminal
+marker, terminal phase, HEAD movement, no active children — are evaluated at the
+end of **that same turn**, not when the session closes. If they all pass the
+engineer workflow is archived then; if any fails it stays marked and a later Stop
+re-evaluates it. Same-turn *evaluation* is the guarantee; same-turn *archival* is
+not, and the move itself is best-effort and non-fatal.
+
+Parent writeback is **not** part of this Stop step on the normal Phase 7 path:
+`phase7-commit.mjs` runs P10 `writebackParent` synchronously *before* it writes
+the terminal marker, and the Stop hook only retries idempotently, or acts as the
+backstop when Phase 7 died between the two. A verb-command terminal write (no
+Phase 7) leaves the writeback to that Stop.
+
+Consequences for a runbook author:
+
+- **Decide before writing the marker.** If the workflow must stay open past this
+  turn, do not set `--terminal-marker true` yet.
+- **The unset window closes at that Stop, and it is a partial rollback.**
+  `set-terminal --terminal-marker false` is accepted by both CLIs (covered by
+  `tests/orchestrator/test-handoff-sidecar.mjs`), but it is not a bare flag —
+  `--workflow-path`, `--host` and `--terminal-phase` are all still required, it
+  rewrites `current_phase` to whatever phase you pass rather than restoring the
+  previous one, it leaves `next_action` untouched unless you pass a new one, and
+  it does not retract a handoff projection or footer the `true` write already
+  emitted. Once the file has moved, recovery is a fresh workflow.
+- **Codex defers rather than skips.** Its Stop hook is declared in
+  `adapters/codex/hooks/hooks.json`, but it runs only once the operator has
+  reviewed and trusted the plugin hooks (`/hooks`). Until then no evaluation
+  happens at all, so the unset window stays open across turns and the archive
+  lands on the first trusted Stop (or a manual run of the adapter hook).
+
 ## Completion footer is code-emitted (ADR-0039)
 
 The `## How to compute + pass the projection` recipe below is the **contract

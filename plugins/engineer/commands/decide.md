@@ -304,8 +304,17 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 
 # ADR-0017 §sub-decision 5 — atomic terminal write. Bumps current_phase
 # into the auto-archive whitelist + sets terminal_marker=true so the
-# Stop hook can archive once the user commits and closes the session
-# (HEAD-moved gate enforces real progress before archive triggers).
+# Stop hook can archive (the HEAD-moved gate still enforces real
+# progress before the archive triggers).
+# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
+# archive gates are evaluated at the end of THIS turn, not at session close;
+# if a gate fails the workflow stays marked and a later Stop re-evaluates it.
+# Clearing the marker with `--terminal-marker false` works only before that
+# Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
+# --terminal-phase), and does not restore the previous phase or next_action.
+# On Codex the Stop hook runs only once the operator has trusted the plugin
+# hooks (`/hooks`), so evaluation waits for that. Full contract:
+# skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
