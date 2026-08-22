@@ -70,7 +70,7 @@ Determine workflow state via the host-shared canonical I/O module:
    ```bash
    GIT_BRANCH="$(git branch --show-current)"
    GIT_HEAD="$(git rev-parse HEAD)"
-   STATUS_DIGEST="$(git status --porcelain=v1 -z | shasum -a 256 | cut -d' ' -f1)"
+   STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
    ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
      --repo-root "$REPO_ROOT" \
      --verb investigate --host "${AGENTIC_HOST:-claude}" \
