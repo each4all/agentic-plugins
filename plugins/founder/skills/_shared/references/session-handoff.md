@@ -40,6 +40,40 @@ reads founder state), and what the code-emitted terminal path guarantees.
 
 It is not emitted on a trivial reversible step.
 
+## Archive timing — Claude same-turn Stop vs Codex
+
+`state.mjs set-terminal --terminal-marker true` is **not** a deferred marker on
+Claude. The Stop hook fires at **every turn end**, so the archive gates — terminal
+marker, terminal phase, HEAD movement, no active children — are evaluated at the
+end of **that same turn**, not when the session closes. If they all pass the
+founder workflow is archived then; if any fails it stays marked and a later Stop
+re-evaluates it. Same-turn *evaluation* is the guarantee; same-turn *archival* is
+not, and the move itself is best-effort and non-fatal.
+
+No parent writeback fires here at all: founder carries no orchestrator parent
+and the step is removed outright (ADR-0036 Non-Goal 3, `scripts/stop-archive.mjs`).
+Note also that `/founder:start` marks terminal before the owner saves or commits,
+so the HEAD-movement gate usually fails on the same turn and the archive lands
+after that commit.
+
+Consequences for a runbook author:
+
+- **Decide before writing the marker.** If the workflow must stay open past this
+  turn, do not set `--terminal-marker true` yet.
+- **The unset window closes at that Stop, and it is a partial rollback.**
+  `set-terminal --terminal-marker false` is accepted by both CLIs (covered by
+  `tests/orchestrator/test-handoff-sidecar.mjs`), but it is not a bare flag —
+  `--workflow-path`, `--host` and `--terminal-phase` are all still required, it
+  rewrites `current_phase` to whatever phase you pass rather than restoring the
+  previous one, it leaves `next_action` untouched unless you pass a new one, and
+  it does not retract a handoff projection or footer the `true` write already
+  emitted. Once the file has moved, recovery is a fresh workflow.
+- **Codex defers rather than skips.** Its Stop hook is declared in
+  `adapters/codex/hooks/hooks.json`, but it runs only once the operator has
+  reviewed and trusted the plugin hooks (`/hooks`). Until then no evaluation
+  happens at all, so the unset window stays open across turns and the archive
+  lands on the first trusted Stop (or a manual run of the adapter hook).
+
 ## Fail-closed baseline (ADR-0043 §2)
 
 The founder sidecar follows engineer's **path-targeted projection**
