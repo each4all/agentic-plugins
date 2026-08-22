@@ -110,7 +110,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
 
 CURRENT_BRANCH="$(git branch --show-current)"
 CURRENT_HEAD="$(git rev-parse HEAD)"
-CURRENT_DIGEST="$(git status --porcelain=v1 -z | shasum -a 256 | cut -d' ' -f1)"
+CURRENT_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
 
 BASE_BRANCH="$(jq -r '.git_baseline.branch' /tmp/engineer-resume-frontmatter.json)"
 BASE_HEAD="$(jq -r '.git_baseline.head' /tmp/engineer-resume-frontmatter.json)"
