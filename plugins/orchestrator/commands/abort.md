@@ -260,6 +260,16 @@ fi
 ## Phase 3 — Step 3: terminal markers (parent lock re-acquired)
 
 ```bash
+# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
+# macro archive gates are evaluated at the end of THIS turn, not at session
+# close; if a gate fails (a subtask still non-terminal, an engineer child
+# still active) the macro stays marked and a later Stop re-evaluates it.
+# Clearing the marker with `--terminal-marker false` works only before that
+# Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
+# --terminal-phase), and does not reopen the subtasks /finalize or /abort
+# already closed. Once archived the macro is outside find-active, so recovery
+# is a fresh /orchestrator:plan. On Codex the Stop hook runs only once the
+# operator has trusted the plugin hooks (`/hooks`), so evaluation waits.
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   set-terminal \
   --workflow-path "$MACRO_PATH" \
@@ -284,7 +294,7 @@ echo "  Next Stop event will evaluate A1-A4 and auto-archive the macro file."
 
 ## Summary
 
-`/orchestrator:abort` completes when all non-terminal subtasks are `abandoned`, every engineer child workflow is archived (terminal via stop-archive, mid-flight via detach-archive), and the macro carries `terminal_marker: true` + `current_phase: 'aborted'`. The macro workflow file is moved to `archive/` on the next host Stop event.
+`/orchestrator:abort` completes when all non-terminal subtasks are `abandoned`, every engineer child workflow is archived (terminal via stop-archive, mid-flight via detach-archive), and the macro carries `terminal_marker: true` + `current_phase: 'aborted'`. The macro workflow file is moved to `archive/` on the next host Stop event — on Claude, the end of this turn.
 
 The runtime completion footer is **code-emitted** on this command's terminal
 path (ADR-0039): the `state.mjs set-terminal` write above fires the ADR-0031

@@ -13,7 +13,7 @@ Explicitly close a macro plan when some subtasks were not completed but are inte
 2. **Active-children detach pass (NO parent lock held)**: scan engineer's `workflows/` for files whose frontmatter has `parent_workflow == <this macro id>`. For each:
    - **Terminal child** (commit landed on its branch): invoke engineer's `stop-archive` CLI with the child's branch HEAD probed via `git rev-parse refs/heads/<baseline_branch>`. If gates pass, engineer archives the child + writes back (writeback sees the subtask as `deferred` from step 1 and skips per the §4 absorbing precondition).
    - **Mid-flight child** (no terminal commit yet, OR engineer's `stop-archive` returned `gate-not-met head_moved` after probe, OR the branch was deleted): invoke engineer's `detach-archive` CLI which atomically writes `parent_detached: true` + `terminal_marker: false` then archives. No parent writeback fires.
-3. **Terminal markers (parent lock re-acquired → released)**: set the macro's `terminal_marker: true` + `current_phase: 'finalized'`. The next host Stop event evaluates A1-A4 (all now passing) and auto-archives the macro file.
+3. **Terminal markers (parent lock re-acquired → released)**: set the macro's `terminal_marker: true` + `current_phase: 'finalized'`. The next host Stop event evaluates A1-A4 (all now passing) and auto-archives the macro file — on Claude that is the end of the turn in which step 3 ran, not session close; on Codex it waits until the operator has trusted the plugin hooks (`/hooks`).
 
 Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root. Engineer plugin root resolved separately via `discover-engineer.mjs`.
 
@@ -309,6 +309,16 @@ fi
 ## Phase 3 — Step 3: terminal markers (parent lock re-acquired)
 
 ```bash
+# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
+# macro archive gates are evaluated at the end of THIS turn, not at session
+# close; if a gate fails (a subtask still non-terminal, an engineer child
+# still active) the macro stays marked and a later Stop re-evaluates it.
+# Clearing the marker with `--terminal-marker false` works only before that
+# Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
+# --terminal-phase), and does not reopen the subtasks /finalize or /abort
+# already closed. Once archived the macro is outside find-active, so recovery
+# is a fresh /orchestrator:plan. On Codex the Stop hook runs only once the
+# operator has trusted the plugin hooks (`/hooks`), so evaluation waits.
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   set-terminal \
   --workflow-path "$MACRO_PATH" \
@@ -324,7 +334,7 @@ echo "  Next Stop event will evaluate A1-A4 and auto-archive the macro file."
 
 ## Phase 4 (Codex only) — manual stop helper
 
-When running on Codex (no host Stop event), the auto-archive evaluation must be invoked manually. The Claude side fires its Stop hook automatically.
+Codex does declare a Stop hook (`adapters/codex/hooks/hooks.json`), but it runs automatically only once the packaged hook has passed Codex `/hooks` review and trust in the active session. Until then no auto-archive evaluation happens on Codex at all, so invoke it manually with the helper below — and note that the macro therefore stays un-evaluated, and its marker still clearable, across turns rather than for the single turn Claude gives you. The Claude side fires its Stop hook automatically at every turn end.
 
 ```bash
 # Codex parity step — uncomment when running on Codex
@@ -341,7 +351,7 @@ When running on Codex (no host Stop event), the auto-archive evaluation must be 
 2. Every engineer child workflow with `parent_workflow == <macro id>` is archived (via `stop-archive` on the child's branch HEAD or `detach-archive` for mid-flight).
 3. Macro `terminal_marker: true` + `current_phase: 'finalized'`.
 
-The macro workflow file is moved to `archive/` on the next host Stop event by `runMacroStopArchiveAll`. Re-running `/orchestrator:finalize` after step 3 is a no-op (subtasks already deferred, terminal_marker already set).
+The macro workflow file is moved to `archive/` on the next host Stop event by `runMacroStopArchiveAll` — on Claude, the end of this turn. Re-running `/orchestrator:finalize` after step 3 is a no-op (subtasks already deferred, terminal_marker already set).
 
 The runtime completion footer is **code-emitted** on this command's terminal
 path (ADR-0039): the `state.mjs set-terminal` write above fires the ADR-0031

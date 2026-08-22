@@ -96,6 +96,16 @@ commands.
 Run:
 
 ```bash
+# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
+# macro archive gates are evaluated at the end of THIS turn, not at session
+# close; if a gate fails (a subtask still non-terminal, an engineer child
+# still active) the macro stays marked and a later Stop re-evaluates it.
+# Clearing the marker with `--terminal-marker false` works only before that
+# Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
+# --terminal-phase), and does not reopen the subtasks /finalize or /abort
+# already closed. Once archived the macro is outside find-active, so recovery
+# is a fresh /orchestrator:plan. On Codex the Stop hook runs only once the
+# operator has trusted the plugin hooks (`/hooks`), so evaluation waits.
 node "<orchestrator-plugin-root>/scripts/state.mjs" set-terminal \
   --workflow-path "$MACRO_PATH" \
   --host codex \

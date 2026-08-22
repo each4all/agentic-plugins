@@ -147,6 +147,17 @@ Surface the JSON envelope. Respect skipped absorbing-terminal results:
 `deferred` and `abandoned` must not be advanced back to
 `in_progress`.
 
+ARCHIVE TIMING — when this update lands the macro's final subtask, the
+auto-terminal pass marks the macro terminal without any `set-terminal` call of
+its own. On Claude the Stop hook fires at **every turn end**, so the macro archive
+gates are **evaluated** at the end of **this** turn, not at session close, and the
+file moves then if they all pass. To hold it open, run the full `state.mjs
+set-terminal` form (`--workflow-path`, `--host`, `--terminal-phase` all required)
+with `--terminal-marker false` before that Stop fires. On Codex the Stop hook runs
+only once the operator has trusted the plugin hooks (`/hooks`), so the evaluation
+waits. Full contract: `skills/_shared/references/session-handoff.md`
+§ Archive timing.
+
 ---
 
 ## Completion
