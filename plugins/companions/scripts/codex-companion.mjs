@@ -42,7 +42,38 @@ export const STDERR_MAX = 200;
 // false negatives here (a misclassified peer_run_error still surfaces the
 // same stderr summary), so the regex stays conservative. Known fragility per
 // contract § 5.4 — peer CLI version drift may shift wording.
-export const AUTH_REGEX = /not\s+signed\s+in|please\s+(?:run|use)\s+`?codex\s+(?:login|auth)|please\s+log\s+in/i;
+//
+// Observed wordings (extend as Codex CLI drifts):
+// - "not signed in" / "please run codex login" / "please use codex auth" /
+//   "please log in" (original set).
+// - "ChatGPT account ID not available, please re-run `codex login`"
+//   (present in the 0.148.0 binary; `(?:re-)?run` covers it).
+// - Deliberately NOT matched: the informational status line "API key
+//   configured (run codex login to use ChatGPT)" — so a bare `run codex
+//   login` stays out.
+export const AUTH_REGEX = /not\s+signed\s+in|please\s+(?:(?:re-)?run|use)\s+`?codex\s+(?:login|auth)|please\s+log\s+in/i;
+
+// Stderr-only companion to AUTH_REGEX. Measured live 2026-08-22 on codex-cli
+// 0.148.0 with an empty CODEX_HOME (no credentials) and again with an
+// invalid OPENAI_API_KEY: `codex exec` does NOT pre-check auth and prints
+// none of the wordings above. It tries the API, logs module-level lines
+//   "… ERROR codex_api::endpoint::responses_websocket: failed to connect to
+//    websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/…"
+//   "warning: Falling back from WebSockets to HTTPS transport. unexpected
+//    status 401 Unauthorized: Missing bearer or basic authentication …"
+// and exits 1 on its top-level diagnostic line
+//   "ERROR: unexpected status 401 Unauthorized: Missing bearer or basic
+//    authentication in header, url: https://api.openai.com/v1/responses, …"
+// Only that terminal line is matched, and only at the start of a stderr
+// line (`ERROR:` with the colon is codex's top-level error prefix; the
+// module lines carry a timestamp and no colon): a preliminary WebSocket 401
+// that falls back to a terminal 429/5xx stays peer_run_error, and nothing is
+// read from stdout, where peer content may legitimately quote "HTTP error:
+// 401 Unauthorized" or "Missing bearer or basic authentication" (peer-review
+// reproductions). Known fragility per contract § 5.4: if codex reshapes its
+// top-level error line this degrades to a false negative, which is the
+// preferred failure direction.
+export const AUTH_STDERR_REGEX = /(?:^|\n)ERROR:\s+unexpected\s+status\s+401\s+unauthorized\b/i;
 
 export class CompanionMisuseError extends Error {
   constructor(message) {
@@ -278,8 +309,11 @@ export function classifyResult(invocation) {
   }
 
   // Non-zero peer exit: try the auth heuristic, otherwise treat as peer_run_error.
+  // AUTH_REGEX reads both streams (the human-facing rows may land on either);
+  // AUTH_STDERR_REGEX reads stderr alone, where codex's top-level diagnostic
+  // lines live — see its comment for why it must not see stdout.
   const haystack = `${stderr}\n${stdout}`;
-  if (AUTH_REGEX.test(haystack)) {
+  if (AUTH_REGEX.test(haystack) || AUTH_STDERR_REGEX.test(stderr)) {
     return {
       status: STATUS.COMPANION_ERROR,
       exit_code: EXIT_PEER_INFRA,

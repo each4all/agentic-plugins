@@ -47,7 +47,28 @@ export const STDERR_MAX = 200;
 // - "not authenticated" / "not authentication"
 // - "please log in"
 // - "Not logged in" + "Please run /login"  (Claude Code CLI 2.1.128+)
-export const AUTH_REGEX = /please\s+(?:run|use)\s+`?claude\s+(?:login|auth)|not\s+authenticat(?:ed|ion)|please\s+log\s+in|not\s+logged\s+in|please\s+run\s+\/login/i;
+// - "Anthropic profile login expired · Re-authenticate your Anthropic profile"
+//   and "Anthropic profile login expired · Run /login to use your claude.ai
+//   account instead, or re-authenticate the profile" (2.1.233+ / 2.1.234+,
+//   captured verbatim from the installed 2.1.239 binary 2026-08-22). Neither
+//   says "please" and neither says "not logged in", so before the
+//   `anthropic profile login expired` alternative an expired profile
+//   classified as peer_run_error / exit 1 instead of peer_unauthenticated /
+//   exit 3 (R2 review residual 6). The alternative is the full row prefix,
+//   not a bare `login expired`: peer stdout is part of the haystack, and a
+//   run that fails for another reason while its partial output says "the
+//   customer login expired yesterday" must stay peer_run_error (peer-review
+//   reproduction). The same table's "Login expired · Please run /login" and
+//   "OAuth token revoked · Please run /login" were already covered by the
+//   `please run /login` alternative. Deliberately NOT matched, from the same
+//   capture: "Your login expires in N days · run /login to renew" (a warning
+//   on a still-valid login — `expires`, not `expired`), "Invalid API key ·
+//   Fix external API key" / "Invalid auth token · …" (invalid, not
+//   missing-or-expired; widening that is a classification decision, not
+//   wording drift), and the Bedrock/Vertex "AWS/Google Cloud credentials
+//   expired or invalid" rows (ambiguous between expired and invalid —
+//   recorded as a policy residual, not silently included).
+export const AUTH_REGEX = /please\s+(?:run|use)\s+`?claude\s+(?:login|auth)|not\s+authenticat(?:ed|ion)|please\s+log\s+in|not\s+logged\s+in|please\s+run\s+\/login|anthropic\s+profile\s+login\s+expired/i;
 
 export class CompanionMisuseError extends Error {
   constructor(message) {
