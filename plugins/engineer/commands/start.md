@@ -491,6 +491,15 @@ rm -f "$PHASE7_PLAN_ERR"
 #     for each extras-list entry the user wants in this commit)
 #   - sweep the entire working tree (--accept-current-tree; all-or-nothing)
 
+# ARCHIVE TIMING — decide BEFORE running execute mode. The driver writes
+# set-terminal internally as its last step (P5), and on Claude the Stop hook
+# fires at EVERY turn end, so the archive gates are evaluated at THIS turn's
+# end, not at session close. If the workflow must stay open past this turn,
+# do not run execute mode yet; clearing the marker afterwards works only
+# before that Stop fires and needs the full set-terminal flag set
+# (--workflow-path, --host, --terminal-phase). Full contract:
+# skills/_shared/references/session-handoff.md § Archive timing.
+
 # Step 2 — execute mode: receive the approved subject(s), commit + gate.
 # Single-commit form:
 node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
@@ -522,8 +531,11 @@ if [ "$PHASE7_RC" -ne 0 ]; then
   # at Phase 7.
   exit "$PHASE7_RC"
 fi
-# On success the driver wrote set-terminal internally; the Stop hook
-# auto-archive (ADR-0017 §sub-decision 5) takes over.
+# On success the driver already ran P10 writebackParent SYNCHRONOUSLY and
+# then wrote set-terminal; the Stop hook evaluates the auto-archive gates
+# (ADR-0017 §sub-decision 5) and only retries the writeback idempotently, or
+# backstops a driver that died between the two writes. On Claude that
+# evaluation happens at THIS turn's end — see the ARCHIVE TIMING note above.
 ```
 
 For multi-package splits the body composition (P1 + P9 trailer

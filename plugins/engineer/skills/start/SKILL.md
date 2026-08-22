@@ -273,6 +273,17 @@ terminal marker, terminal phase, HEAD movement (real commit progress),
 and no active children. When all four hold, the workflow archives
 without manual cleanup.
 
+On Claude those gates are evaluated **at the end of the same turn** as the Phase 7
+commit — the Stop hook fires at every turn end, not at session close — and the
+workflow archives then only if all four hold. Decide before running execute mode:
+the driver writes the terminal marker itself, after running P10 `writebackParent`
+synchronously, so by the time it returns the choice is made. Clearing the marker
+afterwards works only before that Stop fires and needs set-terminal's full flag
+set (`--workflow-path`, `--host`, `--terminal-phase`). On Codex the Stop hook runs
+only once the operator has trusted the plugin hooks (`/hooks`), so the evaluation
+waits. Full contract: `skills/_shared/references/session-handoff.md`
+§ Archive timing.
+
 The base runtime completion footer is **code-emitted** on the Phase 7 terminal
 path (ADR-0039): `phase7-commit.mjs` → `set-terminal` fires the session-handoff
 sidecar, which renders the runtime `footer.mjs` (context state, completion state
