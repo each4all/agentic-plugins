@@ -34,6 +34,9 @@ import {
   parseArguments,
   resolvePromptInput,
 } from '../claude-companion.mjs';
+import * as companionModule from '../claude-companion.mjs';
+import { fileURLToPath } from 'node:url';
+import { defineNestingGuardSuite } from './nesting-guard.suite.mjs';
 
 // --- helpers ---------------------------------------------------------------
 
@@ -845,6 +848,15 @@ describe('main() integration', () => {
     assert.equal(process.listenerCount('SIGINT'),  beforeInt);
     assert.equal(process.listenerCount('SIGTERM'), beforeTerm);
   });
+});
+
+// --- nested peer invocation guard (shared suite, both directions) ---------
+
+defineNestingGuardSuite({
+  label: 'claude-companion',
+  mod: companionModule,
+  scriptPath: fileURLToPath(new URL('../claude-companion.mjs', import.meta.url)),
+  peerBin: PEER_CLI_BIN,
 });
 
 describe('contract version export', () => {

@@ -37,6 +37,9 @@ import {
   parseArguments,
   resolvePromptInput,
 } from '../codex-companion.mjs';
+import * as companionModule from '../codex-companion.mjs';
+import { fileURLToPath } from 'node:url';
+import { defineNestingGuardSuite } from './nesting-guard.suite.mjs';
 
 // --- helpers ---------------------------------------------------------------
 
@@ -314,6 +317,55 @@ describe('buildCodexArgs (peer CLI mapping)', () => {
     const idx = args.indexOf('--cd');
     assert.notEqual(idx, -1);
     assert.equal(args[idx + 1], '/work');
+  });
+
+  // Codex-side nesting-guard delivery (peer review 2026-08-22 MAJOR): `codex
+  // exec` does not forward parent env to its shell tools, so the marker must
+  // ride a `-c shell_environment_policy.set.*` override. Without a test that
+  // pins this exact arg, removing or misspelling it leaves the guard tests
+  // green while the nested shell sees no marker and starts the other
+  // companion at depth 0. This is codex-specific (the claude side delivers
+  // via env alone), so it lives here, not in the shared suite.
+  it('appends -c shell_environment_policy.set.AGENTIC_COMPANION_DEPTH="<v>" when nestingMarker is given, JSON-quoted as a TOML string', () => {
+    const args = buildCodexArgs({ nestingMarker: '1' });
+    const cIdx = args.findIndex((a, k) => a === 'shell_environment_policy.set.AGENTIC_COMPANION_DEPTH="1"' && args[k - 1] === '-c');
+    assert.notEqual(cIdx, -1, 'the -c shell_environment_policy.set override is present with the quoted value');
+  });
+
+  it('omits the shell_environment_policy override when no nestingMarker is given (direct buildCodexArgs call)', () => {
+    const args = buildCodexArgs({});
+    assert.equal(args.some((a) => a.startsWith('shell_environment_policy.set')), false);
+  });
+
+  it('the effort -c override and the nesting -c override coexist without clobbering each other', () => {
+    const args = buildCodexArgs({ effort: 'high', nestingMarker: '2' });
+    assert.ok(args.some((a, k) => a === 'model_reasoning_effort=high' && args[k - 1] === '-c'), 'effort override present');
+    assert.ok(args.some((a, k) => a === 'shell_environment_policy.set.AGENTIC_COMPANION_DEPTH="2"' && args[k - 1] === '-c'), 'nesting override present');
+  });
+});
+
+describe('codex-companion — nesting marker reaches codex via the -c override (not just spawn env)', () => {
+  it('invokePeer at a top-level call (no marker) delivers AGENTIC_COMPANION_DEPTH="1" through -c', async () => {
+    const spawnFn = fakeSpawnReturning(makeFakeChild({ exitCode: 0 }));
+    await invokePeer({ prompt: 'x', options: {} }, { spawnImpl: spawnFn, env: { PATH: '/bin' } });
+    const args = fakeSpawnReturning.lastCall.args;
+    assert.ok(
+      args.some((a, k) => a === 'shell_environment_policy.set.AGENTIC_COMPANION_DEPTH="1"' && args[k - 1] === '-c'),
+      'codex is invoked with the -c shell-policy marker override at value "1"',
+    );
+  });
+
+  it('invokePeer at depth 1 (bound 2) delivers the incremented marker "2" through -c', async () => {
+    const spawnFn = fakeSpawnReturning(makeFakeChild({ exitCode: 0 }));
+    await invokePeer(
+      { prompt: 'x', options: {} },
+      { spawnImpl: spawnFn, env: { PATH: '/bin', AGENTIC_COMPANION_DEPTH: '1', AGENTIC_COMPANION_MAX_DEPTH: '2' } },
+    );
+    const args = fakeSpawnReturning.lastCall.args;
+    assert.ok(
+      args.some((a, k) => a === 'shell_environment_policy.set.AGENTIC_COMPANION_DEPTH="2"' && args[k - 1] === '-c'),
+      'the -c marker is stamped depth+1, matching childEnvForPeer',
+    );
   });
 });
 
@@ -863,6 +915,15 @@ describe('main() integration', () => {
     assert.equal(process.listenerCount('SIGINT'),  beforeInt);
     assert.equal(process.listenerCount('SIGTERM'), beforeTerm);
   });
+});
+
+// --- nested peer invocation guard (shared suite, both directions) ---------
+
+defineNestingGuardSuite({
+  label: 'codex-companion',
+  mod: companionModule,
+  scriptPath: fileURLToPath(new URL('../codex-companion.mjs', import.meta.url)),
+  peerBin: PEER_CLI_BIN,
 });
 
 describe('contract version export', () => {

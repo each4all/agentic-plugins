@@ -140,6 +140,46 @@ describe('companions contract parity', () => {
     }
   });
 
+  it('both companions implement the cooperative nesting guard identically (constants, verdicts, refusal triple)', () => {
+    assert.deepEqual(
+      {
+        NESTING_DEPTH_ENV: claude.NESTING_DEPTH_ENV,
+        NESTING_MAX_DEPTH_ENV: claude.NESTING_MAX_DEPTH_ENV,
+        DEFAULT_MAX_NESTING_DEPTH: claude.DEFAULT_MAX_NESTING_DEPTH,
+      },
+      {
+        NESTING_DEPTH_ENV: codex.NESTING_DEPTH_ENV,
+        NESTING_MAX_DEPTH_ENV: codex.NESTING_MAX_DEPTH_ENV,
+        DEFAULT_MAX_NESTING_DEPTH: codex.DEFAULT_MAX_NESTING_DEPTH,
+      },
+    );
+    const D = claude.NESTING_DEPTH_ENV;
+    const M = claude.NESTING_MAX_DEPTH_ENV;
+    const cases = [
+      {},
+      { [D]: '0' },
+      { [D]: '1' },
+      { [D]: '1', [M]: '2' },
+      { [D]: '2', [M]: '2' },
+      { [D]: 'banana' },
+      { [D]: '' },
+      { [D]: '-1' },
+      { [M]: '0' },
+      { [D]: '1', [M]: 'x' },
+    ];
+    for (const env of cases) {
+      const a = claude.checkNesting({ PATH: '/bin', ...env });
+      const b = codex.checkNesting({ PATH: '/bin', ...env });
+      assert.deepEqual(a, b, `checkNesting env=${JSON.stringify(env)}`);
+      if (a.refused) {
+        // The refusal is host-independent by design: identical status, exit
+        // code, kind, message and detail in both directions.
+        assert.deepEqual(claude.buildNestingRefusal(a), codex.buildNestingRefusal(b), `refusal env=${JSON.stringify(env)}`);
+      }
+      assert.deepEqual(claude.childEnvForPeer({ X: '1', ...env }, 0), codex.childEnvForPeer({ X: '1', ...env }, 0));
+    }
+  });
+
   it('both companions emit the same JSON envelope schema for success and peer-run errors', () => {
     const successInvocation = { stdout: 'peer text', stderr: '', exitCode: 0, signal: null, spawnError: null };
     const peerErrorInvocation = { stdout: 'partial text', stderr: 'peer failed', exitCode: 5, signal: null, spawnError: null };
