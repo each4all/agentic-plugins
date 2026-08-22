@@ -376,6 +376,17 @@ Report one of:
 - `✓ Subtask <id> already in_progress — re-attached to existing engineer workflow <id>.` (idempotent re-attach.)
 - `✓ Subtask <id> auto-promoted: engineer Stop hook had already completed it; macro now terminal_marker=true.` (rare race; PR-C0 auto-terminal pass fired.)
 
+ARCHIVE TIMING — in that auto-promoted case the macro is terminal without any
+`set-terminal` call of its own: the Phase 5 `subtask-update` auto-terminal pass
+sets the marker. On Claude the Stop hook fires at **every turn end**, so the
+macro archive gates are **evaluated** at the end of **this** turn, not at session
+close, and the file moves then if they all pass. To hold it open, run the full
+`state.mjs set-terminal` form (`--workflow-path`, `--host`, `--terminal-phase`
+are all required) with `--terminal-marker false` before that Stop fires. On Codex
+the Stop hook runs only once the operator has trusted the plugin hooks
+(`/hooks`), so the evaluation waits for that. Full contract:
+`skills/_shared/references/session-handoff.md` § Archive timing.
+
 Then emit an **Active Next-Action Proposal** instead of a fixed next command, per
 `skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the

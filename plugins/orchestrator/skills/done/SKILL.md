@@ -127,6 +127,11 @@ Surface the JSON envelope. `subtask-update` owns single-writer
 ownership checks, absorbing-completed semantics, unblock propagation,
 and macro auto-terminal promotion.
 
+`updateSubtask` treats `--status=completed`, `--commit`, `--closed-at` and
+`--pr-url` alike as completion fields: each requires `--engineer-workflow-id` and
+throws without it. This skill never forwards `--pr-url` itself, so the rule bites
+when a PR URL is attached later through a direct `state.mjs subtask-update` call.
+
 ---
 
 ## Completion
@@ -164,6 +169,18 @@ proposal). When subtasks remain, the macro stays
 active and no terminal footer fires. Independently, a real completed subtask
 typically leaves an open PR on its branch — surface that PR follow-up if it has
 not already been handled (orchestrator computes no PR-readiness recommendation).
+
+ARCHIVE TIMING — that auto-terminal promotion marks the macro terminal, and on
+Claude the Stop hook fires at **every turn end**, so the macro archive gates are
+**evaluated** at the end of **this** turn, not at session close. They often do not
+all pass here: `$orchestrator:done` is the backup for a child whose own Stop never
+fired, and that child usually stays active, so the no-active-children gate fails
+and the macro stays marked for a later Stop. To hold it open, run the full
+`state.mjs set-terminal` form (`--workflow-path`, `--host`, `--terminal-phase` all
+required) with `--terminal-marker false` before that Stop fires. On Codex the Stop
+hook runs only once the operator has trusted the plugin hooks (`/hooks`), so the
+evaluation waits. Full contract:
+`skills/_shared/references/session-handoff.md` § Archive timing.
 
 ---
 

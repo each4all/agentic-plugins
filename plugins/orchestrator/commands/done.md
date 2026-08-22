@@ -25,6 +25,7 @@ Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root.
 **Critical rules** (ADR-0019 §4):
 - The commit SHA is the **tip of the subtask branch**, NOT `git rev-parse HEAD` — `/done` can be invoked from any branch.
 - A completion writeback MUST supply the matching `engineer_workflow_id`. When the subtask's `engineer_workflow_id` is already recorded (the usual case after a previous `/next`), use it; on mismatch the API rejects with single-writer ownership diagnostic.
+- `updateSubtask` treats `--status=completed`, `--commit`, `--closed-at` **and `--pr-url`** alike as completion fields: each requires `--engineer-workflow-id`, and `subtask-update` throws without it. `/done` itself never forwards `--pr-url` (it parses only subtask / commit / workflow), so this matters when attaching a PR URL later through a direct `state.mjs subtask-update` call — a metadata-only update that `completed`, absorbing for *status*, still allows.
 - The fallback scan (when `engineer_workflow_id` is unset on the subtask) MUST require BOTH `parent_workflow == <macro id>` AND `originating_subtask == <subtask id>`. Single-key scans risk mismatching when two macro plans both label a subtask the same id.
 
 ---
@@ -274,6 +275,20 @@ missing/too-old runtime emits nothing, and the SessionStart backstop still
 re-surfaces the handoff); it never mutates host session context. When subtasks
 remain (no auto-terminal), the macro stays active and no terminal footer is
 emitted; report the completion/no-op summary above.
+
+ARCHIVE TIMING — that auto-terminal promotion sets the macro `terminal_marker`,
+and on Claude the Stop hook fires at **every turn end**, so the macro archive
+gates are **evaluated** at the end of **this** turn, not at session close. They
+often do not all pass here: `/done` is the backup for a child whose own Stop
+never fired, and that child usually stays active, so the no-active-children gate
+fails and the macro simply stays marked for a later Stop. Where they do pass, the
+macro file moves this turn. To hold it open, run the full `state.mjs set-terminal`
+form (`--workflow-path`, `--host`, `--terminal-phase` are all required) with
+`--terminal-marker false` before that Stop fires — that clears only the marker
+and does not reopen the subtask. Once the file has moved, recovery is a fresh
+`/orchestrator:plan`; an archived macro is outside `find-active`. On Codex the
+Stop hook runs only once the operator has trusted the plugin hooks (`/hooks`), so
+the evaluation waits for that.
 
 Independently of the footer, a real completed subtask (not a no-op) typically
 leaves an open PR on its branch — surface that PR follow-up to the user if it has
