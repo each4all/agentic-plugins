@@ -49,7 +49,7 @@ rm -f "$FIND_ERR"
   ```bash
   GIT_BRANCH="$(git branch --show-current)"
   GIT_HEAD="$(git rev-parse HEAD)"
-  STATUS_DIGEST="$(git status --porcelain=v1 -z | shasum -a 256 | cut -d' ' -f1)"
+  STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
   # ADR-0019 §1+§3 — when /orchestrator:next dispatches this command,
   # it sets AGENTIC_PARENT_WORKFLOW + AGENTIC_ORIGINATING_SUBTASK so
   # the create-time bootstrap records the immutable parent linkage.
