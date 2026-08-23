@@ -29,13 +29,21 @@ critique/feedback and regenerates through Codex's integrated gpt-image — it
    node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" \
      --base-prompt-file <base.txt> --feedback-file <feedback.txt> \
      --iteration <N> --max-iterations 3 --repo-root "$REPO_ROOT" \
-     --format png --quality low [--size <WxH>]
+     --format png --quality low [--size <WxH>] \
+     [--background opaque|auto|transparent]
    ```
 
    It renders the base prompt + feedback into a new generation, writes a fresh
    `ImageResult` manifest (new run-id), verifies the returned file (via
    compose-dispatch), and surfaces the per-iteration cost. Past the cap it
    returns `iteration_cap` and does NOT generate.
+
+   **`--background` is not inherited between iterations.** Restate it on every
+   call: a caller that omits it gets an opaque image and a plain reason,
+   rather than a policy silently carried over from a manifest nobody read.
+   The transparency format policy is checked in the CLI too, so
+   `--estimate-only` cannot quote a price for a run that would be rejected
+   (`docs/contracts.md` §5).
 
 3. **Privacy gate** (`docs/contracts.md` §9): genericize the revised prompt +
    feedback before cross-host dispatch — only the genericized form leaves the

@@ -23,5 +23,6 @@ prompt text.
 patterns, and any public brand/visual constraints — each cited. **Structure**
 them into the ImageBrief fields (`docs/contracts.md` §3:
 style/palette/composition/constraints), flagging anything gpt-image-2 cannot
-honor (e.g. a transparent background). The references feed `image:frame`. No
+honor (e.g. a transparent background on jpeg/webp — transparency itself is
+supported for png, `docs/contracts.md` §5). The references feed `image:frame`. No
 image generation here — no generation cost.

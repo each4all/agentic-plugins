@@ -11,13 +11,19 @@
 //   node refine-dispatch.mjs --base-prompt-file <f> [--feedback-file <f>]
 //        [--iteration N] [--max-iterations M] [--estimate-only]
 //        [--repo-root <d>] [--format png|jpeg|webp] [--size <s>] [--quality <q>] [--slug <s>]
+//        [--background opaque|auto|transparent]
 //   --estimate-only prints the per-image cost estimate and generates nothing.
 //   stdout: { ok, iteration, maxIterations, cost, error?, manifest } JSON
 //   exit 0 on success, 1 on error, 2 on misuse.
+//
+// `--background` is NOT inherited from the previous iteration: each refine call
+// states the full parameter set, so a caller that forgets it gets an opaque
+// image and a plain reason, rather than a silent policy change carried over
+// from a manifest it never read.
 
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { dispatch as composeDispatch, estimateCost } from './compose-dispatch.mjs';
+import { dispatch as composeDispatch, estimateCost, normalizeFormat, BACKGROUNDS, TRANSPARENT_FORMATS } from './compose-dispatch.mjs';
 
 export const MAX_ITERATIONS = 3;
 
@@ -64,8 +70,10 @@ export async function refine(opts = {}) {
     format: opts.format,
     size: opts.size,
     quality: opts.quality,
+    background: opts.background,
     slug: opts.slug || `refine-${iteration}`,
     runRoot: opts.runRoot,
+    findCompanion: opts.findCompanion,
   });
   const ok = manifest.status === 'success';
   // Lift compose's typed error (moderation_blocked/quota_exhausted/...) to the
@@ -84,11 +92,27 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           iteration: { type: 'string' }, 'max-iterations': { type: 'string' },
           'estimate-only': { type: 'boolean' },
           'repo-root': { type: 'string' }, format: { type: 'string' }, size: { type: 'string' }, quality: { type: 'string' }, slug: { type: 'string' },
+          background: { type: 'string' },
         },
         strict: true,
       });
     } catch (err) { console.error(`refine-dispatch: ${err.message}`); process.exit(2); }
     const v = parsed.values;
+
+    // Parameter policy is checked here, not only inside compose-dispatch, so
+    // that --estimate-only cannot quote a price for a combination that will
+    // never be generated.
+    const fmt = normalizeFormat(v.format);
+    if (fmt === null) { console.error('refine-dispatch: --format must be one of png|jpeg|webp'); process.exit(2); }
+    const bg = v.background == null ? null : String(v.background).trim().toLowerCase();
+    if (bg != null && !BACKGROUNDS.includes(bg)) {
+      console.error(`refine-dispatch: --background must be one of ${BACKGROUNDS.join('|')}`);
+      process.exit(2);
+    }
+    if (bg === 'transparent' && !TRANSPARENT_FORMATS.includes(fmt)) {
+      console.error(`refine-dispatch: a transparent background is contracted for ${TRANSPARENT_FORMATS.join('|')} only, not "${fmt}"`);
+      process.exit(2);
+    }
 
     // strict numeric parsing — a typo must NOT silently generate at iteration 1
     let iteration = 1;
@@ -114,7 +138,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (v['feedback-file']) { try { feedback = readFileSync(v['feedback-file'], 'utf8'); } catch (e) { console.error(`refine-dispatch: ${e.message}`); process.exit(2); } }
     if (!basePrompt) { console.error('refine-dispatch: --base-prompt or --base-prompt-file is required'); process.exit(2); }
 
-    const result = await refine({ basePrompt, feedback, iteration, maxIterations, repoRoot: v['repo-root'] || process.cwd(), format: v.format, size: v.size, quality: v.quality, slug: v.slug, env: process.env });
+    const result = await refine({ basePrompt, feedback, iteration, maxIterations, repoRoot: v['repo-root'] || process.cwd(), format: v.format, size: v.size, quality: v.quality, slug: v.slug, background: v.background, env: process.env });
     console.log(JSON.stringify(result, null, 2));
     process.exit(result.ok ? 0 : 1);
   })();

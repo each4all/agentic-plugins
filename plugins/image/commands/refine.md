@@ -26,7 +26,7 @@ clamped); no auto-retry of user/moderation errors. Regenerate with the feedback
 applied (reuses compose-dispatch):
 
 ```bash
-node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" --base-prompt-file <base.txt> --feedback-file <feedback.txt> --iteration <N> --max-iterations 3 --repo-root "$REPO_ROOT" --format png --quality low
+node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" --base-prompt-file <base.txt> --feedback-file <feedback.txt> --iteration <N> --max-iterations 3 --repo-root "$REPO_ROOT" --format png --quality low [--background opaque|auto|transparent]
 ```
 
 Renders base + feedback into a new generation (new run-id manifest, cost

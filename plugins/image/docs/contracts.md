@@ -72,10 +72,11 @@ shape (fields filled best-effort; unknowns omitted):
   "palette":      "string — colours / mood",
   "aspect_ratio": "string — e.g. 1:1, 3:2, 2:3 (must satisfy gpt-image-2 limits, §5)",
   "output": {
-    "size":     "string — e.g. 1024x1024 (edges multiple of 16, max edge <=3840, aspect <=3:1)",
-    "quality":  "low | medium | high | auto",
-    "format":   "png | jpeg | webp",
-    "variants": "integer >= 1 — number of images to generate (n)"
+    "size":       "string — e.g. 1024x1024 (edges multiple of 16, max edge <=3840, aspect <=3:1)",
+    "quality":    "low | medium | high | auto",
+    "format":     "png | jpeg | webp",
+    "background": "opaque | auto | transparent — transparent is png-only (§5)",
+    "variants":   "integer >= 1 — number of images to generate (n)"
   },
   "success_criteria": ["string — what 'good' means; used by image:critique"],
   "constraints":      ["string — hard constraints / things to avoid"]
@@ -83,7 +84,20 @@ shape (fields filled best-effort; unknowns omitted):
 ```
 
 `image:frame` MUST warn or reject brief fields that gpt-image-2 cannot
-honor (e.g. a transparent-background request — see §5).
+honor (see §5).
+
+**`output.background` is authoritative over brief prose** (ADR-0055 §2).
+Prose is still scanned, but only to catch a request the structured field
+never recorded — an unrecorded request never reaches
+`requested_parameters`, so nothing can check it against the returned
+bytes:
+
+| `output.background` | prose asks for transparency | `validateBrief` |
+|---|---|---|
+| `transparent` | yes / no | accepted |
+| `opaque` | yes | **issue** — a contradiction the prompt would fight |
+| `auto` or unset | yes | **warning** — record it in `output.background` |
+| any | no | accepted |
 
 ---
 
@@ -96,8 +110,14 @@ honor (e.g. a transparent-background request — see §5).
   "status":   "success | error",
   "brief_ref": "brief.json | null",
   "prompt":   "string — the exact prompt rendered for Codex's gpt-image tool",
-  "requested_parameters": { "size": "…", "quality": "…", "format": "…", "variants": 1 },
-  "observed_parameters":  { "size": "…", "format": "…", "note": "best-effort; some requested params may be silently ignored (§6)" },
+  "requested_parameters": { "size": "…", "quality": "…", "format": "…", "background": "opaque | auto | transparent | null", "variants": 1 },
+  "observed_parameters":  {
+    "width": "integer | null", "height": "integer | null", "format": "png | jpeg | webp",
+    "background": "transparent | opaque | null — read from the bytes, null when undecided",
+    "alpha": { "format": "…", "valid": "boolean", "channel": "boolean | null", "transparent": "boolean | null", "source": "pixels | flag | format | null", "reason": "string | null" },
+    "note": "best-effort; some requested params may be silently ignored (§6)"
+  },
+  "generation_attempted": "boolean — false when a pre-flight rejection returned before the companion ran, so `cost` cannot be read as spend",
   "images": [
     {
       "path":       "absolute path under the run dir",
@@ -109,6 +129,7 @@ honor (e.g. a transparent-background request — see §5).
       "rejected":   "boolean — retained as an audit artifact unless cleaned (§7)"
     }
   ],
+  "failed_outputs": ["same shape as images[] — a file that landed but failed verification"],
   "cost": { "estimate_usd": "number — surfaced, not hidden", "tier": "low | medium | high", "basis": "string" },
   "error": { "kind": "see §8 | null", "message": "string", "detail": "string" },
   "created_at": "iso-utc"
@@ -120,6 +141,24 @@ Codex stdout. Before recording `status: success` it verifies each image
 path: (a) exists, (b) is under the expected output root unless an
 override was explicit, (c) is non-empty, (d) sniffs dimensions/format,
 and (e) reconciles them against the claimed metadata.
+
+**`images[]` stays candidates-only.** `variant-select.mjs` and the
+decide skill treat every `images[]` entry as a selectable candidate
+*without* consulting `status`, so a file that landed but failed
+verification is filed under `failed_outputs[]` instead — retained,
+because it exists and was paid for, but never selectable. The field is
+purely additive; a consumer that does not know it ignores it
+(ADR-0055 §5).
+
+**Alpha observation (ADR-0055 §4).** `observed_parameters.alpha` is
+recorded on every successful generation, whatever the requested
+background, and is read from the **pixels** — the same standard this
+plugin already applies to dimensions. `transparent: true` means *at
+least one decoded pixel is not fully opaque*: a byte-level fact, **not**
+a judgement that the background was cut out well. No coverage threshold
+exists, deliberately. `valid: false` separates a malformed image from a
+well-formed one the inspector declines to decode (interlaced PNG, WebP
+pixel data), which is why an undecided result never becomes a failure.
 
 ---
 
@@ -137,9 +176,31 @@ limits to respect when framing:
 - **quality** — `low` / `medium` / `high` / `auto`.
 - **format** — `png` (default) / `jpeg` / `webp` (+ `output_compression`
   0–100 for jpeg/webp).
-- **background** — `opaque` / `auto` only. **gpt-image-2 does NOT
-  support transparent backgrounds** (a regression from gpt-image-1) —
-  `image:frame` must reject/warn, never pretend prompt wording guarantees it.
+- **background** — `opaque` / `auto` / `transparent`
+  ([ADR-0055](../../../docs/adr/0055-image-transparent-background-support.md)).
+  A 2026-08-23 probe decoded a genuinely transparent PNG out of Codex
+  `0.148.0`'s integrated tool (`transparency-probe.md`), so the earlier
+  blanket prohibition no longer describes the installed pair. The
+  contract that replaces it:
+  - **`transparent` is png-only.** JPEG has no alpha channel. WebP *is*
+    alpha-capable, but this plugin reads WebP alpha only at the
+    header-flag level, and a transparency claim it cannot verify is
+    exactly what this contract exists to prevent — so `transparent` +
+    `webp` is rejected as unverified-here, not as impossible. Both
+    rejections happen before discovery, before the run dir, before spend.
+  - **The result is checked, never assumed.** An explicit `transparent`
+    request whose bytes carry no transparency is
+    `background_not_honored` (§8) — prompt wording still guarantees
+    nothing, which is the part of ADR-0037 Decision 7 that stands.
+  - **There is no minimum Codex version.** The probe could not record
+    which backend served the request, so a version floor would proxy a
+    capability nobody measured. The byte check is a **post-spend
+    verification**, not a pre-spend capability check.
+  - **Known gap:** the direct `compose-dispatch` path does not scan its
+    prompt text for an unrecorded transparency request — only brief
+    validation does. Blocking there was rejected because the
+    `alpha channel` pattern would refuse a legitimate diagram *about*
+    alpha channels (ADR-0055 §Consequences).
 
 Capabilities the underlying model has but that the **Codex prompt path
 does NOT surface as structured controls** (classified so later verbs do
@@ -200,6 +261,21 @@ errors):
 | `write_failed` | image could not be written/verified on the shared fs | surface path + reason |
 | `malformed_envelope` | companion returned non-JSON / unparseable output | surface; no retry |
 | `peer_run_error` | companion ran but failed for another (non-typed) reason | surface detail; no blind retry |
+| `unsupported_parameters` | the requested parameter set cannot be honored — rejected **before any spend** | fix the parameters; nothing was generated |
+| `background_not_honored` | an **explicit** `transparent` request whose returned bytes carry no transparency | the file is retained in `failed_outputs[]`; retry via `image:refine` |
+
+**Alpha outcomes, in full** (ADR-0055 §5). Only an explicit
+`transparent` request is gated at all; `auto` and `opaque` record the
+observation and never fail on it:
+
+| requested | `alpha.valid` | `alpha.transparent` | outcome |
+|---|---|---|---|
+| `transparent` | `true` | `true` | `success` |
+| `transparent` | `true` | `false` | `background_not_honored` — the definite negative |
+| `transparent` | `true` | `null` | `success`, with `observed_parameters.background: null` and `alpha.reason` — unknown is not failure |
+| `transparent` | `false` | any | `write_failed` — the image could not be decoded, so nothing could be verified |
+| `auto` / `opaque` / unset | any | any | `success` — the observation is recorded, never gated |
+| any (pre-flight) | — | — | `unsupported_parameters`, `generation_attempted: false`, no run dir |
 
 The **honest-scope failure mode** (ADR-0037 Decision 6): where neither
 native generation nor a reachable Codex bridge exists, `image:compose`

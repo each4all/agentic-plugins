@@ -170,7 +170,11 @@ describe('plugins/image — contract surfaces (docs/contracts.md)', () => {
 
   it('records the typed error taxonomy kinds', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
-    for (const kind of ['moderation_blocked', 'quota_exhausted', 'peer_cli_not_found', 'write_failed']) {
+    for (const kind of [
+      'moderation_blocked', 'quota_exhausted', 'peer_cli_not_found', 'write_failed',
+      // ADR-0055 — the two parameter kinds transparency support introduced.
+      'unsupported_parameters', 'background_not_honored',
+    ]) {
       ok(text.includes(kind), `contracts.md must define the error kind "${kind}"`);
     }
   });

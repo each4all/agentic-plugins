@@ -49,18 +49,40 @@ tool and auth.
    metadata; never inline raw bytes.
 5. **Errors** (`docs/contracts.md` §8): the dispatcher classifies failures
    (`moderation_blocked` / `quota_exhausted` / `peer_cli_not_found` /
-   `peer_unauthenticated` / `tool_unavailable` / `write_failed`) — no blind
+   `peer_unauthenticated` / `tool_unavailable` / `write_failed` /
+   `unsupported_parameters` / `background_not_honored`) — no blind
    retry. On `peer_cli_not_found` this is the **honest-scope failure**:
    Claude has no native image generation and no reachable Codex bridge —
    report the limitation explicitly, do not pretend.
+   `unsupported_parameters` is returned **before any spend**, so nothing was
+   generated; `background_not_honored` means the image landed but the bytes
+   refute an explicit `transparent` request — the file is kept in
+   `failed_outputs[]` and `image:refine` is the retry path.
 
 ## On the Codex host
 
 Codex invokes gpt-image natively in-session (`codex exec`), saves to the
 run dir, and writes the same manifest shape — no dispatcher round-trip.
 
+**The background policy is not the dispatcher's; it is the contract's**, so
+the native path applies it by hand (ADR-0055 §3–§5). Before generating:
+refuse `transparent` with any format other than `png`. After generating:
+run `node "$CLAUDE_PLUGIN_ROOT/scripts/alpha-inspect.mjs"`'s `inspectAlpha`
+over the returned bytes, record `observed_parameters.alpha`, and — for an
+explicit `transparent` request only — write `background_not_honored` with the
+file under `failed_outputs[]` when `transparent` comes back `false`. An
+undecided result is recorded, never failed; an undecodable file is
+`write_failed`.
+
 ## Parameter honoring
 
-Codex surfaces only the `prompt`; size/quality/format are prompt-mediated
-best-effort (`docs/contracts.md` §5). The measured requested-vs-observed
-findings live in `docs/parameter-probe.md` (ADR-0037 item 7).
+Codex surfaces only the `prompt`; size/quality/format/background are
+prompt-mediated best-effort (`docs/contracts.md` §5). The measured
+requested-vs-observed findings live in `docs/parameter-probe.md` (ADR-0037
+item 7), and the transparency evidence in `docs/transparency-probe.md`
+(ADR-0055).
+
+Background is the one prompt-mediated parameter whose result is **checked**:
+`--background transparent` renders a positive, negation-free clause into the
+prompt, and the returned pixels decide whether it was honored. Prompt wording
+still guarantees nothing — that part of ADR-0037 Decision 7 stands.

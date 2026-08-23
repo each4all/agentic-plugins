@@ -32,8 +32,15 @@ helper (Claude host):
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/scripts/compose-dispatch.mjs" \
   --prompt-file <genericized-prompt-file> --repo-root "$REPO_ROOT" \
-  --format png --quality low|medium|high [--size <WxH>] [--slug <slug>]
+  --format png --quality low|medium|high [--size <WxH>] [--slug <slug>] \
+  [--background opaque|auto|transparent]
 ```
+
+`--background transparent` is **png-only** and its result is verified in the
+returned pixels (`docs/contracts.md` §5). An unhonorable combination is
+rejected before discovery, before the run dir, and before any spend —
+`unsupported_parameters`, with `generation_attempted: false` so the cost
+estimate cannot be read as money spent.
 
 The helper discovers `codex-companion`, generates via Codex's integrated
 gpt-image, **verifies the returned file** (exists / under the run root /

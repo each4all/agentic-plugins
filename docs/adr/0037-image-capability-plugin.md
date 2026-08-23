@@ -2,7 +2,21 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0055](0055-image-transparent-background-support.md) — Decision 7 transparency clause only
+
+> **Transparency reversed by [ADR-0055](0055-image-transparent-background-support.md).**
+> The decision to build `image` as an L2 capability, its verb set,
+> cross-host dispatch through the companion bridge, output convention,
+> privacy gate, honest-scope failure mode, and Decision 7's operative
+> core — that Codex surfaces **only the prompt**, so every generation
+> parameter is prompt-mediated and best-effort — are unchanged and
+> operative. Only Decision 7's factual clause "`background` — `opaque` /
+> `auto` only; `gpt-image-2` does NOT support transparent backgrounds"
+> is superseded: a 2026-08-23 probe decoded a genuinely transparent PNG
+> out of Codex `0.148.0`'s integrated tool
+> (`plugins/image/docs/transparency-probe.md`). The clause is marked
+> with an inline note below; the original prose is preserved as
+> historical record.
 
 ## Context
 
@@ -145,6 +159,11 @@ Add **`plugins/image`** as a Layer-2 capability plugin
      `output_compression` (0–100) for jpeg/webp;
    - **background** — `opaque` / `auto` only; **`gpt-image-2` does NOT
      support transparent backgrounds** (a regression from `gpt-image-1`);
+     *(Superseded by [ADR-0055](0055-image-transparent-background-support.md) §1
+     — `transparent` is supported through Codex's integrated tool and
+     contracted for PNG, verified in the returned pixels. This ADR makes
+     no claim about the direct `gpt-image-2` model, which the project
+     never calls.)*
    - **n** (multiple images), **moderation** (`auto`/`low`), **edits**
      (one+ reference images + optional alpha **mask**), **partial_images**
      (0–3, streaming).
