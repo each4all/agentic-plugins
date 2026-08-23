@@ -1,0 +1,6 @@
+# Generated image bytes are NOT committed (repo keeps generated images out; see .gitignore 'output/').
+# Re-run the probe and compare these digests. Sizes are exact.
+
+98a2e21df1ed4ff8b69582837fb169efb3727d2244d04196e74778e0d3f1b5e0      411928 bytes  t1-transparent-1.png
+9df838aa59bdd965798f2eb31f35c53fc468edc6d19dcf0d49e76e5db5a897a7      919075 bytes  c1-control-1.png
+7fb6ba179155adef483653d5b5a4b02728915814b4d3d87e741f7b7dbb49646f      158930 bytes  c2-jpeg-opaque-1.jpeg

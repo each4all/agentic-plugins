@@ -1,0 +1,1 @@
+A simple flat-design red maple leaf icon, centered, on a fully transparent background with a real alpha channel. No backdrop, no white fill behind the leaf — the area around the leaf must be transparent.
