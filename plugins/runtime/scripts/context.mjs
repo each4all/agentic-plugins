@@ -2077,7 +2077,7 @@ export function buildHandoffGuidance({ runId, stale, sourceFreshness, sessionHan
 // else the standalone `routing` arg) and shapes the next-session command, not
 // the binary decision. Returns null only when none of the three inputs is
 // present (nothing to decide).
-export function evaluateSessionHandoff({ riskLevel = null, projection = null, routing = null, unsupportedKind = null } = {}) {
+export function evaluateSessionHandoff({ riskLevel = null, riskSupplied = null, projection = null, routing = null, unsupportedKind = null } = {}) {
   // ADR-0031 (runtime-unsupported-kind) — an active workflow whose kind runtime
   // cannot model (e.g. image, or a typo) reaches the seam as projection=null +
   // unsupportedKind=<name>. The honest path fires only for a real, named-but-
@@ -2088,8 +2088,14 @@ export function evaluateSessionHandoff({ riskLevel = null, projection = null, ro
   // (a) Context-budget risk is caller-supplied, not host-measured (ADR-0031
   // §7). Absent OR unrecognized → yellow, the conservative default that FIRES
   // the preflight rather than silently assuming green (fail-soft, no throw).
-  const riskSupplied = RISK_LEVELS.has(riskLevel);
-  const risk = riskSupplied ? riskLevel : 'yellow';
+  // A caller that KNOWS the value it is passing is runtime's own fallback can say
+  // so explicitly. Without that, supply is inferred from the value's validity, as
+  // before. The explicit form exists because the alternative — signalling
+  // "unsupplied" by passing null — collides with the all-inputs-absent early
+  // return above and would silently drop the whole handoff.
+  const riskRecognized = RISK_LEVELS.has(riskLevel);
+  const supplied = riskSupplied === null ? riskRecognized : riskSupplied === true && riskRecognized;
+  const risk = riskRecognized ? riskLevel : 'yellow';
   // (b) archive_gate: the real projected gate when we have one; otherwise a
   // synthesized sentinel — 'unsupported_kind' when an unmodelable workflow was
   // supplied (honest), 'absent' when nothing was. Runtime genuinely cannot read
@@ -2129,7 +2135,7 @@ export function evaluateSessionHandoff({ riskLevel = null, projection = null, ro
     recommended_session: recommendedSession,
     reason,
     context_risk: risk,
-    context_risk_supplied: riskSupplied,
+    context_risk_supplied: supplied,
     archive_gate: archiveGate,
     archive_gate_report: archiveGateReport(archiveGate, unsupported),
     routing_recommendation: routingRecommendation,

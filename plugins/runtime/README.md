@@ -382,7 +382,11 @@ Context output is intentionally limited to:
 
 The footer helper renders the standard ADR-0024 completion footer:
 
-- context state (`green`, `yellow`, or `red`);
+- context state (`green`, `yellow`, or `red`) with its measurement provenance —
+  `context_state_measurement` (`measured`, `unmeasured`, `unknown`) and
+  `context_state_origin` (`caller`, `context-artifact`, `runtime-default`).
+  Runtime measures no host context, so an unsupplied state renders as
+  `unmeasured (no budget sensor)` rather than as a risk level;
 - linked context artifact, lookup freshness, and handoff guidance when a context artifact is supplied;
 - linked consensus run and bounded status guidance when a consensus run is supplied;
 - workflow kind/id/path;
@@ -396,7 +400,7 @@ The footer helper renders the standard ADR-0024 completion footer:
 - optional PR handling readiness, with criteria for deliverable boundary,
   validation, context risk, blocking reviews, and branch pushability.
 
-When supplied `--context-run-id`, the helper reads only bounded fields from the matching `runtime:context` artifact: risk level, artifact pointers, recommended action, next-session prompt pointer, lookup freshness, and handoff guidance. It does not print the context summary body, prompt body, raw peer output, or consensus raw output.
+When supplied `--context-run-id`, the helper reads only bounded fields from the matching `runtime:context` artifact: risk level, artifact pointers, recommended action, next-session prompt pointer, lookup freshness, and handoff guidance. It does not print the context summary body, prompt body, raw peer output, consensus raw output, or the artifact's free-text `risk_reason` — an artifact-recorded risk is reported with an `unknown` measurement basis and the artifact itself stays a pointer.
 
 When supplied `--context-latest`, the helper reads the newest existing readable `runtime:context` artifact and reports read-only lookup metadata, including selected timestamp, age, stale state, stale threshold, skipped invalid artifacts, source-freshness state when a git source snapshot is available, and handoff guidance. Guidance can recommend reusing the handoff, inspecting unverifiable source state, capturing new context, or settling a dirty worktree before capture. `--stale-after-hours <n>` sets the age-based stale threshold. The latest lookup does not create, update, or compact context.
 

@@ -26,13 +26,22 @@ Line references are anchors observed at decision time (`plugin-runtime`
 
 ## 1. Decision record
 
-- **No new footer flags.** Provenance is computed runtime-internally from
-  which inputs actually shaped each field. Rejected: a caller-declared
-  `--completion-derived` flag — the generic fallback this contract exposes is
-  the *runtime's own* no-input default path, not the persona sidecar's
-  designed mapping (ADR-0039 §3 renders concrete by design), and a new flag
-  would add a version-skew surface (older runtimes throw on unknown
-  arguments → the footer would silently stop rendering) for no content gain.
+- **No new footer flags for COMPLETION provenance.** Completion provenance is
+  computed runtime-internally from which inputs actually shaped each field.
+  Rejected: a caller-declared `--completion-derived` flag — the generic fallback
+  this contract exposes is the *runtime's own* no-input default path, not the
+  persona sidecar's designed mapping (ADR-0039 §3 renders concrete by design),
+  and a new flag would add a version-skew surface (older runtimes throw on
+  unknown arguments → the footer would silently stop rendering) for no content
+  gain. This decision is scoped to completion provenance; it is not a
+  repository-wide ban on footer flags. `--context-state-source`
+  ([`footer-contract.md`](footer-contract.md) § Context state and its
+  measurement provenance) is the deliberate counterpart: context-risk
+  measurement is a claim only the caller can make, so it cannot be derived
+  runtime-internally. The version-skew concern above still governs its design —
+  which is why the flag is optional and the honest unmeasured default is reached
+  by omitting input rather than by adding it, so no consumer needs a runtime
+  floor to become honest.
 - **Provenance is tri-state, extending the legacy coarse field.** The
   pre-existing `completion.source` (`explicit` | `inferred`, keyed only on
   `--completion-state` presence) is **frozen for backward compatibility** and

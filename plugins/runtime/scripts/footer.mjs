@@ -17,6 +17,41 @@ import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
 const VALID_CONTEXT_STATES = new Set(['green', 'yellow', 'red']);
+// Provenance for the context risk value, reported on TWO independent axes so
+// neither one has to answer the other's question. The risk enum above stays
+// green|yellow|red — provenance is never an extra enum member, so every
+// downstream consumer that switches on the risk keeps working.
+//
+//   context_state_measurement — the epistemic basis for the value:
+//     measured   — the caller ASSERTS a real context-budget measurement backs it.
+//                  Runtime cannot verify this; it is caller-attested, not observed.
+//     unmeasured — no measurement backs it (a caller's deliberate value, or
+//                  runtime's own fallback).
+//     unknown    — the value was recorded elsewhere and its basis is not knowable
+//                  from what was recorded (a context artifact, see below).
+//
+//   context_state_origin — where the value physically came from:
+//     caller | context-artifact | runtime-default
+//
+// The two axes are deliberately not collapsed: a context artifact records a
+// risk_level but nothing that says whether that level was measured, declared, or
+// itself defaulted, so its ORIGIN is knowable while its MEASUREMENT is not.
+// Collapsing them would launder a stored default into a measurement claim.
+const VALID_CONTEXT_MEASUREMENTS = new Set(['measured', 'unmeasured', 'unknown']);
+const VALID_CONTEXT_ORIGINS = new Set(['caller', 'context-artifact', 'runtime-default']);
+// Only `measured` and `declared` are caller-selectable. There is deliberately NO
+// caller-selectable `default`: the honest way to say "I measured nothing" is to
+// pass no value at all, which needs no flag and therefore no version floor. A
+// caller-selectable default also created a split-brain — `--context-state red
+// --context-state-source default` would have let red drive PR readiness and
+// completion while the session handoff re-derived yellow.
+const VALID_CONTEXT_STATE_SOURCE_FLAGS = new Set(['measured', 'declared']);
+const UNMEASURED_CONTEXT_REPORT = 'unmeasured (no budget sensor)';
+// The ONE definition of the conservative fallback. Runtime measures nothing, so
+// every path that needs a value without an observation must reach for this
+// constant rather than re-deriving `'yellow'` inline — that inline re-derivation
+// is how the fabricated value used to enter from several places at once.
+const CONSERVATIVE_CONTEXT_STATE = 'yellow';
 const VALID_COMPLETION_STATES = new Set([
   'review-needed',
   'publish-needed',
@@ -57,9 +92,13 @@ export async function runFooter(options = {}) {
       })
     : null;
 
-  const contextState = validateContextState(
-    options.contextState ?? context?.contextState ?? 'yellow',
-  );
+  // Honesty seam: ONE resolution of the context risk + its provenance, used by
+  // every consumer below. Previously this was a `??` chain that collapsed three
+  // different provenances into one indistinguishable enum value, and a SECOND
+  // copy of the same chain lived in normalizeNextSession() — so a fabricated
+  // default could not be told apart from a real measurement anywhere downstream.
+  const contextStateResolution = resolveContextState({ options, context });
+  const contextState = contextStateResolution.state;
   // ADR-0031 — an optional bounded workflow projection enriches the workflow
   // fields and drives the session-level continue-vs-fresh decision. When no
   // projection file is supplied the footer degrades to the per-field workflow
@@ -76,7 +115,14 @@ export async function runFooter(options = {}) {
     : normalizeWorkflow(repoRoot, options, null);
   const sessionHandoff = projectionRequested
     ? evaluateSessionHandoff({
+        // The VALUE always goes through — passing null to signal "unsupplied"
+        // would collide with the evaluator's all-inputs-absent early return and
+        // drop session_handoff entirely whenever a projection was malformed,
+        // which the persona sidecars read as fail-closed (no footer at all).
+        // The supplied FACT travels on its own parameter instead, so the
+        // decision is unchanged while the claim becomes honest.
         riskLevel: contextState,
+        riskSupplied: contextStateResolution.supplied,
         projection,
         // runtime-unsupported-kind: prefer the rejected projection's own routing
         // before any standalone --routing-recommendation, so a fresh handoff on
@@ -92,9 +138,9 @@ export async function runFooter(options = {}) {
     ...workflowArtifacts(workflow),
     ...providedArtifacts,
   ]);
-  const nextSession = normalizeNextSession({ host, context, consensus, options });
+  const nextSession = normalizeNextSession({ host, context, consensus, options, contextState });
   const prHandling = shouldIncludePrHandling(options)
-    ? buildPrHandlingReadiness({ contextState, options })
+    ? buildPrHandlingReadiness({ contextState, contextMeasurement: contextStateResolution.measurement, options })
     : null;
   // Completion-output contract: a whitespace-only completion flag is treated
   // as ABSENT (defaults + provenance fire), never as authored explicit
@@ -158,6 +204,12 @@ export async function runFooter(options = {}) {
     version: VERSION,
     advisory: true,
     context_state: contextState,
+    // Provenance is additive: `context_state` keeps meaning "the risk value the
+    // rest of this footer reasoned with", and the fields below report the basis
+    // for it and where it came from, on two independent axes.
+    context_state_measurement: contextStateResolution.measurement,
+    context_state_origin: contextStateResolution.origin,
+    context_state_report: contextStateResolution.report,
     completion_state: localizedCompletion.state,
     completion: localizedCompletion,
     context: context
@@ -257,6 +309,9 @@ export function parseArgs(argv) {
         break;
       case '--context-state':
         options.contextState = validateContextState(requireValue(args, arg));
+        break;
+      case '--context-state-source':
+        options.contextStateSource = validateContextStateSource(requireValue(args, arg));
         break;
       case '--completion-state':
         options.completionState = validateCompletionState(requireValue(args, arg));
@@ -359,7 +414,14 @@ function genericMarker(tier) {
 export function formatText(report) {
   if (report.help) return helpText();
   const lines = ['Runtime completion footer (advisory)'];
-  lines.push(`context state: ${report.context_state}`);
+  // An unmeasured default renders as unmeasured. Older reports (no provenance
+  // field) keep the previous rendering, so this stays readable for any consumer
+  // that hands an older payload to formatText.
+  // The report string is runtime-authored in every branch. Artifact prose is
+  // deliberately NOT echoed here: context.json is user-editable and unvalidated,
+  // so a multi-line or oversized risk_reason could forge footer lines. The
+  // artifact is already surfaced as a pointer, which is the footer's contract.
+  lines.push(`context state: ${report.context_state_report ?? report.context_state}`);
   lines.push(`completion state: ${report.completion_state}${genericMarker(report.completion?.sources?.state)}`);
   if (report.completion?.reason) lines.push(`completion reason: ${report.completion.reason}${genericMarker(report.completion?.sources?.reason)}`);
   if (report.completion?.next_action) lines.push(`completion next action: ${report.completion.next_action}${genericMarker(report.completion?.sources?.next_action)}`);
@@ -411,6 +473,9 @@ export function formatText(report) {
     lines.push('session handoff (continue-vs-fresh):');
     lines.push(`- recommended session: ${report.session_handoff.recommended_session}`);
     lines.push(`- reason: ${report.session_handoff.reason}`);
+    if (report.session_handoff.context_risk_supplied === false) {
+      lines.push(`- context risk: ${report.session_handoff.context_risk} is runtime's conservative fallback, not a supplied or measured value`);
+    }
     lines.push(`- archive gate: ${report.session_handoff.archive_gate} — ${report.session_handoff.archive_gate_report}`);
     if (report.session_handoff.unsupported_workflow_kind) {
       lines.push(`- unsupported workflow kind: ${report.session_handoff.unsupported_workflow_kind} (runtime cannot model it; enablement out of scope)`);
@@ -491,7 +556,14 @@ async function readContextArtifact(repoRoot, options) {
     snapshot: options.currentSourceSnapshot,
     observedAt: toIso(options.now),
   });
-  const state = validateContextState(artifact.context?.risk_level ?? 'yellow');
+  // An artifact that records NO risk level has not recorded a context state —
+  // substituting yellow here would manufacture exactly the fabricated value this
+  // contract exists to expose, and would then report it as artifact-recorded.
+  // Null propagates to the resolver, which reports it as unmeasured.
+  const recordedState = artifact.context?.risk_level == null
+    ? null
+    : validateContextState(artifact.context.risk_level);
+  const state = recordedState ?? CONSERVATIVE_CONTEXT_STATE;
   const promptPointer = artifact.next_session?.prompt_pointer
     ? normalizeRepoPointer(repoRoot, artifact.next_session.prompt_pointer)
     : null;
@@ -506,7 +578,7 @@ async function readContextArtifact(repoRoot, options) {
   });
   return {
     runId,
-    contextState: state,
+    contextState: recordedState,
     contextPointer: pointer(repoRoot, contextPath),
     artifacts: normalizeContextArtifacts(repoRoot, artifact.artifacts ?? []),
     nextSession: {
@@ -690,12 +762,12 @@ function defaultRecommendedNextWork() {
   return 'Review the completion result and choose the next command explicitly.';
 }
 
-function normalizeNextSession({ host, context, consensus, options }) {
+function normalizeNextSession({ host, context, consensus, options, contextState }) {
   const action = options.nextSessionAction
     ? requireSingleLine(options.nextSessionAction, '--next-session-action')
     : options.completionState === 'closed'
       ? 'No next session is required from this footer evidence.'
-      : context?.nextSession.action ?? defaultNextAction(options.contextState ?? context?.contextState ?? 'yellow');
+      : context?.nextSession.action ?? defaultNextAction(contextState);
   const command = options.nextSessionCommand
     ? requireSingleLine(options.nextSessionCommand, '--next-session-command')
     : context
@@ -721,7 +793,7 @@ function shouldIncludePrHandling(options) {
     || options.prBranchState !== undefined;
 }
 
-function buildPrHandlingReadiness({ contextState, options }) {
+function buildPrHandlingReadiness({ contextState, contextMeasurement, options }) {
   const criteria = [
     criterion(
       'deliverable_boundary',
@@ -733,11 +805,18 @@ function buildPrHandlingReadiness({ contextState, options }) {
       options.prValidationState ?? 'unknown',
       { pass: ['passed', 'waived'], fail: ['failed', 'not-run'] },
     ),
-    criterion(
-      'context_risk',
-      contextState,
-      { pass: ['green', 'yellow'], fail: ['red'] },
-    ),
+    // The decision is unchanged — the conservative fallback still passes, exactly
+    // as it did before — but the criterion no longer presents that fallback as
+    // observed evidence, so "readiness passed" cannot cite a measurement that
+    // never happened.
+    {
+      ...criterion(
+        'context_risk',
+        contextState,
+        { pass: ['green', 'yellow'], fail: ['red'] },
+      ),
+      measurement: contextMeasurement,
+    },
     criterion(
       'blocking_reviews',
       options.prReviewState ?? 'unknown',
@@ -1191,6 +1270,68 @@ function validateContextState(value) {
   return value;
 }
 
+function validateContextStateSource(value) {
+  if (!VALID_CONTEXT_STATE_SOURCE_FLAGS.has(value)) {
+    throw new Error('--context-state-source must be measured or declared (omit --context-state entirely to report an unmeasured default)');
+  }
+  return value;
+}
+
+// The single place the footer decides WHAT the context risk is and WHERE it came
+// from. Every consumer (JSON, text, session handoff, PR readiness, next-session
+// action) reads this one result, so a fabricated default cannot re-enter through
+// a second copy of the fallback.
+//
+// Value precedence matches the previous behaviour exactly — caller flag, then
+// context artifact, then the conservative fallback — so no existing caller
+// changes meaning; only the provenance that was previously discarded is now
+// carried alongside.
+export function resolveContextState({ options = {}, context = null } = {}) {
+  const declaredSource = options.contextStateSource
+    ? validateContextStateSource(options.contextStateSource)
+    : null;
+  // `!= null` (not `!== undefined`): a programmatic caller passing an explicit
+  // null previously fell through the `??` chain to the fallback, and must keep
+  // doing so rather than failing enum validation.
+  const callerState = options.contextState != null ? validateContextState(options.contextState) : null;
+  if (declaredSource && callerState === null) {
+    throw new Error(`--context-state-source ${declaredSource} requires --context-state (a provenance claim needs a value to attach to)`);
+  }
+  if (callerState !== null) {
+    const measurement = declaredSource === 'measured' ? 'measured' : 'unmeasured';
+    return {
+      state: callerState,
+      measurement,
+      origin: 'caller',
+      supplied: true,
+      report: measurement === 'measured' ? callerState : `${callerState} [declared, not measured]`,
+    };
+  }
+  if (context && context.contextState != null) {
+    const state = validateContextState(context.contextState);
+    return {
+      state,
+      // A context artifact records a risk level, not the basis for it. Reporting
+      // that as `unmeasured` would be as much of a claim as reporting it as
+      // `measured`; `unknown` is the only honest answer the record supports.
+      measurement: 'unknown',
+      origin: 'context-artifact',
+      supplied: true,
+      report: `${state} [recorded in the context artifact; measurement basis not recorded]`,
+    };
+  }
+  return {
+    // The conservative fallback keeps a valid risk enum because every downstream
+    // rule still needs a value to reason with; what changes is that the footer no
+    // longer presents that value as an observation.
+    state: CONSERVATIVE_CONTEXT_STATE,
+    measurement: 'unmeasured',
+    origin: 'runtime-default',
+    supplied: false,
+    report: UNMEASURED_CONTEXT_REPORT,
+  };
+}
+
 function validateCompletionState(value) {
   if (!VALID_COMPLETION_STATES.has(value)) {
     throw new Error('--completion-state must be review-needed, publish-needed, cleanup-needed, next-work-available, blocked, or closed');
@@ -1298,6 +1439,7 @@ Usage:
   runtime footer render --consensus-latest
   runtime footer render --consensus-latest-open
   runtime footer render --context-state green|yellow|red --recommended-next-work <text>
+  runtime footer render --context-state green|yellow|red --context-state-source measured|declared
   runtime footer render --workflow-projection-file <path>   # ADR-0031 session-level continue-vs-fresh preflight
   runtime footer render --completion-state review-needed|publish-needed|cleanup-needed|next-work-available|blocked|closed
   runtime footer render --pr-handling --pr-completion-boundary reached --pr-validation-state passed --pr-review-state clear --pr-branch-state pushable
@@ -1309,7 +1451,17 @@ does not mutate host session context, workflow state, git state, or pull
 request state. Cutover record guidance renders only a suggested
 runtime:cutover record command; it does not write cutover evidence. Completion
 state is advisory; closed is emitted only when the caller supplies
---completion-state closed.`;
+--completion-state closed.
+
+Context risk carries its provenance on two axes: context_state_measurement
+(measured | unmeasured | unknown) and context_state_origin (caller |
+context-artifact | runtime-default). Runtime performs no automatic host-context
+measurement, so omitting --context-state renders as "context state: unmeasured
+(no budget sensor)" and is reported to the session handoff as an unsupplied
+risk — that is the honest default and it requires no flag. Supply
+--context-state-source measured alongside --context-state only when a real
+context-budget measurement backs the value; runtime records that as a caller
+assertion, it cannot verify it.`;
 }
 
 async function main() {
