@@ -157,6 +157,72 @@ Without a context artifact, callers may supply `--context-state`,
 `--artifact`, `--next-session-action`, `--next-session-command`, and
 `--next-session-prompt-pointer` directly.
 
+### Context state and its measurement provenance
+
+Runtime performs **no automatic host-context measurement**. The risk value and
+the basis for that value are therefore different questions, and the footer
+reports them on two independent axes. The risk enum stays `green | yellow | red`;
+provenance is never expressed as an extra enum member, so every consumer that
+switches on the risk keeps working.
+
+| | `context_state_measurement` | `context_state_origin` | Rendered as |
+|---|---|---|---|
+| `--context-state green --context-state-source measured` | `measured` | `caller` | `context state: green` |
+| `--context-state yellow` (no source flag) | `unmeasured` | `caller` | `context state: yellow [declared, not measured]` |
+| `--context-run-id …` (artifact-recorded `risk_level`) | `unknown` | `context-artifact` | `context state: green [recorded in the context artifact; measurement basis not recorded]` |
+| nothing supplied | `unmeasured` | `runtime-default` | `context state: unmeasured (no budget sensor)` |
+
+**The two axes are deliberately not collapsed.** A context artifact records a
+`risk_level` but nothing that says whether that level was measured, declared, or
+itself defaulted — `captureContext` stores `yellow` both when `--risk` is omitted
+and when `yellow` is supplied. Its *origin* is knowable; its *measurement basis*
+is not. Reporting an artifact value as `measured` would launder a stored default
+into a measurement claim, and reporting it as `unmeasured` would be equally
+unsupported, so `unknown` is the only honest answer the record permits.
+
+**`measured` is caller-attested, not runtime-verified.** Runtime cannot check
+that a measurement happened; `--context-state-source measured` records the
+caller's assertion and nothing more.
+
+**There is no caller-selectable `default`.** The honest way to say "I measured
+nothing" is to pass no value at all — which needs no flag, and therefore no
+runtime version floor for a consumer that wants to become honest. A selectable
+default would also have permitted `--context-state red --context-state-source
+default`, splitting the `red` that drives PR readiness and completion inference
+from the `yellow` the session handoff re-derives. `--context-state-source`
+accepts `measured` or `declared`, and requires `--context-state` — a provenance
+claim needs a value to attach to.
+
+Three consequences worth knowing:
+
+- **An unmeasured default renders as unmeasured in text and in JSON.** The text
+  line replaces the value rather than annotating it, so a fallback cannot be
+  read as an observation. JSON keeps `context_state` as the effective enum — it
+  is still what the rest of the footer reasoned with — and adds
+  `context_state_measurement`, `context_state_origin`, and
+  `context_state_report`.
+- **An unmeasured default is reported to the session handoff as unsupplied.**
+  `session_handoff.context_risk_supplied` is `false` and the rendered handoff
+  names the fallback explicitly. The continue-vs-fresh decision is unchanged —
+  the conservative yellow still drives it. The supply fact travels to
+  `evaluateSessionHandoff` on its own `riskSupplied` parameter rather than by
+  passing `riskLevel: null`, because an absent risk collides with that
+  evaluator's all-inputs-absent early return and would drop `session_handoff`
+  entirely — which every persona sidecar reads as fail-closed, rendering no
+  footer at all.
+- **Artifact prose is never echoed into the footer.** `context.json` is
+  user-editable and is not schema-validated here, so a crafted multi-line
+  `risk_reason` could forge footer lines. Every provenance string the footer
+  renders is runtime-authored; the artifact stays a pointer, per the footer's
+  pointer-only contract.
+
+An artifact that records no `risk_level` is reported as `runtime-default`, not as
+`context-artifact` — reading an absent risk as a recorded one would manufacture
+exactly the fabricated value this contract exists to expose.
+
+This is an honesty contract, not a sensor: nothing here measures context usage.
+A real read-only budget sensor remains separate, future work.
+
 ### Completion state
 
 The helper emits a completion-state contract so callers can guide the next
@@ -207,6 +273,12 @@ readiness criteria pass:
 | context risk | `--context-state green` or `yellow` | `red` |
 | blocking reviews | `--pr-review-state clear` | `blocking` |
 | branch state | `--pr-branch-state pushable` | `not-pushable` |
+
+The context-risk criterion reads the **resolved** risk, so an unmeasured default
+is evaluated as its conservative `yellow` (a pass) exactly as before — this
+change does not alter any PR-readiness decision. The criterion additionally
+carries the `measurement` axis, so an `ask-user` verdict cannot present a
+never-measured fallback as observed evidence.
 
 Any `unknown` criterion returns `defer`; an explicit blocking value returns
 `block`. Only `ask-user` means the host should ask the user whether to
