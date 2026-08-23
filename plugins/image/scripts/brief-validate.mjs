@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// plugins/image/scripts/brief-validate.mjs (ADR-0037)
+// plugins/image/scripts/brief-validate.mjs (ADR-0037, ADR-0055)
 //
 // Validate an ImageBrief's output parameters against gpt-image-2 limits
 // (../docs/contracts.md §5) before the brief reaches image:compose. Pure
@@ -18,14 +18,67 @@ import { parseArgs } from 'node:util';
 
 const QUALITIES = ['low', 'medium', 'high', 'auto'];
 const FORMATS = ['png', 'jpeg', 'webp'];
-const BACKGROUNDS = ['opaque', 'auto']; // gpt-image-2: no transparent (contracts.md §5)
+// `transparent` was added by ADR-0055, after the 2026-08-23 probe decoded a
+// genuinely transparent PNG out of Codex 0.148.0's integrated tool
+// (../docs/transparency-probe.md). ADR-0037 Decision 7's blanket prohibition
+// described the direct `gpt-image-2` model, not the installed pair.
+export const BACKGROUNDS = ['opaque', 'auto', 'transparent'];
+// Transparency is contracted for PNG only. Not because the other formats are
+// incapable — WebP plainly is — but because the plugin's whole basis for
+// allowing transparency is verifying it in the returned bytes, and it can only
+// do that for PNG (contracts.md §5).
+export const TRANSPARENT_FORMATS = ['png'];
 const MAX_VARIANTS = 8; // cost cap (contracts.md §7)
 
-// "transparent background" detection: a background fourcc/medium adjective like
-// "transparent watercolor" is NOT a transparent background; a negated mention
-// ("avoid/no/without transparent") is a constraint, not a request.
-const TRANSPARENT_BG_RE = /transparent\s+(?:background|bg)|background[^.]{0,12}transparent|\balpha\s+channel\b|\bsee-through\s+background\b/i;
-const NEGATED_RE = /\b(?:no|not|without|avoid|never|non-?transparent|opaque)\b/i;
+// Transparent-background *request* patterns, matched INDEPENDENTLY rather than
+// as one alternation. A single combined regex let an early, negated candidate
+// consume text that a later, un-negated candidate needed: measured on
+// "no opaque background; transparent background", where the `background …
+// transparent` span swallowed the real request and reported it as negated.
+const REQUEST_PATTERNS = [
+  /transparent[\s-]+(?:background|bg)\b/gi,
+  /\bbackground[^.]{0,24}?transparent/gi,
+  /\balpha[\s-]+channel\b/gi,
+  /\bsee-through[\s-]+background\b/gi,
+];
+
+// Negation is tested against a BOUNDED WINDOW ending at the match, never
+// against the whole field.
+//
+// The original guard was `TRANSPARENT_BG_RE.test(f) && !NEGATED_RE.test(f)`,
+// which scanned the entire field — so any negation word anywhere disarmed it.
+// The probe demonstrated the hole with its own successful treatment prompt:
+// "a fully transparent background with a real alpha channel … No backdrop, no
+// white fill" was ADMITTED, because that trailing `No` cleared the guard
+// (../docs/transparency-probe.md § Guard defect). Anchoring to the match means
+// a negation only counts when it actually governs the phrase it precedes.
+//
+// The window is a negation token, then at most three intervening words.
+// Punctuation bounds it naturally: in "no white fill, transparent background"
+// the comma stops the walk, so that phrase reads as a request — correctly.
+const NEGATION_BEFORE_RE = /(?:\b(?:no|not|without|avoid|never|excluding|except)\b|\bnon-?|\bun-)\s*(?:\w+[\s-]+){0,3}$/i;
+
+// A preceding window cannot see a negation that sits INSIDE the matched span —
+// "background: not transparent" carries its own negation after the word the
+// match starts on. Both directions are therefore checked.
+const NEGATION_INSIDE_RE = /\b(?:no|not|without|avoid|never|non-?|un-)/i;
+
+/**
+ * Does this field ASK for a transparent background?
+ * True when at least one candidate is governed by no negation, in either
+ * direction. Candidates may overlap; each is judged on its own.
+ */
+export function isTransparencyRequest(field) {
+  if (typeof field !== 'string') return false;
+  for (const re of REQUEST_PATTERNS) {
+    for (const m of field.matchAll(re)) {
+      if (NEGATION_INSIDE_RE.test(m[0])) continue;
+      if (NEGATION_BEFORE_RE.test(field.slice(0, m.index))) continue;
+      return true;
+    }
+  }
+  return false;
+}
 
 export function parseSize(size) {
   if (typeof size !== 'string') return null;
@@ -84,8 +137,20 @@ export function validateBrief(brief) {
 
   if (out.quality != null && !QUALITIES.includes(out.quality)) issues.push(`output.quality "${out.quality}" not in ${QUALITIES.join('|')}`);
   if (out.format != null && !FORMATS.includes(out.format)) issues.push(`output.format "${out.format}" not in ${FORMATS.join('|')}`);
-  if (out.background != null && !BACKGROUNDS.includes(String(out.background).toLowerCase())) {
-    issues.push(`output.background "${out.background}" not in opaque|auto (gpt-image-2 has no transparent-background support)`);
+
+  const bg = out.background != null ? String(out.background).toLowerCase() : null;
+  if (bg != null && !BACKGROUNDS.includes(bg)) {
+    issues.push(`output.background "${out.background}" not in ${BACKGROUNDS.join('|')}`);
+  }
+
+  // Format policy for transparency (contracts.md §5). Statically decidable, so
+  // it is caught here rather than after a paid generation.
+  if (bg === 'transparent' && out.format != null && FORMATS.includes(out.format) && !TRANSPARENT_FORMATS.includes(out.format)) {
+    issues.push(
+      out.format === 'jpeg'
+        ? 'output.background "transparent" is incompatible with output.format "jpeg" — JPEG has no alpha channel; use png'
+        : 'output.background "transparent" is contracted for png only — webp is alpha-capable, but this plugin cannot inspect webp pixels, so a transparent webp request could never be verified (docs/transparency-probe.md); use png',
+    );
   }
 
   if (out.variants != null) {
@@ -101,12 +166,21 @@ export function validateBrief(brief) {
     }
   }
 
-  // transparent-background request anywhere in the brief's text fields
-  const textFields = [brief.subject, brief.composition, brief.style, brief.palette, brief.background, out.background, ...(Array.isArray(brief.constraints) ? brief.constraints : [])].filter((v) => typeof v === 'string');
-  for (const f of textFields) {
-    if (TRANSPARENT_BG_RE.test(f) && !NEGATED_RE.test(f)) {
-      issues.push('transparent background is unsupported by gpt-image-2 — use opaque/auto (ADR-0037 Decision 7); do not promise it via prompt wording');
-      break;
+  // A transparency request in the brief's prose. `output.background` is
+  // authoritative; prose that disagrees with it is a contradiction, and prose
+  // that asks for something the structured field never recorded cannot be
+  // checked against the returned bytes — so it is surfaced either way.
+  // `out.background` itself is a validated enum, not prose, so it is not
+  // scanned here.
+  const textFields = [
+    brief.subject, brief.composition, brief.style, brief.palette, brief.background,
+    ...(Array.isArray(brief.constraints) ? brief.constraints : []),
+  ];
+  if (textFields.some((f) => isTransparencyRequest(f))) {
+    if (bg === 'opaque') {
+      issues.push('the brief text requests a transparent background but output.background is "opaque" — output.background is authoritative, so resolve the contradiction rather than letting the prompt fight the parameter');
+    } else if (bg !== 'transparent') {
+      warnings.push('the brief text requests a transparent background but output.background is not "transparent" — set it so the request is validated, rendered into the prompt, and recorded in the run manifest (an unrecorded request cannot be checked against the returned bytes)');
     }
   }
 

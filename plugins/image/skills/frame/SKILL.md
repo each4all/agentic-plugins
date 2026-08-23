@@ -34,7 +34,11 @@ It flags:
   > 3840, aspect > 3:1, or total pixels outside 655,360..8,294,400
 - bad **quality** (`low|medium|high|auto`) / **format** (`png|jpeg|webp`) /
   **variants** (integer >= 1)
-- a **transparent-background** request — gpt-image-2 does NOT support it
+- a **transparent-background** request paired with `jpeg` or `webp` —
+  transparency is contracted for **png only** (`docs/contracts.md` §5).
+  Record the request in `output.background`, which is authoritative over
+  brief prose: a prose request left unrecorded only warns, but one that
+  contradicts an explicit `opaque` is an error
   (reject; never promise it through prompt wording, `docs/contracts.md` §5)
 
 Surface any issues to the user; do NOT pass an invalid brief to compose.

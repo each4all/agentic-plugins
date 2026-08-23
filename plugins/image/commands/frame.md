@@ -11,15 +11,18 @@ Follow the frame skill at `$CLAUDE_PLUGIN_ROOT/skills/frame/SKILL.md`.
 
 Produces an explicit `ImageBrief` (`docs/contracts.md` §3) that
 `image:compose` renders into a prompt. Warn/reject brief fields gpt-image-2
-cannot honor — e.g. a transparent background (`docs/contracts.md` §5);
-never pretend prompt wording guarantees an unsupported parameter.
+cannot honor — e.g. a transparent background on a format that cannot carry
+alpha (`docs/contracts.md` §5); never pretend prompt wording guarantees a
+parameter. Transparency IS supported, but for **png only**, and the result is
+verified in the returned pixels rather than promised.
 
 > **Lean L2 — no workflow state.** The brief is written as `brief.json`
 > under the run dir (`docs/contracts.md`), not a durable workflow file.
 
 **Validate before compose**: run the helper to check the brief's output
 parameters against gpt-image-2 limits (size grid/aspect/total, quality, format,
-variants, and the unsupported transparent background):
+variants, and the `background` policy — enum, png-only transparency, and prose
+that contradicts or fails to record an explicit `output.background`):
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/scripts/brief-validate.mjs" --brief-file <brief.json>

@@ -7,6 +7,9 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, deepStrictEqual, throws } from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { selectVariant, rejectedPaths, pruneRejected } from '../../plugins/image/scripts/variant-select.mjs';
 
@@ -67,5 +70,67 @@ describe('variant-select — Codex-review hardening', () => {
       { path: '/runs/x/a-2.png', rejected: true, selected: false },   // a real rejected variant
     ] };
     deepStrictEqual(rejectedPaths(m), ['/runs/x/a-2.png']);
+  });
+});
+
+describe('variant-select — failed_outputs are reachable by the explicit prune (ADR-0055)', () => {
+  // A retained failure lives outside images[] so it can never be selected.
+  // That must not also put it outside the ONLY cleanup path — an artifact no
+  // prune can reach is a leak, not a retention policy (contracts.md §7).
+  const manifest = () => ({
+    status: 'error',
+    images: [],
+    failed_outputs: [{ path: '/runs/r/a-1.png', selected: false, rejected: true }],
+  });
+
+  it('rejectedPaths reports a failed output', () => {
+    deepStrictEqual(rejectedPaths(manifest()), ['/runs/r/a-1.png']);
+  });
+
+  it('control: an unmarked failed output is still not prunable', () => {
+    const m = manifest();
+    m.failed_outputs[0].rejected = false;
+    deepStrictEqual(rejectedPaths(m), [], 'the rejected flag is what makes it reachable');
+  });
+
+  it('a selected entry is never prunable, wherever it is filed', () => {
+    const m = manifest();
+    m.failed_outputs[0].selected = true;
+    deepStrictEqual(rejectedPaths(m), []);
+  });
+
+  it('a manifest with no failed_outputs field still works', () => {
+    deepStrictEqual(rejectedPaths({ images: [] }), []);
+  });
+
+  it('pruneRejected actually DELETES a failed output', () => {
+    // rejectedPaths only reports; pruneRejected is what removes the file. A
+    // reporting-only test left the real deletion path unverified, and a
+    // mutation that reverted it stayed green.
+    const runDir = mkdtempSync(join(tmpdir(), 'image-prune-'));
+    const file = join(runDir, 'a-1.png');
+    writeFileSync(file, 'x');
+    const m = { status: 'error', images: [], failed_outputs: [{ path: file, selected: false, rejected: true }] };
+    deepStrictEqual(pruneRejected(m, { runDir }), [file]);
+    strictEqual(existsSync(file), false, 'the file must be gone');
+  });
+
+  it('control: pruneRejected leaves an UNMARKED failed output alone', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'image-prune-'));
+    const file = join(runDir, 'a-1.png');
+    writeFileSync(file, 'x');
+    const m = { status: 'error', images: [], failed_outputs: [{ path: file, selected: false, rejected: false }] };
+    deepStrictEqual(pruneRejected(m, { runDir }), []);
+    strictEqual(existsSync(file), true);
+  });
+
+  it('control: pruneRejected still refuses a path outside the run dir', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'image-prune-'));
+    const outside = mkdtempSync(join(tmpdir(), 'image-outside-'));
+    const file = join(outside, 'a-1.png');
+    writeFileSync(file, 'x');
+    const m = { status: 'error', images: [], failed_outputs: [{ path: file, selected: false, rejected: true }] };
+    deepStrictEqual(pruneRejected(m, { runDir }), [], 'run-dir scope must still hold for the new array');
+    strictEqual(existsSync(file), true);
   });
 });

@@ -9,6 +9,7 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, match } from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,6 +52,53 @@ describe('refine-dispatch — refine guard paths (no generation)', () => {
     const r = await refine({ basePrompt: '', iteration: 1 });
     strictEqual(r.ok, false);
     strictEqual(r.error.kind, 'misuse');
+  });
+});
+
+describe('refine-dispatch — background propagation (ADR-0055)', () => {
+  it('forwards background to compose rather than dropping it', async () => {
+    // The pre-flight reads `background`, so an unhonorable combination proves
+    // the value arrived. The fixture companion is injected so that a
+    // regression which DROPPED the field lands on a stand-in instead of a
+    // live, billed generation.
+    const r = await refine({
+      basePrompt: 'a logo', iteration: 1, format: 'jpeg', background: 'transparent',
+      findCompanion: async () => resolve(REPO_ROOT, 'tests/image/fixtures/fake-codex-companion.mjs'),
+      env: { ...process.env, FAKE_IMAGE_MODE: 'opaque' },
+    });
+    strictEqual(r.ok, false);
+    strictEqual(r.error.kind, 'unsupported_parameters', 'background must reach compose-dispatch');
+    strictEqual(r.manifest.requested_parameters.background, 'transparent');
+  });
+
+  it('passes background through the refine() call site', () => {
+    match(SRC, /background:\s*opts\.background/, 'refine() must forward the option to compose');
+    match(SRC, /background:\s*v\.background/, 'the CLI must forward the flag to refine()');
+  });
+
+  // Driven through the real CLI rather than by reading source positions: a
+  // position check cannot see a policy that is present but disabled, which a
+  // mutation demonstrated. --estimate-only never generates, so this costs
+  // nothing.
+  const cli = (...args) => spawnSync('node', [resolve(REPO_ROOT, 'plugins/image/scripts/refine-dispatch.mjs'), ...args], { encoding: 'utf8' });
+
+  it('--estimate-only still quotes a possible combination (control)', () => {
+    const r = cli('--estimate-only', '--quality', 'low', '--format', 'png', '--background', 'transparent');
+    strictEqual(r.status, 0);
+    match(r.stdout, /estimate_usd/);
+  });
+
+  it('--estimate-only refuses to quote an impossible combination', () => {
+    const r = cli('--estimate-only', '--quality', 'low', '--format', 'jpeg', '--background', 'transparent');
+    strictEqual(r.status, 2, 'must exit as misuse, not print a price');
+    match(r.stderr, /transparent/i);
+    ok(!/estimate_usd/.test(r.stdout), 'no price may be quoted for a run that would be rejected');
+  });
+
+  it('the CLI rejects an out-of-enum background before anything else', () => {
+    const r = cli('--estimate-only', '--background', 'transparant');
+    strictEqual(r.status, 2);
+    match(r.stderr, /background/i);
   });
 });
 

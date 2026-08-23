@@ -37,10 +37,12 @@ generation cost.
    `ImageBrief` (`docs/contracts.md` §3) has no citation field — keep URLs and
    citations OUT of the prompt-rendered fields (`style`/`palette`/`composition`)
    and in a separate "sources" note. Flag anything the **Codex prompt path
-   cannot surface** — not only model-level impossibilities like a transparent
-   background, but also reference images, masks, partial-image streaming, and
+   cannot surface** — reference images, masks, partial-image streaming, and
    exact structured controls ("unsupported through Codex / deferred",
-   `docs/contracts.md` §5) — so frame/compose don't promise them.
+   `docs/contracts.md` §5) — so frame/compose don't promise them. A
+   transparent background is **not** in that set any more (ADR-0055): it is
+   supported for png and verified in the returned pixels, so flag only the
+   format pairing (jpeg/webp) rather than the request itself.
 
 4. **Hand-off**: the field proposals + source notes feed `image:frame`, which
    crystallizes + validates the full brief (`scripts/brief-validate.mjs`). Lean
