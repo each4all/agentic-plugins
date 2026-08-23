@@ -36,8 +36,12 @@ function isPrunableVariant(img) {
 }
 
 export function rejectedPaths(manifest) {
-  if (!manifest || !Array.isArray(manifest.images)) return [];
-  return manifest.images.filter(isPrunableVariant).map((img) => img.path);
+  if (!manifest) return [];
+  const all = [
+    ...(Array.isArray(manifest.images) ? manifest.images : []),
+    ...(Array.isArray(manifest.failed_outputs) ? manifest.failed_outputs : []),
+  ];
+  return all.filter(isPrunableVariant).map((img) => img.path);
 }
 
 // Explicit prune of rejected variant files. runDir is MANDATORY (scope cannot
@@ -47,7 +51,15 @@ export function pruneRejected(manifest, { runDir, unlink = unlinkSync } = {}) {
   let realRoot;
   try { realRoot = realpathSync(resolve(runDir)); } catch { return []; } // run dir gone → nothing to prune
   const pruned = [];
-  for (const img of (manifest && Array.isArray(manifest.images) ? manifest.images : [])) {
+  // Both arrays: `images[]` holds rejected variants, `failed_outputs[]` holds a
+  // file that landed but failed verification (ADR-0055 §5). Both are retained
+  // audit artifacts under the same explicit-cleanup rule, and neither is ever
+  // deleted automatically.
+  const candidates = [
+    ...(manifest && Array.isArray(manifest.images) ? manifest.images : []),
+    ...(manifest && Array.isArray(manifest.failed_outputs) ? manifest.failed_outputs : []),
+  ];
+  for (const img of candidates) {
     if (!isPrunableVariant(img)) continue;
     const p = resolve(img.path);
     if (!existsSync(p)) continue;

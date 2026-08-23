@@ -283,6 +283,11 @@ describe('compose-dispatch — the background gate, end to end through a fixture
     deepStrictEqual(m.images, []);
     strictEqual(m.failed_outputs.length, 1);
     ok(existsSync(m.failed_outputs[0].path), 'the file it names is really there');
+    strictEqual(m.failed_outputs[0].selected, false);
+    // Marked rejected so the EXISTING explicit prune can reach it. Cleanup is
+    // opt-in by design (contracts.md §7), and an artifact no cleanup path can
+    // reach would be a leak rather than a retention policy.
+    strictEqual(m.failed_outputs[0].rejected, true);
   });
 
   it('a request that comes back with no alpha channel at all also fails', async () => {

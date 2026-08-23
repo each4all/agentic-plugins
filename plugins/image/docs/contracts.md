@@ -241,6 +241,10 @@ a best-effort honored/ignored verdict.
   audit artifacts by default**, marked `rejected: true` in the manifest.
 - Cleanup is **explicit**, never automatic: a verb may offer to prune
   rejected variants, but must not delete generated images silently.
+- A file in `failed_outputs[]` (§4) is retained on the same terms and is
+  marked `rejected: true`, so the same explicit prune reaches it. Without
+  that flag it would sit in the run dir with no cleanup path at all — a
+  leak, not a retention policy.
 - The runs root is gitignored — generated images never enter version
   control.
 

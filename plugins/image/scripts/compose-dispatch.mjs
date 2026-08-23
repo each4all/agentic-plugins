@@ -441,6 +441,11 @@ export async function dispatch(opts = {}) {
     note: 'sniffed from bytes; Codex surfaces only the prompt, so requested size/quality/background are best-effort. background "transparent" means at least one non-opaque pixel was decoded — a byte-level fact, not a judgement of cutout quality. null means alpha could not be determined (see alpha.reason).',
   };
   const image = { path: outPath, bytes: st.size, width: sniff.width, height: sniff.height, format: sniff.format, selected: false, rejected: false };
+  // A retained failure is marked rejected so the EXISTING explicit prune
+  // (`variant-select.mjs`, contracts.md §7) can clean it up. Without that flag
+  // it would sit in the run dir forever: cleanup is opt-in by design, and an
+  // artifact no cleanup path can reach is a leak, not a retention policy.
+  const failedOutput = { ...image, rejected: true };
 
   if (background === 'transparent') {
     // A malformed image and an un-inspectable one are different failures. The
@@ -452,7 +457,7 @@ export async function dispatch(opts = {}) {
         status: 'error',
         observed_parameters: observed,
         images: [],
-        failed_outputs: [image],
+        failed_outputs: [failedOutput],
         error: { kind: 'write_failed', message: 'the generated image could not be decoded, so the transparent-background request could not be verified', detail: `${outPath} — ${alpha.reason || 'unknown decode failure'}` },
       });
     }
@@ -468,7 +473,7 @@ export async function dispatch(opts = {}) {
         // `images[]`, which `image:decide` / `variant-select.mjs` treat as
         // selectable candidates regardless of `status`.
         images: [],
-        failed_outputs: [image],
+        failed_outputs: [failedOutput],
         error: {
           kind: 'background_not_honored',
           message: 'a transparent background was requested but the returned image carries no transparency',
