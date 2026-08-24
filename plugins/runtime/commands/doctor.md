@@ -26,6 +26,18 @@ Notes:
 - The `Experience Parity` section summarizes the cross-host user-experience goal as weighted readiness criteria: host plugin availability, plugin-management follow-ups, bidirectional companion contract, explicit peer execution proof, explicit engineer workflow continuation proof, workflow continuity storage, lifecycle hook continuity, and runtime handoff/compatibility artifacts. Its score is observed readiness only; it is not a declaration that the overall project goal is complete.
 - The `Compatibility Artifacts` section reads the latest `runtime:compat` snapshot/gap/plan metadata and reports host-version drift, release-note requirements, and next actions without reading raw release-note bodies or raw host help output.
 - The `Session Capture Readiness` section (ADR-0044 S4, session-capture-contract.md §13) diagnoses the half-enabled capture states: `session_capture` on but attention missing/disabled, runtime below the publisher floor the installed attention build declares in `data/runtime-floors.json` (read dynamically — never hardcoded), and safe mode disabling hooks entirely. `off` and `ready` stay out of the overall warnings; `blocked`/`config-fail-closed` warn.
+- The `Installed Receivers` section classifies what is actually installed at
+  `~/.agentic-plugins/bin` — the statusline shim, the Codex notify shuttle, and
+  the wrapper chain — as `current`, `legacy`, `foreign`, `missing`,
+  `unreadable`, or `not-a-regular-file`. It matters because the settings-level
+  steps prove *configuration*: a legacy full copy satisfies "statusLine is
+  configured" exactly as well as a current shim does, while still running its
+  own frozen logic. Classification reads the installed BYTES and normalizes the
+  rendered placeholders back so a template hash can identify the shape; doctor
+  never imports, spawns, or evaluates an installed receiver, and never follows a
+  symlinked install path to classify its target. An absent receiver the machine
+  did not opt into is reported as a fact, not a defect — re-install guidance
+  comes from `runtime:settings`, which is where the plan lives.
 - The `Plugin Command Surface` section reports whether Claude's `claude plugin ...` CLI surface and Codex's marketplace surface are actually usable before settings suggests executable plugin-management steps. Claude's slash `/plugin` probe is retained only as observed host asymmetry. When Claude plugin CLI management is unavailable to doctor, retired Claude plugin cleanup is required, or Codex packaged hooks still need active-session review/trust, output includes a `Manual Follow-ups` checklist with the host-native `claude plugin ...` or `/hooks` commands to run in the relevant host.
 - Codex installed-state in the `Readiness Matrix` and plugin matrix is read host-natively from `codex plugin list --json` with list-authoritative-then-cache precedence (ADR-0034): when the list probe succeeds it is the source of truth (a stale filesystem cache cannot claim an install the host list omits, and `enabled:false` reports as blocked), and only an unavailable list (older Codex, nonzero exit, or malformed output) falls back to filesystem-cache evidence. The probe is read-only (`codex plugin list --json`, no `--available`, no mutating commands), and only its status — never the raw JSON — is persisted in the recorded artifact.
 - The `Codex Plugin Hooks` section separates generic `hooks`, the `plugin_hooks` feature flag, `.codex-plugin/plugin.json` hook exposure, installed/source hook packaging, the per-plugin review target checklist that the operator should compare against the active Codex `/hooks` view, and `~/.codex/config.toml` `[hooks.state]` enabled/disabled state for expected bundled hook entries.

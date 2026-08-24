@@ -9,6 +9,16 @@ $ARGUMENTS
 
 Run the runtime settings planner. It is dry-run by default. Config mutation is allowed only with `--apply`, and apply mode writes only agentic-plugins-owned config files:
 
+- The `receivers` / `receiver_reinstall` sections report what is installed at
+  `~/.agentic-plugins/bin` and, when a receiver is a previously released shape,
+  offer the re-install as a PLAN — runtime never writes into the install
+  directory. A `foreign` or symlinked path is named for manual review instead:
+  runtime does not overwrite a file it did not render. The rollback guidance is
+  explicit about a consequence of the delegating-shim change (ADR-0048 §2 as
+  amended): restoring a backup of a SELF-CONTAINED copy fully reverts behaviour,
+  but restoring a backup of a DELEGATING shim does not — its behaviour comes
+  from whichever runtime plugin resolves at the time, so a behavioural rollback
+  means rolling the runtime back too.
 - `<repo>/.agentic-plugins/config.toml`
 - `~/.agentic-plugins/config.toml`
 

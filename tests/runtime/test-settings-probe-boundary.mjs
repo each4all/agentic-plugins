@@ -41,6 +41,9 @@ const NULL_OVERALL_COUNTERS = ['plugin_recommendations', 'hook_warnings', 'hook_
 const PRESENCE_KEYS = [
   'clis', 'plugins', 'plugin_command_surface', 'plugin_management', 'plugin_cleanup', 'hook_settings', 'codex_hook_review',
   'config', 'companion_settings', 'notify_settings', 'session_settings', 'session_readiness', 'entry_readiness', 'mutation_boundary', 'artifacts', 'limits', 'overall',
+  // Installed-receiver classification: a local filesystem read, so it is
+  // evaluated in BOTH modes rather than being a probe section.
+  'receivers', 'receiver_reinstall',
   'recommendations', 'permission_plan', 'permission_plan_codex', 'notification_plan', 'egress_launcher_plan',
 ];
 

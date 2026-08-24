@@ -80,6 +80,7 @@ import {
   renderCodexStatusLineFragmentToml,
   statuslineShimInstallPath,
 } from './lib/statusline-plan.mjs';
+import { inspectInstalledReceivers } from './lib/receiver-inventory.mjs';
 import { PROOF_STAGES, deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
 import {
   currentBoundVersions,
@@ -1369,6 +1370,13 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
   // so the preview-strip decision can key on its actual existence.
   try {
     const shim = renderAgenticStatuslineShim();
+    // The statusline shim is opted into by the very act of planning this step,
+    // so its absence IS actionable here (unlike the conditional chain receiver).
+    const receiverInventory = inspectInstalledReceivers({
+      installDir: `${homeDir}/.agentic-plugins/bin`,
+      expected: ['agentic-statusline.mjs'],
+    });
+    const statuslineInstalled = receiverInventory.receivers.find((entry) => entry.kind === 'agentic-statusline.mjs') ?? null;
     const inlineGate = evaluateInlineSufficiency();
     const claudeExpected = expectedClaudeStatuslineCommand({ homeDir });
     const claudeExisting = readersForFragments?.statuslineClaude ?? { readable: true, present: false };
@@ -1389,6 +1397,12 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
         install_path: statuslineShimInstallPath({ homeDir }),
         sha256: shim.sha256,
         body: shim.body,
+        // What is ACTUALLY at that path right now. The step above proves
+        // settings-level configuration, which a legacy or absent shim satisfies
+        // just as well as a current one — so without this the operator sees a
+        // green step and a fresh hash while running frozen bytes. Read-only:
+        // the file is classified from its bytes, never executed.
+        installed: statuslineInstalled,
       },
       inline_sufficiency: inlineGate,
       existing: { observation: claudeClassified.observation, offered_resolutions: claudeClassified.offered_resolutions, note: claudeClassified.note },
