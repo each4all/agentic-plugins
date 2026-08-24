@@ -2,6 +2,8 @@
 // codex-notify-shuttle.mjs — Codex notify= receiver for agentic-plugins
 // (rendered by `runtime:settings --notification-plan`, ADR-0040 §4).
 //
+// @agentic-receiver: codex-notify delegating-shim v1
+//
 // Source template: plugins/runtime/receivers/codex-notify-shuttle.mjs. It
 // ships with the runtime plugin as render-input DATA, deliberately outside
 // plugins/runtime/scripts/: the ADR-0035 §4 executor guard governs code the
@@ -9,54 +11,54 @@
 // — the plan renders it into an artifact and the USER installs and runs it.
 //
 // Codex invokes this script with the notification payload appended as the
-// LAST argv argument: kebab-case JSON whose only variant at the pinned Codex
-// version is {"type":"agent-turn-complete","turn-id":...,"input-messages":
-// [...],"last-assistant-message":<string|null>} plus an undocumented "client"
-// field that is tolerated (unknown fields are ignored, never an error).
+// LAST argv argument.
 //
-// This shuttle exists so ~/.codex/config.toml never points into a
-// version-pinned plugin cache path: it re-resolves the CURRENT runtime plugin
-// root on every invocation (env override -> Codex fixed cache -> Claude cache
-// SemVer-max), version-gates it, and delegates to notify.mjs emit. Requires
-// Node on PATH (invoked via /usr/bin/env node).
+// THIS FILE IS A DELEGATING SHIM. It used to map the payload to a notify event
+// itself — deriving the repo ident and choosing the event kind. Those are the
+// parts that go stale: an installed file is frozen at install time, and the
+// ADR-0047 §5 change (agent-turn-complete -> response-needed) is recorded in
+// this file's own history as having left older installed shuttles emitting a
+// superseded kind. The mapping now lives in the plugin
+// (scripts/receiver-api.mjs, reached through `notify.mjs receive`), so this
+// shim hands over the RAW payload and the mapping upgrades with the plugin.
+//
+// The ACCEPTED-VARIANT GATE deliberately does NOT move. ADR-0047 §5 makes the
+// unknown-type return a contract in the strong form: a non-agent-turn-complete
+// payload must leave notify.mjs NEVER INVOKED, not merely emit nothing —
+// because wiring a newly observed variant requires a source-verified payload
+// and its own follow-up decision. Delegating that check would satisfy "no
+// event" while breaking "no invocation". It is also not the thing that went
+// stale: the §5 incident changed the KIND an accepted variant maps to, which
+// is precisely what now lives in the plugin.
+//
+// What remains here is only what must bootstrap the delegation: re-resolve the
+// CURRENT runtime plugin root on every invocation (env override -> Claude
+// cache SemVer-max -> Codex fixed cache), version-gate it, and spawn. That
+// ladder cannot itself be delegated — the shim has to find the runtime before
+// it can call it — so it is the irreducible copy, and it is also the stable
+// one: it changes only when install layouts change, not when a mapping does.
+//
+// Delegation is by DETACHED SPAWN, unlike the statusline shim's in-process
+// import. A notification is fire-and-forget and must not hold the Codex turn,
+// so an extra interpreter start costs nothing here; the statusline renders
+// synchronously on every prompt, where the same shape measured +29.8 ms.
+// Requires Node on PATH (invoked via /usr/bin/env node).
 //
 // Fail-closed silent: exit 0 always, nothing on stdout, at most one stderr
 // diagnostic line. A notification failure must never break the Codex turn.
 
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// First runtime version whose notify.mjs emit interface this shuttle targets
-// (rendered from the planning runtime's own version).
+// First runtime version whose receiver-api.mjs / `notify.mjs receive`
+// interface this shuttle targets (rendered from the planning runtime's own
+// version).
 const MIN_RUNTIME_VERSION = '__AGENTIC_MIN_RUNTIME_VERSION__';
 
 function diagnostic(reason) {
   try { process.stderr.write('codex-notify-shuttle: ' + reason + '\n'); } catch {}
-}
-
-// Walk up from cwd to the nearest .git marker (dir or worktree file).
-function resolveRepoRoot(cwd) {
-  let current = path.resolve(cwd);
-  try { current = fs.realpathSync(current); } catch { return null; }
-  for (;;) {
-    if (fs.existsSync(path.join(current, '.git'))) return current;
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-}
-
-// Copy of the runtime notify-schema deriveRepoIdent contract (ADR-0040 §1):
-// sanitized basename + 16-hex sha256 of the realpath, colon-free.
-function deriveRepoIdent(repoRoot) {
-  const resolved = path.resolve(repoRoot);
-  let real = resolved;
-  try { real = fs.realpathSync(resolved); } catch {}
-  const base = path.basename(real).replace(/[^A-Za-z0-9._-]/g, '-') || 'repo';
-  return base + '-' + createHash('sha256').update(real).digest('hex').slice(0, 16);
 }
 
 // Prerelease-strict floor gate: a prerelease of the floor version is BELOW it.
@@ -151,11 +153,27 @@ function resolveRuntimeRoot() {
   return null;
 }
 
+// Walk up from cwd to the nearest .git marker (dir or worktree file). Kept
+// local so a directory with no notify state home costs no spawn at all.
+function resolveRepoRoot(cwd) {
+  let current = path.resolve(cwd);
+  try { current = fs.realpathSync(current); } catch { return null; }
+  for (;;) {
+    if (fs.existsSync(path.join(current, '.git'))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
 function main() {
   // Payload = LAST argv argument (receiver input contract). argv[0]=node,
   // argv[1]=this script; anything beyond means Codex appended the payload.
   if (process.argv.length <= 2) return;
   const payloadText = process.argv[process.argv.length - 1];
+  // ADR-0047 §5 accepted-variant gate — see the header. Parsed here ONLY to
+  // decide whether to invoke at all; the payload is forwarded verbatim and
+  // every field of it is interpreted on the other side.
   let payload;
   try {
     payload = JSON.parse(payloadText);
@@ -164,15 +182,7 @@ function main() {
     return;
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
-  // Only variant at the pinned Codex version; future variants no-op silently.
   if (payload.type !== 'agent-turn-complete') return;
-  const turnId = typeof payload['turn-id'] === 'string' && payload['turn-id'].length > 0
-    ? payload['turn-id']
-    : null;
-  // last-assistant-message is nullable by contract.
-  const lastMessage = typeof payload['last-assistant-message'] === 'string'
-    ? payload['last-assistant-message']
-    : '';
   const repoRoot = resolveRepoRoot(process.cwd());
   if (!repoRoot) return; // outside a repository — no notify state home
   const runtimeRoot = resolveRuntimeRoot();
@@ -185,39 +195,19 @@ function main() {
     diagnostic('resolved runtime is older than ' + MIN_RUNTIME_VERSION);
     return;
   }
-  const subject = turnId !== null
-    ? 'codex-turn:' + turnId
-    : 'codex-turn:payload-' + createHash('sha256').update(payloadText).digest('hex').slice(0, 12);
-  const event = {
-    // <repo-ident>:<kind>:<subject>:<status> — 'fired' is the §1 default
-    // status token for response-needed (a kind without a natural terminal
-    // status), matching buildEventId's default.
-    //
-    // ADR-0047 §5: agent-turn-complete maps to response-needed as an
-    // ACCEPTED APPROXIMATION (a completed Codex turn with nobody watching is
-    // at worst an early your-turn, never a lost one) — kind only; the
-    // codex-turn subject namespace, fired status, codex-notify source, and
-    // the no-headline posture are preserved. An older installed shuttle
-    // keeps emitting turn-complete, which the runtime still accepts (§8
-    // soft-degrade); re-render + re-install via `runtime:settings
-    // --notification-plan` to migrate.
-    event_id: deriveRepoIdent(repoRoot) + ':response-needed:' + subject + ':fired',
-    source: 'codex-notify',
-    kind: 'response-needed',
-    urgency: 'normal',
-    title: 'Codex turn complete',
-    body: lastMessage,
-    refs: { path: repoRoot },
-  };
+  // Everything past the gate is the runtime's to decide: the repo ident, the
+  // event kind, the id shape, the title. Those are what the plugin upgrade
+  // must be able to change.
   const child = spawn(process.execPath, [
     path.join(runtimeRoot, 'scripts', 'notify.mjs'),
-    'emit',
-    '--repo-root', repoRoot,
+    'receive',
+    '--source', 'codex-notify',
+    '--cwd', repoRoot,
   ], { stdio: ['pipe', 'ignore', 'ignore'], detached: true });
   child.on('error', function () {});
   try {
     child.stdin.on('error', function () {});
-    child.stdin.end(JSON.stringify(event));
+    child.stdin.end(payloadText);
   } catch {}
   child.unref();
 }

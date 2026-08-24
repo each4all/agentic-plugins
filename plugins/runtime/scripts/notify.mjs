@@ -914,12 +914,107 @@ async function readEventText({ eventFile }) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+// `receive` argv. `--source` names the receiver dialect so one entry point can
+// serve future receivers; `--cwd` is the directory the RECEIVER observed, which
+// is what the repo-root walk must start from — the spawned child's own cwd is
+// not necessarily the host's.
+function parseReceiveArgs(argv) {
+  const opts = { source: null, cwd: null };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    // Deliberately NO --payload-file and no argv payload: the payload arrives
+    // on stdin only, so it never lands in a file the caller chose nor in a
+    // process table any other user can read.
+    if (arg === '--source' || arg === '--cwd') {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) {
+        return { ok: false, reason: `${arg} requires a value` };
+      }
+      i += 1;
+      if (arg === '--source') opts.source = value;
+      else opts.cwd = value;
+    } else {
+      return { ok: false, reason: `unknown argument ${arg}` };
+    }
+  }
+  if (opts.source !== 'codex-notify') {
+    return { ok: false, reason: 'unsupported --source (expected codex-notify)' };
+  }
+  return { ok: true, opts };
+}
+
+// Map a RAW receiver payload to an event, then emit it.
+//
+// This exists so the installed Codex shuttle does not have to carry the
+// mapping: an installed file is frozen at install time, and it was exactly a
+// mapping change (ADR-0047 §5, turn-complete -> response-needed) that left
+// older shuttles emitting a superseded kind. With the shuttle handing over the
+// raw payload, the mapping upgrades with the plugin.
+// A receiver payload is UNTRUSTED and larger than an event: it carries the
+// Codex turn's input-messages, which the old shuttle discarded locally and
+// which now cross this boundary. It is read BOUNDED, only from stdin, and is
+// never echoed into a diagnostic, an artifact, or an error message — only the
+// mapped event's own fields continue past this function.
+const RECEIVE_PAYLOAD_MAX_BYTES = 1024 * 1024;
+
+async function readReceivePayload() {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of process.stdin) {
+    total += chunk.length;
+    if (total > RECEIVE_PAYLOAD_MAX_BYTES) {
+      // Drain rather than destroy: an early close would EPIPE the detached
+      // shuttle child, which must stay silent.
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+    chunks.push(chunk);
+  }
+  if (total > RECEIVE_PAYLOAD_MAX_BYTES) return null;
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function runReceive(opts) {
+  const api = await import('./receiver-api.mjs');
+  // Capability major — the same exact-match rule the statusline shim applies.
+  if (api.RECEIVER_API_MAJORS?.codexNotify !== 1) return null;
+  const payloadText = await readReceivePayload();
+  if (payloadText === null) return null;
+  const mapped = await api.mapCodexNotifyPayload({
+    payloadText,
+    cwd: opts.cwd || process.cwd(),
+  });
+  // No mapping is a legitimate no-op (outside a repository, or a payload
+  // variant this build does not map), not a failure.
+  if (mapped === null) return null;
+  return runEmit({ eventText: JSON.stringify(mapped.event), repoRoot: mapped.repoRoot });
+}
+
 async function main(argv) {
   const [subcommand, ...rest] = argv;
+  if (subcommand === 'receive') {
+    // Same fail-closed silent contract as emit: exit 0 always, never stdout,
+    // at most ONE stderr diagnostic line.
+    try {
+      const parsed = parseReceiveArgs(rest);
+      if (!parsed.ok) {
+        process.stderr.write(`notify: receive failed at args: ${truncateReason(parsed.reason)}\n`);
+      } else {
+        const result = await runReceive(parsed.opts);
+        if (result && result.status === 'failed') {
+          process.stderr.write(`notify: receive failed at ${result.stage}: ${truncateReason(result.reason)}\n`);
+        }
+      }
+    } catch (error) {
+      process.stderr.write(`notify: receive failed at internal: ${truncateReason(error?.message)}\n`);
+    }
+    process.exitCode = 0;
+    return;
+  }
   if (subcommand !== 'emit') {
     // Developer-facing misuse (wrong subcommand) is honest: usage + exit 1.
     // The fail-closed exit-0 contract belongs to the emit path below.
-    process.stderr.write('usage: notify.mjs emit [--event-file <path>] [--repo-root <path>]\n');
+    process.stderr.write('usage: notify.mjs emit [--event-file <path>] [--repo-root <path>]\n       notify.mjs receive --source codex-notify [--cwd <path>]  (payload on stdin)\n');
     process.exitCode = 1;
     return;
   }

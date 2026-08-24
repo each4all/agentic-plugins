@@ -271,18 +271,56 @@ describe('notification plan: fragment + receiver script renderers', () => {
     );
     ok(script.includes("'scripts', 'notify.mjs'"), 'delegates to notify.mjs');
     ok(script.includes('process.argv[process.argv.length - 1]'), 'payload is the LAST argv argument');
-    ok(script.includes("'turn-id'"), 'kebab-case turn-id field');
-    ok(script.includes("'last-assistant-message'"), 'nullable last-assistant-message field');
     ok(script.includes('agent-turn-complete'), 'single accepted INPUT payload variant is unchanged');
-    ok(script.includes('client'), 'undocumented client field tolerance is documented');
     ok(script.includes('process.exitCode = 0'), 'fail-closed exit posture');
     ok(!/runtime[/\\]\d/.test(script), 'no version-pinned runtime cache path literal');
+    // The shuttle is a DELEGATING shim: it forwards the raw payload and no
+    // longer composes the event. The payload-field reads and the ADR-0047 §5
+    // kind remap are asserted against the packaged API below, which is where
+    // that behaviour now lives — an installed shuttle cannot freeze it.
+    ok(script.includes("'receive'"), 'hands the raw payload to the runtime receive entry point');
+    ok(!script.includes("kind: 'response-needed'"), 'the event is no longer composed in installed bytes');
+    ok(!script.includes('deriveRepoIdent'), 'the repo-ident contract is no longer copied into installed bytes');
+  });
+
+  it('the PACKAGED API owns the Codex payload reads and the ADR-0047 §5 kind remap', async () => {
+    // These assertions moved off the installed shuttle and onto the plugin.
+    // They are asserted on BEHAVIOUR, not on source text, because that is the
+    // whole point of the move: the mapping is now code that upgrades.
+    const dir = await mkdtemp(join(tmpdir(), 'runtime-receiver-api-'));
+    await mkdir(join(dir, '.git'), { recursive: true });
+    const { mapCodexNotifyPayload } = await import('../../plugins/runtime/scripts/receiver-api.mjs');
+
+    const mapped = await mapCodexNotifyPayload({
+      payloadText: JSON.stringify({
+        type: 'agent-turn-complete',
+        'turn-id': 't-9',
+        'last-assistant-message': 'done',
+        client: 'vscode',
+      }),
+      cwd: dir,
+    });
+    ok(mapped, 'the accepted variant maps');
     // ADR-0047 §5 remap: the EMITTED kind is response-needed while the input
     // type check stays agent-turn-complete; subject namespace and the fixed
     // fired status are preserved in the event_id composition.
-    ok(script.includes(":response-needed:' + subject + ':fired'"), '§1 event_id composition with the remapped kind');
-    ok(script.includes("kind: 'response-needed'"), 'emitted kind is remapped per ADR-0047 §5');
-    ok(!script.includes("kind: 'turn-complete'"), 'the shuttle no longer emits the interim kind');
+    strictEqual(mapped.event.kind, 'response-needed', 'emitted kind is remapped per ADR-0047 §5');
+    ok(mapped.event.event_id.endsWith(':response-needed:codex-turn:t-9:fired'), '§1 event_id composition');
+    strictEqual(mapped.event.body, 'done', 'last-assistant-message is read (kebab-case)');
+    strictEqual(mapped.event.source, 'codex-notify');
+
+    // nullable last-assistant-message, and the turn-id-less subject fallback.
+    const noMessage = await mapCodexNotifyPayload({
+      payloadText: JSON.stringify({ type: 'agent-turn-complete', 'last-assistant-message': null }),
+      cwd: dir,
+    });
+    strictEqual(noMessage.event.body, '', 'a null last-assistant-message is tolerated');
+    ok(/:codex-turn:payload-[0-9a-f]{12}:fired$/.test(noMessage.event.event_id), 'payload-hash subject without a turn-id');
+
+    // Unknown variants and non-repositories map to nothing, so `receive` emits
+    // nothing — the shuttle-side gate is what makes it never even invoke.
+    strictEqual(await mapCodexNotifyPayload({ payloadText: '{"type":"approval-requested"}', cwd: dir }), null);
+    strictEqual(await mapCodexNotifyPayload({ payloadText: 'not json', cwd: dir }), null);
   });
 
   it('rejects a non-SemVer version floor (rendered-literal guard)', () => {
@@ -490,7 +528,7 @@ describe('notification plan: fragment + receiver script renderers', () => {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
     const finalLines = (await readFile(markerPath, 'utf8')).trim().split('\n');
     strictEqual(finalLines.length, 1, 'exactly one invocation: the known-type control');
-    ok(finalLines[0].includes('emit'), 'the control invocation is a notify.mjs emit call');
+    ok(finalLines[0].includes('receive'), 'the control invocation is a notify.mjs receive call');
   });
 });
 
@@ -829,7 +867,13 @@ describe('settings: notification plan (ADR-0040 §4, M1)', () => {
     strictEqual(np.recommended.mode, 'already-configured');
     strictEqual(np.recommended.chain_install_path, chainPath, 'the in-use chain pointer is surfaced');
     strictEqual(np.scripts.chain, null, 'the existing chain script is untouched — only the shuttle re-renders');
-    ok(np.scripts.shuttle.content.includes("kind: 'response-needed'"), 'the re-rendered shuttle carries the remap');
+    // The §8 migration property, restated for a delegating shuttle: the
+    // re-rendered shuttle forwards the raw payload to the runtime, which is
+    // what puts the ADR-0047 §5 remap on the upgradable side. The remap is no
+    // longer IN these bytes — asserting that it were would re-pin the exact
+    // staleness this shape removes.
+    ok(np.scripts.shuttle.content.includes("'receive'"), 'the re-rendered shuttle delegates the mapping');
+    ok(!np.scripts.shuttle.content.includes("kind: 'response-needed'"), 'the remap is not frozen into installed bytes');
     ok(np.fragments.notify_toml.includes(CHAIN_BASENAME), 'the fragment reproduces the chain pointer');
     ok(!np.fragments.notify_toml.includes(SHUTTLE_BASENAME), 'the fragment never downgrades to the direct shuttle');
     match(np.warning, /wrapper chain/);

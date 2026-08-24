@@ -10,6 +10,7 @@ import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert/str
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 import {
@@ -29,6 +30,9 @@ import {
 import { parseCodexNotifyConfigToml } from '../../plugins/runtime/scripts/lib/notification-plan.mjs';
 import { renderCodexTuiTableToml } from '../../plugins/runtime/scripts/lib/toml.mjs';
 import { judgeSteps, runBootstrap } from '../../plugins/runtime/scripts/bootstrap.mjs';
+
+// This repository's runtime plugin is the root the rendered shim delegates to.
+const RUNTIME_PLUGIN_ROOT = fileURLToPath(new URL('../../plugins/runtime', import.meta.url));
 import { stepIds } from '../../plugins/runtime/scripts/lib/step-registry.mjs';
 
 // The NORMATIVE six ids in their owner-adopted order (ADR-0048 §2.1) —
@@ -111,7 +115,16 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
     const dir = await mkdtemp(join(tmpdir(), 'statusline-shim-'));
     const shimPath = join(dir, 'agentic-statusline.mjs');
     await writeFile(shimPath, renderAgenticStatuslineShim().body);
-    const run = (stdin) => spawnSync(process.execPath, [shimPath], { input: stdin, encoding: 'utf8', timeout: 5000 });
+    // The rendered shim DELEGATES to the packaged receiver API, so it must be
+    // pointed at a runtime root to render anything. This repository's own
+    // plugin is that root, and the default render floor is this runtime's own
+    // version, so the gate is satisfied by construction.
+    const run = (stdin, env = {}) => spawnSync(process.execPath, [shimPath], {
+      input: stdin,
+      encoding: 'utf8',
+      timeout: 5000,
+      env: { ...process.env, AGENTIC_RUNTIME_ROOT: RUNTIME_PLUGIN_ROOT, ...env },
+    });
 
     const full = run(JSON.stringify({
       model: { display_name: 'Opus 4.8' },
@@ -134,6 +147,159 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
       const r = run(bad);
       strictEqual(r.status, 0, 'fail-closed silent: exit 0 always');
     }
+  });
+
+  it('the RENDERED shim fails closed — and stays silent — when the runtime it delegates to is absent, downgraded, or capability-short', async () => {
+    const session = JSON.stringify({ model: { display_name: 'Opus 4.8' } });
+    const dir = await mkdtemp(join(tmpdir(), 'statusline-shim-gate-'));
+
+    // Control FIRST: the same shim, same input, with a satisfied gate — so a
+    // silent result below cannot be mistaken for a shim that renders nothing
+    // under every condition.
+    const okShim = join(dir, 'ok.mjs');
+    await writeFile(okShim, renderAgenticStatuslineShim().body);
+    const control = spawnSync(process.execPath, [okShim], {
+      input: session, encoding: 'utf8', timeout: 5000,
+      env: { ...process.env, AGENTIC_RUNTIME_ROOT: RUNTIME_PLUGIN_ROOT },
+    });
+    strictEqual(control.stdout.trim(), 'Opus 4.8', 'control: the gate is satisfiable');
+
+    const cases = [
+      ['absent runtime', renderAgenticStatuslineShim().body, join(dir, 'nonexistent-root')],
+      // A floor no real runtime satisfies: the version gate must reject it.
+      ['downgraded runtime', renderAgenticStatuslineShim({ minRuntimeVersion: '999.0.0' }).body, RUNTIME_PLUGIN_ROOT],
+    ];
+    for (const [label, body, root] of cases) {
+      const p = join(dir, `${label.replace(/\W+/g, '-')}.mjs`);
+      await writeFile(p, body);
+      const r = spawnSync(process.execPath, [p], {
+        input: session, encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, AGENTIC_RUNTIME_ROOT: root },
+      });
+      strictEqual(r.status, 0, `${label}: exit 0`);
+      strictEqual(r.stdout, '', `${label}: nothing on stdout`);
+      strictEqual(r.stderr, '', `${label}: nothing on stderr either — a statusline must not print diagnostics`);
+    }
+
+    // Capability floor, distinct from the version floor: a root that PASSES the
+    // version gate but whose API does not export what the shim calls.
+    const fake = join(dir, 'fake-runtime');
+    await mkdir(join(fake, '.claude-plugin'), { recursive: true });
+    await mkdir(join(fake, 'scripts'), { recursive: true });
+    await writeFile(join(fake, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '999.0.0' }));
+    await writeFile(join(fake, 'scripts', 'receiver-api.mjs'), 'export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\n');
+    const capShort = join(dir, 'cap.mjs');
+    await writeFile(capShort, renderAgenticStatuslineShim().body);
+    const capRun = spawnSync(process.execPath, [capShort], {
+      input: session, encoding: 'utf8', timeout: 5000,
+      env: { ...process.env, AGENTIC_RUNTIME_ROOT: fake },
+    });
+    strictEqual(capRun.status, 0, 'capability-short: exit 0');
+    strictEqual(capRun.stdout, '', 'capability-short: a version-passing runtime missing the export renders nothing');
+
+    // And the capability major gates EXACTLY, in BOTH directions: a major
+    // above the shim's is refused just as a major below it is. `>=` would have
+    // accepted the higher one — the very runtime whose bump means it broke this
+    // shim's shape.
+    for (const major of [0, 2]) {
+      await writeFile(join(fake, 'scripts', 'receiver-api.mjs'),
+        `export const RECEIVER_API_MAJORS = { statusline: ${major}, codexNotify: 1 };\nexport function renderStatusline() { return "SHOULD NOT APPEAR"; }\n`);
+      const r = spawnSync(process.execPath, [capShort], {
+        input: session, encoding: 'utf8', timeout: 5000,
+        env: { ...process.env, AGENTIC_RUNTIME_ROOT: fake },
+      });
+      strictEqual(r.stdout, '', `statusline major ${major} is refused even though the export exists`);
+    }
+    await writeFile(join(fake, 'scripts', 'receiver-api.mjs'),
+      'export const RECEIVER_API_MAJORS = { statusline: 0, codexNotify: 1 };\nexport function renderStatusline() { return "SHOULD NOT APPEAR"; }\n');
+    const contractRun = spawnSync(process.execPath, [capShort], {
+      input: session, encoding: 'utf8', timeout: 5000,
+      env: { ...process.env, AGENTIC_RUNTIME_ROOT: fake },
+    });
+    strictEqual(contractRun.stdout, '', 'a mismatched capability major is refused even though the export exists');
+  });
+
+  it('the RENDERED shim keeps its own output envelope around whatever the API returns', async () => {
+    // The API is upgradable code; this shim is the stable guarantee the host
+    // depends on. A future API bug must not be able to reach the terminal
+    // through a shim that relays its return value verbatim — so the one-line,
+    // control-free, bounded envelope is enforced HERE, not only in the API.
+    const dir = await mkdtemp(join(tmpdir(), 'statusline-shim-envelope-'));
+    const fake = join(dir, 'rt');
+    await mkdir(join(fake, '.claude-plugin'), { recursive: true });
+    await mkdir(join(fake, 'scripts'), { recursive: true });
+    await writeFile(join(fake, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '99.0.0' }));
+    const hostile = `line1\\nSECOND LINE\\u001b[31m${'x'.repeat(900)}`;
+    await writeFile(join(fake, 'scripts', 'receiver-api.mjs'),
+      `export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\nexport function renderStatusline() { return "${hostile}"; }\n`);
+    const shimPath = join(dir, 'shim.mjs');
+    await writeFile(shimPath, renderAgenticStatuslineShim().body);
+    const r = spawnSync(process.execPath, [shimPath], {
+      input: JSON.stringify({ model: { display_name: 'M' } }), encoding: 'utf8', timeout: 5000,
+      env: { ...process.env, AGENTIC_RUNTIME_ROOT: fake },
+    });
+    strictEqual(r.status, 0);
+    strictEqual(r.stdout.split('\n').filter(Boolean).length, 1, 'exactly one line reaches the host');
+    ok(!/[\u0000-\u001f]/.test(r.stdout.trim()), 'no control bytes reach the terminal');
+    ok(!r.stdout.includes('SECOND LINE\n'), 'an embedded newline cannot forge a second line');
+    ok(r.stdout.trim().length <= 512, `bounded length, got ${r.stdout.trim().length}`);
+  });
+
+  it('the RENDERED shim fails closed rather than resurrecting an older runtime that still has the API', async () => {
+    // The ladder resolves the AUTHORITATIVE root and stops. Filtering candidates
+    // by API presence would let a newer runtime that DROPPED the API be passed
+    // over for an older one that still carries it — silently reviving an
+    // implementation the newer release deliberately removed.
+    const dir = await mkdtemp(join(tmpdir(), 'statusline-shim-noresurrect-'));
+    const cacheRoot = join(dir, 'home', '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime');
+    // Older runtime: has the API.
+    const oldRoot = join(cacheRoot, '0.1.0');
+    await mkdir(join(oldRoot, '.claude-plugin'), { recursive: true });
+    await mkdir(join(oldRoot, 'scripts'), { recursive: true });
+    await writeFile(join(oldRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '0.1.0' }));
+    await writeFile(join(oldRoot, 'scripts', 'receiver-api.mjs'),
+      'export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\nexport function renderStatusline() { return "RESURRECTED"; }\n');
+    // Newer runtime: a valid plugin, but no receiver API at all.
+    const newRoot = join(cacheRoot, '0.9.0');
+    await mkdir(join(newRoot, '.claude-plugin'), { recursive: true });
+    await mkdir(join(newRoot, 'scripts'), { recursive: true });
+    await writeFile(join(newRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '0.9.0' }));
+
+    const shimPath = join(dir, 'shim.mjs');
+    await writeFile(shimPath, renderAgenticStatuslineShim({ minRuntimeVersion: '0.1.0' }).body);
+    const env = { ...process.env, HOME: join(dir, 'home'), USERPROFILE: join(dir, 'home') };
+    delete env.AGENTIC_RUNTIME_ROOT;
+    const r = spawnSync(process.execPath, [shimPath], {
+      input: JSON.stringify({ model: { display_name: 'M' } }), encoding: 'utf8', timeout: 5000, env,
+    });
+    strictEqual(r.status, 0);
+    strictEqual(r.stdout, '', 'the newest root is authoritative; its lack of the API fails closed');
+    ok(!r.stdout.includes('RESURRECTED'), 'the older implementation is never revived');
+  });
+
+  it('the RENDERED shim picks the NEWEST runtime when several are installed', async () => {
+    // The ladder is the one piece that cannot be delegated (the shim must find
+    // the runtime before it can call it), so its selection rule is pinned here.
+    const dir = await mkdtemp(join(tmpdir(), 'statusline-shim-ladder-'));
+    const cacheRoot = join(dir, 'home', '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime');
+    for (const [version, marker] of [['0.1.0', 'OLD'], ['0.10.0', 'NEW'], ['0.2.0', 'MID']]) {
+      const root = join(cacheRoot, version);
+      await mkdir(join(root, '.claude-plugin'), { recursive: true });
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version }));
+      await writeFile(join(root, 'scripts', 'receiver-api.mjs'),
+        `export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\nexport function renderStatusline() { return ${JSON.stringify(marker)}; }\n`);
+    }
+    const shimPath = join(dir, 'shim.mjs');
+    // Floor 0.1.0 so every candidate clears the gate and only ORDER decides.
+    await writeFile(shimPath, renderAgenticStatuslineShim({ minRuntimeVersion: '0.1.0' }).body);
+    const env = { ...process.env, HOME: join(dir, 'home'), USERPROFILE: join(dir, 'home') };
+    delete env.AGENTIC_RUNTIME_ROOT;
+    const r = spawnSync(process.execPath, [shimPath], {
+      input: JSON.stringify({ model: { display_name: 'M' } }), encoding: 'utf8', timeout: 5000, env,
+    });
+    // 0.10.0 > 0.2.0 > 0.1.0 numerically — a lexical sort would pick 0.2.0.
+    strictEqual(r.stdout.trim(), 'NEW', 'SemVer-max, not lexical order');
   });
 });
 

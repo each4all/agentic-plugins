@@ -302,7 +302,10 @@ describe('host-parity baseline consumer contract (ADR-0051 P2)', () => {
     // The concrete half of the case above, on the highest-stakes reader: this
     // renders CODE the operator is invited to install.
     const outside = await mkdtemp(join(tmpdir(), 'bcc-shim-out-'));
-    await writeFile(join(outside, 'evil.mjs'), "const items = ['__AGENTIC_STATUSLINE_ITEMS__']; // OUTSIDE MARKER\n");
+    // Carries BOTH placeholders the renderer substitutes — the delegating shim
+    // has a runtime floor as well as an item list, and substituteOnce is
+    // fail-closed on either being absent.
+    await writeFile(join(outside, 'evil.mjs'), "const items = ['__AGENTIC_STATUSLINE_ITEMS__']; const v = '__AGENTIC_MIN_RUNTIME_VERSION__'; // OUTSIDE MARKER\n");
     const escapedTemplate = await readFile(join(outside, 'evil.mjs'), 'utf8');
 
     // Injected template — the documented seam — still renders, so the guard

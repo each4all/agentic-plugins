@@ -80,6 +80,19 @@ export const CAPABILITY_IMPORTERS = {
   // citation pin scan. Tier R0: read-only, injectable (tests pass gitTrackedFiles
   // and never spawn), single fixed verb-path pinned in ARGV_VERB_ALLOWLIST.git.
   'retention-planner.mjs': { modules: ['node:child_process'], primitives: ['execFile'] },
+  // receiver-api.mjs gitBranchFallback → spawnSync('git', ['branch', '--show-current'])
+  // — the ADR-0048 §2 statusline branch probe. Tier R0: read-only, fixed argv,
+  // shell:false, 1.5s timeout, 4 KiB maxBuffer, scrubbed child env (PATH/HOME
+  // only), cwd validated from the session document; the verb-path is the one
+  // already pinned in ARGV_VERB_ALLOWLIST.git for the session-capture probe.
+  //
+  // Worth noting WHY this appears in the registry only now: the same spawn has
+  // existed since ADR-0048, but it lived in receivers/agentic-statusline.mjs —
+  // outside plugins/runtime/scripts/ and therefore outside this guard's scan.
+  // Making the statusline a delegating shim moved that execution INTO the
+  // guarded surface, so it is audited here rather than shipping unexamined in
+  // an installed file.
+  'receiver-api.mjs': { modules: ['node:child_process'], primitives: ['spawnSync'] },
 };
 
 // Raw child_process primitives. Any of these called in a file that is not a
