@@ -1,0 +1,100 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-receivers-that-could-not-be-updated",
+  "evidence_loop": {
+    "label": "the receivers that could not be updated, and the release cut early to find out",
+    "summary": "Three runtime slices ship together: the footer stops rendering an unmeasured context state as a measured one, both installed receivers become delegating shims so a rendering fix can reach an already-installed file, and diagnosis learns to classify what is actually installed by reading its bytes. The release was cut EARLY by owner decision, before the planned doctor-exit boundary, because the receiver change is code that runs on every prompt (statusline) and every Codex turn (notify) and had never executed as an installed shim resolving a real plugin cache. Cutting early converted that from believed to observed: the release's own new diagnostic read the installed receivers as legacy, the operator re-installed, and doctor then read current. It also exposed a live install gap nothing had modelled — a directory-source Claude marketplace serves a cached catalog, so claude plugin update reported nothing to do while claude plugin list still showed pre-release versions."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.92.0",
+      "tag": "plugin-runtime-v0.92.0",
+      "release_pr": 723,
+      "squash": "70ba21072d9c92eaa12448d0a523dc6102461f95",
+      "marketplace_sync": "e54b7fd9157141067a072cd6dcdc40bdf21e2ab1"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "c87dc81f6f82f06ae3c0486ee1374c447de642df",
+      "pr": 730,
+      "note": "The footer collapsed three provenances into one enum value, so a fabricated yellow drove a real fresh-session recommendation. evaluateSessionHandoff already had an honest context_risk_supplied flag, but the footer substituted a value first, making that branch unreachable."
+    },
+    {
+      "sha": "e6e53fb0e888ca9b6c1368f287b6246859210a1a",
+      "pr": 731,
+      "note": "Installed receivers freeze at install time; the shuttle's header records an ADR-0047 §5 mapping change that left older copies emitting a superseded kind. Delegation shape was measured over 20 runs with identical output: inline 46.0ms / import 47.1ms / spawn 75.8ms / bare-node 26.5ms."
+    },
+    {
+      "sha": "c94c5ddd66c410c10ca396bf196f341c81ec57de",
+      "pr": 732,
+      "note": "A legacy copy runs its own frozen logic and still satisfies the settings step that proves configuration, so only the bytes can tell — and they are never executed. Peer review found the draft ERASED an edited seat, landing a tampered file on the untouched template's hash as current."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260824T112523Z-679846",
+      "date": "2026-08-24",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:166937927aa9a8c6c65ca2c0e94bab8725ad09ad88f38300060d97f44fc2e493",
+      "runtime_version": "0.92.0",
+      "installed": {
+        "claude": "0.92.0",
+        "codex": "0.92.0"
+      },
+      "host_cli": {
+        "claude": "2.1.241 (Claude Code)",
+        "codex": "codex-cli 0.149.1"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning; hard_failures empty; one warning — latest compatibility check needs follow-up"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass"
+        },
+        {
+          "key": "experience_parity",
+          "value": "partial 81% 105/130; satisfied 5, partial 3, not_verified 1, blocked 0, manual follow-ups 1"
+        },
+        {
+          "key": "installed_byte_identity",
+          "value": "both caches hold an identical 127-file 0.92.0 package, whole-tree digest 76a7caf942ceee09a4a877cb2da6173d4ba50ff6768946bf324537b28fe8b8da; packaged baseline 86fdf17e4418884f01b67785eeaaacc74923a8a01efa238f514bf270da600843 matches both caches, the tag and the repository"
+        },
+        {
+          "key": "receivers_before_reinstall",
+          "value": "stale; agentic-statusline.mjs legacy (shipped v0.86.0 … v0.91.2), codex-notify-shuttle.mjs legacy (shipped v0.84.0 … v0.91.2), codex-notify-chain.mjs missing and not opted into. This is the release's own new diagnostic reading a real machine, not a fixture."
+        },
+        {
+          "key": "receivers_after_reinstall",
+          "value": "current; both receivers reclassified after the operator installed the rendered delegating shims, with the rendered statusline byte-identical to the self-contained copy it replaced — the first end-to-end evidence that a delegating shim resolves a real plugin cache"
+        }
+      ]
+    }
+  ],
+  "install_method": "The operator installed 0.92.0 on both hosts. Claude needed `claude plugin marketplace update` FIRST — a directory-source marketplace serves a cached catalog, so `claude plugin update` reported nothing to do while `claude plugin list` still showed pre-release versions. Receivers were then re-rendered from the installed plugin and installed over backups.",
+  "narrative": "This loop is the first where the evidence for releasing was impatience rather than completeness. The macro plan batched six runtime slices into one release with one recovery; three were done. The argument for waiting was the plan and one recovery instead of two. The argument for going was that the riskiest change in the batch — code on every prompt and every Codex turn — had been measured only inside the repository, and three more slices would land on top of it unvalidated. The second argument won, and the release paid for itself twice over.\n\nFirst, the loop it was meant to close did close: doctor read the installed receivers as legacy, named the exact tag ranges they shipped in, the operator re-installed, and doctor read current. That is the whole delegating-shim thesis observed end to end, and it was only observable because the machine still carried the pre-delegation copies — a control that disappears permanently at the first post-release re-install.\n\nSecond, it surfaced something no test could have: `claude plugin update` succeeded while updating nothing. A directory-source marketplace serves a cached catalog, so the host compared the installed version against a stale one and correctly concluded there was nothing to do. `claude plugin list` — the host's own view, not a session cache — still showed the pre-release versions. The fix is one command, `claude plugin marketplace update`, and nothing in the repository knew to say so. Recorded here because the next machine will hit it too.\n\nThe cost was the predicted one and no more: main went red on exactly the two proof-coupled assertions, and the recovery closed them with a real proof rather than a rewritten number. The plan's own recovery-1 stays scoped to the doctor-exit release it names; this is an additional recovery for an additional release, which is what recovery-2 already says to do when a release is cut between them.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-first-grant-and-the-cohort-it-missed",
+      "note": "The immediately preceding loop. Its proof is the one this record's proof supersedes in the stage docs. Its cohort-miss refusal is unchanged here — the grant still names no tuple this machine matches, and host movement continued (codex 0.148.0 to 0.149.1, claude 2.1.237 to 2.1.241) during this loop."
+    }
+  ]
+}
