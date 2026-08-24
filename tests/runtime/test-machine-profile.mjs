@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 
 import {
   EGRESS_CREDENTIAL_ENV_VAR,
+  PROFILE_SESSION_KEYS,
   UNSAFE_CLAUDE_MODES,
   assertProfileWritable,
   buildMachineProfile,
@@ -483,18 +484,180 @@ describe('machine profile 1.1 — statusline_preset forward-compat (ADR-0048 §2
     const warned = verdict.warnings.filter((w) => /unknown scalar key ignored/.test(w));
     strictEqual(warned.length, 1, `the ignore is WARNED, not silent: ${JSON.stringify(verdict.warnings)}`);
     match(warned[0], /\$\.member\[\d+\]/, 'located by ordinal');
-    match(warned[0], /newer schema minor \(1\) than this runtime reads \(0\)/, 'and the minor relation is stated');
+    match(warned[0], /newer schema minor \(2\) than this runtime reads \(0\)/, 'and the minor relation is stated');
     ok(!warned[0].includes('statusline_preset'), 'an undeclared key is not named back at the reader');
   });
 
-  it('canonical serialization puts statusline_preset LAST, so 1.0- and 1.1-reader canonical hashes agree', async () => {
+  it('the trailing scalars serialize after statusline_preset, in schema order', async () => {
     const { canonicalize, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
     const schema = await loadSchema('agentic-machine-profile');
     const profile = build();
     profile.statusline_preset = 'agentic-6';
-    const canonical = canonicalize(profile, schema);
-    const keys = Object.keys(canonical);
-    strictEqual(keys.at(-1), 'statusline_preset', `the trailing-scalar rule holds: ${keys.join(',')}`);
+    const keys = Object.keys(canonicalize(profile, schema));
+    deepStrictEqual(
+      keys.slice(-4),
+      ['statusline_preset', 'entry_brief', 'entry_brief_empty', 'session_capture'],
+      `the trailing-scalar rule holds: ${keys.join(',')}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Profile 1.2 — the session family as trailing bare scalars
+// ---------------------------------------------------------------------------
+
+describe('machine profile 1.2 — session family carriage', () => {
+  const sessionReaders = (keys) => ({
+    session: { family: 'session', keys, source: { scope: 'user', status: 'readable' } },
+  });
+  const withSession = (keys) => build({ readers: sessionReaders(keys) });
+  const ALL_SET = {
+    session_capture: { value: 'stop-hook', provenance: 'user-global' },
+    entry_brief: { value: 'startup', provenance: 'user-global' },
+    entry_brief_empty: { value: 'report', provenance: 'user-global' },
+  };
+
+  it('carries all three keys as bare scalars and validates as a real artifact', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = withSession(ALL_SET);
+    strictEqual(profile.schema, 'agentic-machine-profile-1.2');
+    strictEqual(profile.session_capture, 'stop-hook');
+    strictEqual(profile.entry_brief, 'startup');
+    strictEqual(profile.entry_brief_empty, 'report');
+    // Bare scalars, NOT scalarField objects — an object would be refused by every
+    // older reader at every minor, which is the whole reason for this shape.
+    for (const key of PROFILE_SESSION_KEYS) strictEqual(typeof profile[key], 'string', `${key} is a bare scalar`);
+    strictEqual(validate(profile).ok, true, JSON.stringify(validate(profile).errors));
+  });
+
+  it('an unset key exports null rather than being omitted', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = withSession({ ...ALL_SET, entry_brief: { value: null, provenance: null } });
+    strictEqual(profile.entry_brief, null);
+    ok('entry_brief' in profile, 'the key is present carrying null — absent and unset are not the same bytes');
+    strictEqual(validate(profile).ok, true);
+  });
+
+  it('an out-of-domain value is REFUSED by the schema enum (the control that makes the enum load-bearing)', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = withSession(ALL_SET);
+    profile.session_capture = 'bogus-mode';
+    const verdict = validate(profile);
+    strictEqual(verdict.ok, false, 'a closed set in code is a closed set in the schema');
+    ok(verdict.errors.some((e) => /session_capture/.test(e)), JSON.stringify(verdict.errors));
+  });
+
+  it('a 1.1 document (no session keys) still validates under the 1.2 reader', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = build();
+    profile.schema = 'agentic-machine-profile-1.1';
+    for (const key of PROFILE_SESSION_KEYS) delete profile[key];
+    const verdict = validate(profile);
+    deepStrictEqual(verdict.errors, [], 'the three keys are optional, so the minor stays additive');
+    ok(verdict.ok);
+  });
+
+  it('a 1.2 document under a 1.1-ERA reader is three SCALAR warnings + ignored, never an error (§4.6)', async () => {
+    const { validateAgainstSchema, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const oldSchema = structuredClone(await loadSchema('agentic-machine-profile'));
+    oldSchema.$id = 'agentic-machine-profile-1.1';
+    for (const key of PROFILE_SESSION_KEYS) delete oldSchema.properties[key];
+
+    const verdict = validateAgainstSchema(withSession(ALL_SET), oldSchema, { readerVersion: 'agentic-machine-profile-1.1' });
+    deepStrictEqual(verdict.errors, [], `the newer-minor scalars are forgiven: ${JSON.stringify(verdict.errors)}`);
+    const warned = verdict.warnings.filter((w) => /unknown scalar key ignored/.test(w));
+    strictEqual(warned.length, 3, `one warning per ignored key: ${JSON.stringify(verdict.warnings)}`);
+    for (const w of warned) match(w, /newer schema minor \(2\) than this runtime reads \(1\)/);
+  });
+
+  it('a session OBJECT block would be REFUSED at every minor — the control that makes the bare-scalar shape load-bearing', async () => {
+    const { validateAgainstSchema, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const oldSchema = structuredClone(await loadSchema('agentic-machine-profile'));
+    oldSchema.$id = 'agentic-machine-profile-1.1';
+    for (const key of PROFILE_SESSION_KEYS) delete oldSchema.properties[key];
+
+    // The rejected alternative, exercised rather than asserted in prose: the same
+    // facts carried as ONE object key instead of three scalars.
+    const objectShaped = build();
+    for (const key of PROFILE_SESSION_KEYS) delete objectShaped[key];
+    objectShaped.session = { session_capture: { value: 'stop-hook', scope: 'machine', provenance: 'user-global' } };
+    const verdict = validateAgainstSchema(objectShaped, oldSchema, { readerVersion: 'agentic-machine-profile-1.1' });
+    strictEqual(verdict.ok, false, 'an unknown OBJECT key is refused no matter how new the document claims to be');
+    ok(verdict.errors.some((e) => /unknown-structural-key/.test(e)), JSON.stringify(verdict.errors));
+  });
+
+  it('1.1 and 1.2 readers produce the SAME canonical bytes — and family order would break it', async () => {
+    const { canonicalize, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const schema12 = await loadSchema('agentic-machine-profile');
+    const schema11 = structuredClone(schema12);
+    for (const key of PROFILE_SESSION_KEYS) delete schema11.properties[key];
+
+    const profile = withSession(ALL_SET);
+    const bytes = (schema) => JSON.stringify(canonicalize(profile, schema), null, 2);
+    strictEqual(bytes(schema11), bytes(schema12), 'a 1.1 reader and a 1.2 reader agree byte-for-byte');
+
+    // THE CONTROL. Alphabetical order is not a style choice: declaring the same
+    // three keys in the config family's own order makes the 1.2 reader disagree
+    // with the 1.1 reader about the same document. Without this case the
+    // alignment above passes for a schema ordered either way, and the constraint
+    // that PROFILE_SESSION_KEYS encodes would be untested.
+    const schemaFamilyOrder = structuredClone(schema11);
+    for (const key of ['session_capture', 'entry_brief', 'entry_brief_empty']) {
+      schemaFamilyOrder.properties[key] = schema12.properties[key];
+    }
+    ok(bytes(schemaFamilyOrder) !== bytes(schema11), 'family-declaration order diverges — which is why the schema declares them alphabetically');
+  });
+
+  it('1.0↔1.2 hash equality is NOT claimed — a 1.0 reader sorts statusline_preset in among them', async () => {
+    const { canonicalize, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const schema12 = await loadSchema('agentic-machine-profile');
+    const schema10 = structuredClone(schema12);
+    for (const key of [...PROFILE_SESSION_KEYS, 'statusline_preset']) delete schema10.properties[key];
+
+    const profile = withSession(ALL_SET);
+    profile.statusline_preset = 'agentic-6';
+    const keys10 = Object.keys(canonicalize(profile, schema10));
+    // The limit is inherent, so it is PINNED rather than left as a surprise: to a
+    // 1.0 reader `statusline_preset` is just another unknown scalar and sorts
+    // after `session_capture`. Validation and seeding still work across the gap;
+    // only hash identity is scoped to 1.1↔1.2.
+    deepStrictEqual(keys10.slice(-4), ['entry_brief', 'entry_brief_empty', 'session_capture', 'statusline_preset']);
+    ok(JSON.stringify(canonicalize(profile, schema10)) !== JSON.stringify(canonicalize(profile, schema12)));
+  });
+});
+
+describe('machine profile 1.2 — session family seeding (§4.5)', () => {
+  const ALL_SET = {
+    session_capture: { value: 'stop-hook', provenance: 'user-global' },
+    entry_brief: { value: 'startup', provenance: 'user-global' },
+    entry_brief_empty: { value: null, provenance: null },
+  };
+
+  it('proposes each SET key as a confirmation-required default, and marks the user-scope-only ones', () => {
+    const profile = build({ readers: { session: { family: 'session', keys: ALL_SET, source: { scope: 'user', status: 'readable' } } } });
+    const result = seedProposals({ profile, validate: seedValidate });
+    strictEqual(result.ok, true, JSON.stringify(result.refused));
+    const byKey = new Map(result.proposals.map((p) => [p.key, p]));
+
+    for (const key of ['session.session_capture', 'session.entry_brief']) {
+      ok(byKey.has(key), `${key} is proposed`);
+      strictEqual(byKey.get(key).requires_confirmation, true, 'a proposal is never applied');
+      strictEqual(byKey.get(key).applied, false);
+    }
+    // ADR-0045 §7 — the distinction is carried, not flattened. entry_brief may
+    // never be written repo-side; session_capture legitimately may.
+    strictEqual(byKey.get('session.entry_brief').user_scope_only, true);
+    strictEqual(byKey.get('session.session_capture').user_scope_only, false);
+    // An UNSET key is not a default worth confirming.
+    ok(!byKey.has('session.entry_brief_empty'), 'a null value proposes nothing');
+  });
+
+  it('a profile whose session value is out of domain is REFUSED before anything is presented (§4.5.1)', () => {
+    const profile = build({ readers: { session: { family: 'session', keys: ALL_SET, source: { scope: 'user', status: 'readable' } } } });
+    profile.entry_brief = 'startup-but-wrong';
+    const result = seedProposals({ profile, validate: seedValidate });
+    strictEqual(result.ok, false, 'an incoming profile is untrusted and validated EXACTLY');
+    deepStrictEqual(result.proposals, []);
   });
 });
 

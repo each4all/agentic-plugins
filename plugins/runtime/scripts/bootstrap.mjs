@@ -101,6 +101,7 @@ import {
   projectCodexPermission,
   projectModelEffort,
   projectNotify,
+  projectSession,
   readUserGlobalEgress,
   readUserGlobalRuntimeConfig,
 } from './lib/profile-readers.mjs';
@@ -1628,6 +1629,11 @@ async function readUserGlobalReaders(ctx) {
   ]);
   const modelEffort = projectModelEffort(runtimeConfigSnapshot);
   const notify = projectNotify(runtimeConfigSnapshot);
+  // The THIRD family of the same one snapshot (profile 1.2). Projected here rather
+  // than read separately for the reason stated above: `model_effort`, `notify` and
+  // `session` are three families of ONE file, and a second read could observe an
+  // atomic replacement between them.
+  const session = projectSession(runtimeConfigSnapshot);
   // The override flag is derived from the SAME env the gather resolved
   // $CODEX_HOME with, so the reported provenance describes the bytes read.
   // Provenance comes from the GATHER that produced the bytes, not from a second
@@ -1708,7 +1714,7 @@ async function readUserGlobalReaders(ctx) {
   } else {
     codexNotify = { readable: false, present: false, argv: null, expected: codexNotifyExpected, tuiNotifications: { ...NO_TUI_NOTIFICATIONS } };
   }
-  return { modelEffort, notify, claudePermission, codexPermission, egress, egressActivation, codexNotify, statuslineClaude, statuslineCodex };
+  return { modelEffort, notify, session, claudePermission, codexPermission, egress, egressActivation, codexNotify, statuslineClaude, statuslineCodex };
 }
 
 // ADR-0048 §4 — CONTROL-PLANE child environments are scrubbed at the point of
@@ -3823,8 +3829,12 @@ export function renderText(report) {
     // §3.2 governs whether a value's CONTENT may cross artifact → report, and
     // the profile's own schema answers it: `scalarField.value` is
     // `maxLength`-only and `ruleArray.items` is `maxLength`-only
-    // (agentic-machine-profile-1.1), so neither is grammar-clamped and neither
-    // is disclosable. An earlier version of this block printed them verbatim in
+    // (agentic-machine-profile-1.2), so neither is grammar-clamped and neither
+    // is disclosable. 1.2's session scalars ARE enum-clamped and so would be
+    // disclosable under a per-field rule — but no such rule exists here yet:
+    // `describeWithheld` decides by TYPE, so they are withheld with every other
+    // string. That is the conservative side of the open §3.2/§4.5 tension
+    // (docs/follow-ups.md), not a judgement that their values are sensitive. An earlier version of this block printed them verbatim in
     // text AND in `--format json`, which turned a profile the operator may have
     // written a secret into — §3.2's exact threat model, an artifact reaching
     // terminal capture, CI logs, and agent context — into report content

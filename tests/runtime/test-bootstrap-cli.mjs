@@ -891,12 +891,31 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     const spy = spySubprocess();
     const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
 
+    // Profile 1.2 — give this home a session-family posture so the export path is
+    // exercised end-to-end rather than only in the unit tests. Written here rather
+    // than in the shared fixture so the other 150 cases keep their exact bytes.
+    await writeFile(
+      join(home, '.agentic-plugins', 'config.toml'),
+      'model = "gpt-5.2-codex"\neffort = "high"\nnotify_channel = "file-log"\nsession_capture = "stop-hook"\nentry_brief = "startup"\n',
+    );
+
     const exported = await run(['profile', 'export', '--name', 'machine-a']);
     strictEqual(exported.exitCode, EXIT.OK);
     const profilePath = join(home, '.agentic-plugins', 'profiles', 'machine-a.json');
     const profile = JSON.parse(await readFile(profilePath, 'utf8'));
-    strictEqual(profile.schema, 'agentic-machine-profile-1.1');
+    strictEqual(profile.schema, 'agentic-machine-profile-1.2');
     ok(Object.values(profile.boundary).every((flag) => flag === false), 'every boundary flag is false');
+    // The session family survives the real CLI read → build → write-gate → disk
+    // path, and an UNSET member lands as null rather than vanishing.
+    strictEqual(profile.session_capture, 'stop-hook');
+    strictEqual(profile.entry_brief, 'startup');
+    strictEqual(profile.entry_brief_empty, null);
+    // Canonical order on DISK, which is what a cross-minor reader hashes.
+    deepStrictEqual(
+      Object.keys(profile).slice(-4),
+      ['statusline_preset', 'entry_brief', 'entry_brief_empty', 'session_capture'],
+      `trailing scalars are last and alphabetical: ${Object.keys(profile).join(',')}`,
+    );
 
     // #30 — refuse without --overwrite, succeed with it.
     strictEqual((await run(['profile', 'export', '--name', 'machine-a'])).exitCode, EXIT.INVALID);
@@ -969,7 +988,7 @@ describe('runtime bootstrap CLI — lifecycle', () => {
   it('a proposal VALUE never crosses artifact -> report — §3.2', () => {
     // The first version of this rendering printed proposal values verbatim in
     // text and in `--format json`. `scalarField.value` and `ruleArray.items`
-    // are `maxLength`-only in agentic-machine-profile-1.1, so §3.2 does not let
+    // are `maxLength`-only in agentic-machine-profile-1.2, so §3.2 does not let
     // their content cross — and a machine profile is exactly the artifact that
     // rule's threat model is about (Refine-verify peer, MAJOR).
     const text = renderText({

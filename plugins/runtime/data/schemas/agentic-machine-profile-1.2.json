@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "agentic-machine-profile-1.1",
+  "$id": "agentic-machine-profile-1.2",
   "title": "Portable machine profile",
-  "description": "machine-bootstrap-contract.md §4. A secrets-free, enumerated snapshot of one machine's choices, written by `profile export` and consumed by `profile seed`. The profile is an UNTRUSTED source of interview defaults: it is never configuration to apply, and never an input to any activation or config loader (§4 invariant). Key order here IS the canonical serialization order (§4.1); validated by lib/schema-validate.mjs, whose closed keyword subset means every constraint below is enforced or the schema is rejected. 1.1 (ADR-0048 §2.1) adds the OPTIONAL `statusline_preset` SCALAR — deliberately a bare string, not a field object: §4.6 lets a 1.0 reader ignore an unknown scalar with a warning, while an unknown OBJECT key would refuse the whole document (a nested/custom item shape is exactly the major-bump case §2.1 names).",
+  "description": "machine-bootstrap-contract.md §4. A secrets-free, enumerated snapshot of one machine's choices, written by `profile export` and consumed by `profile seed`. The profile is an UNTRUSTED source of interview defaults: it is never configuration to apply, and never an input to any activation or config loader (§4 invariant). Key order here IS the canonical serialization order (§4.1); validated by lib/schema-validate.mjs, whose closed keyword subset means every constraint below is enforced or the schema is rejected. 1.1 (ADR-0048 §2.1) adds the OPTIONAL `statusline_preset` SCALAR — deliberately a bare string, not a field object: §4.6 lets a 1.0 reader ignore an unknown scalar with a warning, while an unknown OBJECT key would refuse the whole document (a nested/custom item shape is exactly the major-bump case §2.1 names). 1.2 adds the OPTIONAL session family — `entry_brief`, `entry_brief_empty`, `session_capture` — as three more trailing scalars, for the same reason and in ALPHABETICAL order: canonicalization emits unknown keys SORTED, so only that order makes a 1.1 reader and a 1.2 reader agree byte-for-byte over one document. Hash alignment is therefore 1.1↔1.2; a 1.0 reader sorts `statusline_preset` in among them and lands on a fourth ordering, which validation and seeding survive but hash identity does not.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "exported_at", "boundary", "source", "selection", "model_effort", "notify", "egress", "permissions"],
@@ -216,6 +216,18 @@
       "description": "1.1 (ADR-0048 §2.1) — the adopted statusline item set, carried as a SCALAR preset id (the six-item owner set is `agentic-6`). Appended LAST and kept a bare string: canonicalization serializes unknown keys after known ones, so a trailing scalar keeps a 1.0 reader's canonical hash aligned with a 1.1 reader's over the same document, and §4.6 lets the 1.0 reader ignore it with a warning. The preset id names a policy; the canonical item-policy definition itself lives with the statusline adapter, never inline here. Optional (absent from required) — a profile exported before the statusline stage carries null or nothing.",
       "type": ["string", "null"],
       "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "entry_brief": {
+      "description": "1.2 (ADR-0045 §7) — the entry-brief activation posture. A trailing bare SCALAR for the `statusline_preset` reason, and declared with `enum` rather than a loose string for the `notify_channel` reason: a closed set in code is a closed set here, so an out-of-domain value is refused at the write gate and again at the seed gate instead of travelling. USER-SCOPE-ONLY: it activates a session-shaping injected line, so the export reads user-global config only and a seed proposal targets user scope alone — a repo value can never enable it. Declared ALPHABETICALLY with its two siblings, NOT in the config family's own order: canonicalization emits unknown keys sorted, so only this order keeps a 1.1 reader's canonical hash aligned with a 1.2 reader's over the same document. `lib/machine-profile.mjs` PROFILE_SESSION_KEYS carries the same order for the written bytes; the two must not drift.",
+      "enum": ["off", "startup", null]
+    },
+    "entry_brief_empty": {
+      "description": "1.2 (ADR-0045 §7) — how an empty entry brief is reported. Same trailing-scalar carriage, same enum rationale, same user-scope-only rule, and the same alphabetical-order requirement as `entry_brief`.",
+      "enum": ["silent", "report", null]
+    },
+    "session_capture": {
+      "description": "1.2 (ADR-0044 §3) — the session-capture opt-in posture. Same trailing-scalar carriage and enum rationale as its two siblings. NOT user-scope-only: a repo value is legitimate for this key at runtime (it resolves repo → user → default). The export still reads user-global ONLY, per §4.4 — a repo value is this checkout's policy, not the operator default worth carrying to another machine.",
+      "enum": ["off", "stop-hook", null]
     }
   },
   "$defs": {

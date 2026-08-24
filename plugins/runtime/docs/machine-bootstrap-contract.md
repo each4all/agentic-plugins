@@ -805,7 +805,7 @@ carries an egress channel.
 
 ```jsonc
 {
-  "schema": "agentic-machine-profile-1.1",
+  "schema": "agentic-machine-profile-1.2",
   "exported_at": "<iso-8601-utc>",
   "boundary": {
     "writes_host_config": false,
@@ -857,7 +857,19 @@ carries an egress channel.
                 "defaultMode": "<mode|null>", "scope": "machine", "provenance": "user-global" },
     "codex":  { "approval_policy": "<policy|null>", "sandbox_mode": "<mode|null>",
                 "scope": "machine", "provenance": "user-global" }
-  }
+  },
+
+  // The trailing BARE SCALARS, in canonical order. They carry no
+  // {value, scope, provenance} envelope on purpose: an object here would be
+  // refused by every older reader at every minor (§4.6), and the envelope would
+  // say nothing that varies — this artifact reads user-global only, so
+  // provenance is user-global exactly when a value is present. The three
+  // session keys follow `statusline_preset` ALPHABETICALLY; see "Profile 1.2"
+  // below for why that ordering is load-bearing rather than cosmetic.
+  "statusline_preset":  "<preset-id|null>",
+  "entry_brief":        "<off|startup|null>",
+  "entry_brief_empty":  "<silent|report|null>",
+  "session_capture":    "<off|stop-hook|null>"
 }
 ```
 
@@ -977,6 +989,46 @@ existing behavior from one value to the whole profile.
   credential env var can enter the recorded contract) is enforced at the write
   boundary; the difference from the ADR's literal wording is deliberate and
   owner-approved (2026-07-23).
+
+#### Profile 1.2 (the session-config family)
+
+- **`entry_brief`, `entry_brief_empty`, `session_capture`** — the third config
+  family (`CONFIG_KEY_FAMILIES.session`), carried as OPTIONAL trailing **scalars**
+  for exactly the `statusline_preset` reason: §4.6 forgives an unknown scalar from
+  a newer minor, while an unknown *object* is refused at every minor, so a
+  `session` block would make every 1.2 profile unreadable to a 1.1 runtime and
+  break the seed path the artifact exists for. They are declared with `enum`
+  rather than a loose string, following `notify_channel`: a closed set in code is
+  a closed set in the schema, so an out-of-domain value is refused at the write
+  gate and again at the seed gate instead of travelling.
+- **The declared order is ALPHABETICAL, and that is load-bearing.**
+  Canonicalization emits schema-named keys in schema order and every unknown key
+  **sorted**, so a 1.1 reader serializes these three lexically after
+  `statusline_preset`. Declaring them in the config family's own order
+  (`session_capture` first) makes a 1.2 reader produce different canonical bytes
+  for the same document — the exact cross-minor divergence the trailing-scalar
+  shape exists to prevent. `PROFILE_SESSION_KEYS` in `lib/machine-profile.mjs`
+  encodes the same order; the two must not drift.
+- **Hash alignment is scoped to 1.1↔1.2, not 1.0↔1.2**, and the limit is
+  inherent rather than an oversight: a 1.0 reader does not know
+  `statusline_preset` either, so it sorts that key in among these three and lands
+  on a fourth ordering. Validation and seeding still work across all three minors
+  — that is what the §4.6 scalar tolerance buys — and only hash identity is
+  scoped. A consumer comparing hashes across a 1.0 boundary must version the
+  expectation rather than assume equality.
+- **What the export deliberately does NOT see.** `session_capture` resolves
+  repo → user → default at runtime and `entry_brief*` resolve env → user →
+  default (ignoring repo activation, ADR-0045 §7). The profile reads the
+  **user-global** layer only, per §4.4: a repo value is this checkout's policy
+  and an env value is this machine's per-session state, and neither is the
+  operator default worth carrying to another machine. A profile therefore
+  records the PERSISTED posture, never the effective value in force right now.
+- **Seed proposals mark scope, and do not flatten it.** `entry_brief` and
+  `entry_brief_empty` are user-scope-only (§7): a repo-tracked value must never
+  be able to enable a session-shaping injected line, so their proposals carry
+  `user_scope_only: true`. `session_capture` is not in that class and carries
+  `false`. The marker is present only where it was asserted — an omitted marker
+  means nobody classified the key, which must not read as "repo-writable".
 
 ### 4.6 Schema migration
 
@@ -2624,7 +2676,7 @@ nobody mistakes "the contract did not say" for "the contract left it open".
 
 | Item | Constrained by |
 |---|---|
-| Exact JSON Schema files for `agentic-machine-profile-1.1` (1.0 + trailing `statusline_preset` scalar, ADR-0048 §2.1), `runtime-bootstrap-run-1.2` (1.1 + the egress evidence vocabulary, ADR-0048 §3), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
+| Exact JSON Schema files for `agentic-machine-profile-1.2` (1.1 + the trailing session-family scalars; 1.1 was 1.0 + trailing `statusline_preset`, ADR-0048 §2.1), `runtime-bootstrap-run-1.2` (1.1 + the egress evidence vocabulary, ADR-0048 §3), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
 | ~~Exact permission-mode enums per host~~ | **Resolved (S8a2 C0).** The **stored** enum carries whatever each host accepts, unsafe values included, because §4.5.3 shows a source machine's value as a labelled note — it must have a field to live in. Safety grading is a **present/seed-side** rule, not a second schema field: never *present* Claude `bypassPermissions`, Codex `approval_policy = "never"`, or `sandbox_mode = "danger-full-access"` as a default. Presentable Claude `defaultMode`: `default` / `acceptEdits` / `plan`. Presentable Codex `approval_policy`: `untrusted` / `on-request` / `on-failure`; `sandbox_mode`: `read-only` / `workspace-write`. |
 | The complete `minimum_version` floor table | §1.4 — two are known (`companions` 0.3.0, `engineer` 0.7.0); S8a2 C1 verifies the rest against the plugins' own changelogs. Compare **prerelease-aware** with SemVer §11 identifier ranking (numeric identifiers as JS numbers, lossy only above 2^53; beyond the shared `semverCompare`, whose prerelease tie-break ranks a release above its own prereleases but never identifiers against each other); an unknown installed version with a non-null floor stays **unresolved**, never "installed". |
 | ~~The write-ahead journal's exact transition table and the settings-artifact schema minor~~ | **Resolved (S8a1)** — §1.5 "Concrete shape" specifies the fields; artifact schema is `runtime-settings-execution-artifact-1.3` (S8a4 added the `codex_hook_review` canonical `bound_versions`/`attested_plugins`), statuses `planned → in-progress → completed/failed/refused` |

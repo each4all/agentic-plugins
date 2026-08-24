@@ -29,15 +29,35 @@ import { createHash } from 'node:crypto';
 
 import { scrubSecrets } from './egress-channel.mjs';
 import { redactSecrets, sanitizeValue } from './permission-sanitize.mjs';
-import { CONFIG_KEY_FAMILIES } from './runtime-config.mjs';
+import { CONFIG_KEY_FAMILIES, USER_SCOPE_ONLY_CONFIG_KEYS } from './runtime-config.mjs';
 import { canonicalize } from './schema-validate.mjs';
 
-export const MACHINE_PROFILE_SCHEMA_VERSION = 'agentic-machine-profile-1.1';
+export const MACHINE_PROFILE_SCHEMA_VERSION = 'agentic-machine-profile-1.2';
 export const EGRESS_CREDENTIAL_ENV_VAR = 'TELEGRAM_BOT_TOKEN';
 // ADR-0048 §2.1 — the owner-adopted six-item statusline set, carried in the
 // profile as a SCALAR preset id (1.1-additive). The id names a policy; the
 // canonical ordered item definition belongs to the statusline adapter.
 export const STATUSLINE_PRESET_AGENTIC_6 = 'agentic-6';
+
+// 1.2 — the session-config family (ADR-0044 §3 `session_capture`, ADR-0045 §7
+// `entry_brief` / `entry_brief_empty`), carried as TRAILING BARE SCALARS for the
+// `statusline_preset` reason and appended in the order below.
+//
+// THE ORDER IS ALPHABETICAL AND THAT IS LOAD-BEARING, not tidiness. `canonicalize`
+// emits schema-named keys in schema order and then every unknown key SORTED, so a
+// 1.1 reader meeting a 1.2 document serializes these three lexically after
+// `statusline_preset`. Declaring them in the config family's own order
+// (`session_capture` first) makes a 1.2 reader emit a DIFFERENT byte sequence for
+// the SAME document — measured, two distinct canonical hashes — which is exactly
+// the cross-minor alignment the trailing-scalar shape exists to preserve. The
+// schema declares the same order for the same reason; the two must not drift.
+//
+// The alignment holds for 1.1↔1.2 and NOT for 1.0↔1.2, and the limit is inherent:
+// a 1.0 reader does not know `statusline_preset` either, so it sorts that key in
+// among these three and lands on a fourth ordering no amount of care here can
+// match. Validation and seeding still work across all three minors (that is what
+// the §4.6 scalar tolerance buys); only hash identity is scoped to 1.1↔1.2.
+export const PROFILE_SESSION_KEYS = Object.freeze(['entry_brief', 'entry_brief_empty', 'session_capture']);
 
 // §4.5.3 / ADR-0038 — the postures that are STORED but never PRESENTED as a default.
 // The stored enum carries them because §4.5.3 shows a source machine's value as a
@@ -185,6 +205,14 @@ export function buildMachineProfile({ readers, probe, selection, runtimeVersion,
     // one host, declined, or foreign wiring exports null — never an inference
     // from arbitrary host config.
     statusline_preset: readers.statuslinePreset ?? null,
+    // 1.2 — the session family, after `statusline_preset` and in
+    // PROFILE_SESSION_KEYS order (see that constant for why the order is
+    // alphabetical rather than the family's own). Bare scalars, so unlike every
+    // other family here they carry no {scope, provenance} envelope: an object
+    // would be refused by a 1.1 reader at any minor, and the envelope would say
+    // nothing that varies — this reader is user-global-only by construction, so
+    // provenance is user-global exactly when a value is present.
+    ...Object.fromEntries(PROFILE_SESSION_KEYS.map((key) => [key, readers.session?.keys?.[key]?.value ?? null])),
   };
 }
 
@@ -451,7 +479,20 @@ export function seedProposals({ profile, targetDefaults = {}, validate }) {
   // by the reader rather than by the file.
   const propose = (key, value, entry) => {
     if (value === null || value === undefined) return;
-    proposals.push({ key, value, scope: entry?.scope ?? null, provenance: entry?.provenance ?? null, requires_confirmation: true, applied: false });
+    proposals.push({
+      key,
+      value,
+      scope: entry?.scope ?? null,
+      provenance: entry?.provenance ?? null,
+      requires_confirmation: true,
+      applied: false,
+      // 1.2 — present only where the caller asserted it, so an OMITTED marker and
+      // an explicit `false` stay distinguishable. A proposal that simply lacks the
+      // field is one nobody classified; defaulting it to `false` here would let a
+      // future user-scope-only key be presented as repo-writable by omission,
+      // which is the failure the marker exists to prevent.
+      ...(entry?.user_scope_only === undefined ? {} : { user_scope_only: entry.user_scope_only === true }),
+    });
   };
 
   for (const [key, entry] of Object.entries(profile.model_effort ?? {})) propose(`model_effort.${key}`, entry.value, entry);
@@ -462,6 +503,28 @@ export function seedProposals({ profile, targetDefaults = {}, validate }) {
   // a confirmation-required default, never something applied (Codex review
   // MINOR — §4.5's "present every remaining value" covers it).
   propose('statusline_preset', profile.statusline_preset, { scope: 'machine', provenance: 'user-global' });
+
+  // 1.2 — the session family, same bare-scalar treatment. The `session.` prefix
+  // matches how `model_effort.` and `notify.` namespace their families, so a
+  // consumer reading the proposal list can tell which config family a key belongs
+  // to without a lookup table.
+  //
+  // `entry_brief` and `entry_brief_empty` are USER-SCOPE-ONLY (ADR-0045 §7): they
+  // activate a session-shaping injected line, so a repo-tracked value must never be
+  // able to enable them. The proposal therefore carries an explicit
+  // `user_scope_only` marker rather than leaving the consumer to re-derive the rule
+  // — a seed path that proposed one of these into a repo target would reintroduce
+  // exactly the cloned-repository vector §7 closed. `session_capture` is NOT in that
+  // class (a repo value is legitimate for it) and is marked accordingly, so the two
+  // are distinguishable at the point of use instead of being flattened into one
+  // over-broad "session keys are user-only" claim.
+  for (const key of PROFILE_SESSION_KEYS) {
+    propose(`session.${key}`, profile[key], {
+      scope: 'machine',
+      provenance: 'user-global',
+      user_scope_only: USER_SCOPE_ONLY_CONFIG_KEYS.includes(key),
+    });
+  }
 
   // The chat-id pre-fills; the token never does (§4.5) — and the token is not in the
   // profile to begin with, so this is the whole of it.
