@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.6](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.5...plugin-engineer-v0.21.6) (2026-08-24)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** dirty-tree gates see untracked files under status.showUntrackedFiles=no ([0f3f50b](https://github.com/each4all/agentic-plugins/commit/0f3f50beda1b3b321a5d80c7b125cf3ddb869541))
+* **plugin/engineer:** state when Stop evaluates the archive gates ([13cbcfc](https://github.com/each4all/agentic-plugins/commit/13cbcfc93938447c316413b0ae4524b59c45e139))
+
 ## [0.21.5](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.4...plugin-engineer-v0.21.5) (2026-08-16)
 
 

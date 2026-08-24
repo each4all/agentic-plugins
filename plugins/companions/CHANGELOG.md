@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.4.0...plugin-companions-v0.4.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **plugin/companions:** sync companion bundles for the claude expiry / codex 401 auth wordings ([dbcfc26](https://github.com/each4all/agentic-plugins/commit/dbcfc26dddcf7c146ea9361cf0857963ac9d2543))
+* **plugin/companions:** sync companion bundles for the peer-nesting guard ([ebfd0ec](https://github.com/each4all/agentic-plugins/commit/ebfd0eca66c8e4e92bf9a78f9555bb59a00bdfcb))
+
 ## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.3.1...plugin-companions-v0.4.0) (2026-05-06)
 
 
