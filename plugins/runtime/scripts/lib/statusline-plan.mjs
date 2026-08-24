@@ -52,6 +52,7 @@ import { fileURLToPath } from 'node:url';
 import { STATUSLINE_PRESET_AGENTIC_6 } from './machine-profile.mjs';
 import { substituteOnce } from './notification-plan.mjs';
 import { resolveContainedSync } from './path-containment.mjs';
+import { RUNTIME_VERSION } from '../version.mjs';
 import { renderCodexTuiTableToml } from './toml.mjs';
 
 export { STATUSLINE_PRESET_AGENTIC_6 };
@@ -189,6 +190,8 @@ export function renderCodexStatusLineFragmentToml(policy = STATUSLINE_POLICY_AGE
 }
 
 const RECEIVERS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'receivers');
+const SCRIPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const RECEIVER_API_BASENAME = 'receiver-api.mjs';
 
 // Canonical containment, like every other packaged asset. This one renders
 // CODE the operator is invited to install, so a template resolving outside the
@@ -218,13 +221,29 @@ function jsStringArrayLiteral(values) {
  * NOT gate the `statusline.claude.configured` step (settings-level
  * semantics; see the machine-bootstrap contract's statusline section).
  */
-export function renderAgenticStatuslineShim({ policy = STATUSLINE_POLICY_AGENTIC_6, template = null } = {}) {
+export function renderAgenticStatuslineShim({
+  policy = STATUSLINE_POLICY_AGENTIC_6,
+  template = null,
+  minRuntimeVersion = RUNTIME_VERSION,
+} = {}) {
   const source = template ?? readPackagedStatuslineTemplate();
-  const body = substituteOnce(
+  const withItems = substituteOnce(
     source,
     "['__AGENTIC_STATUSLINE_ITEMS__']",
     jsStringArrayLiteral(expectedCodexStatusLineItems(policy)),
     'STATUSLINE_ITEMS',
+  );
+  // The shim delegates to the packaged receiver API, so it carries a runtime
+  // floor exactly as the Codex shuttle does (renderCodexNotifyShuttleScript).
+  // substituteOnce is fail-closed on a missing or repeated token, so a template
+  // that stopped carrying this placeholder fails the render rather than
+  // shipping a shim whose floor is the literal placeholder — which versionGte
+  // would parse as 0.0.0 and let EVERY runtime through the gate.
+  const body = substituteOnce(
+    withItems,
+    "'__AGENTIC_MIN_RUNTIME_VERSION__'",
+    JSON.stringify(String(minRuntimeVersion)),
+    'MIN_RUNTIME_VERSION',
   );
   return { body, sha256: createHash('sha256').update(body).digest('hex') };
 }
@@ -235,11 +254,24 @@ export function renderAgenticStatuslineShim({ policy = STATUSLINE_POLICY_AGENTIC
  * the shim. Fail-closed: an unparsable template returns [] and the agreement
  * test fails loudly.
  */
-export function shimTemplateRendererIds({ template = null } = {}) {
-  const source = template ?? readPackagedStatuslineTemplate();
-  const match = source.match(/const RENDERERS = \{([\s\S]*?)\n\};/);
+export function shimTemplateRendererIds({ source = null } = {}) {
+  const text = source ?? readPackagedReceiverApi();
+  const match = text.match(/const RENDERERS = \{([\s\S]*?)\n\};/);
   if (!match) return [];
   return [...match[1].matchAll(/^ {2}'([a-z0-9-]+)':/gm)].map((m) => m[1]);
+}
+
+// The renderer map moved OUT of the shim template and into the packaged API
+// when the shim became a delegating one — the shim no longer knows any item.
+// This reader follows it there, so the policy-agreement test keeps binding the
+// policy to the code that actually renders, rather than passing vacuously
+// against a template that no longer contains a renderer map.
+function readPackagedReceiverApi() {
+  const located = resolveContainedSync(SCRIPTS_DIR, RECEIVER_API_BASENAME);
+  if (located.status !== 'ok') {
+    throw new Error(`receiver API could not be resolved inside the runtime package (${located.status}${located.code ? `: ${located.code}` : ''}) at ${located.path}`);
+  }
+  return readFileSync(located.canonicalPath, 'utf8');
 }
 
 // ---------------------------------------------------------------------------

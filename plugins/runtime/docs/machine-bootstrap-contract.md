@@ -1484,6 +1484,29 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   material rides separately) — back up the old shim, install, verify the
   hash, and revert by restoring the backup. Hash equality is deliberately NOT
   a condition of the configured step.
+- **The shim hash binds the installed BYTES, not the rendered BEHAVIOUR.**
+  Since the shim became a delegating one (ADR-0048 §2 as amended), what it
+  prints is produced by `scripts/receiver-api.mjs` in the resolved runtime
+  plugin, which the shim finds at run time. Two consequences change how the
+  hash and the backup may be read:
+  - A plugin upgrade can change the rendered statusline **without changing the
+    installed shim or its sha256**. That is the point of the shape — it is how
+    a rendering fix reaches an already-installed shim — but it means hash
+    equality proves the delivery was faithful, never that behaviour is
+    unchanged.
+  - **Restoring the backup no longer necessarily restores the old behaviour.**
+    Restoring a backup that predates the delegating shape restores a
+    self-contained renderer, which does revert behaviour; restoring a backup of
+    a *delegating* shim reverts only the item policy, the runtime floor, and the
+    required capability major — the rendering still comes from whichever runtime
+    resolves at that moment. A behavioural rollback needs the runtime rolled
+    back too, and the shim's floor must not exceed the runtime being rolled back
+    to.
+  The shim declares what it needs so a diagnosis can state the gap rather than
+  infer it: its `@agentic-receiver:` marker line names the generation, its
+  `MIN_RUNTIME_VERSION` the floor, and its required capability major the API
+  shape. A shim whose floor or major the resolved runtime does not satisfy
+  renders nothing at all — visibly empty, never silently stale.
 - **`statusline_preset` export rule (owner-approved 2026-07-23)**: `profile
   export` writes `agentic-6` iff BOTH hosts' statusline configuration is
   observed canonical — the operator applying the rendered fragments IS the

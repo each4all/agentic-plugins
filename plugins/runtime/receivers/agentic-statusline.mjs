@@ -2,6 +2,8 @@
 // agentic-statusline.mjs — Claude Code statusLine shim for agentic-plugins
 // (rendered by the runtime:bootstrap statusline plan, ADR-0048 §2/§2.1).
 //
+// @agentic-receiver: statusline delegating-shim v1
+//
 // Source template: plugins/runtime/receivers/agentic-statusline.mjs. It ships
 // with the runtime plugin as render-input DATA, deliberately outside
 // plugins/runtime/scripts/: the ADR-0035 §4 executor guard governs code the
@@ -10,43 +12,71 @@
 // (canonical home: ~/.agentic-plugins/bin/agentic-statusline.mjs, invoked by
 // Claude Code as `node "<path>"` per the settings statusLine fragment).
 //
+// THIS FILE IS A DELEGATING SHIM. Everything it once implemented inline — the
+// per-item renderers and their sanitization — now lives in the plugin at
+// scripts/receiver-api.mjs, and this shim resolves that API at RUN time. The
+// reason is that installed bytes are frozen at install time: whatever logic
+// ships in this file cannot be corrected by upgrading the plugin, so the
+// volatile half belongs on the other side of the resolution. What remains here
+// is only what must bootstrap the resolution itself, which is why it cannot be
+// delegated in turn.
+//
+// Delegation is by dynamic import(), NOT by spawning a child. Measured over 20
+// runs on the same session document, all shapes producing byte-identical
+// output: today's inline copy 46.0 ms, import() 47.1 ms, child process 75.8 ms
+// (bare `node -e ''` floor 26.5 ms). The statusline renders synchronously on
+// every prompt, so a second interpreter start would be charged to every render.
+//
 // Contract (ADR-0048 §2, the shim half of the sufficiency gate): read-only,
 // bounded, credential-free, network-free, non-polling, order-preserving under
-// missing data. Claude Code writes one session JSON document on stdin and
-// displays the first stdout line; triggers are host-driven (never a timer
-// here). Fail-closed silent: exit 0 always, at most one plain line on stdout,
-// nothing on stderr beyond one diagnostic.
-//
-// The ITEM ORDER is rendered in from the one canonical policy
-// (lib/statusline-plan.mjs, ADR-0048 §2.1 — the owner-adopted agentic-6 set);
-// this shim owns only the per-item projections. A policy item this shim does
-// not know is skipped (order preserved), never an error — and the plan-side
-// test pins that the policy ids and this renderer map agree, so drift fails
-// the suite rather than the statusline.
+// missing data. Under §2 as amended that contract binds this shim AND the
+// packaged API it delegates to. Claude Code writes one session JSON document
+// on stdin and displays the first stdout line; triggers are host-driven (never
+// a timer here). Fail-closed silent: exit 0 always, at most one plain line on
+// stdout, nothing on stderr.
 //
 // Git branch (ADR-0048 realization decision, owner-approved 2026-07-23): an
-// ordinary Claude session's stdin carries no branch (worktree.branch is
-// --worktree-session only), so this shim runs ONE bounded read-only
-// `git branch --show-current` — fixed argv, no shell, cwd validated from the
-// session JSON, 1.5s timeout, capped output, scrubbed child environment.
-// That stays inside the §2 shim contract (read-only + bounded; the contract
-// forbids network/credentials/polling, not a read-only VCS query); the
-// §2.1 "from its stdin JSON" wording predates this decision and the
-// machine-bootstrap contract records the deviation.
+// ordinary Claude session's stdin carries no branch, so the API runs ONE
+// bounded read-only `git branch --show-current` — fixed argv, no shell, cwd
+// validated from the session JSON, 1.5s timeout, capped output, scrubbed child
+// environment. That stays inside the §2 shim contract (read-only + bounded;
+// the contract forbids network/credentials/polling, not a read-only VCS
+// query); the machine-bootstrap contract records the deviation.
 
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const STATUSLINE_ITEMS = ['__AGENTIC_STATUSLINE_ITEMS__'];
 
-const STDIN_MAX_BYTES = 256 * 1024;
-const GIT_TIMEOUT_MS = 1500;
-const SEGMENT_MAX_CHARS = 64;
+// Rendered from the planning runtime's own version: the first runtime whose
+// receiver-api.mjs this shim targets.
+const MIN_RUNTIME_VERSION = '__AGENTIC_MIN_RUNTIME_VERSION__';
+// Capability major, checked IN ADDITION to the version gate. A semver floor
+// only proves which release answered; it cannot prove this build still exports
+// the entry point at the signature this shim calls.
+//
+// Required EXACTLY, never `>=`: the major is incremented precisely because the
+// old shape broke, so accepting a higher one would accept the very runtime that
+// broke this shim. An incompatible runtime therefore reads as no runtime.
+const REQUIRED_STATUSLINE_MAJOR = 1;
 
+// The shim's own output envelope, kept here deliberately. The API is upgradable
+// code; this file is the stable guarantee the host actually depends on — at
+// most ONE plain line, no control or bidi bytes, bounded length. A future API
+// bug must not be able to reach the terminal through a shim that simply relays
+// whatever it was handed.
+const LINE_MAX_CHARS = 512;
+
+const STDIN_MAX_BYTES = 256 * 1024;
+
+// Bounded stdin read. STREAMING cap: read-to-EOF-then-check would buffer an
+// unbounded pipe before the bound applies, so read at most MAX+1 bytes and
+// stop — an over-cap or erroring stream returns null immediately. This stays
+// in the shim because it must happen before any resolution work: the host is
+// already writing, and a shim that resolved first could block on a full pipe.
 function readStdinBounded() {
-  // STREAMING cap (Review peer MAJOR): read-to-EOF-then-check buffers an
-  // unbounded pipe before the bound applies. Read at most MAX+1 bytes and
-  // stop — an over-cap or erroring stream returns null immediately.
   try {
     const chunks = [];
     let total = 0;
@@ -71,128 +101,160 @@ function readStdinBounded() {
   }
 }
 
-// One plain-text segment: strip control/ANSI/newlines, cap length. The
-// statusline is a single terminal line — a hostile or odd value must not be
-// able to break out of it.
-function sanitizeSegment(value) {
-  const text = String(value)
+// Prerelease-strict floor gate: a prerelease of the floor version is BELOW it.
+// Build metadata (`1.2.3+build`) is stripped first — it never affects
+// precedence, and splitting on '-' without the strip would misread
+// `1.2.3+build-5` as a prerelease and reject a valid runtime.
+function versionGte(version, min) {
+  const [core, prerelease] = String(version).split('+', 1)[0].split('-', 2);
+  const parts = core.split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
+  const floor = String(min).split('+', 1)[0].split('-', 1)[0].split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
+  for (let i = 0; i < 3; i += 1) {
+    const av = parts[i] || 0;
+    const bv = floor[i] || 0;
+    if (av !== bv) return av > bv;
+  }
+  return !prerelease;
+}
+
+function readManifestVersion(root) {
+  const layouts = [
+    path.join(root, '.claude-plugin', 'plugin.json'),
+    path.join(root, '.codex-plugin', 'plugin.json'),
+  ];
+  for (const manifestPath of layouts) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      if (typeof manifest.version === 'string' && manifest.version.trim()) {
+        return manifest.version.trim();
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function semverCompare(a, b) {
+  const na = String(a).split('+', 1)[0];
+  const nb = String(b).split('+', 1)[0];
+  const pa = na.split('-', 1)[0].split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
+  const pb = nb.split('-', 1)[0].split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
+  for (let i = 0; i < 3; i += 1) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  }
+  // Equal core: a clean release ranks ABOVE any prerelease of it, so the
+  // candidate sort cannot pick a beta by directory order when the released
+  // version is also installed.
+  const preA = na.indexOf('-') === -1 ? 0 : 1;
+  const preB = nb.indexOf('-') === -1 ? 0 : 1;
+  return preB - preA;
+}
+
+// ADR-0039 §5 discovery ladder. The sibling-monorepo rung does not apply to a
+// home-installed shim; point AGENTIC_RUNTIME_ROOT at a source checkout instead.
+//
+// Same-host preference: this is a CLAUDE statusline receiver, so the Claude
+// cache is probed FIRST — a stale opposite-host Codex install must never
+// shadow a current Claude one.
+//
+// The ladder resolves the AUTHORITATIVE root — the newest install that is a
+// runtime plugin at all — and stops. It deliberately does NOT filter candidates
+// by whether they carry the receiver API: doing so would let a newer runtime
+// that dropped the API be passed over in favour of an older one that still has
+// it, silently resurrecting an implementation the newer release removed. One
+// root is chosen, then gated; a root that fails the gate fails closed rather
+// than handing off to a staler candidate.
+function isRuntimePlugin(root) {
+  return readManifestVersion(root) !== null;
+}
+
+function resolveRuntimeRoot() {
+  const override = process.env.AGENTIC_RUNTIME_ROOT;
+  if (typeof override === 'string' && override.length > 0) {
+    if (!path.isAbsolute(override)) return null;
+    return isRuntimePlugin(override) ? override : null;
+  }
+  const home = os.homedir();
+  const claudeBase = path.join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime');
+  let candidates = [];
+  try {
+    for (const entry of fs.readdirSync(claudeBase, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const root = path.join(claudeBase, entry.name);
+      const version = readManifestVersion(root);
+      if (!version) continue;
+      candidates.push({ version: version, root: root });
+    }
+  } catch {
+    candidates = [];
+  }
+  if (candidates.length > 0) {
+    candidates.sort(function (a, b) { return semverCompare(b.version, a.version); });
+    return candidates[0].root;
+  }
+  const codexHome = typeof process.env.CODEX_HOME === 'string' && process.env.CODEX_HOME.length > 0
+    ? path.resolve(process.env.CODEX_HOME)
+    : path.join(home, '.codex');
+  const codexBase = path.join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime');
+  try {
+    if (isRuntimePlugin(codexBase)) return codexBase;
+  } catch {}
+  return null;
+}
+
+// The stable output envelope — see LINE_MAX_CHARS. Returns null when the value
+// cannot be rendered as one safe line.
+function safeLine(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const text = value
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
-    // C0 + DEL + C1 (Review peer MAJOR: U+009B CSI reached the terminal) and
-    // bidi overrides/isolates (U+202A-E, U+2066-9, LRM/RLM) — a statusline
-    // segment must not be able to reorder or restyle the line around it.
     .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return text.length > SEGMENT_MAX_CHARS ? `${text.slice(0, SEGMENT_MAX_CHARS - 1)}…` : text;
+  if (text.length === 0) return null;
+  return text.length > LINE_MAX_CHARS ? text.slice(0, LINE_MAX_CHARS) : text;
 }
 
-function finitePercent(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0 || n > 999) return null;
-  return Math.round(n);
-}
-
-function gitBranchFallback(data) {
-  const raw = typeof data?.workspace?.current_dir === 'string' ? data.workspace.current_dir
-    : typeof data?.cwd === 'string' ? data.cwd
-      : null;
-  if (!raw) return null;
-  // cwd hardening (Review peer MAJOR): absolute local paths only — UNC and
-  // //-prefixed paths can initiate network filesystem access on Windows, and
-  // a relative path would resolve against whatever cwd the host launched the
-  // shim from. realpath pins symlinked homes to their local target.
-  if (raw.startsWith('\\\\') || raw.startsWith('//')) return null;
-  if (!(raw.startsWith('/') || /^[A-Za-z]:[\\/]/.test(raw))) return null;
-  let cwd;
-  try { cwd = fs.realpathSync(raw); } catch { return null; }
-  if (cwd.startsWith('\\\\') || cwd.startsWith('//')) return null;
-  let stat;
-  try { stat = fs.statSync(cwd); } catch { return null; }
-  if (!stat.isDirectory()) return null;
-  // Scrubbed child environment: PATH/HOME only — no credential-shaped variable
-  // reaches the git child (ADR-0048 §4 spawn-scrub discipline).
-  const env = {};
-  if (process.env.PATH) env.PATH = process.env.PATH;
-  if (process.env.HOME) env.HOME = process.env.HOME;
-  if (process.env.SYSTEMROOT) env.SYSTEMROOT = process.env.SYSTEMROOT;
-  env.GIT_OPTIONAL_LOCKS = '0';
-  // The query inherits git's own semantics for exotic repositories (a .git
-  // file pointing elsewhere follows git's rules) — the shim itself opens no
-  // network connection; the contract states the boundary in those terms.
-  env.GIT_TERMINAL_PROMPT = '0';
-  try {
-    const result = spawnSync('git', ['branch', '--show-current'], {
-      cwd,
-      env,
-      shell: false,
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: 4096,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    if (result.status !== 0 || typeof result.stdout !== 'string') return null;
-    const branch = result.stdout.trim();
-    return branch.length > 0 ? branch : null;
-  } catch {
-    return null;
-  }
-}
-
-// Per-item projections over the Claude session JSON (ADR-0048 §2.1 field
-// mapping). Each returns a rendered segment string, or null to SKIP the item
-// (order preserved — §2's order-preserving-under-missing-data rule).
-const RENDERERS = {
-  'model-with-reasoning': (data) => {
-    const model = typeof data?.model?.display_name === 'string' ? data.model.display_name : null;
-    if (!model) return null;
-    const effort = typeof data?.effort?.level === 'string' ? data.effort.level : null;
-    return sanitizeSegment(effort ? `${model} ${effort}` : model);
-  },
-  'git-branch': (data) => {
-    const worktree = typeof data?.worktree?.branch === 'string' && data.worktree.branch.length > 0 ? data.worktree.branch : null;
-    const branch = worktree ?? gitBranchFallback(data);
-    return branch ? sanitizeSegment(branch) : null;
-  },
-  'pull-request-number': (data) => {
-    const pr = data?.pr?.number;
-    const n = Number(pr);
-    return Number.isInteger(n) && n > 0 ? `PR#${n}` : null;
-  },
-  'context-used': (data) => {
-    const pct = finitePercent(data?.context_window?.used_percentage);
-    return pct === null ? null : `ctx ${pct}%`;
-  },
-  'five-hour-limit': (data) => {
-    const pct = finitePercent(data?.rate_limits?.five_hour?.used_percentage);
-    return pct === null ? null : `5h ${pct}%`;
-  },
-  'weekly-limit': (data) => {
-    const pct = finitePercent(data?.rate_limits?.seven_day?.used_percentage);
-    return pct === null ? null : `wk ${pct}%`;
-  },
-};
-
-function main() {
+async function main() {
+  // Read the host document FIRST — see readStdinBounded.
   const text = readStdinBounded();
   if (text === null) return;
-  let data;
+  let session;
   try {
-    data = JSON.parse(text);
+    session = JSON.parse(text);
   } catch {
     return;
   }
-  const segments = [];
-  for (const item of STATUSLINE_ITEMS) {
-    const renderer = RENDERERS[item];
-    if (!renderer) continue; // unknown policy item — skipped, order preserved
-    let segment = null;
-    try { segment = renderer(data); } catch { segment = null; }
-    if (segment) segments.push(segment);
+  const root = resolveRuntimeRoot();
+  if (root === null) return;                    // no runtime — print nothing
+  const version = readManifestVersion(root);
+  if (!version || !versionGte(version, MIN_RUNTIME_VERSION)) return;  // downgraded
+  let api;
+  try {
+    // pathToFileURL, not a hand-built `file:` string: a manual construction
+    // mishandles '#', '?' and '%' in a path, which are legal on both platforms.
+    api = await import(pathToFileURL(path.resolve(root, 'scripts', 'receiver-api.mjs')).href);
+  } catch {
+    return;
   }
-  if (segments.length > 0) {
-    try { process.stdout.write(`${segments.join(' · ')}\n`); } catch { /* EPIPE — host cancelled */ }
+  // Capability gate — a resolved runtime that passes the version gate but does
+  // not export what this shim calls is treated exactly like no runtime.
+  if (typeof api.renderStatusline !== 'function') return;
+  if (api.RECEIVER_API_MAJORS?.statusline !== REQUIRED_STATUSLINE_MAJOR) return;
+  let line = null;
+  try {
+    line = api.renderStatusline({ session: session, items: STATUSLINE_ITEMS });
+  } catch {
+    return;
+  }
+  const safe = safeLine(line);
+  if (safe !== null) {
+    try { process.stdout.write(safe + '\n'); } catch { /* EPIPE — host cancelled */ }
   }
 }
 
-main();
+try {
+  await main();
+} catch {
+  // Fail-closed silent: a statusline must never break the prompt.
+}
 process.exit(0);

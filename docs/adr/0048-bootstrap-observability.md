@@ -105,6 +105,44 @@ ADR-0041 §6's "runtime ships no statusline component" is **amended** to:
   `already-configured | replace | manual-merge | decline` — never
   auto-chained.
 
+**Amendment (2026-08-24) — the shim delegates, and the contract follows it.**
+The shim above was self-contained: everything it rendered lived in the file the
+operator installed. That is exactly what made it go stale, because installed
+bytes are frozen at install time and a rendering fix cannot reach them without a
+re-install. The shim is therefore now a **delegating** one: it resolves the
+runtime plugin at run time and calls the packaged receiver API
+(`scripts/receiver-api.mjs`), keeping only what must bootstrap that resolution.
+
+Three clarifications, so the amendment does not quietly widen anything:
+
+1. **The §2 contract binds the shim AND whatever it delegates to.** Read-only,
+   bounded, credential-free, network-free, non-polling, order-preserving under
+   missing data now constrain the packaged API as well — it is evaluated inside
+   the shim's own process, so a violation there is a violation of this section.
+   The API must additionally be side-effect-free on import, since the statusline
+   renders synchronously on every prompt.
+2. **Delegation runs one way only.** The shim (a user-installed file) calls into
+   the packaged plugin; runtime still never imports or spawns anything under
+   `~/.agentic-plugins/bin`. The ADR-0035 §4 executor-guard direction is
+   unchanged. One consequence is an improvement rather than a cost: the
+   statusline's `git branch --show-current` probe now lives inside
+   `plugins/runtime/scripts/`, so it is covered by the §4 executor registry
+   instead of shipping unexamined in an installed file.
+3. **The shim keeps its own output envelope.** The API is upgradable code; the
+   shim is the stable guarantee the host depends on. It enforces at most one
+   plain line, no control/ANSI/bidi bytes, and a bounded length around whatever
+   the API returns, and it fails closed — printing nothing — when the resolved
+   runtime is absent, below the rendered floor, or does not present the required
+   capability major.
+
+The capability major is required **exactly**, never as a minimum: a major is
+incremented because the previous shape broke, so accepting a higher one would
+accept precisely the runtime that broke the shim. What this shape does NOT
+remove is the discovery ladder itself — a shim must find the runtime before it
+can call it — so the ladder remains copied into installed bytes. It is the
+stable half (it changes when install layouts change, not when a rendering does),
+which is why the trade is worth making.
+
 #### 2.1 Adopted statusline item set (owner decision)
 
 Fixed order, both hosts, **six items**:
