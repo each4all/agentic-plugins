@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.5](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.4...plugin-designer-v0.3.5) (2026-08-24)
+
+
+### Bug Fixes
+
+* **plugin/designer:** dirty-tree gates see untracked files under status.showUntrackedFiles=no ([d0828e4](https://github.com/each4all/agentic-plugins/commit/d0828e4cda5503cdf98833eca5ce31558c6a0b9d))
+* **plugin/designer:** state when Stop evaluates the archive gates ([e1406c9](https://github.com/each4all/agentic-plugins/commit/e1406c9eea6bf3e3a6bf0ed489520c36dfc71d22))
+
 ## [0.3.4](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.3...plugin-designer-v0.3.4) (2026-08-16)
 
 

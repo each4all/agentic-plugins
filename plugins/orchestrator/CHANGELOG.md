@@ -18,6 +18,15 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.13.4](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.13.3...plugin-orchestrator-v0.13.4) (2026-08-24)
+
+
+### Bug Fixes
+
+* **plugin/orchestrator:** dirty-tree gates see untracked files under status.showUntrackedFiles=no ([9174239](https://github.com/each4all/agentic-plugins/commit/917423988686cd7cbe813b937406e76308ebf4e7))
+* **plugin/orchestrator:** reject blocked_by cycles centrally, not just self-cycles ([8ccf355](https://github.com/each4all/agentic-plugins/commit/8ccf35582ae79ce9423452f309297229c9a5cf16))
+* **plugin/orchestrator:** state when Stop evaluates the archive gates ([a0ef1e3](https://github.com/each4all/agentic-plugins/commit/a0ef1e3a66f3516def0f2d209a853242039729ce))
+
 ## [0.13.3](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.13.2...plugin-orchestrator-v0.13.3) (2026-08-16)
 
 

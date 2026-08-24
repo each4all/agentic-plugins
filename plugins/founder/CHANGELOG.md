@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.5](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.4...plugin-founder-v0.4.5) (2026-08-24)
+
+
+### Bug Fixes
+
+* **plugin/founder:** dirty-tree gates see untracked files under status.showUntrackedFiles=no ([915a351](https://github.com/each4all/agentic-plugins/commit/915a3512259f8ca2caf48e5b848cedf479bdcf6e))
+* **plugin/founder:** state when Stop evaluates the archive gates ([dafa259](https://github.com/each4all/agentic-plugins/commit/dafa25978a6dbb80f204e19a71bda53d61e33149))
+
 ## [0.4.4](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.3...plugin-founder-v0.4.4) (2026-08-16)
 
 

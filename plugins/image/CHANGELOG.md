@@ -2,6 +2,13 @@
 
 All notable changes to the `image` plugin are documented here.
 
+## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.2.0...plugin-image-v0.3.0) (2026-08-24)
+
+
+### Features
+
+* **plugin/image:** support transparent backgrounds, verified in the returned pixels ([#729](https://github.com/each4all/agentic-plugins/issues/729)) ([47d61c8](https://github.com/each4all/agentic-plugins/commit/47d61c88e390cafd6403813f103506f8dede7b4b))
+
 ## [0.2.0](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.1.0...plugin-image-v0.2.0) (2026-06-27)
 
 

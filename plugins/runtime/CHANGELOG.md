@@ -20,6 +20,20 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.92.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.91.2...plugin-runtime-v0.92.0) (2026-08-24)
+
+
+### Features
+
+* **plugin/runtime:** classify installed receivers from their bytes, never by running them ([#732](https://github.com/each4all/agentic-plugins/issues/732)) ([c94c5dd](https://github.com/each4all/agentic-plugins/commit/c94c5ddd66c410c10ca396bf196f341c81ec57de))
+* **plugin/runtime:** delegate receiver behaviour to a packaged API so installed bytes cannot stale ([#731](https://github.com/each4all/agentic-plugins/issues/731)) ([e6e53fb](https://github.com/each4all/agentic-plugins/commit/e6e53fb0e888ca9b6c1368f287b6246859210a1a))
+
+
+### Bug Fixes
+
+* **plugin/runtime:** dirty-tree gates see untracked files under status.showUntrackedFiles=no ([434da18](https://github.com/each4all/agentic-plugins/commit/434da18dcf45d48d757c0a4e48d428a71003b693))
+* **plugin/runtime:** report context-state measurement provenance instead of a fabricated risk ([#730](https://github.com/each4all/agentic-plugins/issues/730)) ([c87dc81](https://github.com/each4all/agentic-plugins/commit/c87dc81f6f82f06ae3c0486ee1374c447de642df))
+
 ## [0.91.2](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.91.1...plugin-runtime-v0.91.2) (2026-08-19)
 
 

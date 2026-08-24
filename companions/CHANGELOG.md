@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1](https://github.com/each4all/agentic-plugins/compare/companions-v0.3.0...companions-v0.3.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **companions:** classify claude profile-expiry and codex 401 auth wordings ([c3a7a69](https://github.com/each4all/agentic-plugins/commit/c3a7a69c35ed34e8fecc75314a94d3de3337c8d9))
+* **companions:** guard cooperative peer-invocation nesting without a contract change ([d99c857](https://github.com/each4all/agentic-plugins/commit/d99c8579ab8a8e11bfc2467cef6b317c83eaaeca))
+* **plugin/companions:** sync companion bundles for the claude expiry / codex 401 auth wordings ([dbcfc26](https://github.com/each4all/agentic-plugins/commit/dbcfc26dddcf7c146ea9361cf0857963ac9d2543))
+
 ## [0.3.0](https://github.com/each4all/agentic-plugins/compare/companions-v0.2.0...companions-v0.3.0) (2026-05-05)
 
 
