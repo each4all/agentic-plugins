@@ -22,6 +22,7 @@ import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { resolveCodexHome } from './lib/state-readers.mjs';
 import { semverCompare } from './lib/semver.mjs';
 import { assessEntryBriefReadiness, assessSessionCaptureReadiness, claudePluginListEnablement } from './lib/session-readiness.mjs';
+import { buildReceiverReinstallStep, inspectInstalledReceivers } from './lib/receiver-inventory.mjs';
 import {
   CONFIG_KEYS,
   CONFIG_KEY_FAMILIES,
@@ -477,6 +478,14 @@ export async function runSettings({
     });
   }
 
+  // ADR-0048 §2 — classify what is installed at the receiver paths and, when it
+  // is out of date, offer the re-install as a PLAN. Read-only: nothing here
+  // writes into the install directory.
+  const receiverInventory = inspectInstalledReceivers({
+    installDir: join(resolvedHomeDir, '.agentic-plugins', 'bin'),
+  });
+  const receiverReinstallStep = buildReceiverReinstallStep(receiverInventory, { host });
+
   const report = {
     schema_version: SETTINGS_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
@@ -493,6 +502,8 @@ export async function runSettings({
       ? { status: 'skipped', flag: '--skip-host-cli-probes' }
       : { status: 'run', flag: null },
     section_presence: buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationPlan, egressLauncherPlan }),
+    receivers: receiverInventory,
+    receiver_reinstall: receiverReinstallStep,
     apply,
     config_apply: apply,
     execute_plugin_management: executePluginManagement,
@@ -666,6 +677,10 @@ function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationP
     session_settings: 'evaluated',
     session_readiness: 'evaluated',
     entry_readiness: 'evaluated',
+    // Installed-receiver classification is a local filesystem read, so it is
+    // evaluated even when host CLI probes are skipped.
+    receivers: 'evaluated',
+    receiver_reinstall: 'evaluated',
     mutation_boundary: 'evaluated',
     artifacts: 'evaluated',
     limits: 'evaluated',

@@ -25,6 +25,7 @@ import { runEmit } from './notify.mjs';
 import { buildEventId, deriveRepoIdent } from './lib/notify-schema.mjs';
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 import { sameDirectory } from './lib/path-containment.mjs';
+import { inspectInstalledReceivers } from './lib/receiver-inventory.mjs';
 import { egressIntentDir, safeRecordName } from './lib/egress-intent-wal.mjs';
 import { EGRESS_ATTEMPT_HASH_DOMAIN, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
 import { EGRESS_CREDENTIAL_ENV_VAR } from './lib/machine-profile.mjs';
@@ -298,6 +299,14 @@ export async function runDoctor({
   // inventory (same flag, same read-only artifact concern) and reconciled with
   // the raw inventory attention so a registry family over cap ONLY because its
   // runs are pinned reads as informational, not a fault. Deletes nothing.
+  // ADR-0048 §2 — what is INSTALLED at the receiver paths, read from bytes and
+  // never executed. Since the receivers became delegating shims a legacy full
+  // copy still runs its own frozen logic and looks healthy from outside, so the
+  // only way to see it is to classify the installed file.
+  const receiverInventory = inspectInstalledReceivers({
+    installDir: join(resolvedHomeDir, '.agentic-plugins', 'bin'),
+  });
+
   const retentionSection = artifactInventory && artifactInventorySection.executed
     ? await buildRetentionSection({ repoRoot: resolvedRepoRoot, now, artifactRetentionCap, artifactMaxBytes, inventory: artifactInventorySection })
     : { requested: Boolean(artifactInventory), executed: false, status: 'not_requested' };
@@ -468,6 +477,7 @@ export async function runDoctor({
     recorded_doctor_proof: recordedDoctorProof,
     artifact_inventory: artifactInventorySection,
     retention: retentionSection,
+    receivers: receiverInventory,
     permission_diagnosis: permissionDiagnosisSection,
     readiness_matrix: readinessMatrix,
     experience_parity: experienceParity,
@@ -481,6 +491,7 @@ export async function runDoctor({
       'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
       'Artifact inventory is read-only; runtime:doctor never deletes or compacts generated artifacts.',
       'Permission diagnosis is read-only (R0): it classifies prompt causes from usage records and recommends/writes nothing; runtime:settings emits the host-config plan (M1).',
+      'Installed receivers are classified by reading their bytes; doctor never imports, spawns, or evaluates an installed receiver, and never follows a symlinked install path.',
     ],
   };
   report.overall = summarizeOverall(report);
@@ -6097,6 +6108,21 @@ export function formatText(report) {
     }
   }
   lines.push('');
+  // Text is doctor's DEFAULT output, so a section that exists only in JSON is a
+  // section most operators never see.
+  if (report.receivers) {
+    lines.push(`Installed Receivers (${report.receivers.state}) — ${report.receivers.install_dir_pointer}`);
+    for (const entry of report.receivers.receivers) {
+      const shipped = entry.shipped_in ? `; shipped in ${entry.shipped_in}` : '';
+      lines.push(`- ${entry.kind}: ${entry.state}${shipped}`);
+      // Only say something further when it is not the uninteresting case.
+      if (entry.state !== 'current') lines.push(`  ${entry.detail}`);
+    }
+    if (report.receivers.reinstall_recommended) {
+      lines.push('- next: runtime:settings --notification-plan renders the current receivers and names the re-install + rollback steps.');
+    }
+    lines.push('');
+  }
   lines.push(`Session Capture Readiness (${report.session_capture.status})`);
   lines.push(`- gate: session_capture=${report.session_capture.gate.value ?? '<fail-closed>'}; safe-mode=${report.session_capture.safe_mode.active}`);
   if (!['off', 'config-fail-closed'].includes(report.session_capture.status)) {

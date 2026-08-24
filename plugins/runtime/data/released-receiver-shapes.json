@@ -1,0 +1,16 @@
+{
+  "schema_version": "runtime-released-receiver-shapes-1.0",
+  "comment": "sha256 of each PREVIOUSLY RELEASED receiver template, with the tag range it shipped in. Recorded by reading `git show <tag>:plugins/runtime/receivers/<file>` across every plugin-runtime tag. This is what lets an installed file be reported as a known out-of-date shape rather than as an unrecognized one; without it `legacy` and `foreign` collapse into a single unhelpful 'not current'. Append a shape when a release ships a new template; never edit an existing entry, since it records what a past release actually contained.",
+  "shapes": {
+    "agentic-statusline.mjs": {
+      "e326eee87c03f0433ccda6da2f2bc67fc25474008bad231b543e513404a3abb3": "plugin-runtime-v0.86.0 … v0.91.2"
+    },
+    "codex-notify-shuttle.mjs": {
+      "09e7022a4586f4a9255295a0cb996874fd0099cdfc32498be12db520012d196b": "plugin-runtime-v0.71.0 … v0.83.1",
+      "6ab70e2d9441c0e919117857e287cd2f495d0ae231436e9680b71d9ce6de88c4": "plugin-runtime-v0.84.0 … v0.91.2"
+    },
+    "codex-notify-chain.mjs": {
+      "a28c313202bd51bccbf8a5a45f7e5fa40b17c18d2c61e003248f4928355bcc63": "plugin-runtime-v0.71.0 … v0.91.2"
+    }
+  }
+}

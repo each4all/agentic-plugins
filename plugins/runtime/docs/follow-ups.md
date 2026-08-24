@@ -126,3 +126,42 @@ ADR-0024 defines more than the first `doctor`, `settings`, consensus, and contex
 - Claude agent teams must not be treated as the portable cross-host team-mode substrate. A portable team-mode design should stay artifacted through runtime/orchestrator consensus, explicit companion dispatch, manual/subagent lanes, and worktree planning unless both hosts expose a compatible team primitive.
 - Consensus execution must stay bounded by explicit `--execute`, max rounds, max peers, process budget, and timeout caps. Runtime must not add automatic unbounded loops or relax host permissions.
 - Worktree planning must remain read-only unless a future PR adds a separate explicit execution boundary with dry-run defaults.
+
+## Installed-receiver inventory (ADR-0048 §2 as amended) — deferred follow-ups
+
+The inventory added with `scripts/lib/receiver-inventory.mjs` classifies what is
+installed at `~/.agentic-plugins/bin` without executing it. Four items were
+raised in cross-host review, verified as real, and deliberately NOT taken in that
+PR — each needs a decision this one should not make on its own.
+
+- **`data/released-receiver-shapes.json` is now a packaged VERDICT input, and the
+  release-obligation gate does not cover it.** ADR-0052 §Decision 3 deferred the
+  receiver templates explicitly *because* they "are not verdict inputs"; a
+  registry whose contents decide whether an install reads as `legacy` or
+  `foreign` makes that premise false for the registry, and arguably for the
+  templates it fingerprints. Editing either on `main` changes nothing anyone runs
+  until a release ships it — the exact failure ADR-0051/0052 exist to prevent.
+  Deciding whether to extend the protected set (and to what) belongs in an
+  amendment to ADR-0052, not in a feature PR.
+- **Requiredness is not yet configuration-aware.** `inspectInstalledReceivers`
+  takes an explicit `expected` list, and only bootstrap passes one (the
+  statusline, which planning that step implies). doctor and settings pass none,
+  so a receiver the operator *has* wired but that is MISSING reads as a fact
+  rather than as actionable. Closing this means reading the Codex `notify` mode
+  (direct vs wrapper-chain) and the Claude `statusLine` value and deriving
+  expectation from them — real work, and a place where a wrong inference would
+  nag an operator about a file they deliberately do not have.
+- **The reader has a pathname TOCTOU window and no descriptor-based no-follow
+  read.** Classification does one `lstat` and then reads by PATH, so a regular
+  file could be replaced between the two. For a read-only diagnostic of the
+  operator's own files the stakes are low, and the file is never executed, but
+  the honest fix is open-once / `fstat` / bounded read / close.
+- **`generation` is not reported as its own axis.** `legacy` currently means
+  "a released shape that is not the current one", which conflates the
+  self-contained full copies with any future superseded *delegating* shim. That
+  distinction is load-bearing for rollback: restoring a self-contained backup
+  reverts behaviour, restoring a delegating one does not (machine-bootstrap
+  contract, §statusline). Today only self-contained shapes are in the registry so
+  the rollback guidance is correct; it stops being correct the first time a
+  delegating shape is superseded.
+
