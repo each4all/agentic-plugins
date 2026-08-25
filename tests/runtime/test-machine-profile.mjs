@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 
 import {
   EGRESS_CREDENTIAL_ENV_VAR,
+  PROFILE_SESSION_KEYS,
   UNSAFE_CLAUDE_MODES,
   assertProfileWritable,
   buildMachineProfile,
@@ -25,6 +26,7 @@ import {
   seedProposals,
 } from '../../plugins/runtime/scripts/lib/machine-profile.mjs';
 import { loadSchema, makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
+import { USER_SCOPE_ONLY_CONFIG_KEYS } from '../../plugins/runtime/scripts/lib/runtime-config.mjs';
 import {
   readUserGlobalClaudePermission,
   readUserGlobalCodexPermission,
@@ -62,8 +64,15 @@ const PROBE = {
 
 const SELECTION = { bundle: 'base', desired: ['runtime', 'companions'], excluded: [] };
 
+// `readers` is destructured OUT of `over` before the spread. It used to ride the
+// trailing `...over`, which re-overwrote the merged bundle with the caller's
+// fragment — so `build({ readers: { session: … } })` produced a profile with EMPTY
+// model_effort/notify/permissions and a declined egress, and every assertion about
+// it ran against a document no export would ever write (code review, LOW). The
+// merge computed on the same line was simply discarded.
 function build(over = {}) {
-  return buildMachineProfile({ readers: baseReaders(over.readers), probe: PROBE, selection: SELECTION, runtimeVersion: '0.80.1', hostname: 'my-laptop.local', now: NOW, ...over });
+  const { readers, ...rest } = over;
+  return buildMachineProfile({ readers: baseReaders(readers), probe: PROBE, selection: SELECTION, runtimeVersion: '0.80.1', hostname: 'my-laptop.local', now: NOW, ...rest });
 }
 
 describe('runtime machine profile — build (§4.1)', () => {
@@ -483,18 +492,244 @@ describe('machine profile 1.1 — statusline_preset forward-compat (ADR-0048 §2
     const warned = verdict.warnings.filter((w) => /unknown scalar key ignored/.test(w));
     strictEqual(warned.length, 1, `the ignore is WARNED, not silent: ${JSON.stringify(verdict.warnings)}`);
     match(warned[0], /\$\.member\[\d+\]/, 'located by ordinal');
-    match(warned[0], /newer schema minor \(1\) than this runtime reads \(0\)/, 'and the minor relation is stated');
+    match(warned[0], /newer schema minor \(2\) than this runtime reads \(0\)/, 'and the minor relation is stated');
     ok(!warned[0].includes('statusline_preset'), 'an undeclared key is not named back at the reader');
   });
 
-  it('canonical serialization puts statusline_preset LAST, so 1.0- and 1.1-reader canonical hashes agree', async () => {
+  it('the trailing scalars serialize after statusline_preset, in schema order', async () => {
     const { canonicalize, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
     const schema = await loadSchema('agentic-machine-profile');
     const profile = build();
     profile.statusline_preset = 'agentic-6';
-    const canonical = canonicalize(profile, schema);
-    const keys = Object.keys(canonical);
-    strictEqual(keys.at(-1), 'statusline_preset', `the trailing-scalar rule holds: ${keys.join(',')}`);
+    const keys = Object.keys(canonicalize(profile, schema));
+    deepStrictEqual(
+      keys.slice(-4),
+      ['statusline_preset', 'entry_brief', 'entry_brief_empty', 'session_capture'],
+      `the trailing-scalar rule holds: ${keys.join(',')}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Profile 1.2 — the session family as trailing bare scalars
+// ---------------------------------------------------------------------------
+
+describe('machine profile 1.2 — session family carriage', () => {
+  const sessionReaders = (keys) => ({
+    session: { family: 'session', keys, source: { scope: 'user', status: 'readable' } },
+  });
+  const withSession = (keys) => build({ readers: sessionReaders(keys) });
+  const ALL_SET = {
+    session_capture: { value: 'stop-hook', provenance: 'user-global' },
+    entry_brief: { value: 'startup', provenance: 'user-global' },
+    entry_brief_empty: { value: 'report', provenance: 'user-global' },
+  };
+
+  it('carries all three keys as bare scalars and validates as a real artifact', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = withSession(ALL_SET);
+    strictEqual(profile.schema, 'agentic-machine-profile-1.2');
+    strictEqual(profile.session_capture, 'stop-hook');
+    strictEqual(profile.entry_brief, 'startup');
+    strictEqual(profile.entry_brief_empty, 'report');
+    // Bare scalars, NOT scalarField objects — an object would be refused by every
+    // older reader at every minor, which is the whole reason for this shape.
+    for (const key of PROFILE_SESSION_KEYS) strictEqual(typeof profile[key], 'string', `${key} is a bare scalar`);
+    strictEqual(validate(profile).ok, true, JSON.stringify(validate(profile).errors));
+  });
+
+  it('carries EVERY member of the config family — membership, not just order', async () => {
+    const { CONFIG_KEY_FAMILIES } = await import('../../plugins/runtime/scripts/lib/runtime-config.mjs');
+    // The `model_effort` family already has this guard, and the session family
+    // needs it for the same reason: ORDER drift is caught by the disk-order and
+    // canonical-byte assertions, but MEMBERSHIP drift is not. Adding a fourth key
+    // to CONFIG_KEY_FAMILIES.session would make `projectSession` read it while
+    // `buildMachineProfile` silently omitted it from the profile, and without this
+    // nothing would fail (code review, LOW).
+    deepStrictEqual(
+      [...PROFILE_SESSION_KEYS].sort(),
+      [...CONFIG_KEY_FAMILIES.session].sort(),
+      'PROFILE_SESSION_KEYS and the config family must name the same keys',
+    );
+    const profile = withSession(ALL_SET);
+    deepStrictEqual(
+      CONFIG_KEY_FAMILIES.session.filter((k) => k in profile).sort(),
+      [...CONFIG_KEY_FAMILIES.session].sort(),
+      'and every one of them reaches the built profile',
+    );
+  });
+
+  it('an unset key exports null rather than being omitted', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = withSession({ ...ALL_SET, entry_brief: { value: null, provenance: null } });
+    strictEqual(profile.entry_brief, null);
+    ok('entry_brief' in profile, 'the key is present carrying null — absent and unset are not the same bytes');
+    strictEqual(validate(profile).ok, true);
+  });
+
+  it('an out-of-domain value is REFUSED by the schema enum (the control that makes the enum load-bearing)', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = withSession(ALL_SET);
+    profile.session_capture = 'bogus-mode';
+    const verdict = validate(profile);
+    strictEqual(verdict.ok, false, 'a closed set in code is a closed set in the schema');
+    ok(verdict.errors.some((e) => /session_capture/.test(e)), JSON.stringify(verdict.errors));
+  });
+
+  it('a 1.1 document (no session keys) still validates under the 1.2 reader', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = build();
+    profile.schema = 'agentic-machine-profile-1.1';
+    for (const key of PROFILE_SESSION_KEYS) delete profile[key];
+    const verdict = validate(profile);
+    deepStrictEqual(verdict.errors, [], 'the three keys are optional, so the minor stays additive');
+    ok(verdict.ok);
+  });
+
+  it('a 1.2 document under a 1.1-ERA reader is three SCALAR warnings + ignored, never an error (§4.6)', async () => {
+    const { validateAgainstSchema, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const oldSchema = structuredClone(await loadSchema('agentic-machine-profile'));
+    oldSchema.$id = 'agentic-machine-profile-1.1';
+    for (const key of PROFILE_SESSION_KEYS) delete oldSchema.properties[key];
+
+    const verdict = validateAgainstSchema(withSession(ALL_SET), oldSchema, { readerVersion: 'agentic-machine-profile-1.1' });
+    deepStrictEqual(verdict.errors, [], `the newer-minor scalars are forgiven: ${JSON.stringify(verdict.errors)}`);
+    const warned = verdict.warnings.filter((w) => /unknown scalar key ignored/.test(w));
+    strictEqual(warned.length, 3, `one warning per ignored key: ${JSON.stringify(verdict.warnings)}`);
+    for (const w of warned) match(w, /newer schema minor \(2\) than this runtime reads \(1\)/);
+  });
+
+  it('a session OBJECT block would be REFUSED at every minor — the control that makes the bare-scalar shape load-bearing', async () => {
+    const { validateAgainstSchema, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const oldSchema = structuredClone(await loadSchema('agentic-machine-profile'));
+    oldSchema.$id = 'agentic-machine-profile-1.1';
+    for (const key of PROFILE_SESSION_KEYS) delete oldSchema.properties[key];
+
+    // The rejected alternative, exercised rather than asserted in prose: the same
+    // facts carried as ONE object key instead of three scalars.
+    const objectShaped = build();
+    for (const key of PROFILE_SESSION_KEYS) delete objectShaped[key];
+    objectShaped.session = { session_capture: { value: 'stop-hook', scope: 'machine', provenance: 'user-global' } };
+    const verdict = validateAgainstSchema(objectShaped, oldSchema, { readerVersion: 'agentic-machine-profile-1.1' });
+    strictEqual(verdict.ok, false, 'an unknown OBJECT key is refused no matter how new the document claims to be');
+    ok(verdict.errors.some((e) => /unknown-structural-key/.test(e)), JSON.stringify(verdict.errors));
+  });
+
+  it('1.1 and 1.2 readers produce the SAME canonical bytes — and family order would break it', async () => {
+    const { canonicalize, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const schema12 = await loadSchema('agentic-machine-profile');
+    const schema11 = structuredClone(schema12);
+    for (const key of PROFILE_SESSION_KEYS) delete schema11.properties[key];
+
+    const profile = withSession(ALL_SET);
+    const bytes = (schema) => JSON.stringify(canonicalize(profile, schema), null, 2);
+    strictEqual(bytes(schema11), bytes(schema12), 'a 1.1 reader and a 1.2 reader agree byte-for-byte');
+
+    // Kept as DOCUMENTATION of why the schema declares these alphabetically, and
+    // labelled as such: it is NOT extra coverage. The claim here used to be that
+    // "without this case the alignment above passes for a schema ordered either
+    // way", and that was false — measured by deleting this block and re-running the
+    // family-order mutation, which the positive assertion above still caught on its
+    // own (cross-host review). The equality IS the guard; this shows the reader what
+    // it is guarding against.
+    const schemaFamilyOrder = structuredClone(schema11);
+    for (const key of ['session_capture', 'entry_brief', 'entry_brief_empty']) {
+      schemaFamilyOrder.properties[key] = schema12.properties[key];
+    }
+    ok(bytes(schemaFamilyOrder) !== bytes(schema11), 'family-declaration order diverges — which is what the equality above rules out');
+  });
+
+  it('1.0↔1.2 hash equality is NOT claimed — a 1.0 reader sorts statusline_preset in among them', async () => {
+    const { canonicalize, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const schema12 = await loadSchema('agentic-machine-profile');
+    const schema10 = structuredClone(schema12);
+    for (const key of [...PROFILE_SESSION_KEYS, 'statusline_preset']) delete schema10.properties[key];
+
+    const profile = withSession(ALL_SET);
+    profile.statusline_preset = 'agentic-6';
+    const keys10 = Object.keys(canonicalize(profile, schema10));
+    // The limit is inherent, so it is PINNED rather than left as a surprise: to a
+    // 1.0 reader `statusline_preset` is just another unknown scalar and sorts
+    // after `session_capture`. Validation and seeding still work across the gap;
+    // only hash identity is scoped to 1.1↔1.2.
+    deepStrictEqual(keys10.slice(-4), ['entry_brief', 'entry_brief_empty', 'session_capture', 'statusline_preset']);
+    ok(JSON.stringify(canonicalize(profile, schema10)) !== JSON.stringify(canonicalize(profile, schema12)));
+  });
+});
+
+describe('machine profile 1.2 — session family seeding (§4.5)', () => {
+  const ALL_SET = {
+    session_capture: { value: 'stop-hook', provenance: 'user-global' },
+    entry_brief: { value: 'startup', provenance: 'user-global' },
+    entry_brief_empty: { value: null, provenance: null },
+  };
+
+  it('proposes each SET key as a confirmation-required default, and marks the user-scope-only ones', () => {
+    const profile = build({ readers: { session: { family: 'session', keys: ALL_SET, source: { scope: 'user', status: 'readable' } } } });
+    const result = seedProposals({ profile, validate: seedValidate });
+    strictEqual(result.ok, true, JSON.stringify(result.refused));
+    const byKey = new Map(result.proposals.map((p) => [p.key, p]));
+
+    for (const key of ['session.session_capture', 'session.entry_brief']) {
+      ok(byKey.has(key), `${key} is proposed`);
+      strictEqual(byKey.get(key).requires_confirmation, true, 'a proposal is never applied');
+      strictEqual(byKey.get(key).applied, false);
+    }
+    // ADR-0045 §7 — the distinction is carried, not flattened. entry_brief may
+    // never be written repo-side; session_capture legitimately may.
+    strictEqual(byKey.get('session.entry_brief').user_scope_only, true);
+    strictEqual(byKey.get('session.session_capture').user_scope_only, false);
+    // An UNSET key is not a default worth confirming.
+    ok(!byKey.has('session.entry_brief_empty'), 'a null value proposes nothing');
+  });
+
+  it('the user_scope_only label is DERIVED, and an incoming profile cannot author it', () => {
+    // The forgeable version read the label off `entry`, which for four of the six
+    // families is an object lifted straight out of the incoming profile. §4.6
+    // forgives unknown SCALAR keys at any depth from a newer minor, so this document
+    // validates while smuggling the label in (code review, MEDIUM).
+    //
+    // The forgery is deliberately set to the value the runtime would NOT derive:
+    // `model` is not user-scope-only, so a forged `true` and a derived `false`
+    // disagree. Forging `false` here would pass under either implementation and
+    // pin nothing.
+    const profile = build();
+    profile.schema = 'agentic-machine-profile-1.9';
+    profile.model_effort.model = { ...profile.model_effort.model, user_scope_only: true };
+
+    const verdict = seedValidate(profile);
+    strictEqual(verdict.ok, true, 'the document is schema-valid — the label rides the newer-minor tolerance');
+    ok(verdict.warnings.some((w) => /unknown scalar key ignored/.test(w)), 'and the validator reports it as IGNORED');
+
+    const result = seedProposals({ profile, validate: seedValidate });
+    const proposed = result.proposals.find((x) => x.key === 'model_effort.model');
+    strictEqual(proposed.user_scope_only, false, 'so what the validator ignored, seedProposals must not read');
+  });
+
+  it('every proposal carries the label, and it matches the runtime key list', () => {
+    const profile = build({ readers: { session: { family: 'session', keys: ALL_SET, source: { scope: 'user', status: 'readable' } } } });
+    const result = seedProposals({ profile, validate: seedValidate });
+    ok(result.proposals.length > 0);
+    for (const p of result.proposals) {
+      strictEqual(typeof p.user_scope_only, 'boolean', `${p.key} carries a derived label`);
+      strictEqual(
+        p.user_scope_only,
+        USER_SCOPE_ONLY_CONFIG_KEYS.includes(p.key.split('.').pop()),
+        `${p.key} agrees with USER_SCOPE_ONLY_CONFIG_KEYS`,
+      );
+    }
+    // And the distinction it exists for actually lands.
+    const byKey = new Map(result.proposals.map((p) => [p.key, p]));
+    strictEqual(byKey.get('session.entry_brief').user_scope_only, true);
+    strictEqual(byKey.get('session.session_capture').user_scope_only, false);
+  });
+
+  it('a profile whose session value is out of domain is REFUSED before anything is presented (§4.5.1)', () => {
+    const profile = build({ readers: { session: { family: 'session', keys: ALL_SET, source: { scope: 'user', status: 'readable' } } } });
+    profile.entry_brief = 'startup-but-wrong';
+    const result = seedProposals({ profile, validate: seedValidate });
+    strictEqual(result.ok, false, 'an incoming profile is untrusted and validated EXACTLY');
+    deepStrictEqual(result.proposals, []);
   });
 });
 

@@ -81,12 +81,38 @@ export function projectNotify(snapshot) {
   return projectRuntimeConfigFamily(snapshot, 'notify', CONFIG_KEY_FAMILIES.notify);
 }
 
+// session — the THIRD family of the same user-global file (profile 1.2). What this
+// read deliberately does NOT see is the point, and the two keys differ in why:
+//
+//   * `session_capture` resolves repo → user → default at runtime, so a repo value
+//     can legitimately be in force on this checkout. The profile still reads
+//     user-global only, because §4.4's rule is that a portable artifact carries the
+//     OPERATOR's default and never a project's policy — exporting the repo value
+//     would seed another machine with this checkout's opinion.
+//   * `entry_brief` / `entry_brief_empty` resolve env → user → default and ignore
+//     repo activation entirely (ADR-0045 §7). An env override is per-machine
+//     operator state that is not portable by construction, so it is excluded here
+//     for the same reason a repository path is: it describes this machine, not the
+//     posture worth carrying to the next one.
+//
+// So a profile records the PERSISTED user-global posture, never the effective value
+// on this machine right now. A consumer that needs the effective value must ask the
+// loader that owns it — this projection is not that loader and must not be mistaken
+// for one.
+export function projectSession(snapshot) {
+  return projectRuntimeConfigFamily(snapshot, 'session', CONFIG_KEY_FAMILIES.session);
+}
+
 export async function readUserGlobalModelEffort({ homeDir }) {
   return projectModelEffort(await readUserGlobalRuntimeConfig({ homeDir }));
 }
 
 export async function readUserGlobalNotify({ homeDir }) {
   return projectNotify(await readUserGlobalRuntimeConfig({ homeDir }));
+}
+
+export async function readUserGlobalSession({ homeDir }) {
+  return projectSession(await readUserGlobalRuntimeConfig({ homeDir }));
 }
 
 // The ONE user-global Claude settings snapshot (ADR-0048 statusline slice,

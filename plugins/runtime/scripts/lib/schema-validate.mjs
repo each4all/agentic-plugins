@@ -622,9 +622,13 @@ export function canonicalJson(document, schema) {
 
 export const PACKAGED_SCHEMA_FILES = Object.freeze({
   // 1.1 (ADR-0048 §2.1): adds the OPTIONAL trailing `statusline_preset` scalar.
-  // A 1.0 document still validates against this reader; a 1.1 document read by a
-  // 1.0-versioned reader gets a scalar warning and the key ignored (§4.6).
-  'agentic-machine-profile': 'agentic-machine-profile-1.1.json',
+  // 1.2: adds the OPTIONAL trailing session family — `entry_brief`,
+  // `entry_brief_empty`, `session_capture`, in that (alphabetical) order, which is
+  // the order canonicalization gives them under an older reader. Every valid 1.0
+  // and 1.1 document still validates against this reader — the three keys are not
+  // required — while a 1.2 document read by a 1.1 reader gets three scalar warnings
+  // and the keys ignored (§4.6), which is why the minor bumps at all.
+  'agentic-machine-profile': 'agentic-machine-profile-1.2.json',
   // 1.1 (S8a5): adds the OPTIONAL probe hosts.codex.hook_state per-handler disabled
   // evidence. A 1.0 document (no hook_state) still validates against this reader —
   // the key is not required — while a 1.1 document read by a 1.0-only runtime would
