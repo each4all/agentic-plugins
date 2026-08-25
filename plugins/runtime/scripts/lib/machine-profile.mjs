@@ -28,7 +28,7 @@
 import { createHash } from 'node:crypto';
 
 import { scrubSecrets } from './egress-channel.mjs';
-import { redactSecrets, sanitizeValue } from './permission-sanitize.mjs';
+import { hasCredentialShape, sanitizeValue } from './permission-sanitize.mjs';
 import { CONFIG_KEY_FAMILIES, USER_SCOPE_ONLY_CONFIG_KEYS } from './runtime-config.mjs';
 import { canonicalize } from './schema-validate.mjs';
 
@@ -249,7 +249,15 @@ function observedFor(probe, host, selection) {
 // detector because the contract happened to name it, on an artifact it was not written
 // for, is following the citation instead of the reason.
 function isSecretShaped(text) {
-  return scrubSecrets(text) !== text || redactSecrets(text) !== text;
+  // The permission-side half is `hasCredentialShape`, NOT `redactSecrets`, and the
+  // difference is deliberate. `redactSecrets` also rewrites emails and any 32+ hex
+  // run — correct for SANITIZING, wrong for REFUSING. Once this predicate gates a raw
+  // source, a permission rule mentioning a git sha or an author address became a hard
+  // refusal clearable only by editing host config, while the sanitizer's redaction
+  // became unreachable for the very class it exists to clean (code review,
+  // reproduced). Credentials refuse; the rest the sanitizer still cleans on the way
+  // into the artifact, which is what §4.1 says happens to permission arrays.
+  return scrubSecrets(text) !== text || hasCredentialShape(text);
 }
 
 // The paths whose value is a hash BY DESIGN. redactSecrets treats any 32+ hex run as a
@@ -264,6 +272,25 @@ function isHashField(path, value) {
   return HASH_BY_DESIGN_PATHS.has(path) && /^[0-9a-f]{16,64}$/.test(value);
 }
 
+// §3.2's locator vocabulary: a zero-based `member[n]` ordinal stands in for any
+// document-supplied key. Shared by both walks so a finding and the child paths under
+// it cannot disagree — truncating one while composing the other from the raw key was
+// how the key leaked anyway.
+function memberSegment(container, key, flagged) {
+  // Only a FLAGGED key becomes an ordinal. §3.2 permits schema-declared property
+  // names in a locator, and this walk has no schema to consult — but a key that
+  // tripped the secret or path predicate is by construction not one of the profile's
+  // declared names (none of them is token- or path-shaped), and it is exactly the
+  // key whose content must not be published. Unflagged keys keep their name so
+  // `$.permissions.claude.allow[0]` stays the readable locator it needs to be.
+  //
+  // The residual, stated rather than hidden: a benign but document-supplied unknown
+  // key still appears by name. Its content has been tested and found neither secret-
+  // nor path-shaped, which is the most this seam can decide without a schema.
+  if (!flagged) return key;
+  return `member[${Object.keys(container).indexOf(key)}]`;
+}
+
 export function findSecretShapedValues(value, path = '$') {
   const findings = [];
   if (typeof value === 'string') {
@@ -276,10 +303,16 @@ export function findSecretShapedValues(value, path = '$') {
   }
   if (value !== null && typeof value === 'object') {
     for (const [key, child] of Object.entries(value)) {
-      // Keys are scanned too: a map keyed by a token is exactly as leaked as one valued
-      // by it.
-      if (isSecretShaped(key)) findings.push(`${path}.<key:${key.slice(0, 12)}…>`);
-      findings.push(...findSecretShapedValues(child, `${path}.${key}`));
+      // Keys are scanned too: a map keyed by a token is exactly as leaked as one
+      // valued by it. The LOCATOR is an ordinal, never the key — §3.2 allows only
+      // `$`, schema-declared names, array indices and a `member[n]` standing in for a
+      // document-supplied key, and forbids the key name outright. Emitting a
+      // truncated key still published the operator's username and repository prefix
+      // (code review); the schema validator already uses this convention.
+      const flagged = isSecretShaped(key);
+      const segment = memberSegment(value, key, flagged);
+      if (flagged) findings.push(`${path}.${segment}`);
+      findings.push(...findSecretShapedValues(child, `${path}.${segment}`));
     }
   }
   return findings;
@@ -318,6 +351,14 @@ export function assertProfileWritable(profile, { original, homeDir = null } = {}
   // Guard 1 — secrets. Checked in the original AND the profile: the first catches a
   // token the sanitizer would have laundered, the second catches one that reached the
   // artifact by another path.
+  // `null` is NOT an escape hatch. Only `undefined` used to be rejected while an
+  // explicit `null` skipped the source scan entirely, which is the original
+  // laundering defect one argument away — and the tests had normalized passing it
+  // (code review, latent). A caller with no pre-sanitize source passes the profile
+  // itself, which is what the docstring above already says.
+  if (original === null) {
+    return { ok: false, errors: ['assertProfileWritable was given `original: null`, which would skip the §4.3 guard-1 source scan entirely. Pass the pre-sanitize source, or the profile itself when validating one that arrived from elsewhere.'] };
+  }
   for (const [label, subject] of [['source value', original], ['profile', profile]]) {
     if (subject === null) continue;
     for (const path of findSecretShapedValues(subject)) {
@@ -381,16 +422,41 @@ export function assertProfileWritable(profile, { original, homeDir = null } = {}
 // check §4.2 exists for. The generic patterns catch another machine's home too, which
 // matters because a profile is precisely the artifact that arrives from elsewhere.
 const HOME_PATH_PATTERNS = Object.freeze([
-  /(?:^|[\s"'(=:])~\//,                       // ~/...
-  /\/(?:Users|home)\/[^/\s"')]+\//i,          // /Users/alice/... , /home/alice/...
-  /[A-Za-z]:\\Users\\[^\\\s"')]+\\/i,         // C:\Users\alice\...
-  /\\\\[^\\\s]+\\Users\\/i,                   // \\host\Users\...
+  /(?:^|[\s"'(=:])~\//,                          // ~/...
+  /\/(?:Users|home)\/[^/\s"')]+[/\\]/i,          // /Users/alice/... , /home/alice/...
+  // `/root` is a home directory with no user segment under it — the generic
+  // `/Users|home/<name>/` shape misses it entirely (code review: it was a clean
+  // bypass). Bounded so `/rootless` is not a match.
+  /(?:^|[\s"'(=:])\/root(?=[/\\]|$)/i,
+  // Windows users, with EITHER separator after the name and a name that may contain
+  // spaces — `C:\Users\alice/repo/` and `C:\Users\Alice Smith\repo\` both bypassed
+  // the original, which required a backslash and rejected spaces.
+  /[A-Za-z]:[\\/]Users[\\/][^\\/\n"')]+[\\/]/i,
+  /\\\\[^\\\s]+\\Users\\/i,                      // \\host\Users\...
 ]);
 
 // The predicate, named once so the value walk and the key walk cannot drift into
 // asking different questions — which is exactly how the key half went missing.
 function isRepositoryPathShaped(text, homeDir) {
-  return HOME_PATH_PATTERNS.some((re) => re.test(text)) || Boolean(homeDir && text.includes(homeDir));
+  return HOME_PATH_PATTERNS.some((re) => re.test(text)) || containsHomeDir(text, homeDir);
+}
+
+// `text.includes(homeDir)` has no path-boundary semantics, so a `/root` home matched
+// `/rootless-model` and refused an ordinary value; a very short home is worse (code
+// review). A match must end at a separator or at the end of the string — that is what
+// makes it a PATH containing the home rather than a string starting with its letters.
+function containsHomeDir(text, homeDir) {
+  if (!homeDir) return false;
+  const home = String(homeDir).replace(/[/\\]+$/, '');
+  if (home.length === 0) return false;
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(home, from);
+    if (at < 0) return false;
+    const next = text[at + home.length];
+    if (next === undefined || next === '/' || next === '\\') return true;
+    from = at + 1;
+  }
 }
 
 function findRepositoryPaths(value, path = '$', homeDir = null) {
@@ -405,14 +471,16 @@ function findRepositoryPaths(value, path = '$', homeDir = null) {
   }
   if (value !== null && typeof value === 'object') {
     for (const [key, child] of Object.entries(value)) {
-      // KEYS are scanned too, for the same reason `findSecretShapedValues` scans
-      // them: §4.2 excludes repository paths "at any nesting depth", and a key IS a
-      // nesting position. The secret scanner had this and the path scanner did not,
-      // so a document carrying `"/Users/alice/private-repo/": "off"` cleared both the
-      // schema and the semantic gate — defeating §4.2 for the one shape it exists to
-      // catch. The asymmetry was the whole defect; there was never a reason for it.
-      if (isRepositoryPathShaped(key, homeDir)) findings.push(`${path}.<key:${key.slice(0, 24)}…>`);
-      findings.push(...findRepositoryPaths(child, `${path}.${key}`, homeDir));
+      // KEYS are scanned for the same reason `findSecretShapedValues` scans them:
+      // §4.2 excludes repository paths "at any nesting depth", and a key IS a nesting
+      // position. The secret scanner had this and the path scanner did not, so
+      // `{"/Users/alice/private-repo/": "off"}` cleared both the schema and the
+      // semantic gate. The locator is an ordinal for the §3.2 reason above — a
+      // finding about a leaked path must not itself publish the path.
+      const flagged = isRepositoryPathShaped(key, homeDir);
+      const segment = memberSegment(value, key, flagged);
+      if (flagged) findings.push(`${path}.${segment}`);
+      findings.push(...findRepositoryPaths(child, `${path}.${segment}`, homeDir));
     }
   }
   return findings;

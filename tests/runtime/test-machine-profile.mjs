@@ -242,8 +242,13 @@ describe('runtime machine profile — secret fail-close (#6, §4.3 guard 1)', ()
     const verdict = assertProfileWritable(profile, { original: profile });
     strictEqual(verdict.ok, false, 'a home path in a key is a layout leak like any other');
     match(verdict.errors.join(' '), /carries a home-directory path/);
-    // The path is located WITHOUT echoing the whole key back — it is untrusted content.
-    match(verdict.errors.join(' '), /<key:/);
+    // §3.2: the locator is an ORDINAL. A finding about a leaked path must not itself
+    // publish the path — not truncated, not at all.
+    match(verdict.errors.join(' '), /member\[\d+\]/);
+    const joined = verdict.errors.join(' ');
+    ok(!joined.includes('alice'), `no username in the diagnostic: ${joined}`);
+    ok(!joined.includes('private-repo'), `no repository name in the diagnostic: ${joined}`);
+    ok(!joined.includes('/Users/'), `no path fragment at all: ${joined}`);
 
     // CONTROL: an ordinary key on the same profile is not flagged, so the assertion
     // above is not passing merely because key scanning refuses everything.
@@ -294,16 +299,19 @@ describe('runtime machine profile — the write gate composes structure AND mean
     profile.model_effort.model.value = 'sk-abcdefghijklmnop1234567890';
     // A token is a perfectly good string — the schema has no objection.
     strictEqual(schemaValidate(profile).ok, true, 'the structural layer sees nothing wrong');
-    const gate = profileWriteGate({ schemaValidate, original: null });
+    // `original: profile` is the documented form when there is no pre-sanitize
+    // source; `null` is refused outright, since skipping the source scan is the
+    // laundering defect one argument away.
+    const gate = profileWriteGate({ schemaValidate, original: profile });
     strictEqual(gate(profile).ok, false, 'the composed gate does');
   });
 
   it('the gate plugs into writeMachineProfile and nothing lands when it refuses', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'agentic-profile-'));
     const schemaValidate = await makeValidator('agentic-machine-profile');
-    const gate = profileWriteGate({ schemaValidate, original: null });
-
     const bad = build();
+    const gate = profileWriteGate({ schemaValidate, original: bad });
+
     bad.boundary.performs_network_request = true;
     const refused = await writeMachineProfile({ homeDir, repoRoot: null, name: 'work', profile: bad, validate: gate, now: NOW });
     strictEqual(refused.written, false);
@@ -320,8 +328,8 @@ describe('runtime machine profile — round-trip (#4)', () => {
   it('export → seed reproduces every enumerated field with scope and provenance intact', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'agentic-profile-'));
     const schema = await loadSchema('agentic-machine-profile');
-    const gate = profileWriteGate({ schemaValidate: await makeValidator('agentic-machine-profile'), original: null });
     const profile = canonicalProfile(build(), schema);
+    const gate = profileWriteGate({ schemaValidate: await makeValidator('agentic-machine-profile'), original: profile });
 
     await writeMachineProfile({ homeDir, repoRoot: null, name: 'work', profile, validate: gate, now: NOW });
     const read = await readMachineProfile({ homeDir, name: 'work' });
