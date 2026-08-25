@@ -1,0 +1,90 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-trust-label-the-document-could-write",
+  "evidence_loop": {
+    "label": "the trust label the document could write, and the second list that stopped mattering",
+    "summary": "One runtime slice: the portable machine profile grows from 1.1 to 1.2 so it carries the session-config family (session_capture, entry_brief, entry_brief_empty) alongside model/effort and notify, as three trailing bare scalars with a projectSession user-global reader and seed proposals that label which keys may never be written repo-side. The carriage shape and its declaration order were settled by running the real validator and canonicalizer against candidate and control rather than by reasoning: an object block is refused by every older reader at every minor, and only an alphabetical declaration keeps a 1.1 and a 1.2 reader agreeing byte-for-byte over one document. Two independent review lanes then found that the new trust label was read off the incoming, untrusted profile — a document declaring a newer schema minor could author it while the validator logged it as ignored."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.93.0",
+      "tag": "plugin-runtime-v0.93.0",
+      "release_pr": 735,
+      "squash": "9be7501f17b8ff953e13e19cf97fda7540a1da32",
+      "marketplace_sync": "c526efe7e7bff5f1047ad947be6de8e742c5847b"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "a973d05da3c248aa8eb164d9f4a9a1a88a889e95",
+      "pr": 734,
+      "note": "Profile 1.1 to 1.2. Carriage was measured, not argued: three trailing bare scalars validate under a 1.1 reader with warnings, while a session object block is refused as unknown-structural-key. Order is alphabetical because canonicalize sorts unknown keys; family order split the hash."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260825T070411Z-d6ecb2",
+      "date": "2026-08-25",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:cd9efb911a63b87e5fec29e3f5943364c5765a0a56d8eb5d5653077461bdcf44",
+      "runtime_version": "0.93.0",
+      "installed": {
+        "claude": "0.93.0",
+        "codex": "0.93.0"
+      },
+      "host_cli": {
+        "claude": "2.1.243 (Claude Code)",
+        "codex": "codex-cli 0.149.1"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning; hard_failures empty; one warning — latest compatibility check needs follow-up"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale, direction ahead — the 2026-08-16 2.1.233 / 0.147.0 baseline against an observed 2.1.243 / 0.149.1; refreshing it is protected-asset work this recovery is forbidden to do"
+        },
+        {
+          "key": "experience_parity",
+          "value": "partial 81% 105/130; satisfied 5, partial 3, not_verified 1, blocked 0, manual follow-ups 1 (codex-hook-review)"
+        },
+        {
+          "key": "installed_byte_identity",
+          "value": "both caches hold an identical 127-file 0.93.0 package, whole-tree digest 92f449d9ee4c83f24a3879663194553964d69322359950aa46f13f81e8e91d0c; packaged baseline 86fdf17e4418884f01b67785eeaaacc74923a8a01efa238f514bf270da600843 matches both caches, the tag and the repository — unchanged from 0.92.0"
+        },
+        {
+          "key": "first_record_was_discarded",
+          "value": "An earlier record from this session was NOT used: doctor --record without the execute flags produced status not_requested for all three proofs. Citing it would have been fabrication, and sync:docs independently refused to bump a version beside the stale citation."
+        }
+      ]
+    }
+  ],
+  "install_method": "0.93.0 installed on both hosts, with different verbs per host. Claude registers this marketplace as a directory source, so `claude plugin marketplace update` had to run before `claude plugin update` saw anything. Codex registers the SAME marketplace as a git source, exposes no plugin-update verb, and refreshes via `codex plugin marketplace upgrade agentic-plugins`.",
+  "narrative": "The measurable part of this loop went well and is the least interesting part of it. Three keys had to travel in a portable artifact; the shape was decided by running the real validator over candidate and control, the declaration order by hashing the same document under two readers, and both results contradicted the instinct a careful reader would have followed. Family order — the order the config family itself declares — silently splits the canonical hash. That is now a test with its control alongside it.\n\nThe interesting part is what two independent review lanes found afterwards, because both found the same thing and neither found it by reading the diff. The change added a user_scope_only label so a consumer could tell that entry_brief must never be written repo-side. It read that label off `entry` — which, for four of the six config families, is an object lifted straight out of the incoming profile. Section 4.6 forgives unknown scalar keys at any depth when a document declares a newer minor, so a profile claiming schema 1.9 could author its own trust label while the validator logged it as ignored. The validator said one thing and the consumer did another. A trust label an untrusted document can write is worse than no label at all, because a consumer would believe it.\n\nThe second finding dissolved a fragility this change had itself introduced. The write gate documented that canonical order is applied before the bytes are produced, and nothing applied it: the file carried the builder's insertion order while the hash was taken over the canonical form, and the two agreed only by coincidence — a coincidence made fragile by adding a second order source. Canonicalizing at the export made the schema the sole byte authority, which in turn let the second membership list be derived from the config family instead of restated. The mutation that used to prove the second list mattered now deliberately does not bite, and that is the result rather than a gap.\n\nThe last thing worth recording is a discipline failure that the tooling caught. Three times in this loop a claim was made about the tests themselves without measuring it: a comment asserting a control was load-bearing when the positive assertion already caught the mutation, a comment overstating which renderer the disclosure fix covered, and a repo-isolation test whose temp repository was never passed or entered — deleting its setup left it green. Each was found by review, not by the author. The same session applied real measurement rigour to the code and none of it to the assertions about the code. Separately, an unexecuted doctor record was nearly cited as an executed proof; sync:docs refused to bump a version beside a stale citation and stopped it.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-receivers-that-could-not-be-updated",
+      "note": "The immediately preceding loop, whose proof this one supersedes in the stage docs. It recorded the directory-source cached-catalog trap as a general caveat; this loop found it host-specific — Codex reads the same marketplace over git and never sees it."
+    }
+  ]
+}
