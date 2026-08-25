@@ -941,7 +941,13 @@ policy as another machine's global default.
 them). Repository-effective values MAY be reported as informational overlays in
 `plan` / `status` output; they are **never** written into the profile and never
 relabelled. Every profile value carries `provenance`, and a value whose provenance
-is not user-global is not exportable.
+is not user-global is not exportable. **The trailing SCALARS are the stated exception
+to the carrier, not to the rule**: `statusline_preset` and the 1.2 session family are
+bare strings with no `{value, scope, provenance}` envelope, because an object there
+would be refused by every older reader at every minor (§4.1). Their provenance is not
+lost, it is STRUCTURAL — these readers are user-global-only by construction, so a
+present value is user-global and an absent one is `null`. Nothing exportable acquires
+an unrecorded provenance.
 
 ### 4.5 Seed-side rules
 
@@ -950,7 +956,13 @@ On `profile seed`, runtime MUST:
 1. validate the schema **exactly**; reject unknown fields, secret-shaped values,
    and any `boundary.writes_* !== false`;
 2. preserve each value's `scope` label — a machine value never becomes a repo
-   override, and a repo override is never promoted to machine-global;
+   override, and a repo override is never promoted to machine-global. For the
+   envelope-less trailing scalars the seed path SYNTHESIZES `scope: machine` /
+   `provenance: user-global`, which is a statement of how they were read rather than
+   a label lifted from the document. It additionally derives `user_scope_only` from
+   the runtime's own `USER_SCOPE_ONLY_CONFIG_KEYS`, **never** from the incoming
+   artifact: a trust label an untrusted profile can author is worse than none, since
+   a consumer would believe it;
 3. **safety-grade before presenting.** A source machine's `bypassPermissions`,
    `approval_policy = "never"`, or `danger-full-access` MUST NOT be presented as a
    default. The target's safe recommendation wins, and the profile's value is shown
@@ -1016,6 +1028,18 @@ existing behavior from one value to the whole profile.
   — that is what the §4.6 scalar tolerance buys — and only hash identity is
   scoped. A consumer comparing hashes across a 1.0 boundary must version the
   expectation rather than assume equality.
+- **The enums have a stated forward limit.** §4.6's tolerance forgives an unknown
+  KEY from a newer minor; it does not forgive an unknown VALUE of a KNOWN key. So a
+  future 1.3 that adds, say, `session_capture = "turn-hook"` is refused outright by a
+  1.2 reader — the whole document, not just the field. That is a real cost and it is
+  accepted deliberately: `notify_channel` has carried exactly this shape since 1.0,
+  and the alternative (a loose pattern) is worse, because an older runtime would then
+  ACCEPT a mode it cannot support and propose it to the operator as a default. The
+  principled fix is value-level newer-minor tolerance in the validator — warn and
+  ignore an unsupported value the way an unsupported key is warned and ignored — and
+  it is tracked in `plugins/runtime/docs/follow-ups.md` rather than invented here.
+  Until then, adding a mode to any of these enums is a change older readers refuse.
+
 - **What the export deliberately does NOT see.** `session_capture` resolves
   repo → user → default at runtime and `entry_brief*` resolve env → user →
   default (ignoring repo activation, ADR-0045 §7). The profile reads the
@@ -2650,6 +2674,14 @@ commands.
 
 ## 12. Non-goals
 
+- **Profile 1.2**: every legal 1.1 document validates under the 1.2 reader; a 1.2
+  document under a 1.1-era reader produces exactly three ignored-scalar warnings and
+  no errors; the same document canonicalizes to identical bytes under a 1.1 and a 1.2
+  reader (1.0 is explicitly NOT in that guarantee — it does not know
+  `statusline_preset` either and sorts it in among the three); an out-of-domain enum
+  value is refused at both the write gate and the seed gate; a `session` OBJECT block
+  is refused at every minor; the written file IS the canonical form; and an incoming
+  profile cannot author `user_scope_only`.
 - **Closing Stage 0.** Manual until ADR-0006 is superseded (§2).
 - **Writing host config.** Never, under any flag. ADR-0041 §2c is not negotiable.
 - **A new plugin-management executor.** Bootstrap presents; `runtime:settings

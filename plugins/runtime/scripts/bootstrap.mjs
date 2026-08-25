@@ -92,7 +92,7 @@ import {
   recomputeHookAttestation,
   reduceCompletion,
 } from './lib/completion-reducer.mjs';
-import { EGRESS_CREDENTIAL_ENV_VAR, buildMachineProfile, profileHash, profileWriteGate, seedProposals } from './lib/machine-profile.mjs';
+import { EGRESS_CREDENTIAL_ENV_VAR, buildMachineProfile, canonicalProfile, profileHash, profileWriteGate, seedProposals } from './lib/machine-profile.mjs';
 import {
   projectClaudePermission,
   projectClaudeStatusline,
@@ -3446,11 +3446,24 @@ async function runProfileExport(ctx, opts) {
     now: ctx.now,
   });
 
+  // CANONICALIZE BEFORE WRITING. `profileWriteGate`'s own docstring says "canonical
+  // order applied before the bytes are produced", and it was not: `writeMachineProfile`
+  // serializes whatever object it is handed, so the bytes on disk carried the BUILDER's
+  // insertion order while `profileHash` hashed the canonical form. They agreed only
+  // because the builder happened to emit keys in schema order — a coincidence, and one
+  // this change made fragile by introducing a second order source (PROFILE_SESSION_KEYS)
+  // alongside the schema. Reproduced by the cross-host review: a schema-valid profile
+  // arranged in config-family order wrote `written: true` with disk bytes that differed
+  // from its own canonical form.
+  //
+  // Canonicalizing here makes the schema the SINGLE authority for byte order, so
+  // PROFILE_SESSION_KEYS governs membership only and cannot drift the file.
+  const canonical = canonicalProfile(profile, profileSchema);
   const written = await writeMachineProfile({
     homeDir: ctx.homeDir,
     repoRoot: ctx.cwd,
     name,
-    profile,
+    profile: canonical,
     overwrite: opts.overwrite === true,
     validate: profileWriteGate({ schemaValidate: validateProfile, original: profile, homeDir: ctx.homeDir }),
     now: ctx.now,
@@ -3834,11 +3847,23 @@ export function renderText(report) {
     // disclosable under a per-field rule — but no such rule exists here yet:
     // `describeWithheld` decides by TYPE, so they are withheld with every other
     // string. That is the conservative side of the open §3.2/§4.5 tension
-    // (docs/follow-ups.md), not a judgement that their values are sensitive. An earlier version of this block printed them verbatim in
-    // text AND in `--format json`, which turned a profile the operator may have
-    // written a secret into — §3.2's exact threat model, an artifact reaching
-    // terminal capture, CI logs, and agent context — into report content
-    // (Refine-verify peer, MAJOR).
+    // (docs/follow-ups.md), not a judgement that their values are sensitive.
+    //
+    // An earlier version of this block printed them verbatim in text AND in
+    // `--format json`, which turned a profile the operator may have written a
+    // secret into — §3.2's exact threat model, an artifact reaching terminal
+    // capture, CI logs, and agent context — into report content (Refine-verify
+    // peer, MAJOR).
+    //
+    // ONLY THE TEXT HALF WAS EVER REPAIRED, and saying otherwise is how this
+    // comment misled a later reader (code review, LOW). `--format json`
+    // serializes the whole report, so `proposals[].value` still crosses raw —
+    // `permissions.claude.allow` rules included, which are precisely what the
+    // threat model above names. The §3.2 regression test exercises `renderText`
+    // only, which is why that door stayed open unnoticed. It is recorded in
+    // plugins/runtime/docs/follow-ups.md rather than widened into this change,
+    // because closing it is a decision about the §3.2/§4.5 tension below, not a
+    // repair with one obvious shape.
     //
     // What crosses instead is the §3.2 fallback: TYPE and LENGTH. The operator
     // learns which keys the interview will pre-fill, at what scope, and the
@@ -3852,7 +3877,17 @@ export function renderText(report) {
     // conservative side — echoing content that the disclosure rule forbids is
     // not reversible once it is in a log.
     for (const proposal of proposals) {
-      lines.push(`  - default (confirm): ${renderSafe(proposal.key)} = ${describeWithheld(proposal.value)}${proposal.scope ? ` [scope ${renderSafe(proposal.scope)}]` : ''}`);
+      // `user-scope-only` rides the line because the marker exists to be acted on:
+      // an operator confirming `session.entry_brief` has to know it may never be
+      // written repo-side (ADR-0045 §7), and until this it reached `--format json`
+      // only — the text operator saw a scope of `machine` and nothing else (code
+      // review, MEDIUM). It is a boolean this runtime derives, so §3.2 does not
+      // withhold it: no content of the profile crosses.
+      const scopeBits = [
+        proposal.scope ? `scope ${renderSafe(proposal.scope)}` : null,
+        proposal.user_scope_only === true ? 'user-scope-only — never write this repo-side' : null,
+      ].filter(Boolean);
+      lines.push(`  - default (confirm): ${renderSafe(proposal.key)} = ${describeWithheld(proposal.value)}${scopeBits.length > 0 ? ` [${scopeBits.join('; ')}]` : ''}`);
     }
     for (const note of notes) {
       lines.push(`  ! ${renderSafe(note.labelled)}: ${renderSafe(note.key)} — ${renderLine(note.note)}`);

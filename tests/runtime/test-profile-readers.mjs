@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -44,18 +44,27 @@ describe('profile-readers §4.4: session family (profile 1.2)', () => {
     strictEqual(s.source.status, 'readable');
   });
 
-  it('a REPO session_capture never enters the profile, even though it wins at runtime', async () => {
-    // The pointed case for this family: `session_capture` legitimately resolves
-    // repo -> user -> default when the runtime reads it, so a reader that simply
-    // reused the runtime resolver would export this checkout's policy as another
-    // machine's global default. §4.4 says user-global ONLY, and this is the
-    // control that proves the projection obeys it rather than inheriting it.
+  it('reads the user-global file by construction — it accepts no repo input at all', async () => {
+    // §4.4's repo-isolation guarantee, pinned the only way it is actually decidable
+    // at this seam. An earlier version of this test created a temp repo, wrote a
+    // competing `session_capture` into it, and called itself the control that proves
+    // the projection ignores repo config — but `readUserGlobalSession` takes only
+    // `homeDir`, never enters a repo, and nothing passed that directory anywhere.
+    // Deleting the repo setup left the test green, which is the definition of
+    // decorative (cross-host review).
+    //
+    // What holds instead is structural: the reader's signature admits no repo, and
+    // the module's ONLY path to a file is the user-global one. A repo-preferring
+    // regression would have to add an input, which this assertion pins.
+    const src = await readFile(new URL('../../plugins/runtime/scripts/lib/profile-readers.mjs', import.meta.url), 'utf8');
+    const body = src.slice(src.indexOf('export function projectSession'));
+    ok(!/repoRoot|repo_root|cwd/.test(body.slice(0, body.indexOf('\n}'))), 'projectSession takes no repo input');
+
     const home = await makeHome();
-    const repo = await mkdtemp(join(tmpdir(), 'profile-readers-repo-'));
     await writeFileAt(join(home, '.agentic-plugins', 'config.toml'), 'session_capture = "off"\n');
-    await writeFileAt(join(repo, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');
     const s = await readUserGlobalSession({ homeDir: home });
-    strictEqual(s.keys.session_capture.value, 'off', 'the USER value is exported, not the repo one');
+    strictEqual(s.keys.session_capture.value, 'off', 'and the user-global value is what it reports');
+    strictEqual(s.keys.session_capture.provenance, 'user-global');
   });
 
   it('a missing config is reported, not crashed — every key null with no provenance', async () => {

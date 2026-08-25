@@ -26,6 +26,7 @@ import {
   seedProposals,
 } from '../../plugins/runtime/scripts/lib/machine-profile.mjs';
 import { loadSchema, makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
+import { USER_SCOPE_ONLY_CONFIG_KEYS } from '../../plugins/runtime/scripts/lib/runtime-config.mjs';
 import {
   readUserGlobalClaudePermission,
   readUserGlobalCodexPermission,
@@ -63,8 +64,15 @@ const PROBE = {
 
 const SELECTION = { bundle: 'base', desired: ['runtime', 'companions'], excluded: [] };
 
+// `readers` is destructured OUT of `over` before the spread. It used to ride the
+// trailing `...over`, which re-overwrote the merged bundle with the caller's
+// fragment — so `build({ readers: { session: … } })` produced a profile with EMPTY
+// model_effort/notify/permissions and a declined egress, and every assertion about
+// it ran against a document no export would ever write (code review, LOW). The
+// merge computed on the same line was simply discarded.
 function build(over = {}) {
-  return buildMachineProfile({ readers: baseReaders(over.readers), probe: PROBE, selection: SELECTION, runtimeVersion: '0.80.1', hostname: 'my-laptop.local', now: NOW, ...over });
+  const { readers, ...rest } = over;
+  return buildMachineProfile({ readers: baseReaders(readers), probe: PROBE, selection: SELECTION, runtimeVersion: '0.80.1', hostname: 'my-laptop.local', now: NOW, ...rest });
 }
 
 describe('runtime machine profile — build (§4.1)', () => {
@@ -530,6 +538,27 @@ describe('machine profile 1.2 — session family carriage', () => {
     strictEqual(validate(profile).ok, true, JSON.stringify(validate(profile).errors));
   });
 
+  it('carries EVERY member of the config family — membership, not just order', async () => {
+    const { CONFIG_KEY_FAMILIES } = await import('../../plugins/runtime/scripts/lib/runtime-config.mjs');
+    // The `model_effort` family already has this guard, and the session family
+    // needs it for the same reason: ORDER drift is caught by the disk-order and
+    // canonical-byte assertions, but MEMBERSHIP drift is not. Adding a fourth key
+    // to CONFIG_KEY_FAMILIES.session would make `projectSession` read it while
+    // `buildMachineProfile` silently omitted it from the profile, and without this
+    // nothing would fail (code review, LOW).
+    deepStrictEqual(
+      [...PROFILE_SESSION_KEYS].sort(),
+      [...CONFIG_KEY_FAMILIES.session].sort(),
+      'PROFILE_SESSION_KEYS and the config family must name the same keys',
+    );
+    const profile = withSession(ALL_SET);
+    deepStrictEqual(
+      CONFIG_KEY_FAMILIES.session.filter((k) => k in profile).sort(),
+      [...CONFIG_KEY_FAMILIES.session].sort(),
+      'and every one of them reaches the built profile',
+    );
+  });
+
   it('an unset key exports null rather than being omitted', async () => {
     const validate = await makeValidator('agentic-machine-profile');
     const profile = withSession({ ...ALL_SET, entry_brief: { value: null, provenance: null } });
@@ -596,16 +625,18 @@ describe('machine profile 1.2 — session family carriage', () => {
     const bytes = (schema) => JSON.stringify(canonicalize(profile, schema), null, 2);
     strictEqual(bytes(schema11), bytes(schema12), 'a 1.1 reader and a 1.2 reader agree byte-for-byte');
 
-    // THE CONTROL. Alphabetical order is not a style choice: declaring the same
-    // three keys in the config family's own order makes the 1.2 reader disagree
-    // with the 1.1 reader about the same document. Without this case the
-    // alignment above passes for a schema ordered either way, and the constraint
-    // that PROFILE_SESSION_KEYS encodes would be untested.
+    // Kept as DOCUMENTATION of why the schema declares these alphabetically, and
+    // labelled as such: it is NOT extra coverage. The claim here used to be that
+    // "without this case the alignment above passes for a schema ordered either
+    // way", and that was false — measured by deleting this block and re-running the
+    // family-order mutation, which the positive assertion above still caught on its
+    // own (cross-host review). The equality IS the guard; this shows the reader what
+    // it is guarding against.
     const schemaFamilyOrder = structuredClone(schema11);
     for (const key of ['session_capture', 'entry_brief', 'entry_brief_empty']) {
       schemaFamilyOrder.properties[key] = schema12.properties[key];
     }
-    ok(bytes(schemaFamilyOrder) !== bytes(schema11), 'family-declaration order diverges — which is why the schema declares them alphabetically');
+    ok(bytes(schemaFamilyOrder) !== bytes(schema11), 'family-declaration order diverges — which is what the equality above rules out');
   });
 
   it('1.0↔1.2 hash equality is NOT claimed — a 1.0 reader sorts statusline_preset in among them', async () => {
@@ -650,6 +681,47 @@ describe('machine profile 1.2 — session family seeding (§4.5)', () => {
     strictEqual(byKey.get('session.session_capture').user_scope_only, false);
     // An UNSET key is not a default worth confirming.
     ok(!byKey.has('session.entry_brief_empty'), 'a null value proposes nothing');
+  });
+
+  it('the user_scope_only label is DERIVED, and an incoming profile cannot author it', () => {
+    // The forgeable version read the label off `entry`, which for four of the six
+    // families is an object lifted straight out of the incoming profile. §4.6
+    // forgives unknown SCALAR keys at any depth from a newer minor, so this document
+    // validates while smuggling the label in (code review, MEDIUM).
+    //
+    // The forgery is deliberately set to the value the runtime would NOT derive:
+    // `model` is not user-scope-only, so a forged `true` and a derived `false`
+    // disagree. Forging `false` here would pass under either implementation and
+    // pin nothing.
+    const profile = build();
+    profile.schema = 'agentic-machine-profile-1.9';
+    profile.model_effort.model = { ...profile.model_effort.model, user_scope_only: true };
+
+    const verdict = seedValidate(profile);
+    strictEqual(verdict.ok, true, 'the document is schema-valid — the label rides the newer-minor tolerance');
+    ok(verdict.warnings.some((w) => /unknown scalar key ignored/.test(w)), 'and the validator reports it as IGNORED');
+
+    const result = seedProposals({ profile, validate: seedValidate });
+    const proposed = result.proposals.find((x) => x.key === 'model_effort.model');
+    strictEqual(proposed.user_scope_only, false, 'so what the validator ignored, seedProposals must not read');
+  });
+
+  it('every proposal carries the label, and it matches the runtime key list', () => {
+    const profile = build({ readers: { session: { family: 'session', keys: ALL_SET, source: { scope: 'user', status: 'readable' } } } });
+    const result = seedProposals({ profile, validate: seedValidate });
+    ok(result.proposals.length > 0);
+    for (const p of result.proposals) {
+      strictEqual(typeof p.user_scope_only, 'boolean', `${p.key} carries a derived label`);
+      strictEqual(
+        p.user_scope_only,
+        USER_SCOPE_ONLY_CONFIG_KEYS.includes(p.key.split('.').pop()),
+        `${p.key} agrees with USER_SCOPE_ONLY_CONFIG_KEYS`,
+      );
+    }
+    // And the distinction it exists for actually lands.
+    const byKey = new Map(result.proposals.map((p) => [p.key, p]));
+    strictEqual(byKey.get('session.entry_brief').user_scope_only, true);
+    strictEqual(byKey.get('session.session_capture').user_scope_only, false);
   });
 
   it('a profile whose session value is out of domain is REFUSED before anything is presented (§4.5.1)', () => {

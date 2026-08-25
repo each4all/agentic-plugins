@@ -41,23 +41,25 @@ export const STATUSLINE_PRESET_AGENTIC_6 = 'agentic-6';
 
 // 1.2 — the session-config family (ADR-0044 §3 `session_capture`, ADR-0045 §7
 // `entry_brief` / `entry_brief_empty`), carried as TRAILING BARE SCALARS for the
-// `statusline_preset` reason and appended in the order below.
+// `statusline_preset` reason: §4.6 forgives an unknown SCALAR from a newer minor
+// while an unknown OBJECT is refused at every minor, so a `session` block would make
+// every 1.2 profile unreadable to a 1.1 runtime.
 //
-// THE ORDER IS ALPHABETICAL AND THAT IS LOAD-BEARING, not tidiness. `canonicalize`
-// emits schema-named keys in schema order and then every unknown key SORTED, so a
-// 1.1 reader meeting a 1.2 document serializes these three lexically after
-// `statusline_preset`. Declaring them in the config family's own order
-// (`session_capture` first) makes a 1.2 reader emit a DIFFERENT byte sequence for
-// the SAME document — measured, two distinct canonical hashes — which is exactly
-// the cross-minor alignment the trailing-scalar shape exists to preserve. The
-// schema declares the same order for the same reason; the two must not drift.
+// DERIVED from the config family, not restated. An earlier version spelled the three
+// names out here and justified the literal order as load-bearing for the written
+// bytes — which was true at the time and is no longer: `runProfileExport` now
+// canonicalizes against the schema before writing, so the SCHEMA alone decides byte
+// order and this constant decides MEMBERSHIP. Deriving it removes the second
+// membership list a cross-host review flagged, and with it the drift where a fourth
+// family member would be read by `projectSession` and silently dropped by the
+// builder.
 //
-// The alignment holds for 1.1↔1.2 and NOT for 1.0↔1.2, and the limit is inherent:
-// a 1.0 reader does not know `statusline_preset` either, so it sorts that key in
-// among these three and lands on a fourth ordering no amount of care here can
-// match. Validation and seeding still work across all three minors (that is what
-// the §4.6 scalar tolerance buys); only hash identity is scoped to 1.1↔1.2.
-export const PROFILE_SESSION_KEYS = Object.freeze(['entry_brief', 'entry_brief_empty', 'session_capture']);
+// Sorted because the schema declares these three alphabetically, and the schema's
+// order IS the canonical order (see lib/schema-validate.mjs). Keeping the two in the
+// same order is no longer load-bearing for correctness, but a builder that emitted a
+// different order would make every profile need repair on the way out; matching costs
+// nothing and keeps the written object canonical before canonicalization touches it.
+export const PROFILE_SESSION_KEYS = Object.freeze([...CONFIG_KEY_FAMILIES.session].sort());
 
 // §4.5.3 / ADR-0038 — the postures that are STORED but never PRESENTED as a default.
 // The stored enum carries them because §4.5.3 shows a source machine's value as a
@@ -197,8 +199,11 @@ export function buildMachineProfile({ readers, probe, selection, runtimeVersion,
         provenance: 'user-global',
       },
     },
-    // 1.1 (ADR-0048 §2.1) — serialized LAST (schema order = canonical order):
-    // a trailing scalar keeps 1.0- and 1.1-reader canonical hashes aligned.
+    // 1.1 (ADR-0048 §2.1) — the FIRST of the trailing scalars (schema order =
+    // canonical order). It was "serialized LAST" until 1.2 appended the session
+    // family after it; what survives the change is the property that mattered —
+    // a trailing scalar keeps an older reader's canonical hash aligned with a
+    // newer one's over the same document.
     // The reader bundle supplies the preset when BOTH hosts' statusline
     // configuration is observed CANONICAL (owner decision 2026-07-23: the
     // operator applying the rendered agentic-6 fragments IS the declaration);
@@ -473,6 +478,12 @@ export function seedProposals({ profile, targetDefaults = {}, validate }) {
   const proposals = [];
   const notes = [];
 
+  // The CONFIG key a proposal names, for the scope lookup in `propose`:
+  // `session.entry_brief` -> `entry_brief`, `permissions.claude.defaultMode` ->
+  // `defaultMode`. The family prefix is presentation; the scope rule is keyed on
+  // the config key itself.
+  const configKeyOf = (key) => String(key).split('.').pop();
+
   // §4.5.2 — PRESERVE each value's scope label. Synthesizing `machine` here would
   // promote whatever the incoming file said into a machine-global default — the exact
   // "a repo override is never promoted to machine-global" the rule forbids, performed
@@ -486,12 +497,22 @@ export function seedProposals({ profile, targetDefaults = {}, validate }) {
       provenance: entry?.provenance ?? null,
       requires_confirmation: true,
       applied: false,
-      // 1.2 — present only where the caller asserted it, so an OMITTED marker and
-      // an explicit `false` stay distinguishable. A proposal that simply lacks the
-      // field is one nobody classified; defaulting it to `false` here would let a
-      // future user-scope-only key be presented as repo-writable by omission,
-      // which is the failure the marker exists to prevent.
-      ...(entry?.user_scope_only === undefined ? {} : { user_scope_only: entry.user_scope_only === true }),
+      // 1.2 — DERIVED from this runtime's own key list, never read off `entry`.
+      //
+      // It was read off `entry` first, and that was forgeable (code review, MEDIUM):
+      // for four of the six families `entry` IS an object lifted straight out of the
+      // incoming profile, and §4.6 forgives unknown SCALAR keys at any depth when
+      // the document declares a newer minor. So a profile claiming schema 1.9 with
+      // `model_effort.model.user_scope_only: false` validated cleanly — the
+      // validator emitting "unknown scalar key ignored" — while this function read
+      // the forged value anyway and put it in the proposal. A trust label the
+      // untrusted document can author is worse than no label at all, because a
+      // consumer would believe it.
+      //
+      // Deriving it here also collapses the earlier omitted-vs-false subtlety: the
+      // marker is now present on EVERY proposal and is a statement this runtime
+      // makes, so there is no "nobody classified this" state left to misread.
+      user_scope_only: USER_SCOPE_ONLY_CONFIG_KEYS.includes(configKeyOf(key)),
     });
   };
 
@@ -511,19 +532,14 @@ export function seedProposals({ profile, targetDefaults = {}, validate }) {
   //
   // `entry_brief` and `entry_brief_empty` are USER-SCOPE-ONLY (ADR-0045 §7): they
   // activate a session-shaping injected line, so a repo-tracked value must never be
-  // able to enable them. The proposal therefore carries an explicit
-  // `user_scope_only` marker rather than leaving the consumer to re-derive the rule
-  // — a seed path that proposed one of these into a repo target would reintroduce
-  // exactly the cloned-repository vector §7 closed. `session_capture` is NOT in that
-  // class (a repo value is legitimate for it) and is marked accordingly, so the two
-  // are distinguishable at the point of use instead of being flattened into one
-  // over-broad "session keys are user-only" claim.
+  // able to enable them, and a seed path that proposed one into a repo target would
+  // reintroduce exactly the cloned-repository vector §7 closed. `session_capture` is
+  // NOT in that class — a repo value is legitimate for it — so the two must stay
+  // distinguishable at the point of use rather than collapsing into one over-broad
+  // "session keys are user-only" claim. `propose` derives that distinction from this
+  // runtime's own key list; nothing here asserts it.
   for (const key of PROFILE_SESSION_KEYS) {
-    propose(`session.${key}`, profile[key], {
-      scope: 'machine',
-      provenance: 'user-global',
-      user_scope_only: USER_SCOPE_ONLY_CONFIG_KEYS.includes(key),
-    });
+    propose(`session.${key}`, profile[key], { scope: 'machine', provenance: 'user-global' });
   }
 
   // The chat-id pre-fills; the token never does (§4.5) — and the token is not in the

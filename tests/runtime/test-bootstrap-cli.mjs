@@ -910,11 +910,26 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     strictEqual(profile.session_capture, 'stop-hook');
     strictEqual(profile.entry_brief, 'startup');
     strictEqual(profile.entry_brief_empty, null);
-    // Canonical order on DISK, which is what a cross-minor reader hashes.
+    // The bytes on disk ARE the canonical form — asserted against the canonicalizer
+    // itself, not against a literal key list. A literal list here would be a third
+    // copy of an ordering fact the schema and PROFILE_SESSION_KEYS already state
+    // twice, and a mirror that can drift is what this whole area keeps getting
+    // wrong (cross-host review). This phrasing also pins the real invariant: the
+    // written file is what `profileHash` hashed, rather than merely happening to
+    // share its order.
+    const { canonicalProfile } = await import('../../plugins/runtime/scripts/lib/machine-profile.mjs');
+    const { loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const profileSchema = await loadSchema('agentic-machine-profile');
     deepStrictEqual(
-      Object.keys(profile).slice(-4),
-      ['statusline_preset', 'entry_brief', 'entry_brief_empty', 'session_capture'],
-      `trailing scalars are last and alphabetical: ${Object.keys(profile).join(',')}`,
+      Object.keys(profile),
+      Object.keys(canonicalProfile(profile, profileSchema)),
+      `written bytes are canonical: ${Object.keys(profile).join(',')}`,
+    );
+    // …and the session family really is at the end of it, which is the property the
+    // cross-minor alignment depends on.
+    ok(
+      Object.keys(profile).slice(-3).every((k) => ['entry_brief', 'entry_brief_empty', 'session_capture'].includes(k)),
+      `session scalars trail: ${Object.keys(profile).join(',')}`,
     );
 
     // #30 — refuse without --overwrite, succeed with it.
