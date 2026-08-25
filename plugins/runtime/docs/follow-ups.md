@@ -174,8 +174,8 @@ recorded here rather than fixed in it because they are separate defects with sep
 blast radii, and folding them in would have mixed a schema-carriage change with a
 security-boundary repair.
 
-- **HIGH — `profile export` hands the SANITIZED profile to the pre-sanitize secret
-  gate.** `bootstrap.mjs` builds the profile (sanitizing permission rules on the way
+- ~~**HIGH — `profile export` hands the SANITIZED profile to the pre-sanitize secret
+  gate.**~~ **RESOLVED (2026-08-26).** `bootstrap.mjs` builds the profile (sanitizing permission rules on the way
   in) and then passes that same object as `original` to `profileWriteGate`. The
   guard's own docstring forbids exactly this: "Passing only the built profile would
   make the scrub check the sanitizer's own output — a guard inspecting the thing
@@ -202,11 +202,46 @@ security-boundary repair.
   errors. Either preserve historical schemas and dispatch on the declared minor, or
   enforce an introduced-minor floor per property.
 
-- **MEDIUM — home-directory paths hidden in KEY names evade the write gate.**
+- ~~**MEDIUM — home-directory paths hidden in KEY names evade the write gate.**~~ **RESOLVED (2026-08-26).**
   `findSecretShapedValues` scans object keys as well as values; `findRepositoryPaths`
   scans values only. A future-minor document carrying `"/Users/alice/private-repo/":
   "off"` passes both the schema and the semantic gate, defeating §4.2 for the one
   shape it most cares about.
+
+- **Closing those two took three passes, and the corrections are the useful part.**
+  The first fix threaded the whole `readUserGlobalReaders` bundle to the gate, which
+  both review lanes independently reproduced as a false-refusal regression: the bundle
+  carries `statuslineClaude` / `statuslineCodex` / `codexNotify` / `egressActivation`,
+  read for judgement and never projected, so a secret the profile provably cannot
+  contain blocked the export with no remedy but editing host config. The source is now
+  the LOSSY inputs only — the Claude permission arrays, the one place `sanitizeValue`
+  makes the artifact a laundered version of its source; everything else the builder
+  copies verbatim, so the profile-side scan already covers it. The first fix also
+  refused on the sanitizer's own `redactSecrets`, which rewrites emails and any 32+ hex
+  run, so an ordinary rule naming a git sha became a hard refusal while the sanitizer's
+  redaction became unreachable; the refusal predicate is now the credential class
+  (`hasCredentialShape`). And the first key-scan fix truncated the offending key into
+  the diagnostic, which §3.2 forbids outright — locators are `member[n]` ordinals now,
+  applied only to flagged keys so ordinary paths stay readable.
+
+- **MEDIUM — `seedProposals` does not enforce the semantic validation it documents.**
+  Found by the cross-host review of that work and left open deliberately: it is a
+  pre-existing library-contract gap, not a consequence of the fix. §4.5.1 promises
+  rejection of secret-shaped values, but the function only calls the injected
+  validator, and production injects the SCHEMA-only one — so a schema-valid but
+  secret-shaped value is returned as a proposal. Reproduced directly:
+  `schemaValidate` true, `assertProfileWritable` false, `seedProposals` ok with the
+  secret in `proposal.value`. No current CLI path reaches it (`readProfileFile` gates
+  first), so this is a contract violation rather than a live exploit — the fix is to
+  compose the semantic gate into the seed path, with direct tests.
+
+- **LOW — a benign but document-supplied unknown key still appears by name in a
+  locator.** The §3.2 residual left by the ordinal fix, stated in `memberSegment`'s
+  own comment rather than hidden. Flagged keys become ordinals; an unflagged unknown
+  key keeps its name, because this seam has no schema to tell a document-supplied key
+  from a declared one and its content has already been tested as neither secret- nor
+  path-shaped. Closing it properly means giving the walk the schema, which is a larger
+  change than the leak justified.
 
 - **MEDIUM — the §3.2 value withholding is renderer-specific.** See the §3.2/§4.5
   entry above: only `renderText` withholds, `--format json` still emits
