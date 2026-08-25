@@ -387,11 +387,16 @@ const HOME_PATH_PATTERNS = Object.freeze([
   /\\\\[^\\\s]+\\Users\\/i,                   // \\host\Users\...
 ]);
 
+// The predicate, named once so the value walk and the key walk cannot drift into
+// asking different questions — which is exactly how the key half went missing.
+function isRepositoryPathShaped(text, homeDir) {
+  return HOME_PATH_PATTERNS.some((re) => re.test(text)) || Boolean(homeDir && text.includes(homeDir));
+}
+
 function findRepositoryPaths(value, path = '$', homeDir = null) {
   const findings = [];
   if (typeof value === 'string') {
-    const hit = HOME_PATH_PATTERNS.some((re) => re.test(value)) || (homeDir && value.includes(homeDir));
-    if (hit) findings.push(path);
+    if (isRepositoryPathShaped(value, homeDir)) findings.push(path);
     return findings;
   }
   if (Array.isArray(value)) {
@@ -399,7 +404,16 @@ function findRepositoryPaths(value, path = '$', homeDir = null) {
     return findings;
   }
   if (value !== null && typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) findings.push(...findRepositoryPaths(child, `${path}.${key}`, homeDir));
+    for (const [key, child] of Object.entries(value)) {
+      // KEYS are scanned too, for the same reason `findSecretShapedValues` scans
+      // them: §4.2 excludes repository paths "at any nesting depth", and a key IS a
+      // nesting position. The secret scanner had this and the path scanner did not,
+      // so a document carrying `"/Users/alice/private-repo/": "off"` cleared both the
+      // schema and the semantic gate — defeating §4.2 for the one shape it exists to
+      // catch. The asymmetry was the whole defect; there was never a reason for it.
+      if (isRepositoryPathShaped(key, homeDir)) findings.push(`${path}.<key:${key.slice(0, 24)}…>`);
+      findings.push(...findRepositoryPaths(child, `${path}.${key}`, homeDir));
+    }
   }
   return findings;
 }

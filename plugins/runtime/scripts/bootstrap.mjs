@@ -3465,7 +3465,21 @@ async function runProfileExport(ctx, opts) {
     name,
     profile: canonical,
     overwrite: opts.overwrite === true,
-    validate: profileWriteGate({ schemaValidate: validateProfile, original: profile, homeDir: ctx.homeDir }),
+    // `original` is the RAW READER BUNDLE, not the built profile.
+    //
+    // It was the built profile, and that made §4.3 guard 1 inert on the ONLY path
+    // that writes. `buildMachineProfile` sanitizes permission rules on the way in,
+    // so handing its output back as `original` had the scrub inspect the sanitizer's
+    // own output — exactly what `assertProfileWritable`'s docstring forbids.
+    // Reproduced: a rule carrying `Authorization: Bearer <token>` is rewritten to
+    // `Bearer <redacted-token>`, the gate returns ok and the profile is WRITTEN;
+    // passing the raw bundle refuses it. A profile the guard exists to refuse was
+    // being laundered past it.
+    //
+    // The READ path (`readProfileFile`) passing the profile itself stays correct and
+    // must not be "fixed" to match: a profile that arrived from another machine has
+    // no pre-sanitize source, and the docstring names that case explicitly.
+    validate: profileWriteGate({ schemaValidate: validateProfile, original: readers, homeDir: ctx.homeDir }),
     now: ctx.now,
   });
   if (!written?.written) {

@@ -231,6 +231,27 @@ describe('runtime machine profile — secret fail-close (#6, §4.3 guard 1)', ()
     }
   });
 
+  it('a HOME path hidden in a KEY NAME is refused too — keys are a nesting depth', () => {
+    // §4.2 excludes repository paths "at any nesting depth", and a key IS a nesting
+    // position. `findSecretShapedValues` had always scanned keys; `findRepositoryPaths`
+    // scanned values only, so a document carrying the operator's layout as a key
+    // cleared both the schema and the semantic gate — defeating §4.2 for the one shape
+    // it exists to catch (cross-host review).
+    const profile = build();
+    profile.notify = { ...profile.notify, '/Users/alice/private-repo/': 'off' };
+    const verdict = assertProfileWritable(profile, { original: profile });
+    strictEqual(verdict.ok, false, 'a home path in a key is a layout leak like any other');
+    match(verdict.errors.join(' '), /carries a home-directory path/);
+    // The path is located WITHOUT echoing the whole key back — it is untrusted content.
+    match(verdict.errors.join(' '), /<key:/);
+
+    // CONTROL: an ordinary key on the same profile is not flagged, so the assertion
+    // above is not passing merely because key scanning refuses everything.
+    const control = build();
+    control.notify = { ...control.notify, some_ordinary_key: 'off' };
+    strictEqual(assertProfileWritable(control, { original: control }).ok, true, 'an ordinary key stays legal');
+  });
+
   it('a SYSTEM path is not a layout leak — /tmp and /usr say nothing about the operator', () => {
     for (const rule of ['Bash(ls /tmp:*)', 'Bash(/usr/bin/git status:*)', 'Read(/opt/tools/**)']) {
       const profile = build();

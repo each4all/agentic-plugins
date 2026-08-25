@@ -886,6 +886,43 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     ok(manifest.steps.every((step) => Array.isArray(step.blocked_by)), 'an empty blocked_by is written explicitly, never omitted');
   });
 
+  it('profile export refuses a secret-bearing permission rule — the RAW readers reach the gate, not the sanitized profile', async () => {
+    // A CLI-LEVEL test on purpose. The defect was in the WIRING, not the guard:
+    // `assertProfileWritable` always refused a secret-shaped source, but the export
+    // handed it `buildMachineProfile`'s OUTPUT as `original`, and the builder
+    // sanitizes permission rules on the way in. So the scrub inspected the
+    // sanitizer's own output and passed. A unit test on the guard passes with the
+    // defect present and pins nothing; only driving the real export can see it.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner });
+
+    // Plant a bearer token where the builder is known to sanitize.
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
+      permissions: {
+        defaultMode: 'acceptEdits',
+        allow: ['Bash(curl -H "Authorization: Bearer sk-live-abcdef0123456789abcdef0123456789")'],
+      },
+    }, null, 2)}\n`);
+
+    const refused = await run(['profile', 'export', '--name', 'leaky']);
+    strictEqual(refused.exitCode, EXIT.INVALID, 'a secret-shaped source refuses the write');
+    ok(
+      JSON.stringify(refused.report).includes('secret-shaped'),
+      `the refusal names the reason: ${JSON.stringify(refused.report).slice(0, 300)}`,
+    );
+    // And nothing landed — a refused profile must not be on disk.
+    await rejects(() => readFile(join(home, '.agentic-plugins', 'profiles', 'leaky.json'), 'utf8'));
+
+    // CONTROL: the same export with clean readers still writes. Without this the
+    // assertion above would also pass if export were broken for every input.
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
+      permissions: { defaultMode: 'acceptEdits', allow: ['Read'] },
+    }, null, 2)}\n`);
+    const ok2 = await run(['profile', 'export', '--name', 'clean']);
+    strictEqual(ok2.exitCode, EXIT.OK, 'a clean source still exports');
+    ok(JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'clean.json'), 'utf8')).schema.startsWith('agentic-machine-profile-'));
+  });
+
   it('#4 + #30 — profile export → seed round-trips (id + hash recorded); overwrite is refused without --overwrite; path traversal is refused', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const spy = spySubprocess();
