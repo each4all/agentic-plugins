@@ -50,6 +50,20 @@ export const stepIds = Object.freeze({
   pluginInstalled: (name, host) => `plugin.${name}.${host}.installed`,
   pluginEnabled: (name) => `plugin.${name}.codex.enabled`,
   configModelEffort: () => 'config.model_effort',
+  // §3.3 / §6.1.3 — the two VALUE-BEARING Stage-4 steps. Stage 4 and not 5
+  // because `appliedByFor` maps stage 4 to `agentic-config` and stage 5 to
+  // `operator`, and what writes these is `runtime:settings --apply --target
+  // user`, not an operator editing a host file. `config.model_effort` is the
+  // precedent: a Stage-4 step that asks for a recorded decision about
+  // agentic-plugins' own config rather than for a host-side merge.
+  //
+  // Two steps and not one, even though both live in the same config file: they
+  // are independently declinable, and a fragment binds to exactly one step id
+  // (composeFragments' `persist`), so a shared fragment across them could not be
+  // amended when one was declined and the other answered — the freeze keeps
+  // first renders.
+  configSession: () => 'config.session',
+  configNotifyKinds: () => 'config.notify_kinds',
   notifyConfigured: () => 'notify.configured',
   // ADR-0048 §1 (notify split): `notify.configured` keeps meaning exactly the
   // LOCAL runtime notification policy (~/.agentic-plugins/config.toml notify
@@ -194,6 +208,20 @@ export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentAp
 
   // Stage 4–6 — agentic-plugins' own config, then the operator-applied fragments.
   steps.push({ id: stepIds.configModelEffort(), stage: 4, applicable: true, declinable: false, blocked_by: [] });
+  // §6.1.3 — the value-carrying interview steps. DECLINABLE, unlike the posture
+  // step beside them, and the difference is real: `config.model_effort` asks for
+  // a decision that must EXIST (a machine has some model/effort posture whether
+  // or not it says so), while these two ask about OPTIONAL machinery whose
+  // shipped defaults are a legitimate standing answer. `decline` is the
+  // vocabulary for "leave this unmanaged and stop asking"; it is not the same as
+  // choosing the defaults, which is what an explicit `set:<key>=unset` records.
+  //
+  // No `blocked_by`: both are writes to agentic-plugins' own user-global config,
+  // which depends on no host CLI, no marketplace, and no plugin being present.
+  // Asserting an edge here would block a step that is actually reachable — the
+  // same reasoning §6.1 applies to marketplace registration.
+  steps.push({ id: stepIds.configSession(), stage: 4, applicable: true, declinable: true, blocked_by: [] });
+  steps.push({ id: stepIds.configNotifyKinds(), stage: 4, applicable: true, declinable: true, blocked_by: [] });
   steps.push({ id: stepIds.notifyConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [] });
   // ADR-0048 §1 — the Codex-side notify wiring, split from the local policy
   // step above (the pre-split judge only ever read ~/.agentic-plugins/config.toml,

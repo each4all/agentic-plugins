@@ -1399,7 +1399,7 @@ describe('legacy completion projection — the disclosure invariant (§3.2)', ()
   });
 
   it('the projection\'s step-id grammar is the PACKAGED schema\'s, not a copy that drifted', async () => {
-    const schema = JSON.parse(await readFile(resolve('plugins/runtime/data/schemas/runtime-bootstrap-run-1.2.json'), 'utf8'));
+    const schema = JSON.parse(await readFile(resolve('plugins/runtime/data/schemas/runtime-bootstrap-run-1.3.json'), 'utf8'));
     // The projection clamps step_id against a regex written in the reducer. If
     // the schema's pattern ever moves, that copy must move with it — so the two
     // are compared here rather than trusted to stay aligned.

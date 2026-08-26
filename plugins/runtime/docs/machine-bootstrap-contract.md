@@ -640,6 +640,87 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   (§6.2) until a proof approved later in that same file no longer applies. Both
   answers were legal when given, so this is not a refusal — the executor skips
   the proof, warns, and leaves the choice recorded in `choices[]`.
+- **The VALUE answer (§3.3).** Two Stage-4 steps (§6.1.3) need the operator to
+  CHOOSE a value, not merely to approve or refuse a step, so the vocabulary has
+  a fifth form beside the four bare answers:
+
+      set:<key>=<value|unset>[;<key>=<value|unset>]...
+
+  `;` separates pairs and `=` separates key from value. The separator is not a
+  comma because `notify_kinds`' own value IS a comma-separated kind list.
+  `unset` means "leave this key UNWRITTEN; the shipped default stands,
+  **deliberately**" — a recorded decision, not an absence (§6.1.3).
+
+  **It is ONE atomic string, and a sibling `choices[].value` field is
+  forbidden.** §4.6 forgives an unknown *scalar* key when a document declares a
+  newer minor, so a 1.2 reader meeting such a field would emit
+  `unknown-scalar-key-ignored`, drop the value, and read `answer: "accept"` as a
+  bare accept — a ledger saying the operator approved something without saying
+  what. The prefix form fails an older runtime's closed-set check outright, so it
+  REFUSES (exit `40`) rather than misreading. Loud beats lossy.
+
+  **Parsing is ATOMIC**: any defect — a duplicate key, an unknown key, a missing
+  `=`, an empty member, an invalid value, an over-long payload — rejects the
+  whole row. A payload is order-independent by design, so accepting the good
+  members of `entry_brief=off;entry_brief=startup` would make the result depend
+  on member order, which is the property the `key=value` shape exists to remove.
+
+  **Grammar refusals are symmetric.** `set:` against a step that owns no config
+  keys is exit `40` (it would be recorded and read by nothing), and `accept`
+  against a value step is exit `40` — `accept` means "go ahead without changing
+  step state", and a value step has nothing to go ahead with, so it would record
+  an answer while leaving every key undecided. Two `notify_kinds` payloads are
+  additionally refused: the enumeration of **every** current kind (identical to
+  `unset` today, permanently narrower tomorrow — the refusal names `unset`), and
+  the **blank** CSV (behaves as unset while writing a byte that looks like a
+  filter). Comparison is by set semantics after trimming and de-duplication, so
+  neither ordering nor a repeated token walks an all-kinds payload past the
+  refusal.
+
+  **The STANDING decision is folded from `choices[]`, never held in
+  `steps[].desired`.** §7 clears `desired` on any version drift — for satisfied,
+  manual-follow-up and pending rows alike — so a routine patch bump would
+  silently discard the operator's choice. A drift invalidates observations and
+  rendered plans; it never invalidates a decision, which is the same rule §7
+  already applies to `declined`. The fold is: rows in file order, later rows
+  winning; a later partial payload **merges per key** (a row naming one key does
+  not un-decide the others — `decline` is the only way to un-decide, and it
+  un-decides the whole step, visibly); a `decline` tombstones the accumulated
+  decisions so a later `set:` starts from empty.
+
+  **A `set:` row is honoured only on a value step AND only when the document's
+  own schema minor is at least the minor that introduced that step.** The pre-1.3
+  schema never constrained `answer` vocabulary, so arbitrary `set:...` text can
+  already sit in a valid older manifest — and the step-id pattern it accepted is
+  the SAME one, so `config.session` is nameable there too. The weaker rule
+  ("value steps did not exist before 1.3, so no legacy row can name one") holds
+  only for rows an older RUNTIME writes; a run file is operator-editable data,
+  which is the entire premise of the registry-authority rule. An unreadable or
+  absent minor fails closed. A malformed payload, and a row refused for
+  provenance, are both reported as warnings on every verb that folds the ledger —
+  never obeyed, never thrown (stored rows are not revalidated on write, so a fold
+  that threw would strand the run), and never silently dropped: a step whose
+  recorded answer this runtime declined to honour must not report "no decision is
+  recorded" while `choices[]` visibly holds one.
+
+  **A `set:` never satisfies a step by assertion.** The decision is recorded;
+  the step resolves only when a post-probe OBSERVES the machine matching it
+  (§6, §6.1.3's matrix). A `set:` over a standing decline lifts the decline
+  before re-judgement — otherwise the judge would restore it and the reducer,
+  which counts `declined` as resolved, could close the run with the new choice
+  never applied. A `set:` that CHANGES the standing decision withdraws the
+  rendered hand-off so the next render re-freezes against the new decision: the
+  freeze protects against silent re-binding under the operator, and a new answer
+  is the operator's own explicit act — the same exception §7 makes for drift.
+
+  **Ledger capacity is a preflight, not a late failure.** `choices` and
+  `history` are both capped at 256 and nothing prunes either, because the run is
+  replayable from its own manifest. A value interview makes corrections ordinary,
+  so `resume` refuses an over-cap write BEFORE executing any proof — otherwise a
+  resume carrying both a value answer and an `execute` would run the executor
+  (a real subprocess, and for the egress kind a real network send) and only then
+  fail the manifest write, leaving the effect performed and unrecorded.
+
 - **Run terminalization is asymmetric** (S8b errata — closing on the reduction
   alone made Stage 8 unreachable): `resume` closes a run as `complete` when the
   reducer says so, and as `configured-not-verified` **only when every required
@@ -1071,7 +1152,7 @@ any unknown key at all. Downgrade is never attempted.
 
 ```jsonc
 {
-  "schema": "runtime-bootstrap-run-1.2",
+  "schema": "runtime-bootstrap-run-1.3",
   "run_id": "<run-id>",
   "started_at": "<iso-8601-utc>",
   "updated_at": "<iso-8601-utc>",
@@ -1286,6 +1367,8 @@ left to S8:
 | `plugin.<name>.codex.installed` | 3 | per plugin in the selection targeting Codex | only if the plugin is optional (§6.2) |
 | `plugin.<name>.codex.enabled` | 3 | per plugin in the selection targeting Codex | follows `.installed` |
 | `config.model_effort` | 4 | always | no (see §6.1.1 — a recorded `host-native` posture satisfies it; a decline is not the vocabulary for that) |
+| `config.session` | 4 | always | **yes** (see §6.1.3 — a VALUE-bearing step; `accept` is refused, `set:` or `decline`) |
+| `config.notify_kinds` | 4 | always | **yes** (see §6.1.3 — same value grammar; `unset` is the future-open answer) |
 | `notify.configured` | 5 | always | **yes** |
 | `notify.codex.configured` | 5 | always | **yes** |
 | `statusline.claude.configured` | 5 | always | **yes** |
@@ -1593,6 +1676,105 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   fragment fields; an unreadable persisted expectation judges
   `manual-follow-up` (fail-closed), never a silently widened match.
 
+#### 6.1.3 The VALUE-bearing Stage-4 steps
+
+`config.session` and `config.notify_kinds` are the only steps whose resolution
+depends on a value the operator **chooses** rather than on a fact the probe
+finds. Their grammar is §3.3; this section is what they mean.
+
+**What they certify is the PERSISTED USER-GLOBAL POSTURE**, never the effective
+value on this machine right now, and the distinction is load-bearing rather than
+pedantic. `notify_kinds` and `session_capture` resolve repo → user → default at
+runtime, and `entry_brief` / `entry_brief_empty` resolve env → user → default
+(ADR-0045 §7). So a satisfied step can coexist with a repo or env layer that
+wins at runtime. That is deliberate: §1.1 keeps bootstrap off the repo-scoped
+reader seam, and §4.4's rule is that a machine artifact carries the **operator's
+default**, not a checkout's policy — the same rule `profile export` follows for
+the same keys. ENV shadowing IS surfaced on the step (env is already in hand);
+repo shadowing is a named boundary, diagnosed by `runtime:doctor`, not by this
+step.
+
+**Why Stage 4 and not Stage 5.** `applied_by` is derived from the stage — 4 is
+`agentic-config`, 5 is `operator` — and what writes these keys is
+`runtime:settings --apply --target user`, not an operator merging a fragment
+into a host file. `config.model_effort` is the precedent: a Stage-4 step that
+asks for a recorded decision about agentic-plugins' own config.
+
+**Why two steps and not one.** They are independently declinable, and a fragment
+binds to exactly one step id. A shared fragment could not be amended once one
+step was declined and the other answered, because the freeze keeps first renders
+— so a single fragment across two independently declinable steps is unsafe by
+construction, not merely untidy.
+
+**Why declinable, when `config.model_effort` beside them is not.** The posture
+step asks for a decision that must EXIST: a machine has some model/effort
+posture whether or not it says so. These two ask about OPTIONAL machinery whose
+shipped defaults are a legitimate standing answer. `decline` is the vocabulary
+for "leave this unmanaged and stop asking" — which is **not** the same as
+choosing the defaults. Choosing the defaults deliberately is
+`set:<key>=unset`, and the two differ in exactly the way §6.1.1 cares about: one
+records a decision, the other records a refusal to decide.
+
+**The status matrix**, in full, so `pending` and `manual-follow-up` are never
+guessed at. `pending` means not done; `manual-follow-up` means a hand-off was
+rendered and is awaiting action — a previously rendered fragment IS that
+hand-off:
+
+| standing decision | observation | status |
+|---|---|---|
+| none recorded | anything | `pending`, with the answer grammar presented |
+| `decline` | anything not satisfying | `declined` (restored on every re-judge, §6.2) |
+| `set:`, some keys undecided | anything | `pending`, naming the undecided keys |
+| `set:`, every key matches | matches | `satisfied` |
+| `set:`, a key differs, nothing rendered yet | differs | `pending` + the apply command |
+| `set:`, a key differs, a fragment exists | differs | `manual-follow-up` + the apply command |
+| any | user config unreadable | `unknown` (§6: unknown is never satisfied) |
+
+**`unset` is satisfied by physical ABSENCE only.** `parseRuntimeConfigToml`
+preserves a present-but-empty key, so `notify_kinds = ""` is a *present blank*,
+not an unset key — even though `parseKindsFilter` happens to treat it as no
+filter today. A blank is a byte the operator still has to remove, and
+`runtime:settings --unset <key>` is what removes it.
+
+**The apply path for `unset` is a real operation, not a hand-edit.** The config
+writer had only add/update, so `--notify-kinds` could narrow a filter and
+nothing could widen it back — a one-way door in a settings CLI, independent of
+this interview and surfaced by it. `runtime:settings --unset <key>[,<key>]`
+deletes **every** assignment line for the key (the config parser is
+last-value-wins, so a surviving duplicate would resurrect it) and reports how
+many lines went. Removal is deliberately **not** filtered by the user-scope-only
+rule: ADR-0045 §7 forbids a tracked repo value from *activating* a
+session-shaping key, and deleting one can only ever deactivate.
+
+**ADR-0047 §8's dual-kind window is a warning, not a refusal.** A `notify_kinds`
+filter naming exactly one of `turn-complete` / `response-needed` gets a warning
+naming the verification a one-sided filter presupposes. §8 step 2 opens the
+window with both (or no filter) and §8 step 5 explicitly permits narrowing once
+both producers are verified upgraded, so refusing would block a legitimate
+post-window narrowing. The warning is recomputed from the standing ledger on
+every verb rather than emitted once while parsing an incoming answer, so it does
+not vanish with the resume that produced it.
+
+**Concurrent resumes are still an operating assumption, and this feature raises
+the stakes.** `resume` computes from an unlocked snapshot and the locked mutator
+appends onto the latest `choices` while writing its own precomputed `steps` and
+`completion`, so two overlapping resumes can leave a ledger containing both
+answers and a judgement made against only one of them. That is pre-existing and
+unchanged here, but a value interview makes it consequential rather than
+cosmetic: the losing writer's DECISION survives in the ledger while the stored
+verdict describes the other one. One resume at a time remains the assumption;
+`status` re-folds the ledger and re-judges, so it is the way to see which
+decision actually stands.
+
+**Enabled values have functional dependencies this step does not judge.**
+`session_capture = "stop-hook"` and `entry_brief = "startup"` both need an
+installed, enabled attention sensor above its runtime floor before the machinery
+they name actually runs. This step certifies that the POSTURE is recorded and
+observed; `runtime:doctor` and `runtime:settings` own the readiness question.
+Saying so is the point — a step that claimed "the machinery is on" would be
+`satisfied` on a machine where nothing fires.
+
+
 ### 6.2 The declinable set is narrow
 
 **Not declinable, ever**: host CLI presence and authentication; marketplace
@@ -1725,6 +1907,37 @@ with a reason — when any of these changed since `probe.probed_at`:
 
 A step "satisfied" against Codex `0.136` says nothing about `0.140`; hook trust in
 particular is version-bound (ADR-0030).
+
+**A schema-minor bump adds obligations, and an OLDER READER cannot see them.**
+An older runtime's `status` / `verify` on a newer-minor run derives its OWN
+registry, so a step the newer minor added is simply absent from its expectation:
+the report is optimistic and the exit code can read `0` while that step is
+unresolved. This is the shipped, accepted behaviour of every step addition — the
+1.1 → 1.2 bump added `notify.codex.configured` in the same commit and has the
+identical property — and it is why the fence lives on the MUTATORS: `resume` and
+`profile seed` refuse a future minor outright, so an older runtime can never
+*close* a run under an expectation it cannot derive. `status` and `verify` are
+R0 and write nothing, so an optimistic read costs a re-run, not a state.
+Stating it rather than implying it: the remedy for a stale reader is to upgrade
+the runtime, not to consult its verdict.
+
+**A bump also closes the post-terminal receipt window for runs under the old
+minor.** `attest` requires the terminal manifest to carry the EXACT current
+schema — receipt testimony is current-schema vocabulary, and it is deliberately
+the strictest gate in the evidence writer. So an operator holding a terminal run
+under the previous minor, with a recorded provider ack but no receipt
+attestation, can no longer record one; there is no recovery for that window, and
+a fresh plan does not reopen it. The 1.2 → 1.3 bump paid that cost knowingly
+(owner decision, 2026-08-26) rather than loosening the narrowest door in the
+evidence writer to accommodate a config-step addition.
+
+**Terminal runs never adopt new steps.** `resume` refuses a terminal run, so a
+`complete` / `configured-not-verified` / `abandoned` run cannot take an injected
+step and its completion stays HISTORICAL: it was reduced against the expectation
+of its own time, and the steps a later minor adds were never part of it.
+Adopting them requires a **fresh plan** — `status` and `verify` on such a run
+summarize the stored completion and re-certify nothing (exit `50` for an older
+minor), which is exactly why they must not be read as a current verdict.
 
 **Step invalidation is not proof staleness, and neither substitutes for the
 other.** This clause resets version-bound *observations* on the CONTROL axis
@@ -2010,7 +2223,7 @@ changed activation stales the proof; it never becomes `not-applicable`.
 design (folding the value in would persist a value-derived hash, which §4/ADR-0048
 forbids) — a rotated token surfaces as the executor's next real attempt failing,
 not as staleness. The "contract version" the proof binds is realized as the run
-schema id (`runtime-bootstrap-run-1.2`) plus the runtime semver already in
+schema id (`runtime-bootstrap-run-1.3`) plus the runtime semver already in
 `bound_versions` — the contract document ships inside the runtime package, so the
 runtime version pins it; no separate field exists.
 
@@ -2708,7 +2921,7 @@ nobody mistakes "the contract did not say" for "the contract left it open".
 
 | Item | Constrained by |
 |---|---|
-| Exact JSON Schema files for `agentic-machine-profile-1.2` (1.1 + the trailing session-family scalars; 1.1 was 1.0 + trailing `statusline_preset`, ADR-0048 §2.1), `runtime-bootstrap-run-1.2` (1.1 + the egress evidence vocabulary, ADR-0048 §3), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
+| Exact JSON Schema files for `agentic-machine-profile-1.2` (1.1 + the trailing session-family scalars; 1.1 was 1.0 + trailing `statusline_preset`, ADR-0048 §2.1), `runtime-bootstrap-run-1.3` (1.2 + the §3.3 value-answer grammar — a SEMANTIC minor: no JSON shape changed, and the bump exists to arm the future-minor mutator fence; 1.2 was 1.1 + the egress evidence vocabulary, ADR-0048 §3), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
 | ~~Exact permission-mode enums per host~~ | **Resolved (S8a2 C0).** The **stored** enum carries whatever each host accepts, unsafe values included, because §4.5.3 shows a source machine's value as a labelled note — it must have a field to live in. Safety grading is a **present/seed-side** rule, not a second schema field: never *present* Claude `bypassPermissions`, Codex `approval_policy = "never"`, or `sandbox_mode = "danger-full-access"` as a default. Presentable Claude `defaultMode`: `default` / `acceptEdits` / `plan`. Presentable Codex `approval_policy`: `untrusted` / `on-request` / `on-failure`; `sandbox_mode`: `read-only` / `workspace-write`. |
 | The complete `minimum_version` floor table | §1.4 — two are known (`companions` 0.3.0, `engineer` 0.7.0); S8a2 C1 verifies the rest against the plugins' own changelogs. Compare **prerelease-aware** with SemVer §11 identifier ranking (numeric identifiers as JS numbers, lossy only above 2^53; beyond the shared `semverCompare`, whose prerelease tie-break ranks a release above its own prereleases but never identifiers against each other); an unknown installed version with a non-null floor stays **unresolved**, never "installed". |
 | ~~The write-ahead journal's exact transition table and the settings-artifact schema minor~~ | **Resolved (S8a1)** — §1.5 "Concrete shape" specifies the fields; artifact schema is `runtime-settings-execution-artifact-1.3` (S8a4 added the `codex_hook_review` canonical `bound_versions`/`attested_plugins`), statuses `planned → in-progress → completed/failed/refused` |

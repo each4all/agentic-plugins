@@ -37,9 +37,10 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    value is shown as a labelled note, never presented as a default.
 3. **Ask.** Walk the open steps stage by stage. Ask only about steps the
    contract makes declinable (notification, statusline — per host, egress, permission fragments,
-   optional plugins, proofs) plus the bundle choice itself. Record the
+   optional plugins, proofs), the two Stage-4 **value** steps, plus the bundle
+   choice itself. Record the
    operator's decisions into a JSON answers file — an array of
-   `{ "step_id": "...", "answer": "decline" | "accept" | "execute" | "attest-receipt" }` —
+   `{ "step_id": "...", "answer": "decline" | "accept" | "execute" | "attest-receipt" | "set:<key>=<value|unset>[;...]" }` —
    and pass it via `--answers` on `plan` or `resume`. **Answers reach the
    script only through that file** (prose-to-flag translation is unauditable);
    `--answers` is accepted on no other verb. `attest-receipt` (ADR-0048 §3) is
@@ -48,6 +49,27 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    never `plan` (no provider ack can exist yet, so there is nothing to
    testify about). The standalone `attest` verb records the same testimony
    post-terminally without an answers file.
+3b. **Ask the two VALUE steps by presenting their menus, never from memory.**
+   `config.session` and `config.notify_kinds` (contract §6.1.3) take a VALUE or a
+   `decline` — never `accept`, which is refused because it would record a
+   go-ahead while leaving every key undecided. `decline` is legal and is the
+   supported opt-out ("leave this config unmanaged, stop asking"); offer it.
+   Note it is NOT the same as choosing the shipped defaults — that is
+   `set:<key>=unset`, which records the decision instead of refusing to make one. Each one renders
+   a decision-menu fragment listing every legal value, the shipped default, and
+   what leaving a key unset means; surface that menu rather than reciting the
+   options, and re-read it after any re-answer (a changed decision re-renders it).
+
+   Two things to get right when asking:
+
+   - **`unset` is a real answer, not a skip.** It records "leave this key
+     unwritten; the shipped default stands, deliberately". For `notify_kinds` it
+     is the *recommended* answer — absence means future-open ALL kinds, so an
+     enumeration of today's kinds is identical now and permanently narrower later.
+     Enumerating every kind is refused for exactly that reason.
+   - **A partial answer is legal.** Naming one key leaves the others undecided and
+     the step pending; a later `set:` merges per key. Say which keys remain.
+
 4. **Render.** The script renders host-config fragments into the run's
    `fragments/` directory and presents apply commands (including the
    plugin-management command carrying the plan hash). Surface them verbatim.

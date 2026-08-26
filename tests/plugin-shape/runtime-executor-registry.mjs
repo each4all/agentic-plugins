@@ -644,9 +644,9 @@ export const FS_MUTATION_USERS = {
     justification: 'ADR-0040 notify-owned state: log.ndjson append/rotate + reclaim-lock removal',
   },
   'settings.mjs': {
-    primitives: ['mkdir', 'rename', 'writeFile'],
+    primitives: ['mkdir', 'realpath', 'rename', 'rm', 'writeFile'],
     stateRoots: ['.agentic-plugins/config.toml', 'HOME:.agentic-plugins/config.toml', '.agentic-plugins/runs/settings'],
-    justification: 'explicit --apply config.toml upsert (repo + user-global) and settings run artifacts',
+    justification: 'explicit --apply config.toml upsert AND removal (repo + user-global) and settings run artifacts. The config write is temp+rename ATOMIC because it is now a read-modify-write that can DELETE lines (`--unset`), so an interrupted in-place write would truncate the operator\'s config — `rename` publishes, and `rm` drops ONLY this process\'s own `<target>.agentic-tmp-<pid>` staging file when the publish fails. `realpath` resolves a symlinked config so the temp lands on the same filesystem as its rename target and so the report can DISCLOSE where the bytes actually went; a symlinked config is a legitimate dotfiles layout and is followed deliberately, never rewritten.',
   },
   // lib/ (basename-keyed like every other registry table)
   'bootstrap-artifacts.mjs': {

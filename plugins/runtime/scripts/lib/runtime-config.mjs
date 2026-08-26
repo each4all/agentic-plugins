@@ -211,29 +211,63 @@ export function normalizeConfigKey(key) {
   return String(key).replace(/[.-]/g, '_');
 }
 
-export function parseRuntimeConfigToml(text) {
-  const result = {};
+/**
+ * THE line scan both the reader and the writer share.
+ *
+ * Split out because a config REMOVER must delete exactly the lines the reader
+ * READS as a given key — no more, no less. A second hand-rolled line regex is
+ * how the two drift, and the drift is asymmetric: a reader that misses a line
+ * mis-reports, while a writer that matches a line the reader ignores DESTROYS
+ * data the runtime never owned. Reproduced before this split: `--unset
+ * notify_kinds` deleted a `notify_kinds` line inside an unrelated `[foo]` table,
+ * which `parseRuntimeConfigToml` deliberately never reads.
+ *
+ * Each row carries the line's own bytes and its terminator, so a caller can
+ * rebuild the file byte-for-byte minus whatever it drops — CRLF, a missing final
+ * newline, and every untouched line survive exactly.
+ *
+ * `key` is non-null iff the reader would take this line as a KNOWN config key.
+ */
+export function scanRuntimeConfigLines(text) {
+  // Lines WITH their terminators, so nothing has to be re-synthesized on the
+  // way out. The final segment has no terminator when the file lacks a trailing
+  // newline, which is itself a byte fact worth preserving.
+  const parts = String(text ?? '').match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const rows = [];
   let insideTable = false;
-  for (const raw of String(text ?? '').split(/\r?\n/)) {
-    const withoutComment = raw.replace(/#.*/, '').trim();
-    if (!withoutComment) continue;
+  for (const part of parts) {
+    const eol = part.endsWith('\n') ? (part.endsWith('\r\n') ? '\r\n' : '\n') : '';
+    const body = eol ? part.slice(0, -eol.length) : part;
+    const withoutComment = body.replace(/#.*/, '').trim();
+    if (!withoutComment) { rows.push({ body, eol, key: null, value: null, insideTable }); continue; }
     // The config surface is FLAT-KEY by contract. A `[section]` header opens a
     // table scope this parser does not model — keys under it must NOT be read
     // as if they were top-level authorization keys (S2 plan-verify finding: a
     // `session_capture` under `[some.table]` was silently treated as the
     // global gate key). Once a table opens, everything after it is ignored.
-    if (withoutComment.startsWith('[')) { insideTable = true; continue; }
-    if (insideTable) continue;
+    if (withoutComment.startsWith('[')) {
+      insideTable = true;
+      rows.push({ body, eol, key: null, value: null, insideTable });
+      continue;
+    }
+    if (insideTable) { rows.push({ body, eol, key: null, value: null, insideTable }); continue; }
     const match = withoutComment.match(/^([A-Za-z0-9_.-]+)\s*=\s*("?)(.*?)\2\s*$/);
-    if (!match) continue;
+    if (!match) { rows.push({ body, eol, key: null, value: null, insideTable }); continue; }
     const key = normalizeConfigKey(match[1]);
-    const value = match[3].trim();
     // Presence of a KNOWN key is preserved even for an empty value: dropping
     // `session_capture = ""` would let a lower-precedence layer win the
     // precedence chain and flip a gate the higher layer explicitly set — the
     // empty value must instead reach the per-key validator and fail closed
     // (S2 plan-verify finding).
-    if (CONFIG_KEYS.includes(key)) result[key] = value;
+    rows.push({ body, eol, key: CONFIG_KEYS.includes(key) ? key : null, value: match[3].trim(), insideTable });
+  }
+  return rows;
+}
+
+export function parseRuntimeConfigToml(text) {
+  const result = {};
+  for (const row of scanRuntimeConfigLines(text)) {
+    if (row.key !== null) result[row.key] = row.value;
   }
   return result;
 }

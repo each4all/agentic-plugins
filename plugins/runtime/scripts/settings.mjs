@@ -12,7 +12,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
@@ -33,6 +33,7 @@ import {
   loadEntryBriefConfig,
   normalizeConfigKey,
   parseRuntimeConfigToml,
+  scanRuntimeConfigLines,
   validateConfigValue,
 } from './lib/runtime-config.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
@@ -88,7 +89,14 @@ import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/
 // half-enabled hook-chain states (session-capture-contract.md §18),
 // evaluated in BOTH report scopes (filesystem+env reads only), with
 // overall.entry_readiness_warnings.
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.24';
+// 1.25 — the config plan gained a fourth op. `planned_writes[].op` can now be
+// `remove`, `after` can be `null` (the REMOVED state, distinct from an absent
+// key's `keep`), and an applied plan carrying removals adds `removed_lines`.
+// A typed consumer pinned to 1.24 would misread or reject those, and
+// settings-report-contract.md §4 requires the constant and its pinning
+// assertions to move together (cross-host review, MAJOR — the shape changed
+// under the old identifier).
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.25';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -145,6 +153,10 @@ export async function runSettings({
   apply = false,
   target = 'both',
   desired = {},
+  // §Config removal — the keys to DELETE from the selected layer(s). Separate
+  // from `desired` because `normalizeDesiredConfig` drops null/empty by design,
+  // so removal has no expressible encoding there.
+  unset = [],
   executePluginManagement = false,
   executePluginCleanup = false,
   attestCodexHookReview = false,
@@ -206,6 +218,21 @@ export async function runSettings({
   const settingsExecutionRequested = executePluginManagement || executePluginCleanup || attestCodexHookReview;
   const settingsRunId = runId ? validateSettingsRunId(runId) : settingsExecutionRequested ? makeSettingsRunId(now) : null;
   const desiredConfig = normalizeDesiredConfig(desired);
+  // The same two gates parseArgs applies, re-asked here: `runSettings` is a
+  // PUBLIC programmatic surface (bootstrap and the tests call it directly), so a
+  // caller that never went through parseArgs must not be able to remove an
+  // unknown key or write and remove the same key in one call.
+  const unsetKeys = [];
+  for (const raw of Array.isArray(unset) ? unset : []) {
+    const key = normalizeConfigKey(String(raw).trim());
+    if (!key) continue;
+    if (!CONFIG_KEYS.includes(key)) throw new Error(`unset names '${key}', which is not a runtime config key`);
+    if (!unsetKeys.includes(key)) unsetKeys.push(key);
+  }
+  const contradictoryKeys = unsetKeys.filter((key) => Object.hasOwn(desiredConfig, key));
+  if (contradictoryKeys.length > 0) {
+    throw new Error(`unset and a desired value both name ${contradictoryKeys.join(', ')}; a key is either written or removed, never both in one invocation`);
+  }
   const commandRunner = runner ?? runCommand;
 
   // ADR-0041 §2b/§2c (Codex review MAJOR): the egress credential (TELEGRAM_BOT_TOKEN)
@@ -247,6 +274,7 @@ export async function runSettings({
     homeDir: resolvedHomeDir,
     target,
     desiredConfig,
+    unsetKeys,
   });
 
   if (apply) {
@@ -511,8 +539,15 @@ export async function runSettings({
     attest_codex_hook_review: attestCodexHookReview,
     mutation_boundary: {
       writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview, permissionPlan, notificationPlan, egressLauncherPlan }),
+      // The LOGICAL path plus, when they differ, the path the write actually
+      // resolved to. A symlinked config is followed by design (dotfiles), so the
+      // boundary has to name where the bytes went, not only where the operator
+      // pointed (cross-host review, MAJOR: a user-config symlink wrote into an
+      // external file the boundary never mentioned).
       allowed_paths: [
-        ...configPlans.targets.filter((plan) => plan.selected).map((plan) => plan.path),
+        ...new Set(configPlans.targets
+          .filter((plan) => plan.selected)
+          .flatMap((plan) => (plan.resolved_path ? [plan.path, plan.resolved_path] : [plan.path]))),
       ],
       allowed_plugin_management_actions: executePluginManagement
         ? Array.from(EXECUTABLE_PLUGIN_ACTIONS).sort()
@@ -693,7 +728,7 @@ function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationP
   };
 }
 
-async function buildConfigPlans({ repoRoot, homeDir, target, desiredConfig }) {
+async function buildConfigPlans({ repoRoot, homeDir, target, desiredConfig, unsetKeys = [] }) {
   const selectedTargets = target === 'both' ? new Set(['repo', 'user']) : new Set([target]);
   // ADR-0045 §7 repo-write prevention: the user-scope-only keys are stripped
   // from the REPO target's desired set before planning, so neither the
@@ -721,6 +756,13 @@ async function buildConfigPlans({ repoRoot, homeDir, target, desiredConfig }) {
     path: repoConfigPath,
     selected: selectedTargets.has('repo'),
     desiredConfig: repoDesired,
+    // REMOVAL is deliberately NOT filtered by USER_SCOPE_ONLY_CONFIG_KEYS, and
+    // the asymmetry is the point rather than an oversight. ADR-0045 §7's rule is
+    // that a tracked repo value must never ACTIVATE a session-shaping key;
+    // deleting one can only ever deactivate. Refusing to remove a repo-side
+    // `entry_brief` would leave the exact byte the ADR exists to prevent sitting
+    // in the file with no tool able to take it out.
+    unsetKeys,
   });
   repoPlan.refused_user_scope_only = refusedUserScopeOnly;
   if (refusedUserScopeOnly.length > 0) {
@@ -731,6 +773,7 @@ async function buildConfigPlans({ repoRoot, homeDir, target, desiredConfig }) {
     path: userConfigPath,
     selected: selectedTargets.has('user'),
     desiredConfig: aliased ? repoDesired : desiredConfig,
+    unsetKeys,
   });
   userPlan.refused_user_scope_only = aliased ? refusedUserScopeOnly : [];
   if (aliased && refusedUserScopeOnly.length > 0) {
@@ -759,7 +802,7 @@ function isAbsentReadFailure(readResult) {
   return !readResult.ok && ['ENOENT', 'ENOTDIR'].includes(readResult.reason);
 }
 
-async function buildOneConfigPlan({ kind, path, selected, desiredConfig }) {
+async function buildOneConfigPlan({ kind, path, selected, desiredConfig, unsetKeys = [] }) {
   const currentText = await readTextIfExists(path);
   const unreadable = !currentText.ok && !isAbsentReadFailure(currentText);
   const current = currentText.ok ? parseRuntimeConfigToml(currentText.text) : {};
@@ -773,6 +816,16 @@ async function buildOneConfigPlan({ kind, path, selected, desiredConfig }) {
       after,
     });
   }
+  // §Config removal — the fourth op. An `after` of `null` is the REMOVED state
+  // and is distinguishable from an absent key (`op: 'keep'`, `before: null`),
+  // which is what lets a plan say "already absent" instead of staging a write
+  // that would change nothing.
+  for (const key of unsetKeys) {
+    const before = Object.hasOwn(current, key) ? current[key] : null;
+    actions.push({ op: before === null ? 'keep' : 'remove', key, before, after: null });
+  }
+  const projectedAfterUnset = { ...current, ...desiredConfig };
+  for (const key of unsetKeys) delete projectedAfterUnset[key];
   return {
     kind,
     path,
@@ -780,17 +833,22 @@ async function buildOneConfigPlan({ kind, path, selected, desiredConfig }) {
     read_error: unreadable ? `${path}: ${currentText.reason}` : null,
     selected,
     current_config: sortConfig(current),
-    projected_config: sortConfig(selected && !unreadable ? { ...current, ...desiredConfig } : current),
+    projected_config: sortConfig(selected && !unreadable ? projectedAfterUnset : current),
     current_keys: Object.keys(current).sort(),
     planned_writes: unreadable ? [] : actions.filter((action) => action.op !== 'keep'),
     unchanged: unreadable ? [] : actions.filter((action) => action.op === 'keep'),
     applied: false,
     message: unreadable
       ? `Config layer unreadable (${currentText.reason}) — planning and apply are refused for this target (fail-closed; the file is preserved byte-for-byte).`
-      : Object.keys(desiredConfig).length === 0
-        ? 'No config values requested; pass --model/--effort, direction-specific flags, --notify-* flags, or --session-capture to plan config writes.'
+      : Object.keys(desiredConfig).length === 0 && unsetKeys.length === 0
+        ? 'No config values requested; pass --model/--effort, direction-specific flags, --notify-* flags, --session-capture, or --unset <key> to plan config writes.'
         : selected
-          ? 'Selected for apply when --apply is present.'
+          ? (actions.length > 0 && actions.every((action) => action.op === 'keep')
+            // Distinguishes "nothing to do because it already matches" from
+            // "staged a write". For `--unset` that is the difference between an
+            // already-absent key and one about to be removed.
+            ? 'Nothing to write: every requested key already holds the requested state (an --unset key is already absent).'
+            : 'Selected for apply when --apply is present.')
           : 'Not selected by --target.',
   };
 }
@@ -807,12 +865,50 @@ async function applyConfigPlans(configPlans) {
       plan.message = `Apply refused: config layer unreadable (${currentText.reason}) — fail-closed; the file is preserved byte-for-byte.`;
       continue;
     }
-    const desired = Object.fromEntries(plan.planned_writes.map((action) => [action.key, action.after]));
-    const nextText = upsertRuntimeConfigToml(currentText.ok ? currentText.text : '', desired);
+    const desired = Object.fromEntries(plan.planned_writes.filter((action) => action.op !== 'remove').map((action) => [action.key, action.after]));
+    const removals = plan.planned_writes.filter((action) => action.op === 'remove').map((action) => action.key);
+    // REMOVE BEFORE UPSERT. The two never touch the same key (parseArgs refuses
+    // a contradiction), so the order cannot change the result — it is fixed
+    // anyway so that a reader does not have to prove that for themselves.
+    const removed = removeRuntimeConfigKeys(currentText.ok ? currentText.text : '', removals);
+    const nextText = upsertRuntimeConfigToml(removed.text, desired);
     await mkdir(dirname(plan.path), { recursive: true });
-    await writeFile(plan.path, nextText, 'utf8');
+    // ATOMIC, and THROUGH the symlink deliberately.
+    //
+    // Two separate repairs, both reported by the cross-host review:
+    //
+    //   * DURABILITY. The previous in-place `writeFile` was a read-modify-write
+    //     with a truncating open in the middle, so a crash or a full disk left
+    //     the operator's config truncated — and this path now DELETES lines, so
+    //     the half-written state is strictly worse than it was. Write a sibling
+    //     temp file and `rename` it over the target: rename is atomic within a
+    //     filesystem, so a reader sees either the old file or the new one.
+    //   * DISCLOSURE. A symlinked config is a legitimate dotfiles layout and is
+    //     deliberately still followed — but the write then lands somewhere the
+    //     report never named, while `mutation_boundary.allowed_paths` claimed
+    //     only the logical path. The resolved target is now recorded on the plan
+    //     and folded into the boundary, so "what this command wrote" is a fact
+    //     the report states rather than one the operator has to infer.
+    //
+    // The temp file is created beside the RESOLVED target, because a rename
+    // across filesystems fails — and a symlink is exactly how the two end up on
+    // different ones.
+    const resolvedPath = await realpath(plan.path).catch(() => resolve(plan.path));
+    if (resolvedPath !== resolve(plan.path)) plan.resolved_path = resolvedPath;
+    const tempPath = `${resolvedPath}.agentic-tmp-${process.pid}`;
+    try {
+      await writeFile(tempPath, nextText, { encoding: 'utf8', mode: 0o600 });
+      await rename(tempPath, resolvedPath);
+    } catch (err) {
+      await rm(tempPath, { force: true }).catch(() => {});
+      plan.status = 'unreadable';
+      plan.read_error = `${resolvedPath}: ${err?.code ?? err?.message ?? 'write failed'}`;
+      plan.message = `Apply refused: the config layer could not be written atomically (${err?.code ?? 'write failed'}) — fail-closed; the file is preserved byte-for-byte.`;
+      continue;
+    }
     plan.applied = true;
     plan.status = 'available';
+    if (removals.length > 0) plan.removed_lines = removed.removed;
   }
 }
 
@@ -852,6 +948,58 @@ export function upsertRuntimeConfigToml(text, desired) {
     }
   }
   return `${output.join('\n')}\n`;
+}
+
+/**
+ * Delete every line the READER would take as one of `keys`, and report how many
+ * lines went.
+ *
+ * It rides `scanRuntimeConfigLines` — the same scan `parseRuntimeConfigToml`
+ * reduces — rather than a line regex of its own. That is the whole correctness
+ * argument, and it is asymmetric: a reader that misses a line mis-reports, while
+ * a writer that matches a line the reader ignores DESTROYS data the runtime
+ * never owned. Three shapes were reproduced against the private regex this
+ * replaces, all of them data loss:
+ *
+ *   * a `notify_kinds` line inside an unrelated `[foo]` table — the reader stops
+ *     at the first table header by contract (§FLAT-KEY), so that line belongs to
+ *     whoever wrote it and is not a runtime key at all;
+ *   * CRLF endings and a missing final newline, both rewritten on every apply
+ *     because the old implementation re-synthesized every terminator;
+ *   * lines the reader skips for any other reason (an unparseable assignment,
+ *     a quoted key like `"notify_kinds" = "x"` that the key regex does not
+ *     accept) were matched by the looser writer pattern.
+ *
+ * EVERY matching line, not the first: `parseRuntimeConfigToml` is last-value-wins,
+ * so a surviving duplicate would resurrect the key the operator just removed —
+ * the same reasoning `upsertRuntimeConfigToml` gives, in the direction that
+ * actually loses data if it is wrong.
+ *
+ * Note `notify.kinds` and `notify-kinds` ARE removed: `normalizeConfigKey` maps
+ * `.` and `-` to `_`, so the reader genuinely takes them as `notify_kinds`. That
+ * is not conflation by this writer — it is the writer agreeing with the reader,
+ * which is the invariant.
+ *
+ * The `removed` count is returned rather than inferred by the caller because
+ * "removed 0 lines" and "removed 3 duplicates" are different facts about the
+ * file the operator just changed, and only this function can tell them apart.
+ * Comments and unrelated lines are preserved byte-for-byte, including a header
+ * comment that may now sit above nothing: this writer removes assignments the
+ * operator named, never prose it did not author.
+ */
+export function removeRuntimeConfigKeys(text, keys) {
+  const wanted = new Set((keys ?? []).map((key) => normalizeConfigKey(key)));
+  if (wanted.size === 0) return { text: String(text ?? ''), removed: 0 };
+  let removed = 0;
+  const kept = [];
+  for (const row of scanRuntimeConfigLines(text)) {
+    if (row.key !== null && wanted.has(row.key)) {
+      removed += 1;
+      continue;
+    }
+    kept.push(`${row.body}${row.eol}`);
+  }
+  return { text: kept.join(''), removed };
 }
 
 function tomlString(value) {
@@ -2410,9 +2558,12 @@ export function formatText(report) {
   lines.push('');
   lines.push('Config Proposals');
   for (const target of report.config.targets) {
-    lines.push(`- ${target.kind}: ${target.path}; ${target.status}; selected=${target.selected}; writes=${target.planned_writes.length}; applied=${target.applied}`);
+    lines.push(`- ${target.kind}: ${target.path}${target.resolved_path ? ` (resolves to ${target.resolved_path})` : ''}; ${target.status}; selected=${target.selected}; writes=${target.planned_writes.length}; applied=${target.applied}${typeof target.removed_lines === 'number' ? `; removed_lines=${target.removed_lines}` : ''}`);
     for (const write of target.planned_writes) {
-      lines.push(`  ${write.op}: ${write.key} ${write.before ?? '<unset>'} -> ${write.after}`);
+      // A removal renders as `-> <removed>`, not `-> null`: "the key is gone" and
+      // "the key holds null" are different states, and the text surface was the
+      // one that could not tell them apart (cross-host review, MINOR).
+      lines.push(`  ${write.op}: ${write.key} ${write.before ?? '<unset>'} -> ${write.op === 'remove' ? '<removed>' : write.after}`);
     }
     if (target.planned_writes.length === 0) lines.push(`  note: ${target.message}`);
   }
@@ -2657,8 +2808,10 @@ function usage() {
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
     '  [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>]',
     '  [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>]',
-    '  [--session-capture off|stop-hook] [--entry-brief off|startup] [--entry-brief-empty silent|report]',
+    '  [--session-capture off|stop-hook] [--entry-brief off|startup] [--entry-brief-empty silent|report] [--model-effort-fallback host-native]',
     '    (entry-brief keys are user-scope-only per ADR-0045 §7: the repo target refuses them; effective value resolves env > user-global > default)',
+    '  [--unset <key>[,<key>...]]  (REMOVE a config key from the selected layer(s) — the only way back to an unset posture,',
+    '    e.g. a future-open notify_kinds. Removal is not user-scope-filtered: deleting a key can never activate one.)',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
     '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--egress-launcher-plan] [--run-id <settings-run-id>]',
     '  [--expected-plan-hash <sha256>]  (§1.6 drift guard: refuse plugin-management/cleanup execution unless the freshly recomputed plan hash matches)',
@@ -2699,6 +2852,11 @@ export function parseArgs(argv) {
     runId: null,
     expectedPlanHash: null,
     desired: {},
+    // §Config removal — the keys to DELETE. A separate list rather than a
+    // sentinel value inside `desired`: `normalizeDesiredConfig` drops null and
+    // empty by design (an empty value is not a value), so "remove this key"
+    // has no expressible encoding there and never had one.
+    unset: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -2744,6 +2902,14 @@ export function parseArgs(argv) {
       opts.runId = validateSettingsRunId(requireValue(argv, ++i, arg));
     } else if (arg === '--expected-plan-hash') {
       opts.expectedPlanHash = validatePlanHash(requireValue(argv, ++i, arg));
+    } else if (arg === '--unset') {
+      for (const raw of requireValue(argv, ++i, arg).split(',')) {
+        const key = normalizeConfigKey(raw.trim());
+        if (!key) continue;
+        if (!CONFIG_KEYS.includes(key)) throw new Error(`--unset names '${key}', which is not a runtime config key (known: ${CONFIG_KEYS.join(', ')})`);
+        if (!opts.unset.includes(key)) opts.unset.push(key);
+      }
+      if (opts.unset.length === 0) throw new Error('--unset requires at least one config key');
     } else if (CONFIG_FLAG_TO_KEY[arg]) {
       opts.desired[CONFIG_FLAG_TO_KEY[arg]] = requireValue(argv, ++i, arg);
     } else {
@@ -2751,6 +2917,13 @@ export function parseArgs(argv) {
     }
   }
   opts.desired = normalizeDesiredConfig(opts.desired);
+  // A key cannot be both written and removed in one invocation. Silently letting
+  // one win would make the outcome depend on which stage ran last, which is the
+  // one thing a config writer must never be.
+  const contradictory = opts.unset.filter((key) => Object.hasOwn(opts.desired, key));
+  if (contradictory.length > 0) {
+    throw new Error(`--unset and a value flag both name ${contradictory.join(', ')}; a key is either written or removed, never both in one invocation`);
+  }
   return opts;
 }
 

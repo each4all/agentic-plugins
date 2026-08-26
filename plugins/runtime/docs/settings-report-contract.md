@@ -120,7 +120,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.24`)
+## 3. Report schema contract (`runtime-settings-1.25`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -191,7 +191,10 @@ the readiness **status** exactly like `session_readiness_warnings`).
 Same observed-current semantics and the same additive-section erratum
 scope (1.23 `entry_readiness` appends its own text block in both
 scopes).
-Then `runtime-settings-1.23` → `runtime-settings-1.24` (additive,
+Then `runtime-settings-1.24` → `runtime-settings-1.25` (additive: the config
+plan's fourth op — `planned_writes[].op = "remove"`, a `null` `after` for the
+REMOVED state, and `removed_lines` on an applied plan that removed any). Before
+that, `runtime-settings-1.23` → `runtime-settings-1.24` (additive,
 ADR-0040 §4b) when the notification plan's read-check gained
 `notification_plan.read_check.tui_notifications_form` — the trust
 classification (`absent | true | false | array | invalid`, fail-closed)
@@ -312,7 +315,7 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.24` report constant and the
+4. Schema-version lockstep: the `runtime-settings-1.25` report constant and the
    `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
    both constants; `test-notification-plan.mjs` and `test-settings.mjs` pin the

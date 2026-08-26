@@ -105,8 +105,25 @@ export const BOOTSTRAP_ARTIFACT_FAMILY = 'bootstrap';
 // The run-schema version this storage layer stamps (tombstones) and gates on
 // (the post-terminal receipt window). bootstrap.mjs imports THIS — one lockstep
 // site, not two.
-export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.2';
+// 1.3 (§3.3) — the value-carrying interview. Bumping this CLOSES the
+// post-terminal receipt window for every terminal 1.2 run: the gate below is an
+// exact-current-schema test ("receipt testimony is current-schema vocabulary"),
+// deliberately the strictest in this writer, and an operator holding a terminal
+// 1.2 run with a recorded provider ack but no receipt attestation can no longer
+// record one. That cost was weighed and accepted (owner decision, 2026-08-26)
+// rather than relaxing the narrowest door in the evidence writer to accommodate
+// a config-step addition. §7's terminal policy states it; a fresh plan is the
+// recovery for the config steps, and there is none for the lost receipt window.
+export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.3';
 export const BOOTSTRAP_LATEST_SCHEMA_VERSION = 'runtime-bootstrap-latest-1.0';
+
+// The run-schema minor, parsed locally so the storage layer's no-downgrade guard
+// does not depend on its caller. bootstrap.mjs has its own copy for the unlocked
+// pre-check; this one is the authoritative, under-the-lock reading.
+function parseRunSchemaMinorLocal(schema) {
+  const m = typeof schema === 'string' ? schema.match(/^runtime-bootstrap-run-\d+\.(\d+)$/) : null;
+  return m ? Number(m[1]) : null;
+}
 
 // bootstrap-YYYYMMDDTHHMMSSZ-<6hex> — the same run-id shape as every other family
 // (consensus/compat/settings/permission), so one regex idiom validates them all.
@@ -1606,6 +1623,25 @@ export async function updateBootstrapRun({ homeDir, repoRoot, runId, mutate, val
     // the invalid part with a valid one — the write would then bless a record
     // nobody ever validated whole. An invalid previous is an abandon case, not
     // an update case.
+    // NO-DOWNGRADE, rechecked UNDER THE LOCK. Every mutator fences a future
+    // minor on its own unlocked snapshot, and that snapshot can be stale: two
+    // overlapping resumes let the older process read 1.2, wait, and then stamp
+    // its own schema back over a 1.3 document a newer runtime had already
+    // written — silently shedding the additions the fence exists to protect
+    // (cross-host review, SUGGESTION; one resume at a time is a documented
+    // operating assumption, not a guarantee). The authoritative read is here, so
+    // the invariant belongs here too; it is a string comparison, not a cost.
+    const previousMinor = parseRunSchemaMinorLocal(previous.schema);
+    const writerMinor = parseRunSchemaMinorLocal(BOOTSTRAP_RUN_SCHEMA_VERSION);
+    if (previousMinor !== null && writerMinor !== null && previousMinor > writerMinor) {
+      return {
+        updated: false,
+        reason: 'schema-newer',
+        run_id: runId,
+        manifest: null,
+        diagnostics: [`Run ${runId} carries schema ${previous.schema}, newer than this runtime's ${BOOTSTRAP_RUN_SCHEMA_VERSION} — refusing to write, because the write would stamp the older schema over a document a newer runtime already advanced (§4.6: downgrade is never attempted). Upgrade the runtime plugin.`],
+      };
+    }
     if (validate) {
       const previousVerdict = validate(previous);
       if (!previousVerdict?.ok) {

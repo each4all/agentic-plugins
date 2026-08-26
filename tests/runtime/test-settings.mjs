@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import {
   parseArgs,
   runSettings,
   upsertRuntimeConfigToml,
+  removeRuntimeConfigKeys,
   renderCodexConfigToml,
   parseCodexPermissionConfigToml,
 } from '../../plugins/runtime/scripts/settings.mjs';
@@ -70,7 +71,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.24');
+    strictEqual(report.schema_version, 'runtime-settings-1.25');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -1085,7 +1086,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.24');
+    strictEqual(report.schema_version, 'runtime-settings-1.25');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -1766,6 +1767,176 @@ describe('runtime settings', () => {
     ok(next.includes('other = "keep"'));
     ok(next.includes('claude-effort = "high"'));
     ok(next.includes('model = "shared"'));
+  });
+
+  it('every config flag is advertised on ALL THREE public surfaces — cross-host parity', async () => {
+    // DERIVED from CONFIG_KEYS, never a hand-listed set: the flag surface is
+    // auto-generated from that array, so a key added there gets a working flag
+    // immediately and can be missing from the docs indefinitely. Measured when
+    // this test was written: `--unset` was absent from the command
+    // argument-hint and the Codex skill (cross-host review, MINOR), and
+    // `--model-effort-fallback` had been absent from all three since it shipped.
+    //
+    // The Codex SKILL is the load-bearing one: a Codex operator reads the skill's
+    // invocation line, so a flag documented only in the Claude-oriented prose is
+    // a host-parity gap, not a typo.
+    const { CONFIG_KEYS } = await import('../../plugins/runtime/scripts/lib/runtime-config.mjs');
+    const flags = [...CONFIG_KEYS.map((key) => `--${key.replace(/_/g, '-')}`), '--unset'];
+    const surfaces = {
+      'commands/settings.md': 'plugins/runtime/commands/settings.md',
+      'skills/settings/SKILL.md': 'plugins/runtime/skills/settings/SKILL.md',
+      'scripts/settings.mjs usage()': 'plugins/runtime/scripts/settings.mjs',
+    };
+    for (const [label, path] of Object.entries(surfaces)) {
+      const text = await readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
+      const missing = flags.filter((flag) => !text.includes(flag));
+      deepStrictEqual(missing, [], `${label} does not advertise: ${missing.join(', ')}`);
+    }
+    // Non-vacuous: the sweep must actually have a population to check.
+    ok(flags.length >= 12, `the flag set is real (${flags.length} flags)`);
+  });
+
+  it('removeRuntimeConfigKeys deletes EVERY assignment line and reports the count', () => {
+    // Every line, not the first: the read parser is last-value-wins, so a
+    // surviving duplicate would resurrect the key the operator just removed —
+    // the same reasoning the upsert gives, in the direction that loses data.
+    const { text, removed } = removeRuntimeConfigKeys(
+      '# header\nnotify_kinds = "approval"\nmodel = "keep"\nnotify_kinds = "idle"\n',
+      ['notify_kinds'],
+    );
+    strictEqual(removed, 2, 'both duplicates went');
+    ok(!text.includes('notify_kinds'), 'no assignment survives');
+    ok(text.includes('model = "keep"'), 'unrelated keys are preserved byte-for-byte');
+    ok(text.includes('# header'), 'and so is prose this writer did not author');
+  });
+
+  it('removeRuntimeConfigKeys deletes ONLY what the reader reads — table scope, byte preservation, key aliases', () => {
+    // The writer must match `parseRuntimeConfigToml` exactly, and the asymmetry
+    // is why: a reader that misses a line mis-reports, a writer that matches a
+    // line the reader ignores DESTROYS data the runtime never owned. All four
+    // shapes below were reproduced as data loss against the private line regex
+    // this replaces (both review lanes; the table case was found first).
+    const table = removeRuntimeConfigKeys(
+      'notify_kinds = "approval"\nmodel = "keep"\n\n[foo]\nnotify_kinds = "someone-elses"\nother = "keep"\n',
+      ['notify_kinds'],
+    );
+    strictEqual(table.removed, 1, 'the key under [foo] is NOT a runtime key — the reader stops at the first table header');
+    ok(table.text.includes('notify_kinds = "someone-elses"'), 'so the foreign table keeps its line');
+    ok(table.text.includes('other = "keep"'));
+
+    const crlf = removeRuntimeConfigKeys('notify_kinds = "a"\r\nmodel = "keep"\r\n', ['notify_kinds']);
+    strictEqual(crlf.text, 'model = "keep"\r\n', 'CRLF endings survive — the writer no longer re-synthesizes terminators');
+
+    const noTrailing = removeRuntimeConfigKeys('model = "keep"\nnotify_kinds = "a"', ['notify_kinds']);
+    strictEqual(noTrailing.text, 'model = "keep"\n', 'and a missing final newline is not invented back');
+
+    // `normalizeConfigKey` maps `.` and `-` to `_`, so the READER genuinely takes
+    // these as notify_kinds — removing them is the writer agreeing with it.
+    const aliases = removeRuntimeConfigKeys('notify.kinds = "a"\nnotify-kinds = "b"\nmodel = "keep"\n', ['notify_kinds']);
+    strictEqual(aliases.removed, 2, 'dotted and dashed spellings ARE the same key to the reader');
+
+    // A quoted key is NOT accepted by the reader's key regex, so it is not a
+    // runtime key and must survive.
+    const quoted = removeRuntimeConfigKeys('"notify_kinds" = "x"\nmodel = "keep"\n', ['notify_kinds']);
+    strictEqual(quoted.removed, 0, 'a quoted key the reader ignores is not the writer\'s to delete');
+  });
+
+  it('--apply writes ATOMICALLY and DISCLOSES a symlinked target', async () => {
+    // A symlinked config is a legitimate dotfiles layout and is followed
+    // deliberately — but the write then lands somewhere `mutation_boundary`
+    // never named (cross-host review, MAJOR). The symlink itself must survive:
+    // rename goes to the RESOLVED target, never over the link.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-symlink-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-symlink-home-'));
+    const external = await mkdtemp(join(tmpdir(), 'runtime-settings-symlink-ext-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    const realTarget = join(external, 'real.toml');
+    await writeFile(realTarget, 'notify_kinds = "approval"\nmodel = "keep"\n');
+    await symlink(realTarget, join(home, '.agentic-plugins', 'config.toml'));
+
+    const report = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'], apply: true });
+    const plan = report.config.targets.find((t) => t.kind === 'user');
+    strictEqual(plan.applied, true);
+    ok(plan.resolved_path, 'the plan records where the bytes actually went');
+    ok(report.mutation_boundary.allowed_paths.includes(plan.resolved_path), 'and the boundary names it too');
+    ok((await lstat(join(home, '.agentic-plugins', 'config.toml'))).isSymbolicLink(), 'the symlink is followed, never replaced');
+    ok(!(await readFile(realTarget, 'utf8')).includes('notify_kinds'), 'and the write landed through it');
+    // No staging litter left behind.
+    const leftovers = (await readdir(external)).filter((name) => name.includes('agentic-tmp'));
+    deepStrictEqual(leftovers, [], 'the temp file is published or removed, never abandoned');
+  });
+
+  it('removeRuntimeConfigKeys on an absent key is a no-op that says so', () => {
+    const { text, removed } = removeRuntimeConfigKeys('model = "keep"\n', ['notify_kinds']);
+    strictEqual(removed, 0, '"removed 0" and "removed 3 duplicates" are different facts');
+    strictEqual(text, 'model = "keep"\n');
+  });
+
+  it('--unset plans a remove op, applies it, and distinguishes absent from present', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    const userConfig = join(home, '.agentic-plugins', 'config.toml');
+    await writeFile(userConfig, 'notify_kinds = "approval"\nmodel = "keep"\n');
+
+    const planned = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'] });
+    const userPlan = planned.config.targets.find((t) => t.kind === 'user');
+    deepStrictEqual(userPlan.planned_writes, [{ op: 'remove', key: 'notify_kinds', before: 'approval', after: null }]);
+    strictEqual(userPlan.applied, false, 'a dry run applies nothing');
+    strictEqual(await readFile(userConfig, 'utf8'), 'notify_kinds = "approval"\nmodel = "keep"\n', 'and writes nothing');
+    ok(!Object.hasOwn(userPlan.projected_config, 'notify_kinds'), 'the projection shows the key GONE, not blanked');
+
+    const applied = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'], apply: true });
+    const appliedPlan = applied.config.targets.find((t) => t.kind === 'user');
+    strictEqual(appliedPlan.applied, true);
+    const after = await readFile(userConfig, 'utf8');
+    ok(!after.includes('notify_kinds'), 'the key is removed from the file');
+    ok(after.includes('model = "keep"'));
+
+    // A second apply is a no-op the plan reports as `keep`, not `remove`.
+    const again = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'] });
+    deepStrictEqual(again.config.targets.find((t) => t.kind === 'user').planned_writes, [], 'an already-absent key stages no write');
+  });
+
+  it('--unset is NOT user-scope-filtered — removal can never activate a session-shaping key', async () => {
+    // ADR-0045 §7 forbids a tracked repo value from ACTIVATING entry_brief.
+    // Refusing to REMOVE one would leave the exact byte the ADR exists to
+    // prevent sitting in the repo file with no tool able to take it out.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-repo2-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-home2-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    const repoConfig = join(root, '.agentic-plugins', 'config.toml');
+    await writeFile(repoConfig, 'entry_brief = "startup"\n');
+
+    // The WRITE direction is still refused for the same key, in the same call.
+    const writeAttempt = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'repo', desired: { entry_brief: 'startup' } });
+    const repoWritePlan = writeAttempt.config.targets.find((t) => t.kind === 'repo');
+    deepStrictEqual(repoWritePlan.refused_user_scope_only, ['entry_brief'], 'CONTROL: activation stays refused repo-side');
+    deepStrictEqual(repoWritePlan.planned_writes, [], 'and stages nothing');
+
+    const removal = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'repo', unset: ['entry_brief'], apply: true });
+    strictEqual(removal.config.targets.find((t) => t.kind === 'repo').applied, true);
+    ok(!(await readFile(repoConfig, 'utf8')).includes('entry_brief'), 'deactivation is allowed where activation is not');
+  });
+
+  it('a key cannot be written and removed in one invocation, on either surface', async () => {
+    // Letting one win would make the outcome depend on which stage ran last.
+    rejects(async () => parseArgs(['--notify-kinds', 'approval', '--unset', 'notify_kinds']), /never both in one invocation/);
+    await rejects(
+      runSettings({ repoRoot: '.', homeDir: '.', skipHostCliProbes: true, desired: { notify_kinds: 'approval' }, unset: ['notify_kinds'] }),
+      /never both in one invocation/,
+    );
+  });
+
+  it('--unset refuses a key that is not a runtime config key, on either surface', async () => {
+    rejects(async () => parseArgs(['--unset', 'not_a_key']), /is not a runtime config key/);
+    await rejects(
+      runSettings({ repoRoot: '.', homeDir: '.', skipHostCliProbes: true, unset: ['not_a_key'] }),
+      /is not a runtime config key/,
+    );
   });
 
   it('rewrites EVERY duplicate line of a desired key (read parser is last-value-wins)', () => {
