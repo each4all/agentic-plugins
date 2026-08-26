@@ -22,6 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { EXIT, judgeSteps, runBootstrap } from '../../plugins/runtime/scripts/bootstrap.mjs';
 import { stepIds } from '../../plugins/runtime/scripts/lib/step-registry.mjs';
 import {
+  SET_ANSWER_MAX,
+  SET_ANSWER_PREFIX,
   SET_PAYLOAD_MAX,
   UNSET,
   applyCommandFor,
@@ -103,10 +105,22 @@ describe('value grammar — payload parsing (§3.3)', () => {
     }
   });
 
+  it('the payload cap leaves room for the `set:` prefix the schema actually measures', () => {
+    // The cap was a flat 1024 and that was an off-by-prefix: the run schema caps
+    // the STORED answer, so a payload at 1024 produced a 1028-character answer
+    // that parsed here and was rejected by validateRun at persist — after resume
+    // had already run a proof executor (cross-host review, MAJOR).
+    strictEqual(SET_PAYLOAD_MAX, SET_ANSWER_MAX - SET_ANSWER_PREFIX.length);
+    const atCap = `notify_kinds=approval${' '.repeat(SET_PAYLOAD_MAX - 'notify_kinds=approval'.length)}`;
+    ok(parseSetPayload(KINDS, atCap).ok, 'a payload AT the cap is legal');
+    strictEqual((SET_ANSWER_PREFIX + atCap).length, SET_ANSWER_MAX, 'and its stored answer lands exactly on the schema cap');
+    strictEqual(parseSetPayload(KINDS, `${atCap} `).ok, false, 'one character more is refused here, not at persist');
+  });
+
   it('refuses an over-long payload BEFORE parsing it, and withholds the value', () => {
     const parsed = parseSetPayload(SESSION, `session_capture=${'x'.repeat(SET_PAYLOAD_MAX)}`);
     strictEqual(parsed.ok, false);
-    match(parsed.errors[0], /exceeds 1024 characters/);
+    match(parsed.errors[0], new RegExp(`exceeds ${SET_PAYLOAD_MAX} characters`));
     ok(!parsed.errors[0].includes('xxxx'), 'the unclamped value is withheld, not echoed (D1 §3.2)');
   });
 
@@ -166,9 +180,13 @@ describe('value grammar — the notify_kinds refusals (§3.3)', () => {
 
 describe('value grammar — the standing fold (§3.3)', () => {
   const row = (step_id, answer, at = '2026-08-26T00:00:00Z') => ({ step_id, answer, at });
+  // The fold judges PROVENANCE, so every call has to say which schema minor the
+  // document declares. `CURRENT` is "a document this runtime wrote".
+  const CURRENT = { documentMinor: 3 };
+  const fold = (rows, opts = CURRENT) => foldStandingDecisions(rows, opts);
 
   it('later rows win, and a partial payload MERGES per key rather than replacing', () => {
-    const { standing } = foldStandingDecisions([
+    const { standing } = fold([
       row(SESSION, 'set:session_capture=stop-hook;entry_brief=off'),
       row(SESSION, 'set:entry_brief=startup'),
     ]);
@@ -179,7 +197,7 @@ describe('value grammar — the standing fold (§3.3)', () => {
   });
 
   it('a decline TOMBSTONES the accumulated decisions — a later set starts from empty', () => {
-    const { standing } = foldStandingDecisions([
+    const { standing } = fold([
       row(SESSION, 'set:session_capture=stop-hook;entry_brief=off'),
       row(SESSION, 'decline'),
       row(SESSION, 'set:entry_brief=startup'),
@@ -190,7 +208,7 @@ describe('value grammar — the standing fold (§3.3)', () => {
   });
 
   it('a set followed by a decline leaves the step DECLINED with no standing decisions', () => {
-    const { standing } = foldStandingDecisions([
+    const { standing } = fold([
       row(SESSION, 'set:entry_brief=startup'),
       row(SESSION, 'decline'),
     ]);
@@ -208,7 +226,7 @@ describe('value grammar — the standing fold (§3.3)', () => {
     // added). What only the fold's guard gives is SILENCE: without it every
     // legacy row would be reported malformed on every verb, turning bytes that
     // were never an answer into permanent diagnostic noise.
-    const { standing, malformed } = foldStandingDecisions([
+    const { standing, malformed } = fold([
       row('egress.configured', 'set:notify_kinds=approval'),
       row('config.model_effort', 'set:entry_brief=startup'),
     ]);
@@ -219,7 +237,7 @@ describe('value grammar — the standing fold (§3.3)', () => {
   it('a MALFORMED payload on a real value step is reported and ignored — never obeyed, never thrown', () => {
     // Stored rows are not revalidated on write, so a fold that threw would
     // strand the run rather than degrade it.
-    const { standing, malformed } = foldStandingDecisions([
+    const { standing, malformed } = fold([
       row(SESSION, 'set:entry_brief=nonsense'),
       row(SESSION, 'set:entry_brief=startup'),
     ]);
@@ -230,8 +248,33 @@ describe('value grammar — the standing fold (§3.3)', () => {
   });
 
   it('a schema-legal `answer: null` is skipped rather than crashing the fold', () => {
-    const { standing } = foldStandingDecisions([{ step_id: SESSION, answer: null, at: '2026-08-26T00:00:00Z' }]);
+    const { standing } = fold([{ step_id: SESSION, answer: null, at: '2026-08-26T00:00:00Z' }]);
     strictEqual(standing.size, 0);
+  });
+
+  it('LEGACY PROVENANCE, the real guard — a value row PRE-DATING its step is refused, not honoured', () => {
+    // My original guard asked only "is this a value step in the CURRENT
+    // registry", reasoning that value steps did not exist before 1.3 so no
+    // legacy row could name one. REFUTED (cross-host review, MAJOR): that holds
+    // for rows an older RUNTIME writes, and a run file is operator-editable data
+    // — the entire premise of the registry-authority rule. `config.session`
+    // matches the same $defs.stepId pattern 1.2 already accepted.
+    const rows = [row(KINDS, 'set:notify_kinds=approval')];
+    const legacy = fold(rows, { documentMinor: 2 });
+    strictEqual(legacy.standing.size, 0, 'a 1.2 document cannot carry 1.3 policy');
+    strictEqual(legacy.preDating.length, 1, 'and the refusal is REPORTED, not silent');
+    match(legacy.preDating[0], /did not exist at the document's schema minor/);
+
+    strictEqual(fold(rows, { documentMinor: 3 }).standing.size, 1, 'CONTROL: the same row at its own minor IS honoured');
+  });
+
+  it('an UNREADABLE or omitted minor fails CLOSED — unreadable provenance cannot authorize a decision', () => {
+    const rows = [row(KINDS, 'set:notify_kinds=approval')];
+    for (const [label, opts] of [['null', { documentMinor: null }], ['omitted', {}]]) {
+      const folded = fold(rows, opts);
+      strictEqual(folded.standing.size, 0, `${label}: refused`);
+      strictEqual(folded.preDating.length, 1, `${label}: and reported`);
+    }
   });
 
   it('classifyAnswer separates the prefix family from the bare four', () => {
@@ -370,6 +413,39 @@ describe('judgeSteps — the value-step status matrix (§6.1.3)', () => {
     strictEqual(shadowed.status, 'satisfied', 'an env override does not unsatisfy a persisted posture');
     ok(!clean.recovery, 'no shadow, no note');
     match(shadowed.recovery, /environment override is in force for entry_brief/);
+  });
+
+  it('§3.2 — an UNCLAMPED observed value is withheld from `observed`, a clamped one is named', () => {
+    // The judge interpolated the raw persisted config value into
+    // `steps[].observed`, which is a maxLength-only field, so a private path or
+    // marker sitting in a config file crossed verbatim into JSON and text
+    // (cross-host review, MAJOR; reproduced). §3.2 decides by grammar clamping,
+    // and every value key here has a closed-set validator — so the question is
+    // decidable rather than a judgement call.
+    const standing = standingOf(KINDS, [['notify_kinds', 'approval,idle']]);
+    const leaky = judgeValue({ stepId: KINDS, standing, keys: { notify_kinds: '/Users/someone/PRIVATE-MARKER' } });
+    ok(!leaky.observed.includes('PRIVATE-MARKER'), `the unclamped value must not cross:\n${leaky.observed}`);
+    match(leaky.observed, /chars — not a value this runtime declares/, 'type and length cross instead');
+
+    // CONTROL: a value this runtime's own grammar accepts IS named — a blanket
+    // "withhold every string" would pass the assertion above and fail this one.
+    const clamped = judgeValue({ stepId: KINDS, standing, keys: { notify_kinds: 'health' } });
+    match(clamped.observed, /observed health/, 'a clamped token is disclosed, not reduced to a length');
+  });
+
+  it('a semantically identical notify_kinds observation SATISFIES — set semantics, not string equality', () => {
+    // Answers are normalized to a sorted set and the runtime consumer parses a
+    // set, but the observation was compared raw: `idle,approval` was a mismatch
+    // against a standing `approval,idle`, sending the step to manual-follow-up
+    // and presenting a rewrite command for a no-op (cross-host review, MINOR).
+    const standing = standingOf(KINDS, [['notify_kinds', 'approval,idle']]);
+    for (const observed of ['idle,approval', 'approval,idle,approval', ' approval , idle ']) {
+      const entry = judgeValue({ stepId: KINDS, standing, keys: { notify_kinds: observed } });
+      strictEqual(entry.status, 'satisfied', `${JSON.stringify(observed)} is the same configuration`);
+      strictEqual(entry.apply_command ?? null, null, 'and no rewrite is proposed for it');
+    }
+    // CONTROL: a genuinely different set still mismatches.
+    strictEqual(judgeValue({ stepId: KINDS, standing, keys: { notify_kinds: 'approval' } }).status, 'pending');
   });
 
   it('a recorded DECLINE is restored over a non-satisfying observation, as for any declinable step (§6.2)', () => {
@@ -712,6 +788,81 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     const resume = await boot({ argv: ['resume', '--latest-open', '--format', 'json'], home, cwd });
     strictEqual(resume.exitCode, EXIT.INVALID);
     match(resume.report.diagnostics.join(' '), /newer than this runtime/);
+  });
+});
+
+describe('review remediation — the fixes that only exist across verbs', () => {
+  it('the ADR-0047 warning fires on EVERY verb that folds the ledger, not only resume', async () => {
+    // It was inlined in resume alone while both its own comment and the contract
+    // said "every verb", so an operator who answered a one-sided filter at plan
+    // saw nothing there, and status showed nothing either (code review, MEDIUM).
+    // Driven end to end because the finding was about WIRING, not the predicate.
+    const { home, cwd } = await makeHome();
+    const file = await answers(home, 'one-sided.json', [{ step_id: KINDS, answer: 'set:notify_kinds=approval,turn-complete' }]);
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
+    ok(plan.report.warnings.some((w) => /dual-kind window/.test(w)), 'plan warns at the moment the operator answers');
+
+    for (const verb of ['status', 'verify']) {
+      const result = await boot({ argv: [verb, '--latest', '--format', 'json'], home, cwd });
+      ok(result.report.warnings.some((w) => /dual-kind window/.test(w)), `${verb} warns too — the hazard is not resume-only`);
+    }
+  });
+
+  it('a value row this runtime declined to honour is REPORTED on status, not swallowed', async () => {
+    // `foldStandingDecisions().malformed` was computed and dropped at all five
+    // call sites, so a recorded answer that stopped parsing left the step saying
+    // "No decision is recorded" while choices[] visibly held a row (both lanes).
+    const { home, cwd } = await makeHome();
+    const file = await answers(home, 'ok.json', [{ step_id: KINDS, answer: 'set:notify_kinds=approval,idle' }]);
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
+    const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    // Corrupt the STORED payload — stored rows are never revalidated on write.
+    manifest.choices = manifest.choices.map((row) => (row.step_id === KINDS ? { ...row, answer: 'set:notify_kinds=not-a-kind' } : row));
+    await writeFile(path, JSON.stringify(manifest, null, 2));
+
+    const status = await boot({ argv: ['status', '--latest', '--format', 'json'], home, cwd });
+    ok(status.report.warnings.some((w) => /cannot parse/.test(w)), `the ignored row is named:\n${status.report.warnings.join('\n')}`);
+    ok(status.report.warnings.some((w) => /choices\[/.test(w)), 'located by ordinal, and the payload is not quoted back');
+  });
+
+  it('a value row PRE-DATING its step is refused end to end, not promoted on resume', async () => {
+    const { home, cwd } = await makeHome();
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
+    const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    // A hand-edited manifest claiming the OLD minor while carrying a 1.3 answer:
+    // the 1.2 stepId pattern accepted `config.notify_kinds`, so this file is
+    // schema-valid and was previously honoured (cross-host review, MAJOR).
+    manifest.schema = 'runtime-bootstrap-run-1.2';
+    manifest.choices = [{ step_id: KINDS, answer: 'set:notify_kinds=approval', at: '2026-01-01T00:00:00Z' }];
+    await writeFile(path, JSON.stringify(manifest, null, 2));
+
+    const status = await boot({ argv: ['status', '--latest', '--format', 'json'], home, cwd });
+    deepStrictEqual(status.report.value_decisions, [], 'the pre-dating row is not standing policy');
+    ok(status.report.warnings.some((w) => /did not exist at the document's schema minor/.test(w)), 'and the refusal is named');
+  });
+
+  it('the ledger preflight budgets injection rows even WITHOUT a schema bump', async () => {
+    // The mutate appends one history row per registry-new step unconditionally —
+    // its own comment says a runtime upgrade can widen the expected set without
+    // a schema bump — while the preflight budgeted them only when migrating
+    // (code review, MEDIUM). Same-minor growth passed the preflight and failed
+    // at the write, after Stage 8 had run.
+    const { home, cwd } = await makeHome();
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
+    const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    manifest.history = Array.from({ length: 256 }, () => ({ step_id: null, from: 'a', to: 'b', reason: 'filler', at: '2026-08-26T00:00:00Z' }));
+    // Registry-new steps with NO schema drift: the document already claims the
+    // current minor, so `migratingFromSchema` is null.
+    manifest.steps = (manifest.steps ?? []).filter((row) => row.id !== SESSION && row.id !== KINDS);
+    await writeFile(path, JSON.stringify(manifest, null, 2));
+
+    const resume = await boot({ argv: ['resume', '--latest-open', '--format', 'json'], home, cwd });
+    strictEqual(resume.exitCode, EXIT.INVALID);
+    strictEqual(resume.report.reason, 'ledger-capacity');
+    match(resume.report.diagnostics.join(' '), /history would reach/);
   });
 });
 

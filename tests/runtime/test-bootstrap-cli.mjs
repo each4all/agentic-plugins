@@ -1101,12 +1101,71 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
   });
 
-  it('a proposal VALUE never crosses artifact -> report — §3.2', () => {
-    // The first version of this rendering printed proposal values verbatim in
-    // text and in `--format json`. `scalarField.value` and `ruleArray.items`
-    // are `maxLength`-only in agentic-machine-profile-1.2, so §3.2 does not let
-    // their content cross — and a machine profile is exactly the artifact that
-    // rule's threat model is about (Refine-verify peer, MAJOR).
+  it('an UNCLAMPED proposal value never crosses artifact -> report — §3.2, in JSON as well as text', async () => {
+    // REWRITTEN. The previous version drove `renderText` with a hand-built
+    // report object, which measured the RENDERER — and the renderer was never
+    // the whole boundary: `--format json` serializes the report OBJECT, so a
+    // raw `proposals[].value` crossed there no matter what the text path did
+    // (cross-host review, MAJOR — "the §3.2 regression test exercises renderText
+    // only, which is why that door stayed open unnoticed"). Disclosure now
+    // happens at report-BUILD time, so the test drives the real verbs and reads
+    // BOTH surfaces.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // Private markers in keys with NO validator: `model` is a free string and
+    // the Claude permission rules are a free array — exactly the class §3.2's
+    // threat model is about, and the class the old renderer-only test could not
+    // protect in `--format json`.
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'model = "PRIVATE-MARKER-ALPHA"\neffort = "high"\n');
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
+      permissions: { defaultMode: 'acceptEdits', allow: ['Bash(PRIVATE-RULE-BRAVO)'] },
+      statusLine: { type: 'command', command: `node '${join(home, '.agentic-plugins', 'bin', 'agentic-statusline.mjs').replace(/\\/g, '/')}'` },
+    }, null, 2)}\n`);
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const exported = await run(['profile', 'export', '--name', 'leak', '--format', 'json']);
+    strictEqual(exported.exitCode, 0, 'precondition: a profile was exported');
+    const profilePath = join(home, '.agentic-plugins', 'profiles', 'leak.json');
+    const artifact = await readFile(profilePath, 'utf8');
+    for (const marker of ['PRIVATE-MARKER-ALPHA', 'PRIVATE-RULE-BRAVO']) {
+      ok(artifact.includes(marker),
+        `precondition: the ARTIFACT does carry ${marker} — the boundary is artifact -> report, not artifact -> disk`);
+    }
+
+    // Both entry points that present proposals, on both surfaces. `profile seed`
+    // needs the open run; `plan` refuses while one is open, so the run is closed
+    // between them.
+    const seeded = await run(['profile', 'seed', '--profile-file', profilePath, '--format', 'json']);
+    await run(['abandon', '--latest-open', '--reason', 'test']);
+    const planned = await run(['plan', '--bundle', 'base', '--profile-file', profilePath, '--format', 'json']);
+    for (const [label, result] of [['profile seed', seeded], ['plan --profile-file', planned]]) {
+      ok(result.report.proposals, `${label}: presents proposals at all (the plan half is the new door)`);
+      // Scoped to the PROPOSALS boundary, which is what this change owns.
+      // Deliberately NOT asserted over the whole report: `config.model_effort`'s
+      // judge interpolates its raw coordinate values into `steps[].observed`,
+      // which is the same §3.2 class in PRE-EXISTING code this change does not
+      // touch. Widening the assertion here would either fail on that unrelated
+      // leak or quietly pressure this change into redefining an unrelated
+      // judge's disclosure policy — a decision with a real diagnostic cost
+      // (`model=claude-opus-5` would stop being readable), recorded rather than
+      // absorbed. See docs/follow-ups.md.
+      const serialized = JSON.stringify(result.report.proposals);
+      for (const marker of ['PRIVATE-MARKER-ALPHA', 'PRIVATE-RULE-BRAVO']) {
+        ok(!serialized.includes(marker), `${label}: ${marker} must not cross in the proposal list`);
+      }
+      ok(!result.rendered.split('\n').filter((line) => /default \(confirm\)/.test(line)).join('\n').includes('PRIVATE-'),
+        `${label}: nor on the rendered proposal lines`);
+      const model = result.report.proposals.proposals.find((entry) => entry.key === 'model_effort.model');
+      ok(model && model.value_disclosed === false, `${label}: the withholding is recorded, not just performed`);
+      match(model.value, /chars — /, `${label}: and what crosses instead is type + length`);
+    }
+  });
+
+  it('a GRAMMAR-CLAMPED proposal value DOES cross — §3.2 keys on the schema, not on caution', () => {
+    // The control for the test above: withholding is decided per field, so a
+    // value this runtime's own validators accept is named rather than reduced
+    // to a length. A blanket "withhold every string" would pass the test above
+    // and fail this one.
     const text = renderText({
       verb: 'profile seed',
       run_id: 'run-x',
@@ -1116,9 +1175,9 @@ describe('runtime bootstrap CLI — lifecycle', () => {
         ok: true,
         refused: [],
         proposals: [
-          { key: 'model_effort.claude', value: 'PRIVATE-MARKER-ALPHA', scope: 'machine' },
-          { key: 'permissions.claude.allow', value: ['PRIVATE-RULE-BRAVO', 'PRIVATE-RULE-CHARLIE'], scope: 'machine' },
-          { key: 'egress.headline_opt_in', value: true, scope: 'machine' },
+          // Post-sanitize shapes, which is what the renderer now receives.
+          { key: 'session.entry_brief', value: 'startup', value_disclosed: true, scope: 'machine' },
+          { key: 'permissions.claude.allow', value: '<2 entries, 36 chars — withheld per §3.2>', value_disclosed: false, scope: 'machine' },
         ],
         notes: [],
         boundary: {},
@@ -1126,15 +1185,8 @@ describe('runtime bootstrap CLI — lifecycle', () => {
       warnings: [],
       diagnostics: [],
     });
-    for (const secret of ['PRIVATE-MARKER-ALPHA', 'PRIVATE-RULE-BRAVO', 'PRIVATE-RULE-CHARLIE']) {
-      ok(!text.includes(secret), `${secret} must not cross the artifact -> report boundary:\n${text}`);
-    }
-    // The KEY, its scope, and the value's shape still reach the operator —
-    // withholding content is not withholding information.
-    ok(/model_effort\.claude = <string, 20 chars/.test(text), `type and length still cross:\n${text}`);
-    ok(/permissions\.claude\.allow = <2 entries, /.test(text), 'an array reports its count and width');
-    // A grammar-clamped value (a boolean) is disclosable and still shows.
-    ok(/egress\.headline_opt_in = true/.test(text), 'a clamped value is not withheld — §3.2 keys on the schema, not on caution');
+    ok(/session\.entry_brief = startup/.test(text), `a clamped enum is named:\n${text}`);
+    ok(/permissions\.claude\.allow = <2 entries, /.test(text), 'an unclamped array still reports count and width');
   });
 
   it('a safety-graded note is what the operator actually SEES, not just what seed computed', async () => {
@@ -1242,7 +1294,7 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     ok(/abandoned run is an escape hatch/.test(onAbandoned.report.diagnostics.join(' ')));
   });
 
-  it('refuses a legacy-schema run — attest records 1.2 evidence only', async () => {
+  it('refuses a legacy-schema run — attest records CURRENT-schema evidence only', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const spy = spySubprocess();
     // Seed a schema-1.1 terminal run directly (the pre-vnext world).

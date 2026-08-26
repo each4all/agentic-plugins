@@ -243,9 +243,27 @@ security-boundary repair.
   path-shaped. Closing it properly means giving the walk the schema, which is a larger
   change than the leak justified.
 
-- **MEDIUM — the §3.2 value withholding is renderer-specific.** See the §3.2/§4.5
-  entry above: only `renderText` withholds, `--format json` still emits
-  `proposals[].value` raw.
+- **~~MEDIUM — the §3.2 value withholding is renderer-specific.~~ CLOSED**
+  (value-interview review remediation). Withholding moved to report-BUILD time
+  (`sanitizeProposals`), so `--format json` and text now share one per-field rule:
+  a config key with a closed-set validator is disclosed, everything else leaves as
+  type and length. `plan --profile-file` and `profile seed` both run it, and
+  `value_disclosed` records which happened.
+
+- **MEDIUM — `config.model_effort` still interpolates its raw coordinate values
+  into `steps[].observed`.** The MIRROR of the value-step leak closed above
+  (`feedback_peer_finding_mirror`: when a review finds a defect, look for its
+  copy). `observed` is `maxLength`-only, so `model = "<anything the operator
+  typed>"` crosses artifact → report verbatim; reproduced with a private path.
+  Deliberately NOT fixed in the value-interview change, because the honest fix has
+  a real cost the owner should weigh rather than absorb: the model/effort
+  coordinates have no validator, so applying the same grammar-clamping rule would
+  reduce a legitimate `model=claude-opus-5` to `<string, 13 chars>` and make a
+  useful diagnostic unreadable. A shape heuristic is NOT the escape hatch — §3.2's
+  own header records that sink-side redaction was tried and withdrawn on
+  measurement, because the root is a classification question. The two candidate
+  resolutions are a per-key allowlist of disclosable-by-declaration keys, or an
+  accepted-value enum for the coordinates; both are decisions, not repairs.
 
 - **LOW — value-level forward tolerance does not exist.** §4.6 forgives an unknown
   KEY from a newer minor but not an unknown VALUE of a known key, so any future

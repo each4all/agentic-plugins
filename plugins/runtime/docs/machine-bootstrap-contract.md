@@ -688,14 +688,20 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   un-decides the whole step, visibly); a `decline` tombstones the accumulated
   decisions so a later `set:` starts from empty.
 
-  **A `set:` row is honoured only on a value step**, and that is the
-  legacy-provenance guard rather than a tidiness rule: the pre-1.3 schema never
-  constrained `answer` vocabulary, so arbitrary `set:...` text can already sit in
-  a valid older manifest. Value steps did not exist before 1.3, so no legacy row
-  can name one — honouring the prefix only there is what stops migration from
-  retroactively turning meaningless bytes into policy. A malformed payload on a
-  real value step is reported and ignored, never obeyed and never thrown: stored
-  rows are not revalidated on write, so a fold that threw would strand the run.
+  **A `set:` row is honoured only on a value step AND only when the document's
+  own schema minor is at least the minor that introduced that step.** The pre-1.3
+  schema never constrained `answer` vocabulary, so arbitrary `set:...` text can
+  already sit in a valid older manifest — and the step-id pattern it accepted is
+  the SAME one, so `config.session` is nameable there too. The weaker rule
+  ("value steps did not exist before 1.3, so no legacy row can name one") holds
+  only for rows an older RUNTIME writes; a run file is operator-editable data,
+  which is the entire premise of the registry-authority rule. An unreadable or
+  absent minor fails closed. A malformed payload, and a row refused for
+  provenance, are both reported as warnings on every verb that folds the ledger —
+  never obeyed, never thrown (stored rows are not revalidated on write, so a fold
+  that threw would strand the run), and never silently dropped: a step whose
+  recorded answer this runtime declined to honour must not report "no decision is
+  recorded" while `choices[]` visibly holds one.
 
   **A `set:` never satisfies a step by assertion.** The decision is recorded;
   the step resolves only when a post-probe OBSERVES the machine matching it

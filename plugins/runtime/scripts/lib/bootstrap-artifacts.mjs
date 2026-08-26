@@ -117,6 +117,14 @@ export const BOOTSTRAP_ARTIFACT_FAMILY = 'bootstrap';
 export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.3';
 export const BOOTSTRAP_LATEST_SCHEMA_VERSION = 'runtime-bootstrap-latest-1.0';
 
+// The run-schema minor, parsed locally so the storage layer's no-downgrade guard
+// does not depend on its caller. bootstrap.mjs has its own copy for the unlocked
+// pre-check; this one is the authoritative, under-the-lock reading.
+function parseRunSchemaMinorLocal(schema) {
+  const m = typeof schema === 'string' ? schema.match(/^runtime-bootstrap-run-\d+\.(\d+)$/) : null;
+  return m ? Number(m[1]) : null;
+}
+
 // bootstrap-YYYYMMDDTHHMMSSZ-<6hex> — the same run-id shape as every other family
 // (consensus/compat/settings/permission), so one regex idiom validates them all.
 export const BOOTSTRAP_RUN_ID_RE = /^bootstrap-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
@@ -1615,6 +1623,25 @@ export async function updateBootstrapRun({ homeDir, repoRoot, runId, mutate, val
     // the invalid part with a valid one — the write would then bless a record
     // nobody ever validated whole. An invalid previous is an abandon case, not
     // an update case.
+    // NO-DOWNGRADE, rechecked UNDER THE LOCK. Every mutator fences a future
+    // minor on its own unlocked snapshot, and that snapshot can be stale: two
+    // overlapping resumes let the older process read 1.2, wait, and then stamp
+    // its own schema back over a 1.3 document a newer runtime had already
+    // written — silently shedding the additions the fence exists to protect
+    // (cross-host review, SUGGESTION; one resume at a time is a documented
+    // operating assumption, not a guarantee). The authoritative read is here, so
+    // the invariant belongs here too; it is a string comparison, not a cost.
+    const previousMinor = parseRunSchemaMinorLocal(previous.schema);
+    const writerMinor = parseRunSchemaMinorLocal(BOOTSTRAP_RUN_SCHEMA_VERSION);
+    if (previousMinor !== null && writerMinor !== null && previousMinor > writerMinor) {
+      return {
+        updated: false,
+        reason: 'schema-newer',
+        run_id: runId,
+        manifest: null,
+        diagnostics: [`Run ${runId} carries schema ${previous.schema}, newer than this runtime's ${BOOTSTRAP_RUN_SCHEMA_VERSION} — refusing to write, because the write would stamp the older schema over a document a newer runtime already advanced (§4.6: downgrade is never attempted). Upgrade the runtime plugin.`],
+      };
+    }
     if (validate) {
       const previousVerdict = validate(previous);
       if (!previousVerdict?.ok) {

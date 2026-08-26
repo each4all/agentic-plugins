@@ -130,7 +130,7 @@ import {
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 // §6.1 Stage 4 — the declarable model/effort postures. Imported (not restated)
 // so the judge, the settings validator and the contract cannot drift apart.
-import { ENTRY_BRIEF_ENV_KEYS, MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
+import { CONFIG_KEY_VALIDATORS, ENTRY_BRIEF_ENV_KEYS, MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
 import { FINDINGS_MAX_PER_ARTIFACT, loadSchema, makeValidator } from './lib/schema-validate.mjs';
 import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
@@ -468,6 +468,104 @@ function boundExpected(previous, broadCandidates) {
  * both. Repo shadowing has no equivalent here because §1.1 keeps bootstrap off
  * the repo-scoped reader seam; it is a named boundary, not an oversight.
  */
+/**
+ * §3.2, applied to a CONFIG VALUE: it crosses the artifact → report boundary iff
+ * this runtime's own grammar clamps it.
+ *
+ * Every value key here has a closed-set validator (`validateValueForKey`), so
+ * the question is decidable rather than a judgement call: a value that PASSES is
+ * one of a fixed set of tokens this runtime declared, and is safe to name; a
+ * value that FAILS is unclamped operator-authored text by definition — the exact
+ * class §3.2 withholds — and leaves as its type and length only.
+ *
+ * Two leaks were reproduced before this existed, and both were mine:
+ *   * the value-step judge interpolated the raw persisted config value into
+ *     `steps[].observed`, which is a maxLength-only field, so a private path or
+ *     marker sitting in a config file crossed verbatim into JSON and text;
+ *   * `plan --profile-file` put raw `seedProposals` into the report, extending a
+ *     leak the code already acknowledged for `profile seed` (the text half was
+ *     repaired long ago; `--format json` still serialized `value` raw).
+ */
+function discloseConfigValue(key, value) {
+  if (value === null || value === undefined) return { disclosed: true, text: '<absent>' };
+  if (value === '') return { disclosed: true, text: '<blank>' };
+  if (typeof value !== 'string') return { disclosed: false, text: `<${typeof value} — withheld per §3.2>` };
+  const verdict = validateValueForKey(key, value);
+  if (verdict.ok) return { disclosed: true, text: verdict.normalized };
+  return { disclosed: false, text: `<string, ${value.length} chars — not a value this runtime declares; withheld per §3.2>` };
+}
+
+/**
+ * §3.2 applied to the SEED PROPOSAL list, at report-BUILD time.
+ *
+ * Build time and not render time, which is the whole repair: the text half was
+ * fixed long ago with `describeWithheld`, but `--format json` serializes the
+ * report object, so `proposals[].value` still crossed raw — a leak the code
+ * acknowledged for `profile seed` and that adding proposals to `plan
+ * --profile-file` would have extended (cross-host review, MAJOR). Sanitizing the
+ * object closes both doors with one rule.
+ *
+ * The rule is per-FIELD, which the old comment noted was missing: a config key
+ * with a closed-set validator is grammar-clamped, so its value is disclosable —
+ * the 1.2 session scalars and the notify enums included. Everything else (the
+ * permission arrays, a free-string recipient) leaves as type and length.
+ */
+/**
+ * Mark seeded values the value grammar would refuse, and say so.
+ *
+ * ONE helper because both entry points that present proposals must agree:
+ * `plan --profile-file` and `profile seed` run the same `seedProposals`, so a
+ * value flagged by one and offered by the other is the same profile giving two
+ * different answers depending on which door the operator used.
+ */
+function markUnanswerableProposals(result) {
+  const warnings = [];
+  for (const proposal of result?.proposals ?? []) {
+    const key = String(proposal.key).split('.').pop();
+    if (!VALUE_KEYS.has(key)) continue;
+    const verdict = validateValueForKey(key, proposal.value);
+    if (!verdict.ok) {
+      proposal.refused_by_interview = verdict.reason;
+      warnings.push(`the seeded ${proposal.key} value is not answerable through the interview (${verdict.reason}); it is shown as the source machine's posture, not offered as a default.`);
+    }
+  }
+  return warnings;
+}
+
+function sanitizeProposals(result) {
+  for (const proposal of result?.proposals ?? []) {
+    const key = String(proposal.key).split('.').pop();
+    if (Object.hasOwn(CONFIG_KEY_VALIDATORS, key)) {
+      const verdict = discloseConfigValue(key, proposal.value);
+      proposal.value = verdict.text;
+      proposal.value_disclosed = verdict.disclosed;
+    } else {
+      proposal.value = describeWithheld(proposal.value);
+      proposal.value_disclosed = false;
+    }
+  }
+  return result;
+}
+
+/**
+ * ADR-0047 §8, recomputed from a STANDING ledger.
+ *
+ * A HELPER because it has to run on every verb that folds one, and it did not:
+ * it was inlined in `resume` alone while both the comment beside it and the
+ * contract said "on every verb". An operator who answered a one-sided filter at
+ * `plan` got no warning there, and `status` showed none either — the hazard was
+ * invisible on three of the four verbs that render it (code review, MEDIUM).
+ */
+function dualKindWarningsFor(standing) {
+  const out = [];
+  for (const [stepId, entry] of standing ?? new Map()) {
+    if (stepId !== stepIds.configNotifyKinds() || entry.mode !== 'set') continue;
+    const warning = dualKindWarning(entry.decisions.get('notify_kinds'));
+    if (warning) out.push(warning);
+  }
+  return out;
+}
+
 function envShadowFor(keys, readers) {
   const shadowed = readers?.sessionEnvShadow ?? null;
   if (!shadowed) return [];
@@ -657,7 +755,10 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         };
       }
       const { mismatched } = compareStanding(id, entry, observedOf);
-      const summarize = (rows) => rows.map(({ key, want, got }) => `${key}: chose ${want}, observed ${got === null ? '<absent>' : got === '' ? '<blank>' : got}`).join('; ');
+      // `want` is always safe: it came through the value grammar. `got` is raw
+      // persisted config text and is disclosed only when it too is a token this
+      // runtime declares (§3.2 — see discloseConfigValue).
+      const summarize = (rows) => rows.map(({ key, want, got }) => `${key}: chose ${want}, observed ${discloseConfigValue(key, got).text}`).join('; ');
       if (mismatched.length === 0) {
         return {
           status: 'satisfied',
@@ -1266,8 +1367,11 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
   // presence of a `set:` row: re-sending the same answers file is ordinary
   // (resume takes one every time), and re-rendering identical bytes on every
   // resume would burn the freeze for nothing.
-  const priorStanding = foldStandingDecisions(priorChoices).standing;
-  const nextStanding = foldStandingDecisions([...(Array.isArray(priorChoices) ? priorChoices : []), ...choices]).standing;
+  // Current-minor by construction on both sides: these folds exist only to spot a
+  // CHANGED decision within this verb, and this verb writes at the reader's own
+  // minor. Provenance is judged where the document is read, not here.
+  const priorStanding = foldStandingDecisions(priorChoices, { documentMinor: READER_RUN_SCHEMA.minor }).standing;
+  const nextStanding = foldStandingDecisions([...(Array.isArray(priorChoices) ? priorChoices : []), ...choices], { documentMinor: READER_RUN_SCHEMA.minor }).standing;
   for (const [stepId, answer] of effective) {
     if (classifyAnswer(answer).kind !== 'set') continue;
     const step = byId.get(stepId);
@@ -1429,7 +1533,10 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
       return;
     }
     step.fragment_pointer = write.fragment.pointer;
-    step.apply_command = applyCommand;
+    // A null applyCommand means the caller has none to offer; keep whatever the
+    // judge computed rather than blanking it (the value steps pass null when the
+    // decision is partial or already observed).
+    if (applyCommand !== null) step.apply_command = applyCommand;
     // The plan-bound expectation (mode binding, Refine-verify peer): when THIS
     // run rendered a fragment, the step's `desired` records exactly what that
     // fragment asks the operator to merge — the exact probe then judges
@@ -1464,16 +1571,49 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
       if (!step) continue;
       const keys = valueStepKeys(stepId) ?? [];
       const entry = standingForFragments?.get(stepId) ?? null;
-      await persist(`config-${stepId.split('.').pop().replace(/_/g, '-')}`, {
+      const fragmentName = `config-${stepId.split('.').pop().replace(/_/g, '-')}`;
+      const recordedNow = entry?.mode === 'set'
+        ? Object.fromEntries([...entry.decisions].sort(([a], [b]) => a.localeCompare(b)))
+        : null;
+      // SELF-HEALING FREEZE for the value steps.
+      //
+      // The fragment is written to a stable filename BEFORE the manifest update
+      // that records its pointer, and there is no manifest CAS. Before this
+      // change that ordering self-healed: a failed manifest write left NO
+      // pointer, so the next resume re-rendered. Once a changed decision started
+      // clearing the pointer to force a re-render, a failed write could instead
+      // leave the OLD pointer standing over NEW bytes — and the freeze would
+      // then skip rendering forever, making the mismatch permanent
+      // (cross-host review, MAJOR).
+      //
+      // So the freeze is checked against CONTENT, not just presence: if the
+      // artifact on disk does not carry the decision the ledger holds, the
+      // pointer is withdrawn and persist re-renders. Cheaper than
+      // content-addressed revisions and it repairs the runs that already
+      // diverged. An unreadable artifact is treated as diverged, which is the
+      // fail-closed direction — re-rendering costs a write, believing a
+      // stale pointer costs the operator a wrong instruction.
+      if (step.fragment_pointer) {
+        let onDisk = null;
+        try {
+          onDisk = JSON.parse(await readFile(join(bootstrapFragmentsDir(homeDir, runId), `${fragmentName}.fragment`), 'utf8'));
+        } catch { onDisk = null; }
+        const agrees = onDisk !== null
+          && JSON.stringify(onDisk.recorded_decision ?? null) === JSON.stringify(recordedNow);
+        if (!agrees) {
+          warnings.push(`the ${stepId} decision menu on disk did not match the recorded decision (a fragment write that outran its manifest update); it is being re-rendered.`);
+          step.fragment_pointer = null;
+          step.apply_command = null;
+        }
+      }
+      await persist(fragmentName, {
         requested: true,
         step_id: stepId,
         applied_by: 'agentic-config',
         target: '~/.agentic-plugins/config.toml',
         answer_grammar: `${SET_ANSWER_PREFIX}${keys.map((k) => `${k}=<value|${UNSET}>`).join(';')}`,
         keys: keys.map((key) => valueKeyMenu(key)),
-        recorded_decision: entry?.mode === 'set'
-          ? Object.fromEntries([...entry.decisions].sort(([a], [b]) => a.localeCompare(b)))
-          : null,
+        recorded_decision: recordedNow,
         unset_means: 'the key is left UNWRITTEN and the shipped default stands — a recorded decision, not an absence. Only `runtime:settings --unset <key>` removes a key that is already written.',
         note: 'This artifact is the decision menu, not a merge target: nothing here is pasted into a host config. Answer the step through the answers file, then apply the presented runtime:settings command and resume so a live re-probe confirms it.',
       }, stepId,
@@ -1481,7 +1621,13 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
       // (`--notify-kinds approval,idle`, `--unset notify_kinds`). persist's
       // parameter would otherwise overwrite it with the generic form, handing
       // the operator a command that does not contain their own answer.
-      step.apply_command ?? 'runtime:settings --apply --target user (agentic-plugins-owned config; --unset <key> removes one)',
+      // The judge's command carries THIS decision (`--notify-kinds approval,idle`,
+      // `--unset notify_kinds`). When it computed NONE — a partial decision, or
+      // one already observed — persist must not substitute a generic string:
+      // the §6.1.3 matrix gives a partial decision `pending` plus the undecided
+      // key names, and a prose-bearing `runtime:settings ... (<explanation>)` is
+      // not a command the operator can run (cross-host review, MINOR).
+      step.apply_command ?? null,
       '~/.agentic-plugins/config.toml',
       { guidance: `Back up ~/.agentic-plugins/config.toml before applying (copy it aside), run the presented \`runtime:settings\` command, then re-run \`runtime:bootstrap resume --latest-open\` so a live re-probe confirms the step. To undo, restore your backup — or re-answer this step, which re-renders the plan against the new decision (§6.1.3).` });
     } catch (err) {
@@ -1909,8 +2055,15 @@ async function readUserGlobalReaders(ctx) {
   // the fact (an env key set to anything wins over user-global at ADR-0045 §7's
   // resolution order); the VALUE is deliberately not captured — the step does
   // not judge it, and an env value is unclamped operator input.
+  // PRESENCE, matching `loadEntryBriefConfig`'s own rule: an env var that EXISTS
+  // with an empty or whitespace value reaches the validator and fails closed —
+  // it never falls through to the user layer as if absent. Testing `length > 0`
+  // made the comment beside it false and omitted a real override: with
+  // `AGENTIC_ENTRY_BRIEF=` exported, the entry-brief loader fail-closes while
+  // this step reported a clean satisfied posture and no shadow at all
+  // (both review lanes).
   const sessionEnvShadow = Object.fromEntries(
-    Object.entries(ENTRY_BRIEF_ENV_KEYS).map(([key, envName]) => [key, typeof ctx.env?.[envName] === 'string' && ctx.env[envName].length > 0]),
+    Object.entries(ENTRY_BRIEF_ENV_KEYS).map(([key, envName]) => [key, typeof ctx.env?.[envName] === 'string']),
   );
   // The override flag is derived from the SAME env the gather resolved
   // $CODEX_HOME with, so the reported provenance describes the bytes read.
@@ -2294,16 +2447,8 @@ async function runPlan(ctx, opts) {
     // sensible default and then rejected at the answers boundary. Marked here,
     // where both the proposal and the grammar are in scope; `seedProposals`
     // stays free of the bootstrap-only grammar it has no business importing.
-    for (const proposal of proposals?.proposals ?? []) {
-      const key = String(proposal.key).split('.').pop();
-      if (!VALUE_KEYS.has(key)) continue;
-      const verdict = validateValueForKey(key, proposal.value);
-      if (!verdict.ok) {
-        proposal.refused_by_interview = verdict.reason;
-        seededWarnings.push(`the seeded ${proposal.key} value is not answerable through the interview (${verdict.reason}); it is shown as the source machine's posture, not offered as a default.`);
-      }
-    }
-    seededProposals = proposals;
+    seededWarnings.push(...markUnanswerableProposals(proposals));
+    seededProposals = sanitizeProposals(proposals);
   }
 
   // `selection` is rebindable: an answers file carrying a plugin decline narrows it to
@@ -2347,6 +2492,9 @@ async function runPlan(ctx, opts) {
   let steps = deriveAndJudge(effective);
 
   const { choices, history } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'plan', expected: expectedNow, priorChoices: [] });
+  // Collected before `warnings` exists (it is composed below from several
+  // sources), then folded into it — a push into `warnings` here is a TDZ error.
+  const foldWarningsNow = [];
 
   // §3.3 — RE-JUDGE against the decisions this verb just recorded. Judgement
   // runs BEFORE applyAnswers (it has to: the answers grammar reads the judged
@@ -2356,11 +2504,13 @@ async function runPlan(ctx, opts) {
   // re-judge shape the file already uses after selection narrowing and after a
   // hook-attestation import, not a new mechanism.
   if (choices.some((row) => isValueStep(row.step_id) && classifyAnswer(row.answer).kind === 'set')) {
-    standingNow = foldStandingDecisions(choices).standing;
+    const foldedNow = foldStandingDecisions(choices, { documentMinor: READER_RUN_SCHEMA.minor });
+    standingNow = foldedNow.standing;
+    foldWarningsNow.push(...foldedNow.malformed, ...foldedNow.preDating, ...dualKindWarningsFor(standingNow));
     steps = deriveAndJudge(effective, steps);
   }
 
-  const warnings = [...softWarnings, ...seededWarnings];
+  const warnings = [...softWarnings, ...seededWarnings, ...foldWarningsNow];
 
   // §6.2 — a plugin decline creates a new effective `custom` selection. The retained
   // set is PERSISTED (below, through buildManifestShape) rather than recomputed by
@@ -2526,7 +2676,16 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // top afterwards (see its re-judge). Threading the same fold through every
   // judgement site is what stops `status` and `resume` disagreeing about which
   // value the operator stands behind.
-  const standing = foldStandingDecisions(manifest.choices).standing;
+  const documentMinor = parseRunSchemaMinor(manifest.schema)?.minor ?? null;
+  const folded = foldStandingDecisions(manifest.choices, { documentMinor });
+  const standing = folded.standing;
+  // §3.3 — a value row this runtime declined to honour is REPORTED, not
+  // swallowed. The fold returns them and every caller used to drop them on the
+  // floor, so a step whose recorded answer stopped parsing (a renamed key, a
+  // hand-edited manifest) reported "No decision is recorded" while `choices[]`
+  // visibly held a row for it — the operator was told to answer a step they had
+  // answered, with no explanation (code review, MEDIUM).
+  const foldWarnings = [...folded.malformed, ...folded.preDating, ...dualKindWarningsFor(standing)];
 
   let steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, standing, now: ctx.now });
 
@@ -2613,7 +2772,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // leaving the step judged against evidence the same verb has since superseded.
   // The previous-state map is deliberately NOT exported: that caller must build
   // it from ITS OWN current steps, since applyAnswers has mutated them since.
-  return { raw, probe, readers, steps, completion, selection, effective, standing, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, egressOptIn, selectionRestored };
+  return { raw, probe, readers, steps, completion, selection, effective, standing, foldWarnings, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, egressOptIn, selectionRestored };
 }
 
 /**
@@ -2729,7 +2888,7 @@ async function runStatus(ctx, opts) {
     steps,
     value_decisions: valueDecisionRows(reprobe.standing),
     probe,
-    warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe', consequence: 'The selection was re-derived and the affected steps re-judged.' }), ...(divergence ? [divergence.warning] : [])],
+    warnings: [...(picked.warnings ?? []), ...(reprobe.foldWarnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe', consequence: 'The selection was re-derived and the affected steps re-judged.' }), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -2765,7 +2924,7 @@ async function runVerify(ctx, opts) {
     steps,
     value_decisions: valueDecisionRows(reprobe.standing),
     probe,
-    warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe', consequence: 'The selection was re-derived and the affected steps re-judged.' }), ...(divergence ? [divergence.warning] : [])],
+    warnings: [...(picked.warnings ?? []), ...(reprobe.foldWarnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe', consequence: 'The selection was re-derived and the affected steps re-judged.' }), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -2986,7 +3145,7 @@ async function runResume(ctx, opts) {
   let selection = reprobe.selection;
   let effective = reprobe.effective;
   let expected = reprobe.expected;
-  const warnings = [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: "as of this run's re-probe", consequence: 'The selection was re-derived and the affected steps re-judged.' })];
+  const warnings = [...(picked.warnings ?? []), ...(reprobe.foldWarnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: "as of this run's re-probe", consequence: 'The selection was re-derived and the affected steps re-judged.' })];
 
   // `answeredEffective` is the per-step last-wins ANSWER map — a different thing from
   // the effective SELECTION above, and named apart so the two can never be confused
@@ -3017,18 +3176,20 @@ async function runResume(ctx, opts) {
   // PERSISTED ledger only, because the answers grammar needs a judged
   // applicability before it can refuse anything — so a value step answered in
   // THIS resume is still carrying the previous verdict at this point.
-  const standingNow = foldStandingDecisions([
+  const foldedResume = foldStandingDecisions([
     ...(Array.isArray(picked.manifest.choices) ? picked.manifest.choices : []),
     ...choices,
-  ]).standing;
-  // ADR-0047 §8 — recomputed from the STANDING ledger rather than emitted only
-  // while parsing an incoming answer, so the warning survives into every later
-  // status/verify instead of vanishing with the resume that produced it.
-  for (const [stepId, entry] of standingNow) {
-    if (stepId !== stepIds.configNotifyKinds() || entry.mode !== 'set') continue;
-    const warning = dualKindWarning(entry.decisions.get('notify_kinds'));
-    if (warning) warnings.push(warning);
-  }
+  ], {
+    // The document's OWN minor, not the reader's: resume stamps the current
+    // schema on the way out, but the rows it is folding were written under the
+    // minor the file still declares. Judging provenance against the post-write
+    // stamp would authorize exactly the pre-dating rows the guard exists to
+    // refuse.
+    documentMinor: parseRunSchemaMinor(picked.manifest.schema)?.minor ?? null,
+  });
+  const standingNow = foldedResume.standing;
+  warnings.push(...foldedResume.malformed, ...foldedResume.preDating);
+  warnings.push(...dualKindWarningsFor(standingNow));
 
   // §6.2 — a plugin decline (this resume's, or one a legacy run recorded before the
   // narrowing existed) creates the effective `custom` selection. Re-derive and
@@ -3103,7 +3264,16 @@ async function runResume(ctx, opts) {
     // The migration rows this resume may still add: one schema-migration row,
     // plus one injection row per registry-new step. Counted rather than assumed
     // so the preflight refuses BEFORE the write instead of at it.
-    const migrationHeadroom = migratingFromSchema ? 1 + expected.filter((step) => !(picked.manifest.steps ?? []).some((row) => row.id === step.id)).length : 0;
+    // The injection rows this resume may add. Counted UNCONDITIONALLY, because
+    // the mutate that writes them is unconditional: its own comment says a
+    // runtime upgrade can widen the expected-step set WITHOUT a schema bump, so
+    // gating the budget on `migratingFromSchema` under-counted exactly the
+    // same-minor registry growth this change is an instance of — the preflight
+    // would pass at the cap and the write would then fail, after Stage 8 had
+    // already run (code review, MEDIUM). Only the schema-migration row itself
+    // is conditional.
+    const injectedRows = expected.filter((step) => !(picked.manifest.steps ?? []).some((row) => row.id === step.id)).length;
+    const migrationHeadroom = (migratingFromSchema ? 1 : 0) + injectedRows;
     const overflow = [];
     if (priorChoiceCount + choices.length > LEDGER_MAX_ITEMS) {
       overflow.push(`choices would reach ${priorChoiceCount + choices.length} rows (cap ${LEDGER_MAX_ITEMS})`);
@@ -3711,7 +3881,7 @@ async function runAttest(ctx, opts) {
   // against it would be unreadable evidence. An OPEN legacy run migrates on
   // resume first; a terminal one needs a fresh run for 1.2 evidence.
   if (picked.manifest.schema !== RUN_SCHEMA_VERSION) {
-    return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [`Run ${picked.run.run_id} carries schema ${picked.manifest.schema}, not ${RUN_SCHEMA_VERSION} — attest records 1.2 evidence only. Resume an open legacy run to migrate it first; a terminal legacy run stays immutable history.`] } };
+    return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [`Run ${picked.run.run_id} carries schema ${picked.manifest.schema}, not ${RUN_SCHEMA_VERSION} — attest records CURRENT-schema evidence only. Resume an open legacy run to migrate it first; a terminal legacy run stays immutable history.`] } };
   }
 
   // NOT converged (§7, owner decision): the receipt door judges the run as the
@@ -4030,6 +4200,12 @@ async function runProfileSeed(ctx, opts) {
   if (proposals?.ok === false) {
     return { exitCode: EXIT.INVALID, report: { verb: 'profile seed', status: 'refused', diagnostics: proposals.refused ?? ['profile failed seed validation'] } };
   }
+  // The SAME pass `plan --profile-file` runs. Marking the unanswerable values on
+  // one entry point and not the other meant a valid profile carrying, say, an
+  // all-kinds `notify_kinds` was offered as a sensible default by this verb and
+  // flagged by the other (both review lanes) — the operator confirms it here and
+  // meets exit 40 at the answers boundary.
+  const seedWarnings = markUnanswerableProposals(proposals);
 
   const updated = await updateBootstrapRun({
     homeDir: ctx.homeDir,
@@ -4048,9 +4224,9 @@ async function runProfileSeed(ctx, opts) {
       verb: 'profile seed',
       run_id: picked.run.run_id,
       seeded_from: { profile_id: seeded.profileId, profile_hash: seeded.hash },
-      proposals,
+      proposals: sanitizeProposals(proposals),
       status: 'seeded',
-      warnings: seeded.warnings,
+      warnings: [...seeded.warnings, ...seedWarnings],
       diagnostics: updated.diagnostics,
     },
   };
@@ -4337,36 +4513,31 @@ export function renderText(report) {
   if (report.proposals) {
     const { proposals = [], notes = [], refused = [] } = report.proposals;
     for (const entry of refused) lines.push(`  ! refused: ${renderLine(entry)}`);
-    // §3.2 governs whether a value's CONTENT may cross artifact → report, and
-    // the profile's own schema answers it: `scalarField.value` is
-    // `maxLength`-only and `ruleArray.items` is `maxLength`-only
-    // (agentic-machine-profile-1.2), so neither is grammar-clamped and neither
-    // is disclosable. 1.2's session scalars ARE enum-clamped and so would be
-    // disclosable under a per-field rule — but no such rule exists here yet:
-    // `describeWithheld` decides by TYPE, so they are withheld with every other
-    // string. That is the conservative side of the open §3.2/§4.5 tension
-    // (docs/follow-ups.md), not a judgement that their values are sensitive.
+    // §3.2 governs whether a value's CONTENT may cross artifact → report. The
+    // profile's own schema is maxLength-only for `scalarField.value` and
+    // `ruleArray.items`, so the PROFILE cannot answer the question — but this
+    // runtime's config validators can, per key, and that is now the rule.
     //
-    // An earlier version of this block printed them verbatim in text AND in
-    // `--format json`, which turned a profile the operator may have written a
-    // secret into — §3.2's exact threat model, an artifact reaching terminal
-    // capture, CI logs, and agent context — into report content (Refine-verify
-    // peer, MAJOR).
+    // BOTH HALVES ARE REPAIRED, at report-BUILD time (`sanitizeProposals`). The
+    // history is worth keeping because each stage misled the next: an early
+    // version printed values verbatim in text AND `--format json`; the text half
+    // was repaired with `describeWithheld`; a comment then claimed the leak was
+    // closed, which it was not, because `--format json` serializes the report
+    // OBJECT and the renderer never touches it. Sanitizing the object is what
+    // finally closes it, and it closes `plan --profile-file` at the same time
+    // (cross-host review, MAJOR — that verb would otherwise have extended the
+    // open door rather than inherited a shut one).
     //
-    // ONLY THE TEXT HALF WAS EVER REPAIRED, and saying otherwise is how this
-    // comment misled a later reader (code review, LOW). `--format json`
-    // serializes the whole report, so `proposals[].value` still crosses raw —
-    // `permissions.claude.allow` rules included, which are precisely what the
-    // threat model above names. The §3.2 regression test exercises `renderText`
-    // only, which is why that door stayed open unnoticed. It is recorded in
-    // plugins/runtime/docs/follow-ups.md rather than widened into this change,
-    // because closing it is a decision about the §3.2/§4.5 tension below, not a
-    // repair with one obvious shape.
+    // The rule is PER-FIELD, which is the thing the previous comment correctly
+    // said was missing: a config key with a closed-set validator is
+    // grammar-clamped, so its value is disclosable — the 1.2 session scalars and
+    // the notify enums included. A key with no validator, and every rule array,
+    // still leaves as the §3.2 fallback: TYPE and LENGTH. So the operator now
+    // reads the values that are safe to read and learns the shape of the rest,
+    // rather than the shape of everything.
     //
-    // What crosses instead is the §3.2 fallback: TYPE and LENGTH. The operator
-    // learns which keys the interview will pre-fill, at what scope, and the
-    // shape of each — and reads the values in the profile file they already
-    // hold, which is deliberately a file read rather than a `--verbatim` flag.
+    // `value_disclosed` records which of the two happened, so a machine consumer
+    // does not have to infer it from the string.
     //
     // This leaves a REAL tension the owner should settle rather than the
     // renderer: §4.5 item 4 says to present every remaining value as a default
@@ -4385,7 +4556,13 @@ export function renderText(report) {
         proposal.scope ? `scope ${renderSafe(proposal.scope)}` : null,
         proposal.user_scope_only === true ? 'user-scope-only — never write this repo-side' : null,
       ].filter(Boolean);
-      lines.push(`  - default (confirm): ${renderSafe(proposal.key)} = ${describeWithheld(proposal.value)}${scopeBits.length > 0 ? ` [${scopeBits.join('; ')}]` : ''}`);
+      // `value` was sanitized at BUILD time (sanitizeProposals), so it is
+      // already either a grammar-clamped token or a withheld descriptor —
+      // re-describing it here would turn a legal enum back into
+      // "<string, 13 chars>" and lose the per-field disclosure the object now
+      // carries. `renderSafe` still applies: safe-to-disclose is not the same
+      // question as safe-to-render.
+      lines.push(`  - default (confirm): ${renderSafe(proposal.key)} = ${renderSafe(proposal.value)}${scopeBits.length > 0 ? ` [${scopeBits.join('; ')}]` : ''}`);
     }
     for (const note of notes) {
       lines.push(`  ! ${renderSafe(note.labelled)}: ${renderSafe(note.key)} — ${renderLine(note.note)}`);

@@ -50,9 +50,12 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    testify about). The standalone `attest` verb records the same testimony
    post-terminally without an answers file.
 3b. **Ask the two VALUE steps by presenting their menus, never from memory.**
-   `config.session` and `config.notify_kinds` (contract §6.1.3) are answered with
-   a value, not with accept/decline — `accept` against them is refused, because
-   it would record a go-ahead while leaving every key undecided. Each one renders
+   `config.session` and `config.notify_kinds` (contract §6.1.3) take a VALUE or a
+   `decline` — never `accept`, which is refused because it would record a
+   go-ahead while leaving every key undecided. `decline` is legal and is the
+   supported opt-out ("leave this config unmanaged, stop asking"); offer it.
+   Note it is NOT the same as choosing the shipped defaults — that is
+   `set:<key>=unset`, which records the decision instead of refusing to make one. Each one renders
    a decision-menu fragment listing every legal value, the shipped default, and
    what leaving a key unset means; surface that menu rather than reciting the
    options, and re-read it after any re-answer (a changed decision re-renders it).

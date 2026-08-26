@@ -97,10 +97,17 @@ export const VALUE_STEPS = Object.freeze({
     // user-global posture in ~/.agentic-plugins/config.toml, which is the ONLY
     // layer bootstrap reads (§1.1 keeps it off the repo-scoped seam).
     scope: 'user',
+    // The run-schema MINOR that introduced this step. Load-bearing for the
+    // legacy-provenance guard below: a document written under an older minor
+    // cannot legitimately carry a value answer for a step that did not exist
+    // then, so the fold must be able to ask "did this id exist yet?" rather
+    // than only "is this id a value step NOW?".
+    introducedInMinor: 3,
   }),
   [stepIds.configNotifyKinds()]: Object.freeze({
     keys: Object.freeze(['notify_kinds']),
     scope: 'user',
+    introducedInMinor: 3,
   }),
 });
 
@@ -128,12 +135,19 @@ export function classifyAnswer(answer) {
   return { kind: 'bare', payload: null };
 }
 
-// The value-side cap. `choices[].answer` is capped at 1024 by the run schema;
-// this is the same bound applied BEFORE any parsing effect, so an oversized
-// payload is refused rather than parsed and then rejected at persist time
-// (a resume can run a proof executor before the manifest validates, so "refused
-// late" is not the same as "refused").
-export const SET_PAYLOAD_MAX = 1024;
+// The run schema's cap on `choices[].answer`. The stored answer is the WHOLE
+// string including the `set:` prefix, which is what the schema measures.
+export const SET_ANSWER_MAX = 1024;
+
+// The value-side cap, DERIVED from the two facts above rather than restated.
+//
+// It was written as a flat 1024 and that was an off-by-prefix: the schema caps
+// the stored answer, so a payload at 1024 produced a 1028-character answer that
+// parsed cleanly here and was then rejected by `validateRun` at persist —
+// after `resume` had already run a proof executor (a real subprocess, and for
+// the egress kind a real network send). "Refused late" is not refused
+// (cross-host review, MAJOR; reproduced with a whitespace-padded valid payload).
+export const SET_PAYLOAD_MAX = SET_ANSWER_MAX - SET_ANSWER_PREFIX.length;
 
 /**
  * Parse one `set:` payload for one step. ATOMIC: any defect rejects the WHOLE
@@ -170,14 +184,26 @@ export function parseSetPayload(stepId, payload) {
   const decisions = new Map();
   const errors = [];
   const members = payload.split(';');
+  // The refusal is BOUNDED. A payload of nothing but separators produced one
+  // defect per member — measured at 1,025 defects and a 74,823-character
+  // refusal, which a UsageError carries past the report's own finding bounds
+  // and into terminal capture and CI logs (cross-host review, MINOR). The row
+  // is rejected atomically anyway, so the operator needs the FIRST few reasons
+  // and the total, never all of them.
+  const ERROR_CAP = 8;
+  let suppressed = 0;
+  const fail = (message) => {
+    if (errors.length < ERROR_CAP) errors.push(message);
+    else suppressed += 1;
+  };
   for (const member of members) {
     if (member.length === 0) {
-      errors.push(`step ${stepId}: the set: payload has an empty member (a stray ';')`);
+      fail(`step ${stepId}: the set: payload has an empty member (a stray ';')`);
       continue;
     }
     const eq = member.indexOf('=');
     if (eq <= 0) {
-      errors.push(`step ${stepId}: every set: member must be <key>=<value>; one member is not`);
+      fail(`step ${stepId}: every set: member must be <key>=<value>; one member is not`);
       continue;
     }
     const key = member.slice(0, eq);
@@ -186,11 +212,11 @@ export function parseSetPayload(stepId, payload) {
       // The key is named: it either matched a declared key (safe to echo) or it
       // did not, in which case naming the EXPECTED set is what makes the error
       // actionable while echoing nothing the operator typed.
-      errors.push(`step ${stepId}: unknown key in the set: payload — expected one of ${keys.join(', ')}`);
+      fail(`step ${stepId}: unknown key in the set: payload — expected one of ${keys.join(', ')}`);
       continue;
     }
     if (decisions.has(key)) {
-      errors.push(`step ${stepId}: key ${key} appears twice in one set: payload; an order-independent payload cannot carry two answers for one key`);
+      fail(`step ${stepId}: key ${key} appears twice in one set: payload; an order-independent payload cannot carry two answers for one key`);
       continue;
     }
     if (raw === UNSET) {
@@ -199,12 +225,13 @@ export function parseSetPayload(stepId, payload) {
     }
     const verdict = validateValueForKey(key, raw);
     if (!verdict.ok) {
-      errors.push(`step ${stepId}: ${key} — ${verdict.reason}`);
+      fail(`step ${stepId}: ${key} — ${verdict.reason}`);
       continue;
     }
     decisions.set(key, verdict.normalized);
   }
 
+  if (suppressed > 0) errors.push(`… and ${suppressed} further defect${suppressed === 1 ? '' : 's'} in the same payload (bounded at ${ERROR_CAP}; the row is rejected whole either way)`);
   if (errors.length > 0) return { ok: false, decisions: new Map(), errors };
   return { ok: true, decisions, errors: [] };
 }
@@ -315,21 +342,56 @@ export function dualKindWarning(csv) {
  *     guard: the 1.2 run schema never constrained `answer` vocabulary
  *     (`type:[string,null], maxLength:1024`), so an operator-edited or otherwise
  *     arbitrary `set:...` string can already sit in a valid pre-1.3 manifest.
- *     Value steps did not exist before 1.3, so no legacy row can name one, and
- *     honouring the prefix only there is what stops migration from retroactively
- *     turning meaningless bytes into policy. A malformed payload on a real value
- *     step is REPORTED and ignored, never obeyed and never thrown — stored rows
- *     are not revalidated on write, so a fold that threw would strand the run.
+ *     A row is honoured only when the DOCUMENT'S OWN minor is at least the minor
+ *     that introduced the step.
+ *
+ *     The weaker "value steps did not exist before 1.3, so no legacy row can name
+ *     one" was the original reasoning and was REFUTED (cross-host review, MAJOR):
+ *     it holds for rows an older RUNTIME writes, and a run file is
+ *     operator-editable data — the entire premise of the registry-authority rule.
+ *     `config.session` matches the same `$defs.stepId` pattern 1.2 already
+ *     accepted, so a hand-edited 1.2 manifest can carry the row, and resuming it
+ *     would have promoted those bytes to standing policy.
+ *
+ *     A malformed payload, and a row refused for provenance, are both RETURNED to
+ *     the caller (`malformed` / `preDating`) and surfaced as warnings — never
+ *     obeyed, and never thrown, because stored rows are not revalidated on write
+ *     and a fold that threw would strand the run.
  */
-export function foldStandingDecisions(choices) {
+export function foldStandingDecisions(choices, { documentMinor = null } = {}) {
   const standing = new Map();
   const malformed = [];
+  const preDating = [];
   let ordinal = -1;
   for (const row of Array.isArray(choices) ? choices : []) {
     ordinal += 1;
     const stepId = row?.step_id;
     const answer = row?.answer;
     if (typeof stepId !== 'string' || !isValueStep(stepId)) continue;
+    // PROVENANCE, not merely shape. The original guard asked only "is this a
+    // value step in the CURRENT registry", on the reasoning that value steps did
+    // not exist before 1.3 so no legacy row could name one. That reasoning was
+    // REFUTED (cross-host review, MAJOR): it holds for rows an older RUNTIME
+    // writes, and a run file is operator-editable data — which is the entire
+    // premise of the registry-authority rule. `config.session` matches the same
+    // `$defs.stepId` pattern 1.2 already accepted, so a hand-edited or hostile
+    // 1.2 manifest can carry the row today, and resuming it would promote those
+    // bytes to standing policy.
+    //
+    // So a value answer is honoured only when the document is at least the minor
+    // that introduced its step. A document with no readable minor is treated as
+    // older, which is the fail-closed direction: an unreadable provenance may
+    // not authorize a decision.
+    const introduced = VALUE_STEPS[stepId]?.introducedInMinor ?? Infinity;
+    if (!(typeof documentMinor === 'number' && documentMinor >= introduced)) {
+      // Written as "not (readable AND new enough)" rather than "older than", so
+      // an ABSENT or unparseable minor lands on the refusing side. An unreadable
+      // provenance may not authorize a decision, and the default parameter is
+      // the same value — so a call site that forgets to pass it loses value
+      // answers loudly (these warnings) instead of honouring unauthorized ones.
+      preDating.push(`choices[${ordinal}] carries a value answer for ${stepId}, which did not exist at the document's schema minor (${documentMinor ?? 'unreadable'}); it is ignored rather than promoted to policy (§3.3 legacy provenance)`);
+      continue;
+    }
     const classified = classifyAnswer(answer);
     if (classified.kind === 'set') {
       const parsed = parseSetPayload(stepId, classified.payload);
@@ -352,7 +414,7 @@ export function foldStandingDecisions(choices) {
     // boundary (`answerRefusal`), so there is no fold rule for it. A row that
     // predates the refusal cannot exist: value steps are 1.3-only.
   }
-  return { standing, malformed };
+  return { standing, malformed, preDating };
 }
 
 /**
@@ -385,10 +447,31 @@ export function compareStanding(stepId, entry, observedOf) {
     if (!entry?.decisions?.has(key)) continue;
     const want = entry.decisions.get(key);
     const got = observedOf(key);
-    const ok = want === UNSET ? got === null : got === want;
+    const ok = want === UNSET ? got === null : sameConfigValue(key, want, got);
     (ok ? matched : mismatched).push({ key, want, got });
   }
   return { matched, mismatched };
+}
+
+/**
+ * Are two persisted values the SAME configuration for this key?
+ *
+ * String equality for every key whose value is a single token, and SET equality
+ * for `notify_kinds` — because the runtime that consumes it parses a set, and
+ * answers are normalized to a sorted one. Comparing raw strings there made
+ * `idle,approval` a mismatch against a standing `approval,idle`: the step went
+ * to manual-follow-up and an apply command was presented for a rewrite that
+ * changes nothing the emitter can observe (cross-host review, MINOR). The
+ * comparison now asks the same question the consumer does.
+ */
+export function sameConfigValue(key, want, got) {
+  if (got === null || got === undefined) return false;
+  if (key !== 'notify_kinds') return got === want;
+  const a = parseKindsFilter(want);
+  const b = parseKindsFilter(got);
+  if (!a.ok || !b.ok) return got === want;
+  if (a.kinds === null || b.kinds === null) return a.kinds === b.kinds;
+  return a.kinds.size === b.kinds.size && [...a.kinds].every((kind) => b.kinds.has(kind));
 }
 
 /**
@@ -420,7 +503,10 @@ export function applyCommandFor(stepId, entry, observedOf) {
       if (got !== null) unsets.push(key);
       continue;
     }
-    if (got !== want) sets.push([key, want]);
+    // Same equivalence the judge uses — otherwise a semantically identical
+    // `notify_kinds` ordering would be "satisfied" and still get a rewrite
+    // command proposed beside it.
+    if (!sameConfigValue(key, want, got)) sets.push([key, want]);
   }
   if (sets.length === 0 && unsets.length === 0) return null;
   const parts = ['runtime:settings --apply --target user'];
