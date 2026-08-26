@@ -33,6 +33,37 @@ export function singleLine(value) {
 // embedded user:pass is gone before the email rule can match the host
 // half; password=/bearer rules use a capture group to keep the harmless
 // key name while dropping the secret value.
+// The CREDENTIAL half of `redactSecrets`, as a predicate.
+//
+// `redactSecrets` deliberately rewrites two classes: credentials (url userinfo,
+// provider tokens, AWS keys, `password=`, bearer) and things merely PII- or
+// digest-shaped (an email address, any 32+ hex run — which is every git sha, image
+// digest and dashless UUID). For SANITIZING they are alike: neither belongs in an
+// exported artifact verbatim.
+//
+// For REFUSING they are not, and conflating them was a measured regression. The
+// profile write gate refuses when a raw source value is secret-shaped, on the
+// documented principle that a token must not be quietly laundered — but under the
+// union predicate a permission rule mentioning `git show <40-hex>` or
+// `--author=someone@example.com` became a hard refusal the operator could only clear
+// by editing host config, while the sanitizer's redaction became unreachable for
+// exactly the class it was written to clean.
+//
+// So: refuse on this predicate, sanitize the rest.
+export function hasCredentialShape(value) {
+  const text = String(value ?? '');
+  return CREDENTIAL_PATTERNS.some((re) => re.test(text));
+}
+
+const CREDENTIAL_PATTERNS = Object.freeze([
+  /([a-z][a-z0-9+.-]*):\/\/[^/@\s]+@/i,
+  /\b(?:ghp|github_pat|xox[baprs])_[A-Za-z0-9_=:-]{12,}\b/,
+  /\b(?:sk|sk-proj|sk-ant)-[A-Za-z0-9_-]{12,}\b/,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
+  /(password)\s*[=:]\s*\S+/i,
+  /bearer\s+[\w.+=~/-]+/i,
+]);
+
 export function redactSecrets(value) {
   return String(value ?? '')
     .replace(/([a-z][a-z0-9+.-]*):\/\/[^/@\s]+@/gi, '$1://<redacted>@')

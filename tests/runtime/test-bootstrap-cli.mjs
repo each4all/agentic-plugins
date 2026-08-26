@@ -886,6 +886,97 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     ok(manifest.steps.every((step) => Array.isArray(step.blocked_by)), 'an empty blocked_by is written explicitly, never omitted');
   });
 
+  it('profile export refuses a secret-bearing permission rule — the RAW readers reach the gate, not the sanitized profile', async () => {
+    // A CLI-LEVEL test on purpose. The defect was in the WIRING, not the guard:
+    // `assertProfileWritable` always refused a secret-shaped source, but the export
+    // handed it `buildMachineProfile`'s OUTPUT as `original`, and the builder
+    // sanitizes permission rules on the way in. So the scrub inspected the
+    // sanitizer's own output and passed. A unit test on the guard passes with the
+    // defect present and pins nothing; only driving the real export can see it.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner });
+
+    // Plant a bearer token where the builder is known to sanitize.
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
+      permissions: {
+        defaultMode: 'acceptEdits',
+        allow: ['Bash(curl -H "Authorization: Bearer sk-live-abcdef0123456789abcdef0123456789")'],
+      },
+    }, null, 2)}\n`);
+
+    const refused = await run(['profile', 'export', '--name', 'leaky']);
+    strictEqual(refused.exitCode, EXIT.INVALID, 'a secret-shaped source refuses the write');
+    ok(
+      JSON.stringify(refused.report).includes('secret-shaped'),
+      `the refusal names the reason: ${JSON.stringify(refused.report).slice(0, 300)}`,
+    );
+    // And nothing landed — a refused profile must not be on disk.
+    await rejects(() => readFile(join(home, '.agentic-plugins', 'profiles', 'leaky.json'), 'utf8'));
+
+    // CONTROL: the same export with clean readers still writes. Without this the
+    // assertion above would also pass if export were broken for every input.
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
+      permissions: { defaultMode: 'acceptEdits', allow: ['Read'] },
+    }, null, 2)}\n`);
+    const ok2 = await run(['profile', 'export', '--name', 'clean']);
+    strictEqual(ok2.exitCode, EXIT.OK, 'a clean source still exports');
+    ok(JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'clean.json'), 'utf8')).schema.startsWith('agentic-machine-profile-'));
+  });
+
+  it('export is NOT gated on reader data the profile never carries', async () => {
+    // The over-correction control. `readers` also holds statuslineClaude /
+    // statuslineCodex / codexNotify / egressActivation — read for JUDGEMENT, never
+    // projected — and projectClaudeStatusline documents its raw command as possibly
+    // carrying secrets. Gating on the whole bundle refused exports over values the
+    // profile provably cannot contain (both review lanes, reproduced).
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner });
+
+    const settings = JSON.parse(await readFile(join(home, '.claude', 'settings.json'), 'utf8'));
+    settings.statusLine = { type: 'command', command: 'node /opt/sl.mjs --key sk-ant-abcdefghijklmnopqrstuvwx' };
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`);
+
+    const exported = await run(['profile', 'export', '--name', 'statusline-secret']);
+    strictEqual(exported.exitCode, EXIT.OK, `a secret in a NON-exported subtree must not block the write: ${JSON.stringify(exported.report).slice(0, 240)}`);
+    ok(!JSON.stringify(JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'statusline-secret.json'), 'utf8'))).includes('sk-ant-'), 'and the secret is nowhere in the artifact');
+  });
+
+  it('a laundered permission rule is refused, and the diagnostic names THAT field exactly', async () => {
+    // The narrowing must not weaken the guard it exists for. Asserting the exact
+    // locator is the point: a bare "contains secret-shaped" assertion would also be
+    // satisfied by some unrelated reader field failing, which is how a too-wide
+    // source passed review once already.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner });
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
+      permissions: { defaultMode: 'acceptEdits', allow: ['Bash(curl -H "Authorization: Bearer sk-live-abcdef0123456789abcdef0123456789")'] },
+    }, null, 2)}\n`);
+
+    const refused = await run(['profile', 'export', '--name', 'leaky2']);
+    strictEqual(refused.exitCode, EXIT.INVALID);
+    const text = JSON.stringify(refused.report);
+    ok(text.includes('$.claudePermission.allow[0]'), `the refusal names the lossy field exactly: ${text.slice(0, 300)}`);
+    await rejects(() => readFile(join(home, '.agentic-plugins', 'profiles', 'leaky2.json'), 'utf8'));
+  });
+
+  it('a benign PII-shaped rule is SANITIZED into the profile, not refused', async () => {
+    // §4.1 says permission arrays are "sanitized through permission-sanitize.mjs".
+    // Refusing on the sanitizer's own detector made that unreachable and turned an
+    // email or a git sha into a hard refusal.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner });
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
+      permissions: { defaultMode: 'acceptEdits', allow: ['Bash(git commit --author=ada@example.com:*)', 'Bash(git show 1234567890abcdef1234567890abcdef12345678:*)'] },
+    }, null, 2)}\n`);
+
+    const exported = await run(['profile', 'export', '--name', 'benign']);
+    strictEqual(exported.exitCode, EXIT.OK, `benign PII-shaped rules export: ${JSON.stringify(exported.report).slice(0, 240)}`);
+    const rules = JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'benign.json'), 'utf8')).permissions.claude.allow;
+    ok(rules.some((r) => r.includes('<redacted-email>')), `the email is redacted, not exported: ${JSON.stringify(rules)}`);
+    ok(rules.some((r) => r.includes('<redacted-hex>')), `the sha is redacted: ${JSON.stringify(rules)}`);
+    ok(!JSON.stringify(rules).includes('ada@example.com'), 'and the raw address never reaches the artifact');
+  });
+
   it('#4 + #30 — profile export → seed round-trips (id + hash recorded); overwrite is refused without --overwrite; path traversal is refused', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const spy = spySubprocess();

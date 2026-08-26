@@ -3380,6 +3380,28 @@ function basenameNoExt(path) {
   return base.replace(/\.json$/i, '');
 }
 
+// The builder inputs the artifact CANNOT be checked against — the pre-sanitize source
+// the §4.3 guard-1 scrub exists for, and nothing else.
+//
+// `buildMachineProfile` copies almost everything through verbatim (`field()` is
+// `value ?? null`), so a secret in `modelEffort` or `notify` lands IN the profile and
+// the profile-side half of the same guard catches it. Exactly one input is LOSSY:
+// the Claude permission arrays go through `sanitizeValue`, which rewrites a token to
+// `<redacted-token>`. That is the only place the artifact can be a laundered version
+// of its source, so it is the only place a source-side scan adds anything.
+//
+// Passing the whole `readUserGlobalReaders` bundle instead was measured as a real
+// regression, by both review lanes independently: it carries `statuslineClaude`,
+// `statuslineCodex`, `codexNotify` and `egressActivation`, which are read for
+// JUDGEMENT and never projected — and `projectClaudeStatusline` documents its raw
+// foreign command as possibly carrying secrets. Gating on them refused exports over
+// values the profile provably cannot contain, with no remedy but editing host config.
+// A guard must refuse what could leak, not everything the machine happens to hold.
+function lossyProfileInputs(readers) {
+  const claude = readers?.claudePermission ?? {};
+  return { claudePermission: { allow: claude.allow ?? [], ask: claude.ask ?? [], deny: claude.deny ?? [] } };
+}
+
 async function runProfileExport(ctx, opts) {
   const { pluginSet, validateProfile, profileSchema, validateRun } = await loadContext(ctx);
   const name = opts.name ?? 'default';
@@ -3465,7 +3487,21 @@ async function runProfileExport(ctx, opts) {
     name,
     profile: canonical,
     overwrite: opts.overwrite === true,
-    validate: profileWriteGate({ schemaValidate: validateProfile, original: profile, homeDir: ctx.homeDir }),
+    // `original` is the RAW READER BUNDLE, not the built profile.
+    //
+    // It was the built profile, and that made §4.3 guard 1 inert on the ONLY path
+    // that writes. `buildMachineProfile` sanitizes permission rules on the way in,
+    // so handing its output back as `original` had the scrub inspect the sanitizer's
+    // own output — exactly what `assertProfileWritable`'s docstring forbids.
+    // Reproduced: a rule carrying `Authorization: Bearer <token>` is rewritten to
+    // `Bearer <redacted-token>`, the gate returns ok and the profile is WRITTEN;
+    // passing the raw bundle refuses it. A profile the guard exists to refuse was
+    // being laundered past it.
+    //
+    // The READ path (`readProfileFile`) passing the profile itself stays correct and
+    // must not be "fixed" to match: a profile that arrived from another machine has
+    // no pre-sanitize source, and the docstring names that case explicitly.
+    validate: profileWriteGate({ schemaValidate: validateProfile, original: lossyProfileInputs(readers), homeDir: ctx.homeDir }),
     now: ctx.now,
   });
   if (!written?.written) {
