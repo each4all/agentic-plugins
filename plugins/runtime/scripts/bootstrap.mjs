@@ -83,6 +83,22 @@ import {
 import { inspectInstalledReceivers } from './lib/receiver-inventory.mjs';
 import { PROOF_STAGES, deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
 import {
+  SET_ANSWER_PREFIX,
+  UNSET,
+  applyCommandFor,
+  classifyAnswer,
+  compareStanding,
+  dualKindWarning,
+  foldStandingDecisions,
+  isValueStep,
+  parseSetPayload,
+  VALUE_STEPS,
+  undecidedKeys,
+  validateValueForKey,
+  valueKeyMenu,
+  valueStepKeys,
+} from './lib/answer-values.mjs';
+import {
   currentBoundVersions,
   egressProofOptedIn,
   importHookAttestation,
@@ -114,7 +130,7 @@ import {
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 // §6.1 Stage 4 — the declarable model/effort postures. Imported (not restated)
 // so the judge, the settings validator and the contract cannot drift apart.
-import { MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
+import { ENTRY_BRIEF_ENV_KEYS, MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
 import { FINDINGS_MAX_PER_ARTIFACT, loadSchema, makeValidator } from './lib/schema-validate.mjs';
 import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
@@ -184,6 +200,17 @@ class UsageError extends Error {
 // ---------------------------------------------------------------------------
 
 const RUN_SELECTORS = ['--run-id', '--latest', '--latest-open'];
+
+// The run schema's `maxItems` for `choices` and `history`. Duplicated here as a
+// PREFLIGHT bound, not as a second source of truth: the schema still refuses an
+// over-cap document, and a test pins the two together so this constant cannot
+// drift below the thing it is predicting.
+const LEDGER_MAX_ITEMS = 256;
+
+// Every config key the value interview owns, flattened — used to decide whether
+// a seeded profile value will have to pass the value grammar. Derived from
+// VALUE_STEPS so a key added to a family joins this set with it.
+const VALUE_KEYS = new Set(Object.values(VALUE_STEPS).flatMap((entry) => entry.keys));
 
 // Per-verb flag whitelists — the grammar block, verbatim. `--answers` is
 // accepted on exactly the two interview verbs and NO other (§3; test #34):
@@ -430,7 +457,24 @@ function boundExpected(previous, broadCandidates) {
   }
 }
 
-export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById = new Map(), now }) {
+/**
+ * ENV shadowing over the persisted user posture, for the keys that have an env
+ * override at all (ADR-0045 §7 gives `entry_brief`/`entry_brief_empty` one;
+ * nothing else in these families does).
+ *
+ * Surfaced rather than judged: the step certifies the PERSISTED posture, so an
+ * env override never makes it unsatisfied — it makes the satisfied posture not
+ * be the effective one, which is a different sentence and the operator is owed
+ * both. Repo shadowing has no equivalent here because §1.1 keeps bootstrap off
+ * the repo-scoped reader seam; it is a named boundary, not an oversight.
+ */
+function envShadowFor(keys, readers) {
+  const shadowed = readers?.sessionEnvShadow ?? null;
+  if (!shadowed) return [];
+  return keys.filter((key) => shadowed[key] === true);
+}
+
+export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById = new Map(), standing = new Map(), now }) {
   const observedAt = new Date(now).toISOString();
   const judged = new Map();
   const floors = Object.fromEntries(
@@ -550,6 +594,88 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         status: 'pending',
         apply_command: 'runtime:settings --apply --target user (model/effort defaults; agentic-plugins-owned config)',
         recovery: 'Either set an explicit model/effort coordinate, or declare the host-native posture with `runtime:settings --apply --target user --model-effort-fallback host-native` — leaving every coordinate unset is a legitimate choice (§6.1 Stage 4), but it has to be a recorded one.',
+      };
+    }
+    if (isValueStep(id)) {
+      // §6.1.3 — the VALUE-BEARING Stage-4 steps. One judge, two steps: the only
+      // difference is which reader family carries the keys, and hard-coding two
+      // near-copies is how they would drift.
+      //
+      // What this step certifies is the PERSISTED USER-GLOBAL POSTURE, never the
+      // effective value on this machine right now, and the distinction is not a
+      // technicality. `notify_kinds` and `session_capture` resolve repo → user →
+      // default at runtime and the entry-brief pair resolves env → user →
+      // default, so a repo or env layer can shadow a satisfied user posture. That
+      // is deliberate and is exactly what `projectSession`'s own contract says
+      // ("a profile records the PERSISTED user-global posture, never the
+      // effective value… this projection is not that loader"): §1.1 keeps
+      // bootstrap off the repo-scoped reader seam, and a machine bootstrap
+      // records the OPERATOR's default rather than a checkout's policy (§4.4).
+      // ENV shadowing IS surfaced below, because env is already in hand; repo
+      // shadowing is a named boundary, diagnosed by runtime:doctor.
+      const family = id === stepIds.configNotifyKinds() ? readers?.notify : readers?.session;
+      // An UNREADABLE config is not an absent one (§6: unknown is never
+      // satisfied) — the same rule the posture step above applies to the same
+      // file, which is the only file either of them reads.
+      if (family && family.source?.status !== 'readable' && family.source?.status !== 'missing') {
+        return { status: 'unknown', recovery: `The user-global runtime config could not be read (${family.source?.status ?? 'unreadable'}); this step's posture is unobservable until it is. Fix the file's permissions, then re-run.` };
+      }
+      const keys = valueStepKeys(id) ?? [];
+      // `null` = the key is not present in the file; `''` = present and blank.
+      // parseRuntimeConfigToml preserves that difference on purpose and UNSET is
+      // satisfied only by physical ABSENCE — a present blank is a byte the
+      // operator still has to remove.
+      const observedOf = (key) => family?.keys?.[key]?.value ?? null;
+      const entry = standing.get(id) ?? null;
+      const undecided = undecidedKeys(id, entry);
+      const shadow = envShadowFor(keys, readers);
+      const shadowNote = shadow.length > 0
+        ? ` An environment override is in force for ${shadow.join(', ')} — this step certifies the persisted user-global posture, and the env value wins at runtime (ADR-0045 §7).`
+        : '';
+      // A DECLINE recorded in the ledger is authoritative for a value step, and
+      // must be read here rather than left to the generic status restoration.
+      // The restoration keys on `previous.status === 'declined'`, and
+      // `applyAnswers` deliberately skips a step that is already SATISFIED — so
+      // declining a satisfied value step left no status trace anywhere, and this
+      // judge (seeing no `set:` decision) would have reported `pending` with
+      // "no decision is recorded" over a decision that plainly was.
+      if (entry?.mode === 'decline') {
+        return { status: 'declined', observed: 'left unmanaged by operator decision' };
+      }
+      if (!entry || entry.mode !== 'set') {
+        return {
+          status: 'pending',
+          apply_command: `runtime:bootstrap resume --latest-open --answers <file>  (answer set:${keys.map((k) => `${k}=<value|unset>`).join(';')} for ${id}; agentic-plugins-owned config)`,
+          recovery: `No decision is recorded for ${keys.join(', ')}. Answer the step with a \`set:\` value (or \`unset\` per key to keep the shipped default deliberately), or decline it to leave this config unmanaged.${shadowNote}`,
+        };
+      }
+      if (undecided.length > 0) {
+        return {
+          status: 'pending',
+          observed: `decided: ${[...entry.decisions.keys()].sort().join(', ')}`,
+          recovery: `Still undecided: ${undecided.join(', ')}. A partial answer is legal — name the remaining key(s) in a later \`set:\` and the decisions merge.${shadowNote}`,
+        };
+      }
+      const { mismatched } = compareStanding(id, entry, observedOf);
+      const summarize = (rows) => rows.map(({ key, want, got }) => `${key}: chose ${want}, observed ${got === null ? '<absent>' : got === '' ? '<blank>' : got}`).join('; ');
+      if (mismatched.length === 0) {
+        return {
+          status: 'satisfied',
+          observed: keys.map((key) => `${key}=${entry.decisions.get(key) === UNSET ? '<unset, observed absent>' : entry.decisions.get(key)}`).join(' '),
+          ...(shadow.length > 0 ? { recovery: shadowNote.trim() } : {}),
+        };
+      }
+      const applyCommand = applyCommandFor(id, entry, observedOf);
+      // pending vs manual-follow-up is the contract's own distinction: pending
+      // means not done, manual-follow-up means a HAND-OFF was rendered and is
+      // awaiting action. A previously rendered fragment is that hand-off, so the
+      // first pass (nothing rendered yet) is pending and every later one is
+      // manual-follow-up.
+      return {
+        status: previous?.fragment_pointer ? 'manual-follow-up' : 'pending',
+        observed: summarize(mismatched),
+        ...(applyCommand ? { apply_command: applyCommand } : {}),
+        recovery: `The recorded decision has not been observed on this machine yet. ${applyCommand ? `Run the apply command, then resume so a live re-probe confirms it.` : `Nothing needs writing for this decision — resume to re-observe.`}${shadowNote}`,
       };
     }
     if (id === stepIds.notifyConfigured()) {
@@ -955,6 +1081,31 @@ export function answerRefusal({ step, answer, verb, applicable }) {
   // defect is the answers that leave `declined: false` — `accept` and
   // `execute` — which no filter shows and no verb acts on. Refusing the whole
   // status would delete a contract-visible path to close an invisible one.
+  // §3.3 — the VALUE form and the value STEPS, refused symmetrically. Both
+  // directions leave no trace if allowed, which is the same defect the
+  // applicability rule below closes:
+  //
+  //   * `set:` against a step that owns no keys would be recorded in `choices[]`
+  //     and read by nothing — the fold honours it only on a value step (which is
+  //     also the legacy-provenance guard: a pre-1.3 manifest can carry arbitrary
+  //     `set:...` text because the 1.2 schema never constrained the vocabulary).
+  //   * `accept` against a value step is the one that would look like it worked.
+  //     `accept` means "go ahead, without changing step state", and a value step
+  //     has nothing to go ahead with — the value IS the decision. Recording it
+  //     would leave the step undecided while the ledger says the operator
+  //     answered. `execute`/`attest-receipt` are already refused above by their
+  //     own proof-only rules, so this is the whole of the remaining surface.
+  const classified = classifyAnswer(answer);
+  if (classified.kind === 'set') {
+    if (!isValueStep(step.id)) {
+      return `answer '${SET_ANSWER_PREFIX}…' targets the value-bearing config steps only (§3.3) — ${step.id} owns no config keys, so the value would be recorded and never read`;
+    }
+    const parsed = parseSetPayload(step.id, classified.payload);
+    if (!parsed.ok) return parsed.errors.join('; ');
+  } else if (isValueStep(step.id) && answer === 'accept') {
+    const keys = valueStepKeys(step.id) ?? [];
+    return `step ${step.id} carries a VALUE, so 'accept' is not the vocabulary for it (§3.3) — it would record a go-ahead while leaving ${keys.join(', ')} undecided. Answer '${SET_ANSWER_PREFIX}${keys.map((k) => `${k}=<value|${UNSET}>`).join(';')}', or decline the step to leave this config unmanaged`;
+  }
   if (applicable === false && (answer === 'accept' || answer === 'execute')) {
     return `step ${step.id} is not applicable to this run's selection (§6.1) — refusing to record '${answer}' against it, because no verb would act on it and no report would show it (decline it instead if you mean to record a refusal)`;
   }
@@ -989,6 +1140,23 @@ export function answerRefusal({ step, answer, verb, applicable }) {
 }
 
 /**
+ * Do two standing decisions carry the same per-key answers? Compared as a
+ * canonical sorted pair list rather than by identity, so a re-answer that
+ * reorders the payload or repeats a value is correctly recognized as changing
+ * nothing (the kind list is already normalized to a sorted set by
+ * `validateValueForKey`, so this comparison is total).
+ *
+ * A mode change (`decline` <-> `set`) counts as a change even when the decision
+ * map happens to match, because the render state a decline withdrew has to come
+ * back.
+ */
+function sameDecisions(a, b) {
+  if ((a?.mode ?? 'none') !== (b?.mode ?? 'none')) return false;
+  const flatten = (entry) => [...(entry?.decisions ?? new Map())].sort(([x], [y]) => x.localeCompare(y)).map(([k, v]) => `${k}=${v}`).join(';');
+  return flatten(a) === flatten(b);
+}
+
+/**
  * Apply an answers list to judged steps. An answer whose step_id is not an
  * expected step of the run is REJECTED (exit 40) rather than recorded — a stale
  * answers file cannot smuggle a step into a manifest the registry never derived
@@ -1008,7 +1176,7 @@ export function answerRefusal({ step, answer, verb, applicable }) {
  * The evidence-side preconditions (a current passed ack, not same-run-executed)
  * belong to the attestation pipeline, not the answers grammar.
  */
-export function applyAnswers({ steps, answers, now, selection = null, pluginSet = null, verb = 'resume', expected = null }) {
+export function applyAnswers({ steps, answers, now, selection = null, pluginSet = null, verb = 'resume', expected = null, priorChoices = [] }) {
   const at = new Date(now).toISOString();
   const byId = new Map(steps.map((s) => [s.id, s]));
   // The expectation this verb derived, keyed for the applicability question.
@@ -1040,8 +1208,13 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
     if (!step) {
       throw new UsageError(`answers[${answerOrdinal}] names a step this run does not expect (§6.1); refusing to record it. The id is withheld because an unmatched step id is free text — expected ids: ${[...byId.keys()].sort().join(', ')}`);
     }
-    if (!ANSWER_VALUES.includes(answer)) {
-      throw new UsageError(`answers[${answerOrdinal}] carries an answer for ${stepId} that is not one of ${ANSWER_VALUES.join('|')}; the value is withheld because it did not match the closed set`);
+    // §3.3 — the vocabulary is now the four BARE answers PLUS the value form.
+    // `ANSWER_VALUES` deliberately keeps naming exactly the bare four: the value
+    // form is a prefix family, which a list membership cannot express, so the
+    // shape question is asked by a predicate and the payload's legality is asked
+    // by `answerRefusal` below (one grammar, one enforcement point).
+    if (classifyAnswer(answer).kind !== 'set' && !ANSWER_VALUES.includes(answer)) {
+      throw new UsageError(`answers[${answerOrdinal}] carries an answer for ${stepId} that is not one of ${ANSWER_VALUES.join('|')} nor a '${SET_ANSWER_PREFIX}<key>=<value>' value answer; the value is withheld because it did not match the closed set`);
     }
     const refusal = answerRefusal({ step, answer, verb, applicable: applicableById.get(stepId) });
     if (refusal) throw new UsageError(refusal);
@@ -1065,6 +1238,55 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
       step.fragment_pointer = null;
       step.apply_command = null;
       step.desired = null;
+    }
+  }
+
+  // §3.3 — a VALUE answer's state transition. Two things must happen here and
+  // NEITHER can be left to re-judgement, which is why this pass exists rather
+  // than a comment saying "the next judge will sort it out":
+  //
+  //   1. LIFT A STANDING DECLINE. `judgeSteps` restores a recorded decline over
+  //      any non-satisfied observation for a declinable step, so a
+  //      `decline -> set:` sequence would re-judge straight back to `declined`
+  //      — and the reducer counts `declined` as RESOLVED, so the run could close
+  //      `complete` with the operator's new choice never applied. Clearing the
+  //      status here is what defeats that restoration on the next judge, because
+  //      the prior map is built from these same rows.
+  //   2. UN-FREEZE A CHANGED DECISION. `composeFragments.persist` returns early
+  //      while a `fragment_pointer` is present, so `set:X -> set:Y` would keep
+  //      X's fragment and X's apply command — the operator would be handed the
+  //      superseded instruction. The freeze exists to stop a SILENT rebinding
+  //      under the operator mid-apply; a new answer is the operator's own
+  //      explicit act, which is precisely the exception §7 already makes for
+  //      version drift ("changing the plan is an explicit act"). So a changed
+  //      decision clears the render fields and the next composeFragments
+  //      re-renders and re-freezes.
+  //
+  // The un-freeze is keyed on the decision actually CHANGING, not on the mere
+  // presence of a `set:` row: re-sending the same answers file is ordinary
+  // (resume takes one every time), and re-rendering identical bytes on every
+  // resume would burn the freeze for nothing.
+  const priorStanding = foldStandingDecisions(priorChoices).standing;
+  const nextStanding = foldStandingDecisions([...(Array.isArray(priorChoices) ? priorChoices : []), ...choices]).standing;
+  for (const [stepId, answer] of effective) {
+    if (classifyAnswer(answer).kind !== 'set') continue;
+    const step = byId.get(stepId);
+    if (!step) continue;
+    if (step.status === 'declined') {
+      history.push({ step_id: stepId, from: 'declined', to: 'pending', reason: 'operator recorded a value answer over a standing decline', at });
+      step.status = 'pending';
+    }
+    if (!sameDecisions(priorStanding.get(stepId), nextStanding.get(stepId))) {
+      if (step.fragment_pointer || step.apply_command || step.desired != null) {
+        history.push({ step_id: stepId, from: step.status, to: step.status, reason: 'value decision changed; the rendered hand-off was withdrawn so it can be re-rendered against the new decision', at });
+      }
+      step.fragment_pointer = null;
+      step.apply_command = null;
+      step.desired = null;
+      // The fragment lifecycle restarts with the render; an `invalidated` stamp
+      // is an independent fact about VERSION drift and is deliberately left
+      // standing (judgeSteps carries it separately).
+      step.fragment_applied = false;
     }
   }
 
@@ -1188,9 +1410,9 @@ function presentPluginManagement({ candidates, planHash }) {
 // Fragment composition (plan/resume only — the M1 verbs; R0 verbs re-present
 // recorded pointers without rendering). Every fragment carries the §10.3
 // backup/verify/manual-revert guidance next to its apply command.
-async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings, readersForFragments = null }) {
+async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings, readersForFragments = null, standingForFragments = null }) {
   const byId = new Map(steps.map((s) => [s.id, s]));
-  const persist = async (name, body, stepId, applyCommand, target, { desired = null } = {}) => {
+  const persist = async (name, body, stepId, applyCommand, target, { desired = null, guidance = null } = {}) => {
     const step = byId.get(stepId);
     if (!step || step.status === 'satisfied' || step.status === 'declined' || step.status === 'not-applicable') return;
     // FREEZE-AFTER-FIRST-RENDER (statusline peer G7): once a fragment and its
@@ -1217,8 +1439,55 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     // judgeSteps' egress recovery carries the activation procedure (which
     // env keys, placeholder-only, uid-less note) that must survive fragment
     // persistence alongside the §10.3 backup/verify guidance (Codex review).
-    step.recovery = step.recovery ? `${step.recovery} ${guidance103(target)}` : guidance103(target);
+    // §10.3 guidance is for an OPERATOR-applied fragment. A Stage-4 step is
+    // applied by `runtime:settings`, so "bootstrap never reverses an operator
+    // edit" describes the wrong actor there; those steps pass their own sentence.
+    const sentence = guidance ?? guidance103(target);
+    step.recovery = step.recovery ? `${step.recovery} ${sentence}` : sentence;
   };
+
+  // Stage 4 — the two VALUE-BEARING config steps (§6.1.3). SEPARATE fragments,
+  // one per step, and that is structural rather than stylistic: `persist` binds a
+  // fragment to exactly one step id and skips a declined step, so a shared
+  // fragment across two INDEPENDENTLY declinable steps could not be amended when
+  // one was declined and the other answered — the freeze keeps first renders.
+  //
+  // What these fragments carry is INTERVIEW material, not merge material. Unlike
+  // a Stage-5/6 fragment there is nothing for the operator to paste into a host
+  // file: `runtime:settings` performs the write. The frozen artifact is the menu
+  // the operator decides FROM — every legal value, what each does, the shipped
+  // default, and what leaving a key unset means — which is exactly the thing that
+  // must not be re-rendered underneath them mid-decision.
+  for (const stepId of [stepIds.configSession(), stepIds.configNotifyKinds()]) {
+    try {
+      const step = byId.get(stepId);
+      if (!step) continue;
+      const keys = valueStepKeys(stepId) ?? [];
+      const entry = standingForFragments?.get(stepId) ?? null;
+      await persist(`config-${stepId.split('.').pop().replace(/_/g, '-')}`, {
+        requested: true,
+        step_id: stepId,
+        applied_by: 'agentic-config',
+        target: '~/.agentic-plugins/config.toml',
+        answer_grammar: `${SET_ANSWER_PREFIX}${keys.map((k) => `${k}=<value|${UNSET}>`).join(';')}`,
+        keys: keys.map((key) => valueKeyMenu(key)),
+        recorded_decision: entry?.mode === 'set'
+          ? Object.fromEntries([...entry.decisions].sort(([a], [b]) => a.localeCompare(b)))
+          : null,
+        unset_means: 'the key is left UNWRITTEN and the shipped default stands — a recorded decision, not an absence. Only `runtime:settings --unset <key>` removes a key that is already written.',
+        note: 'This artifact is the decision menu, not a merge target: nothing here is pasted into a host config. Answer the step through the answers file, then apply the presented runtime:settings command and resume so a live re-probe confirms it.',
+      }, stepId,
+      // The judge already computed the command that carries THIS decision
+      // (`--notify-kinds approval,idle`, `--unset notify_kinds`). persist's
+      // parameter would otherwise overwrite it with the generic form, handing
+      // the operator a command that does not contain their own answer.
+      step.apply_command ?? 'runtime:settings --apply --target user (agentic-plugins-owned config; --unset <key> removes one)',
+      '~/.agentic-plugins/config.toml',
+      { guidance: `Back up ~/.agentic-plugins/config.toml before applying (copy it aside), run the presented \`runtime:settings\` command, then re-run \`runtime:bootstrap resume --latest-open\` so a live re-probe confirms the step. To undo, restore your backup — or re-answer this step, which re-renders the plan against the new decision (§6.1.3).` });
+    } catch (err) {
+      warnings.push(`the ${stepId} decision menu could not be built: ${err?.message ?? String(err)}`);
+    }
+  }
 
   // Stage 5 — notification (Codex notify= + tui fragments via the pure builder).
   // Each builder gets a run id in ITS OWN family's grammar — the sections carry
@@ -1634,6 +1903,15 @@ async function readUserGlobalReaders(ctx) {
   // `session` are three families of ONE file, and a second read could observe an
   // atomic replacement between them.
   const session = projectSession(runtimeConfigSnapshot);
+  // §6.1.3 — which session keys are currently overridden by env. Read from the
+  // SAME env the rest of this reader resolves paths with, so the reported
+  // shadowing describes the process the judge is running in. Presence alone is
+  // the fact (an env key set to anything wins over user-global at ADR-0045 §7's
+  // resolution order); the VALUE is deliberately not captured — the step does
+  // not judge it, and an env value is unclamped operator input.
+  const sessionEnvShadow = Object.fromEntries(
+    Object.entries(ENTRY_BRIEF_ENV_KEYS).map(([key, envName]) => [key, typeof ctx.env?.[envName] === 'string' && ctx.env[envName].length > 0]),
+  );
   // The override flag is derived from the SAME env the gather resolved
   // $CODEX_HOME with, so the reported provenance describes the bytes read.
   // Provenance comes from the GATHER that produced the bytes, not from a second
@@ -1714,7 +1992,7 @@ async function readUserGlobalReaders(ctx) {
   } else {
     codexNotify = { readable: false, present: false, argv: null, expected: codexNotifyExpected, tuiNotifications: { ...NO_TUI_NOTIFICATIONS } };
   }
-  return { modelEffort, notify, session, claudePermission, codexPermission, egress, egressActivation, codexNotify, statuslineClaude, statuslineCodex };
+  return { modelEffort, notify, session, sessionEnvShadow, claudePermission, codexPermission, egress, egressActivation, codexNotify, statuslineClaude, statuslineCodex };
 }
 
 // ADR-0048 §4 — CONTROL-PLANE child environments are scrubbed at the point of
@@ -1799,6 +2077,21 @@ function resolveSelection({ opts, pluginSet, seededSelection = null }) {
  */
 function priorJudgeMapOf(stepList) {
   return new Map((stepList ?? []).map((s) => {
+    // A LEGACY-MIGRATION strip, and the rationale belongs here rather than at a
+    // call site: a pre-split run carried the Codex notification fragment on
+    // `notify.configured` (the local-policy step); post-split it belongs to
+    // `notify.codex.configured`, and carrying the stale pointer forward would
+    // keep presenting the Codex merge command on the wrong step — and could mark
+    // that unrelated fragment applied when the LOCAL policy satisfies (Codex
+    // review MINOR). composeFragments re-renders it onto the right step on the
+    // same resume.
+    //
+    // The comment was written at the ONE call site this was inlined in and was
+    // left behind when the helper was extracted (`b55ce53`), which left an
+    // unconditional, permanently-firing strip reading as if it had no reason.
+    // It is restored here because the rule is a property of the helper, not of
+    // any caller: it fires on every run forever, so a future fragment attached
+    // to `notify.configured` would vanish on reprobe with nothing to explain it.
     if (s.id === stepIds.notifyConfigured() && (s.fragment_pointer || s.apply_command)) {
       const { fragment_pointer, apply_command, fragment_applied, ...rest } = s;
       return [s.id, rest];
@@ -1892,6 +2185,30 @@ function selectionNarrowedHistoryRow({ before, after, dropped, at }) {
   };
 }
 
+/**
+ * The report-side projection of the standing value decisions (§3.3).
+ *
+ * Every value is reconstructed from the fold's validated map rather than lifted
+ * from the ledger's raw `answer` string, so the §3.2 disclosure invariant holds:
+ * a grammar-clamped value crosses, unclamped operator text never does.
+ */
+function valueDecisionRows(standing) {
+  const rows = [];
+  for (const stepId of Object.keys(VALUE_STEPS)) {
+    const entry = standing?.get(stepId) ?? null;
+    if (!entry || entry.mode === 'none') continue;
+    rows.push({
+      step_id: stepId,
+      mode: entry.mode,
+      decisions: entry.mode === 'set'
+        ? Object.fromEntries([...entry.decisions].sort(([a], [b]) => a.localeCompare(b)))
+        : null,
+      at: entry.at ?? null,
+    });
+  }
+  return rows;
+}
+
 function buildManifestShape({ selection, probe, steps, choices, history, completion, planHash, seededFrom }) {
   return {
     schema: RUN_SCHEMA_VERSION,
@@ -1920,7 +2237,7 @@ function buildManifestShape({ selection, probe, steps, choices, history, complet
 // ---------------------------------------------------------------------------
 
 async function runPlan(ctx, opts) {
-  const { pluginSet, validateRun } = await loadContext(ctx);
+  const { pluginSet, validateRun, validateProfile } = await loadContext(ctx);
 
   // Concurrency (§10.2): a second plan while a run is open is rejected, naming
   // the open run's id. createBootstrapRun re-checks under the family lock; this
@@ -1944,12 +2261,49 @@ async function runPlan(ctx, opts) {
 
   let seededSelection = null;
   let seededFrom = null;
+  let seededProposals = null;
   const seededWarnings = [];
   if (opts.profile_file) {
     const seeded = await readProfileFile(ctx, opts.profile_file);
     seededSelection = seeded.profile.selection;
     seededFrom = { profile_id: seeded.profileId, profile_hash: seeded.hash };
     seededWarnings.push(...seeded.warnings);
+    // §3 says "`plan --profile-file` is sugar for `plan` immediately followed by
+    // `seed`", and only HALF of that was true: this path recorded the
+    // `seeded_from` linkage and dropped every per-key proposal on the floor,
+    // because `seedProposals` was called by the standalone `profile seed` verb
+    // and nowhere else. The plan report had no `proposals` key at all, so a
+    // profile carried to a new machine seeded its plugin SELECTION and none of
+    // its configuration — which is most of what a machine profile is for.
+    //
+    // §4.5.4 is preserved exactly: these are DEFAULTS that pre-fill the
+    // interview, never decisions. Nothing here writes a `choices[]` row; the
+    // operator still answers, and `seedProposals` still does the safety grading
+    // that refuses to propose an unsafe source posture as a default.
+    const proposals = seedProposals({ profile: seeded.profile, validate: validateProfile });
+    if (proposals?.ok === false) {
+      return {
+        exitCode: EXIT.INVALID,
+        report: { verb: 'plan', status: 'refused', reason: 'profile-rejected', diagnostics: proposals.refused ?? ['profile failed seed validation'] },
+      };
+    }
+    // A seeded value is a DEFAULT the operator confirms, and confirming it
+    // produces a `set:` answer — so a profile value the value grammar refuses
+    // (an all-kinds `notify_kinds`, say, which a 1.2 profile can carry because
+    // the profile schema types it as a bare scalar) would be presented as a
+    // sensible default and then rejected at the answers boundary. Marked here,
+    // where both the proposal and the grammar are in scope; `seedProposals`
+    // stays free of the bootstrap-only grammar it has no business importing.
+    for (const proposal of proposals?.proposals ?? []) {
+      const key = String(proposal.key).split('.').pop();
+      if (!VALUE_KEYS.has(key)) continue;
+      const verdict = validateValueForKey(key, proposal.value);
+      if (!verdict.ok) {
+        proposal.refused_by_interview = verdict.reason;
+        seededWarnings.push(`the seeded ${proposal.key} value is not answerable through the interview (${verdict.reason}); it is shown as the source machine's posture, not offered as a default.`);
+      }
+    }
+    seededProposals = proposals;
   }
 
   // `selection` is rebindable: an answers file carrying a plugin decline narrows it to
@@ -1964,6 +2318,11 @@ async function runPlan(ctx, opts) {
   const answers = opts.answers ? await readAnswersFile(opts.answers) : [];
   const egressProofRequested = answers.some((a) => a.step_id === stepIds.proofEgressProviderAck());
 
+  // §3.3 — the standing decisions this judge sees. `plan` starts a NEW run, so
+  // the only ledger is this verb's own answers; it is empty on the first pass
+  // and re-folded after applyAnswers below (see the re-judge there for why a
+  // single pass cannot be correct).
+  let standingNow = new Map();
   const deriveAndJudge = (effectiveSel, previousSteps = null) => {
     const derived = deriveExpectedSteps({ pluginSet, selection: effectiveSel, egressProofRequested });
     expectedNow = derived;
@@ -1975,9 +2334,10 @@ async function runPlan(ctx, opts) {
       probe,
       raw,
       pluginSet,
-      readers,
       hookVerdict: verdict,
+      standing: standingNow,
       ...(previousSteps ? { previousById: priorJudgeMapOf(previousSteps) } : {}),
+      readers,
       now: ctx.now,
     });
   };
@@ -1986,7 +2346,19 @@ async function runPlan(ctx, opts) {
   let effective = effectiveSelection({ pluginSet, selection, steps: [] });
   let steps = deriveAndJudge(effective);
 
-  const { choices, history } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'plan', expected: expectedNow });
+  const { choices, history } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'plan', expected: expectedNow, priorChoices: [] });
+
+  // §3.3 — RE-JUDGE against the decisions this verb just recorded. Judgement
+  // runs BEFORE applyAnswers (it has to: the answers grammar reads the judged
+  // applicability), so a first pass necessarily judges a value step against the
+  // PREVIOUS standing decision — on `plan`, against none at all. Persisting that
+  // would record a status the observation never matched. This is the same
+  // re-judge shape the file already uses after selection narrowing and after a
+  // hook-attestation import, not a new mechanism.
+  if (choices.some((row) => isValueStep(row.step_id) && classifyAnswer(row.answer).kind === 'set')) {
+    standingNow = foldStandingDecisions(choices).standing;
+    steps = deriveAndJudge(effective, steps);
+  }
 
   const warnings = [...softWarnings, ...seededWarnings];
 
@@ -2031,7 +2403,7 @@ async function runPlan(ctx, opts) {
 
   // Fragments are rendered AFTER the run exists (they live inside it); the
   // manifest is then updated with the pointers under the family lock.
-  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: created.run_id, now: ctx.now, steps, warnings, readersForFragments: readers });
+  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: created.run_id, now: ctx.now, steps, warnings, readersForFragments: readers, standingForFragments: standingNow });
   const updated = await updateBootstrapRun({
     homeDir: ctx.homeDir,
     repoRoot: ctx.cwd,
@@ -2057,6 +2429,9 @@ async function runPlan(ctx, opts) {
     steps,
     stage0,
     plugin_management: presentPluginManagement({ candidates, planHash }),
+    value_decisions: valueDecisionRows(standingNow),
+    ...(seededFrom ? { seeded_from: seededFrom } : {}),
+    ...(seededProposals ? { proposals: seededProposals } : {}),
     probe,
     warnings,
     diagnostics: created.diagnostics,
@@ -2146,7 +2521,14 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // right step on this same resume.
   const priorForJudge = priorJudgeMapOf(invalidation.steps);
 
-  let steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, now: ctx.now });
+  // §3.3 — the PERSISTED standing decisions. Every verb that re-probes reads the
+  // ledger the run already carries; `resume` layers its own incoming answers on
+  // top afterwards (see its re-judge). Threading the same fold through every
+  // judgement site is what stops `status` and `resume` disagreeing about which
+  // value the operator stands behind.
+  const standing = foldStandingDecisions(manifest.choices).standing;
+
+  let steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, standing, now: ctx.now });
 
   // SECOND PASS on the permission fragment, for the same reason the selection
   // narrowing re-derives further down: a judgement INPUT changed during the
@@ -2210,7 +2592,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     });
     const graph = validateStepGraph(expected);
     if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
-    steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, now: ctx.now });
+    steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, standing, now: ctx.now });
   }
   const receiptRow = proofRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
   const ackRow = proofRead.records.find((r) => r.kind === 'egress-provider-ack') ?? null;
@@ -2231,7 +2613,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // leaving the step judged against evidence the same verb has since superseded.
   // The previous-state map is deliberately NOT exported: that caller must build
   // it from ITS OWN current steps, since applyAnswers has mutated them since.
-  return { raw, probe, readers, steps, completion, selection, effective, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, egressOptIn, selectionRestored };
+  return { raw, probe, readers, steps, completion, selection, effective, standing, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, egressOptIn, selectionRestored };
 }
 
 /**
@@ -2345,6 +2727,7 @@ async function runStatus(ctx, opts) {
     ...(divergence ? { effective_selection: divergence.effective_selection } : {}),
     completion,
     steps,
+    value_decisions: valueDecisionRows(reprobe.standing),
     probe,
     warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe', consequence: 'The selection was re-derived and the affected steps re-judged.' }), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
@@ -2380,6 +2763,7 @@ async function runVerify(ctx, opts) {
     proofs: completion.proofs,
     hook_attestation: completion.hook_attestation,
     steps,
+    value_decisions: valueDecisionRows(reprobe.standing),
     probe,
     warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe', consequence: 'The selection was re-derived and the affected steps re-judged.' }), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
@@ -2622,7 +3006,29 @@ async function runResume(ctx, opts) {
     pluginSet,
     verb: 'resume',
     expected,
+    // §3.3 — the ledger this resume's answers are layered onto, so the value pass
+    // can tell a CHANGED decision (which un-freezes the rendered hand-off) from a
+    // re-sent identical answers file (which must not).
+    priorChoices: Array.isArray(picked.manifest.choices) ? picked.manifest.choices : [],
   });
+
+  // §3.3 — the standing decisions AFTER this resume's answers, folded once and
+  // reused by every judgement below. The reprobe above judged against the
+  // PERSISTED ledger only, because the answers grammar needs a judged
+  // applicability before it can refuse anything — so a value step answered in
+  // THIS resume is still carrying the previous verdict at this point.
+  const standingNow = foldStandingDecisions([
+    ...(Array.isArray(picked.manifest.choices) ? picked.manifest.choices : []),
+    ...choices,
+  ]).standing;
+  // ADR-0047 §8 — recomputed from the STANDING ledger rather than emitted only
+  // while parsing an incoming answer, so the warning survives into every later
+  // status/verify instead of vanishing with the resume that produced it.
+  for (const [stepId, entry] of standingNow) {
+    if (stepId !== stepIds.configNotifyKinds() || entry.mode !== 'set') continue;
+    const warning = dualKindWarning(entry.decisions.get('notify_kinds'));
+    if (warning) warnings.push(warning);
+  }
 
   // §6.2 — a plugin decline (this resume's, or one a legacy run recorded before the
   // narrowing existed) creates the effective `custom` selection. Re-derive and
@@ -2669,8 +3075,56 @@ async function runResume(ctx, opts) {
       readers: reprobe.readers,
       hookVerdict: hookVerdictNow,
       previousById: priorJudgeMapOf(steps),
+      standing: standingNow,
       now: ctx.now,
     });
+  }
+
+  // LEDGER CAPACITY PREFLIGHT — asked HERE, before any effect, because the
+  // effects below are not undoable and the validation that would catch an
+  // over-cap ledger runs after them.
+  //
+  // `choices` and `history` are both `maxItems: 256` and NOTHING prunes either:
+  // every answer row is appended deliberately, so the run stays replayable from
+  // its own manifest. That was a footnote while answers were rare
+  // accept/decline rows; a VALUE interview makes corrections ordinary (a
+  // re-answer is one more row every time), so the cap becomes reachable in
+  // normal use.
+  //
+  // The failure this closes is specific and bad: a resume carrying BOTH a value
+  // answer and an `execute` would run the proof executor — a real doctor
+  // subprocess, and for the egress kind a real network send — and only then fail
+  // the manifest write, leaving the effect performed and unrecorded. Refusing
+  // first costs an operator one diagnostic; refusing last costs them a proof
+  // they cannot see.
+  {
+    const priorChoiceCount = Array.isArray(picked.manifest.choices) ? picked.manifest.choices.length : 0;
+    const priorHistoryCount = Array.isArray(picked.manifest.history) ? picked.manifest.history.length : 0;
+    // The migration rows this resume may still add: one schema-migration row,
+    // plus one injection row per registry-new step. Counted rather than assumed
+    // so the preflight refuses BEFORE the write instead of at it.
+    const migrationHeadroom = migratingFromSchema ? 1 + expected.filter((step) => !(picked.manifest.steps ?? []).some((row) => row.id === step.id)).length : 0;
+    const overflow = [];
+    if (priorChoiceCount + choices.length > LEDGER_MAX_ITEMS) {
+      overflow.push(`choices would reach ${priorChoiceCount + choices.length} rows (cap ${LEDGER_MAX_ITEMS})`);
+    }
+    if (priorHistoryCount + history.length + migrationHeadroom > LEDGER_MAX_ITEMS) {
+      overflow.push(`history would reach ${priorHistoryCount + history.length + migrationHeadroom} rows (cap ${LEDGER_MAX_ITEMS})`);
+    }
+    if (overflow.length > 0) {
+      return {
+        exitCode: EXIT.INVALID,
+        report: {
+          verb: 'resume',
+          status: 'refused',
+          reason: 'ledger-capacity',
+          diagnostics: [
+            `Run ${picked.run.run_id} cannot record this resume: ${overflow.join('; ')}. The ledgers are append-only by design — the run is replayable from its own manifest, so nothing is pruned — and nothing was executed, written, or rendered by this verb.`,
+            'Recovery: close this run (`abandon`) and start a fresh `plan`, carrying the decisions forward in the answers file. A run that has accumulated this many rows has a history worth keeping as its own artifact rather than extending.',
+          ],
+        },
+      };
+    }
   }
 
   // Stage 8 — execute the proofs the operator explicitly approved (answer
@@ -3017,6 +3471,12 @@ async function runResume(ctx, opts) {
     // PARAMETER rather than a closed-over binding: the second pass may recompute
     // it, and a closure read at call time is a timing detail nobody should have to
     // hold in their head to know which verdict a judgement used.
+    // §3.3 — `standingNow` is the ledger INCLUDING this resume's answers, and
+    // this unconditional pass is what makes a value answer correct: judgement
+    // necessarily runs before `applyAnswers` (the grammar needs a judged
+    // applicability), so every earlier pass saw the previous standing decision.
+    // The same reasoning the unconditional-ness above rests on applies to values
+    // exactly as it does to declines.
     const judgeFinal = (expectation, hookVerdict) => judgeSteps({
       expected: expectation,
       probe: finalProbe,
@@ -3025,6 +3485,7 @@ async function runResume(ctx, opts) {
       readers: finalReaders,
       hookVerdict,
       previousById: previousForFinalJudge,
+      standing: standingNow,
       now: ctx.now,
     });
     const fragmentAppliedBefore = permissionFragmentAppliedFrom(steps);
@@ -3150,7 +3611,7 @@ async function runResume(ctx, opts) {
   // configuration the operator is about to apply, so composing it from the
   // pre-execution snapshot would hand them a command built around reader state
   // the same resume has already superseded.
-  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: picked.run.run_id, now: ctx.now, steps, warnings, readersForFragments: finalReaders });
+  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: picked.run.run_id, now: ctx.now, steps, warnings, readersForFragments: finalReaders, standingForFragments: standingNow });
 
   // The migration row derives from the LOCKED read inside mutate (Codex review
   // MAJOR): deciding it from the pre-lock snapshot let two concurrent resumes
@@ -3206,6 +3667,7 @@ async function runResume(ctx, opts) {
     selection,
     completion,
     steps,
+    value_decisions: valueDecisionRows(standingNow),
     stage0,
     // The SAME probe the steps above were judged against, the reduction was
     // computed from, and the manifest now stores — one machine state per
@@ -3778,7 +4240,7 @@ function renderReasonLines(reasons, indent, label) {
   const supplied = Array.isArray(reasons) ? reasons : [];
   // Blank and control-only entries are not rendered — a line reading
   // `evidence: ` says nothing. They are still COUNTED: `maxLength` with no
-  // `minLength` makes `""` and `"   "` schema-valid (runtime-bootstrap-run-1.2),
+  // `minLength` makes `""` and `"   "` schema-valid (runtime-bootstrap-run-1.3),
   // so filtering them before the accounting let a record hold two entries, show
   // one, and claim nothing was omitted (Refine-verify peer, MAJOR). The count
   // below is taken against everything the record held, not against what
@@ -4070,6 +4532,21 @@ export function renderText(report) {
     lines.push(`- plugin management (presented, never executed here — §1.6):`);
     for (const action of report.plugin_management.actions) lines.push(`  - ${action.host}: ${renderSafe(action.command)}${action.note ? ` (${renderSafe(action.note)})` : ''}`);
     lines.push(`  - run: ${renderSafe(report.plugin_management.presented_command)}`);
+  }
+  // §3.3 — the STANDING VALUE DECISIONS, rendered as their own block.
+  //
+  // The step loop below skips `satisfied` rows, so a value step that succeeded —
+  // including the `unset` posture, whose whole point is that the config carries
+  // nothing — would otherwise disappear from text entirely: the operator's
+  // decision would be invisible in exactly the state where it worked.
+  //
+  // Reconstructed CANONICALLY from the fold, never copied from
+  // `choices[].answer`. The raw answer is a maxLength-only string (§3.2: a field
+  // the grammar does not clamp is not disclosable), while every value here has
+  // passed a closed-set validator, so what is printed is this runtime's own
+  // vocabulary rather than operator input echoed back.
+  for (const row of report.value_decisions ?? []) {
+    lines.push(`- [stage 4] ${row.step_id}: ${row.mode}${row.decisions ? ` — ${Object.entries(row.decisions).map(([k, v]) => `${k}=${renderSafe(v)}`).join(' ')}` : ''}`);
   }
   for (const step of report.steps ?? []) {
     if (['satisfied', 'not-applicable'].includes(step.status)) continue;

@@ -638,7 +638,17 @@ export const PACKAGED_SCHEMA_FILES = Object.freeze({
   // kind-discriminated exclusivity lives in lib/evidence-contract.mjs because the
   // validator has no oneOf) and the OPTIONAL completion.egress_receipt_attestation
   // verdict. Every valid 1.1 document still validates against this reader.
-  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.2.json',
+  // 1.3 (§3.3, the value-carrying interview): NO JSON shape change at all — the
+  // `set:<key>=<value|unset>` answer rides the existing bounded `answer` string
+  // and the two new steps ride the existing `stepId` pattern. The minor bumps
+  // for a semantic reason rather than a structural one, and that is exactly the
+  // fence it needs to arm: `resume` and `profile seed` refuse a FUTURE minor, so
+  // a 1.2 runtime cannot mutate a run whose registry it cannot derive — it would
+  // drop the two new CONFIG steps and could close the run under an expectation
+  // that never included them. A schema pattern on `answer` was considered and
+  // rejected: the grammar is per-step and per-key, so a pattern strong enough to
+  // express it would be a second copy of lib/answer-values.mjs that drifts.
+  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.3.json',
   'runtime-plugin-set': 'runtime-plugin-set-1.0.json',
   // ADR-0044 session-capture families (session-capture-contract.md §3). Load-bearing
   // from S2 on: the packaged schemas ARE the validation source for the slot/entry/note
@@ -654,7 +664,7 @@ export const PACKAGED_SCHEMA_FILES = Object.freeze({
   // ADR-0053 §Decision 2 / ADR-0054 §Decision 2 — the human-granted host
   // compatibility assurance record carried in the packaged host-parity
   // baseline. STRUCTURE only; lib/assurance-contract.mjs is the semantic half,
-  // the same split runtime-bootstrap-run-1.2 makes for the same missing oneOf.
+  // the same split runtime-bootstrap-run-1.3 makes for the same missing oneOf.
   //
   // Its `schema` property is an EXACT pin (ADR-0054 §Decision 3). That is the
   // majority shape here — the four session/entry-brief families pin exactly and

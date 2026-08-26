@@ -105,7 +105,16 @@ export const BOOTSTRAP_ARTIFACT_FAMILY = 'bootstrap';
 // The run-schema version this storage layer stamps (tombstones) and gates on
 // (the post-terminal receipt window). bootstrap.mjs imports THIS — one lockstep
 // site, not two.
-export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.2';
+// 1.3 (§3.3) — the value-carrying interview. Bumping this CLOSES the
+// post-terminal receipt window for every terminal 1.2 run: the gate below is an
+// exact-current-schema test ("receipt testimony is current-schema vocabulary"),
+// deliberately the strictest in this writer, and an operator holding a terminal
+// 1.2 run with a recorded provider ack but no receipt attestation can no longer
+// record one. That cost was weighed and accepted (owner decision, 2026-08-26)
+// rather than relaxing the narrowest door in the evidence writer to accommodate
+// a config-step addition. §7's terminal policy states it; a fresh plan is the
+// recovery for the config steps, and there is none for the lost receipt window.
+export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.3';
 export const BOOTSTRAP_LATEST_SCHEMA_VERSION = 'runtime-bootstrap-latest-1.0';
 
 // bootstrap-YYYYMMDDTHHMMSSZ-<6hex> — the same run-id shape as every other family

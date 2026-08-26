@@ -176,12 +176,22 @@ function mutableRunner(state) {
 
 const satisfiedRunner = () => hostedRunner();
 
-// The one declinable Stage-5 step this fixture never satisfies from config:
-// egress is opt-in (ADR-0041 §3a default OFF), so the contract-shaped way to
-// resolve it in a fixture is an explicit operator decline through --answers.
+// The declinable steps this fixture never satisfies from config, resolved the
+// contract-shaped way — an explicit operator answer through --answers.
+//
+// `egress.configured` is opt-in (ADR-0041 §3a default OFF). The two Stage-4
+// VALUE steps (§6.1.3) are the same shape for a different reason: a value step
+// is satisfied only by a DECISION plus an observation confirming it, and a
+// fixture that records no decision leaves them pending forever — which is the
+// interview working, not a defect. Declining is the terse fixture answer; the
+// value paths get their own tests rather than riding in every unrelated one.
 async function writeEgressDecline(home) {
   const path = join(home, 'egress-decline.json');
-  await writeFile(path, JSON.stringify([{ step_id: 'egress.configured', answer: 'decline' }]));
+  await writeFile(path, JSON.stringify([
+    { step_id: 'egress.configured', answer: 'decline' },
+    { step_id: 'config.session', answer: 'decline' },
+    { step_id: 'config.notify_kinds', answer: 'decline' },
+  ]));
   return path;
 }
 
@@ -1213,7 +1223,7 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     const dir = join(home, '.agentic-plugins', 'runs', 'bootstrap', bareId);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'run.json'), `${JSON.stringify({
-      schema: 'runtime-bootstrap-run-1.2',
+      schema: 'runtime-bootstrap-run-1.3',
       run_id: bareId,
       started_at: '2026-07-18T04:00:00Z',
       updated_at: '2026-07-18T04:00:00Z',
@@ -1263,7 +1273,15 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
 
     // 1. Plan with the egress-proof opt-in (an execute answer makes the step expected).
     const optIn = join(home, 'opt-in.json');
-    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    await writeFile(optIn, JSON.stringify([
+      { step_id: 'proof.egress-provider-ack', answer: 'execute' },
+      // §6.1.3 — the two Stage-4 value steps are CONFIG obligations like any
+      // other; a run that never resolves them cannot terminalize, which is the
+      // interview doing its job. Declining is this fixture's answer because its
+      // subject is the receipt door, not the value grammar.
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
+    ]));
     const plan = await run(['plan', '--bundle', 'base', '--answers', optIn, '--format', 'json']);
     const runId = plan.report.run_id;
     ok(plan.report.steps.some((s) => s.id === 'proof.egress-provider-ack'), 'the opt-in makes the step expected');
@@ -1630,8 +1648,8 @@ describe('runtime bootstrap CLI — schema-minor migration (ADR-0048 §1)', () =
     ok(resume.exitCode !== EXIT.INVALID, JSON.stringify(resume.report.diagnostics ?? []));
 
     const migrated = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8'));
-    strictEqual(migrated.schema, 'runtime-bootstrap-run-1.2', 'the schema stamp is bumped explicitly (the old spread preserved 1.1)');
-    ok(migrated.history.some((h) => h.from === 'runtime-bootstrap-run-1.1' && h.to === 'runtime-bootstrap-run-1.2'), 'the migration is a history row, not a silent rewrite');
+    strictEqual(migrated.schema, 'runtime-bootstrap-run-1.3', 'the schema stamp is bumped explicitly (the old spread preserved 1.1)');
+    ok(migrated.history.some((h) => h.from === 'runtime-bootstrap-run-1.1' && h.to === 'runtime-bootstrap-run-1.3'), 'the migration is a history row, not a silent rewrite');
     // Registry-new steps joined the persisted run (the 1.1 world had no notify.codex.configured).
     ok(migrated.steps.some((s) => s.id === 'notify.codex.configured'), 'the ADR-0048 §1 split step was injected additively');
     // The satisfied fixture wires notify=, so the injected step judged satisfied on the same resume.
@@ -2123,6 +2141,8 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     await writeFile(path, JSON.stringify([
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
     ]));
     return path;
   }
@@ -2263,6 +2283,8 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
     ]));
     // The operator changes their mind and installs it on Codex mid-proof.
@@ -2306,6 +2328,8 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath],
@@ -2371,6 +2395,8 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath],
@@ -2438,6 +2464,8 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
     ]));
     // Nothing moves during the proof here — this is the OTHER window.
@@ -2485,6 +2513,8 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath], smokeDoctorStub(async () => {}));
@@ -2513,6 +2543,8 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     await writeFile(answersPath, JSON.stringify([
       { step_id: 'proof.egress-provider-ack', answer: 'accept' },
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
     // CONTROL: no child ran, so this is the no-snapshot-movement path — the one
@@ -2595,7 +2627,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       return missing();
     };
     const answersPath = join(home, 'no-executor.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'egress.configured', answer: 'decline' }]));
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'egress.configured', answer: 'decline' }, { step_id: 'config.session', answer: 'decline' }, { step_id: 'config.notify_kinds', answer: 'decline' }]));
     await run(['resume', '--latest-open', '--answers', answersPath], readOnlyDoctorStub);
 
     // CONTROL: the only child really was the read-only fetch.
@@ -2659,6 +2691,10 @@ describe('bootstrap attest — the receipt door judges the run as it was reduced
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
       { step_id: 'proof.egress-provider-ack', answer: 'execute' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      // §6.1.3 — CONFIG obligations this suite is not about; declined so the run
+      // can reach the terminal state whose receipt door IS the subject.
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
     strictEqual(resume.report.run_status, 'complete', 'precondition: the run closed');
@@ -3480,6 +3516,8 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     await writeFile(answersPath, JSON.stringify([
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
     ]));
     await run(['resume', '--latest-open', '--answers', answersPath]);
 
@@ -3550,6 +3588,8 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const answersPath = join(home, 'decline-proof.json');
     await writeFile(answersPath, JSON.stringify([
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'decline' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
@@ -3591,6 +3631,8 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     await writeFile(answersPath, JSON.stringify([
       { step_id: 'proof.egress-provider-ack', answer: 'accept' },
       { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
 
@@ -3840,6 +3882,8 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
   ];
   const EXECUTE_SMOKE = [
     { step_id: 'egress.configured', answer: 'decline' },
+    { step_id: 'config.session', answer: 'decline' },
+    { step_id: 'config.notify_kinds', answer: 'decline' },
     { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
   ];
 
@@ -3890,7 +3934,7 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
     // And the persisted document is still a 1.2 manifest — the narrowing needed no
     // schema addition, which is what keeps an older runtime able to read this run
     // (§4.1: an unknown non-scalar key is refused at EVERY minor).
-    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.2');
+    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.3');
     const validate = await makeValidator('runtime-bootstrap-run', { pluginRoot: PLUGIN_ROOT });
     deepStrictEqual(validate(manifest).errors, []);
   });
@@ -4395,7 +4439,7 @@ describe('runtime bootstrap CLI — proof-directory entry names (§3.2)', () => 
     const runDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId);
     await mkdir(join(runDir, 'proof'), { recursive: true });
     await writeFile(join(runDir, 'run.json'), `${JSON.stringify({
-      schema: 'runtime-bootstrap-run-1.2',
+      schema: 'runtime-bootstrap-run-1.3',
       run_id: runId,
       started_at: '2026-07-16T00:00:00Z',
       updated_at: '2026-07-16T00:00:00Z',

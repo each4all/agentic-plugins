@@ -9,6 +9,7 @@ import {
   parseArgs,
   runSettings,
   upsertRuntimeConfigToml,
+  removeRuntimeConfigKeys,
   renderCodexConfigToml,
   parseCodexPermissionConfigToml,
 } from '../../plugins/runtime/scripts/settings.mjs';
@@ -1766,6 +1767,92 @@ describe('runtime settings', () => {
     ok(next.includes('other = "keep"'));
     ok(next.includes('claude-effort = "high"'));
     ok(next.includes('model = "shared"'));
+  });
+
+  it('removeRuntimeConfigKeys deletes EVERY assignment line and reports the count', () => {
+    // Every line, not the first: the read parser is last-value-wins, so a
+    // surviving duplicate would resurrect the key the operator just removed —
+    // the same reasoning the upsert gives, in the direction that loses data.
+    const { text, removed } = removeRuntimeConfigKeys(
+      '# header\nnotify_kinds = "approval"\nmodel = "keep"\nnotify_kinds = "idle"\n',
+      ['notify_kinds'],
+    );
+    strictEqual(removed, 2, 'both duplicates went');
+    ok(!text.includes('notify_kinds'), 'no assignment survives');
+    ok(text.includes('model = "keep"'), 'unrelated keys are preserved byte-for-byte');
+    ok(text.includes('# header'), 'and so is prose this writer did not author');
+  });
+
+  it('removeRuntimeConfigKeys on an absent key is a no-op that says so', () => {
+    const { text, removed } = removeRuntimeConfigKeys('model = "keep"\n', ['notify_kinds']);
+    strictEqual(removed, 0, '"removed 0" and "removed 3 duplicates" are different facts');
+    strictEqual(text, 'model = "keep"\n');
+  });
+
+  it('--unset plans a remove op, applies it, and distinguishes absent from present', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    const userConfig = join(home, '.agentic-plugins', 'config.toml');
+    await writeFile(userConfig, 'notify_kinds = "approval"\nmodel = "keep"\n');
+
+    const planned = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'] });
+    const userPlan = planned.config.targets.find((t) => t.kind === 'user');
+    deepStrictEqual(userPlan.planned_writes, [{ op: 'remove', key: 'notify_kinds', before: 'approval', after: null }]);
+    strictEqual(userPlan.applied, false, 'a dry run applies nothing');
+    strictEqual(await readFile(userConfig, 'utf8'), 'notify_kinds = "approval"\nmodel = "keep"\n', 'and writes nothing');
+    ok(!Object.hasOwn(userPlan.projected_config, 'notify_kinds'), 'the projection shows the key GONE, not blanked');
+
+    const applied = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'], apply: true });
+    const appliedPlan = applied.config.targets.find((t) => t.kind === 'user');
+    strictEqual(appliedPlan.applied, true);
+    const after = await readFile(userConfig, 'utf8');
+    ok(!after.includes('notify_kinds'), 'the key is removed from the file');
+    ok(after.includes('model = "keep"'));
+
+    // A second apply is a no-op the plan reports as `keep`, not `remove`.
+    const again = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'] });
+    deepStrictEqual(again.config.targets.find((t) => t.kind === 'user').planned_writes, [], 'an already-absent key stages no write');
+  });
+
+  it('--unset is NOT user-scope-filtered — removal can never activate a session-shaping key', async () => {
+    // ADR-0045 §7 forbids a tracked repo value from ACTIVATING entry_brief.
+    // Refusing to REMOVE one would leave the exact byte the ADR exists to
+    // prevent sitting in the repo file with no tool able to take it out.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-repo2-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unset-home2-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    const repoConfig = join(root, '.agentic-plugins', 'config.toml');
+    await writeFile(repoConfig, 'entry_brief = "startup"\n');
+
+    // The WRITE direction is still refused for the same key, in the same call.
+    const writeAttempt = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'repo', desired: { entry_brief: 'startup' } });
+    const repoWritePlan = writeAttempt.config.targets.find((t) => t.kind === 'repo');
+    deepStrictEqual(repoWritePlan.refused_user_scope_only, ['entry_brief'], 'CONTROL: activation stays refused repo-side');
+    deepStrictEqual(repoWritePlan.planned_writes, [], 'and stages nothing');
+
+    const removal = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'repo', unset: ['entry_brief'], apply: true });
+    strictEqual(removal.config.targets.find((t) => t.kind === 'repo').applied, true);
+    ok(!(await readFile(repoConfig, 'utf8')).includes('entry_brief'), 'deactivation is allowed where activation is not');
+  });
+
+  it('a key cannot be written and removed in one invocation, on either surface', async () => {
+    // Letting one win would make the outcome depend on which stage ran last.
+    rejects(async () => parseArgs(['--notify-kinds', 'approval', '--unset', 'notify_kinds']), /never both in one invocation/);
+    await rejects(
+      runSettings({ repoRoot: '.', homeDir: '.', skipHostCliProbes: true, desired: { notify_kinds: 'approval' }, unset: ['notify_kinds'] }),
+      /never both in one invocation/,
+    );
+  });
+
+  it('--unset refuses a key that is not a runtime config key, on either surface', async () => {
+    rejects(async () => parseArgs(['--unset', 'not_a_key']), /is not a runtime config key/);
+    await rejects(
+      runSettings({ repoRoot: '.', homeDir: '.', skipHostCliProbes: true, unset: ['not_a_key'] }),
+      /is not a runtime config key/,
+    );
   });
 
   it('rewrites EVERY duplicate line of a desired key (read parser is last-value-wins)', () => {
