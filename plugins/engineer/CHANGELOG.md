@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.7](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.6...plugin-engineer-v0.21.7) (2026-08-27)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** stop declaring a context state the sidecar never measured ([9fa6aa7](https://github.com/each4all/agentic-plugins/commit/9fa6aa73608e78cbb8c09892c9d3005ebf0dcc61))
+
 ## [0.21.6](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.5...plugin-engineer-v0.21.6) (2026-08-24)
 
 

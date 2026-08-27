@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.6](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.5...plugin-founder-v0.4.6) (2026-08-27)
+
+
+### Bug Fixes
+
+* **plugin/founder:** stop declaring a context state the sidecar never measured ([8637217](https://github.com/each4all/agentic-plugins/commit/8637217e2b9d687cdba266d9068c9146b592602f))
+
 ## [0.4.5](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.4...plugin-founder-v0.4.5) (2026-08-24)
 
 
