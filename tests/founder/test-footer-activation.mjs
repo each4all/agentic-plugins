@@ -150,6 +150,34 @@ describe('founder completion-footer activation (ADR-0043 S3)', () => {
     match(res.stderr, /\/(founder|runtime):/);
   });
 
+  // The sidecar owns no context-budget sensor. It used to pass a hard-coded
+  // `--context-state yellow`, which the footer could only read as a caller
+  // ASSERTION — so a fabricated value was rendered as if someone had looked,
+  // and `session_handoff.context_risk_supplied` was stuck `true`, making the
+  // runtime's own honest-fallback branch (footer.mjs, `=== false`) unreachable.
+  // Passing nothing is the honest statement of "I measured nothing": runtime
+  // still applies the same conservative yellow, and now says whose it is.
+  it('declares no context state — an unmeasured default renders as unmeasured, not as a caller assertion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ffooter-unmeasured-'));
+    initRepo(root);
+    const wf = createWorkflow(root);
+    const res = cliSetTerminal(root, wf, 'Critique the composed artifact');
+
+    strictEqual(res.status, 0, res.stderr);
+    ok(
+      res.stderr.includes('context state: unmeasured (no budget sensor)'),
+      `context state must render as unmeasured; got:\n${res.stderr}`,
+    );
+    ok(
+      res.stderr.includes("context risk: yellow is runtime's conservative fallback"),
+      `session handoff must name the fallback as runtime's; got:\n${res.stderr}`,
+    );
+    ok(
+      !res.stderr.includes('[declared, not measured]'),
+      `sidecar must not declare a context state it never measured; got:\n${res.stderr}`,
+    );
+  });
+
   it('is idempotent: the Stop-hook backstop does NOT re-render what the primary rendered', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ffooter-idem-'));
     initRepo(root);
