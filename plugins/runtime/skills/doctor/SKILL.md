@@ -15,8 +15,16 @@ description: "Read-only runtime operator diagnostic for agentic-plugins. Use whe
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--record]
+node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--record] [--strict]
 ```
+
+   Exit codes: `0` no hard failures and every requested proof executor passed; `10`
+   findings (`overall.status` is `fail`, or `warning` under the opt-in `--strict`); `20` a
+   requested proof produced no usable verdict for some lane; `30` a requested proof needs an
+   operator action in the host; `40` `--record` could not persist its artifact; `2` invalid
+   usage; `1` unexpected. Codes `10` and above still write the complete report to stdout — read
+   the report and treat the code as a classifier, not as a command failure. Only `1` and `2`
+   produce no report, and `40` hides any findings underneath it, so read `overall.status` too.
 
 3. Present the result without hiding host asymmetry. In particular:
    - Start from the `Readiness Matrix` / `readiness_matrix` summary when explaining whether Claude/Codex are available, installed, authenticated, which model/effort would be used, and where hook parity differs.

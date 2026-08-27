@@ -5,8 +5,12 @@
 // against a staleness window, then signals drift via exit code for a
 // scheduled CI gate.
 //
-// Why a separate script (not compat.mjs): runtime:compat/doctor keep exit-0
-// semantics for interactive use and probe the *installed* host CLI. CI runners
+// Why a separate script (not compat.mjs): runtime:compat keeps exit-0 semantics
+// for interactive use, and both it and runtime:doctor probe the *installed* host
+// CLI. (runtime:doctor no longer keeps exit-0 semantics — it reports findings
+// through a diagnostic exit ladder, `plugins/runtime/commands/doctor.md`
+// § Exit codes — but it is still the wrong gate here for the probe-target reason
+// below, not for its exit code.) CI runners
 // have no claude/codex CLI, so this gate uses the *public latest* release as
 // the drift reference and owns a CI-only hard-fail policy. The baseline parser
 // (compat.extractBaselineVersions) is reused so there is one source of truth
