@@ -4,6 +4,9 @@
 
 Accepted (2026-07-12)
 
+> Amended 2026-08-27 — see [Amendments](#amendments). The inherited
+> ADR-0039 contract no longer passes `--context-state`.
+
 <!--
 This is the runtime-enablement ADR that ADR-0042 explicitly required
 before extending workflow-projection semantics ("extending
@@ -225,7 +228,8 @@ hardened delivery and stale-file handling**, concretely:
   points opt in explicitly, so library callers and tests don't fire
   sidecars as a side effect.
 - The ADR-0039 piggyback applied unchanged: `execFile` subprocess,
-  `--context-state` (default `yellow`), completion-flags mapping,
+  no `--context-state` (amended 2026-08-27 — see
+  [Amendments](#amendments)), completion-flags mapping,
   output re-emitted on the caller's **stderr only**, `emitted === true`
   gate, at-most-once render guard (atomic claimed/rendered marker with
   reconciliation), silent fail-closed (§§2-6 of ADR-0039).
@@ -519,6 +523,24 @@ reserved by the macro plan's collision guard (0043=S0, 0044=S5,
 - Marker *filenames* stay per-persona (S3/S4 choose them), but each
   choice ships as a documented cross-package contract with regression
   pins (§2) — attention consumes the contract, not the implementation.
+
+## Amendments
+
+### 2026-08-27 — inherited from ADR-0039: no `--context-state`
+
+This ADR applies [ADR-0039](0039-completion-footer-activation.md) §2's
+subprocess contract unchanged, so it inherits that ADR's 2026-08-27
+amendment: the sidecar passes no `--context-state`. The hard-coded `yellow`
+was read by `footer.mjs` as a caller assertion, rendering an unmeasured
+value as though it had been observed. Designer and founder now supply
+nothing, and runtime reports its own conservative fallback as
+`unmeasured (no budget sensor)`.
+
+Both personas floor discovery at runtime **0.79.0**, and the provenance
+render arrived in **0.92.0**, so 0.79.0–0.91.x remain reachable and render
+`context state: yellow` exactly as before — the omission is byte-identical
+there, which is why no capability floor was added. See ADR-0039
+§Amendments for the full rationale and the measurement.
 
 ## Alternatives Considered
 
