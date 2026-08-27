@@ -11,7 +11,17 @@ Supersedes ADR-0038. Amends ADR-0046 (§"Which proofs, exactly" — the
 removes an advisory that sat inside the R0/M1 tiers; it does not move the
 ceiling, and §6's Guard-Hook deferral is carried forward verbatim rather than
 dropped, because the deferral is a boundary decision and not part of the
-advisory being removed.
+advisory being removed. ADR-0046's `:542`-`:545` ("the flags remain") is amended
+alongside its proofs clause.
+
+A Plan-verify cross-host review returned `modify` against the first draft and
+disproved six of its claims: the retention behaviour (Decision 7), the proof's
+uniqueness (twice — §What is worth keeping), the sanitizer surviving whole
+(Decision 3), auto mode's role in the empty allow set (§Context), the Codex
+`count: 0` mitigation (§Consequences), and the completeness of the removal
+manifest (Decision 2). Each refutation is recorded in place rather than silently
+applied, because a removal ADR whose own evidence was wrong is the failure it
+exists to prevent.
 -->
 
 ## Context
@@ -98,13 +108,29 @@ The inversion is not a grading bug. `gradeCommand` in isolation is correct:
 The verdict flips in aggregation, through three steps that are each individually
 defensible:
 
-1. `generalizeCommand` keys a pattern on the **first token** of the observed
-   line, so the compound `cd X && rm -rf Y` generalizes to `cd *`.
+1. `generalizeCommand` (`permission-sanitize.mjs:176`–`:203`) keys a pattern on
+   the **leading program token** — `basenameProgram(tokens[0])`, plus a second
+   token when the program is in `SUBCOMMAND_WRAPPERS` (which is why
+   `git status *` exists alongside `git *`). So the compound `cd X && rm -rf Y`
+   generalizes to `cd *`.
 2. `gradeCommand` grades the **whole line**, so it correctly sees
    `rm-recursive-force` in it.
 3. `aggregateObservations` folds grades within a pattern with
    `prev.grade = worstGrade(prev.grade, grade)`
    (`permission-usage-learner.mjs:405`).
+
+**Three distinct failures live here and this ADR does not conflate them**, since
+an earlier draft described only the first as if it were the whole story:
+
+| Failure | Direction | Where |
+|---|---|---|
+| **Severity poisoning** — worst-wins folding over a leading-token key | too **strict**: benign families denied | the three steps above |
+| **Pseudo-command emission** — any leading token is accepted, including `&&`, `#`, `[`, `while`, `mk()` | neither: 13 rules that can never match a real program | `generalizeCommand` has no program-shape gate |
+| **Wildcard under-grading** — one safe command's grade generalized to a `*` pattern covering unsafe siblings | too **loose**: over-broad `allow` | already recorded at `follow-ups.md:42` |
+
+The first two are what this machine's plan exhibits. The third is the inverse
+failure and is what makes "just fix the grader" harder than it looks: the two
+directions pull against each other.
 
 Net: **one dangerous compound line condemns an entire benign family.** Census
 over this machine's 100 Claude transcripts (7,639 shell observations with a
@@ -125,17 +151,33 @@ non-empty generalized pattern, 84 distinct patterns):
   stricter bucket.
 - **2** patterns are pushed to `deny` by a *single* dangerous instance.
 
-**Auto mode does not cause this, and the distinction matters.** Auto mode
-explains the *empty allow set*: the learner did produce 4 `allow`-graded rules,
-and all 4 were absorbed as `already_allowed_count` because the operator's 218
-standing allow rules already govern them — the planner correctly declines to
-re-recommend what is already permitted. It does not explain the deny set, which
-would appear on a `default`-mode machine with the same transcripts. The two
-defects are independent, and the follow-up ledger already carries the first half
-of the second: `plugins/runtime/docs/follow-ups.md` rows 42 and 43 record
-"safety grade vs. wildcard generalization" and "grader vs. pattern-emitter
-divergence on a path-shaped program". This ADR does not fix them. It records
-that the layer they sit in is no longer worth repairing.
+**Auto mode causes neither the deny set nor the empty allow set**, and an
+earlier draft of this ADR got the second half wrong — it credited `auto` with
+the empty allow set. Cross-host review refuted that against the control flow, and
+the correction matters because it changes what the mode is evidence *of*:
+
+- The allow / ask / deny buckets are decided entirely from the learned grade and
+  the operator's standing rule buckets (`permission-plan.mjs:224`–`:290`). The
+  empty allow set is caused by **the operator's 218 standing allow rules** —
+  all 4 `allow`-graded rules were absorbed as `already_allowed_count` — and would
+  appear identically on a `default`-mode machine with the same rules.
+- `hostConfig.defaultMode` is first read at `:294`, *after* that loop, and is
+  used for exactly one thing: the `acceptEdits` recommendation.
+
+So `auto` does not distort the plan. It **exposes a stale mode vocabulary** —
+one field, one wrong recommendation — while the 90 restrictions come from the
+grader and the aggregation. Both defects are independent of the mode, and the
+follow-up ledger already carries the first half of the second:
+`plugins/runtime/docs/follow-ups.md` rows 42 and 43 record "safety grade vs.
+wildcard generalization" and "grader vs. pattern-emitter divergence on a
+path-shaped program". This ADR does not fix them. It records that the layer they
+sit in is no longer worth repairing.
+
+**The census is a point-in-time measurement over unfrozen input.** The
+transcripts it reads are this machine's live `~/.claude/projects` tree, which
+moves; no input snapshot or hash is committed, so a rerun will drift. The
+numbers are evidence of the *mechanism*, which is decidable from the code, not a
+reproducible constant.
 
 ### The obsolete vocabulary has leaked into a protected, non-advisor contract
 
@@ -197,12 +239,21 @@ active-execution boundary guard", and with `runtime-executor-scan.mjs` it proves
 *statically* that no child-process / `fs` / network primitive appears outside the
 allowlist. That is real §4 evidence and it survives untouched.
 
-The accurate claim is narrower and still load-bearing: `proof.permission` is the
-only **live, on-host** evidence that a companion invocation *actually ran* under
-the host's own permission policy with nothing injected. The static guard proves
-runtime cannot contain a relaxation primitive; only the proof observes a real
-session not using one. Neither substitutes for the other, and the proof survives
-this removal.
+**A second narrowing followed, from the same review**, and the two together are
+why this paragraph is worded as carefully as it is. `proof.deep-peer-smoke`
+performs the *same* live companion invocation under the same host policy
+(`doctor.mjs:4720`–`:4755`), so the permission proof is not the only run that
+*exercises* unrelaxed execution. What is unique is narrower: it is the only one
+that **explicitly records** the fact as a claim —
+`permission_policy: {host_native_default, relaxed_by_doctor, injected_flags}`
+appears at `doctor.mjs:3464` and `:3616`, both inside the permission-proof path
+and nowhere else, and is rendered at `:6003`.
+
+So the accurate claim, after two corrections, is: `proof.permission` is the
+**dedicated live proof that records the no-relaxation fact**. The static guard
+proves runtime cannot contain a relaxation primitive; deep-peer-smoke
+incidentally runs without one; only this proof asserts and records it. That is
+still worth keeping, and it is a smaller claim than either earlier draft made.
 
 What must not survive is its **coupling** to the advisor. `step-registry.mjs:315`
 makes the proof `applicable` only when
@@ -286,8 +337,9 @@ implementation must visit every site:
   `permissionDiagnosisLimits` (`:2450`, `:2494`, `:2522`, `:2575`), and the
   `getPromptCause` import (`:23`)
 - `settings.mjs` — the `--permission-plan` flags (`:2891`–`:2900`), the
-  cross-host plan call (`:20`, `:2741`), the two mutation-boundary strings
-  (`:625`, `:626`), the usage line (`:2816`), and the
+  cross-host plan **call site** (`:463`–`:478` — an earlier draft cited `:2741`,
+  which is only the comment), the import (`:20`), the two mutation-boundary
+  strings (`:625`, `:626`), the usage line (`:2816`), and the
   `parseCodexPermissionConfigToml` re-export (`:47`, which stays — Decision 4)
 - `bootstrap.mjs` — Stage 6 (`:1897`–`:1908`), the applied-state derivation
   (`:1023`, `:2317`–`:2327`), the two re-derivation sites (`:2747`, `:2827`),
@@ -295,6 +347,21 @@ implementation must visit every site:
   advisor imports (`:138`, `:139`)
 - `state-readers.mjs` — the `permission` entry in
   `RUNTIME_ARTIFACT_FAMILIES` (`:161`) and its comment (`:154`–`:155`)
+- **`step-registry.mjs` and `completion-reducer.mjs` — added after review, and
+  the omission mattered**: `stepIds.permissionApplied` (`:75`), the Stage-6
+  emission (`:259`), and the proof's `applicable` / `blocked_by` (`:315`,
+  `:317`) in the registry; the `permissionFragmentApplied` reconstruction
+  (`completion-reducer.mjs:772`–`:775`) and its hand-off to
+  `deriveExpectedSteps` (`:783`). Decision 5 governs what replaces them.
+- `notification-plan.mjs` — the two stale by-reference analogies (`:43`, `:702`)
+  that cite `permission-artifacts.mjs` as the precedent for their own shape.
+  These are comments, not code, but a comment pointing at a deleted module is a
+  dangling reference of the same kind the amendments in Decision 10 exist to fix.
+
+**Two public exports disappear and are BREAKING beyond the CLI flags**:
+`doctor.mjs:84`–`:88` re-exports `collectUsageRecordSources`, and
+`settings.mjs:48`–`:50` re-exports `renderCodexConfigToml`. Both are module
+surface, not flags, and neither is covered by the flag list in Consequences.
 - `tests/plugin-shape/runtime-executor-registry.mjs` — the
   `permission-artifacts.mjs` entry (`:682`–`:686`, primitives `mkdir` /
   `writeFile` / `rename` under `.agentic-plugins/runs`). This one is easy to
@@ -313,9 +380,20 @@ implementation must visit every site:
 (173) **survive** per Decisions 3 and 4; `test-planner-purity.mjs` (256) loses
 its `permission-plan.mjs` closure assertions and keeps the rest;
 `test-usage-records-fixtures.mjs` (111) and
-`tests/runtime/fixtures/usage-records/**` (210 lines, 6 files) go with the
-learner. `test-settings.mjs`, `test-doctor.mjs`, `test-bootstrap.mjs` and
+`tests/runtime/fixtures/usage-records/**` (210 lines, **7** files — an earlier
+draft said 6, omitting `claude-secret-redaction.jsonl`) go with the learner.
+`test-settings.mjs`, `test-doctor.mjs`, `test-bootstrap.mjs` and
 `test-bootstrap-cli.mjs` lose their permission-section cases.
+
+**Five further test files carry Stage-6 / proof expectations and were missed by
+the first draft**: `test-runtime-plugin.mjs:321`–`:345`,
+`test-settings-probe-boundary.mjs:41`–`:48`, `:123`–`:132`, `:381`–`:387`,
+`test-step-registry.mjs:138`–`:145`, `:209`–`:216`, `:304`–`:371`,
+`test-completion-reducer.mjs:172`–`:220`, `:756`–`:827`, and
+`test-effective-selection.mjs:101`–`:109`. `advisor-impl` adds one test that does
+not exist today: a **`defaultMode: "auto"` control** against the Decision 6
+schema, since the enum widening is exactly the kind of change that passes
+vacuously without one.
 
 **Documentation**: `plugins/runtime/docs/usage-records-source-map.md` (240
 lines) is advisor-exclusive and goes. `commands/doctor.md`,
@@ -342,29 +420,60 @@ for the step model Decision 5 changes:
 
 Rows `:1377`–`:1378` are deleted; `:1312`–`:1313`, `:1382`, `:1542` and `:2007`
 are **rewritten to the new applicability**, not deleted — the proof survives and
-its contract has to say what now governs it. This file is **not** a protected
-path under ADR-0052, so these edits add no release-obligation debt beyond the two
-protected paths named in Consequences. `docs/artifact-policy.md` needs two narrower edits, not a
+its contract has to say what now governs it. Cross-host review found **ten
+further sites in the same file** the first enumeration missed — `:425`–`:434`,
+`:616`–`:636`, `:1047`–`:1051`, `:1195`–`:1211`, `:1527`–`:1543`,
+`:1799`–`:1802`, `:1982`–`:2008`, `:2185`–`:2192`, `:2819`–`:2822`,
+`:2937`–`:2940` — which is itself the argument for enumerating rather than
+describing. This file is **not** a protected path under ADR-0052, so these edits
+add no release-obligation debt beyond the two protected paths named in
+Consequences.
+
+**Four more surfaces outside `plugins/runtime/docs/` also describe the removed
+capability**, and none was in the first draft: `plugins/runtime/README.md:134`–`:139`
+(alongside `:41`, `:42`, `:56`, `:57`), `settings-report-contract.md:35`–`:56`,
+the packaged manifest `plugins/runtime/.codex-plugin/plugin.json:38`, and the
+repository stage docs `docs/DEVELOPMENT.md:95`–`:103`, `:560` and
+`docs/ARCHITECTURE.md:252`. The manifest one matters disproportionately: it is
+**packaged**, so a stale description ships to both hosts. `docs/artifact-policy.md` needs two narrower edits, not a
 section removal: `:147`'s family list keeps `permission` per Decision 7, and
 `:130`'s sanitization rule — which is illustrated *by* the advisory — is
 re-illustrated from a surviving consumer rather than deleted, because the rule
 outlives its example.
 
-### Decision 3 — `permission-sanitize.mjs` survives whole, and is renamed with a compatibility re-export
+### Decision 3 — `permission-sanitize.mjs` SPLITS; only its generic half survives
 
-It has eight non-advisor consumers and a normative citation in a protected
-schema. It stays, and the ADR states the rename explicitly because the file's
-name is the only thing about it that is advisor-flavoured: it becomes
-`lib/sanitize.mjs`, with `lib/permission-sanitize.mjs` retained as a
-re-exporting shim so the protected schema's `:270` description — which names the
-old path — does not have to change in the same release that removes the
-advisor. `advisor-impl` retires the shim and updates the schema description in a
-**separate, later** release, because editing that file is a protected-path
-change and coupling it to this one doubles the debt window for no benefit.
+An earlier draft of this ADR said the module "survives whole". **Cross-host
+review refuted that**, and the refutation is recorded because the draft was
+internally inconsistent as a result: it simultaneously claimed the module
+survives whole *and* described `generalizeCommand` as living "inside modules
+Decision 1 deletes". Both cannot be true, and measurement settles which.
+
+The file has two halves with disjoint consumers:
+
+| Exports | Lines | Consumers | Disposition |
+|---|---|---|---|
+| `singleLine`, `hasCredentialShape`, `redactSecrets`, `sanitizeValue` | `:22`–`:84` | `dashboard`, `doctor`, `settings`, `state-readers`, `machine-probe`, `machine-profile`, `assurance-result`, `host-assurance-facts` — **8 non-advisor** | **survives** |
+| `tokenizeCommand`, `stripEnvAssignments`, `generalizeCommand` | `:142`–`:204` | `permission-advisor-core.mjs` and `permission-usage-learner.mjs` **only** — both deleted by Decision 1 | **removed** |
+
+The generic half — which carries the normative citation in the protected schema
+at `agentic-machine-profile-1.2.json:270` — moves to `lib/sanitize.mjs`, with
+`lib/permission-sanitize.mjs` retained as a re-exporting shim.
+`test-permission-sanitize.mjs` is **reduced to the surviving exports**, not kept
+whole; its `generalizeCommand` cases go with the function.
+
+**The "second debt window" rationale from the earlier draft is withdrawn.** It
+argued for deferring the schema's `:270` citation update to a later release to
+avoid opening protected-path debt twice — but Decision 6 already edits
+`agentic-machine-profile-1.2.json` at `:197` in *this* removal, so the file is in
+the release either way and there is no second window to avoid. `advisor-impl`
+decides the citation rename on migration scope alone: update `:270` alongside
+`:197` if the shim is retired in the same release, or leave the citation
+accurate against the shim if it is not.
 
 If `advisor-impl` measures the rename as not worth its cost, keeping the current
-name is an acceptable outcome — but it must then say so, rather than leaving the
-question unasked.
+name for the surviving half is acceptable — but it must say so, rather than
+leaving the question unasked.
 
 ### Decision 4 — `permission-config.mjs` splits by consumer, not by file
 
@@ -407,8 +516,25 @@ referent, and a declinable step nobody can satisfy is worse than no step.
 **`proof.permission` is retained and its gate is rewritten.** Its applicability
 changes from "a permission fragment was applied on some host" to **always
 applicable and declinable**, matching `proof.deep-peer-smoke` — the proof it is
-structurally a sibling of. Both prove the companion bridge works; this one
-additionally proves runtime added no relaxation flags to get there.
+structurally a sibling of. Both exercise the companion bridge under host policy;
+this one additionally *records* that runtime added no relaxation flags.
+
+**Applicability is not the only edge, and an earlier draft addressed only that
+one.** The step carries `blocked_by: PLUGIN_SET_HOSTS.map((h) =>
+stepIds.permissionApplied(h))` (`step-registry.mjs:317`), so deleting Stage 6
+without replacing those edges leaves the proof blocked by steps that no longer
+exist. `advisor-impl` **replaces** them rather than emptying them — the sibling
+`proof.deep-peer-smoke` blocks on `hostAuthenticated` for both hosts plus the
+`companions` install/enable steps (`:290`–`:294`), which is the shape a live
+companion proof actually depends on, and is what this proof's edges should
+become.
+
+A second consumer reconstructs the removed input and must be rewired with it:
+`completion-reducer.mjs:772`–`:775` rebuilds `permissionFragmentApplied` from the
+Stage-6 rows and hands it to `deriveExpectedSteps` at `:783`. Left alone it
+would compute `{claude: false, codex: false}` from absent rows and silently make
+the proof non-applicable — reintroducing, through the reducer, exactly the
+coupling this decision removes.
 
 `advisor-impl` decides the **name**. The proof no longer relates to a permission
 *plan*, and `permission` now reads as vestigial; but renaming it is a
@@ -451,8 +577,19 @@ inverted plan this ADR is built on.
 
 - The `permission` family stays in `RUNTIME_ARTIFACT_FAMILIES`
   (`state-readers.mjs:161`) as a **historical, read-only** family: `dashboard`
-  and `retention` continue to see, count, age and garbage-collect it under the
-  ADR-0047 §7 policy unchanged.
+  and the artifact inventory continue to **see, count and age** it.
+- **It is not garbage-collected, and an earlier draft of this ADR said it was.**
+  Cross-host review refuted that against the tree and the correction is recorded
+  rather than silently applied. `RETENTION_FAMILY_REGISTRY`
+  (`retention-planner.mjs:66`–`:84`) is a **frozen, closed** registry of exactly
+  `doctor` / `compat` / `settings`, pinned by
+  `test-retention-planner.mjs:73`–`:76`; `permission` has never been a member.
+  Retained advisories are therefore inventory-visible and **retention-excluded**
+  — they accumulate rather than expire. That is the status quo, and this ADR
+  keeps it: widening deletion authority to a family whose producer is being
+  removed would need its own ADR-0047 amendment and manifest, and deleting the
+  only surviving record of what the advisor recommended is the opposite of what
+  Decision 7 is for.
 - **No reader survives, because none is needed.** An earlier draft of this ADR
   required reducing `permission-artifacts.mjs` to "the readers retention and
   dashboard need", in the shape ADR-0056 §Decision 5 used for
@@ -503,14 +640,27 @@ row closed as resolved.
 Two are already known to be non-trivial and are stated so the triage is not
 done by shape:
 
-- **Rows 42 and 43 are `resolved by removal`** — both describe
-  `gradeCommand`/`generalizeCommand` divergence inside modules Decision 1
-  deletes.
+- **Rows 42 and 43 are `resolved by removal`** — both describe divergence
+  between `gradeCommand` (in `permission-advisor-core.mjs`, removed by
+  Decision 1) and `generalizeCommand` (in `permission-sanitize.mjs`, removed by
+  **Decision 3**, not Decision 1). The first draft attributed both to Decision 1
+  while simultaneously claiming the sanitizer survived whole — the two halves of
+  the same contradiction Decision 3 now resolves. Both functions go; the rows
+  resolve.
 - **Row 45 `splits`.** It reports `skills/settings/SKILL.md`'s frontmatter
   `description` exceeding Codex's 1,024-character skill-creator cap, noting the
   field was already ~1.6k *before* the advisor clause pushed it to ~1.8k.
   Removing the clause shrinks it and does **not** clear the cap. The row
   survives with a smaller number.
+- **Rows 66 and 82 were missed by the first draft** and both touch the step
+  model this ADR changes. Row 66 — a decline recorded while a step was
+  non-applicable becoming a sticky waiver once it applies — bears directly on
+  Decision 5, since the proof's applicability is exactly what changes; whether it
+  is resolved, survives, or splits depends on the `blocked_by` replacement.
+  Row 82 — unpinned fragment-composition readers, whose builders re-read config
+  independently of the snapshot — is half about the permission fragment and half
+  about the others, so it is a **`splits`** candidate and must not be triaged
+  whole.
 
 The **severity-poisoning mechanism measured in §Context is not filed as a new
 row.** It is resolved by removal, and recording it as a follow-up would imply
@@ -529,13 +679,18 @@ state the index must never show.
 Two further accepted ADRs normatively prescribe surfaces this ADR removes. Both
 are amended in place by `advisor-impl`, in that same acceptance commit.
 
-- **[ADR-0046](0046-machine-bootstrap.md) §"Which proofs, exactly"** states
-  "`permission` is required **iff a permission fragment was applied**". That is
-  precisely the coupling Decision 5 removes. The clause is amended to state the
-  proof's new applicability and its independent justification.
+- **[ADR-0046](0046-machine-bootstrap.md) — two clauses, not one.**
+  §"Which proofs, exactly" states "`permission` is required **iff a permission
+  fragment was applied**", which is precisely the coupling Decision 5 removes;
+  it is amended to state the proof's new applicability and its independent
+  justification. **`:542`–`:545` is the clause the first draft missed**: it
+  states that bootstrap *composes* the settings planners and that "the flags
+  remain" — a present-tense claim about `--permission-plan` that stops being
+  true. It is amended alongside.
   ADR-0046's §Alternatives citation of `--permission-plan` as a settings-flag
   precedent is **left alone**: it records what was true when the alternative was
-  weighed.
+  weighed, and the difference between the two — a live claim versus a historical
+  one — is exactly the distinction this manifest is built on.
 - **[ADR-0048](0048-bootstrap-observability.md) §1** justifies the per-host
   statusline split "(mirroring the `permission.<host>.applied` split — a single
   combined step could false-pass after only one host is configured)". The
@@ -544,11 +699,45 @@ are amended in place by `advisor-impl`, in that same acceptance commit.
   reference. The statusline steps stay per-host. ADR-0048's §D1 rejection text
   is left alone as historical.
 
-### Decision 11 — This ADR is docs-only; `advisor-impl` implements it
+### Decision 11 — Every removal here is non-additive, so each contract gets a stated era matrix
+
+The first draft named the schema questions inside Decisions 5 and 6 and left the
+rest to `advisor-impl`. Review showed that is not enough: **four contracts lose
+fields**, and a field deletion is non-additive in a way a version bump alone does
+not describe. ADR-0056 §Decision 5 met the same problem with an explicit matrix,
+and this ADR follows it rather than re-deriving the lesson.
+
+| Contract | Today | Loses | Reader obligation |
+|---|---|---|---|
+| settings report | `runtime-settings-1.25` (`settings.mjs:517`–`:590`) | `permission_plan`, `permission_plan_codex` | `settings-report-contract.md:318`–`:323` requires version lockstep — the bump and the contract edit land together |
+| doctor inner report | `runtime-doctor-1.0` (`doctor.mjs:425`–`:482`) | `permission_diagnosis` | `dashboard.mjs:104`–`:109`, `:299`–`:302` **exact-pins** the version; producer and dual reader must ship in one release |
+| doctor outer artifact | `1.0` | the nested section | same release as the inner bump |
+| bootstrap run | `runtime-bootstrap-run-1.3.json` (`:499`–`:510`, `:574`–`:576`) | stage-6 steps; `fragment_applied` loses its only defining gate | retained runs still carry both — see below |
+
+`advisor-impl` publishes, per contract, the tokens it **writes new**, the tokens
+it still **reads as historical**, and the projection between them. Three
+questions are named here because they are decisions rather than mechanics:
+
+1. **Do stages 7 and 8 keep their numbers** once stage 6 is empty? Renumbering
+   invalidates every retained run manifest; leaving a gap is honest and cheap.
+   The ADR's expectation is **leave the gap**, and `advisor-impl` states it.
+2. **Does `fragment_applied` survive as a legacy-only field?** Its schema
+   description (`:574`–`:576`) defines it *solely* through the gate Decision 5
+   removes, so at minimum the description is rewritten; whether the field stays
+   readable for retained runs is the decision.
+3. **How are open runs that reached Stage 6 read?** Already named in
+   Consequences; the matrix is where the answer is recorded.
+
+The dashboard exact-pin is the sharpest of these. Doctor scans every retained
+run, and a rejected historical artifact increments `malformed`, which blocks the
+collection — the same failure mode ADR-0056 §Consequences recorded. **A producer
+that lands without its dual reader turns every retained artifact into a fault.**
+
+### Decision 12 — This ADR is docs-only; `advisor-impl` implements it
 
 Two-stage, matching ADR-0056: `Proposed` here, `Accepted` on merge.
-Implementation, the residual triage, the schema decisions of Decisions 5 and 6,
-and the two amendments all land in the `advisor-impl` subtask.
+Implementation, the residual triage, the schema decisions of Decisions 5, 6 and
+11, and the amendments of Decision 10 all land in the `advisor-impl` subtask.
 
 ## Consequences
 
@@ -572,9 +761,31 @@ So Codex does ship a policy engine — but it is *rules-and-configuration* shape
 the same class of thing the advisor planned for, not a per-call decision mode
 like Claude's `auto`. A Codex operator therefore loses the advisor and gains no
 host replacement, and unlike the Claude side the premise there has **not**
-expired. Two measurements bound the loss rather than excusing it: the Codex plan
-recommended `count: 0` on this machine, and ADR-0038 §Context established that
-the companion path does not prompt at all. If Codex prompt fatigue is later
+expired.
+
+**The `count: 0` this ADR first offered as mitigation is not mitigation — it is
+a second, independent defect**, and the correction is recorded because it makes
+the regression *larger* in one sense and the removal case stronger in another.
+Cross-host review found that `parseCodexRollout` recognizes only
+`local_shell_call` and `function_call` with `name === 'shell'`
+(`permission-usage-learner.mjs:239`–`:260`). Re-measured over this machine's 100
+most recent rollouts — 33,009 JSONL lines — the shapes actually present are
+`custom_tool_call:exec` (1,006) and `function_call:exec_command` (314), and
+`function_call:shell` does not appear at all. **Recognized observations: 0.**
+
+The Codex advisor has therefore been reading nothing on current Codex versions,
+silently, for as long as that schema drift has existed — while
+`permission-plan.mjs:367`–`:423` demonstrably *can* build approval / sandbox /
+project-trust recommendations when given evidence (pinned by
+`test-settings.mjs:2162`–`:2214`). What is lost is a path that is currently
+non-functional and would need new parsers to revive.
+
+That cuts both ways and the ADR states both. It removes the comfortable reading
+that Codex was fine; and it supplies ADR-0056's own argument in a new form — a
+capability whose Codex half produced **zero** observations against current
+rollouts, undetected, is one nobody was relying on. The honest bound on the loss
+is the remaining one: ADR-0038 §Context established that the companion path does
+not prompt, so the exposure is direct interactive Codex use. If that is later
 measured as a real cost, §Alternatives names the shape the answer should take —
 and it is not this advisor.
 
@@ -587,12 +798,21 @@ intended signal. `plugins/runtime/data/plugin-set.json` is **not** touched — t
 advisor declares no floor — which is one protected path fewer than ADR-0056's
 removal.
 
-**This is a BREAKING change to `plugins/runtime`.** Two documented CLI flags
-disappear (`--permission-diagnosis`, `--permission-plan`, plus their `-max-files`
-/ `-max-file-bytes` companions), a bootstrap stage disappears, and report fields
-`permission_diagnosis`, `permission_plan` and `permission_plan_codex` leave the
-doctor and settings artifacts. `advisor-impl` carries the `BREAKING CHANGE:`
-footer.
+**This is a BREAKING change to `plugins/runtime`**, on four surfaces rather than
+the two the first draft listed:
+
+1. **CLI flags** — `--permission-diagnosis`, `--permission-plan`, plus their
+   `-max-files` / `-max-file-bytes` companions.
+2. **Report fields** — `permission_diagnosis`, `permission_plan`,
+   `permission_plan_codex`, each a non-additive deletion under Decision 11's
+   matrix.
+3. **Module exports** — `doctor.mjs`'s `collectUsageRecordSources` and
+   `settings.mjs`'s `renderCodexConfigToml` re-exports, and the whole
+   advisor-only half of `permission-sanitize.mjs` (Decision 3).
+4. **Run-manifest shape** — bootstrap Stage 6 disappears and `proof.permission`
+   changes applicability and blockers.
+
+`advisor-impl` carries the `BREAKING CHANGE:` footer and enumerates all four.
 
 **Open runs that reached Stage 6 need a stated migration.** ADR-0048 §1 handled
 its own stage change by injecting steps additively; a *removal* has no
@@ -634,21 +854,26 @@ and would report `cat` as a deny-graded prompt cause. A diagnosis nobody acts on
 that is also wrong is worse than none. It is also the shape that leaves 828 + 502
 lines standing to serve a read-only report.
 
-**Keep the advisor but scope it to Codex.** Rejected, though it is the one
-option with a live regression behind it (Consequences, paragraph 2). The Codex
-half is not independently healthy: it shares `permission-usage-sources.mjs`,
-`permission-usage-learner.mjs` (`parseCodexRollout`) and
-`permission-advisor-core.mjs` with the Claude half, so scoping to Codex keeps
-essentially the whole library to serve a plan that produced `count: 0`. If Codex
-prompt fatigue becomes a measured problem, it deserves an advisor designed
-against Codex's actual approval model, not the Claude allowlist model wearing a
+**Keep the advisor but scope it to Codex.** Rejected, and the measurement that
+rejects it is the one in §Context: `parseCodexRollout` recognizes **zero**
+observations in current rollouts. Scoping to Codex would mean keeping
+`permission-usage-sources.mjs`, `permission-usage-learner.mjs` and
+`permission-advisor-core.mjs` — essentially the whole library — and then
+**writing new parsers first**, because the existing ones read a rollout schema
+Codex no longer emits. That is not "keep the working half"; it is "rebuild the
+half that silently stopped working." If Codex prompt fatigue is later measured as
+a real cost, it deserves an advisor designed against Codex's actual approval
+model and current rollout schema, not the Claude allowlist model wearing a
 `renderCodexConfigToml` hat.
 
 **Delete `proof.permission` along with Stage 6.** Rejected on measurement. The
-proof takes no advisor input and is the only executable evidence for ADR-0035
-§4's no-relaxation invariant. Deleting it would remove a boundary guarantee as a
-side effect of removing an advisory — exactly the "resolved by removal" error
-ADR-0056 §Decision 7 built the `splits` category to prevent.
+proof takes no advisor input and is the dedicated live proof that **records**
+ADR-0035 §4's no-relaxation fact (`doctor.mjs:3464`, `:3616` — the only two
+sites). Deleting it would remove a boundary record as a side effect of removing
+an advisory — exactly the "resolved by removal" error ADR-0056 §Decision 7 built
+the `splits` category to prevent. (This ADR twice over-claimed that proof's
+uniqueness before review narrowed it; the narrowing is in §What is worth keeping,
+and this sentence is the corrected form, not a third variant.)
 
 **Delete `permissions.claude.defaultMode` from the machine profile.** Rejected.
 The field is host-configuration reproduction, not advice; a profile that cannot
