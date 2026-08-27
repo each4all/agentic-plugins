@@ -366,6 +366,14 @@ The surviving half moves to `lib/codex-config.mjs`, again with a compatibility
 re-export from the old path, and `test-permission-config.mjs` is reduced to the
 surviving functions rather than deleted.
 
+`settings.mjs:47`'s own re-export of `parseCodexPermissionConfigToml` is a
+separate question and is left to `advisor-impl` with the measurement attached:
+its only consumer is `tests/runtime/test-settings.mjs` (`:14`, `:2146`) — the
+sole *production* import is `profile-readers.mjs:24`, which reaches the library
+directly. A re-export kept alive only by the test that asserts it is a
+reasonable thing to drop, and equally reasonable to keep as a stable surface;
+what it must not be is retained by accident.
+
 **One inconsistency is recorded here rather than fixed**, because it is real and
 `advisor-impl` will meet it: the two Claude permission readers disagree on
 casing. `permission-config.mjs`'s `readClaudePermissionConfig` returns
