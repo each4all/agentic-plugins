@@ -4,6 +4,10 @@
 
 Accepted (2026-07-02)
 
+> Amended 2026-08-27 — see [Amendments](#amendments). The
+> subprocess contract below no longer passes `--context-state`;
+> the sidecars measure no context budget, so they supply no value.
+
 <!--
 Relates to ADR-0024 (runtime operator control plane — introduced the
 footer + `footer.mjs`), ADR-0029 (entry-routing / Active Next-Action
@@ -136,7 +140,8 @@ leak into the caller's channels):
 execFile(process.execPath, [
   <runtime-root>/scripts/footer.mjs, 'render',
   '--workflow-projection-file', <projection-file>,
-  '--context-state', 'yellow',          // NOT --risk; footer.mjs:214
+  // no --context-state — see Amendments (2026-08-27); the sidecar
+  // measures nothing, so it asserts nothing
   '--host', <host>,                      // threaded through the sidecar
   '--repo-root', <repoRoot>,             // not the child's cwd
   '--completion-state', <mapped>,        // see §3
@@ -148,9 +153,12 @@ execFile(process.execPath, [
 
 - Output goes to the caller's **stderr only, never stdout** (mirrors the
   sidecar's two-channel model; preserves the machine-channel contract).
-- `--context-state` defaults to `yellow` (conservative → the handoff
-  fires); the caller may pass a better value if one is ever available, but
-  the footer never claims to have measured live token usage.
+- `--context-state` is **not passed** (amended 2026-08-27). Runtime still
+  applies the conservative `yellow` when nothing is supplied, so the handoff
+  still fires; the difference is that runtime now reports the value as its
+  own fallback instead of as a caller assertion. The caller may pass a better
+  value if one is ever available — with `--context-state-source measured`
+  when it is genuinely measured.
 - `--host` and `--repo-root` are passed explicitly. The sidecar signature
   (`{ repoRoot, workflowPath, projectionFile }`) currently carries no
   `host`; the wiring threads `host` through it from the call site (which
@@ -281,6 +289,42 @@ the model's prose.
 - `footer.mjs` itself is unchanged (no new flag); the wiring uses its
   existing `render` interface. `footer-contract.md` gains a note that the
   sidecar terminal path now invokes the render step.
+
+## Amendments
+
+### 2026-08-27 — the sidecars stop declaring an unmeasured context state
+
+**Trigger**: runtime 0.92.0 shipped context-state provenance
+(`context_state_measurement` / `context_state_origin` /
+`context_state_report`, and `session_handoff.context_risk_supplied`).
+
+**What changed**: §2's subprocess contract specified
+`'--context-state', 'yellow'`. `footer.mjs` reads any supplied value as a
+**caller assertion**, so that hard-coded value was rendered as though a
+measurement backed it, and it pinned `context_risk_supplied` to `true` —
+which made runtime's own honest-fallback branch unreachable. The four
+persona sidecars now pass no `--context-state` at all. Runtime applies the
+same conservative `yellow` and reports it as `unmeasured (no budget
+sensor)`, naming the fallback as its own.
+
+**What did not change**: the effective risk enum is still `yellow`, so every
+consumer that switches on it is unaffected; `recommended_session`,
+completion state and archive gate are identical. §2's other flags, the
+stderr-only channel, the at-most-once render guard and the fail-closed
+posture all stand.
+
+**No capability floor was added**, and that is deliberate rather than an
+oversight. `footer.mjs` was designed so the honest path needs no flag, and
+the omission was measured against every released `plugin-runtime` tag in the
+sidecars' discovery range: below 0.92.0 omitting `--context-state` is
+byte-identical to passing `yellow`, and at or above it the only deltas are
+the provenance fields. A version gate would therefore have guarded a
+difference that does not exist. Documentation that promises the
+`unmeasured` render must still name 0.92.0, because the *rendered text*
+does differ across that boundary even though the behavior does not.
+
+[ADR-0043](0043-founder-designer-footer-enablement.md) applied §2 unchanged
+to designer and founder and is amended in step.
 
 ## Alternatives Considered
 
