@@ -88,6 +88,26 @@ export const stepIds = Object.freeze({
   statuslineConfigured: (host) => `statusline.${host}.configured`,
 });
 
+/**
+ * The proofs whose APPLICABILITY comes from an operator CHOICE rather than from a
+ * machine fact — the "opt-in" class.
+ *
+ * The distinction matters because of what happens if the choice is never made.
+ * Every other Stage-8 proof derives its applicability from something observable:
+ * `proof.workflow-continuation` from whether `engineer` is selected,
+ * `proof.permission` from whether a permission fragment was actually applied,
+ * `proof.deep-peer-smoke` from nothing at all (always owed). Those cannot be
+ * "missed" — the machine already decided. An OPT-IN proof is `not-applicable`
+ * until the operator asks for it, so a run whose other required proofs all pass
+ * TERMINALIZES around it, and `resume` refuses a terminal run: the proof can
+ * then never be attached, and the only recovery is a fresh plan.
+ *
+ * Kept as a list rather than a predicate over `applicable` because "not
+ * applicable" alone cannot tell the two classes apart — which is precisely the
+ * confusion the plan-time warning exists to remove.
+ */
+export const OPT_IN_PROOF_STEPS = Object.freeze([stepIds.proofEgressProviderAck()]);
+
 // §6.2 — not declinable, EVER: host CLI presence and authentication; marketplace
 // registration; `runtime`; `companions`; and any plugin reached by a hard edge from
 // a retained plugin. The last is selection-dependent, so it is computed per run
