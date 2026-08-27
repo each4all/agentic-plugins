@@ -147,8 +147,10 @@ const ANY_DOCTOR_ID = String.raw`doctor-\d{8}T\d{6}Z-[0-9a-f]+`;
 const DATE = String.raw`(\d{4}-\d{2}-\d{2})Z?`;
 // A content digest that a hard wrap has SPLIT, e.g. a 64-hex whole-tree
 // hash reflowed as `<49 hex> <15 hex>`. Masked so the short fragment
-// cannot read as a sha. The scorecard and DEVELOPMENT.md carry six such
-// digests (four and two); all six are unwrapped today, and an unwrapped
+// cannot read as a sha. The scorecard and DEVELOPMENT.md carry ten such
+// digests (eight and two) as of the 0.95.0 recovery — a count that drifts
+// with every loop, so it is a measurement rather than a bound; all are
+// unwrapped today, and an unwrapped
 // one needs no mask because `CITED_SHA`'s alphanumeric-neighbour rule
 // already rejects every window inside a run longer than 40.
 //

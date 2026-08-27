@@ -1,0 +1,99 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-interview-that-carried-values",
+  "evidence_loop": {
+    "label": "the interview that carried values, and the reader that had to see them unsanitized",
+    "summary": "One runtime release on the bootstrap plane. The bootstrap interview gains a value-carrying answer form, `set:<key>=<value-or-unset>`, with two Stage-4 value steps (`config.session`, `config.notify_kinds`); the run schema is RENAMED 1.2 to 1.3 so the future-minor mutator fence arms against it; and `runtime:settings --unset` adds the first destructive write on that path, which is why its apply became temp+rename atomic. Underneath it, the profile-export secret gate was being handed already-sanitized readers, so the gate scanned redacted text and could not have found the secret it exists to find."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.94.0",
+      "tag": "plugin-runtime-v0.94.0",
+      "release_pr": 738,
+      "squash": "479693e847e5a7f2c2d0862d67de73bfe5afa93c",
+      "marketplace_sync": "6d5357464507019b5849142f2ad8e9ce96795383"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "f79508505ee21fdc36e34e04a611573cca2be8e2",
+      "pr": 739,
+      "note": "The value-carrying interview. The standing decision is folded from the `choices[]` ledger rather than held in `steps[].desired`, which version drift clears. The schema move was a RENAME 1.2 to 1.3: the tagged trees show two additions (schema 1.3, `answer-values.mjs`) against one removal, net 127 to "
+    },
+    {
+      "sha": "3c22185a8ef609c3d21f94dd4d49ecb4a928c469",
+      "pr": 737,
+      "note": "The pre-sanitize secret gate was reading post-sanitize output. A gate positioned before sanitization but fed sanitized text is not a weaker gate — it is a gate that can never fire, and its passing verdict was being reported as evidence."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260827T013118Z-e8d064",
+      "date": "2026-08-27",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:4cefeec62384c68c0ac89684204cbe01b00da7cba2b2caf0434ad2b13040cc54",
+      "runtime_version": "0.94.0",
+      "installed": {
+        "claude": "0.94.0",
+        "codex": "0.94.0"
+      },
+      "host_cli": {
+        "claude": "2.1.247 (Claude Code)",
+        "codex": "codex-cli 0.150.0"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning; hard_failures empty; one warning — latest compatibility check needs follow-up"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "egress_ack_proof",
+          "value": "not_requested — it performs a real network send behind a second consent, and this loop had no reason to ask for one"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale, direction ahead — the 2026-08-16 2.1.233 / 0.147.0 baseline against an observed 2.1.247 / 0.150.0; refreshing it is protected-asset work a recovery is forbidden to do"
+        },
+        {
+          "key": "experience_parity",
+          "value": "partial 81% 105/130; satisfied 5, partial 3, not_verified 1, blocked 0, manual follow-ups 1 (codex-hook-review)"
+        },
+        {
+          "key": "installed_byte_identity",
+          "value": "both caches held an identical 128-file 0.94.0 package; packaged baseline 86fdf17e4418884f01b67785eeaaacc74923a8a01efa238f514bf270da600843 matched both caches, the tag and the repository — unchanged from 0.93.0, because this release did not touch the packaged baseline"
+        },
+        {
+          "key": "record_is_a_backfill",
+          "value": "Both caches held an identical 128-file 0.94.0 package, whole-tree digest 9b66e6de… under the path-first recipe stated in the scorecard; packaged baseline 86fdf17e… matched both caches, the tag and the repository — unchanged from 0.93.0, because this release did not touch the packaged baseline."
+        }
+      ]
+    }
+  ],
+  "install_method": "Installed on both hosts by the loop's own recovery, with host-specific verbs: Claude registers this marketplace as a directory source, so `claude plugin marketplace update` had to run before `claude plugin update` saw anything; Codex reads the SAME marketplace as a git source and refreshes via `codex plugin marketplace upgrade agentic-plugins`. Attested from PR #740, not re-observed.",
+  "narrative": "Two changes shipped here and only one of them is interesting.\n\nThe interview change is the visible one: an answer form that carries a value rather than a choice, two value steps for the session and notify families, and the first destructive settings operation on that path. Its one design decision worth recording is where the standing decision lives. Holding it in `steps[].desired` would have made it a property of the plan; folding it from the `choices[]` ledger makes it a property of what the operator actually answered, which is the thing that survives a version bump. The schema move was a rename rather than an addition for the same reason — a 1.2 reader must refuse a 1.3 document rather than half-read it, and the future-minor mutator fence only arms if the minor actually moved.\n\nThe other change is the one worth keeping. The profile export runs a secret gate before sanitization, on the theory that the gate should see what the operator wrote rather than what redaction left behind. It was being handed the sanitized readers. That is not a gate with reduced sensitivity; it is a gate that cannot fire, because the pattern it looks for has already been replaced by the time it looks. It had been passing, and the passing verdict was being carried as evidence that no secret was present. The distinction between `no secret was found` and `nothing could have been found` is the whole value of the check, and for as long as the wiring was wrong the artifact could not tell the two apart.\n\nWhat this record adds, being written late, is the observation that the recovery for this loop closed the document red and skipped the store. The stage docs were updated, the proof was real, the scorecard byte comparison was re-taken rather than edited — and no record was written, so the machine-checkable half of the evidence simply did not exist for this release. A recovery that updates prose and skips the record leaves exactly the asymmetry ADR-0049 was accepted to remove, and it is invisible: nothing in the repository goes red when a loop has no record.\n\nOne administrative note belongs with the rest. This record was authored on 2026-08-27 during the post-0.95.0 recovery, not during its own: PR #740 squash `4d9805e` closed this loop's document red and wrote no record. Every derived and observed field here comes from git and from the proof artifact, which was still on disk; nothing was reconstructed from prose.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-trust-label-the-document-could-write",
+      "note": "The immediately preceding loop. It moved the portable machine profile to 1.2 so it could carry the session-config family; this loop gives the interview a way to supply those values."
+    }
+  ]
+}
