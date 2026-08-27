@@ -70,6 +70,29 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    - **A partial answer is legal.** Naming one key leaves the others undecided and
      the step pending; a later `set:` merges per key. Say which keys remain.
 
+3c. **Opt into the optional proofs at PLAN time, or accept losing them.**
+   `plan` now warns for every opt-in proof this run does not owe — today that is
+   `proof.egress-provider-ack`. The warning is not noise: a run terminalizes as
+   soon as every proof it DOES owe passes, `resume` refuses a terminal run, and
+   an opt-in proof can then never be attached. Recovery is a fresh plan and a
+   re-run of every proof, which costs minutes.
+
+   **The canonical sequence, when the operator wants the egress proof:**
+
+   ```
+   plan   --answers <file>   # the egress opt-in — the ONE answer that does real
+                             # work at plan time (§3: every other `execute` is
+                             # refused here, because resume reads its own file)
+   resume --answers <file>   # every proof to execute, in ONE file
+   ```
+
+   Execute the proofs in a SINGLE resume. Splitting them across resumes is the
+   trap this warning exists for: the first resume whose owed set happens to pass
+   terminalizes the run, and the proofs left for "the next one" have nowhere to
+   go. Post-terminal, the only remaining door is the `attest` verb, and it
+   records receipt testimony about an ALREADY-recorded ack — it cannot add a
+   proof that was never run.
+
 4. **Render.** The script renders host-config fragments into the run's
    `fragments/` directory and presents apply commands (including the
    plugin-management command carrying the plan hash). Surface them verbatim.

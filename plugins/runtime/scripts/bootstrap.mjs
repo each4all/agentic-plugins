@@ -81,7 +81,7 @@ import {
   statuslineShimInstallPath,
 } from './lib/statusline-plan.mjs';
 import { inspectInstalledReceivers } from './lib/receiver-inventory.mjs';
-import { PROOF_STAGES, deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
+import { OPT_IN_PROOF_STEPS, PROOF_STAGES, deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
 import {
   SET_ANSWER_PREFIX,
   UNSET,
@@ -556,6 +556,45 @@ function sanitizeProposals(result) {
  * `plan` got no warning there, and `status` showed none either — the hazard was
  * invisible on three of the four verbs that render it (code review, MEDIUM).
  */
+/**
+ * The plan-time warning for an OPT-IN proof nobody opted into.
+ *
+ * The failure it names is silent and unrecoverable. A run terminalizes as soon
+ * as the reducer says `complete` — which asks only about APPLICABLE proofs — and
+ * an opt-in proof is `not-applicable` until the operator requests it. So a run
+ * that never opted in closes cleanly around the missing evidence, `resume`
+ * refuses a terminal run, and the proof can never be attached: the only recovery
+ * is a fresh plan and a re-run of every proof from scratch.
+ *
+ * Warned rather than refused, because not opting in is the COMMON and correct
+ * choice — most machines never egress. What the operator is owed is that the
+ * door closes, and when.
+ *
+ * `expected` is the derived registry (never the manifest's own rows), so a step
+ * this selection genuinely does not apply cannot be confused with one the
+ * operator merely has not asked for.
+ */
+function optInProofWarnings({ expected }) {
+  const out = [];
+  const byId = new Map((expected ?? []).map((step) => [step.id, step]));
+  for (const id of OPT_IN_PROOF_STEPS) {
+    const step = byId.get(id);
+    // `applicable` IS the whole gate, and deliberately the only one. Both call
+    // sites derive it from a predicate at least as inclusive as
+    // `egressProofOptedIn` — plan from this verb's answers, resume from the
+    // manifest's rows, choices and recorded proofs — so an opt-in of ANY
+    // provenance has already flipped it to true by the time we get here.
+    //
+    // A second `egressProofOptedIn(...)` check was written here first and
+    // removed on measurement: no mutation could kill it, because it is
+    // unreachable. A redundant guard that reads as load-bearing is worse than
+    // no guard, so the reachable condition is the one that stays.
+    if (!step || step.applicable === true) continue;
+    out.push(`${id} is NOT opted in, so this run does not owe it — and once every proof it DOES owe passes, the run terminalizes and resume refuses a terminal run, which means this proof can never be attached to it afterwards (recovery is a fresh plan, re-running every proof). Opt in now with an answers file naming ${id}, or accept that this run will close without that evidence.`);
+  }
+  return out;
+}
+
 function dualKindWarningsFor(standing) {
   const out = [];
   for (const [stepId, entry] of standing ?? new Map()) {
@@ -2510,7 +2549,14 @@ async function runPlan(ctx, opts) {
     steps = deriveAndJudge(effective, steps);
   }
 
-  const warnings = [...softWarnings, ...seededWarnings, ...foldWarningsNow];
+  const warnings = [
+    ...softWarnings,
+    ...seededWarnings,
+    ...foldWarningsNow,
+    // PLAN is where the opt-in decision is still cheap: the answers file is
+    // already in the operator's hands and no proof has run yet.
+    ...optInProofWarnings({ expected: expectedNow }),
+  ];
 
   // §6.2 — a plugin decline creates a new effective `custom` selection. The retained
   // set is PERSISTED (below, through buildManifestShape) rather than recomputed by
@@ -3827,6 +3873,16 @@ async function runResume(ctx, opts) {
   });
   if (!updated.updated) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'resume', status: 'persist-failed', reason: updated.reason, diagnostics: updated.diagnostics } };
+  }
+
+  // The same warning at the LAST moment it is still actionable. Gated on the run
+  // staying OPEN: once `nextStatus` is terminal the door has already shut, and a
+  // warning telling the operator to opt in would be an epitaph rather than an
+  // instruction. This is the resume half of the failure the plan warning names —
+  // and the half that actually bit, because a proof run SPLIT across resumes
+  // terminalizes on the first one whose owed set happens to pass.
+  if (nextStatus === 'open') {
+    warnings.push(...optInProofWarnings({ expected }));
   }
 
   const stage0 = buildStage0(finalProbe, finalRaw);

@@ -866,6 +866,49 @@ describe('review remediation — the fixes that only exist across verbs', () => 
   });
 });
 
+describe('bootstrap CLI — the opt-in proof warning (§3, terminalization)', () => {
+  it('plan WARNS that a non-opted-in proof can never be attached once the run terminalizes', async () => {
+    const { home, cwd } = await makeHome();
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
+    const warned = plan.report.warnings.filter((w) => w.includes('proof.egress-provider-ack'));
+    strictEqual(warned.length, 1, `exactly one opt-in proof is unclaimed:\n${plan.report.warnings.join('\n')}`);
+    match(warned[0], /NOT opted in/);
+    match(warned[0], /terminalizes/, 'it names WHEN the door shuts');
+    match(warned[0], /can never be attached/, 'and that the loss is permanent');
+    match(warned[0], /fresh plan/, 'and what the recovery costs');
+  });
+
+  it('CONTROL — opting in silences it, because the run then OWES the proof', async () => {
+    // Without this control the assertion above passes on a warning that fires
+    // unconditionally, which would be noise rather than a signal.
+    const { home, cwd } = await makeHome();
+    const file = await answers(home, 'opt-in.json', [{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]);
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
+    strictEqual(plan.report.warnings.filter((w) => w.includes('proof.egress-provider-ack')).length, 0,
+      'an opted-in proof is owed, so there is nothing to warn about');
+    const step = stepOf(plan.report, 'proof.egress-provider-ack');
+    ok(step && step.status !== 'not-applicable', `and the step is genuinely owed (${step?.status})`);
+  });
+
+  it('a DECLINE also silences it — refusing is a decision, not an oversight', async () => {
+    const { home, cwd } = await makeHome();
+    const file = await answers(home, 'declined.json', [{ step_id: 'proof.egress-provider-ack', answer: 'decline' }]);
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
+    strictEqual(plan.report.warnings.filter((w) => w.includes('proof.egress-provider-ack')).length, 0);
+  });
+
+  it('an OPEN resume repeats it — the split-proof-run trap is a resume-time failure', async () => {
+    // This is the half that actually bit: a proof run split across resumes
+    // terminalizes on the first one whose owed set passes, and the proofs left
+    // for "the next resume" have nowhere to go.
+    const { home, cwd } = await makeHome();
+    await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
+    const resume = await boot({ argv: ['resume', '--latest-open', '--format', 'json'], home, cwd });
+    strictEqual(resume.report.run_status, 'open', 'precondition: the run is still open, so the warning is still actionable');
+    ok(resume.report.warnings.some((w) => w.includes('proof.egress-provider-ack')), 'and resume repeats it');
+  });
+});
+
 describe('bootstrap CLI — the ledger capacity preflight (§3.3)', () => {
   it('refuses BEFORE any effect when the choices ledger would overflow', async () => {
     const { home, cwd } = await makeHome();
