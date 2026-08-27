@@ -359,10 +359,10 @@ describe('doc evidence — the sha extractor', () => {
   }
 
   it('does not extract a 64-hex content digest, wrapped or not', () => {
-    // The scorecard and DEVELOPMENT.md carry nine of these (whole-tree and
-    // packaged-baseline hashes), five of them distinct — the count was six
+    // The scorecard and DEVELOPMENT.md carry ten of these (whole-tree and
+    // packaged-baseline hashes), six of them distinct — the count was six
     // when this was written and drifts with every recovery, so it is a
-    // measurement of the corpus, not a bound this test enforces. All nine
+    // measurement of the corpus, not a bound this test enforces. All ten
     // are unwrapped today; the wrapped form is covered because one reflow
     // would produce it, and this is its only exercise.
     const long = 'a'.repeat(64);
