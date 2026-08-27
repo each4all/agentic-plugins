@@ -20,6 +20,17 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.96.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.95.0...plugin-runtime-v0.96.0) (2026-08-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **plugin/runtime:** the compat and doctor artifact schemas bump and lose fields. `runtime-compat-{snapshot,gap,plan}` go to 1.2, `runtime-doctor-1.1` / `runtime-doctor-artifact-1.1` lose `host_parity_assurance`, `runtime-experience-parity-1.1` loses a criterion from its denominator, and `runtime-dashboard` goes to 2.0. Readers accept every earlier schema era; producers no longer emit the removed fields, and the dual readers ship in the same release as the producers. `plugins.runtime.minimum_version` returns to `null`. Rollback is a forward release, never a reused or lowered version.
+
+### Features
+
+* **plugin/runtime:** remove the assurance grant/cohort matcher (ADR-0056) ([d28702e](https://github.com/each4all/agentic-plugins/commit/d28702e2363223fe21af31ac97427e3a242d759c))
+
 ## [0.95.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.94.0...plugin-runtime-v0.95.0) (2026-08-27)
 
 
