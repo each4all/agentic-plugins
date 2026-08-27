@@ -25,6 +25,18 @@ reads designer state), and what the code-emitted terminal path guarantees.
   artifact pointers, recommended next work, and the continue-vs-fresh
   session-handoff) on the caller's **stderr**. The model does **not**
   hand-compose it at completion; it surfaces the emitted one.
+
+  The sidecar supplies **no** `--context-state`: it owns no context-budget
+  sensor, and footer.mjs reads a supplied value as a caller assertion.
+  Against runtime **≥ 0.92.0**, where context provenance shipped, the footer
+  reports `context state: unmeasured (no budget sensor)` and names the
+  conservative yellow as runtime's own fallback in the continue-vs-fresh
+  block. Older runtimes are still reachable — discovery floors at
+  **0.79.0** here — and there the render is unchanged
+  (`context state: yellow`): omitting the flag is byte-identical to passing
+  it below 0.92.0, which is why no capability floor guards the omission. A
+  measured risk is still honored when a caller that actually measures one
+  passes it.
 - from the **Stop hook backstop** — if the active workflow is terminal,
   the hook (both hosts) re-fires the sidecar **before** the auto-archive
   move, so the guaranteed-channel projection exists even when the primary
