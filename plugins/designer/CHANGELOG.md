@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.6](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.5...plugin-designer-v0.3.6) (2026-08-27)
+
+
+### Bug Fixes
+
+* **plugin/designer:** stop declaring a context state the sidecar never measured ([653110a](https://github.com/each4all/agentic-plugins/commit/653110aacbb713ad87a6e9cea61e9c4613a58734))
+
 ## [0.3.5](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.4...plugin-designer-v0.3.5) (2026-08-24)
 
 
