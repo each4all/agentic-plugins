@@ -490,7 +490,17 @@ function renderTerminalFooter({ repoRoot, host, projectionFile, projection, gate
         const footerHost = host === 'claude' || host === 'codex' ? host : 'neutral';
         const baseArgs = [
           '--workflow-projection-file', projectionFile,
-          '--context-state', 'yellow', // NOT --risk (footer.mjs:214); yellow = conservative default
+          // NO --context-state ON PURPOSE. This sidecar owns no context-budget
+          // sensor, and footer.mjs reads any supplied value as a CALLER
+          // ASSERTION. Passing a hard-coded yellow therefore rendered a
+          // fabrication as if someone had looked, and pinned
+          // `session_handoff.context_risk_supplied` to true — which made
+          // runtime's own honest-fallback branch unreachable. Passing nothing
+          // is the honest statement of "I measured nothing": runtime still
+          // applies the same conservative yellow and now reports it as its own.
+          // No version floor is needed: below the provenance capability,
+          // omitting the flag is byte-identical to passing yellow (measured —
+          // both render `context state: yellow`), so this degrades silently.
           '--host', footerHost,
           '--repo-root', repoRoot,
           '--completion-state', flags.state,
@@ -571,8 +581,10 @@ function renderTerminalFooter({ repoRoot, host, projectionFile, projection, gate
  * its text on stderr. That render is fail-closed silent (missing/too-old runtime
  * → nothing) and idempotent (rendered at most once per terminal transition,
  * guarded by a sibling marker so the Stop-hook backstop does not double-render).
- * The stderr advisory below still names the conservative `yellow` default; the
- * footer step composes the single continue-vs-fresh report on top of it.
+ * The stderr advisory below no longer names a `yellow` default: this sidecar
+ * measures no context budget, so it asks the operator to supply their own
+ * reading rather than handing them one it invented. The footer step composes
+ * the single continue-vs-fresh report on top of it.
  *
  * @param {object} args
  * @param {string} args.repoRoot
@@ -606,8 +618,10 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
       process.stderr.write(
         `⚑ ADR-0031 session-handoff: ${p.workflow_kind} ${p.workflow_id} ` +
           `(archive_gate=${p.archive_gate}); projection → ${repoRelativePointer(repoRoot, target)}. ` +
-          `Render continue-vs-fresh: runtime:context check --risk yellow ` +
-          `--workflow-projection-file <file> (yellow = conservative script-fired default).\n`,
+          `Render continue-vs-fresh: runtime:context check --risk <green|yellow|red> ` +
+            `--workflow-projection-file <file> (this script measures no context ` +
+            `budget — supply your own reading; check requires --risk or ` +
+            `--token-budget metrics).\n`,
       );
     } catch {
       /* advisory is best-effort — swallow */

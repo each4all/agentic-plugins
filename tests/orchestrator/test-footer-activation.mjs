@@ -247,6 +247,35 @@ describe('orchestrator completion-footer activation (ADR-0039)', () => {
     match(stderr, /\/(orchestrator|runtime):/);
   });
 
+  // The sidecar owns no context-budget sensor. It used to pass a hard-coded
+  // `--context-state yellow`, which the footer could only read as a caller
+  // ASSERTION — so a fabricated value was rendered as if someone had looked,
+  // and `session_handoff.context_risk_supplied` was stuck `true`, making the
+  // runtime's own honest-fallback branch (footer.mjs, `=== false`) unreachable.
+  // Passing nothing is the honest statement of "I measured nothing": runtime
+  // still applies the same conservative yellow, and now says whose it is.
+  it('declares no context state — an unmeasured default renders as unmeasured, not as a caller assertion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orch-footer-unmeasured-'));
+    const macroPath = await bootstrapMacro(root, { subtasks: [SUBTASK('T1')], nextAction: 'Dispatch the first ready subtask' });
+    const projectionFile = join(root, 'proj.json');
+    const { value, stderr } = await withRuntime(RUNTIME_ROOT, () => captureStderr(() =>
+      emitTerminalHandoffSidecar({ repoRoot: root, workflowPath: macroPath, projectionFile, host: 'claude' })));
+
+    strictEqual(value.footerRendered, true, stderr);
+    ok(
+      stderr.includes('context state: unmeasured (no budget sensor)'),
+      `context state must render as unmeasured; got:\n${stderr}`,
+    );
+    ok(
+      stderr.includes("context risk: yellow is runtime's conservative fallback"),
+      `session handoff must name the fallback as runtime's; got:\n${stderr}`,
+    );
+    ok(
+      !stderr.includes('[declared, not measured]'),
+      `sidecar must not declare a context state it never measured; got:\n${stderr}`,
+    );
+  });
+
   it('is idempotent: the Stop-hook backstop does NOT re-render what the primary rendered', async () => {
     const root = await mkdtemp(join(tmpdir(), 'orch-footer-idem-'));
     const macroPath = await bootstrapMacro(root, { subtasks: [SUBTASK('T1')] });

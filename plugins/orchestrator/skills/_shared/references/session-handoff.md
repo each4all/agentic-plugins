@@ -140,6 +140,15 @@ next work:
 - whenever the caller-supplied **context risk is yellow/red** (continuing a
   near-full session is the case the handoff exists to catch).
 
+The sidecar itself supplies **no** context risk — it owns no context-budget
+sensor. Against runtime **≥ 0.92.0**, where context provenance shipped, the
+runtime applies its conservative yellow and the footer reports
+`context state: unmeasured (no budget sensor)`, naming the fallback as
+runtime's own rather than presenting it as an observation. Older runtimes are
+still reachable — discovery floors at **0.63.0** here — and there the render is
+unchanged (`context state: yellow`): omitting the flag is byte-identical to
+passing it below 0.92.0, which is why no capability floor guards the omission.
+
 It is not emitted on a trivial reversible step.
 
 ### How to compute + pass the projection
