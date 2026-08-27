@@ -312,10 +312,28 @@ lines) is advisor-exclusive and goes. `commands/doctor.md`,
 bootstrap skills, both `agents/openai.yaml` mirrors, and
 `plugins/runtime/README.md` lose their advisor clauses.
 `docs/settings-report-contract.md` (§flag list `:53`, the report-field row
-`:226`, the dry-run-vs-artifact clause `:263`, the family erratum `:296`) and
-`docs/machine-bootstrap-contract.md` (the two lift tables at `:180`–`:194`, the
-no-`repoRoot` rule `:200`, the failure-boundary section `:215`) lose their
-advisory sections. `docs/artifact-policy.md` needs two narrower edits, not a
+`:226`, the dry-run-vs-artifact clause `:263`, the family erratum `:296`) loses
+its advisory sections.
+
+**`docs/machine-bootstrap-contract.md` is the largest documentation surface and
+the easiest to under-scope**, so its sites are enumerated rather than described.
+Beyond the planner lift tables (`:180`–`:194`), the no-`repoRoot` rule (`:200`)
+and the failure-boundary section (`:215`), it carries **five normative sites**
+for the step model Decision 5 changes:
+
+| Site | What it states |
+|---|---|
+| `:1312`–`:1313` | the §8.1 rule that the `permission` proof is required iff a `permission.*.applied` step carries `fragment_applied: true` |
+| `:1377`–`:1378` | the Stage 6 rows `permission.claude.applied` / `permission.codex.applied`, applicability "always", declinable "yes" |
+| `:1382` | the `proof.permission` row, with the same fragment-gated applicability |
+| `:1542` | the blocked-by table: `proof.permission` ← every applicable `permission.<h>.applied` |
+| `:2007` | the prose explaining that reprobe-time promotion of `fragment_applied` feeds §6.1's applicability derivation |
+
+Rows `:1377`–`:1378` are deleted; `:1312`–`:1313`, `:1382`, `:1542` and `:2007`
+are **rewritten to the new applicability**, not deleted — the proof survives and
+its contract has to say what now governs it. This file is **not** a protected
+path under ADR-0052, so these edits add no release-obligation debt beyond the two
+protected paths named in Consequences. `docs/artifact-policy.md` needs two narrower edits, not a
 section removal: `:147`'s family list keeps `permission` per Decision 7, and
 `:130`'s sanitization rule — which is illustrated *by* the advisory — is
 re-illustrated from a surviving consumer rather than deleted, because the rule
