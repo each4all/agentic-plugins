@@ -250,9 +250,20 @@ mentioning the word, not the plan's 163.
 
 The word is generic in most of its occurrences: filesystem permissions in error
 strings (`bootstrap.mjs:708`, `:758`), Claude/Codex host permission *concepts*
-in the parity baseline and skill prose, ADR-0035's boundary language, and
-`plugins/attention`'s `Notification/permission_prompt` matcher — which is a
-**hook event name**, not advisor machinery, and must not be touched.
+in the parity baseline and skill prose, and ADR-0035's boundary language.
+
+**Three surfaces are close enough in name to be deleted by accident, and none of
+them is advisor machinery.** Each is named here for the same reason ADR-0056
+§Decision 2 named designer's and engineer's "quality assurance":
+
+| Surface | What it actually is |
+|---|---|
+| `plugins/attention` `Notification/permission_prompt` (`adapters/claude/hooks/hooks.json:5`, `notification.mjs:49`, `:59`, `sensor.mjs:143`, `:285`, README `:22`, `:122`) | a Claude **hook `notification_type` matcher**, the ADR-0040 §3 attention sensor. A different plugin, a different concept, and untouched. |
+| `runtime:doctor --sandbox-permission-probe` (`doctor.mjs:130`, `:347`, `:443`, `buildSandboxPermissionProbeSection`) | a read-only preflight over CLI / auth / feature-surface / companion-script readiness. Verified: it takes `{requested, readiness}` and reads `readiness.<direction>.sandbox_permission` — **no advisor input**. Survives. |
+| `runtime:doctor --permission-proof` / `--execute-permission-proof` | the ADR-0035 §4 boundary proof — Decision 5. Survives, decoupled. |
+
+Historical evidence records, changelog entries and retained advisory artifacts
+are likewise left alone: they record what was observed at the time.
 
 **Modules removed in full**
 
