@@ -24,6 +24,18 @@ user toward substantial next work**:
   session-handoff) on the caller's **stderr**. The model does **not** hand-compose
   it at completion; it surfaces the emitted one.
 
+  The sidecar supplies **no** `--context-state`: it owns no context-budget
+  sensor, and footer.mjs reads a supplied value as a caller assertion.
+  Against runtime **≥ 0.92.0**, where context provenance shipped, the footer
+  reports `context state: unmeasured (no budget sensor)` and names the
+  conservative yellow as runtime's own fallback in the continue-vs-fresh
+  block. Older runtimes are still reachable — discovery floors at
+  **0.63.0** here — and there the render is unchanged
+  (`context state: yellow`): omitting the flag is byte-identical to passing
+  it below 0.92.0, which is why no capability floor guards the omission. A
+  measured risk is still honored when a caller that actually measures one
+  passes it.
+
 It is not emitted on a trivial reversible step.
 
 ## Archive timing — Claude same-turn Stop vs Codex
