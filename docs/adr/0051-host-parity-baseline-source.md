@@ -273,6 +273,24 @@ the source that is reviewed and released — never a runtime read.**
 > `unknown` — which ADR-0053 §Decision 3 makes an independent hard stop that
 > outranks any assurance grant.
 
+> **Further amended by [ADR-0056](0056-assurance-matcher-removal.md) (accepted
+> 2026-08-27): the assurance section is REMOVED from the packaged baseline.**
+> Items 1–8 remain operative and are, if anything, cleaner: the packaged copy is
+> the sole authority, changing it still obliges a release (ADR-0052), and the
+> grammar is single-sourced in one module again rather than two grammars over one
+> file. The clause the amendment above added — "the packaged baseline gains a
+> compatibility-assurance section" — is **withdrawn**, and this note is written
+> in place rather than by rewriting §Decision 3, so the trail of what was
+> normative when is legible.
+>
+> Two consequences for readers of this ADR. The `withoutAssuranceRegion` masking
+> ADR-0053 required is now `withoutQuotedRegions`: it still blanks fenced and
+> HTML-quoted blocks before `HEADER_RE` runs — item 4's grammar is unchanged, and
+> the exactly-one-header property still holds — but it no longer blanks a
+> sentinel region, because there is none. And the third status class named just
+> above still outranks everything: integrity remains a hard stop, with nothing
+> beneath it to outrank.
+
 **Out of scope.** Enforcement of §Decision 2 is **prose only** and is
 recorded as an explicit follow-up: nothing in CI, release-please, or the
 validators fails when a packaged asset changes without a version change,

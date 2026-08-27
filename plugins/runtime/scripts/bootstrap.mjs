@@ -311,10 +311,16 @@ export function parseBootstrapArgs(argv) {
 }
 
 // ---------------------------------------------------------------------------
-// The prerelease-aware floor comparator MOVED to `lib/runtime-floor.mjs`
-// (ADR-0054 §Decision 5). Three callers need it — this file, the assurance
-// ladder and the cutover gate — and two of them are libraries, so keeping it in
-// a command module would have made a library import a command.
+// The prerelease-aware version comparator lives in `lib/runtime-floor.mjs`.
+// ADR-0054 §Decision 5 moved it there because three callers needed it — this
+// file, the assurance ladder and the cutover gate — and two of them were
+// libraries, so keeping it in a command module would have made a library import
+// a command. ⚠ ADR-0056 removed the other two callers with the assurance layer,
+// so THIS FILE IS NOW THE ONLY ONE, and the comparator stays a leaf module
+// rather than moving back: it serves the GENERAL per-plugin `minimum_version`
+// map below, which `plugin-set.json` still declares for `companions` and
+// `engineer`, and folding it back in would have to be undone by the next
+// library that needs a version comparison.
 //
 // The move also HARDENED it, and the hardening is why the import is not a
 // no-op: the parse here was a prefix regex with no end anchor, so against a

@@ -43,11 +43,11 @@ It does not own persona-level engineering work or macro planning. Those remain i
 | `/runtime:migrate workflow-storage [--format text\|json] [--plugin all\|engineer\|orchestrator] [--apply]` | shipping | Explicit ADR-0025 workflow storage migration planner. Dry-run reports legacy/canonical state, branch counts, peer-run and lock blockers, and source/destination paths. `--apply` moves only gitignored `.claude/agentic-*` workflow state into `.agentic-plugins/state/<plugin>` and writes a local migration manifest. |
 | `/runtime:migrate legacy-egress-intents [--root <path>]... [--skip <path>]... [--max-depth <n>] [--time-budget-ms <n>] [--format text\|json]` | shipping | ADR-0048 residual (d) READ-ONLY cross-checkout inventory of pre-upgrade repo-scoped egress intent WALs. No `--apply` exists: it writes nothing, reads no record body, and never emits a shell command; the scan spawns no subprocess (the command wrapper resolves the repo root with `git rev-parse`, as every runtime command does). Scans `$HOME` by default (`--root` replaces it; `--skip` excludes a subtree by device/inode identity). The live machine-global WAL is excluded by identity; the current checkout's own legacy directory **is** reported, annotated `already_fenced_by_current_doctor`. Exit `0` nothing in scanned scope / `2` locations found / `1` scan incomplete — and an incomplete scan carries no removal instruction at all. |
 | `/runtime:consensus plan\|record\|synthesize\|decide\|ratify\|cancel\|next-round\|execute\|status ...` | shipping | Runtime-owned consensus artifact manager and explicit companion executor. Creates fanout/rebuttal prompts, records or executes raw peer output as files, records owner decisions for unresolved consensus, records owner ratifications for converged runs whose synthesis flagged a residual owner lever, records artifact-only cancellation for stopped runs, and emits only sanitized execution metadata, synthesized summary, durable disagreements, evidence pointers, artifact paths, owner-decision/owner-ratification/cancellation pointers, `status --latest` guidance from the newest readable manifest, and `status --latest-open` guidance that skips terminal runs. |
-| `/runtime:compat snapshot\|check\|ingest-release-notes\|plan ...` | shipping scaffold | Runtime-owned host-version compatibility artifact manager. Records Claude Code / Codex CLI version snapshots, compares them to the remembered host-parity baseline, stores explicit release-note files, URL pointers, or explicitly fetched URL content, requires changed-host/version release-note coverage, and emits compatibility update plans without fetching URLs by default or mutating host state. Per ADR-0053 §Decision 4 it also **observes** compatibility assurance — freezing the verdict into the snapshot so a remembered run is never retroactively granted coverage — and keys its readiness classification (`current`/`assured`/`unassured`/`assurance_blocked`/`legacy_unassured`) on that verdict while continuing to record drift as evidence. Assurance is granted by human review recorded in the packaged baseline (§Decision 2); compat evaluates membership and can neither create nor widen a grant. |
+| `/runtime:compat snapshot\|check\|ingest-release-notes\|plan ...` | shipping scaffold | Runtime-owned host-version compatibility artifact manager. Records Claude Code / Codex CLI version snapshots, compares them to the remembered host-parity baseline, stores explicit release-note files, URL pointers, or explicitly fetched URL content, requires changed-host/version release-note coverage, and emits compatibility update plans without fetching URLs by default or mutating host state. Readiness is classified as `current`/`release_notes_required`/`gap_analysis_ready`/`baseline_unusable`/`snapshot_unreadable`/`host_version_unreadable` while drift keeps being recorded as evidence. Per ADR-0056 there is no compatibility-assurance verdict: the grant/cohort matcher was removed, and every record carries the `schema_era` that wrote it, so an assurance-era run reads as `legacy_era` history rather than being re-interpreted under this era's weaker meaning of `current`. |
 | `/runtime:worktree plan [--format text\|json] [--task <text>] [--branch <name>] [--base <ref>] [--worktree-dir <path>]` | shipping scaffold | Read-only dedicated-worktree planner. Reports current branch/dirtiness, existing `git worktree list --porcelain` entries, base-ref resolution, candidate branch/path availability, and suggested `git worktree add` commands without executing them. |
 | `/runtime:context capture\|status\|check\|note\|publish-session\|entry-brief ...` | shipping scaffold | Runtime-owned context hygiene artifact manager and read-only explicit budget check. Writes context summary, risk level, artifact pointers, next-session prompt/action, and read-only git source snapshot under `.agentic-plugins/runs/context/`; `status --latest` reads the newest handoff artifact with age stale metadata, source-freshness state, and explicit reuse-or-refresh guidance; `check` creates no artifact. ADR-0044 S3a adds `note (--text\|--file\|--clear)` — explicit, byte-capped, atomic session-capture note staging with operator/hook-grade output-mode split — and `status --slot`, a read-only validated inspection of the session-capture slot/entry/note files with per-file fail-closed skip. ADR-0044 S3b adds `publish-session`, the hook-grade slot publisher gated by the `session_capture` config key (default `off`), intended for the attention Stop sensor; config-off stops production while existing artifacts stay readable, abrupt termination hands off the previous turn's slot, and rollback is consumer-first with a one-shot `state/runtime/session-capture/` cleanup (see [`docs/session-capture-contract.md`](docs/session-capture-contract.md) §9/§13). ADR-0045 S7b adds `entry-brief`, the R0 entry arbiter: bounded reads over persona/orchestrator state, the macro bridge, handoff slots, entry.json, and runtime ledgers; one pointer-only brief (`runtime-entry-brief-1.0`) whose single command is synthesized from the contract §16 lattice and host-localized; `--surface cli|dashboard` always compute while `--surface session-start-hook` is hook-grade and gated by the user-scope-only `entry_brief` key (contract §14-§17). |
 | `/runtime:dashboard [--format text\|json] [--host claude\|codex] [--watch] [--interval-seconds <n>] [--watch-count <n>] [--recent <n>]` | shipping scaffold | Read-only ADR-0040 §6 aggregate operator dashboard. Tier 1: active workflows for engineer, orchestrator, AND founder (persona-generic reads; doctor's `{engineer, orchestrator}` ledger contract untouched), peer runs with stale/non-terminal emphasis, orchestrator macro subtask progress, consensus run states, and the ADR-0045 §7(ii) **entry advisory** — the same arbitrated pointer-only brief `runtime:context entry-brief` computes for the current branch, snapshot mode only, behind the wrapper-threaded trusted `--host` (`skipped (host-not-threaded)` without one; the `entry_brief` gate is informational — the section always computes). Tier 2: recorded doctor/compat/baseline freshness, settings and Codex hook-attestation recency, artifact-inventory attention items, notify-state health (expired dedupe claims, stale reclaim/rotation locks) read directly from `.agentic-plugins/state/runtime/notify/`, and recent `file-log` notifications when configured. `--watch` re-renders from filesystem reads only (never re-probes host CLIs, never spawns, always excludes the entry advisory before the arbiter runs) on a bounded poll interval (default 2s, floor 1s) with explicit exit (SIGINT or `--watch-count`). Snapshot mode's advisory is the one declared exception to the dashboard's no-spawn shape: bounded git probes via the shared entry-brief executor (contract §17). |
-| `/runtime:cutover [record] [--format text\|json] [--completion-audit] [--footer-state <state>] [--omcc-dev-active yes\|no\|unknown] [--dogfood-date YYYY-MM-DD]` | shipping scaffold | omcc cutover readiness report plus explicit dogfood evidence recorder. Audit mode is read-only and aggregates ADR-0012 condition state, scorecard rows, legacy omcc-dev pattern-map completeness, **compatibility assurance** (ADR-0053 §Decision 4: readiness keys on human-granted acceptance of this host pair, not on exact version equality — with a hard ADR-0054 §Decision 5 runtime floor evaluated per host, and a compat check requiring collection integrity plus an identity binding to this machine; exactness moves to a non-gating `observations` channel), host parity baseline freshness, installed/cache plugin versions, latest compat/consensus/context artifacts, forward-looking one-week omcc-dev-free dogfood evidence, latest footer evidence, and latest omcc-dev activity evidence. Text and JSON output include gate details that state the required threshold, current value, and blocker for ADR-0012, scorecard, parity, dogfood, footer, and final owner-declaration gates, plus an operator verification checklist for active manual checks such as Codex `/hooks`, dogfood records, and the owner cutover declaration. `--completion-audit` adds a prompt-to-artifact checklist plus ADR-0012 transition advice across requirement rows, condition rows, runtime commands, artifacts, gates, and weak/missing evidence for final-readiness review. `record` writes only sanitized cutover evidence artifacts under `.agentic-plugins/runs/cutover/`. It can only emit `cutover-ready-candidate`; final cutover remains a user declaration. |
+| `/runtime:cutover [record] [--format text\|json] [--completion-audit] [--footer-state <state>] [--omcc-dev-active yes\|no\|unknown] [--dogfood-date YYYY-MM-DD]` | shipping scaffold | omcc cutover readiness report plus explicit dogfood evidence recorder. Audit mode is read-only and aggregates ADR-0012 condition state, scorecard rows, legacy omcc-dev pattern-map completeness, the latest compat run (ADR-0056 §Decision 6: intact collection, `current` in **this** schema era, and an identity binding between the recorded observation and the live host pair — the two assurance checks and the runtime floor are removed, and exactness stays in a non-gating `observations` channel), host parity baseline freshness, installed/cache plugin versions, latest compat/consensus/context artifacts, forward-looking one-week omcc-dev-free dogfood evidence, latest footer evidence, and latest omcc-dev activity evidence. Text and JSON output include gate details that state the required threshold, current value, and blocker for ADR-0012, scorecard, parity, dogfood, footer, and final owner-declaration gates, plus an operator verification checklist for active manual checks such as Codex `/hooks`, dogfood records, and the owner cutover declaration. `--completion-audit` adds a prompt-to-artifact checklist plus ADR-0012 transition advice across requirement rows, condition rows, runtime commands, artifacts, gates, and weak/missing evidence for final-readiness review. `record` writes only sanitized cutover evidence artifacts under `.agentic-plugins/runs/cutover/`. It can only emit `cutover-ready-candidate`; final cutover remains a user declaration. |
 
 ### Permission-prompt advisor (ADR-0038)
 
@@ -145,43 +145,49 @@ The source-backed parity matrix for Claude expectations that do not port
 directly to Codex is documented in
 [`docs/host-parity-baseline.md`](docs/host-parity-baseline.md).
 
-Doctor reports the host-parity baseline as **three separate facts** rather than
-one verdict (ADR-0053 §Decision 3, ADR-0054). *Integrity* — is the packaged
-baseline present, readable, inside the package, and headed by a canonical dated
-line — outranks the other two and is never expressible as a freshness answer.
-*Exactness* is the unchanged strict normalized comparison of that header against
-the observed host versions, now recorded alongside the drift direction so "the
-host moved past the last review" and "this machine is behind the reviewed
-baseline" stop sharing one word. *Assurance* — carried as a
-`runtime-host-assurance-1.0` record inside the packaged baseline and answered as
-a nested `runtime-host-assurance-result-1.0` result — reports whether a human
-reviewer accepted this host pair against this installed code. It is granted only
-by review and only ever matched mechanically: a version match, an upgrade, or
-elapsed time never produce `covered`, and a broken baseline, an unknown record
-schema, an unreadable host version, an ambiguous or non-authoritative
-installed-plugin list, a disabled package, or a package at a version the review
-did not name all resolve to `blocked` or `unassured`. The doctor report schema
-deliberately does **not** bump for this — the assurance answer carries its own
-version, so the retained proof corpus stays readable and a report predating the
-section reads `legacy-unassured`: readable, never malformed, never covered.
-`runtime:dashboard` reports the same plane as three distinct rows and never
-claims the current machine's assurance, because it performs no live host probe.
-**The assurance result GATES**: `runtime:cutover`'s readiness checks and the
-experience-parity score both key on it, and exactness moved to an observation
-channel that reports without gating. No grant has been authored yet — the
-packaged record ships with an empty grant set on purpose (ADR-0054 §Decision 6's
-R1), so every host reads `unassured` and readiness blocks. That is the negative
-path being exercised by the real gate on real machines, not a gap.
+Doctor reports the host-parity baseline as **two separate facts** rather than
+one verdict (ADR-0053 §Decision 3, as narrowed by
+[ADR-0056](../../docs/adr/0056-assurance-matcher-removal.md)). *Integrity* — is
+the packaged baseline present, readable, inside the package, and headed by a
+canonical dated line — outranks the other and is never expressible as a
+freshness answer. *Exactness* is the unchanged strict normalized comparison of
+that header against the observed host versions, recorded alongside the drift
+direction so "the host moved past the last review" and "this machine is behind
+the reviewed baseline" stop sharing one word.
 
-> Corrected 2026-08-18. Through `plugin-runtime-v0.91.0` this paragraph said the
-> result was "reported and not yet gated" and that the three consumers "still key
-> on exactness". That was written for the slice before the gate moved and shipped
-> unrevised alongside the commit that moved it, while `skills/doctor/SKILL.md`
-> and `skills/cutover/SKILL.md` in the same package said the opposite. An
-> operator whose cutover was blocked could read this and conclude the block was a
-> bug. Recorded rather than silently replaced, because a shipped document that
-> contradicted its own package is the kind of thing a reader deserves to see
-> named.
+⚠ **There is no third fact, and no machine verdict of "reviewed."** ADR-0053
+added *assurance* — a `runtime-host-assurance-1.0` grant record inside the
+packaged baseline, matched against an explicit cohort of `(claude, codex)`
+version tuples — and ADR-0056 removed it. The measurement is the reason: across
+two releases the matcher never once answered `covered` on a real machine, and
+the cause was arithmetic rather than a defect. Claude took 18 distinct versions
+at a median 2.1 days apart while the review round trip that produced the one
+authored grant took 10.8 hours brief-to-install, so each grant was correct and
+stale before or shortly after it shipped. A reviewer's judgement now lives in the
+brief and in this baseline's prose, where a human reads it, and no gate
+re-derives it from version numbers.
+
+Two consequences an operator can see. Readiness reports exactness, drift and
+proof evidence — three things that are re-derivable — and `runtime:cutover`'s
+`latest_compat_snapshot` is the compatibility check that remains. And every
+compat and doctor record carries the **schema era** that wrote it, because
+`current` meant "covered and drift-free" under `runtime-compat-gap-1.1` and means
+"drift-free" under `1.2`: a record from the assurance era is readable history,
+never a current verdict, whatever token it carries. Historical assurance results
+in retained doctor artifacts are still decoded and reported — labelled
+`historical_assurance`, with their era — and are never mapped onto a current
+status.
+
+> Correction history, kept rather than replaced. Through
+> `plugin-runtime-v0.91.0` this section said the assurance result was "reported
+> and not yet gated" and that its three consumers "still key on exactness". That
+> was written for the slice before the gate moved and shipped unrevised alongside
+> the commit that moved it, while `skills/doctor/SKILL.md` and
+> `skills/cutover/SKILL.md` in the same package said the opposite. An operator
+> whose cutover was blocked could read this and conclude the block was a bug.
+> That trail is worth keeping now that the layer itself is gone: a shipped
+> document contradicting its own package is the kind of thing a reader deserves
+> to see named, and it is part of the evidence ADR-0056 weighed.
 
 Permission proof execution requires the separate `--execute-permission-proof` flag in addition to `--permission-proof`. The executor invokes each available companion through `companions/contract.md` JSON-envelope mode with the resolved model/effort inputs and no doctor-injected sandbox, approval, permission-mode, or host-native policy relaxation flags. Doctor output records only execution status, exit codes, peer host/model metadata, duration, stdout byte count, stdout SHA-256, and sanitized operator-action class. Permission, sandbox, and child-process auth failures are reported as `operator_action_required` with `operator_action_kind` values such as `permission_required`, `sandbox_blocked`, or `auth_required`; they are operator preconditions, not runtime implementation failures. Raw peer stdout, prompt bodies, host secrets, and account details are not printed into the main report. `--permission-proof-timeout-ms <n>` bounds each companion process. This proves companion invocation under current host permission defaults; it does not authorize future writes or broader tool use.
 

@@ -45,25 +45,28 @@ node "<runtime-plugin-root>/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" 
 3. Present the report as readiness evidence only.
    - Do not claim final cutover unless the user explicitly declares it.
    - Treat unknown footer state or omcc-dev activity as not verified.
-   - Readiness keys on **assurance**, not on exact host-version equality
-     (ADR-0053 §Decision 4). Three checks carry it, and their repairs differ:
-     - `host_parity_assurance` — is this host pair covered by accepted human
-       review? `unassured` is not a defect to fix; it resolves only when a
-       release carries a grant naming this pair (§Decision 5).
-     - `assurance_runtime_floor` — do **both hosts'** installed runtimes meet
-       the ADR-0054 §Decision 5 minimum? A cache-only listing, unknown
-       enablement, a disabled package or an unparseable version all block, and
-       each host is judged independently.
+   - ⚠ **The two assurance checks are gone** (ADR-0056 §Decisions 1 and 4).
+     `host_parity_assurance` and `assurance_runtime_floor` no longer exist, and
+     no check answers "has a human reviewed this host pair". Never present the
+     audit as able to grant, withhold, or await such a verdict.
+   - One compatibility check remains:
      - `latest_compat_snapshot` — is the newest recorded compat run intact,
-       assured, and describing *this* machine? A malformed historical artifact
-       blocks the whole collection, and a run that observed a different host
-       pair does not count as evidence about this one.
-   - `host_parity_baseline` (exactness) is now reported under `observations`
-     and does **not** gate. A stale or drifted baseline beside a covered grant
-     is visible and no longer blocking — say so rather than presenting it as a
-     blocker.
-   - Never present assurance as something the audit can grant. It reports
-     membership in a human-authored grant and can neither create nor widen one.
+       `current`, written by **this** schema era, describing *this* machine, and
+       still re-bound to the **installed** baseline? A malformed historical
+       artifact blocks the whole collection; a run that observed a different host
+       pair is not evidence about this one; a run from the assurance era is
+       readable history rather than a current verdict, whatever token it carries;
+       and the live `host_parity_baseline` must report `current`, because the
+       recorded run's remembered baseline is frozen in its snapshot and nothing
+       else re-binds it to the package installed now.
+   - ⚠ **Drift now blocks this check.** Under ADR-0053 §Decision 4 a reviewed
+     drift (`assured`) reached the gate; with no reviewer, ADR-0056 §Decision 6
+     item 4 makes `current` the only ready status — openly restoring exactness
+     as the gate rather than letting a pair nobody reconciled read healthy. Say
+     that plainly; the repair is a fresh snapshot and check, not a review.
+   - `host_parity_baseline` (exactness) is reported under `observations` and
+     does **not** gate — it is not promoted back into `checks` by the removal,
+     because the compat check above already reaches readiness with that fact.
    - Use proof execution flags only when the operator wants current
      peer/workflow evidence; they invoke the same bounded executors as
      `runtime:doctor` and do not relax host permissions or trust hooks.

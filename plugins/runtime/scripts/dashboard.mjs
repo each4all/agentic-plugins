@@ -42,9 +42,8 @@ import { RUNTIME_VERSION } from './version.mjs';
 // section can never disagree with `runtime:context entry-brief` (§7 "the
 // same arbiter output"). Sibling-script import, same shape as notify.mjs.
 import { entryBriefContext } from './context.mjs';
-import { assuranceFailure, baselineFailure, resolveAssuranceRecord, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
-import { assuranceRecordIssues } from './lib/assurance-contract.mjs';
-import { NO_RECORDED_ASSURANCE, projectRecordedAssurance } from './lib/assurance-result.mjs';
+import { baselineFailure, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
+import { projectRecordedAssurance } from './lib/legacy-assurance-reader.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { elapsedMsSince } from './lib/clock.mjs';
 import { isClaimExpired, isLockStale, notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
@@ -76,15 +75,24 @@ import {
 // entry advisory; the --watch loop omits it and spawns no git).
 // 1.2 → 1.3 (additive, ADR-0053 §Decision 3 / ADR-0054 §Decision 4):
 // tier2.assurance — the three compatibility-assurance facts, plus
-// `tier2.doctor.latest.assurance`, the projection of the newest recorded
-// doctor run's assurance result. This family bumps for an additive change
-// while `runtime-doctor-1.0` deliberately does not, and the asymmetry is not
-// an inconsistency: this version is computed fresh on every run, while a
-// doctor report version is stamped into 70 retained artifacts that
-// `inspectDoctorRuns` re-reads by exact string equality — measured, any bump
-// there moves the whole collection to `blocked malformed=70` and no fresh
-// proof clears it.
-export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-1.3';
+// `tier2.doctor.latest.assurance`.
+// 1.3 → 2.0 (ADR-0056 §Decision 5): `tier2.assurance` is REMOVED with the layer,
+// and `tier2.doctor.latest.assurance` is renamed `historical_assurance` so the
+// era it belongs to is in its name.
+//
+// ⚠ MAJOR, NOT A MINOR WITH A PROJECTION, and the choice was measured rather
+// than defaulted. `1.3` exists specifically for the fields being removed, so the
+// change is non-additive; ADR-0056 §Decision 5 left the shape to this
+// implementation. The projection option is VACUOUS here: this report is never
+// persisted — no `writeFile`, no runs directory, stdout only — so there is no
+// historical corpus to project and a minor would be nothing but a silent field
+// drop. A major costs nothing for the same reason.
+//
+// ⚠ THE ASYMMETRY WITH THE DOCTOR FAMILIES IS NOT AN INCONSISTENCY. This version
+// is computed fresh on every run; a doctor report version is stamped into
+// retained artifacts that `inspectDoctorRuns` re-reads by exact string equality,
+// which is why doctor bumps a MINOR and ships a dual reader in the same release.
+export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-2.0';
 export const DEFAULT_WATCH_INTERVAL_SECONDS = 2;
 export const MIN_WATCH_INTERVAL_SECONDS = 1;
 export const DEFAULT_RECENT_NOTIFICATIONS = 5;
@@ -105,8 +113,17 @@ const SETTINGS_EXECUTION_NONTERMINAL_STATUSES = new Set(['planned', 'in-progress
 // a parseable JSON blob is NOT doctor evidence unless it carries the doctor
 // artifact schema and an embedded report — the dashboard must not report
 // bogus recorded freshness (Codex review MAJOR).
-const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.0';
-const DOCTOR_REPORT_SCHEMA_VERSION = 'runtime-doctor-1.0';
+// ⚠ THIS READER PINS INDEPENDENTLY OF `doctor.mjs`, so it needs the dual read
+// too (ADR-0056 §Consequences). A blocked newest artifact here renders the whole
+// Tier 2 doctor row as unusable, and the operator's remedy — record a fresh
+// proof — cannot clear a rejection caused by the reader being too narrow.
+// MATCHED PAIRS — the same rule `doctor.mjs` applies, for the same reason: a
+// mixed tuple is a shape no producer can emit, so admitting one would read a
+// hand-edited artifact as genuine.
+const READABLE_DOCTOR_SCHEMA_PAIRS = Object.freeze([
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.0', report: 'runtime-doctor-1.0' }),
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.1', report: 'runtime-doctor-1.1' }),
+]);
 // ADR-0040 §6 scopes the dashboard to attestation RECENCY. Doctor's stricter
 // CURRENCY judgment (plugin set/version drift, disabled hook state) needs
 // live plugin-cache and hook-state evidence the R0 dashboard must not probe.
@@ -297,9 +314,9 @@ export async function inspectLatestDoctorRun({ repoRoot }) {
   const artifactPath = path.join(root, latestId, 'doctor.json');
   const artifact = await readJsonIfExists(artifactPath);
   const validShape = artifact.ok
-    && artifact.json.schema_version === DOCTOR_ARTIFACT_SCHEMA_VERSION
     && DOCTOR_RUN_ID_RE.test(artifact.json.run_id ?? '')
-    && artifact.json.report?.schema_version === DOCTOR_REPORT_SCHEMA_VERSION;
+    && READABLE_DOCTOR_SCHEMA_PAIRS.some((pair) => pair.artifact === artifact.json.schema_version
+      && pair.report === artifact.json.report?.schema_version);
   if (!validShape) {
     return {
       status: 'blocked',
@@ -310,10 +327,10 @@ export async function inspectLatestDoctorRun({ repoRoot }) {
         artifact_pointer: pointer(repoRoot, artifactPath),
         reason: artifact.ok ? 'invalid doctor artifact schema' : artifact.reason,
         // A malformed OUTER artifact is its own state, distinct from a valid
-        // artifact whose assurance section is missing or unreadable: nothing
-        // about assurance was established here, and reporting
-        // `legacy-unassured` would claim the report said something.
-        assurance: { status: 'unreadable', grant_id: null, direction: null, reason: 'the newest doctor artifact does not conform, so nothing in it can be read' },
+        // artifact whose historical assurance section is missing or unreadable:
+        // nothing was established here, and reporting `legacy-unassured` would
+        // claim the report said something.
+        historical_assurance: { status: 'unreadable', schema_era: 'assurance-era', grant_id: null, direction: null, reason: 'the newest doctor artifact does not conform, so nothing in it can be read' },
       },
     };
   }
@@ -333,149 +350,21 @@ export async function inspectLatestDoctorRun({ repoRoot }) {
       runtime_version_current: recordedRuntime === RUNTIME_VERSION,
       // BOUNDED projection, not the report. This reader deliberately keeps only
       // metadata — `doctor.json` embeds a full report and is the largest
-      // runtime artifact — so the assurance answer is projected here, at the
-      // one place the artifact is already open, rather than by handing the
-      // whole body to a caller.
-      assurance: projectRecordedAssurance(artifact.json.report),
+      // runtime artifact — so the answer is projected here, at the one place the
+      // artifact is already open, rather than by handing the whole body to a
+      // caller.
+      //
+      // ⚠ `historical_assurance`, NOT `assurance` (ADR-0056 §Decision 5). No
+      // report written after the removal carries the section, so this is
+      // ARCHAEOLOGY over the retained corpus and the name says so. It carries
+      // `schema_era: 'assurance-era'` for the same reason, and no consumer may
+      // put any of its values in a ready set (§Decision 6 rule 1).
+      historical_assurance: projectRecordedAssurance(artifact.json.report),
+      // (the decoder distinguishes "predates the section" from "postdates its
+      // removal" by the report's own version — see legacy-assurance-reader.mjs)
     },
   };
 }
-
-/**
- * The THREE assurance facts a dashboard may report, kept apart because two of
- * them are routinely mistaken for the third.
- *
- * `readHostParityBaseline`'s note one function below is the constraint: this
- * surface performs no live host probe on purpose — the drift verdict against
- * OBSERVED versions is compat's recorded job. That is exactly why it cannot
- * answer "is THIS machine covered": the packaged record says which host pairs a
- * human accepted, and deciding membership needs the pair this machine actually
- * runs plus its installed package facts, neither of which is readable here
- * without probing.
- *
- *   authored        — is the packaged grant record readable and COHERENT? A
- *                     property of the INSTALL, with no machine involved.
- *                     Deliberately not called "valid assurance": an empty grant
- *                     array is perfectly coherent and covers nobody.
- *   recorded        — what did the newest recorded `runtime:doctor` conclude?
- *                     A property of THAT RUN, which may be old, may have been
- *                     taken on different host versions, and may predate the
- *                     section entirely.
- *   current_machine — always `not-evaluated`, with the command that would
- *                     evaluate it. Stating the limit IS the feature: a
- *                     dashboard that inferred this from `authored` would report
- *                     coverage for a machine it never looked at, which is the
- *                     precise shape of false assurance this plane exists to
- *                     prevent.
- *
- * The failure branches ask `assuranceFailure` rather than listing statuses, for
- * the reason `readHostParityBaseline` learned the hard way: this file used to
- * enumerate two baseline statuses and return `available` for everything else,
- * so a third failure rendered as an available baseline whose value is `null` —
- * the one rendering that cannot be true.
- */
-export async function readHostAssurance({ repoRoot, pluginRoot, recordedAssurance = null } = {}) {
-  const resolveOpts = pluginRoot === undefined ? {} : { pluginRoot };
-  const recorded = recordedAssurance ?? NO_RECORDED_ASSURANCE;
-  const unreadablePackage = (reason) => ({
-    authored: {
-      status: 'unreadable-package',
-      pointer: null,
-      grant_count: null,
-      issues: [],
-      summary: 'the runtime package could not be read as an assurance authority',
-      next_action: `Reinstall or repair the runtime plugin (${reason}).`,
-    },
-    recorded,
-    current_machine: MACHINE_ASSURANCE_NOT_EVALUATED,
-  });
-
-  let record;
-  try {
-    record = await resolveAssuranceRecord(resolveOpts);
-  } catch (err) {
-    // `resolveAssuranceRecord` throws rather than returning a status when the
-    // package cannot find its own packaged schema — a corrupt package is not a
-    // document it can report on, and a read-only dashboard must not crash on
-    // one. The rethrow keeps a caller bug (an empty `pluginRoot` override,
-    // which both readers reject with `TypeError`) from being laundered into a
-    // package verdict.
-    if (err instanceof TypeError) throw err;
-    return unreadablePackage(sanitizeValue(err?.message) ?? 'unknown error');
-  }
-
-  // ⚠ TWO READS of one path, exactly as at the doctor site. This function and
-  // `readHostParityBaseline` each resolve the packaged baseline, and the module
-  // requires a consumer needing both facts about ONE revision to compare
-  // `provenance.content_sha256` and treat a difference as a failure — otherwise
-  // a file replaced between them yields a header from revision A beside a
-  // record from revision B, both reporting `resolved`.
-  const baselineRead = await resolveHostParityBaseline(resolveOpts);
-  const baselineSha = baselineRead?.provenance?.content_sha256 ?? null;
-  const recordSha = record?.provenance?.content_sha256 ?? null;
-  if (baselineSha === null || recordSha === null || baselineSha !== recordSha) {
-    return unreadablePackage('the packaged baseline was read twice and the two reads did not see the same bytes');
-  }
-
-  const asPointer = pointer(repoRoot ?? path.dirname(record.provenance.path), record.provenance.path);
-  const failure = assuranceFailure(record);
-  if (failure) {
-    return {
-      authored: {
-        status: failure.status,
-        pointer: asPointer,
-        grant_count: null,
-        issues: [],
-        summary: failure.summary,
-        next_action: failure.operator_action,
-      },
-      recorded,
-      current_machine: MACHINE_ASSURANCE_NOT_EVALUATED,
-    };
-  }
-
-  // COHERENCE, not merely readability. The structural schema was measured
-  // accepting eight records that must not be accepted — duplicate ids, a
-  // `granted` and a `revoked` over one cohort, a `supersedes` naming nothing,
-  // `packages: {}`, `cohort: []`, a contradictory residual, a future
-  // `reviewed_at`, and the calendar-invalid `2026-13-45`. The semantic contract
-  // is the half that catches them, and an incoherent record covers nothing, so
-  // reporting it as merely "present with N grants" would overstate it.
-  const issues = assuranceRecordIssues(record.record);
-  const grants = Array.isArray(record.record?.grants) ? record.record.grants.length : 0;
-  return {
-    authored: {
-      status: issues.length > 0 ? 'incoherent' : 'coherent',
-      pointer: asPointer,
-      grant_count: grants,
-      issues: issues.map((issue) => sanitizeValue(issue)).filter(Boolean),
-      summary: issues.length > 0
-        ? `the packaged assurance record has ${issues.length} semantic violation${issues.length === 1 ? '' : 's'}`
-        // Not a defect, and saying so matters: ADR-0054 §Decision 6 ships the
-        // gate live with an empty grant set on purpose, so the negative path is
-        // exercised by the real gate on real machines before any positive is
-        // possible.
-        : grants === 0
-          ? 'the packaged assurance record is coherent and grants nothing yet'
-          : `the packaged assurance record is coherent and carries ${grants} grant${grants === 1 ? '' : 's'}`,
-      next_action: issues.length > 0
-        ? 'Repair the compatibility assurance block in the packaged host-parity baseline — a record that contradicts itself covers nothing.'
-        : null,
-    },
-    recorded,
-    current_machine: MACHINE_ASSURANCE_NOT_EVALUATED,
-  };
-}
-
-const MACHINE_ASSURANCE_NOT_EVALUATED = Object.freeze({
-  status: 'not-evaluated',
-  reason: 'the dashboard performs no live host probe, so it cannot establish which host pair this machine runs or which packages are enabled on it',
-  // TWO actions, because they answer different questions and an operator who
-  // wanted the second would be misled by only the first: one evaluates this
-  // machine now, the other refreshes the durable evidence the `recorded` fact
-  // above is read from.
-  next_action: 'Run runtime:doctor to evaluate assurance against this machine, or runtime:doctor --record to refresh the recorded evidence.',
-});
 
 export async function inspectSettingsRecency({ repoRoot }) {
   const root = path.join(repoRoot, '.agentic-plugins', 'runs', 'settings');
@@ -876,10 +765,6 @@ export async function buildDashboardReport({
   const doctor = await inspectLatestDoctorRun({ repoRoot });
   const compat = await inspectCompatRuns({ repoRoot });
   const baseline = await readHostParityBaseline({ repoRoot, pluginRoot });
-  // The recorded fact comes from the artifact read above, already projected —
-  // this call adds only the packaged-record read, so the two never disagree
-  // about which run was consulted.
-  const assurance = await readHostAssurance({ repoRoot, pluginRoot, recordedAssurance: doctor.latest?.assurance ?? null });
   const settings = await inspectSettingsRecency({ repoRoot });
   const artifacts = await inspectRuntimeArtifactInventory({
     repoRoot,
@@ -986,7 +871,6 @@ export async function buildDashboardReport({
           : null,
       },
       baseline,
-      assurance,
       settings,
       artifacts: {
         status: artifacts.status,
@@ -1129,16 +1013,18 @@ export function renderDashboardText(report) {
   lines.push(baseline.baseline
     ? `- baseline: observed ${baseline.baseline.date} — claude ${baseline.baseline.claude}, codex ${baseline.baseline.codex}`
     : `- baseline: ${baseline.status} (${baseline.pointer})`);
-  // THREE lines, not one. Collapsing them here would be the same substitution
-  // ADR-0053 removed at the doctor freshness site: a reader who saw a single
-  // `assurance: …` row on this surface would take it for this machine's answer,
-  // and this surface never probed the machine.
-  const assurance = report.tier2.assurance;
-  lines.push(`- assurance (authored record): ${assurance.authored.status}${assurance.authored.grant_count === null ? '' : `; grants=${assurance.authored.grant_count}`} — ${assurance.authored.summary}`);
-  if (assurance.authored.next_action) lines.push(`  next: ${assurance.authored.next_action}`);
-  lines.push(`- assurance (latest recorded doctor): ${assurance.recorded.status}${assurance.recorded.grant_id ? `; grant=${assurance.recorded.grant_id}` : ''}${assurance.recorded.reason ? ` — ${assurance.recorded.reason}` : ''}`);
-  lines.push(`- assurance (this machine): ${assurance.current_machine.status} — ${assurance.current_machine.reason}`);
-  lines.push(`  next: ${assurance.current_machine.next_action}`);
+  // ⚠ ONE LINE, AND IT IS LABELLED HISTORICAL. Three rows stood here — the
+  // authored record, the newest recorded run, and an always-`not-evaluated`
+  // machine row whose whole job was stating that this surface never probes. The
+  // first two subjects no longer exist; the third has nothing left to disclaim.
+  // What remains is archaeology over the retained corpus, and it says so in the
+  // row rather than leaving a reader to infer the tense (ADR-0056 §Decision 5).
+  // It is rendered ONLY when a historical run actually carried the section — a
+  // row saying "nothing recorded" about a fact nobody records any more is noise.
+  const historical = report.tier2.doctor.latest?.historical_assurance ?? null;
+  if (historical && !['legacy-unassured', 'no-recorded-run', 'not-applicable'].includes(historical.status)) {
+    lines.push(`- compatibility assurance (HISTORICAL, ${historical.schema_era}; the layer was removed by ADR-0056): ${historical.status}${historical.grant_id ? `; grant=${historical.grant_id}` : ''}${historical.reason ? ` — ${historical.reason}` : ''}`);
+  }
   const settings = report.tier2.settings;
   if (settings.latest) {
     const attestation = settings.hook_attestation

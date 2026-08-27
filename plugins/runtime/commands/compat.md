@@ -9,9 +9,11 @@ $ARGUMENTS
 
 Record Claude Code and Codex CLI version snapshots under ADR-0026, compare them to the remembered runtime host-parity baseline, attach explicit release-note artifacts, require content-backed notes to cover changed host/version pairs, and plan compatibility updates. This command does not fetch release-note URLs by default, install host CLIs, mutate host config, or update plugins.
 
-Per ADR-0053 §Decision 4, `snapshot` additionally **observes** compatibility assurance for the host pair it just probed and freezes that verdict into the snapshot; `check` projects the frozen verdict and never re-evaluates it, so a remembered snapshot is never retroactively granted assurance. Readiness is classified from that verdict — `current`, `assured` (drift a reviewer accepted), `unassured`, `assurance_blocked`, `legacy_unassured` — while drift keeps being recorded as evidence in `drift_class`.
+Readiness is classified as `current` (no drift), `release_notes_required`, `gap_analysis_ready` (drift, and a plan can be built), `baseline_unusable`, `snapshot_unreadable`, or `host_version_unreadable` (a host printed a version with more than three components or trailing residue, which the comparison cannot carry faithfully), while drift keeps being recorded as evidence in `drift_class`.
 
-Assurance is granted by human review recorded in the packaged host-parity baseline (§Decision 2). This command evaluates whether the machine is a member of an existing grant; it can neither create, widen, nor promote one.
+⚠ **There is no compatibility-assurance verdict.** ADR-0053 §Decision 4 keyed readiness on a human-granted acceptance of the host pair; [ADR-0056](../../../docs/adr/0056-assurance-matcher-removal.md) removed that layer, and `runtime:compat` reports only facts it can re-derive — exactness, drift, and release-note coverage. Nothing here answers "has a human reviewed this pair".
+
+Artifacts from the earlier eras stay readable and are never re-interpreted. `current` meant "covered **and** drift-free" under `runtime-compat-gap-1.1` and means "drift-free" under `1.2`, so every record carries its `schema_era` and a pre-`1.2` run projects as `legacy_era` — readable history, never a current verdict. The only resolution for one is a fresh snapshot.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"

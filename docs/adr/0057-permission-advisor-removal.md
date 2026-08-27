@@ -712,6 +712,24 @@ and this ADR follows it rather than re-deriving the lesson.
 | settings report | `runtime-settings-1.25` (`settings.mjs:517`–`:590`) | `permission_plan`, `permission_plan_codex` | `settings-report-contract.md:318`–`:323` requires version lockstep — the bump and the contract edit land together |
 | doctor inner report | `runtime-doctor-1.0` (`doctor.mjs:425`–`:482`) | `permission_diagnosis` | `dashboard.mjs:104`–`:109`, `:299`–`:302` **exact-pins** the version; producer and dual reader must ship in one release |
 | doctor outer artifact | `1.0` | the nested section | same release as the inner bump |
+
+> **Amendment (2026-08-27) — the two doctor rows above were measured before
+> ADR-0056's `grant-impl` landed, and their CURRENT values moved.** The inner
+> report is now `runtime-doctor-1.1` and the outer artifact
+> `runtime-doctor-artifact-1.1`, so this ADR's bumps target `1.2` in each case
+> unless the two removals coalesce into one release. Two further facts changed
+> under this table rather than in it: the exact-pin is now a **matched-pair**
+> check in both `doctor.mjs` and `dashboard.mjs` — `(artifact-1.0, report-1.0)`
+> and `(artifact-1.1, report-1.1)` only, because a mixed tuple is a shape no
+> producer emits — so `advisor-impl` extends the pair list rather than two
+> independent allowlists. And the `permission-sanitize.mjs` consumer inventory in
+> Decision 3 counted `assurance-result` and `host-assurance-facts` among its
+> eight non-advisor importers; ADR-0056 deleted the second and reduced the first
+> to `lib/legacy-assurance-reader.mjs`, which still imports `sanitizeValue`. The
+> count is **seven**, and `advisor-impl` re-measures rather than trusting either
+> number. Written in place because this ADR is still `Proposed`: its decisions
+> are unaffected, only the tree they were measured against moved.
+
 | bootstrap run | `runtime-bootstrap-run-1.3.json` (`:499`–`:510`, `:574`–`:576`) | stage-6 steps; `fragment_applied` loses its only defining gate | retained runs still carry both — see below |
 
 `advisor-impl` publishes, per contract, the tokens it **writes new**, the tokens

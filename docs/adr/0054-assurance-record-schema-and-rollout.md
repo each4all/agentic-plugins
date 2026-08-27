@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-17). **Proposed to be superseded** by [ADR-0056](0056-assurance-matcher-removal.md) (proposed 2026-08-27); this line becomes `Superseded by ADR-0056` in the same commit that flips ADR-0056 to Accepted. The exactness half of ADR-0053 (§Decision 1 strict normalized equality) is NOT superseded and remains in force; what ADR-0056 removes is the assurance verdict built beside it.
+**Superseded by [ADR-0056](0056-assurance-matcher-removal.md)** (2026-08-27). Accepted 2026-08-17. ⚠ **PARTIALLY superseded, and the boundary is load-bearing**: the exactness half of ADR-0053 (§Decision 1 strict normalized equality) is NOT superseded and remains in force. What ADR-0056 removes is the assurance verdict built beside it — ADR-0056 §Consequences states it in one line: removing assurance removes the SECOND fact at the freshness site, not the first.
 
 ## Context
 

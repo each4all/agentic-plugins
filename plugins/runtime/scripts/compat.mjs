@@ -5,32 +5,22 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import { basename, dirname, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
 import {
   COMPAT_GAP_SCHEMA,
   COMPAT_SNAPSHOT_SCHEMA,
+  GAP_SCHEMA_ERAS,
   projectGapFamily,
 } from './lib/compat-artifacts.mjs';
 import {
-  ASSURANCE_RESULT_SCHEMA_VERSION,
-  ASSURANCE_RESULT_STATUSES,
-  isGrantId,
-} from './lib/assurance-result.mjs';
-import {
-  buildAssuranceProbe,
-  observeMachinePackages,
-  resolveHostAssuranceFacts,
-} from './lib/host-assurance-facts.mjs';
-import {
   extractBaselineVersions,
   normalizeVersion,
+  readVersionToken,
   resolveHostParityBaseline,
   scanVersionTokens,
 } from './lib/host-parity-baseline.mjs';
-import { probeMachineHostState } from './lib/machine-probe.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -38,13 +28,18 @@ const VERSION = RUNTIME_VERSION;
 // because the consumer needs it too and cannot import this file: state-readers
 // -> compat -> doctor -> state-readers is a cycle.
 const SNAPSHOT_SCHEMA = COMPAT_SNAPSHOT_SCHEMA;
-// Families that PREDATE the assurance section. Enumerated rather than derived as
-// "anything that is not current", because those are two different answers: a known
-// older family is history (`legacy`), an unknown one is unread (`unreadable`).
-const KNOWN_LEGACY_SNAPSHOT_SCHEMAS = Object.freeze(['runtime-compat-snapshot-1.0']);
+// Families this runtime reads but did not write. Enumerated rather than derived
+// as "anything that is not current", because those are two different answers: a
+// known older family is history (`legacy`), an unknown one is unread
+// (`unreadable`). `1.1` joins `1.0` here under ADR-0056 §Decision 5 — the
+// assurance era is now history exactly as the pre-assurance era was.
+const KNOWN_LEGACY_SNAPSHOT_SCHEMAS = Object.freeze([
+  'runtime-compat-snapshot-1.0',
+  'runtime-compat-snapshot-1.1',
+]);
 const GAP_SCHEMA = COMPAT_GAP_SCHEMA;
 const RELEASE_NOTES_SCHEMA = 'runtime-compat-release-notes-1.0';
-const PLAN_SCHEMA = 'runtime-compat-plan-1.1';
+const PLAN_SCHEMA = 'runtime-compat-plan-1.2';
 const LATEST_SCHEMA = 'runtime-compat-latest-1.0';
 const POLICY_SCHEMA = 'runtime-compat-policy-1.0';
 const POLICY_ADR = 'ADR-0026';
@@ -127,7 +122,6 @@ export async function createSnapshot(options = {}) {
   ]);
   const baseline = options.baseline ?? await loadBaselineVersions();
   const pluginVersions = await readPluginVersions(repoRoot);
-  const assurance = await observeAssurance({ repoRoot, claude, codex, runner, timeoutMs, now, options });
 
   const snapshot = {
     schema_version: SNAPSHOT_SCHEMA,
@@ -139,21 +133,11 @@ export async function createSnapshot(options = {}) {
     hosts: { claude, codex },
     remembered_baseline: baseline,
     plugin_versions: pluginVersions,
-    // ADR-0053 §Decision 4 — FROZEN HERE, and this is the whole point of putting
-    // the evaluation in `snapshot` rather than in `check`.
-    //
-    // A remembered snapshot is never retroactively granted assurance. If `check`
-    // evaluated against the THEN-INSTALLED record, re-running it on a six-week-old
-    // snapshot after a release shipped a grant would turn that old observation
-    // into `covered` — coverage awarded to a machine state nobody reviewed,
-    // arriving through the one command an operator runs casually.
-    //
-    // It also keeps ONE moment in one artifact: drift is computed from the host
-    // versions recorded here, so an assurance verdict computed at a different
-    // moment would put two observations of two machines into one file. `doctor`
-    // states the same rule for its own two sections and computes the observed
-    // pair once for both.
-    host_assurance: assurance,
+    // ⚠ `host_assurance` USED TO BE FROZEN HERE and is gone with the layer
+    // (ADR-0056 §Decision 1). The freezing rule it existed to enforce — a
+    // remembered snapshot is never retroactively granted anything — has no
+    // subject any more: what `check` projects out of a snapshot is now only the
+    // host versions this run observed, and those were always recorded here.
     policy: compatibilityPolicy(),
     artifacts: [],
     limits: compatLimits(),
@@ -182,117 +166,6 @@ export async function createSnapshot(options = {}) {
       `runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`,
     ],
     limits: snapshot.limits,
-  };
-}
-
-/**
- * OBSERVE the machine's assurance and freeze it into the snapshot.
- *
- * ⚠ THIS GRANTS NOTHING, and the boundary is ADR-0053 §Decision 2: `runtime:compat`
- * may assemble evidence; it may not grant acceptance. Every positive verdict here
- * comes from `matchAssurance` matching a HUMAN-authored grant that named this host
- * pair, reached only through the shared `evaluateAssurance` ladder. There is no
- * branch in this file that produces `covered`, and none that promotes a candidate
- * into an active grant — ADR-0054 §Decision 9 keeps the candidate-assembly half of
- * §Decision 2 a `may` and out of scope, so it is deliberately not built.
- *
- * WHY THE MACHINE PROBE AND NOT COMPAT'S OWN SIX COMMANDS. Membership needs the
- * installed-plugin listings, and `observePackages` reports a missing listing as
- * NON-authoritative. Measured on the shipped ladder: with no listing at all and a
- * grant that names the pair, the result is `blocked` carrying "Repair the
- * installed-plugin listing on claude and codex" — an instruction to repair a probe
- * compat never ran, and it would fire on exactly the day a grant first ships.
- *
- * ⚠ EVERY ENVIRONMENT INPUT IS THREADED, not defaulted (cross-host review).
- * `probeMachineHostState` otherwise reads the real home directory, the real
- * `process.env` and the real `CODEX_HOME`, so a test that injects only a runner
- * would still inspect the developer's own caches — hermetic by accident, and only
- * until someone's machine differs.
- *
- * The probe is skipped entirely when `assuranceProbe: false` is passed, which is
- * how a caller that already knows the answer (or a test pinning the ladder) avoids
- * paying for 16 host commands.
- */
-async function observeAssurance({ repoRoot, claude, codex, runner, timeoutMs, now, options = {} }) {
-  // The explicit override wins, and `null` is a legitimate override meaning "do
-  // not observe" — distinguished from "not supplied" so a caller can suppress the
-  // probe without the value being laundered into a default.
-  if (options.hostAssurance !== undefined) return options.hostAssurance;
-
-  const probe = buildAssuranceProbe({
-    // compat's own probe statuses, expressed in the vocabulary the shared builder
-    // expects. `observeHost` reports `available` when the command RAN at all, so
-    // a version it could not parse is `null` here and step 6 of the ladder refuses
-    // it rather than letting it arrive as a membership miss.
-    // THE COMMAND RESULT DECIDES, never the presence of a parsed version.
-    // `observeHost` fills `.version` from stdout OR stderr regardless of exit
-    // status, so a `claude --version` that exits non-zero — or times out — after
-    // printing version-shaped text used to arrive here as `available`, and the
-    // ladder then permitted coverage from a probe that FAILED. ADR-0053
-    // §Decision 3 puts an unreadable host probe in the integrity layer; a probe
-    // that did not succeed is not a reading of the host (measured, ST5; doctor's
-    // symmetric path already preserved the command status).
-    claudeProbe: claude?.probes?.version?.ok ? 'available' : null,
-    codexProbe: codex?.probes?.version?.ok ? 'available' : null,
-    // RAW text, never `observed.version`. `extractSemver` has already dropped the
-    // trailing components of a four-component version, and the ladder's truncation
-    // guard is the thing that stops `1.2.3.4` reaching `covered` against a grant
-    // for `1.2.3`.
-    // NOT withheld here on failure, deliberately. `buildAssuranceProbe` already
-    // drops the observed text when either probe is not `available`, and its own
-    // note says why — "a failed `--version` carries stderr or an error message in
-    // its text, so normalizing it would manufacture an observed version out of a
-    // diagnostic". A second copy of that rule at this call site was written and
-    // then removed during ST5: it made the two lines JOINTLY load-bearing, so
-    // either could be deleted with a green suite, which is the shape of defect
-    // this subtask exists to find rather than to add.
-    claudeText: claude?.version_text ?? null,
-    codexText: codex?.version_text ?? null,
-  });
-
-  let machine = null;
-  let probeFault = null;
-  if (options.assuranceProbe !== false) {
-    try {
-      machine = await probeMachineHostState({
-        // NEUTRAL cwd — never the caller's repository (machine-bootstrap-contract §1.1).
-        // `repoRoot` was passed here, which is the ONE call site of three that broke the
-        // seam's stated invariant: `doctor.mjs` and `bootstrap.mjs` both pass `tmpdir()`.
-        // A repo-local project-scoped plugin install would otherwise enter compat's
-        // package facts and therefore its frozen assurance, so compat could describe a
-        // machine state that doctor and cutover — the two that gate — cannot see.
-        cwd: tmpdir(),
-        runner,
-        timeoutMs,
-        ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }),
-        ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
-        ...(options.env === undefined ? {} : { env: options.env }),
-      });
-    } catch (error) {
-      // A failed listing is NON-coverage, never a thrown snapshot. The ladder
-      // already knows what to do with a missing observation; losing the whole
-      // snapshot to it would be the atomicity defect this function was moved
-      // above `mkdir` to avoid.
-      probeFault = sanitizeLine(error?.message) ?? 'unknown error';
-    }
-  }
-
-  const facts = await resolveHostAssuranceFacts({
-    pluginRoot: options.pluginRoot ?? PLUGIN_ROOT,
-    probe,
-    packageObservation: machine === null ? null : observeMachinePackages(machine),
-    // INJECTED. `assuranceRecordIssues` rejects a `reviewed_at` in the future, so
-    // reading the clock here would let one artifact carry a `created_at` and a
-    // coverage verdict decided on different days.
-    today: (now instanceof Date ? now : new Date()).toISOString().slice(0, 10),
-  });
-
-  return {
-    ...facts.assurance,
-    // Recorded so a reader can tell "no grant named this pair" from "the listing
-    // could not be taken", which have different operator actions even though both
-    // are non-coverage.
-    probe_fault: probeFault,
   };
 }
 
@@ -507,44 +380,25 @@ export async function planCompatibility(options = {}) {
   // in one command and not the next is how the reader one layer up ended up
   // with `plan_ready` over a broken package.
   const baselineUnusable = gap.overall.status === 'baseline_unusable';
-  // The assurance-integrity states are terminal for planning for exactly the
-  // reason `baseline_unusable` is: a compatibility plan is work to do about a
-  // comparison, and when the comparison could not be made or its verdict cannot
-  // be read, emitting `planned` with update steps hands the operator work that
-  // cannot fix what is wrong. `legacy_unassured` joins them because its only
-  // honest next step is a FRESH snapshot — planning off a remembered one is how
-  // a stale observation would keep producing current-looking work.
-  const assuranceTerminal = gap.overall.status === 'assurance_blocked'
-    ? 'blocked_assurance'
-    : gap.overall.status === 'legacy_unassured'
-      ? 'blocked_legacy_unassured'
-      : null;
-  const terminal = baselineUnusable || assuranceTerminal !== null;
-  // ⚠ A REVIEWED DRIFT IS NOT OUTSTANDING WORK, and this is where that belongs
-  // rather than in the reader. An `assured` gap is drift a human examined and
-  // accepted, and the release-note requirement exists to make an operator
-  // justify drift — a grant naming this pair already did both. Leaving them in
-  // the actionability test made every assured host emit an actionable plan, so
-  // its first `compat plan` run demoted it permanently.
-  //
-  // `surfaces` and a detected notification-watch signal are NOT dropped: a grant
-  // covers the host pair a reviewer looked at, not a payload variant observed
-  // afterwards, so those stay outstanding work on a covered host.
-  const driftReviewed = gap.overall.status === 'assured';
-  // `classifySurfaces` derives `host-version-baseline` from `drift_class` alone,
-  // so on a reviewed drift that entry is the SAME fact the grant covers. It stays
-  // in `affected_surfaces` — it is genuinely an affected surface and the plan
-  // should say so — but it must not be what makes the plan actionable, or the
-  // drift re-enters actionability through the surface list after being removed
-  // from the drift test directly. Measured: without this the assured host still
-  // emitted `actionable: true`.
-  const unreviewedSurfaces = driftReviewed
-    ? surfaces.filter((surface) => surface !== 'host-version-baseline')
-    : surfaces;
+  // An unreadable snapshot family is terminal for planning for exactly the reason
+  // `baseline_unusable` is: a compatibility plan is work to do about a
+  // comparison, and when the observation behind it cannot be read, emitting
+  // `planned` with update steps hands the operator work that cannot fix what is
+  // wrong. (Under ADR-0053 this clause also covered `assurance_blocked` and
+  // `legacy_unassured`; ADR-0056 §Decision 1 removed those statuses, and the
+  // remaining integrity case kept its terminality rather than inheriting the
+  // removal.)
+  const snapshotUnreadable = gap.overall.status === 'snapshot_unreadable';
+  const terminal = baselineUnusable || snapshotUnreadable;
+  // ⚠ `driftReviewed` IS GONE WITH THE LAYER. It existed for `assured` — drift a
+  // human examined and accepted under a grant — and with no grant there is no
+  // reviewed drift for a machine to know about. Drift is outstanding work again,
+  // which is what it was before ADR-0053 §Decision 4 and what ADR-0056
+  // §Consequences says readiness now reports.
   const actionable = !terminal
-    && ((!driftReviewed && gap.overall.release_notes_required)
-      || (!driftReviewed && gap.overall.drift_class !== 'none')
-      || unreviewedSurfaces.length > 0
+    && (gap.overall.release_notes_required
+      || gap.overall.drift_class !== 'none'
+      || surfaces.length > 0
       || notificationWatch.some((row) => row.signal_detected));
   const plan = {
     schema_version: PLAN_SCHEMA,
@@ -553,13 +407,9 @@ export async function planCompatibility(options = {}) {
     created_at: toIso(options.now ?? new Date()),
     status: baselineUnusable
       ? 'blocked_baseline_unusable'
-      : assuranceTerminal !== null
-        ? assuranceTerminal
-        // Same rule as `actionable` above, and it has to be here too: the plan's
-        // STATUS is what the reader projects, so narrowing only actionability
-        // left an assured host reporting `blocked_release_notes_required` — told
-        // to go fetch notes justifying a drift a reviewer had already accepted.
-        : (!driftReviewed && gap.overall.release_notes_required)
+      : snapshotUnreadable
+        ? 'blocked_snapshot_unreadable'
+        : gap.overall.release_notes_required
           ? 'blocked_release_notes_required'
           : 'planned',
     actionable,
@@ -630,6 +480,22 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
     const observed = snapshot.hosts?.[host] ?? {};
     const baselineVersion = baseline?.[host]?.version ?? null;
     const observedVersion = observed.version ?? null;
+    // ⚠ DID READING THE OBSERVED TEXT DROP A COMPONENT? `observed.version` is
+    // `normalizeVersion(version_text)`, which keeps the first three components —
+    // so a host printing `1.2.3.4` is stored as `1.2.3` and compares EQUAL to a
+    // genuine `1.2.3` baseline. Measured on this tree.
+    //
+    // Under ADR-0053 that false match could not reach readiness alone, because
+    // the assurance ladder consumed the RAW text and refused the truncated class
+    // before coverage. ADR-0056 removed that ladder, and removing it without
+    // this line would leave the false `current` reaching the cutover gate
+    // (cross-host review of the removal). Recorded as EVIDENCE beside the
+    // status rather than folded into it: `drift_class`'s vocabulary is
+    // deliberately untouched (ADR-0053 §Decision 4), and it is the readiness
+    // ladder that refuses.
+    const observedTruncated = observed.version_text === null || observed.version_text === undefined
+      ? false
+      : readVersionToken(observed.version_text).truncated === true;
     let status = 'matches';
     if (baselineUnusable) status = `baseline_${baselineStatus}`;
     else if (!observed.available) status = 'host_unavailable';
@@ -640,6 +506,7 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
       host,
       status,
       observed_version: observedVersion,
+      observed_version_truncated: observedTruncated,
       baseline_version: baselineVersion,
       version_text: observed.version_text ?? null,
     };
@@ -655,11 +522,9 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
   const releaseNotesRequired = !baselineBroken
     && driftClass !== 'none'
     && (releaseNotes.content_backed_count === 0 || releaseNoteCoverage.missing_required_hosts.length > 0);
-  // PROJECTED, never re-evaluated. The verdict was frozen when the snapshot was
-  // taken; reading the installed record again here is the retroactive-assurance
-  // path §Decision 4 forbids.
-  const assurance = projectSnapshotAssurance(snapshot);
-  const overallStatus = readinessStatus({ baselineBroken, assurance, releaseNotesRequired, driftClass });
+  const snapshotFamily = projectSnapshotFamily(snapshot);
+  const observedTruncated = hostGaps.some((gap) => gap.observed_version_truncated === true);
+  const overallStatus = readinessStatus({ baselineBroken, snapshotFamily, observedTruncated, releaseNotesRequired, driftClass });
   return {
     schema_version: GAP_SCHEMA,
     runtime_version: VERSION,
@@ -670,15 +535,14 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
       status: overallStatus,
       drift_class: driftClass,
       release_notes_required: releaseNotesRequired,
-      // The WHOLE evidence object, not four scalars (cross-host review). Dropping
-      // `next_action` would strip `assurance_blocked` of the only line saying how
-      // to repair it — the same defect §Decision 4 removed from the baseline
-      // status itself — and a consumer that must later gate on this fact needs the
-      // recorded evidence, not a status string it would have to re-derive.
-      assurance: assurance.state === 'legacy'
-        ? null
-        : assurance.evidence,
-      assurance_state: assurance.state,
+      // ⚠ `assurance` / `assurance_state` ARE GONE (ADR-0056 §Decision 1). What
+      // replaces them is not a verdict but a PROVENANCE fact: which schema era
+      // the snapshot this gap was computed from belongs to. A reader needs it
+      // because `current` exists in two eras and means two different things
+      // (§Decision 6 rule 2), and a token read without its era is a verdict read
+      // out of context.
+      snapshot_schema_version: snapshotFamily.schema_version,
+      snapshot_schema_era: snapshotFamily.era,
     },
     host_gaps: hostGaps,
     release_notes: summarizeReleaseNotes(releaseNotes),
@@ -689,7 +553,7 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
     // `runtime:compat plan` handed the operator an action that cannot fix
     // what is wrong, which is the same misdirection §Decision 4 removed from
     // the status itself.
-    next_steps: gapNextSteps({ overallStatus, baselineStatus, assurance, runId: snapshot.run_id }),
+    next_steps: gapNextSteps({ overallStatus, baselineStatus, snapshotFamily, runId: snapshot.run_id }),
   };
 }
 
@@ -753,132 +617,121 @@ function buildReleaseNoteCoverage({ hostGaps, releaseNotes }) {
 }
 
 /**
- * The stored next step, per readiness state.
+ * The one repair or next action for a gap's overall status.
  *
- * Every state gets one. Silence is the wrong answer here for the same reason it
- * is wrong in the reader: a run with no next step reads as a run with nothing to
- * do, and three of these states are exactly the ones an operator must act on.
+ * The stored line is the PRODUCER's, and every terminal branch prefers it — a
+ * generic re-derivation would discard the field whose job is naming the specific
+ * failure (a corrupt package, a straddled read, an unreadable host probe).
  */
-function gapNextSteps({ overallStatus, baselineStatus, assurance, runId }) {
+function gapNextSteps({ overallStatus, baselineStatus, snapshotFamily, runId }) {
   if (overallStatus === 'baseline_unusable') {
-    return [`Repair the packaged host-parity baseline (${baselineStatus}) — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.`];
+    return [baselineStatus?.operator_action
+      ?? 'Repair the packaged host-parity baseline — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.'];
   }
-  if (overallStatus === 'assurance_blocked') {
-    // The EVALUATOR's own instruction wherever it exists. It names the specific
-    // repair — a corrupt package, a straddled read, an unreadable host probe —
-    // and re-deriving a generic line here would discard the one field whose job
-    // is telling those apart.
-    const recorded = typeof assurance.evidence?.next_action === 'string' ? assurance.evidence.next_action : null;
-    return [recorded ?? 'Re-run runtime:doctor and reinstall the runtime plugin — the recorded compatibility assurance result could not be read.'];
+  if (overallStatus === 'host_version_unreadable') {
+    return ['A host printed a version this runtime cannot read faithfully — it carries more than three components or trailing residue, so a comparison against the baseline would drop what makes it different. Repair or re-probe the host CLI; re-running check rewrites the same bytes.'];
   }
-  if (overallStatus === 'legacy_unassured') {
-    return [`runtime:compat snapshot — this run predates the compatibility assurance record, and a remembered snapshot is never retroactively granted assurance (ADR-0053 §Decision 4). Take a fresh snapshot, then runtime:compat check.`];
+  if (overallStatus === 'snapshot_unreadable') {
+    return [`Upgrade the runtime plugin — snapshot ${runId} declares ${snapshotFamily?.schema_version ?? 'a compatibility schema'}, which this runtime does not read. Re-running check would rewrite the same bytes.`];
   }
   if (overallStatus === 'release_notes_required') {
     return [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`];
-  }
-  if (overallStatus === 'unassured') {
-    return ['Assurance is granted by human review of this host pair against this installed code — not by a version match, an upgrade, or elapsed time. Until a release carries a grant naming this pair, readiness stays ungranted (ADR-0053 §Decision 5).'];
   }
   return [`runtime:compat plan --run-id ${runId}`];
 }
 
 /**
- * Read the assurance verdict the SNAPSHOT froze. FAIL-CLOSED.
+ * Which schema era the SNAPSHOT belongs to. FAIL-CLOSED.
  *
- * Four outcomes, and none of them re-runs the ladder:
+ * ⚠ THIS IS THE FAMILY GUARD `projectSnapshotAssurance` USED TO CARRY, kept when
+ * the verdict it guarded was removed (ADR-0056 §Decision 1). What it stops is
+ * unchanged: re-running `check` over a snapshot written by a runtime this one
+ * does not read would mint a fresh, current-looking `1.2` gap from an
+ * observation whose shape may carry a narrowing field this reader skips.
  *
- *   no section          -> `legacy_unassured` — a snapshot taken before the
- *                          decision. It can never become covered; the operator
- *                          takes a FRESH snapshot, they do not re-check this one.
- *   unreadable section  -> `blocked` — a result this runtime does not read.
- *                          Upgrade; re-running check rewrites the same bytes.
- *   `covered` w/o grant  -> `blocked` — the producer cannot emit it, so the
- *                          artifact is corrupt or from a producer this reader
- *                          does not understand. Both are non-coverage.
- *   a producer status   -> carried verbatim.
+ * Three outcomes:
+ *
+ *   this runtime's family  -> `post-assurance`, readable as a current
+ *                             observation.
+ *   a KNOWN older family   -> its own era, readable. The host versions a `1.0` or
+ *                             `1.1` snapshot recorded are still exactly what those
+ *                             hosts printed, and drift is RECOMPUTED here rather
+ *                             than projected out of the old artifact — which is
+ *                             why an older snapshot no longer needs refusing.
+ *                             Under ADR-0053 it did, because the artifact carried
+ *                             a frozen VERDICT that could have been laundered into
+ *                             coverage; there is no frozen verdict any more.
+ *   an UNKNOWN family      -> `snapshot_unreadable`. Upgrade; re-running check
+ *                             rewrites the same bytes.
  */
-function projectSnapshotAssurance(snapshot) {
-  // ⚠ THE SNAPSHOT FAMILY DECIDES FIRST, NEVER THE SECTION'S PRESENCE — the
-  // exact rule `lib/compat-artifacts.mjs` already applies to the GAP artifact,
-  // whose comment records why: "a `1.0` artifact carrying a hand-added assurance
-  // block read as `readable`, so an edited legacy file could inject a `covered`
-  // verdict into a plane whose whole purpose is that only a human grant produces
-  // one". The READER side was fixed there and the PRODUCER side here was not, so
-  // re-running `check` over a doctored snapshot minted a fresh, protected-looking
-  // `1.1` gap saying `current` (measured, ST5).
-  //
-  // A pre-decision snapshot is history and history is `legacy` regardless of what
-  // has been written into it (ADR-0053 §Decision 4 — remembered snapshots are
-  // never retroactively granted assurance). An UNKNOWN future family is
-  // `unreadable`, not legacy: a narrowing field this reader does not understand
-  // is how absence of evidence becomes coverage.
-  const family = snapshot?.schema_version ?? null;
-  if (family !== SNAPSHOT_SCHEMA) {
-    return KNOWN_LEGACY_SNAPSHOT_SCHEMAS.includes(family)
-      ? { state: 'legacy', status: null, grant_id: null, evidence: null }
-      : { state: 'unreadable', status: null, grant_id: null, evidence: { schema_version: family } };
+function projectSnapshotFamily(snapshot) {
+  const schemaVersion = typeof snapshot?.schema_version === 'string' ? snapshot.schema_version.trim() : null;
+  if (schemaVersion === SNAPSHOT_SCHEMA) {
+    return { schema_version: schemaVersion, era: 'post-assurance', readable: true };
   }
-  const section = snapshot?.host_assurance;
-  if (section === undefined || section === null) {
-    return { state: 'legacy', status: null, grant_id: null, evidence: null };
+  if (schemaVersion !== null && KNOWN_LEGACY_SNAPSHOT_SCHEMAS.includes(schemaVersion)) {
+    return {
+      schema_version: schemaVersion,
+      // Named from the GAP era map so the snapshot and gap sides of one artifact
+      // pair cannot disagree about which era a run belongs to.
+      era: GAP_SCHEMA_ERAS[schemaVersion.replace('-snapshot-', '-gap-')] ?? null,
+      readable: true,
+    };
   }
-  const readable = section.schema_version === ASSURANCE_RESULT_SCHEMA_VERSION
-    && ASSURANCE_RESULT_STATUSES.includes(section.status)
-    && !(section.status === 'covered' && !isGrantId(section.evidence?.grant_id));
-  if (!readable) {
-    return { state: 'unreadable', status: null, grant_id: null, evidence: section };
-  }
-  return {
-    state: 'readable',
-    status: section.status,
-    grant_id: section.evidence?.grant_id ?? null,
-    evidence: section,
-  };
+  return { schema_version: schemaVersion, era: null, readable: false };
 }
 
 /**
- * The readiness ladder (ADR-0053 §Decision 4). ORDERED, and the order is the
- * decision rather than a style.
+ * The readiness ladder (ADR-0053 §Decision 4, reshaped by ADR-0056 §Decision 6).
+ * ORDERED, and the order is the decision rather than a style.
  *
- * Integrity first (§Decision 3: negative and unknown beat positive at every
- * layer), then history, then coverage, then the planning states.
+ * Integrity first (ADR-0053 §Decision 3: negative and unknown beat positive at
+ * every layer), then the release-note requirement, then drift.
  *
- * ⚠ `current` NOW REQUIRES COVERAGE, and it is the one narrowing here. ADR-0053
- * §Decision 11 says it in one line — "a new reader against an old baseline or an
- * old recorded artifact yields unassured, and unassured blocks" — and ADR-0054
- * §Decision 6 names the consequence as the POINT of the rollout: R1 ships with
- * `grants: []`, so every host reads `unassured` and readiness blocks, which is
- * how the negative path gets exercised by the real gate on real machines instead
- * of by a simulation of it.
+ * ⚠ `current` MEANS SOMETHING DIFFERENT HERE THAN IT DID IN `1.1`, and that is
+ * why the gap carries its `snapshot_schema_era` and why no reader may put an
+ * assurance-era token in a ready set. Under `1.1` `current` required `covered` —
+ * a human grant naming this host pair — as WELL as no drift. Here it means no
+ * drift alone. Projecting an old `current` onto this one would silently change
+ * what the record claimed (ADR-0056 §Decision 5).
  *
- * ⚠ COVERAGE OUTRANKS THE RELEASE-NOTE REQUIREMENT, deliberately. The
- * requirement exists to make an operator justify drift with content-backed
- * evidence; a human grant naming this exact pair IS that justification, already
- * reviewed. Ordering it below would hand the operator homework a reviewer has
- * already done.
+ * ⚠ THIS IS THE PRE-ADR-0053 LADDER RESTORED, not a new invention. ADR-0053
+ * §Decision 4 moved readiness OFF exactness and onto assurance; removing
+ * assurance returns the classification to what it was, because exactness, drift
+ * and the release-note requirement are the only re-derivable facts left
+ * (ADR-0056 §Consequences). Two shapes were rejected: keeping a positive state
+ * for drift a human accepted (there is no reviewer to record one), and treating
+ * every analyzed drift state as healthy (a pair whose baseline nobody reconciled
+ * would read healthy, which is the "stale pair reads healthy" failure the ADR
+ * names).
+ *
+ * ⚠ THE RELEASE-NOTE REQUIREMENT NOW OUTRANKS DRIFT UNCONDITIONALLY. Under
+ * `1.1` coverage was ordered above it, because a grant naming this exact pair
+ * already WAS the content-backed justification the requirement asks for. With no
+ * grant there is nothing that can pre-satisfy it, so the exception is removed
+ * rather than left as a branch nothing can reach.
  *
  * DRIFT IS UNTOUCHED. `classifyDrift` keeps its whole vocabulary and a non-exact
- * host stays visibly `drifted` — §Decision 4 keeps drift as evidence and moves
- * only the readiness classification.
+ * host stays visibly `drifted` — §Decision 4 kept drift as evidence and moved
+ * only the readiness classification; this moves the classification back.
  */
-function readinessStatus({ baselineBroken, assurance, releaseNotesRequired, driftClass }) {
+function readinessStatus({ baselineBroken, snapshotFamily, observedTruncated, releaseNotesRequired, driftClass }) {
   // Nothing was compared. Neither a readiness verdict nor a gap verdict is honest.
   if (baselineBroken) return 'baseline_unusable';
-  // An unreadable frozen result is an integrity failure of THIS artifact, and it
-  // is ordered above history because a snapshot that carries a section this
-  // runtime cannot read is not a snapshot that predates the section.
-  if (assurance.state === 'unreadable') return 'assurance_blocked';
-  if (assurance.status === 'blocked') return 'assurance_blocked';
-  // Readable, and it predates the decision. Never retroactively granted.
-  if (assurance.state === 'legacy') return 'legacy_unassured';
-  if (assurance.status === 'covered') return driftClass === 'none' ? 'current' : 'assured';
+  // ⚠ A TRUNCATED OBSERVED TOKEN CANNOT REACH `current`. `1.2.3.4` normalizes to
+  // `1.2.3` and compares equal to a genuine `1.2.3`, so the comparison that
+  // decides `drift_class` cannot see the difference. Ordered with the integrity
+  // failures because that is what it is: the host printed something this reader
+  // could not faithfully carry, and doctor's exactness ladder refuses the same
+  // class (`unknown`, not `stale`) for the same reason.
+  if (observedTruncated === true) return 'host_version_unreadable';
+  // The observation itself could not be read. Ordered above every readiness
+  // answer for the same reason `baseline_unusable` is: a verdict computed from an
+  // artifact this runtime does not understand is not a verdict about this
+  // machine.
+  if (snapshotFamily?.readable !== true) return 'snapshot_unreadable';
   if (releaseNotesRequired) return 'release_notes_required';
-  // Reviewed by nobody. `gap_analysis_ready` keeps its meaning — there is drift
-  // and a plan can be built — while a machine with no drift and no grant gets its
-  // own state rather than borrowing `current`, which would be exactness standing
-  // in for assurance.
-  return driftClass === 'none' ? 'unassured' : 'gap_analysis_ready';
+  return driftClass === 'none' ? 'current' : 'gap_analysis_ready';
 }
 
 function classifyDrift(hostGaps, { baselineStatus = null } = {}) {
@@ -1246,9 +1099,9 @@ function hostSummary(hosts) {
 
 function compatLimits() {
   return [
-    'runtime:compat records host-version, release-note, and compatibility-assurance observation artifacts only; it does not install, update, authenticate, or mutate host CLIs.',
-    'Compatibility assurance is GRANTED BY HUMAN REVIEW recorded in the packaged host-parity baseline (ADR-0053 §Decision 2). runtime:compat evaluates whether this machine is a member of an existing grant; it never creates, widens, or promotes one.',
-    'The assurance verdict is frozen when the snapshot is taken. Re-running check on a remembered snapshot projects that frozen verdict and never re-evaluates it, so a snapshot is never retroactively granted assurance (ADR-0053 §Decision 4).',
+    'runtime:compat records host-version and release-note observation artifacts only; it does not install, update, authenticate, or mutate host CLIs.',
+    'Readiness here reports exactness, drift and the release-note requirement — three re-derivable facts. It does not report whether a human has reviewed this host pair: the compatibility-assurance grant layer was removed by ADR-0056, and no machine verdict of \'reviewed\' exists.',
+    'A recorded run from an earlier compatibility schema era is readable history and never a current verdict. `current` meant \'covered and drift-free\' under runtime-compat-gap-1.1 and means \'drift-free\' under 1.2, so the era travels beside the status.',
     'Release-note URL fetch is not automatic. Provide --release-notes-file or explicit --release-notes-url with --fetch-release-notes-url for content-backed planning.',
     'Raw command help output and release-note bodies stay in artifacts; main-session output is limited to metadata, hashes, gaps, and pointers.',
   ];
