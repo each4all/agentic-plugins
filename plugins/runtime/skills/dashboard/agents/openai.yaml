@@ -1,7 +1,7 @@
 interface:
   display_name: "Runtime - Dashboard"
   short_description: "Read-only aggregate operator dashboard for agentic state and operator health"
-  default_prompt: "Use $runtime:dashboard to render the read-only Tier 1 + Tier 2 operator snapshot (three-persona workflows, peer runs, macro progress, consensus, the snapshot-only arbitrated entry advisory via --host codex, doctor/compat/baseline freshness, the three compatibility-assurance facts, settings/hook-attestation recency, artifact attention, notify-state health) without probing host CLIs or mutating state."
+  default_prompt: "Use $runtime:dashboard to render the read-only Tier 1 + Tier 2 operator snapshot (three-persona workflows, peer runs, macro progress, consensus, the snapshot-only arbitrated entry advisory via --host codex, doctor/compat/baseline freshness, the historical compatibility-assurance projection, settings/hook-attestation recency, artifact attention, notify-state health) without probing host CLIs or mutating state."
 
 policy:
   allow_implicit_invocation: false

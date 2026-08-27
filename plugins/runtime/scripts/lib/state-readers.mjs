@@ -72,7 +72,7 @@
 
 import { lstat, readdir, readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { projectGapFamily, READY_COMPAT_STATUSES } from './compat-artifacts.mjs';
+import { isReadyCompatState, projectGapFamily, projectPlanFamily } from './compat-artifacts.mjs';
 import { sanitizeValue } from './permission-sanitize.mjs';
 import { elapsedMsSince } from './clock.mjs';
 
@@ -353,6 +353,9 @@ export async function inspectCompatRuns({ repoRoot }) {
       runs.push({
         run_id: entry.name,
         status: 'blocked',
+        // No readable gap, so no era. `null` never satisfies the ready
+        // predicate, which is the direction a malformed artifact must fail in.
+        schema_era: null,
         artifact_pointer: pointer(repoRoot, snapshotPath),
         selected_at: null,
         selected_at_ms: runIdTimestampMs(entry.name) ?? 0,
@@ -393,24 +396,27 @@ export async function inspectCompatRuns({ repoRoot }) {
   // have been reported as a healthy compat state. Only `current` earns
   // `available`; anything unrecognised needs attention.
   //
-  // `assurance_blocked` joins the blocking set for the same reason
-  // `baseline_unusable` did: it is an INTEGRITY failure, not a readiness answer,
-  // and ADR-0053 §Decision 3 puts integrity above both other layers.
+  // `available` is decided from the SHARED ready PREDICATE rather than from a
+  // literal, so the producer's positive vocabulary and the consumer's cannot
+  // drift apart — the failure this reader's own comment describes, repeated one
+  // release later for a second status.
   //
-  // `available` is decided from the SHARED ready list rather than from a literal,
-  // so the producer's positive vocabulary and the consumer's cannot drift apart —
-  // the failure this reader's own comment describes, repeated one release later
-  // for a second status. `legacy_unassured` and `unassured` deliberately fall
-  // through to `needs_attention`: they are not malformed and not broken, they are
-  // simply not covered, and §Decision 11 says unassured blocks.
+  // ⚠ THE PREDICATE TAKES THE ERA, NOT ONLY THE TOKEN (ADR-0056 §Decision 6
+  // rules 1-2). An assurance-era run whose stored status is `current` carries a
+  // token this era also uses, meaning something else: there it required a human
+  // grant, here it means no drift. Reading the token alone is the fail-open the
+  // removal review measured. `legacy_era` therefore falls through to
+  // `needs_attention` — the run is neither malformed nor broken, it is simply
+  // not a verdict this runtime may read as current.
   const status = malformed > 0
     || latest.status === 'baseline_unusable'
-    || latest.status === 'assurance_blocked'
+    || latest.status === 'snapshot_unreadable'
+    || latest.status === 'host_version_unreadable'
     || latest.status === 'unrecognized'
     ? 'blocked'
     : latest.status === 'release_notes_required'
       ? 'release_notes_required'
-      : READY_COMPAT_STATUSES.includes(latest.status)
+      : isReadyCompatState({ status: latest.status, schemaEra: latest.schema_era })
         ? 'available'
         : 'needs_attention';
   return {
@@ -441,7 +447,29 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
     releaseNotesPath,
     releaseNotes,
   });
-  // A plan that declares itself non-actionable (runtime-compat-plan-1.1
+  // ADR-0053 §Decision 4 as amended by ADR-0056 §Decision 5 — the FAMILY and its
+  // ERA, resolved before any persisted status is read. Measured before the family
+  // check was written: a gap artifact declaring a schema this runtime has never
+  // heard of read as `available / current`, because nothing validated the family
+  // and every branch switched on the stored string. The ERA half is newer and
+  // closes the sibling hole: `current` exists in two eras and means two different
+  // things, so a token read without its era is a verdict read out of context.
+  const gapFamily = gap.status === 'available' ? projectGapFamily(gap.json) : null;
+  const gapFamilyEra = gapFamily?.era ?? null;
+  // ⚠ THE PLAN NEEDS THE SAME FAMILY CHECK THE GAP GETS, and its absence was a
+  // measured override (cross-host review of the removal). The branch below lets
+  // a plan outrank the gap's status, and it switched on the persisted
+  // `plan.status` string alone — so an assurance-era plan carrying
+  // `blocked_assurance` or `blocked_legacy_unassured` matched neither named
+  // status and fell through to `plan_ready`, presenting a verdict from the
+  // removed layer as this era's "there is a plan to act on".
+  //
+  // A non-current plan is POINTED AT and never DECIDES. It is not treated as
+  // malformed — it is a perfectly good artifact from an earlier contract — and
+  // `plan_pointer` below still carries it, so an operator can read what it said.
+  const planFamily = plan.status === 'available' ? projectPlanFamily(plan.json) : null;
+  const planDecides = planFamily?.kind === 'readable';
+  // A plan that declares itself non-actionable (runtime-compat-plan-1.2
   // `actionable: false` — no drift, no surfaces, no notification-watch
   // signal; the plan exists only to render the ADR-0047 standing watch)
   // must not outrank a current gap: without this, every routine standing-
@@ -449,15 +477,17 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
   // plan_ready/needs_attention. Older plans without the field keep today's
   // plan-presence-wins behavior.
   //
-  // The gap side is the READY SET, not the literal `current`. Keyed on the
+  // The gap side is the READY PREDICATE, not the literal `current`. Keyed on the
   // literal, this protection did not reach `assured` — the status ADR-0053
   // §Decision 4 added for drift a human reviewed — so a routine standing-watch
   // plan flipped a reviewed host to `plan_ready / needs_attention`, which is the
   // very failure this carve-out exists to prevent, reappearing one release later
-  // for the second ready status.
-  const planInformationalOnly = plan.status === 'available'
+  // for the second ready status. `assured` is gone with the layer; the predicate
+  // stays because it now also carries the ERA, which is the thing a literal can
+  // never carry.
+  const planInformationalOnly = planDecides
     && plan.json?.actionable === false
-    && READY_COMPAT_STATUSES.includes(gapOverall.status);
+    && isReadyCompatState({ status: gapOverall.status, schemaEra: gapFamilyEra });
   // Ordered ABOVE the plan and gap branches, because it outranks both.
   // `baseline_unusable` is compat's terminal marker for "nothing was
   // compared": the packaged baseline could not be read, parsed, or contained.
@@ -468,33 +498,31 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
   // down, repeated by its reader. The single string is compat's; nothing is
   // re-derived here.
   const baselineUnusable = gap.status === 'available' && gapOverall.status === 'baseline_unusable';
-  // ADR-0053 §Decision 4 — the FAMILY, checked before any persisted status is
-  // read. Measured before it was written: a gap artifact declaring a schema this
-  // runtime has never heard of read as `available / current`, because nothing
-  // below validates the family and every branch switches on the stored string.
+  // The snapshot-family guard outranks the plan for the same reason
+  // `baseline_unusable` does: a plan cannot be acted on when the observation
+  // behind it could not be read. Without this, an existing plan artifact turned
+  // a blocked run into `plan_ready`.
+  const snapshotUnreadable = gap.status === 'available' && gapOverall.status === 'snapshot_unreadable';
+  const hostVersionUnreadable = gap.status === 'available' && gapOverall.status === 'host_version_unreadable';
   // An unread narrowing field is how a restricted verdict becomes an
   // unrestricted one, so an unknown family is refused rather than consumed.
-  const family = gap.status === 'available' ? projectGapFamily(gap.json) : null;
-  const unrecognizedFamily = family?.kind === 'unrecognized';
-  const legacyFamily = family?.kind === 'legacy';
-  // The assurance-integrity states outrank the plan for the same reason
-  // `baseline_unusable` does: a plan cannot be acted on when the verdict behind
-  // it could not be read. Without this, an existing plan artifact turned a
-  // blocked run into `plan_ready`.
-  const assuranceBlocked = gap.status === 'available' && gapOverall.status === 'assurance_blocked';
+  const unrecognizedFamily = gapFamily?.kind === 'unrecognized';
+  const legacyFamily = gapFamily?.kind === 'legacy';
   const status = malformed.length > 0
     ? 'blocked'
     : unrecognizedFamily
       ? 'unrecognized'
       : baselineUnusable
         ? 'baseline_unusable'
-        : assuranceBlocked
-          ? 'assurance_blocked'
-          // History, and it cannot be planned away — the only honest next step is
-          // a fresh snapshot, so a plan artifact must not mask it either.
-          : legacyFamily
-            ? 'legacy_unassured'
-            : plan.status === 'available' && !planInformationalOnly
+        : snapshotUnreadable
+          ? 'snapshot_unreadable'
+        : hostVersionUnreadable
+          ? 'host_version_unreadable'
+        // History, and it cannot be planned away — the only honest next step is
+        // a fresh snapshot, so a plan artifact must not mask it either.
+        : legacyFamily
+          ? 'legacy_era'
+          : planDecides && !planInformationalOnly
         ? planStatus === 'blocked_release_notes_required'
           ? 'release_notes_required'
           // A plan can also declare itself blocked on the baseline. The gap
@@ -511,7 +539,8 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
           // projected `release_notes_required`, re-deciding one layer up a
           // question the producer had answered.
           ? (gapOverall.status === 'release_notes_required'
-              || (gapOverall.release_notes_required === true && !READY_COMPAT_STATUSES.includes(gapOverall.status)))
+              || (gapOverall.release_notes_required === true
+                && !isReadyCompatState({ status: gapOverall.status, schemaEra: gapFamilyEra })))
             ? 'release_notes_required'
             : gapOverall.status === 'current'
               ? 'current'
@@ -533,22 +562,18 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
               // malformed-artifact count with no artifact to point at.
               : gapOverall.status === 'gap_analysis_ready'
                 ? 'gap_analysis_ready'
-                // Reviewed by nobody — readable, drift-free, and covered by no
-                // grant. ADR-0053 §Decision 11: "unassured blocks". Carried as
-                // its own value rather than folded into `gap_analysis_ready`,
-                // whose next step is a plan that would have nothing to plan.
-                : gapOverall.status === 'unassured'
-                  ? 'unassured'
-                  // Drift a human reviewed and accepted. Positive for readiness,
-                  // while `drift_class` keeps reporting the drift as evidence —
-                  // §Decision 4 moves the classification, not the evidence.
-                  : gapOverall.status === 'assured'
-                    ? 'assured'
-                    : 'unrecognized'
+                : 'unrecognized'
           : 'snapshot_only';
   return {
     run_id: sanitizeValue(snapshot.run_id) ?? runId,
     status,
+    // ⚠ THE ERA TRAVELS WITH THE STATUS (ADR-0056 §Decision 6 rule 2). This
+    // projection used to drop it, and the cross-host review of the removal
+    // measured what that costs: `current` exists in two schema eras and means
+    // two different things, so every downstream ready-set test that saw only the
+    // token was free to read an assurance-era record as a present-tense verdict.
+    // `null` is honest for a run whose gap could not be read at all.
+    schema_era: gapFamilyEra,
     artifact_pointer: pointer(repoRoot, snapshotPath),
     gap_pointer: gap.status === 'available' || gap.status === 'malformed' ? pointer(repoRoot, gapPath) : null,
     plan_pointer: plan.status === 'available' || plan.status === 'malformed' ? pointer(repoRoot, planPath) : null,
@@ -629,32 +654,25 @@ function compatNextSteps({ runId, status, gap, plan }) {
       ? storedGapSteps
       : ['Repair the packaged host-parity baseline — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.'];
   }
-  // The producer stores the EVALUATOR's own repair instruction for these, and it
-  // names the specific failure — a corrupt package, a straddled read, an
-  // unreadable host probe. Re-deriving a generic line would discard the one field
-  // whose job is telling those apart, which is the defect this function already
-  // fixed once for `baseline_unusable`.
-  if (status === 'assurance_blocked') {
+  // The producer stores the specific repair instruction; re-deriving a generic
+  // line would discard the one field whose job is naming the observed family.
+  if (status === 'snapshot_unreadable') {
     return storedGapSteps.length > 0
       ? storedGapSteps
-      : ['Re-run runtime:doctor and reinstall the runtime plugin — the recorded compatibility assurance result could not be read.'];
+      : ['Upgrade the runtime plugin — the recorded snapshot declares a compatibility schema this runtime does not read; re-running check would rewrite the same bytes.'];
   }
-  if (status === 'legacy_unassured') {
+  if (status === 'host_version_unreadable') {
     return storedGapSteps.length > 0
       ? storedGapSteps
-      : ['runtime:compat snapshot — this run predates the compatibility assurance record, and a remembered snapshot is never retroactively granted assurance (ADR-0053 §Decision 4).'];
+      : ['A host printed a version this runtime cannot read faithfully — repair or re-probe the host CLI, then take a fresh snapshot.'];
   }
-  if (status === 'unassured') {
-    return storedGapSteps.length > 0
-      ? storedGapSteps
-      : ['Assurance is granted by human review of this host pair against this installed code (ADR-0053 §Decision 5); until a release carries a grant naming this pair, readiness stays ungranted.'];
-  }
-  // `assured` is drift a human accepted. There is nothing to do about it, but
-  // silence is still wrong — the drift is real and stays worth seeing.
-  if (status === 'assured') {
-    return storedGapSteps.length > 0
-      ? storedGapSteps
-      : [`Host versions drifted from the reviewed baseline and a grant covers this pair; no action required. runtime:compat plan --run-id ${runId} for the advisory sequence.`];
+  // A run from an earlier schema era. ⚠ THE STORED STEPS ARE NOT USED HERE, and
+  // that is the one place this function deliberately does not prefer them: an
+  // assurance-era gap stored steps naming a review process that no longer exists
+  // (ADR-0056), so echoing them would hand the operator an action they cannot
+  // take. Every other branch keeps preferring the producer's own line.
+  if (status === 'legacy_era') {
+    return [`runtime:compat snapshot — this run was written by an earlier compatibility schema era, whose verdict this runtime does not read as current (ADR-0056 §Decision 5). Take a fresh snapshot, then runtime:compat check --run-id <new>.`];
   }
   if (status === 'release_notes_required') {
     return storedGapSteps.length > 0 ? storedGapSteps : [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`];

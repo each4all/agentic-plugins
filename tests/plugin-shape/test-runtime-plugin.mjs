@@ -1,7 +1,7 @@
 // plugins/runtime plugin-shape conformance test (ADR-0024 runtime/operator track).
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok, deepStrictEqual, rejects } from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -882,11 +882,6 @@ describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
       'data/schemas/runtime-session-entry-1.0.json',
       'data/schemas/runtime-session-note-1.0.json',
       'data/schemas/runtime-entry-brief-1.0.json',
-      // ADR-0053 §Decision 2 / ADR-0054 §Decision 2 — the host compatibility
-      // assurance record's structural schema, named by prose in
-      // docs/host-parity-baseline.md § Compatibility Assurance and therefore
-      // subject to the same cited-but-not-shipped drift this list closes.
-      'data/schemas/runtime-host-assurance-1.0.json',
     ]) {
       const schema = await readJSON(resolve(PLUGIN_ROOT, file));
       strictEqual(schema.additionalProperties, false, `${file} follows the closed-schema rule`);
@@ -898,17 +893,30 @@ describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
   // different document shape would have to touch a PROTECTED asset a second
   // time (ADR-0052 release obligation).
   //
-  // The assurance section gets NO prose-token assertion in this file, and that
-  // is deliberate. A `baseline.includes('## Compatibility Assurance')` check
-  // has the failure mode this file has already been bitten by twice: it is
-  // satisfiable by any sentence that happens to contain the phrase, and it
-  // says nothing about whether the record inside the section still parses. The
-  // real consistency — exactly one sentinel pair, a canonical block, a schema
-  // version the shipped reader accepts — is pinned BEHAVIOURALLY against the
-  // shipped bytes in tests/runtime/test-host-assurance-record.mjs, which fails
-  // if any of those drift. What is asserted here instead is the one fact that
-  // test cannot reach: that the schema file the section's prose names is
-  // actually packaged, in the same shape as its siblings.
+  // ⚠ THE ASSURANCE SECTION AND ITS SCHEMA ARE GONE (ADR-0056 §Decisions 1
+  // and 5), and their absence is asserted rather than assumed. The section was
+  // an author-editable free-text region inside a PROTECTED asset, and the one
+  // way its removal could silently regress is a later edit re-adding it — at
+  // which point the packaged baseline would carry a record no reader parses and
+  // `$id` reuse would become possible.
+  //
+  // ⚠ THIS IS A PROSE-TOKEN CHECK, WHICH THIS FILE'S OWN NOTE WARNS ABOUT, and
+  // the direction is what makes it safe here. The warning is against asserting
+  // PRESENCE by substring — satisfiable by any sentence containing the phrase.
+  // Asserting ABSENCE has the opposite failure mode: a false red on an innocent
+  // mention, which is loud and cheap, rather than a false green on a broken
+  // record. The sentinels are matched because they are the machine-readable
+  // delimiters, not the human heading.
+  it('the compatibility-assurance section and its schema stay removed', async () => {
+    const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
+    ok(!baseline.includes('<!-- BEGIN COMPATIBILITY ASSURANCE -->'), 'the packaged baseline must not carry an assurance block (ADR-0056)');
+    ok(!baseline.includes('<!-- END COMPATIBILITY ASSURANCE -->'), 'the packaged baseline must not carry an assurance block (ADR-0056)');
+    await rejects(
+      () => readJSON(resolve(PLUGIN_ROOT, 'data/schemas/runtime-host-assurance-1.0.json')),
+      /ENOENT/,
+      'the assurance schema is removed and its $id is never reused (ADR-0056 §Decision 5)',
+    );
+  });
 });
 
 describe('plugins/runtime repo documentation freshness', () => {

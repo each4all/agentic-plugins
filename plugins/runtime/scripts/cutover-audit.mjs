@@ -8,10 +8,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runDoctor } from './doctor.mjs';
-import { describeFloorFailure } from './lib/runtime-floor.mjs';
 import { elapsedMsSince } from './lib/clock.mjs';
-import { isGrantId } from './lib/assurance-result.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
+import { isReadyCompatState } from './lib/compat-artifacts.mjs';
 
 const VERSION = RUNTIME_VERSION;
 const CUTOVER_EVIDENCE_SCHEMA_VERSION = 'runtime-cutover-evidence-1.0';
@@ -46,11 +45,13 @@ const FOOTER_STATES = new Set([
 const CUTOVER_CANDIDATE_GATE = [
   'ADR-0012 conditions 1-4 satisfied',
   'omcc replacement scorecard has no partial/missing rows',
-  // ADR-0053 §Decision 4 / ADR-0054 §Decision 5 — named here because this list
-  // is the audit's own explanation of what it gates on. A hard check absent from
-  // it is a blocker the operator cannot see coming.
-  'host compatibility assurance is granted for this host pair',
-  'both hosts run an assurance-capable runtime (the ADR-0054 floor)',
+  // ⚠ TWO ENTRIES ARE GONE (ADR-0056 §Decisions 1 and 4): the human-granted
+  // assurance gate and the assurance-capable runtime floor. This list is the
+  // audit's own explanation of what it gates on, so a check absent from `checks`
+  // must be absent here too — a stale line names a blocker the operator cannot
+  // clear, which is the mirror of the "hard check absent from the list" defect
+  // this comment originally recorded.
+  'the latest compatibility run is intact, current, and describes this machine',
   'observed runtime experience parity is ready and 100%',
   'at least one week of omcc-dev-free dogfood evidence',
   'latest completion footer is closed',
@@ -109,8 +110,6 @@ export async function runCutoverAudit(options = {}) {
     checkScorecardRequirements({ repoRoot, text: scorecardText }),
     checkLegacyPatternMap({ repoRoot, text: legacyPatternText }),
     checkObservedExperienceParity(doctor),
-    checkHostParityAssurance(doctor),
-    checkAssuranceRuntimeFloor(doctor),
     checkPluginVersions({ repoRoot, manifest, doctor }),
     checkCompatFreshness({ doctor, now, maxArtifactAgeHours }),
     await checkConsensusAndContext({ repoRoot, doctor, now, maxArtifactAgeHours }),
@@ -588,13 +587,6 @@ function buildCompletionAudit({ repoRoot, checks, cutoverGate, observations = []
       covers: 'D1-D20 legacy omcc-dev pattern disposition and active-dependency blockers',
     }),
     checklistItem({
-      id: 'host-parity-assurance',
-      kind: 'file',
-      status: byId.get('host_parity_assurance')?.status,
-      source: '<runtime package>/docs/host-parity-baseline.md § COMPATIBILITY ASSURANCE',
-      covers: 'Human-granted acceptance of this host pair against this installed code, and the ADR-0054 minimum assurance-capable runtime floor',
-    }),
-    checklistItem({
       id: 'host-parity-baseline',
       kind: 'file',
       status: byId.get('host_parity_baseline')?.status,
@@ -977,144 +969,19 @@ function applyReusableDoctorProofToExperienceParity({ experience, recordedProof 
 }
 
 /**
- * READINESS PATH 1 (ADR-0053 §Decision 4) — assurance, not exactness.
- *
- * ⚠ WHAT CHANGED AND WHY IT IS A REPLACEMENT. This check used to return doctor's
- * `host_parity_baseline` verbatim, which made EXACTNESS — "the packaged baseline
- * names the versions this machine runs" — the thing readiness keyed on. ADR-0053
- * §Decision 1 keeps that computation and §Decision 4 moves the gate off it:
- * readiness must key on whether a human accepted this host pair.
- *
- * §Alternatives C-min is the warning this obeys: dropping the exactness check
- * WITHOUT substituting assurance would not fix the gate, it would remove it.
- * Exactness is not deleted — it moves to `observations`, a channel that reports
- * and does not gate — because every entry in `checks` gates readiness.
- *
- * The section is VALIDATED rather than trusted. Returning doctor's object
- * verbatim would let an unknown status reach `CHECK_PASS.has(status)`, and only
- * `covered` may map to a pass. A `covered` result with no grant id cannot come
- * from the producer, so it is a corrupt or unread report, and both are refusals.
- */
-function checkHostParityAssurance(doctor) {
-  const base = { id: 'host_parity_assurance', label: 'Host compatibility assurance (human-granted)' };
-  const section = doctor.host_parity_assurance;
-  if (!section || typeof section !== 'object') {
-    return {
-      ...base,
-      status: 'missing',
-      evidence: {},
-      next_action: 'Re-run runtime:doctor — host_parity_assurance is absent from the doctor report (older doctor shape; current shape required).',
-    };
-  }
-  const evidence = {
-    status: section.status ?? null,
-    grant_id: section.evidence?.grant_id ?? null,
-    record_status: section.evidence?.record_status ?? null,
-    direction: section.evidence?.direction?.state ?? null,
-    reasons: Array.isArray(section.evidence?.reasons) ? section.evidence.reasons.slice(0, 4) : [],
-  };
-  if (section.status === 'covered' && isGrantId(section.evidence?.grant_id)) {
-    return { ...base, status: 'satisfied', evidence, next_action: null };
-  }
-  if (section.status === 'covered') {
-    return {
-      ...base,
-      status: 'blocked',
-      evidence,
-      next_action: 'Re-run runtime:doctor — the recorded assurance result reports coverage with no grant id, which the producer cannot emit, so it is corrupt or from a producer this audit does not read.',
-    };
-  }
-  // `unassured` and `blocked` keep their own names. Collapsing them would lose
-  // the operator action: one is repaired, the other is reviewed.
-  const status = section.status === 'blocked' ? 'blocked' : section.status === 'unassured' ? 'unassured' : 'unknown';
-  // ⚠ NO INVENTED ACTION FOR A STATUS THIS AUDIT DOES NOT KNOW. The fallback
-  // below is the REVIEW instruction, which is the right answer for `unassured`
-  // and the wrong one for a status from a newer producer: telling an operator to
-  // wait for a human review when the real problem is that this audit cannot read
-  // the report would send them to wait for something that changes nothing.
-  //
-  // For an unknown status the action is deliberately left absent, and the
-  // report-level no-silent-blocker invariant names the check instead. That is
-  // also what keeps the invariant REACHABLE rather than a guard every caller
-  // pre-empts.
-  const nextAction = section.next_action
-    ?? (status === 'unknown'
-      ? null
-      : 'Assurance is granted by human review of this host pair against this installed code (ADR-0053 §Decision 5); until a release carries a grant naming this pair, readiness is not claimable.');
-  return { ...base, status, evidence, next_action: nextAction };
-}
-
-/**
- * READINESS PATH 1b (ADR-0054 §Decision 5) — the minimum assurance-capable runtime.
- *
- * A HARD check, and a separate one rather than a clause inside the assurance
- * check, because the two failures have different repairs: a floor failure is
- * fixed by installing or enabling a plugin, an assurance miss is resolved by
- * review. It reads the verdict the assurance evaluator already computed from the
- * RAW installed observation — not `checkPluginVersions`, which accepts a cache
- * fallback, and not the readiness matrix, which can label cache-only evidence
- * installed. Two sources for one fact is how they come to disagree.
- *
- * `runtime_floor: null` means the evaluator returned before reaching the floor,
- * so the answer is `unknown` — never `satisfied`.
- */
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-const FLOOR_REQUIRED_HOSTS = Object.freeze(['claude', 'codex']);
-
-function checkAssuranceRuntimeFloor(doctor) {
-  const base = { id: 'assurance_runtime_floor', label: 'Both hosts run an assurance-capable runtime' };
-  const verdict = doctor.host_parity_assurance?.evidence?.runtime_floor ?? null;
-  if (verdict === null) {
-    return {
-      ...base,
-      status: 'unknown',
-      evidence: {},
-      next_action: 'Re-run runtime:doctor — the assurance evaluation stopped before the runtime floor was reached, so whether both hosts run an assurance-capable runtime is unknown. Resolve the assurance integrity failure first.',
-    };
-  }
-  const evidence = {
-    floor: verdict.floor ?? null,
-    unsatisfied_hosts: verdict.unsatisfied ?? [],
-    claude: verdict.hosts?.claude ?? null,
-    codex: verdict.hosts?.codex ?? null,
-  };
-  // THE VERDICT MUST BE SHAPED LIKE AN ANSWER BEFORE IT CAN BE A PASS. ST5's
-  // audit measured the composition this refuses: `evaluateRuntimeFloor` returns
-  // `{floor: null, satisfied: true, hosts: {}}` when the packaged plugin set
-  // declares no `plugins.runtime.minimum_version`, and a truthy `satisfied` test
-  // then reported the check whose whole job is "both hosts run an
-  // assurance-capable runtime" as SATISFIED having evaluated NEITHER host.
-  // `satisfied === true` alone would not close it; the floor value and the two
-  // host rows are what make the verdict about this machine (ADR-0054 §Decision 5).
-  const shaped = verdict.satisfied === true
-    && typeof verdict.floor === 'string'
-    && isPlainObject(verdict.hosts)
-    && FLOOR_REQUIRED_HOSTS.every((host) => isPlainObject(verdict.hosts[host]));
-  if (shaped) return { ...base, status: 'satisfied', evidence, next_action: null };
-  if (verdict.satisfied === true) {
-    return {
-      ...base,
-      status: 'unknown',
-      evidence,
-      next_action: 'Reinstall or repair the runtime plugin — the floor verdict reports satisfied but does not name a floor '
-        + 'or does not carry a row for each host, so it is not an answer about this machine. A floor that evaluates no host '
-        + 'satisfies nothing (ADR-0054 §Decision 5).',
-    };
-  }
-  return { ...base, status: 'blocked', evidence, next_action: describeFloorFailure(verdict) };
-}
-
-/**
  * Exactness, REPORTED and not gated (ADR-0053 §Decision 1 + §Decision 4).
  *
  * It stays in the report because doctor computes it, the completion audit's
  * checklist names it, and an operator comparing a drifted host against the
- * reviewed baseline needs to see it. It stays OUT of `checks` because every
- * entry there gates readiness, and gating on it is exactly what §Decision 4
- * moved away from.
+ * reviewed baseline needs to see it.
+ *
+ * ⚠ IT STAYS OUT OF `checks`, AND ADR-0056 DOES NOT CHANGE THAT. Removing the
+ * assurance gate could look like an invitation to promote exactness back into
+ * `checks` — it is the fact that remains, after all — but every entry there
+ * gates readiness, and the freshness verdict already reaches readiness through
+ * `checkCompatFreshness`'s ready set. Promoting it here would charge the same
+ * fact twice, and would do it in the check whose §Decision 4 note says exactness
+ * is observation-only.
  */
 function observeHostParityBaseline(doctor) {
   return doctor.host_parity_baseline ?? {
@@ -1176,8 +1043,21 @@ function checkPluginVersions({ repoRoot, manifest, doctor }) {
 }
 
 /**
- * READINESS PATH 1c — the recorded compat run, keyed on ASSURANCE rather than on
- * exact version equality (ADR-0053 §Decision 4).
+ * READINESS PATH 1c — the recorded compat run: intact, current, and about THIS
+ * machine (ADR-0053 §Decision 4 as replaced by ADR-0056 §Decision 6).
+ *
+ * ⚠ THE FOURTH CLAUSE WAS `liveCovered`, AND DELETING IT WITHOUT A REPLACEMENT
+ * IS A MEASURED FAIL-OPEN. The cross-host review of the removal named it: it was
+ * the live-coverage clause, not exactness, that stopped a STORED bit from
+ * passing on its own, because exactness here is explicitly observation-only. An
+ * old `1.1` run whose status was `current` or `assured` still parses, and its
+ * recorded host pair can still equal the live one, so the check would pass on a
+ * verdict from a layer that no longer exists.
+ *
+ * The replacement is the ERA (ADR-0056 §Decision 6 rules 1-2), and it is why
+ * `isReadyCompatState` takes both halves: a record from the assurance era is
+ * readable evidence of the past and is never a current verdict, whatever token
+ * it carries.
  *
  * Four things must hold, and each was a way a positive answer could have been
  * wrong rather than a way to be strict:
@@ -1188,22 +1068,42 @@ function checkPluginVersions({ repoRoot, manifest, doctor }) {
  *   here and was caught, if at all, by experience parity — a different check,
  *   for a different reason, by accident.
  *
- *   A READY RECORDED STATUS. `current` and `assured` both mean the recorded run
- *   found the machine covered; `assured` additionally means the drift was
- *   reviewed. Keying on `status === 'current' && drift_class === 'none'` refused
- *   the reviewed host this whole plane exists to admit.
+ *   A READY RECORDED STATUS, IN THIS ERA. `current` is the only positive under
+ *   `runtime-compat-gap-1.2`, and it means exact-and-no-drift. That does put
+ *   exactness back in the gate, which ADR-0056 §Decision 6 item 4 names as one
+ *   of three shapes and refuses to let anyone pick by default. It is chosen
+ *   here, openly, because the two alternatives are worse: accepting the analyzed
+ *   drift states (`gap_analysis_ready`, `release_notes_required`) lets a pair
+ *   whose baseline nobody reconciled read healthy, and deleting this check drops
+ *   host-pair identity and freshness protection that no other check performs.
  *
- *   IDENTITY BINDING. The recorded run observed SOME host pair; live assurance
+ *   IDENTITY BINDING. The recorded run observed SOME host pair; the live probe
  *   describes THIS one. Without binding them, a fresh snapshot of pair A beside
- *   live coverage of pair B passes — two true facts about two machines, read as
- *   one (cross-host review).
+ *   a live observation of pair B passes — two true facts about two machines,
+ *   read as one (cross-host review).
  *
- *   LIVE COVERAGE. ⚠ NO STORED BIT. A grant can be revoked, and the packaged
- *   baseline can change, between the snapshot and this audit. `runCutoverAudit`
- *   runs doctor live, so the coverage question is re-asked here rather than read
- *   out of the artifact. The artifact's own frozen verdict is the right answer to
- *   compat's question — "was the machine THAT snapshot observed covered" — and
- *   the wrong answer to this one.
+ *   A LIVE PAIR TO BIND AGAINST, AND A LIVE BASELINE VERDICT. ⚠ THE SOURCE
+ *   MOVED, AND ONE CLAUSE IS NEW. The pair was
+ *   `host_parity_assurance.evidence.normalized_observed`; ADR-0056 §Decision 6
+ *   item 3 moves it to `host_parity_baseline.evidence.normalized_observed`,
+ *   which is the SAME observation without the verdict attached.
+ *
+ *   The NEW clause is `host_parity_baseline.status === 'current'`, and it is not
+ *   the same guard as the recorded status twice over — the two bind different
+ *   things, which is why both are here:
+ *
+ *     the recorded status  is about the run: was it drift-free when taken?
+ *     the live baseline    is about NOW: does the INSTALLED packaged baseline
+ *                          still describe this machine?
+ *
+ *   `liveCovered` used to supply the second, because coverage was evaluated
+ *   against the installed record. Without a replacement, a recorded `current`
+ *   inside the freshness window passes while the packaged baseline it was
+ *   compared against has since been replaced — the recorded run's remembered
+ *   baseline is frozen in the snapshot and nothing re-binds it. Doctor's
+ *   exactness ladder is that re-binding, and it additionally refuses a
+ *   TRUNCATED observed token (`1.2.3.4` reads `unknown`, not `current`), which
+ *   is the second half of the same fail-open.
  */
 function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
   const runs = doctor.compat_runs ?? null;
@@ -1218,11 +1118,11 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
   const ageUnreadable = Boolean(latest?.selected_at) && ageHours === null;
   const fresh = ageHours !== null && ageHours <= maxArtifactAgeHours;
   const collectionOk = runs?.status === 'available' && (runs?.malformed ?? 0) === 0;
-  const recordedReady = latest?.status === 'current' || latest?.status === 'assured';
-
-  const assurance = doctor.host_parity_assurance ?? null;
-  const liveCovered = assurance?.status === 'covered' && isGrantId(assurance?.evidence?.grant_id);
-  const liveObserved = assurance?.evidence?.normalized_observed ?? null;
+  // ERA AND TOKEN, never the token alone. See the note above.
+  const recordedReady = isReadyCompatState({ status: latest?.status, schemaEra: latest?.schema_era });
+  const liveBaselineStatus = doctor.host_parity_baseline?.status ?? null;
+  const liveBaselineCurrent = liveBaselineStatus === 'current';
+  const liveObserved = doctor.host_parity_baseline?.evidence?.normalized_observed ?? null;
 
   // The recorded pair, from the host rows the run stored. Exactly one row per
   // host is required: a missing row cannot be compared, and duplicates mean the
@@ -1251,7 +1151,7 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
   }
   const identityBound = identityFault === null;
 
-  const ready = Boolean(latest) && collectionOk && recordedReady && identityBound && liveCovered;
+  const ready = Boolean(latest) && collectionOk && recordedReady && identityBound && liveBaselineCurrent;
   const status = !latest
     ? 'missing'
     : ready && fresh
@@ -1264,11 +1164,13 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
     : !collectionOk
       ? `the recorded compat collection is ${runs?.status ?? 'unreadable'} with ${runs?.malformed ?? 0} malformed artifact(s)`
       : !recordedReady
-        ? `the newest recorded run reports ${latest.status}`
+        ? (latest.schema_era !== null && latest.schema_era !== 'post-assurance'
+          ? `the newest recorded run was written by the ${latest.schema_era} compatibility schema era, whose verdicts this runtime does not read as current (ADR-0056 §Decision 5)`
+          : `the newest recorded run reports ${latest.status}`)
         : !identityBound
           ? identityFault
-          : !liveCovered
-            ? 'this machine is not currently covered by a compatibility assurance grant'
+          : !liveBaselineCurrent
+            ? `the installed host-parity baseline reports ${liveBaselineStatus ?? 'nothing'} against this machine, so the recorded run's remembered baseline is not re-bound to the one installed now`
             : ageUnreadable
               ? `the newest recorded run is stamped ${latest.selected_at}, which is not a readable age from here`
               : !fresh
@@ -1276,18 +1178,22 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
                 : null;
   return {
     id: 'latest_compat_snapshot',
-    label: 'Latest compatibility run is assured, intact, and describes this machine',
+    label: 'Latest compatibility run is intact, current, and describes this machine',
     status,
     evidence: {
       run_id: latest?.run_id ?? null,
       status: latest?.status ?? null,
+      // The era travels into the evidence for the same reason it travels into
+      // the predicate: a reader seeing `status: current` alone cannot tell which
+      // of two meanings it carried.
+      schema_era: latest?.schema_era ?? null,
       drift_class: latest?.drift_class ?? null,
       collection_status: runs?.status ?? null,
       malformed: runs?.malformed ?? null,
       recorded_pair: recordedPair,
       live_pair: liveObserved,
       identity_bound: identityBound,
-      live_covered: liveCovered,
+      live_baseline_status: liveBaselineStatus,
       selected_at: latest?.selected_at ?? null,
       age_hours: ageHours,
       max_age_hours: maxArtifactAgeHours,
@@ -1300,7 +1206,7 @@ function checkCompatFreshness({ doctor, now, maxArtifactAgeHours }) {
         // timestamp, so the future-dated artifact stays newest.
         ? `${reason}. Repair the machine clock or delete the mis-stamped artifact `
           + `(${latest?.run_id ?? 'the newest compat run'}) — a new snapshot will not clear this, because the newest run is chosen by its recorded timestamp.`
-        : `${reason}. Run runtime:compat snapshot and runtime:compat check for the current host pair, repairing any malformed artifacts first; assurance itself is granted by review, not by re-running compat.`,
+        : `${reason}. Run runtime:compat snapshot and runtime:compat check for the current host pair, repairing any malformed artifacts first.`,
   };
 }
 

@@ -144,21 +144,24 @@ describe('plugin-set — hook_bearing equals effective registration (TESTED mand
 });
 
 describe('plugin-set — floors + edges', () => {
-  it('carries the three verified floors and null elsewhere', async () => {
+  it('carries the two verified floors and null elsewhere — runtime\'s included', async () => {
     const set = await loadPluginSet();
     assert.equal(set.plugins.companions.minimum_version, '0.3.0');
     assert.equal(set.plugins.engineer.minimum_version, '0.7.0');
-    // ADR-0054 §Decision 5 — the assurance floor, and the reason this assertion
-    // moved rather than being relaxed. Its old message said the floor should be
-    // null "(no documented incompatibility)", which was true until the
-    // incompatibility was documented: below this version a host cannot read the
-    // compatibility assurance record at all, so readiness is not claimable.
+    // ⚠ RUNTIME'S FLOOR RETURNED TO `null` (ADR-0056 §Decision 4), and this
+    // assertion moved BACK rather than being deleted. ADR-0054 §Decision 5 had
+    // set it to `0.91.0` — the first version able to read the compatibility
+    // assurance record — with the message "no documented incompatibility" no
+    // longer true. With no record to read, that floor guards nothing, and
+    // leaving it would assert an incompatibility that does not exist.
     //
-    // The value is the FIRST RELEASED READER version, so it must equal the
-    // version the R1 release actually cuts. A release that lands on a different
-    // version leaves this pinned value naming a release that does not exist.
-    assert.equal(set.plugins.runtime.minimum_version, '0.91.0');
-    const floored = new Set(['companions', 'engineer', 'runtime']);
+    // ⚠ THE ST5 LOWER-BOUND ASSERTION IS GONE WITH IT. A separate test pinned
+    // "the packaged floor may never fall below `0.91.0`, the first released
+    // reader"; that rule was about irreversibility of an assurance policy value,
+    // and applying it to a `null` floor would have made this removal
+    // unimplementable by a test rather than by a decision.
+    assert.equal(set.plugins.runtime.minimum_version, null);
+    const floored = new Set(['companions', 'engineer']);
     for (const name of Object.keys(set.plugins)) {
       if (floored.has(name)) continue;
       assert.equal(set.plugins[name].minimum_version, null, `${name} floor should be null (no documented incompatibility)`);

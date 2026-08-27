@@ -14,10 +14,8 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
-import { baselineFailure, classifyHostPairRelation, normalizeVersion, readVersionToken } from './lib/host-parity-baseline.mjs';
-import { observePackages } from './lib/assurance-contract.mjs';
-import { buildAssuranceProbe, resolveHostAssuranceFacts } from './lib/host-assurance-facts.mjs';
-import { isGrantId } from './lib/assurance-result.mjs';
+import { baselineFailure, classifyHostPairRelation, normalizeVersion, readVersionToken, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
+import { buildHostVersionProbe } from './lib/host-version-probe.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { getPromptCause } from './lib/permission-advisor-core.mjs';
@@ -107,7 +105,34 @@ const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // imports FROM doctor.mjs — the dependency runs one way only.
 const SETTINGS_EXECUTION_NONTERMINAL_STATUSES = new Set(['planned', 'in-progress']);
 const DOCTOR_RUN_ID_RE = /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
-const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.0';
+// ADR-0056 §Decision 5 — both doctor families bump because the inner report LOSES
+// `host_parity_assurance` and its `experience_parity` denominator changes. A
+// removal is not an additive change, so the version has to move.
+//
+// ⚠ THE DUAL READER SHIPS IN THE SAME RELEASE AS THE PRODUCER — not before, not
+// after, and this is the one sequencing rule in the whole removal that cannot be
+// deferred. `isDoctorArtifact` gates `inspectDoctorRuns`, which scans EVERY
+// retained run; a rejected artifact increments `malformed`, and
+// `status: malformed > 0 ? 'blocked' : …` means no fresh proof ever clears it.
+// Measured on the retained corpus when this was last considered: bumping the
+// inner report alone moved `doctor_runs` from `available malformed=0` to
+// `blocked malformed=70`. So the READABLE lists below are the load-bearing half,
+// and the producer constants are only their newest members.
+const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.1';
+const DOCTOR_REPORT_SCHEMA_VERSION = 'runtime-doctor-1.1';
+// ⚠ MATCHED PAIRS, NOT TWO INDEPENDENT ALLOWLISTS. The outer artifact and the
+// inner report bump together, so exactly two tuples were ever written. Checking
+// each half against its own list would additionally admit `(artifact-1.1,
+// report-1.0)` and `(artifact-1.0, report-1.1)` — shapes no producer can emit,
+// which makes them corrupt or hand-edited artifacts, and this reader's whole job
+// is refusing those (cross-host review of the removal).
+const READABLE_DOCTOR_SCHEMA_PAIRS = Object.freeze([
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.0', report: 'runtime-doctor-1.0' }),
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.1', report: 'runtime-doctor-1.1' }),
+]);
+function isReadableDoctorSchemaPair(artifactSchema, reportSchema) {
+  return READABLE_DOCTOR_SCHEMA_PAIRS.some((pair) => pair.artifact === artifactSchema && pair.report === reportSchema);
+}
 const DOCTOR_LATEST_SCHEMA_VERSION = 'runtime-doctor-latest-1.0';
 
 export async function runDoctor({
@@ -204,22 +229,16 @@ export async function runDoctor({
     observedCodexHookConfig: machine.codexHookConfig,
   });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList, codexPluginHooks });
-  // Destructured EXPLICITLY into two names. Assigning the whole
-  // `{baseline, assurance}` pair to `hostParityBaseline` would have dropped
-  // `.status` off the section `cutover-audit.mjs:562` reads and changed its
-  // verdict silently (cross-host review) — the one shape this refactor could
-  // break without any test noticing.
-  const { baseline: hostParityBaseline, assurance: hostParityAssurance } = await buildHostParityFacts({
+  // ⚠ STILL DESTRUCTURED, though only one name comes out now. Assigning the
+  // whole result to `hostParityBaseline` would drop `.status` off the section
+  // `cutover-audit.mjs` reads and change its verdict silently (cross-host
+  // review) — the one shape this refactor could break without any test noticing.
+  // ADR-0056 §Decision 1 removed the second name (`assurance`); the shape is
+  // kept so the same mistake is not available to the next edit.
+  const { baseline: hostParityBaseline } = await buildHostParityFacts({
     claude,
     codex,
     pluginRoot,
-    claudePluginList,
-    // The Claude installed-plugin list arrives from the SAME probe the parser
-    // consumed (`machine.claude.plugin`), so its success status travels with
-    // its text rather than being inferred downstream.
-    claudeListStatus: machine.claude?.plugin?.status ?? null,
-    codexPluginList,
-    now,
   });
   const settingsRuns = await inspectSettingsRuns({
     repoRoot: resolvedRepoRoot,
@@ -406,7 +425,6 @@ export async function runDoctor({
     workflowContinuationProof: workflowContinuationProofSection,
   });
   const experienceParity = buildExperienceParity({
-    hostParityAssurance,
     readinessMatrix,
     pluginCommandSurface,
     codexPluginHooks,
@@ -423,7 +441,7 @@ export async function runDoctor({
   });
 
   const report = {
-    schema_version: 'runtime-doctor-1.0',
+    schema_version: DOCTOR_REPORT_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
     generated_at: startedAt,
     repo_root: resolvedRepoRoot,
@@ -458,15 +476,6 @@ export async function runDoctor({
     codex_plugin_hooks: codexPluginHooks,
     host_parity: hostParity,
     host_parity_baseline: hostParityBaseline,
-    // ADR-0054 §Decision 4 — a nested, separately versioned result inside a
-    // report whose own `runtime-doctor-1.0` does NOT bump. ⚠ THIS GATES. The
-    // note that stood here said "reporting only in this slice"; `70e0461` took
-    // the seat it predicted and the note was not revised, so for one release the
-    // module's own header licensed a maintainer to treat the computation as
-    // inert. Live readers: `experience_parity`'s ninth criterion below, and
-    // `cutover-audit`'s `checks`. `summarizeOverall` and `readiness` genuinely
-    // do not read it, and that half remains accurate.
-    host_parity_assurance: hostParityAssurance,
     companions: companion,
     model_effort: modelEffort,
     settings_runs: settingsRuns,
@@ -1238,66 +1247,34 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
 // surfaces without a manual runtime:compat run. cutover-audit reuses this
 // result rather than re-parsing the baseline (single source of truth).
 //
-// ADR-0053 §Decision 3 splits what used to be one verdict into THREE facts over
-// TWO report sections, and the split is the point: integrity outranks the other
-// two, exactness answers "does the packaged evidence describe this machine",
-// and assurance answers "is this machine covered by accepted review". Only the
-// third is what readiness actually needs, and until this slice no such fact
-// existed — `readyCandidate` substituted "the strings match" for "a human
-// accepted this host".
+// ADR-0053 §Decision 3 split what used to be one verdict into THREE facts over
+// TWO report sections. ADR-0056 §Decision 1 removed the third: integrity
+// outranks the rest, exactness answers "does the packaged evidence describe this
+// machine", and there is no longer a fact answering "is this machine covered by
+// accepted review" — no machine verdict of `reviewed` exists, by decision.
 //
-// ⚠ THIS GATES — and correcting this note is itself an ST5 finding, raised
-// independently by four reviews. It used to read "REPORTING ONLY in this slice
-// … nothing reads it … deliberately absent from `summarizeOverall`, from
-// `readiness`, from `experience_parity`, and from `cutover-audit`'s `checks`".
-// The last two clauses stopped being true at `70e0461`, which wired
-// `experience_parity`'s ninth criterion and both cutover checks; the note was
-// written one commit earlier and never revised, while its co-located twin in
-// `cutover-audit.mjs` was. The risk is not cosmetic: the next author to tidy
-// this file inherits "nothing reads it" as a licensed premise and can remove
-// both readiness paths in a change that reviews as reporting-only.
+// ⚠ EXACTNESS IS NOT RELAXED BY THAT REMOVAL. ADR-0053 §Decision 1's strict
+// normalized equality is exactly what it was; ADR-0056 §Consequences states the
+// boundary in one line — removing assurance removes the SECOND fact at the
+// freshness site, not the first.
 //
-// Still accurate: `summarizeOverall` and `readiness` do not read it. The
-// separation ADR-0053 §Decision 4 wanted — a matcher defect and a gate change
-// not landing in one release — was achieved by the R1/R2 split, not by this
-// section staying inert.
-//
-// ONE READ feeds both sections. `resolveHostParityBaseline` and
-// `resolveAssuranceRecord` share a read PATH and not a read, and the module
-// says so: a consumer needing both facts about one revision must compare
-// `provenance.content_sha256` and treat a difference as a failure. Resolving
-// the header here and handing it down is half of that; the hash comparison
-// inside `evaluateAssurance` is the other half.
-async function buildHostParityFacts({ claude, codex, pluginRoot, claudePluginList, claudeListStatus, codexPluginList, now }) {
-  // ONE composition, shared with `compat`. It used to live here privately, and a
-  // cross-host Plan-verify review on the compat slice measured what a second
-  // caller would cost: `evaluateAssurance` needs the resolved baseline, the
-  // record and the fault its reader throws, the plugin set and its fault, raw
-  // and normalized versions, both probe statuses, the package observation and an
-  // injected date — roughly a hundred lines to reproduce, which is the
-  // four-private-copies failure ADR-0051 §Decision 4 forbids.
-  //
-  // `resolved` and `probe` come BACK out because the exactness section below
-  // must be derived from the same read and the same observation. Two sections
-  // each deriving "what did we observe" would be two chances to disagree, and a
-  // report whose exactness line and assurance line named different host versions
-  // would be unreadable in exactly the case that matters.
-  const probe = buildAssuranceProbe({
+// ⚠ WHAT THIS STILL GATES. `cutover-audit.mjs` reads
+// `host_parity_baseline.evidence.normalized_observed` for the live host pair
+// (ADR-0056 §Decision 6 item 3 moved it here from the removed section), so the
+// probe below is a readiness input and not report decoration. The note this
+// replaces was wrong in the other direction for one release — it claimed
+// "reporting only … nothing reads it" after two readers had been wired — and the
+// correction is kept as a warning about the class, not just the instance.
+async function buildHostParityFacts({ claude, codex, pluginRoot }) {
+  const probe = buildHostVersionProbe({
     claudeProbe: claude?.version?.status ?? null,
     codexProbe: codex?.version?.status ?? null,
     claudeText: observedVersionText(claude?.version),
     codexText: observedVersionText(codex?.version),
   });
-  const facts = await resolveHostAssuranceFacts({
-    pluginRoot,
-    probe,
-    packageObservation: observePackages({ claudePluginList, claudeListStatus, codexPluginList }),
-    // The INJECTED date, not the wall clock.
-    today: (now instanceof Date ? now : new Date()).toISOString().slice(0, 10),
-  });
+  const resolved = await resolveHostParityBaseline({ pluginRoot });
   return {
-    baseline: buildHostParityBaseline({ resolved: facts.resolved, probe: facts.probe }),
-    assurance: facts.assurance,
+    baseline: buildHostParityBaseline({ resolved, probe }),
   };
 }
 
@@ -1311,10 +1288,11 @@ async function buildHostParityFacts({ claude, codex, pluginRoot, claudePluginLis
  * adoption work is one of them, so a patch-tolerant verdict would have graded
  * the `2.1.233` tool withdrawal as not worth reporting.
  *
- * What is ADDED is `evidence.direction`, and it is evidence ONLY (§Decision 10).
- * No branch below reads it, and the assurance matcher deliberately does not
- * import the comparator, so a future change to what `exact` means there cannot
- * silently widen what is covered.
+ * `evidence.direction` is evidence ONLY (§Decision 10) and no branch below reads
+ * it. It was kept out of the coverage path deliberately when one existed; with
+ * the coverage path removed (ADR-0056) the separation still matters, because
+ * `direction` answers a comparative question that ADR-0053 §Decision 9 forbids
+ * promoting into a readiness verdict at all.
  */
 function buildHostParityBaseline({ resolved, probe }) {
   const { claude_probe: claudeProbe, codex_probe: codexProbe, probes_ok: probesOk } = probe;
@@ -1416,10 +1394,10 @@ function buildHostParityBaseline({ resolved, probe }) {
       // host ahead while the other is behind is not "drifted" in any single
       // direction.
       //
-      // Over RAW observed text rather than the normalized form, for the reason
-      // the assurance path uses raw: the normalized form cannot report
-      // `1.2.3.4` as unparseable, and evidence that quietly called a
-      // four-component version exact would agree with the bug it sits beside.
+      // Over RAW observed text rather than the normalized form: the normalized
+      // form cannot report `1.2.3.4` as unparseable, and evidence that quietly
+      // called a four-component version exact would agree with the bug it sits
+      // beside.
       direction: classifyHostPairRelation({
         observed: probe.observed,
         reviewed: baseline ? { claude: baseline.claude, codex: baseline.codex } : null,
@@ -2170,10 +2148,12 @@ function summarizeDoctorRun(run) {
 function isDoctorArtifact(value) {
   return value
     && typeof value === 'object'
-    && value.schema_version === DOCTOR_ARTIFACT_SCHEMA_VERSION
     && DOCTOR_RUN_ID_RE.test(value.run_id ?? '')
     && value.report
-    && value.report.schema_version === 'runtime-doctor-1.0';
+    // READABLE PAIRS, not the producer constants. See the constants' note: this
+    // predicate decides `malformed`, and `malformed > 0` blocks the whole
+    // collection with no path back.
+    && isReadableDoctorSchemaPair(value.schema_version, value.report.schema_version);
 }
 
 function buildRecordedDoctorProof({ runs = [], latest = null, plugins, claude, codex }) {
@@ -2702,7 +2682,6 @@ function buildReadinessMatrix({
 }
 
 function buildExperienceParity({
-  hostParityAssurance,
   readinessMatrix,
   pluginCommandSurface,
   codexPluginHooks,
@@ -2726,13 +2705,13 @@ function buildExperienceParity({
     buildWorkflowContinuityExperienceCriterion(ledgers),
     buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommandSurface }),
     buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, compatRuns }),
-    // READINESS PATH 2 (ADR-0053 §Decision 4). Cutover requires 100% experience
-    // parity separately from its own checks, so a gate that moved only in
-    // `cutover-audit` would still leave an assured host blocked here — and,
-    // worse, a REVOKED grant would leave this path green while the other one
-    // refused, because everything below reads RECORDED compat state and nothing
-    // read the live verdict.
-    buildHostAssuranceExperienceCriterion(hostParityAssurance),
+    // ⚠ THE NINTH CRITERION IS GONE, AND THAT MOVES THE DENOMINATOR
+    // (ADR-0056 §Decision 8). `host_compatibility_assurance` carried weight 15
+    // and sat in `totalWeight`, so removing it changes the criterion count, the
+    // total weight, the score and possibly the headline. That is intended — a
+    // criterion that can never be satisfied should not sit in a denominator —
+    // but it is a SCORING change, not a field deletion, which is why
+    // `runtime-experience-parity` bumps below.
   ];
   const totalWeight = criteria.reduce((sum, item) => sum + item.weight, 0);
   const earnedWeight = criteria.reduce((sum, item) => sum + item.earned_weight, 0);
@@ -2744,7 +2723,7 @@ function buildExperienceParity({
   };
   const nextActions = buildExperienceParityNextActions(criteria, pluginCommandSurface.manual_followups);
   return {
-    schema_version: 'runtime-experience-parity-1.0',
+    schema_version: 'runtime-experience-parity-1.1',
     status: counts.blocked > 0
       ? 'blocked'
       : counts.partial > 0 || counts.not_verified > 0
@@ -2765,56 +2744,6 @@ function buildExperienceParity({
       'Codex hook review/trust state is not host-verifiable here; /hooks remains an explicit operator check unless a current runtime:settings operator attestation artifact is present.',
     ],
   };
-}
-
-/**
- * Live compatibility assurance as an experience-parity criterion.
- *
- * ⚠ THE LIVE SECTION, NOT THE RECORDED COMPAT RUN. `runtime_handoff_artifacts`
- * below consumes `compatRuns`, which is persisted state: a grant revoked after
- * the last `compat check` would leave it reporting `assured` indefinitely. This
- * criterion reads the verdict doctor computed in THIS run, so a revocation, a
- * changed packaged baseline or a changed installed package moves parity the
- * moment it happens.
- *
- * NEGATIVE WINS, and `unknown` counts as negative: a report shape this code
- * cannot read is not evidence of coverage (ADR-0053 §Decision 3).
- */
-function buildHostAssuranceExperienceCriterion(assurance) {
-  const base = {
-    id: 'host_compatibility_assurance',
-    label: 'This host pair is covered by accepted compatibility review',
-    weight: 15,
-  };
-  const status = assurance?.status ?? null;
-  if (status === 'covered' && isGrantId(assurance?.evidence?.grant_id)) {
-    return parityCriterion({
-      ...base,
-      status: 'satisfied',
-      evidence: `grant=${assurance.evidence.grant_id}`,
-      next_step: null,
-    });
-  }
-  if (status === 'unassured') {
-    return parityCriterion({
-      ...base,
-      // `not_verified` rather than `blocked`: nothing is broken, and ADR-0053
-      // §Decision 5 is explicit that the resolution is a human review rather
-      // than an operator repair. It still costs score, because §Decision 11 says
-      // unassured blocks readiness.
-      status: 'not_verified',
-      evidence: `assurance=unassured${assurance?.evidence?.direction?.state ? `; direction=${assurance.evidence.direction.state}` : ''}`,
-      next_step: assurance?.next_action
-        ?? 'Assurance is granted by human review of this host pair against this installed code (ADR-0053 §Decision 5).',
-    });
-  }
-  return parityCriterion({
-    ...base,
-    status: 'blocked',
-    evidence: `assurance=${status ?? 'absent'}`,
-    next_step: assurance?.next_action
-      ?? 'Re-run runtime:doctor — the compatibility assurance result is absent or unreadable, so coverage cannot be established.',
-  });
 }
 
 function buildHostPluginExperienceCriterion(readinessMatrix) {
@@ -3045,21 +2974,20 @@ function buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, 
     });
   }
   const missing = [settingsRuns.status, consensusRuns.status, compatRuns.status].some((value) => value === 'missing');
-  // ⚠ THIS CRITERION IS ABOUT READABILITY, and after ADR-0053 §Decision 4 the
-  // collection status has two very different causes behind one word. A compat
-  // collection is `needs_attention` when its artifacts need attention — and also
-  // when they are perfectly readable and simply report that nobody has reviewed
-  // this host pair.
+  // ⚠ THIS CRITERION IS ABOUT READABILITY, and the carve-out it used to carry is
+  // gone with its subject. Under ADR-0053 §Decision 4 a compat collection could
+  // be `needs_attention` for two very different reasons behind one word — its
+  // artifacts genuinely need attention, or they are perfectly readable and
+  // simply report that nobody has reviewed this host pair — and the second
+  // belonged to the assurance criterion, so counting it here charged one fact
+  // twice. ADR-0056 §Decision 1 removed the unreviewed states, so
+  // `needs_attention` has one meaning again.
   //
-  // The second cause belongs to `host_compatibility_assurance`, which reads the
-  // LIVE verdict. Counting it here too would charge one fact twice: an unassured
-  // host would lose score for coverage AND for artifact readability, and an
-  // operator reading "artifacts are readable for handoff — partial" would go
-  // looking for a corrupt file that does not exist.
-  const ASSURANCE_CAUSED = new Set(['unassured', 'legacy_unassured', 'assured']);
-  const attentionIsAssurance = compatRuns.status === 'needs_attention'
-    && ASSURANCE_CAUSED.has(compatRuns.latest?.status);
-  const needsAttention = ['empty', 'needs_attention'].includes(compatRuns.status) && !attentionIsAssurance;
+  // ⚠ `legacy_era` IS DELIBERATELY NOT CARVED OUT. It is `needs_attention` for
+  // the FIRST reason: a run from an earlier schema era is not a verdict this
+  // runtime may read, and the operator's action — take a fresh snapshot — is
+  // real work, not a review nobody has done.
+  const needsAttention = ['empty', 'needs_attention'].includes(compatRuns.status);
   return parityCriterion({
     id: 'runtime_handoff_artifacts',
     label: 'Runtime execution and compatibility artifacts are readable for handoff and comparison',
@@ -5929,43 +5857,13 @@ export function formatText(report) {
   if (report.host_parity_baseline.next_action) {
     lines.push(`  next: ${report.host_parity_baseline.next_action}`);
   }
-  // THREE facts, three lines (ADR-0053 §Decision 3). Folding assurance into the
-  // freshness line would repeat, in the renderer, the substitution this whole
-  // plane exists to remove: a reader who saw one verdict took "the strings
-  // match" for "a human accepted this host".
+  // TWO facts, two lines. ADR-0053 §Decision 3 split one verdict into three and
+  // required three lines; ADR-0056 §Decision 1 removed the third. The rule the
+  // split encoded still holds for the two that remain: freshness and direction
+  // are separate answers and folding them would let a reader take "the strings
+  // match" for more than it says.
   const direction = report.host_parity_baseline.evidence.direction;
   lines.push(`- baseline-direction: ${direction?.state ?? 'unknown'} (claude=${direction?.hosts?.claude?.state ?? 'unknown'}, codex=${direction?.hosts?.codex?.state ?? 'unknown'})`);
-  const assurance = report.host_parity_assurance;
-  if (!assurance) {
-    // Said out loud rather than skipped. A missing section is unreachable from
-    // `runDoctor`, so silence here would only ever hide a caller handing
-    // `formatText` a report from before this slice — and rendering nothing for
-    // an absent fact is the fall-through shape this section is fixing.
-    lines.push('- assurance: unavailable (this report predates the compatibility assurance section)');
-  } else {
-    const grant = assurance.evidence?.grant_id;
-    const residuals = assurance.evidence?.residuals ?? [];
-    lines.push(`- assurance: ${assurance.status}${grant ? `; grant=${grant}` : ''}${assurance.evidence?.record_status ? `; record=${assurance.evidence.record_status}` : ''}`);
-    // The reviewer's own caveats travel with the positive (§Decision 6). A
-    // `covered` line without them would drop exactly the part of the review
-    // that says what was NOT settled.
-    for (const residual of residuals) {
-      lines.push(`  residual: ${residual.surface ?? 'unnamed surface'} (${residual.consumption ?? 'unknown consumption'}; ${residual.disposition ?? 'no disposition'})`);
-    }
-    // WHAT THE GRANT DID NOT NAME, on the operator's line rather than only in
-    // the JSON. Cross-host review of the first fix caught this: the list was
-    // added to the result object and rendered nowhere, so the only mitigation
-    // for a still-`covered` partial package binding was invisible on both
-    // normal operator surfaces. `covered` is precisely when it needs saying.
-    const unbound = assurance.evidence?.unbound_packages ?? [];
-    if (unbound.length > 0) {
-      lines.push(`  unbound: ${unbound.join(', ')} — installed here and named by no grant, so no reviewer bound ${unbound.length === 1 ? 'it' : 'them'}`);
-    }
-    for (const reason of (assurance.evidence?.reasons ?? []).slice(0, 4)) {
-      lines.push(`  reason: ${reason}`);
-    }
-    if (assurance.next_action) lines.push(`  next: ${assurance.next_action}`);
-  }
   lines.push('');
   lines.push('Model / Effort');
   for (const key of ['claude_to_codex', 'codex_to_claude']) {

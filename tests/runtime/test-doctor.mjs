@@ -163,7 +163,19 @@ describe('runtime doctor', () => {
     strictEqual(report.readiness_matrix.directions.claude_to_codex.companion.status, 'available');
     strictEqual(report.readiness_matrix.directions.claude_to_codex.model.value, 'gpt-5.4');
     strictEqual(report.readiness_matrix.directions.codex_to_claude.effort.value, 'high');
-    strictEqual(report.experience_parity.schema_version, 'runtime-experience-parity-1.0');
+    // ADR-0056 §Decision 8 — the family bumped because the DENOMINATOR moved:
+    // `host_compatibility_assurance` carried weight 15 and sat in `totalWeight`,
+    // so removing it changes the criterion count, the total weight and the
+    // score. A field deletion would not have needed a bump; a scoring change
+    // does.
+    strictEqual(report.experience_parity.schema_version, 'runtime-experience-parity-1.1');
+    strictEqual(report.experience_parity.criteria.length, 8, 'the ninth criterion was removed, and the count is what the denominator is built from');
+    strictEqual(report.experience_parity.weight.total, 115);
+    strictEqual(
+      report.experience_parity.criteria.some((item) => item.id === 'host_compatibility_assurance'),
+      false,
+      'the removed criterion must not reappear',
+    );
     strictEqual(report.experience_parity.status, 'blocked');
     ok(report.experience_parity.score_percent > 0);
     ok(report.experience_parity.criteria.some((item) => item.id === 'workflow_continuity_storage' && item.status === 'blocked'));
@@ -2143,7 +2155,7 @@ describe('runtime doctor', () => {
       },
     });
     await writeJson(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'gap-analysis.json'), {
-      schema_version: 'runtime-compat-gap-1.1',
+      schema_version: 'runtime-compat-gap-1.2',
       runtime_version: RUNTIME_VERSION,
       run_id: runId,
       created_at: '2026-05-16T00:01:00.000Z',
@@ -2152,10 +2164,8 @@ describe('runtime doctor', () => {
         status: 'release_notes_required',
         drift_class: 'host-version-changed',
         release_notes_required: true,
-        // This case is about release-note evidence, not about coverage, so the
-        // assurance result is present and positive — otherwise the fixture would
-        // be exercising the assurance ladder while claiming to test drift.
-        assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } }, assurance_state: 'readable',
+        snapshot_schema_version: 'runtime-compat-snapshot-1.2',
+        snapshot_schema_era: 'post-assurance',
       },
       host_gaps: [
         { host: 'claude', status: 'version_changed', observed_version: '2.1.150', baseline_version: '2.1.141' },
@@ -2220,15 +2230,18 @@ describe('runtime doctor', () => {
       },
     });
     await writeJson(join(runDir, 'gap-analysis.json'), {
-      schema_version: 'runtime-compat-gap-1.1',
+      schema_version: 'runtime-compat-gap-1.2',
       runtime_version: RUNTIME_VERSION,
       run_id: runId,
       created_at: '2026-07-21T00:01:00.000Z',
       updated_at: '2026-07-21T00:01:00.000Z',
       // ADR-0047 §5's contract is that a non-actionable standing-watch plan does
-      // not flip compat state. That is orthogonal to coverage, so the fixture
-      // carries a positive assurance result and keeps testing the plan rule.
-      overall: { status: 'current', drift_class: 'none', release_notes_required: false, assurance: { schema_version: 'runtime-host-assurance-result-1.0', status: 'covered', evidence: { grant_id: 'fixture-grant' } }, assurance_state: 'readable' },
+      // not flip compat state. That rule is keyed on the READY predicate, which
+      // now takes the schema era as well as the token (ADR-0056 §Decision 6), so
+      // the fixture declares the post-assurance family — an assurance-era one
+      // would read `legacy_era` and this case would be measuring the era rule
+      // instead of the plan rule.
+      overall: { status: 'current', drift_class: 'none', release_notes_required: false, snapshot_schema_version: 'runtime-compat-snapshot-1.2', snapshot_schema_era: 'post-assurance' },
       host_gaps: [
         { host: 'claude', status: 'matches', observed_version: '2.1.215', baseline_version: '2.1.215' },
         { host: 'codex', status: 'matches', observed_version: '0.144.6', baseline_version: '0.144.6' },
@@ -2236,7 +2249,7 @@ describe('runtime doctor', () => {
       next_steps: [],
     });
     const planFixture = {
-      schema_version: 'runtime-compat-plan-1.1',
+      schema_version: 'runtime-compat-plan-1.2',
       runtime_version: RUNTIME_VERSION,
       run_id: runId,
       created_at: '2026-07-21T00:02:00.000Z',
@@ -3021,6 +3034,61 @@ describe('runtime doctor', () => {
     const stateCalls = calls.filter((c) => c.args[0]?.endsWith('state.mjs'));
     ok(stateCalls.length > 0 && stateCalls.every((c) => c.args[0].startsWith(cacheRoot)), 'executor invoked the cache-resolved state.mjs, not repoRoot/plugins/engineer');
     ok(!calls.some((c) => c.args[0]?.includes(join(root, 'plugins', 'engineer'))), 'never touches repoRoot/plugins/engineer');
+  });
+
+  it('reads BOTH doctor schema eras — the retained corpus does not become a fault', async () => {
+    // ADR-0056 §Decision 5 + §Consequences. ⚠ THE ONE SEQUENCING RULE THAT
+    // CANNOT BE DEFERRED: `inspectDoctorRuns` scans EVERY retained
+    // `doctor.json`, a rejected artifact increments `malformed`, and
+    // `status: malformed > 0 ? 'blocked' : …` means no fresh proof ever clears
+    // it. A producer bumped without a reader for the OLD version turns the whole
+    // corpus into a fault with no operator path back — measured at
+    // `blocked malformed=70` on the real corpus when this was last considered.
+    //
+    // Driven through `runDoctor` rather than the private reader, because that is
+    // the caller the rule is about.
+    const root = await mkdtemp(join(tmpdir(), 'doctor-dual-'));
+    const home = await mkdtemp(join(tmpdir(), 'doctor-dual-home-'));
+    const seedRun = async (runId, artifactSchema, reportSchema) => {
+      const dir = join(root, '.agentic-plugins', 'runs', 'doctor', runId);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'doctor.json'), JSON.stringify({
+        schema_version: artifactSchema,
+        run_id: runId,
+        runtime_version: RUNTIME_VERSION,
+        status: 'recorded',
+        generated_at: '2026-08-20T00:00:00.000Z',
+        report: { schema_version: reportSchema },
+      }));
+    };
+    // A MIXED corpus: a machine that upgraded mid-corpus keeps both versions in
+    // one directory, and that is the cell a reader taught only the new version
+    // measures as `malformed=1 count=2`.
+    await seedRun('doctor-20260820T000000Z-aaaaaa', 'runtime-doctor-artifact-1.0', 'runtime-doctor-1.0');
+    await seedRun('doctor-20260821T000000Z-bbbbbb', 'runtime-doctor-artifact-1.1', 'runtime-doctor-1.1');
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    strictEqual(report.doctor_runs.count, 2);
+    strictEqual(report.doctor_runs.malformed, 0, 'neither era may be counted malformed');
+    strictEqual(report.doctor_runs.status, 'available');
+
+    // ⚠ A MIXED TUPLE IS REFUSED, and it needed its own case: replacing the
+    // matched-pair predicate with two independent allowlists turned no test red
+    // until this one existed. Outer and inner bump together, so `(artifact-1.1,
+    // report-1.0)` is a shape no producer writes — corrupt or hand-edited, and
+    // refusing it is the predicate's job.
+    await seedRun('doctor-20260822T000000Z-cccccc', 'runtime-doctor-artifact-1.1', 'runtime-doctor-1.0');
+    const withMixed = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    strictEqual(withMixed.doctor_runs.malformed, 1, 'a mixed tuple must count as malformed');
+    strictEqual(withMixed.doctor_runs.status, 'blocked');
+
+    // CONTROL: a genuinely unknown version IS malformed and DOES block. Without
+    // it, the assertions above would pass against a reader that accepts
+    // anything — the opposite defect, and the one the exact-pin rule prevents.
+    await seedRun('doctor-20260823T000000Z-dddddd', 'runtime-doctor-artifact-9.9', 'runtime-doctor-9.9');
+    const withUnknown = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    ok(withUnknown.doctor_runs.malformed > 0, 'an unread version must count as malformed');
+    strictEqual(withUnknown.doctor_runs.status, 'blocked');
   });
 
   it('records reusable doctor proof artifacts and reuses them when current versions match', async () => {

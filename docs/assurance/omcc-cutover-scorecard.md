@@ -1,5 +1,14 @@
 # omcc Cutover Assurance Scorecard
 
+> **The compatibility-assurance layer was removed on 2026-08-27**
+> ([ADR-0056](../adr/0056-assurance-matcher-removal.md)). Every `unassured` /
+> `covered` / `host_compatibility_assurance` reading below is **history, and is
+> kept deliberately**: the R1 empty-set refusal and the R2 cohort miss are the
+> evidence that removal was the right call, and deleting them would remove the
+> reason the layer went away. No live gate reads any of them any more. The
+> live weighting and status are restated in post-release recovery, not here —
+> the numbers in this record still describe the last assurance-era proof.
+
 Status: Draft
 Last reviewed: 2026-05-17
 
@@ -277,11 +286,21 @@ next step for each, so they must not be chained into one remedy:
    Both need one Codex `/hooks` re-review, which is an operator action this
    record cannot self-attest; runtime records the attestation claim and never
    proves host trust state on its own.
-3. `host_compatibility_assurance` — **not_verified**. Clearing it needs a new
+3. ~~`host_compatibility_assurance` — **not_verified**. Clearing it needs a new
    human review of claude `2.1.237` / codex `0.148.0` plus a released grant
-   naming that pair.
+   naming that pair.~~ **CRITERION REMOVED** by
+   [ADR-0056](../adr/0056-assurance-matcher-removal.md) §Decision 8: it could
+   never be satisfied — no grant ever matched a real machine — and a criterion
+   that cannot be satisfied should not sit in a denominator. The removal changes
+   the criterion count, the total weight and the score, so the **numbers above
+   and below this line are the last assurance-era proof and are not restated
+   here**: ADR-0056 §Consequences assigns that to post-release recovery, and
+   `sync-doc-versions.mjs` refuses a manifest/proof mismatch anyway. The
+   `runtime-recovery-2` subtask re-records a proof under the new install and
+   restates the live weighting then.
 
-Only item 3 is forward-release work. On the baseline: this is a stale landing
+~~Only item 3 is forward-release work.~~ Item 3 is no longer work at all; items 1
+and 2 remain. On the baseline: this is a stale landing
 and now a consecutive one — the preceding 0.91.1 proof also read `stale` —
 which is the expected shape when the host moves faster than the release loop,
 not evidence of a regression in

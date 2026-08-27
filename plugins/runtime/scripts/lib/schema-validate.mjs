@@ -661,23 +661,6 @@ export const PACKAGED_SCHEMA_FILES = Object.freeze({
   // same way: the arbiter self-validates its output against this family before
   // any surface renders it, and the S8 dashboard consumer validates through it.
   'runtime-entry-brief': 'runtime-entry-brief-1.0.json',
-  // ADR-0053 §Decision 2 / ADR-0054 §Decision 2 — the human-granted host
-  // compatibility assurance record carried in the packaged host-parity
-  // baseline. STRUCTURE only; lib/assurance-contract.mjs is the semantic half,
-  // the same split runtime-bootstrap-run-1.3 makes for the same missing oneOf.
-  //
-  // Its `schema` property is an EXACT pin (ADR-0054 §Decision 3). That is the
-  // majority shape here — the four session/entry-brief families pin exactly and
-  // only the three above them use the family-wide `1\.[0-9]+` form — but it is
-  // the only one that pins for a REASON rather than for want of a second minor.
-  // The forward-compat rule at the top of this file is right for additive
-  // artifacts; for assurance a newer minor could add a NARROWING key — an
-  // expiry, a session cap, a stricter applicability condition — and an older
-  // reader that ignored it with a warning would report coverage the newer
-  // document withheld. That is ADR-0053 §Decision 5's "absence of evidence is
-  // never coverage", reached by accident. So when this family reaches 1.1, the
-  // pin must be BUMPED rather than widened.
-  'runtime-host-assurance': 'runtime-host-assurance-1.0.json',
 });
 
 // Deprecated alias — the pre-S2 name for the registry, kept so an external

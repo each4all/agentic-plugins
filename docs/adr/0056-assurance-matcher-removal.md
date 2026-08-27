@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-08-27). Supersedes [ADR-0053](0053-baseline-exactness-and-compatibility-assurance.md) and [ADR-0054](0054-assurance-record-schema-and-rollout.md) in part — the assurance verdict, not ADR-0053 §Decision 1's exactness. Implemented by the `grant-impl` subtask in the same release.
 
 ## Context
 

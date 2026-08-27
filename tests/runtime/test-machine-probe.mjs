@@ -621,54 +621,27 @@ describe('machine host probe (machine-only seam)', () => {
       strictEqual(result.codexPluginList.entries.runtime.ambiguous, false);
     });
 
-    it('the ambiguity reaches the assurance matcher as unassured', async () => {
-      // End to end, because the fields exist for exactly one consumer and a
-      // producer test alone would not show they are read. The grant is
-      // otherwise satisfiable — the ONLY difference between the two branches
-      // here is whether the two observed rows agree.
-      const { observePackages, matchAssurance } = await import('../../plugins/runtime/scripts/lib/assurance-contract.mjs');
-      const { loadPluginSet } = await import('../../plugins/runtime/scripts/lib/plugin-set.mjs');
-      const pluginSet = await loadPluginSet({ pluginRoot: resolve(dirname(MODULE_PATH), '..', '..') });
-      const grantRecord = {
-        schema: 'runtime-host-assurance-1.0',
-        grants: [{
-          id: 'ambiguity-probe',
-          state: 'granted',
-          reviewed_at: '2026-08-16',
-          review_provenance: { kind: 'adr', reference: 'ADR-0054' },
-          cohort: [{ claude: '2.1.140', codex: '0.137.0' }],
-          packages: { runtime: '0.91.0' },
-          residuals: [],
-        }],
-      };
-      const hosts = { claude: '2.1.140', codex: '0.137.0' };
-
-      const agreeing = await probe({
-        'claude plugin list': okResult(claudeDuplicate({ version: '0.91.0', status: 'enabled' }, { version: '0.91.0', status: 'enabled' })),
-        'codex plugin list --json': okResult(codexDuplicate({ version: '0.91.0', enabled: true }, { version: '0.91.0', enabled: true })),
-      });
-      strictEqual(
-        matchAssurance({
-          record: grantRecord, hosts, pluginSet, today: '2026-08-17',
-          observed: observePackages({ claudeListStatus: agreeing.claude.plugin.status, claudePluginList: agreeing.claudePluginList, codexPluginList: agreeing.codexPluginList }),
-        }).state,
-        'covered',
-        'CONTROL: agreeing duplicates leave a determinate answer',
-      );
-
+    it('a DISAGREEING duplicate is reported ambiguous — the fact a consumer must refuse on', async () => {
+      // ⚠ THIS TEST USED TO RUN END TO END THROUGH `matchAssurance`, and that
+      // consumer was removed with the assurance plane (ADR-0056 §Decision 1).
+      // The producer property it existed to protect is unchanged and still has
+      // exactly one job — telling a reader that the host reported two different
+      // answers for one package — so the assertion moved DOWN to the producer
+      // rather than being deleted along with its consumer. The ONLY difference
+      // between the two cases below is whether the two observed rows agree.
       const disagreeing = await probe({
         'claude plugin list': okResult(claudeDuplicate({ version: '0.91.0', status: 'enabled' }, { version: '0.90.3', status: 'enabled' })),
-        'codex plugin list --json': okResult(codexDuplicate({ version: '0.91.0', enabled: true }, { version: '0.91.0', enabled: true })),
+        'codex plugin list --json': okResult(codexDuplicate({ version: '0.91.0', enabled: true }, { version: '0.90.3', enabled: true })),
       });
-      const blocked = matchAssurance({
-        record: grantRecord, hosts, pluginSet, today: '2026-08-17',
-        observed: observePackages({ claudeListStatus: disagreeing.claude.plugin.status, claudePluginList: disagreeing.claudePluginList, codexPluginList: disagreeing.codexPluginList }),
-      });
-      strictEqual(blocked.state, 'unassured');
-      ok(
-        blocked.reasons.some((reason) => /observed 2 times with differing facts/.test(reason)),
-        `the ambiguity is the stated reason (got: ${blocked.reasons.join(' | ')})`,
-      );
+      // ⚠ THE TWO READERS HAVE DIFFERENT SHAPES — Claude's entries hang off the
+      // list object directly, Codex's off `.entries`. Writing `.entries` for
+      // both was a real slip here and it threw rather than passing, which is the
+      // only reason it is worth a note: a shape mismatch that reads `undefined`
+      // into a falsy assertion would have passed silently.
+      strictEqual(disagreeing.claudePluginList.runtime.observations, 2);
+      strictEqual(disagreeing.claudePluginList.runtime.ambiguous, true);
+      strictEqual(disagreeing.codexPluginList.entries.runtime.observations, 2);
+      strictEqual(disagreeing.codexPluginList.entries.runtime.ambiguous, true);
     });
   });
 });

@@ -26,30 +26,32 @@ node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" plan (-
    - Treat `release_notes_required` as a blocker for detailed compatibility planning.
    - Treat a missing changed-host/version coverage row as still requiring release
      notes, even when another content-backed note was stored.
-   - Readiness keys on **assurance**, not on exact version equality (ADR-0053
-     §Decision 4). Drift is still recorded as evidence — a non-exact host stays
-     visibly `drifted` in `drift_class` — but the readiness status is:
-     - `current` — no drift, and a human grant covers this host pair.
-     - `assured` — drift is present, and a human grant covers this pair anyway.
-       No action; the drift stays visible.
-     - `unassured` — no grant names this pair. Assurance is granted by review,
-       never by a version match, an upgrade, or elapsed time (§Decision 5), so
-       the only resolution is a release that carries a grant.
-     - `assurance_blocked` — integrity: the packaged record, the plugin set, the
-       host probe, or the recorded verdict could not be read. Surface the stored
-       `next_steps` line; it names the specific repair.
-     - `legacy_unassured` — the run predates the assurance record. It can never
-       be re-checked into coverage; take a **fresh** snapshot.
-   - Never describe `runtime:compat` as granting assurance. It evaluates
-     membership in a human-authored grant and cannot create or widen one.
-   - The verdict is **frozen when the snapshot is taken**. `check` projects it
-     and never re-evaluates, so a remembered run is never retroactively granted
-     assurance (ADR-0053 §Decision 4). A run that predates the record reports
-     `legacy_unassured`, and the only resolution is a *fresh* snapshot.
-   - `runtime:cutover` asks a different question — "is this machine covered
-     **now**" — and re-matches against live facts rather than reading the frozen
-     bit, so a grant revoked after the snapshot cannot survive as a stale
-     positive. Both answers are correct; they are answers to different questions.
+   - ⚠ **There is no compatibility-assurance verdict** (ADR-0056). ADR-0053
+     §Decision 4 keyed readiness on human-granted acceptance of the host pair;
+     that layer is removed, and nothing in this command answers "has a human
+     reviewed this pair". Never imply one — not as `covered`, not as `assured`,
+     and not as a pending review that a later run could satisfy.
+   - Readiness reports what it can re-derive. Drift is still recorded as
+     evidence — a non-exact host stays visibly `drifted` in `drift_class` — and
+     the status is:
+     - `current` — no drift. This means exactly that, and nothing about review.
+     - `release_notes_required` — drift, and no content-backed note covers the
+       changed host/version pair.
+     - `gap_analysis_ready` — drift, notes are in hand, a plan can be built.
+     - `baseline_unusable` — integrity: the packaged baseline could not be read.
+       Surface the stored `next_steps` line; it names the specific repair.
+     - `snapshot_unreadable` — the snapshot declares a schema this runtime does
+       not read. Upgrade; re-running `check` rewrites the same bytes.
+     - `host_version_unreadable` — a host printed a version with more than three
+       components or trailing residue (`1.2.3.4`, `1.2.3-`). The stored value is
+       the truncated token, so a comparison against the baseline would drop
+       exactly what makes it different. Repair or re-probe the host CLI; this is
+       a host fault, not a package or artifact one.
+   - **The era travels with the status.** `current` meant "covered and
+     drift-free" under `runtime-compat-gap-1.1` and means "drift-free" under
+     `1.2`, so a pre-`1.2` run projects as `legacy_era`: readable history, never
+     a current verdict, and resolvable only by a **fresh** snapshot. Never quote
+     an older run's status without saying which era wrote it.
    - Do not fetch URLs unless `--fetch-release-notes-url` is explicitly present.
    - Do not mutate Claude/Codex config, auth, sandbox, approvals, or plugin installs from this surface.
 
