@@ -505,12 +505,18 @@ The **severity-poisoning mechanism measured in §Context is not filed as a new
 row.** It is resolved by removal, and recording it as a follow-up would imply
 somebody should fix it.
 
-### Decision 10 — Amendments to accepted ADRs
+### Decision 10 — Amendments to accepted ADRs, and atomic supersession
 
-Two accepted ADRs normatively prescribe surfaces this ADR removes. Both are
-amended in place by `advisor-impl`, in the same commit that flips this ADR to
-`Accepted` — the [ADR-0056](0056-assurance-matcher-removal.md) §Decision 9 rule
-that an accepted ADR must never point at a proposed one applies here too.
+**Supersession is atomic with acceptance**, following
+[ADR-0056](0056-assurance-matcher-removal.md) §Decision 9. This ADR's own PR
+edits ADR-0038's Status line to read *proposed to be superseded* — and to state
+what is **not** superseded, which for ADR-0038 is §6 (Decision 8). The commit
+that flips this ADR to `Accepted` flips that line to `Superseded by ADR-0057` in
+the same commit. An accepted ADR pointing at a proposed one, or the reverse, is a
+state the index must never show.
+
+Two further accepted ADRs normatively prescribe surfaces this ADR removes. Both
+are amended in place by `advisor-impl`, in that same acceptance commit.
 
 - **[ADR-0046](0046-machine-bootstrap.md) §"Which proofs, exactly"** states
   "`permission` is required **iff a permission fragment was applied**". That is

@@ -2,7 +2,16 @@
 
 ## Status
 
-Accepted (2026-06-27, PR #449)
+Accepted (2026-06-27, PR #449). **Proposed to be superseded** by
+[ADR-0057](0057-permission-advisor-removal.md) (proposed 2026-08-27); this line
+becomes `Superseded by ADR-0057` in the same commit that flips ADR-0057 to
+Accepted. **§6 is NOT superseded and remains in force**: the refusal to ship a
+permission-relaxing Guard Hook, classified by *effect* rather than by who flips
+the final switch, is a boundary decision about ADR-0035 §4 and is independent of
+whether an advisory exists. ADR-0057 §Decision 8 carries it forward verbatim.
+What ADR-0057 removes is the A+C advisory of §1/§2 — the diagnosis, the plan, and
+the usage learner — whose §Context premise (allowlist catch-up) the host's `auto`
+mode ended.
 
 <!--
 Relates to ADR-0024 (runtime operator control plane) and ADR-0035
