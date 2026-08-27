@@ -188,8 +188,21 @@ permission_policy: { host_native_default: true, relaxed_by_doctor: false, inject
 ```
 
 That is live evidence for **ADR-0035 §4** — runtime injects no sandbox,
-approval, or permission-mode relaxation — and it is the only executable evidence
-of that invariant the project has. It survives this removal.
+approval, or permission-mode relaxation. **The scope of that claim was narrowed
+during drafting and the narrowing is recorded rather than quietly applied**: an
+earlier version called it "the only evidence of that invariant", which
+transverse measurement refuted. `tests/plugin-shape/runtime-executor-registry.mjs`
+is described in its own header as "the data half of the ADR-0035 §4
+active-execution boundary guard", and with `runtime-executor-scan.mjs` it proves
+*statically* that no child-process / `fs` / network primitive appears outside the
+allowlist. That is real §4 evidence and it survives untouched.
+
+The accurate claim is narrower and still load-bearing: `proof.permission` is the
+only **live, on-host** evidence that a companion invocation *actually ran* under
+the host's own permission policy with nothing injected. The static guard proves
+runtime cannot contain a relaxation primitive; only the proof observes a real
+session not using one. Neither substitutes for the other, and the proof survives
+this removal.
 
 What must not survive is its **coupling** to the advisor. `step-registry.mjs:315`
 makes the proof `applicable` only when
@@ -271,6 +284,16 @@ implementation must visit every site:
   advisor imports (`:138`, `:139`)
 - `state-readers.mjs` — the `permission` entry in
   `RUNTIME_ARTIFACT_FAMILIES` (`:161`) and its comment (`:154`–`:155`)
+- `tests/plugin-shape/runtime-executor-registry.mjs` — the
+  `permission-artifacts.mjs` entry (`:682`–`:686`, primitives `mkdir` /
+  `writeFile` / `rename` under `.agentic-plugins/runs`). This one is easy to
+  miss and **fails closed if missed in either direction** — verified by
+  mutation, not assumed: injecting an entry for a non-existent module makes
+  `test-runtime-executor-guard.mjs:1183` fail with "should exist in the runtime
+  scripts tree", so the ADR-0035 §4 guard rejects a stale allowlist entry as
+  firmly as it rejects an unlisted primitive. Because Decision 7 deletes
+  `permission-artifacts.mjs` whole, the entry is deleted outright — no
+  replacement entry is needed, since nothing survives to write under `runs/`.
 
 **Tests removed or reduced**: `test-permission-advisor-core.mjs` (638),
 `test-permission-artifacts.mjs` (600), `test-permission-acceptance.mjs` (321),
@@ -393,12 +416,25 @@ inverted plan this ADR is built on.
   (`state-readers.mjs:161`) as a **historical, read-only** family: `dashboard`
   and `retention` continue to see, count, age and garbage-collect it under the
   ADR-0047 §7 policy unchanged.
-- Nothing writes it again. `makePermissionRunId`,
-  `writePermissionAdvisoryArtifact`, `recordPermissionAdvisoryArtifact` and the
-  latest-pointer writers go with `permission-artifacts.mjs`; the **readers**
-  needed to enumerate a retained run for retention and dashboard purposes are
-  reduced to exactly that and re-homed, in the shape ADR-0056 §Decision 5 used
-  for `projectRecordedAssurance`.
+- **No reader survives, because none is needed.** An earlier draft of this ADR
+  required reducing `permission-artifacts.mjs` to "the readers retention and
+  dashboard need", in the shape ADR-0056 §Decision 5 used for
+  `projectRecordedAssurance`. That obligation was **manufactured, and is
+  withdrawn**: `inspectArtifactScope` (`state-readers.mjs:809`) enumerates a
+  family by **directory segment** (`segments: [family]`) and never parses an
+  artifact's contents, so retention and dashboard need nothing from the module.
+  `permission-artifacts.mjs` is deleted whole, as Decision 2 lists. Carrying a
+  legacy decoder nothing calls would be dead code justified by a false analogy —
+  ADR-0056 kept `projectRecordedAssurance` because a doctor artifact's assurance
+  *section* genuinely had to be decoded; here there is no analogous read.
+- **The registration is documentation, not behaviour**, and the ADR says so to
+  keep the reason honest. `inspectRuntimeArtifactInventory` passes
+  `discoverUnknownFamilies: true`, and a discovered family is assigned
+  `retentionCap: policy.run_count_cap` (`:833`) — the same cap the explicit entry
+  supplies. Removing `'permission'` from the list would therefore change nothing
+  observable. It stays so the family is **declared** rather than silently
+  discovered, and so the comment at `:154`–`:155` can be re-pointed from ADR-0038
+  to this ADR instead of deleted.
 - A retained advisory is reported as historical and is **never** projected into
   a current recommendation.
 
