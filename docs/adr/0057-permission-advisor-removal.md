@@ -541,14 +541,25 @@ runtime reports what it observes without proposing a change. Runtime keeps the
 one permission fact it can actually establish — that it relaxed nothing — and
 stops asserting one it could not.
 
-**Prompt-reduction is no longer an agentic-plugins capability.** ADR-0038's user
-goal ("provide a capability that reduces prompts") is now met by the host on
-Claude. On **Codex** it is met by nothing: Codex has `approval_policy` /
-`sandbox_mode` but no dynamic per-call decision mode, so a Codex operator loses
-the advisor and gains no host replacement. That is a real regression and it is
-named rather than hidden — mitigated only by the measurement that the Codex half
-already recommended `count: 0` on this machine, and by ADR-0038 §Context's own
-finding that the companion path does not prompt.
+**Prompt-reduction is no longer an agentic-plugins capability, and the Codex
+half of that is a real regression.** ADR-0038's user goal ("provide a capability
+that reduces prompts") is now met by the host on Claude. **Codex has not made the
+equivalent move**, and this was measured against the binary rather than inferred
+from the baseline's silence — the packaged baseline mentions `execpolicy` zero
+times, which is not evidence of absence. Probing the real Codex binary (228 MB,
+the vendored `codex-darwin-arm64` path, not the launcher shim) with
+known-true control tokens behaving (`approval_policy` 46, `sandbox_mode` 37,
+`workspace-write` 34, `on-request` 38) finds `execpolicy` present **45 times**.
+
+So Codex does ship a policy engine — but it is *rules-and-configuration* shaped,
+the same class of thing the advisor planned for, not a per-call decision mode
+like Claude's `auto`. A Codex operator therefore loses the advisor and gains no
+host replacement, and unlike the Claude side the premise there has **not**
+expired. Two measurements bound the loss rather than excusing it: the Codex plan
+recommended `count: 0` on this machine, and ADR-0038 §Context established that
+the companion path does not prompt at all. If Codex prompt fatigue is later
+measured as a real cost, §Alternatives names the shape the answer should take —
+and it is not this advisor.
 
 **`advisor-impl` will put `main` into release-obligation debt, and two protected
 paths are involved**: `plugins/runtime/data/schemas/**` (Decisions 5 and 6) and
