@@ -1,6 +1,6 @@
 ---
 description: Read-only runtime readiness diagnosis for Claude/Codex hosts, plugins, companions, model/effort, permissions, artifacts, workflow ledgers, ADR-0044 session-capture readiness, and ADR-0045 entry-brief hook-chain readiness
-argument-hint: "[--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--artifact-inventory] [--record]"
+argument-hint: "[--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--artifact-inventory] [--record] [--strict]"
 ---
 
 # Runtime - Doctor
@@ -17,9 +17,76 @@ if [ -z "$RUNTIME_ROOT" ]; then
 fi
 
 node "$RUNTIME_ROOT/scripts/doctor.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS
+DOCTOR_EXIT=$?
+case "$DOCTOR_EXIT" in
+  0) ;;
+  10) echo "runtime:doctor exit 10 (findings) — the report above is complete; it lists the hard failures. This is a diagnosis, not a command failure." >&2 ;;
+  20) echo "runtime:doctor exit 20 (proof-incomplete) — the report above is complete; a requested proof produced no usable verdict for at least one lane." >&2 ;;
+  30) echo "runtime:doctor exit 30 (proof-operator-action) — the report above is complete; a requested proof needs an action in the host, outside runtime:doctor." >&2 ;;
+  40) echo "runtime:doctor exit 40 (record-failed) — the report above is complete, but --record could not persist its artifact, so nothing may link this run by hash until it is re-recorded. Read overall.status too: this code hides any findings underneath it." >&2 ;;
+  2) echo "runtime:doctor exit 2 (invalid) — usage error; no report was produced." >&2 ;;
+  *) echo "runtime:doctor exit $DOCTOR_EXIT (unexpected) — no report was produced." >&2 ;;
+esac
+exit "$DOCTOR_EXIT"
 ```
 
+Exit codes — doctor reports its findings the way a diagnostic command does
+(`git fsck`, `brew doctor`). This is doctor's own table; the numbers are not
+shared with `runtime:bootstrap`, whose §3.1 ladder reads the same slots as
+configured-not-verified / incomplete / no-active-run / invalid-input. Only the
+decade spacing is borrowed, so a class can be inserted later without
+renumbering.
+
+| Code | Name | Meaning |
+|---|---|---|
+| 0 | `ok` | The run completed with no hard failures, every requested proof executor passed or none was requested, and the artifact was written when `--record` was supplied. Warnings are allowed here. |
+| 1 | `unexpected` | doctor could not complete. No report is produced. |
+| 2 | `invalid` | Usage error or unreadable repo root. No report is produced. |
+| 10 | `findings` | `overall.status` is `fail` — an unavailable or unauthenticated host CLI, a blocked direction, or a proof that executed and did not pass. Under `--strict`, `overall.status` of `warning` reports here too. |
+| 20 | `proof-incomplete` | A requested proof executor produced no usable verdict for at least one lane: blocked, skipped, failed, timed out, or refused before it ran. |
+| 30 | `proof-operator-action` | Every non-passing lane of every requested proof executor is `operator_action_required`: the remedy is an action in the host, outside runtime:doctor. |
+| 40 | `record-failed` | The report is complete but `--record` could not persist its artifact. |
+
+The rules are ordered, root-cause first — each names a condition that would
+explain the ones below it:
+
+1. `--record` did not persist → `40`
+2. hard failures → `10`
+3. a requested proof lane has no usable verdict → `20`
+4. a requested proof lane needs an operator action → `30`
+5. `--strict` and warnings present → `10`
+6. otherwise → `0`
+
+`record-failed` comes first because a stored bootstrap proof links its doctor
+artifact by `artifact_sha256`: a caller that inspects only the exit code has to
+fail closed when no artifact exists rather than import a record whose
+`artifact_hash` points at nothing. The cost is that `40` **hides** any findings
+underneath it, so read `overall.status` as well — it is on stdout either way.
+
+Rules 3 and 4 sit above the `--strict` promotion because a specific proof
+verdict is more actionable than "some warning exists", and both are non-zero.
+
+**Every code from `10` up still writes the complete report to stdout**, so
+`--format json` stays parseable on a non-zero exit and a caller should parse
+stdout first and read the exit code as a classifier, not as a gate. Only `1` and
+`2` produce no report.
+
 Notes:
+
+- Proof outcomes are classified from the proof sections themselves, never from
+  the warning bucket, and never depend on `--strict`. That matters for the one
+  case the warning bucket hides: an `--execute-egress-ack-proof` refused before
+  it sends anything is only a warning in `overall` — correctly, since no network
+  request happened — and it now reports `20` regardless.
+- A section's own aggregate status is deliberately not the input: every
+  aggregator checks `operator_action_required` before `failed`/`blocked`, so one
+  lane needing an operator action can mask a second lane that outright failed.
+  The lanes are read individually.
+- `--strict` promotes an `overall.status` of `warning` to exit `10`. It is opt-in
+  because a warning is the ordinary state of a healthy machine here — of the
+  doctor artifacts recorded in this repository, roughly a third are `warning`
+  with zero hard failures — so exiting non-zero on them by default would mark
+  most healthy runs failed.
 
 - `--format json` emits the machine-readable report.
 - Default output starts with a `Readiness Matrix` that separates CLI availability, runtime installation evidence, authentication state, direction-specific peer model/effort inputs, hook evidence, companion readiness, and sandbox/permission status for Claude and Codex.

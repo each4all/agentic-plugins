@@ -1955,7 +1955,22 @@ snapshot it started from would compare a machine against itself. The trigger is
 the **spawn**, not the child's outcome: a doctor run that ends in a crash,
 unparseable output or an internally inconsistent section imports nothing while
 having had exactly as long to let the machine move, so gating the re-probe on the
-import would make the failure path the one that reports stale facts. That second
+import would make the failure path the one that reports stale facts.
+
+**A non-zero doctor exit is not a crash.** `runtime:doctor` reports its findings
+through a diagnostic exit ladder (`commands/doctor.md` § Exit codes), and every
+code from `10` up still writes the complete report to stdout. The importer
+therefore PARSES STDOUT FIRST and reads the exit code as a classifier: a report
+is usable whenever it parses to a plain object AND the exit code is one this
+runtime has a report contract for. Only an absent or unparseable report — or an
+exit code outside that set — is the crash case. The one code that refuses an
+otherwise-usable report is `record-failed`: §8.2 links a proof to its doctor
+artifact by exact-byte hash, and there is no artifact to link. For
+`egress-provider-ack` that refusal carries an extra caveat, because the provider
+send happens long before the artifact is written — "not imported" must not be
+read as "not sent".
+
+That second
 snapshot then becomes the verb's ONLY account of the machine: `probe`, the raw
 host facts behind it, and the user-global readers are gathered once, and
 everything the verb JUDGES and REPORTS is rebuilt from that one gathering — the

@@ -1851,7 +1851,12 @@ describe('bootstrap egress-provider-ack executor E2E (ADR-0048 §3)', () => {
       if (scriptPath.endsWith('doctor.mjs')) {
         if (args.includes('--execute-egress-ack-proof')) {
           if (blocked) {
-            return okOut(JSON.stringify({
+            // A blocked egress executor is what runtime:doctor exits
+            // PROOF_INCOMPLETE (20) for — it is a requested proof that produced
+            // no verdict. The stub carries the real code so this fixture keeps
+            // describing a report doctor can actually emit; the import must
+            // still read it, which is the property being pinned.
+            return { ...okOut(JSON.stringify({
               egress_ack_proof: {
                 requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked',
                 provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false,
@@ -1859,7 +1864,7 @@ describe('bootstrap egress-provider-ack executor E2E (ADR-0048 §3)', () => {
                 limits: [],
               },
               doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: ARTIFACT_SHA },
-            }));
+            })), ok: false, exit_code: 20 };
           }
           return okOut(JSON.stringify({
             egress_ack_proof: {
@@ -3586,6 +3591,129 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS, 'the executing shape imports the same attestation');
   });
 
+  // --- the runtime:doctor exit-code ladder ---------------------------------
+  //
+  // Doctor now reports its findings through its exit code, so `result.ok` — which
+  // is only `exit_code === 0` — stopped being a usable gate at both call sites.
+  // The machines these two paths run on are exactly the machines with findings:
+  // one is mid-bootstrap with hosts that are not ready yet, the other is
+  // executing a proof that may legitimately end blocked. The rule is parse the
+  // report first, read the code as a classifier.
+
+  /** Wrap a stub so every doctor.mjs answer carries `overrides` instead of ok/0. */
+  const withDoctorExit = (base, overrides, mutate = (out) => out) => ({
+    calls: base.calls,
+    runner: async (scriptPath, args) => {
+      const out = await base.runner(scriptPath, args);
+      if (!scriptPath.endsWith('doctor.mjs')) return out;
+      return { ...mutate(out), ok: false, ...overrides };
+    },
+  });
+
+  const kindProofPath = (home, runId, kind) => join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', `${kind}.json`);
+
+  const executeSmokeAnswers = async (home) => {
+    const path = join(home, 'execute-smoke-exit.json');
+    await writeFile(path, JSON.stringify([
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'config.session', answer: 'decline' },
+      { step_id: 'config.notify_kinds', answer: 'decline' },
+    ]));
+    return path;
+  };
+
+  it('imports the attestation from a read-only doctor run that exited with findings', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // Identical report, exit 10. Gating on `result.ok` would have stranded the
+    // import on every machine whose hosts still have hard failures — which is
+    // the machine bootstrap exists to walk through.
+    const stub = withDoctorExit(hookDoctorStub({ review: currentReview() }), { exit_code: 10 });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
+    strictEqual(recorded.status, 'attested');
+    deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS);
+  });
+
+  it('still refuses a read-only doctor run that produced no report at all', async () => {
+    // Control for the case above: the gate moved from the exit code onto the
+    // report, so an ABSENT report must still be refused. Without this, "parse
+    // stdout first" could degrade into "never fail".
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = withDoctorExit(
+      hookDoctorStub({ review: currentReview() }),
+      { exit_code: null, error_code: 'ETIMEDOUT' },
+      (out) => ({ ...out, stdout: '' }),
+    );
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    await rejects(() => readFile(proofPath(home, runId), 'utf8'), /ENOENT/, 'nothing may be imported from a report that does not exist');
+    ok((resume.report.warnings ?? []).some((w) => /could not be run \(ETIMEDOUT\)/.test(w)), `the absent report is named: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('refuses a report from an exit code that carries no report contract', async () => {
+    // "Parse stdout first" must not become "never fail". A child that dies after
+    // buffering JSON — a crash, a signal, or a future code this runtime has no
+    // contract for — is not a diagnosis, however parseable its output is.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = withDoctorExit(hookDoctorStub({ review: currentReview() }), { exit_code: 99 });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    await rejects(() => readFile(proofPath(home, runId), 'utf8'), /ENOENT/, 'an uncontracted exit fabricates no evidence');
+    ok((resume.report.warnings ?? []).some((w) => /exited 99, which carries no report contract/.test(w)), `the refusal names the code: ${JSON.stringify(resume.report.warnings)}`);
+    // CONTROL: the identical report at a CONTRACTED non-zero code imports. Without
+    // this the assertion above would also pass if the reader refused everything.
+    const okStub = withDoctorExit(hookDoctorStub({ review: currentReview() }), { exit_code: 10 });
+    const second = await makeHome({ satisfied: true });
+    const okRun = await planEngineering(second.home, second.cwd, okStub);
+    await okRun.run(['resume', '--latest-open', '--answers', await writeEgressDecline(second.home)]);
+    strictEqual(JSON.parse(await readFile(proofPath(second.home, okRun.runId), 'utf8')).status, 'attested');
+  });
+
+  it('imports an executed proof whose doctor run exited with findings', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = withDoctorExit(hookDoctorStub({ review: currentReview(), serveSmoke: true }), { exit_code: 10 });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    await run(['resume', '--latest-open', '--answers', await executeSmokeAnswers(home)]);
+
+    const recorded = JSON.parse(await readFile(kindProofPath(home, runId, 'deep-peer-smoke'), 'utf8'));
+    ok(recorded, 'the proof metadata is imported from the report, not discarded with the exit code');
+  });
+
+  it('refuses to import a proof whose artifact could not be persisted (exit 40)', async () => {
+    // The proof may well have RUN. §8.2 imports its metadata alongside the
+    // artifact's exact-byte hash, and there is no artifact — a record stored
+    // here would carry an `artifact_hash` nothing can verify.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = withDoctorExit(
+      hookDoctorStub({ review: currentReview(), serveSmoke: true }),
+      { exit_code: 40 },
+      (out) => {
+        const report = JSON.parse(out.stdout);
+        report.doctor_artifact = { requested: true, written: false, status: 'write_failed', error: 'ENOTDIR' };
+        return { ...out, stdout: JSON.stringify(report) };
+      },
+    );
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await executeSmokeAnswers(home)]);
+
+    await rejects(() => readFile(kindProofPath(home, runId, 'deep-peer-smoke'), 'utf8'), /ENOENT/, 'an unhashable proof is not stored');
+    ok((resume.report.warnings ?? []).some((w) => /could not persist its artifact at/.test(w)), `the refusal names the cause: ${JSON.stringify(resume.report.warnings)}`);
+    // CONTROL: the read-only half of the same report is still usable — the
+    // refusal is scoped to the proof import, not to the whole run.
+    const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
+    deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS);
+  });
+
   it('the imported claim satisfies the hook step in the SAME resume, not the next one', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const stub = hookDoctorStub({ review: currentReview() });
@@ -3862,7 +3990,11 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const { run } = await planEngineering(home, cwd, { runner, calls });
 
     const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
-    ok((resume.report.warnings ?? []).some((w) => /runtime:doctor could not be run for the Codex \/hooks attestation/.test(w)), `a failed fetch is stated: ${JSON.stringify(resume.report.warnings)}`);
+    // The shared doctor reader states the failure; the call site appends which
+    // import it belongs to. Both facts must still appear, and the failure code
+    // now does too — a stricter assertion than the single-sentence form it
+    // replaces, not a looser one.
+    ok((resume.report.warnings ?? []).some((w) => /runtime:doctor could not be run \(ENOENT\).*Codex \/hooks attestation/.test(w)), `a failed fetch is stated: ${JSON.stringify(resume.report.warnings)}`);
   });
 
   it('the base bundle carries no Codex hook-bearing plugin, so the import is not attempted at all', async () => {

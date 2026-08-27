@@ -2331,6 +2331,63 @@ function permissionFragmentAppliedFrom(rows) {
 // A parsed JSON value is only usable as a report/record when it is a plain
 // object: `null`, `false`, `0`, `""` and arrays all survive JSON.parse and would
 // otherwise slip through truthiness checks unremarked.
+// `runtime:doctor` reports its findings through its exit code (doctor.mjs EXIT).
+// That makes `result.ok` — which is only `exit_code === 0` — the wrong gate for
+// both sites below: a machine with a blocked proof or an unauthenticated host is
+// exactly the machine bootstrap is here to fix, and discarding its report would
+// turn a diagnosis into "doctor failed (unknown)". The rule is therefore: PARSE
+// STDOUT FIRST; the exit code is a classifier, not a gate. Only an unparseable
+// or absent report is a real failure, and only DOCTOR_EXIT.RECORD_FAILED means
+// the run produced no artifact for a proof record to link by hash.
+//
+// The constant is restated rather than imported ON PURPOSE: the §1.1 machine
+// seam forbids this file from importing the repo-scoped doctor module at all,
+// and `tests/runtime/test-bootstrap-cli.mjs` enforces that with a whole-source
+// scan. The value is additionally cross-checked against the report field below,
+// so a drift in the number alone cannot silently change the verdict.
+const DOCTOR_EXIT = Object.freeze({ RECORD_FAILED: 40 });
+
+// The exits that mean "a complete report is on stdout". Everything else — a
+// crash, a usage error, a signal, a future code this runtime has never heard of
+// — is refused even when stdout happens to hold parseable JSON, because a
+// buffered fragment from a child that then died is not a diagnosis. Restricting
+// to a KNOWN set is what keeps "parse first" from degrading into "never fail".
+const DOCTOR_REPORT_BEARING_EXITS = Object.freeze([0, 10, 20, 30, 40]);
+
+function readDoctorSubprocessReport(result) {
+  const producedOutput = typeof result?.stdout === 'string' && result.stdout.trim() !== '';
+  const failure = result?.error_code ?? result?.exit_code ?? 'unknown';
+  // `exit_code` is null on a timeout or spawn error; treat only a real integer
+  // as a code, so a missing one can never accidentally match the allowlist.
+  const exitCode = Number.isInteger(result?.exit_code) ? result.exit_code : null;
+  const refuse = (diagnostic) => ({ report: null, recordFailed: false, diagnostic });
+
+  if (!producedOutput) {
+    return refuse(`runtime:doctor could not be run (${failure})`);
+  }
+  if (exitCode === null || !DOCTOR_REPORT_BEARING_EXITS.includes(exitCode)) {
+    return refuse(`runtime:doctor exited ${failure}, which carries no report contract`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return refuse(`runtime:doctor output was not valid JSON (exit ${failure})`);
+  }
+  // A successful parse that is not an OBJECT is not a report: `null`, `false`,
+  // `0` and `""` all parse, and each would slip past every truthiness check
+  // downstream without a word (peer, Low).
+  if (!isPlainReportObject(parsed)) {
+    return refuse(`runtime:doctor output parsed but is not a report object (exit ${failure})`);
+  }
+  // Two independent sources for the same fact; either alone is enough. The exit
+  // code covers a caller that lost the report field, and the report field covers
+  // a doctor whose ladder predates this constant.
+  const recordFailed = exitCode === DOCTOR_EXIT.RECORD_FAILED
+    || (parsed.doctor_artifact?.requested === true && parsed.doctor_artifact.written !== true);
+  return { report: parsed, recordFailed, diagnostic: null };
+}
+
 function isPlainReportObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -3016,15 +3073,31 @@ async function executeProofViaDoctor(ctx, { kind, probe, effective }) {
   const doctorPath = join(SCRIPT_DIR, 'doctor.mjs');
   const args = ['--repo-root', ctx.cwd, '--format', 'json', '--record', ...PROOF_EXECUTE_FLAGS[kind]];
   const result = await ctx.subprocessRunner(doctorPath, args, { cwd: ctx.cwd, env: ctx.env, timeoutMs: 600_000 });
-  if (!result?.ok) {
-    return { ok: false, diagnostic: `runtime:doctor --record for ${kind} failed (${result?.error_code ?? result?.exit_code ?? 'unknown'})`, record: null };
+  const read = readDoctorSubprocessReport(result);
+  if (!read.report) {
+    return { ok: false, diagnostic: `runtime:doctor --record for ${kind} failed: ${read.diagnostic}`, record: null };
   }
-  let report;
-  try {
-    report = JSON.parse(result.stdout);
-  } catch {
-    return { ok: false, diagnostic: `runtime:doctor output for ${kind} was not valid JSON`, record: null };
+  if (read.recordFailed) {
+    // The proof may well have RUN — but §8.2 imports its metadata alongside the
+    // artifact's exact-byte hash, and there is no artifact. Storing the record
+    // anyway would persist an `artifact_hash` of null against a pointer nothing
+    // can verify, which is the claim ADR-0048 §3 exists to refuse.
+    // Egress is the ONE side-effecting proof, and a record failure says nothing
+    // about whether the send landed: the provider call happens long before the
+    // artifact is written. Advise reconcile-then-retry there rather than letting
+    // the operator read "not imported" as "not sent" and re-run into a duplicate
+    // message on their phone.
+    const egressCaveat = kind === 'egress-provider-ack'
+      ? ' — the send itself may ALREADY have succeeded, so check the phone and the intent WAL before re-running this proof'
+      : '';
+    return {
+      ok: false,
+      diagnostic: `runtime:doctor ran the ${kind} proof but could not persist its artifact at the ${read.report.doctor_artifact?.failed_phase ?? 'unknown'} phase (${read.report.doctor_artifact?.error ?? 'write failed'}); the proof cannot be imported without a hash-linkable artifact${egressCaveat}`,
+      record: null,
+      doctorReport: read.report,
+    };
   }
+  const report = read.report;
   const section = report?.[DOCTOR_SECTION_BY_KIND[kind]];
   const ranAt = new Date(ctx.now).toISOString();
   // The proof binds the RETAINED set (§6.2): a freshly executed proof must bind
@@ -3506,18 +3579,15 @@ async function runResume(ctx, opts) {
       // triggers the final snapshot on the same "was one spawned" rule.
       doctorInvoked = true;
       const result = await ctx.subprocessRunner(doctorPath, ['--repo-root', ctx.cwd, '--format', 'json'], { cwd: ctx.cwd, env: scrubbedControlPlaneEnv(ctx.env), timeoutMs: 120_000 });
-      if (result?.ok) {
-        // A successful parse that is not an OBJECT is not a report: `null`,
-        // `false`, `0` and `""` all parse, and each would slip past every
-        // truthiness check below without a word (peer, Low).
-        try {
-          const parsed = JSON.parse(result.stdout);
-          if (isPlainReportObject(parsed)) doctorReport = parsed;
-          else warnings.push('doctor output for the hook attestation parsed but is not a report object; the attestation step stays open');
-        } catch { warnings.push('doctor output for the hook attestation was not valid JSON'); }
-      } else {
-        warnings.push(`runtime:doctor could not be run for the Codex /hooks attestation (${result?.error_code ?? result?.exit_code ?? 'unknown failure'}); the attestation step stays open`);
-      }
+      // A non-zero exit here is the NORM, not a failure: this read happens on a
+      // machine mid-bootstrap, whose hosts routinely still have hard failures.
+      // Gating on `result.ok` would have stranded the attestation import on every
+      // machine that needed it. A report that is not a plain object is still
+      // rejected — `null`, `false`, `0` and `""` all parse, and each would slip
+      // past every truthiness check below without a word (peer, Low).
+      const read = readDoctorSubprocessReport(result);
+      if (read.report) doctorReport = read.report;
+      else warnings.push(`${read.diagnostic} for the Codex /hooks attestation; the attestation step stays open`);
     }
     // A MALFORMED section and an ABSENT one are different diagnoses and must not
     // collapse into one message: "nothing was attested yet" sends the operator to

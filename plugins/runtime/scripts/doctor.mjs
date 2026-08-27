@@ -149,6 +149,7 @@ export async function runDoctor({
   permissionDiagnosisMaxFiles = DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILES,
   permissionDiagnosisMaxFileBytes = DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILE_BYTES,
   recordArtifact = false,
+  strict = false,
   runId = null,
 } = {}) {
   if (executeDeepPeerSmoke && !deepPeerSmoke) {
@@ -497,7 +498,7 @@ export async function runDoctor({
   report.overall = summarizeOverall(report);
   report.output_format = format;
   report.doctor_artifact = recordArtifact
-    ? await writeDoctorArtifact({
+    ? await recordDoctorArtifact({
         repoRoot: resolvedRepoRoot,
         now,
         runId,
@@ -508,7 +509,49 @@ export async function runDoctor({
         requested: false,
         status: 'not_requested',
       };
+  // Assigned AFTER the artifact write, and the ordering is load-bearing:
+  // `writeDoctorArtifact` snapshots `report` at call time, so the recorded
+  // report never grows this field. What that buys is narrow and worth stating
+  // narrowly — the ladder ADDS NOTHING to the stored artifact — rather than as
+  // a whole-artifact byte-identity claim, which this ordering cannot support:
+  // the report inventories previous runs, so two sequential runs legitimately
+  // differ. The LIVE report carries the field so an out-of-process consumer
+  // reads the ladder instead of reimplementing it.
+  report.exit_code = doctorExitCode(report, { strict });
   return report;
+}
+
+/**
+ * A `--record` that cannot write must not take the diagnosis down with it.
+ * `writeDoctorArtifact` throwing used to propagate to `main()`'s catch, so the
+ * operator got a stack trace and ZERO bytes of stdout — the report was lost
+ * because its filing cabinet happened to be read-only. The report is complete
+ * either way; the only open question is whether it was persisted, which is what
+ * `EXIT.RECORD_FAILED` reports.
+ *
+ * The catch is placed HERE, around the write alone, rather than in `main()`:
+ * a broad catch there would relabel every unrelated exception as a record
+ * failure, and `main()` has no report to print by the time it sees one.
+ *
+ * `failed_phase` exists because the record is two writes. `doctor.json` lands
+ * before `latest.json`, so a failure in the second leaves a real artifact that
+ * no pointer publishes — reporting a bare `written: false` there would be
+ * inaccurate about what is on disk. The pointer rides along for that case so an
+ * operator can find the orphan.
+ */
+async function recordDoctorArtifact({ repoRoot, now, runId, report }) {
+  try {
+    return await writeDoctorArtifact({ repoRoot, now, runId, report });
+  } catch (err) {
+    return {
+      written: false,
+      requested: true,
+      status: 'write_failed',
+      failed_phase: err?.doctorWritePhase ?? 'prepare',
+      artifact_pointer: err?.doctorArtifactPointer ?? null,
+      error: sanitizeValue(err?.message ?? String(err)),
+    };
+  }
 }
 
 export async function runCommand(command, args = [], { cwd = process.cwd(), env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
@@ -5757,6 +5800,18 @@ export function formatText(report) {
   lines.push(`runtime:doctor ${report.runtime_version} (${report.overall.status})`);
   lines.push(`repo: ${report.repo_root}`);
   lines.push('read-only: true');
+  if (typeof report.exit_code === 'number') {
+    lines.push(`exit-code: ${report.exit_code} (${exitCodeName(report.exit_code)})`);
+  }
+  // A failed record is only visible in text mode if it is printed: the artifact
+  // line below is gated on `written`, so without this the default format would
+  // report the exit code and then say nothing about why.
+  if (report.doctor_artifact?.status === 'write_failed') {
+    lines.push(`doctor-artifact: write_failed at ${report.doctor_artifact.failed_phase ?? 'unknown'} phase (${report.doctor_artifact.error ?? 'no detail'})`);
+    if (report.doctor_artifact.artifact_pointer) {
+      lines.push(`doctor-artifact: the artifact itself was written to ${report.doctor_artifact.artifact_pointer} but no pointer publishes it`);
+    }
+  }
   if (report.doctor_artifact?.written) {
     lines.push(`doctor-artifact: ${report.doctor_artifact.artifact_pointer}; latest=${report.doctor_artifact.latest_pointer}`);
   }
@@ -6359,6 +6414,12 @@ async function writeDoctorArtifact({ repoRoot, now, runId, report }) {
     ],
   };
   const artifactPath = join(runDir, 'doctor.json');
+  // The record is TWO writes, and which one failed changes what is on disk.
+  const phase = (err, name, artifactPointer = null) => {
+    err.doctorWritePhase = name;
+    err.doctorArtifactPointer = artifactPointer;
+    return err;
+  };
   const latestPath = join(root, 'latest.json');
   // ADR-0048 §3 — the artifact bytes are EVIDENCE another artifact links by
   // hash (bootstrap proof records import artifact_sha256 as artifact_hash), so
@@ -6367,14 +6428,24 @@ async function writeDoctorArtifact({ repoRoot, now, runId, report }) {
   // from the serialized buffer that is written, never a re-serialization.
   const artifactBytes = `${JSON.stringify(artifact, null, 2)}\n`;
   const artifactSha256 = createHash('sha256').update(artifactBytes).digest('hex');
-  await writeFileAtomic(artifactPath, artifactBytes);
-  await writeFileAtomic(latestPath, `${JSON.stringify({
+  try {
+    await writeFileAtomic(artifactPath, artifactBytes);
+  } catch (err) {
+    throw phase(err, 'artifact');
+  }
+  try {
+    await writeFileAtomic(latestPath, `${JSON.stringify({
     schema_version: DOCTOR_LATEST_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
     run_id: id,
     artifact_pointer: pointer(repoRoot, artifactPath),
     updated_at: now.toISOString(),
-  }, null, 2)}\n`);
+    }, null, 2)}\n`);
+  } catch (err) {
+    // The artifact itself LANDED; only its pointer did not. Carrying the pointer
+    // out lets the operator find the orphan instead of hunting a run id.
+    throw phase(err, 'latest', pointer(repoRoot, artifactPath));
+  }
   return {
     written: true,
     requested: true,
@@ -6394,8 +6465,12 @@ async function writeDoctorArtifact({ repoRoot, now, runId, report }) {
 async function writeFileAtomic(path, data) {
   await mkdir(dirname(path), { recursive: true });
   const tempPath = join(dirname(path), `.${basename(path)}.${randomBytes(4).toString('hex')}.tmp`);
-  await writeFile(tempPath, data);
+  // The cleanup covers the WRITE as well as the rename. It used to start after
+  // `writeFile`, so a write that failed part-way (ENOSPC, EIO) left the temp
+  // behind — harmless while a failed record crashed the process, and no longer
+  // harmless now that a failed record is survivable and the run continues.
   try {
+    await writeFile(tempPath, data);
     await rename(tempPath, path);
   } catch (err) {
     await rm(tempPath, { force: true }).catch(() => {});
@@ -6749,8 +6824,147 @@ function sameStringSet(left, right) {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+// --- CLI exit-code ladder -------------------------------------------------
+//
+// A diagnostic command reports its findings through its exit code (`git fsck`,
+// `brew doctor`). Doctor did not: it fell off the end of `main()` at 0, so a
+// run whose `overall.status` was `fail` with three blocked proofs was
+// indistinguishable from a clean one to any script — measured, 2026-08-27.
+//
+// The numbers are doctor's OWN table. An earlier draft justified them as
+// mirroring `bootstrap.mjs`, and the cross-host review disproved that: bootstrap
+// reads 10/20/30/40 as configured-not-verified / incomplete / no-active-run /
+// invalid-input, none of which is what doctor means by them. Reusing the SLOTS
+// with unrelated meanings is not a shared ladder, so the only thing borrowed is
+// the decade spacing, which leaves room to insert a class without renumbering.
+// `0`, `1` and `2` keep the meanings doctor already shipped.
+export const EXIT = Object.freeze({
+  OK: 0,
+  UNEXPECTED: 1,
+  INVALID: 2,
+  FINDINGS: 10,
+  PROOF_INCOMPLETE: 20,
+  PROOF_OPERATOR_ACTION: 30,
+  RECORD_FAILED: 40,
+});
+
+const EXIT_NAMES = Object.freeze(Object.fromEntries(
+  Object.entries(EXIT).map(([name, code]) => [code, name.toLowerCase().replace(/_/g, '-')]),
+));
+
+function exitCodeName(code) {
+  return EXIT_NAMES[code] ?? 'unknown';
+}
+
+// Every report section that can carry an explicit proof executor. Pinned by
+// tests/runtime/test-doctor-exit.mjs against a LIVE report: the set of top-level
+// sections carrying a `mode` field is exactly these four plus
+// `sandbox_permission_probe`, which is excluded because its mode vocabulary is
+// `read_only_preflight` / `not_requested` and it proves nothing.
+export const EXIT_PROOF_SECTIONS = Object.freeze([
+  'permission_proof',
+  'deep_peer_smoke',
+  'egress_ack_proof',
+  'workflow_continuation_proof',
+]);
+
+/**
+ * The per-lane outcomes of a proof section.
+ *
+ * Read from `directions` rather than from the section's own aggregate status,
+ * and that is not defensiveness — it is a measured requirement. Every
+ * aggregator (`summarizePermissionProofExecutionStatus` and its two siblings)
+ * checks `operator_action_required` BEFORE `failed` / `blocked` / `timed_out`,
+ * so one direction needing an operator action MASKS a second direction that
+ * outright failed. Trusting the aggregate would report the softer verdict.
+ * Fixing the aggregators instead was considered and rejected here: their status
+ * strings are stored in recorded artifacts, and changing them would rewrite what
+ * every stored proof means.
+ *
+ * `egress_ack_proof` has no directions — one attempt, one verdict — so the
+ * section itself is the lane. Its executor can also refuse BEFORE sending
+ * (`executed: false` with `mode: 'explicit_egress_executor'`), which is the
+ * exact case the cross-host review caught escaping as exit 0: doctor treats a
+ * pre-send refusal as a warning because no network request happened, and a
+ * warning alone would not raise the code.
+ */
+function proofLaneStatuses(section) {
+  const directions = section?.directions;
+  if (directions && typeof directions === 'object') {
+    const lanes = Object.values(directions);
+    if (lanes.length > 0) return lanes.map((lane) => lane?.status ?? 'unknown');
+  }
+  if (section?.executed === true) return [section.status ?? 'unknown'];
+  return ['not_executed'];
+}
+
+/** 'not-requested' | 'passed' | 'operator-action' | 'incomplete'. */
+function proofVerdict(section) {
+  // `mode` is the one field that separates "an executor was requested" from a
+  // plan-only preflight, across all four sections. It is deliberately not
+  // `requested` (true for plan-only too) nor `executed` (false for a pre-send
+  // egress refusal, and true for a permission run whose every lane was skipped).
+  // The mode strings differ per section — `explicit_permission_executor`,
+  // `explicit_executor`, `explicit_engineer_workflow_executor`,
+  // `explicit_egress_executor` — so the prefix is the contract, and the only
+  // other vocabulary is `not_requested` / `plan_only_preflight`.
+  if (typeof section?.mode !== 'string' || !section.mode.startsWith('explicit_')) return 'not-requested';
+  const statuses = proofLaneStatuses(section);
+  if (statuses.every((status) => status === 'passed')) return 'passed';
+  if (statuses.every((status) => status === 'passed' || status === 'operator_action_required')) return 'operator-action';
+  return 'incomplete';
+}
+
+/**
+ * The single mapping from a finished report to a process exit code. `main()`
+ * calls it, `report.exit_code` carries its answer, and the full partition is
+ * pinned in tests/runtime/test-doctor-exit.mjs.
+ *
+ * The rules are ordered, and the order is root-cause-first: each rule names a
+ * condition that would explain the ones below it.
+ *
+ *   1. `--record` did not persist  -> RECORD_FAILED
+ *   2. hard failures               -> FINDINGS
+ *   3. a requested proof lane has no usable verdict -> PROOF_INCOMPLETE
+ *   4. a requested proof lane needs an operator action -> PROOF_OPERATOR_ACTION
+ *   5. `--strict` and warnings present -> FINDINGS
+ *   6. otherwise                   -> OK
+ *
+ * RECORD_FAILED is first because a caller that inspects only the exit code has
+ * to fail closed on "no evidence was persisted"; a proof record links its doctor
+ * artifact by `artifact_sha256`, and importing one whose artifact was never
+ * written stores a hash against nothing. The cost is that RECORD_FAILED HIDES
+ * any findings underneath it — stated here rather than left for a caller to
+ * discover, and the remedy is to read `overall`, which is on stdout either way.
+ *
+ * Rules 3 and 4 sit ABOVE the strict promotion on purpose: a specific proof
+ * verdict is more actionable than "some warning exists", and both are non-zero,
+ * so `--strict`'s contract holds either way.
+ *
+ * `warning` is not non-zero by default. Measured over the 78 recorded artifacts
+ * in this repository: pass 50 / warning 26 / fail 2. A warning is the ordinary
+ * state of a healthy, fully-cutover machine. The review's fair objection — that
+ * the warning bucket also holds a requested-but-blocked proof — is answered by
+ * rules 3 and 4 rather than by promoting the whole bucket: proof outcomes are
+ * now classified from the proof sections themselves and never depend on
+ * `--strict`, which existing automation would not pass.
+ */
+export function doctorExitCode(report, { strict = false } = {}) {
+  if (report?.doctor_artifact?.requested === true && report.doctor_artifact.written !== true) {
+    return EXIT.RECORD_FAILED;
+  }
+  if (report?.overall?.status === 'fail') return EXIT.FINDINGS;
+  const verdicts = EXIT_PROOF_SECTIONS.map((name) => proofVerdict(report?.[name]));
+  if (verdicts.includes('incomplete')) return EXIT.PROOF_INCOMPLETE;
+  if (verdicts.includes('operator-action')) return EXIT.PROOF_OPERATOR_ACTION;
+  if (strict && report?.overall?.status === 'warning') return EXIT.FINDINGS;
+  return EXIT.OK;
+}
+
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--permission-diagnosis] [--permission-diagnosis-max-files <n>] [--permission-diagnosis-max-file-bytes <n>] [--record] [--run-id <doctor-run-id>]\n`;
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--permission-diagnosis] [--permission-diagnosis-max-files <n>] [--permission-diagnosis-max-file-bytes <n>] [--record] [--run-id <doctor-run-id>] [--strict]
+Exit codes: 0 ok; 1 unexpected (no report); 2 invalid usage (no report); 10 findings (overall=fail, or overall=warning under --strict); 20 a requested proof produced no usable verdict; 30 a requested proof needs operator action outside doctor; 40 --record could not persist the artifact. Codes 10 and above still write the complete report to stdout.
+`;
 }
 
 export function parseArgs(argv) {
@@ -6779,6 +6993,7 @@ export function parseArgs(argv) {
     permissionDiagnosisMaxFiles: DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILES,
     permissionDiagnosisMaxFileBytes: DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILE_BYTES,
     recordArtifact: false,
+    strict: false,
     runId: null,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -6840,6 +7055,8 @@ export function parseArgs(argv) {
       opts.permissionDiagnosisMaxFileBytes = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--record') {
       opts.recordArtifact = true;
+    } else if (arg === '--strict') {
+      opts.strict = true;
     } else if (arg === '--run-id') {
       opts.runId = validateDoctorRunId(requireValue(argv, ++i, arg));
     } else {
@@ -6883,17 +7100,17 @@ async function main() {
     opts = parseArgs(process.argv.slice(2));
   } catch (err) {
     process.stderr.write(`${err.message}\n${usage()}`);
-    process.exit(2);
+    process.exit(EXIT.INVALID);
   }
   if (opts.help) {
     process.stdout.write(usage());
-    process.exit(0);
+    process.exit(EXIT.OK);
   }
   try {
     await access(opts.repoRoot, fsConstants.R_OK);
   } catch (err) {
     process.stderr.write(`repo root is not readable: ${err.message}\n`);
-    process.exit(2);
+    process.exit(EXIT.INVALID);
   }
   const report = await runDoctor(opts);
   if (opts.format === 'json') {
@@ -6901,11 +7118,16 @@ async function main() {
   } else {
     process.stdout.write(formatText(report));
   }
+  // `process.exitCode`, never `process.exit(code)`: the report IS the product,
+  // and process.exit() can truncate a stdout write that has not drained to a
+  // pipe — which would break the one invariant this change must preserve, that
+  // `--format json` stays parseable on every non-zero exit.
+  process.exitCode = report.exit_code ?? EXIT.OK;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((err) => {
     process.stderr.write(`runtime:doctor failed: ${err.stack ?? err.message}\n`);
-    process.exit(1);
+    process.exit(EXIT.UNEXPECTED);
   });
 }
