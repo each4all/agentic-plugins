@@ -1,0 +1,107 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-verdicts-that-never-left-the-run",
+  "evidence_loop": {
+    "label": "the verdicts that never left the run — a proof that could no longer be attached, findings the exit code never carried",
+    "summary": "One runtime release, two changes on the same fault line: a diagnosis existed inside a run and nothing carried it out. `runtime:bootstrap plan` accepted a proof opt-in set that its own terminalization rule would later make unextendable, and said nothing at the only moment the operator could still act — the run completes and terminalizes the instant every required proof passes, so a proof not opted into at plan time can never be attached afterwards. `runtime:doctor` reported findings in its text and JSON and then exited 0 regardless, so no caller, script or CI step could act on a verdict the run had already reached. The release replaces the single exit code with a diagnostic ladder, which is a breaking change to every caller that read 0 as `nothing to see`."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.95.0",
+      "tag": "plugin-runtime-v0.95.0",
+      "release_pr": 742,
+      "squash": "f8ee09a57e29456c0409e725419f51e7d6287108",
+      "marketplace_sync": "f62541591f458dbf11317ec1eebd58aea018ea75"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "16d5c413ed4a8feadbfaef7c2bf236b2508c876a",
+      "pr": 743,
+      "note": "The exit-code ladder. BREAKING: doctor previously exited 0 whatever it found. The ladder is ordered so a record failure (40) does not hide findings underneath it, which is why the docs tell the reader to read `overall.status` as well as the code."
+    },
+    {
+      "sha": "7a50a6f7a1fad3d2c78e996d58e8af35146d17c0",
+      "pr": 741,
+      "note": "The plan-time warning. The failure it closes is not a crash: the run does exactly what it was asked, completes, terminalizes, and the omission only becomes visible later, when the proof can no longer be attached and the only recovery is a fresh plan and a full re-execution."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260827T055919Z-cc5c4b",
+      "date": "2026-08-27",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:44db6ec5fb13d1f7008ed4cfa0f729a43ae120ea26f49a7db0d6865a7c8f5143",
+      "runtime_version": "0.95.0",
+      "installed": {
+        "claude": "0.95.0",
+        "codex": "0.95.0"
+      },
+      "host_cli": {
+        "claude": "2.1.247 (Claude Code)",
+        "codex": "codex-cli 0.150.1"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning; hard_failures empty; one warning — latest compatibility check needs follow-up"
+        },
+        {
+          "key": "process_exit_code",
+          "value": "0 (ok) — the first proof recorded under the ladder this release shipped, so the code is itself a reading rather than a constant; it agrees with an empty hard_failures under a warning overall"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed both directions"
+        },
+        {
+          "key": "egress_ack_proof",
+          "value": "not_requested — it performs a real network send behind a second consent, and this loop had no reason to ask for one"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; 0 issues, 2 informational differences (Codex exposes no per-plugin update/enable/disable/details/validate/prune; the two hosts' permission models differ)"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale, direction ahead on both hosts — the 2026-08-16 2.1.233 / 0.147.0 baseline against an observed 2.1.247 / 0.150.1; refreshing it is protected-asset work this recovery is forbidden to do, so it stays a named follow-up"
+        },
+        {
+          "key": "experience_parity",
+          "value": "partial 81% 105/130; satisfied 5, partial 3, not_verified 1, blocked 0, manual follow-ups 1 (codex-hook-review) — unchanged in shape from 0.94.0; runtime ships no hooks, so this release altered no Codex trusted entry"
+        },
+        {
+          "key": "installed_byte_identity",
+          "value": "The two caches were compared directly rather than by digest: `diff -r` over the 0.95.0 trees, excluding Claude's `.orphaned_at` supersede marker, reports no difference. 128 files each, the same file set as 0.94.0 — this release only modified existing files. Whole-tree digest f106374f… on both."
+        },
+        {
+          "key": "packaged_baseline_hash",
+          "value": "86fdf17e4418884f01b67785eeaaacc74923a8a01efa238f514bf270da600843, identical across both caches, the plugin-runtime-v0.95.0 tag and the repository, and independently recorded by doctor — unchanged from 0.93.0 and 0.94.0, because none of those releases touched the packaged baseline"
+        },
+        {
+          "key": "digest_recipe_was_not_recoverable",
+          "value": "Earlier whole-tree digests were operator measurements whose recipe was never recorded, and no script reproduces them. Five recipes were run against the 0.94.0 cache, whose digest is published and whose 128-file count was the control; none matched. The digest above is NEW, under a stated recipe."
+        }
+      ]
+    }
+  ],
+  "install_method": "Not performed by this recovery. Both hosts already served 0.95.0 when it began — Claude's cache holds 0.93.0, 0.94.0 and 0.95.0 side by side with superseded trees marked `.orphaned_at`, Codex's holds 0.95.0 alone — so what is attested is a verification, not an install. Verbs remain host-specific as recorded in the preceding loops.",
+  "narrative": "Both changes in this release are the same bug wearing different clothes: a run reaches a verdict and has no way to hand it to whoever needed it.\n\nThe doctor half is the plainer one. Doctor has always reported findings — in its text output, in its JSON, in the artifact it records — and has always exited 0. Every non-interactive consumer of it was therefore reading a constant. The ladder gives the code a meaning, and the ordering of the ladder is the part that had to be argued rather than chosen: a `--record` failure sits at 40 and is explicitly documented as hiding whatever findings sit underneath it, so the command tells its reader to consult `overall.status` too. A ladder that let one failure mask another would have reproduced the original defect one level up. It is a breaking change, and it is typed as one, because a caller that read 0 as `nothing to see` will now see a non-zero code on a run that has not changed its behaviour at all.\n\nThe bootstrap half is quieter and, for the operator, worse. `runtime:bootstrap` terminalizes a run the moment every required proof has passed. That is correct on its own terms — there is nothing left to wait for. The consequence is that the set of proofs is fixed at plan time and cannot be widened afterwards: a proof not opted into then can never be attached, and the only recovery is a fresh plan and a full re-execution of everything that already passed. Nothing said so at plan time, which is the only moment the operator could still act on it. The change adds the warning there. It closes no crash and fixes no wrong answer; what it repairs is the gap between when a decision becomes irreversible and when the tool admits it.\n\nThe recovery itself surfaced one thing worth recording, and it is not about either change. The scorecard has carried a whole-tree digest of the installed package since several loops back, presented as the measured evidence that the two hosts hold identical bytes. That number is not reproducible: no script in the repository computes it, and five candidate recipes run against the 0.94.0 cache — whose published digest is known and whose file count reproduces exactly, so the tree was right — all disagreed with it. An evidence claim that no one can re-derive is weaker than the underlying fact deserves, because the actual claim, that the two trees are identical, is directly checkable with `diff -r`. This loop re-takes it that way, publishes a digest under a recipe stated beside the number, and says plainly that the new digest is not comparable with the old ones. The alternative — carrying the old number forward, or quietly producing a new one under an unstated method — would have preserved the appearance of continuity over the substance of the check.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-interview-that-carried-values",
+      "note": "The immediately preceding loop, whose record was authored in the same recovery as this one because its own recovery skipped it."
+    }
+  ]
+}
