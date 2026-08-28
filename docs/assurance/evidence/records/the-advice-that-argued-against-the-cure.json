@@ -1,0 +1,115 @@
+{
+ "schema": "evidence-record-1.0",
+ "record_id": "the-advice-that-argued-against-the-cure",
+ "evidence_loop": {
+  "label": "the advice that argued against the cure — a permission advisor removed after the host solved the problem",
+  "summary": "ADR-0038 shipped an advisor that read a machine's tool-use history and recommended a permission configuration to reduce prompts. Claude Code then gained `auto`, a permission MODE deciding per call, which met the goal at a layer the advisor could not reach and left the advice pointing the wrong way: on this machine it proposed `default_mode: acceptEdits` while the host config read `auto`, an EMPTY allow set, and 8 deny patterns including `Bash(cd *)`, `Bash(cat *)` and `Bash(git status *)`. Inversion, not staleness — caused by severity poisoning, where one dangerous instance drags a whole pattern to deny (`cat *` denied on 322 allow / 1 deny; `du *` on a single observation). The Codex half was quieter and worse: `parseCodexRollout` recognizes only `local_shell_call` and `function_call` named `shell`, and across 33,009 rollout lines the shapes present are `custom_tool_call:exec` (1,006) and `function_call:exec_command` (314). Recognized observations: 0. ADR-0057 removes the advisor and keeps the one permission fact runtime can still establish — that it relaxed nothing."
+ },
+ "package_releases": [
+  {
+   "package": "plugins/runtime",
+   "version": "0.97.0",
+   "tag": "plugin-runtime-v0.97.0",
+   "release_pr": 753,
+   "squash": "f02a2c22111cbb27b3d7b7ebeb44bf38cd4b55f5",
+   "marketplace_sync": "9fd523c5c27e25064b6770e329ce216ce39305b6"
+  }
+ ],
+ "feature_commits": [
+  {
+   "sha": "0be3ae5468c3f5961ee0e78edba09a217bb912bf",
+   "pr": 748,
+   "note": "The ADR. Merged before the 0.96.0 release cut, so authoring and implementation sit either side of a release boundary. `package_releases` lists only 0.97.0 because that is the release this record's proof is taken against; 0.96.0 belongs to the preceding record."
+  },
+  {
+   "sha": "9d014b7ecb3df0b95e243c0f8341151c17b58791",
+   "pr": 752,
+   "note": "The removal. BREAKING across FOUR contracts, not one: the doctor inner report loses `permission_diagnosis` (1.1->1.2); the SETTINGS report loses `permission_plan` and `permission_plan_codex` (runtime-settings-1.25->1.26); plus CLI flags and advisor-only exports."
+  }
+ ],
+ "hardening_commits": [],
+ "proofs": [
+  {
+   "run_id": "doctor-20260828T035114Z-44ccdf",
+   "date": "2026-08-28",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:77b46462d3b66f941c5d182d4f7bd933d434a4df99f0e57bb5fbda10261ad079",
+   "runtime_version": "0.97.0",
+   "installed": {
+    "claude": "0.97.0",
+    "codex": "0.97.0"
+   },
+   "host_cli": {
+    "claude": "2.1.250 (Claude Code)",
+    "codex": "codex-cli 0.150.1"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "warning; hard_failures empty; one warning — latest compatibility check needs follow-up. The same single pre-existing warning as the previous two loops."
+    },
+    {
+     "key": "report_schema_version",
+     "value": "runtime-doctor-1.2 inner; -artifact-1.2 outer. Lost EXACTLY ONE field: `permission_diagnosis`, present under 1.1 and absent here, so the deletion has a control. NOT evidence for `permission_plan`/`permission_plan_codex` — those are SETTINGS fields (1.25->1.26), never in a doctor report."
+    },
+    {
+     "key": "doctor_runs",
+     "value": "available, malformed=0, count=80. ADR-0056 shipped the dual reader; this release deletes another field, so this is that reader's second test. The 1.2 implementation read the 80 artifacts retained at scan time — 79 matched 1.0 pairs, one matched 1.1 pair — clean. Excludes its own."
+    },
+    {
+     "key": "permission_proof",
+     "value": "passed; both directions; relaxed_by_doctor: false. SURVIVAL evidence only: the `proof.permission` applicability row lives in the bootstrap step registry, which a direct `--permission-proof` run bypasses, so this cannot itself establish §Decision 5's decoupling — source and tests carry that."
+    },
+    {
+     "key": "deep_peer_smoke",
+     "value": "passed; executed both directions"
+    },
+    {
+     "key": "workflow_continuation_proof",
+     "value": "passed; executed both directions"
+    },
+    {
+     "key": "egress_ack_proof",
+     "value": "not_requested — it performs a real network send behind a second consent, and this loop had no reason to ask for one"
+    },
+    {
+     "key": "experience_parity",
+     "value": "partial 86% 99/115; satisfied 5, partial 3, blocked 0; 8 criteria; one manual codex-hook-review follow-up. NUMERICALLY IDENTICAL to 0.96.0 — same numerator, denominator and three partials. Nothing moved; this removal touched no criterion. Stated because a repeated figure reads as a stale copy."
+    },
+    {
+     "key": "host_parity",
+     "value": "pass"
+    },
+    {
+     "key": "host_parity_baseline",
+     "value": "stale, direction ahead — the 2026-08-16 2.1.233 / 0.147.0 baseline against an observed 2.1.250 / 0.150.1. This release EDITED that protected file and again did not refresh the dated header, which is correct: a refresh asserts a new reviewed host observation, and this loop reviewed no host."
+    },
+    {
+     "key": "compat_runs",
+     "value": "needs_attention; newest run still reads legacy_era with schema_era assurance-era — unchanged from the previous loop, genuine history rather than a fault."
+    },
+    {
+     "key": "packaged_baseline_hash",
+     "value": "OPERATOR-MEASURED, not a doctor field. f7e3b5fac4ee198562e322259b043a27a461e2eb0391081ddd38c5f9fb697852, identical in the Claude cache, Codex SERVED tree and repo. MOVED again from bdb6eeb7… — second consecutive move; this release also edits the protected baseline."
+    },
+    {
+     "key": "installed_byte_identity",
+     "value": "OPERATOR-MEASURED, not a doctor field. `diff -r` between Claude's cache and Codex's SERVED checkout under ~/.codex/.tmp/marketplaces/ exits 0, no output. This loop first compared ~/.codex/plugins/cache — the mistake the scorecard documents — then re-ran it. 120 files, down from 126. Digest 74f2779a…"
+    },
+    {
+     "key": "digest_recipe_control",
+     "value": "OPERATOR-MEASURED, not a doctor field. The recipe was control-verified before this digest was published: against the retained 0.96.0 cache it reproduces that record's published 725ad396… over 126 files exactly. It is locale- and format-sensitive; the scorecard now pins both."
+    }
+   ]
+  }
+ ],
+ "install_method": "NOT performed by this recovery — the material difference from its predecessor. Both hosts already served 0.97.0 when the loop opened, verified by re-reading the installed manifests in both caches rather than trusting command output or directory names. This record attests the installed STATE, not the verbs that produced it.",
+ "narrative": "This is the second consecutive loop to remove an overtaken layer — though only the first was still functioning when it went. The difference is where the answer came from: ADR-0056's matcher lost to arithmetic on a moving target; this advisor lost to the host shipping the cure.\n\nADR-0038's goal was fewer permission prompts, and its mechanism was advice: read the machine's tool-use history, grade each pattern, propose a configuration. Claude Code then added `auto` — a permission MODE deciding per call rather than a ruleset fixed in advance. That met the goal at a layer the advisor could not reach, and left the advice pointing the wrong way. The measurement is what makes this a removal rather than a rewrite: the advisor recommended `default_mode: acceptEdits` while the host's own config read `auto`, produced an EMPTY allow set, and named 8 deny patterns including `Bash(cd *)`, `Bash(cat *)` and `Bash(git status *)`. Applying that fragment would have made the session strictly worse.\n\nThe cause was traced, not assumed, and it is not a grading bug — `gradeCommand` in isolation is correct. It is severity poisoning: one dangerous instance drags an entire pattern to deny. `cat *` was denied on 322 allow against 1 deny; `git status *` on 16 against 1; `du *` on a single compound observation. Two of the eight deny patterns rest on one instance each. An earlier draft also credited `auto` with causing the empty allow set; that was wrong and is recorded as wrong — auto mode causes neither the deny set nor the empty allow set.\n\nThe Codex half is the part worth carrying forward, because it is a class rather than an instance. `parseCodexRollout` recognizes only `local_shell_call` and `function_call` named `shell`. Across this machine's 100 most recent rollouts — 33,009 JSONL lines — the shapes present are `custom_tool_call:exec` (1,006) and `function_call:exec_command` (314); `function_call:shell` never appears. Recognized observations: 0. The Codex advisor had been reading nothing, silently, for as long as that drift existed. A zero is a claim about the reader, not the world, and only an input-shape histogram against a control tells those apart.\n\nThat cuts both ways and the ADR states both. It removes the comfortable reading that Codex was fine, and it supplies the removal's argument in a new form: a capability whose Codex half produced zero observations, undetected, is one nobody relied on. But the regression is real and is not softened — Claude's operators lost an advisor and gained a better host mechanism; Codex's operators lost one and gained nothing, because Codex ships a rules-and-configuration engine (`execpolicy`, found 45 times in the real 228 MB binary with known-true control tokens behaving) and not a per-call decision mode. That was measured against the binary because the packaged baseline mentions `execpolicy` zero times, and silence is not evidence of absence.\n\nWhat survives is the narrow, defensible fact: runtime relaxed nothing. `proof.permission` reads as advisor machinery because of its name and its old Stage-6 gate, and it is not. Its applicability was gated on an advisory fragment, so removing the advisor without rewriting that gate would have retired the assertion in silence. §Decision 5 decoupled it. This loop's proof shows the boundary proof still executes and passes; the rewrite itself is carried by source and tests, since a direct invocation bypasses the bootstrap applicability row.\n\nOne process reading belongs here because it repeated. This recovery's first byte-identity measurement was taken against `~/.codex/plugins/cache` — the exact mistake the scorecard already documents an earlier recovery making. The trees happened to agree, so the number did not change, but a written warning was walked into anyway, and the published value is the re-run one. The digest recipe got the same treatment: control-verified against the retained 0.96.0 cache first.",
+ "relations": [
+  {
+   "type": "follows",
+   "record_id": "the-verdict-no-machine-could-reach",
+   "note": "The preceding runtime loop and structural twin: both remove a layer that had been overtaken. Its 86% 99/115 parity figure is the one this loop's identical figure continues rather than improves upon; its 79-artifact corpus reading is extended here to 80."
+  }
+ ]
+}

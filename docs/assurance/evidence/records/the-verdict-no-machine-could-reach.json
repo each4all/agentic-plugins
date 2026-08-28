@@ -49,7 +49,7 @@
     },
     {
      "key": "doctor_runs",
-     "value": "available, malformed=0, count=79 — THE READING THIS LOOP MOST NEEDED. ADR-0056 §Consequences predicted `blocked malformed=70` for a producer bumped without a dual reader in the same release, and `malformed > 0` never clears. 79 artifacts across both eras read clean."
+     "value": "available, malformed=0, count=79 — THE READING THIS LOOP MOST NEEDED. ADR-0056 predicted `blocked malformed=70` for a producer bumped without a dual reader, and `malformed > 0` never clears. 79 read clean. (Corrected 2026-08-28: said 'across both eras'; all 79 predating this run were 1.0.)"
     },
     {
      "key": "experience_parity",
