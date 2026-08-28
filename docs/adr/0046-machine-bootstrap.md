@@ -402,8 +402,17 @@ let `companions` be declined while requiring the smoke proof would define an
 unreachable terminal state, and making the proof conditional instead would let a
 machine reach `complete` having proven nothing. `workflow-continuation` is required
 **iff `engineer` is in the selection** (it exercises engineer machinery; demanding it
-without engineer would be unreachable). `permission` is required **iff a permission
-fragment was applied**.
+without engineer would be unreachable). `permission` was required **iff a permission
+fragment was applied** — **amended by [ADR-0057](0057-permission-advisor-removal.md)
+§Decision 5 (2026-08-28): it is now required always, and declinable.** The advisory
+fragment that gate named no longer exists, and a boundary proof conditional on an
+advisory artifact was backwards in the first place — ADR-0048 §D1 named that hazard in
+its own rejection rationale. The proof's justification is independent of the advisory
+and always was: it takes no advisor input, and it is the only run that explicitly
+RECORDS the ADR-0035 §4 no-relaxation fact (`permission_policy: {host_native_default,
+relaxed_by_doctor, injected_flags}`). Simply deleting the gate would have made it
+permanently non-applicable, so ADR-0057 replaced its applicability **and** its
+`blocked_by` edges rather than emptying them.
 
 **Proof evidence must be machine-global.** Doctor records proofs and Codex hook
 attestations repo-relative, so bootstrap run from repository B cannot discover
@@ -555,8 +564,10 @@ ADR-0024 §4 explicitly says settings *may assist with* marketplace-entry instal
 plugin install/update, host-CLI install recommendation, and "generating host-native
 commands or config edits when direct mutation would be too risky" — which is
 literally this content. And `--notification-plan` (ADR-0040 §4), `--permission-plan`
-(ADR-0038), and `--egress-launcher-plan` (ADR-0041 §12) are three consecutive
-precedents for landing a state-aware, artifact-only, per-machine planner as a
+(ADR-0038 — removed by [ADR-0057](0057-permission-advisor-removal.md) in 2026-08-28;
+recorded here as the precedent it was when this alternative was weighed, which is a
+historical claim and stays), and `--egress-launcher-plan` (ADR-0041 §12) are three
+consecutive precedents for landing a state-aware, artifact-only, per-machine planner as a
 settings flag. The egress launcher in particular is *structurally identical* to what
 bootstrap generalizes.
 

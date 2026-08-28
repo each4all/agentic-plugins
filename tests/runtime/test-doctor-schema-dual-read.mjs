@@ -26,8 +26,10 @@ import { inspectLatestDoctorRun } from '../../plugins/runtime/scripts/dashboard.
 const ERAS = [
   // The version every retained artifact on disk carries today.
   { label: 'assurance-era producer', artifact: 'runtime-doctor-artifact-1.0', report: 'runtime-doctor-1.0' },
-  // The version this runtime writes.
+  // The ADR-0056 removal era.
   { label: 'post-assurance producer', artifact: 'runtime-doctor-artifact-1.1', report: 'runtime-doctor-1.1' },
+  // The version this runtime writes: ADR-0057 dropped `permission_diagnosis`.
+  { label: 'post-advisor producer', artifact: 'runtime-doctor-artifact-1.2', report: 'runtime-doctor-1.2' },
 ];
 
 async function seed(runs) {
@@ -73,6 +75,8 @@ describe('the dashboard pins the same two versions, independently', () => {
     for (const [artifact, report] of [
       ['runtime-doctor-artifact-1.0', 'runtime-doctor-1.1'],
       ['runtime-doctor-artifact-1.1', 'runtime-doctor-1.0'],
+      ['runtime-doctor-artifact-1.1', 'runtime-doctor-1.2'],
+      ['runtime-doctor-artifact-1.2', 'runtime-doctor-1.1'],
     ]) {
       const repoRoot = await seed([{ artifact, report }]);
       const latest = await inspectLatestDoctorRun({ repoRoot });

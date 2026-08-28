@@ -508,7 +508,7 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const POINTER_RE = /^[~.][A-Za-z0-9/._-]{0,511}$/;
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
-// Mirrors data/schemas/runtime-bootstrap-run-1.3.json `$defs.stepId`. A copy of a
+// Mirrors data/schemas/runtime-bootstrap-run-1.4.json `$defs.stepId`. A copy of a
 // schema pattern is a drift risk, so test-completion-reducer asserts this source
 // against the packaged schema's rather than trusting the two to stay aligned.
 const STEP_ID_RE = /^[a-z][a-z0-9]*(?:\.[a-z0-9_-]+)+$/;
@@ -769,17 +769,19 @@ export function reduceCompletion({
   receiptEvidence = null,
 }) {
   const stateById = new Map(steps.filter((s) => typeof s?.id === 'string').map((s) => [s.id, s]));
-  const fragmentApplied = {};
-  for (const host of ['claude', 'codex']) {
-    fragmentApplied[host] = stateById.get(stepIds.permissionApplied(host))?.fragment_applied === true;
-  }
   // The egress-proof opt-in (D0.2) — from a recorded operator answer or recorded
   // delivery evidence, never from the derived row this reduction itself produces.
   // egressProofOptedIn documents each leg and, more importantly, what is
   // deliberately NOT a leg.
   const egressProofRequested = egressProofOptedIn({ steps, choices, proofs });
 
-  const expected = deriveExpectedSteps({ pluginSet, selection, permissionFragmentApplied: fragmentApplied, egressProofRequested });
+  // ADR-0057 §Decision 5 — this reconstruction used to rebuild
+  // `permissionFragmentApplied` from the Stage-6 rows and hand it to the
+  // derivation. Left in place after Stage 6 was deleted it would have computed
+  // `{claude: false, codex: false}` from absent rows and silently made
+  // `proof.permission` non-applicable — reintroducing the very coupling the
+  // decision removes, through the reducer instead of the registry.
+  const expected = deriveExpectedSteps({ pluginSet, selection, egressProofRequested });
   const owed = expectedStepIds(expected);
   const current = currentBoundVersions({ probe, selection, runtimeVersion });
   const requiredPlugins = requiredBoundPlugins({ pluginSet, selection });

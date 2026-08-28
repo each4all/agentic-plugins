@@ -628,7 +628,11 @@ export const PACKAGED_SCHEMA_FILES = Object.freeze({
   // and 1.1 document still validates against this reader — the three keys are not
   // required — while a 1.2 document read by a 1.1 reader gets three scalar warnings
   // and the keys ignored (§4.6), which is why the minor bumps at all.
-  'agentic-machine-profile': 'agentic-machine-profile-1.2.json',
+  // 1.3 (ADR-0057 §Decision 6): widens the `permissions.claude.defaultMode` enum with
+  // the two host modes it was missing (`auto`, `dontAsk`). No key is added, so 1.2↔1.3
+  // hash alignment holds. The minor bumps for IDENTITY, not tolerance — §4.6 never
+  // forgave an unknown VALUE, so a 1.2 reader refuses `auto` under either stamp.
+  'agentic-machine-profile': 'agentic-machine-profile-1.3.json',
   // 1.1 (S8a5): adds the OPTIONAL probe hosts.codex.hook_state per-handler disabled
   // evidence. A 1.0 document (no hook_state) still validates against this reader —
   // the key is not required — while a 1.1 document read by a 1.0-only runtime would
@@ -648,7 +652,11 @@ export const PACKAGED_SCHEMA_FILES = Object.freeze({
   // that never included them. A schema pattern on `answer` was considered and
   // rejected: the grammar is per-step and per-key, so a pattern strong enough to
   // express it would be a second copy of lib/answer-values.mjs that drifts.
-  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.3.json',
+  // 1.4 (ADR-0057): SEMANTIC bump, no shape change. Stage 6 was removed and
+  // `proof.permission` re-edged, so a 1.3 stamp would let an older runtime restore
+  // rows this runtime deleted and let a terminal pre-removal run be re-judged as
+  // current. The bump arms the existing refuse-newer / legacy-terminal fences.
+  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.4.json',
   'runtime-plugin-set': 'runtime-plugin-set-1.0.json',
   // ADR-0044 session-capture families (session-capture-contract.md §3). Load-bearing
   // from S2 on: the packaged schemas ARE the validation source for the slot/entry/note

@@ -318,31 +318,28 @@ describe('plugins/runtime settings surface', () => {
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     ok(agent.includes('--skip-host-cli-probes'));
 
-    // ADR-0038 permission plan is discoverable on every public surface.
-    // It shipped in settings.mjs but was named on none of them, while the
-    // command doc already referred to "the three plan flags" — so the docs
-    // counted it without ever letting a reader find it.
+    // ADR-0057 removed the permission plan and its three flags, so the
+    // discoverability pins that named them went with the surfaces they pinned.
+    // The two properties that block underneath them did NOT go, and are re-pointed
+    // here rather than deleted with their first subject:
     //
-    // Pin each flag in the FIELD a reader actually reaches, not merely somewhere
-    // in the file: a whole-file `includes` passes as long as the token survives
-    // anywhere, so dropping a flag from the argument-hint while leaving it in a
-    // prose note would go unnoticed (Refine-verify finding).
-    const PERMISSION_FLAGS = ['--permission-plan', '--permission-plan-max-files', '--permission-plan-max-file-bytes'];
-    const argumentHint = command.split('\n').find((line) => line.startsWith('argument-hint:'));
-    ok(argumentHint, 'commands/settings.md has an argument-hint');
-    const skillInvocation = skill.split('\n').find((line) => line.includes('scripts/settings.mjs') && line.includes('--repo-root'));
-    ok(skillInvocation, 'skills/settings/SKILL.md has the settings.mjs invocation line');
-    const agentPrompt = agent.split('\n').find((line) => line.trim().startsWith('default_prompt:'));
-    ok(agentPrompt, 'settings agent yaml has a default_prompt');
-    for (const flag of PERMISSION_FLAGS) {
-      ok(argumentHint.includes(`[${flag}`), `commands/settings.md argument-hint advertises ${flag}`);
-      ok(skillInvocation.includes(`[${flag}`), `skills/settings/SKILL.md invocation advertises ${flag}`);
-      ok(agentPrompt.includes(flag), `settings agent default_prompt advertises ${flag}`);
-    }
-    // The command and skill also owe a substantive note, not just a flag token.
+    //   (a) the MUTATION BOUNDARY. Measured during the removal: the exact sentence
+    //       "never writes host config" lived inside the `--permission-plan` bullet
+    //       on both surfaces, so deleting that bullet silently took the general
+    //       boundary statement with it. This assertion is what caught it.
+    //   (b) the SAFETY-GRADING CEILING. `bypassPermissions` / `danger-full-access`
+    //       are never proposed as a target default. That rule is a property of
+    //       PROFILE SEEDING (machine-profile.mjs UNSAFE_CLAUDE_MODES), not of the
+    //       advisory, so it is pinned on bootstrap's surface, which still owns it.
     for (const [label, surface] of [['commands/settings.md', command], ['skills/settings/SKILL.md', skill]]) {
       ok(/never writes host config/i.test(surface), `${label} states the no-host-config-write boundary`);
-      ok(surface.includes('bypassPermissions') && surface.includes('danger-full-access'), `${label} states the ADR-0038 ceiling`);
+    }
+    const bootstrapSkill = await readFile(resolve(PLUGIN_ROOT, 'skills/bootstrap/SKILL.md'), 'utf-8');
+    ok(bootstrapSkill.includes('bypassPermissions') && bootstrapSkill.includes('danger-full-access'),
+      'skills/bootstrap/SKILL.md names the seeding safety ceiling the advisory used to carry');
+    // And the removed surface stays removed on every public surface.
+    for (const [label, surface] of [['commands/settings.md', command], ['skills/settings/SKILL.md', skill], ['settings agent yaml', agent]]) {
+      ok(!surface.includes('--permission-plan'), `${label} no longer advertises the removed --permission-plan`);
     }
   });
 

@@ -73,7 +73,7 @@
 import { lstat, readdir, readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isReadyCompatState, projectGapFamily, projectPlanFamily } from './compat-artifacts.mjs';
-import { sanitizeValue } from './permission-sanitize.mjs';
+import { sanitizeValue } from './sanitize.mjs';
 import { elapsedMsSince } from './clock.mjs';
 
 // A beyond-skew future mtime yields `null` — "this file establishes no age" —
@@ -85,8 +85,8 @@ function ageMinutesOrNull(nowMs, thenMs) {
   return elapsed === null ? null : Math.floor(elapsed / 60000);
 }
 
-// $CODEX_HOME resolution — the ONE canonical form (the `collectUsageRecordSources`
-// precedent). `~/.codex` is the default, never a hardcode (machine-bootstrap-contract.md
+// $CODEX_HOME resolution — the ONE canonical form for every caller.
+// `~/.codex` is the default, never a hardcode (machine-bootstrap-contract.md
 // §10.2). Lives in this pure, host-CLI-free leaf so every caller (doctor, machine-probe,
 // settings, consensus) resolves it identically without dragging the host-CLI probe into a
 // spawn-sensitive import closure.
@@ -151,9 +151,18 @@ export const VALID_PEER_RUN_STATUSES = new Set([
 
 export const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 export const COMPAT_RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
-// 'permission' is the ADR-0038 permission advisory family; its on-disk segment
-// is owned by scripts/lib/permission-artifacts.mjs (PERMISSION_ARTIFACT_FAMILY),
-// registered here so the inventory + uniform retention cap covers it.
+// 'permission' is the retired ADR-0038 permission advisory family. ADR-0057
+// §Decision 7 removed its PRODUCER but deliberately kept the family declared:
+// retained advisory runs are historical evidence of what the advisor recommended
+// (including the inverted plan the removal was built on), and stay visible,
+// countable and ageable in the inventory. Nothing writes it any more, and it is
+// NEVER projected into a current recommendation. It is also retention-EXCLUDED:
+// RETENTION_FAMILY_REGISTRY is a closed set of doctor/compat/settings and
+// `permission` was never a member, so these runs accumulate rather than expire —
+// widening deletion authority to a family whose producer is gone would need its
+// own ADR-0047 amendment. The registration is documentation rather than
+// behaviour (an unlisted family would be DISCOVERED and given the same cap), and
+// that is the point: declared beats silently discovered.
 // 'notification' is the ADR-0040 §4 notification plan family, owned by
 // scripts/lib/notification-plan.mjs (NOTIFICATION_ARTIFACT_FAMILY).
 // 'egress-launcher' is the ADR-0041 §12 first-class egress launcher plan family,

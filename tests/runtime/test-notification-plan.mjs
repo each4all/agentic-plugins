@@ -644,7 +644,7 @@ describe('settings: notification plan (ADR-0040 §4, M1)', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.25');
+    strictEqual(report.schema_version, 'runtime-settings-1.26');
     strictEqual(report.dry_run, true, 'the notification plan never flips dry-run');
     const np = report.notification_plan;
     ok(np.requested && np.executed);

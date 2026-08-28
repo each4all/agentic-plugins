@@ -127,9 +127,13 @@ guarantee that is not there.
 Machine-global pointers render **home-relative** — `~/.agentic-plugins/runs/bootstrap/<run-id>`
 — never absolute. An absolute path carries the operator's home layout (typically
 their username) into an artifact, a report, and any terminal they paste it into.
-This is the same rule that makes the permission advisory drop raw transcript
-source paths outright, and the same reason the run manifest's `seeded_from`
-records a profile **id and hash** and never a filesystem path (contract §5).
+This is the same reason the run manifest's `seeded_from` records a profile
+**id and hash** and never a filesystem path (contract §5), and the same reason
+the portable machine profile carries a hostname **hash prefix** rather than the
+hostname (§4.2). (The rule's original illustration was the permission advisory
+dropping raw transcript source paths; ADR-0057 removed that consumer, and the
+rule is re-illustrated from surviving ones rather than deleted with its
+example.)
 
 Repo-relative pointers keep their existing repo-relative form. The two are
 distinguishable on sight: a machine pointer starts with `~/`.
@@ -144,7 +148,7 @@ the other's root.
 
 | Scope | Root | Families | Retention cap |
 |---|---|---|---|
-| repo | `<repo>/.agentic-plugins/runs/` | `compat`, `consensus`, `context`, `settings`, `doctor`, `permission`, `notification`, `egress-launcher` | 20 runs |
+| repo | `<repo>/.agentic-plugins/runs/` | `compat`, `consensus`, `context`, `settings`, `doctor`, `permission` (historical — ADR-0057 §Decision 7 removed the producer, kept the family declared and readable), `notification`, `egress-launcher` | 20 runs |
 | machine | `~/.agentic-plugins/` | `bootstrap` (under `runs/`), `profiles` | 10 runs; profiles exempt |
 
 The machine scope also holds ONE non-family path that is deliberately not a run

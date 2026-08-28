@@ -13,7 +13,7 @@
 //     profile engine (C5) can explain a null instead of guessing.
 //
 // The repo-preferring resolvers stay in their home modules (peer-execution-context
-// model/effort, notify.loadNotifyConfig, the settings permission planner); these are
+// model/effort, notify.loadNotifyConfig); these are
 // the deliberately SEPARATE user-global reads §4.4 mandates, sharing those modules'
 // parsers so there is no second parser to drift.
 
@@ -21,7 +21,7 @@ import { join, resolve } from 'node:path';
 
 import { readTextIfExists } from './state-readers.mjs';
 import { CONFIG_KEY_FAMILIES, parseRuntimeConfigToml } from './runtime-config.mjs';
-import { parseCodexPermissionConfigToml } from './permission-config.mjs';
+import { parseCodexPermissionConfigToml } from './codex-config.mjs';
 import { loadEgressExportConfig } from './egress-config.mjs';
 
 const USER_GLOBAL = 'user-global';

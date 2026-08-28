@@ -33,7 +33,7 @@ Line references below are anchors observed at decision time
   strict-R0 variant that was not chosen); `--local-only`/`--offline` (reads as
   a network property; the probes are local subprocesses).
 - **Composition (owner lever, ratified 2026-07-10): allow `--apply` and the
-  three plan flags; reject the three evidence-consuming executors and their
+  two plan flags; reject the three evidence-consuming executors and their
   exclusive modifiers.** The gate rule is derivable, not enumerative in
   spirit: *a flag is rejected under `--skip-host-cli-probes` iff its effect
   consumes host-CLI probe evidence, or it exclusively parameterizes a rejected
@@ -50,10 +50,10 @@ Line references below are anchors observed at decision time
     flag (`--model`/`--effort`/direction-specific/`--notify-*`), `--apply`
     (`applyConfigPlans` consumes zero doctor evidence — it is a pure
     filesystem diff against `.agentic-plugins/config.toml`),
-    `--permission-plan` (+ its `--permission-plan-max-*` parameters),
-    `--notification-plan`, and `--egress-launcher-plan` (the three plan
-    builders take `{repoRoot, homeDir, env, now[, host]}` and never read
-    doctor output).
+    `--notification-plan`, and `--egress-launcher-plan` (both plan builders
+    take `{repoRoot, homeDir, env, now[, host]}` and never read doctor
+    output). ADR-0057 removed a third, `--permission-plan`, with the
+    permission advisor.
   - Rejected-alternative posture: a strict output-only mode (also rejecting
     `--apply` + the plan flags) was scored and declined — it re-couples the
     two axes (the `--plan-only` conflation, mirrored) and pushes the primary
@@ -120,7 +120,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.25`)
+## 3. Report schema contract (`runtime-settings-1.26`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -191,6 +191,12 @@ the readiness **status** exactly like `session_readiness_warnings`).
 Same observed-current semantics and the same additive-section erratum
 scope (1.23 `entry_readiness` appends its own text block in both
 scopes).
+`runtime-settings-1.25` → `runtime-settings-1.26` is **non-additive** — the only
+such bump in this contract's history. ADR-0057 §Decision 11 deleted
+`permission_plan` and `permission_plan_codex` with the permission advisor that
+produced them, and a field DELETION is not describable as an additive minor: a
+1.25 reader meeting a 1.26 report finds two keys gone, and the version is what
+says why rather than leaving it to look like a producer fault.
 Then `runtime-settings-1.24` → `runtime-settings-1.25` (additive: the config
 plan's fourth op — `planned_writes[].op = "remove"`, a `null` `after` for the
 REMOVED state, and `removed_lines` on an applied plan that removed any). Before
@@ -223,7 +229,7 @@ distinguishable only by what it lacks:
   |---|---|---|
   | `clis`, `plugins`, `plugin_command_surface`, `plugin_management`, `plugin_cleanup`, `hook_settings`, `codex_hook_review` | `evaluated` | `not_evaluated` (value `null`) |
   | `config`, `companion_settings`, `notify_settings`, `session_settings`, `session_readiness`, `entry_readiness`, `mutation_boundary`, `artifacts`, `limits`, `overall` | `evaluated` | `evaluated` |
-  | `permission_plan`, `permission_plan_codex`, `notification_plan`, `egress_launcher_plan` | `evaluated` when requested, else `not_requested` | same |
+  | `notification_plan`, `egress_launcher_plan` | `evaluated` when requested, else `not_requested` | same |
   | `recommendations` | `evaluated` | `local_only` |
 
 - **Null, never empty**: probe-derived sections are `null` when skipped —
@@ -259,10 +265,11 @@ distinguishable only by what it lacks:
 - `mutation_boundary` honesty amendment (**both modes** — fixes a
   pre-existing gap surfaced by this decision's peer review):
   `mutation_boundary.writes_allowed` MUST enumerate requested plan-artifact
-  families. Today (`settings.mjs:350-357`) it reports `"none; dry-run only"`
-  even when `--permission-plan` writes an advisory artifact
-  (`recordPermissionAdvisoryArtifact`, `written: true`). "Dry run" must never
-  render as "no writes" while plan artifacts are being written.
+  families. It used to report `"none; dry-run only"` even while a requested
+  plan wrote its artifact. "Dry run" must never render as "no writes" while
+  plan artifacts are being written. (The example that surfaced this was
+  `--permission-plan`, removed by ADR-0057; the rule outlives it and still
+  governs `--notification-plan` and `--egress-launcher-plan`.)
 
 ## 4. Rendering contract
 
@@ -293,13 +300,10 @@ distinguishable only by what it lacks:
   the single writer (`writeSettingsExecutionArtifact`, gated at
   `settings.mjs:321-328` on the three rejected executor/attest flags) is
   unreachable in this mode; a regression test pins the invariant regardless.
-- The plan-artifact families (`runs/permission` — erratum 2026-07-10: the
-  pinned family name is `permission`, `PERMISSION_ARTIFACT_FAMILY` in
-  `lib/permission-artifacts.mjs` — plus the notification and egress-launcher
-  families) are unaffected: when their flags are requested they write their
-  own families exactly as in full mode. Their artifact pointers live inside
-  each plan section (`permission_plan.artifact`, `notification_plan.artifact`,
-  `egress_launcher_plan.artifact`) — **not** in `report.artifacts`, which
+- The plan-artifact families (notification and egress-launcher) are
+  unaffected: when their flags are requested they write their own families
+  exactly as in full mode. Their artifact pointers live inside each plan
+  section (`notification_plan.artifact`, `egress_launcher_plan.artifact`) — **not** in `report.artifacts`, which
   carries only `settings_execution` (erratum 2026-07-10) — and
   `mutation_boundary.writes_allowed` must enumerate the requested families
   (§3).
@@ -315,7 +319,7 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.25` report constant and the
+4. Schema-version lockstep: the `runtime-settings-1.26` report constant and the
    `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
    both constants; `test-notification-plan.mjs` and `test-settings.mjs` pin the

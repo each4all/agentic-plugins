@@ -2,7 +2,12 @@
 
 ## Status
 
-Proposed
+Accepted (2026-08-28). Supersedes [ADR-0038](0038-runtime-permission-prompt-advisory.md)
+**except its §6**, which §Decision 8 carries forward as binding. Amends
+[ADR-0046](0046-machine-bootstrap.md) (the `permission` proof's applicability, and its
+§Alternatives "the flags remain" claim) and [ADR-0048](0048-bootstrap-observability.md)
+§1 (an analogy whose referent this ADR deletes). Implemented by the `advisor-impl`
+subtask in the same release.
 
 <!--
 Supersedes ADR-0038. Amends ADR-0046 (§"Which proofs, exactly" — the
@@ -756,6 +761,66 @@ that lands without its dual reader turns every retained artifact into a fault.**
 Two-stage, matching ADR-0056: `Proposed` here, `Accepted` on merge.
 Implementation, the residual triage, the schema decisions of Decisions 5, 6 and
 11, and the amendments of Decision 10 all land in the `advisor-impl` subtask.
+
+## Amendment (2026-08-28) — what implementation measured, and where it overrode this ADR
+
+`advisor-impl` landed with a cross-host Plan-verify review, which returned `modify` and
+disproved four things this ADR asserted. Each is recorded here rather than silently
+applied, on the same rule §Status already applies to the first review.
+
+1. **The run schema HAD to bump, and this ADR did not say so.** §Decision 11's matrix
+   listed `runtime-bootstrap-run-1.3` as losing stage-6 steps, and treated that as
+   describable inside 1.3. It is not. The registry change is semantic: under an
+   unchanged stamp an older runtime accepts a run this runtime rewrote, restores the
+   Stage-6 rows from its own registry, and re-enters the deleted permission-fragment
+   path — reproduced by the reviewer. Worse, an already-**terminal** pre-removal run is
+   re-judged against the new registry and owes `proof.permission`, which `resume`
+   refuses to let it attach: a `complete` run becomes permanently
+   `configured-not-verified`. The schema is now **`runtime-bootstrap-run-1.4`**, which
+   arms both existing fences (refuse-newer on resume; legacy-terminal presented as
+   immutable history). Pinned by a regression whose mutation — reverting the bump —
+   reproduces the reviewer's failure exactly.
+
+2. **The machine profile bumps to `agentic-machine-profile-1.3` after all, reversing
+   the reasoning in §Decision 6.** The implementation first widened the enum in place,
+   on three measurements that still stand: §4.6's forgiveness is key-shaped and never
+   covered enum VALUES, `readProfileFile` has no newer-minor fence, and the profile
+   hash is enum-independent (verified with a control). So the bump genuinely buys **no
+   behavioural difference** — an old reader refuses `auto` under either stamp. It is
+   taken anyway, because the contract's own §4.6 worked example frames an added enum
+   value as arriving at a new minor, and because a `$id` that denotes two different
+   accepted languages makes a historical document impossible to re-validate against the
+   schema that admitted it. **The bump buys identity, not tolerance**, and the
+   distinction is worth stating: this is not a compatibility fix.
+
+3. **The enum was missing TWO modes, not one.** §Decision 6 told `advisor-impl` to
+   enumerate from the host rather than from memory, and doing so found `dontAsk`
+   alongside `auto`. Claude Code `2.1.248` carries the canonical list
+   `["acceptEdits","auto","bypassPermissions","default","dontAsk","plan"]` in its own
+   binary. `UNSAFE_CLAUDE_MODES` stays `['bypassPermissions']`: `dontAsk` is stricter
+   than `default`, and `auto` keeps a classifier in the loop rather than removing the
+   check. `host-parity-baseline.md`'s row is now an enumeration rather than a "such as"
+   list, because listing every mode except the decisive one is how this went unnoticed.
+
+4. **No compatibility shims were kept, overriding §Decision 4's prescription.** That
+   decision said the surviving half of `permission-config.mjs` moves "again with a
+   compatibility re-export from the old path". It was retired instead, and so was
+   `permission-sanitize.mjs`'s (which §Decision 3 already left to `advisor-impl`).
+   Measurement: zero importers outside the deleted planner, and ADR-0010 §5 forbids
+   cross-plugin imports, so `plugins/runtime/scripts/lib/**` has no reachable
+   out-of-repo consumer. A shim would protect nobody while leaving a filename asserting
+   a relationship the code no longer has — which is the dangling reference §Decision 2
+   and §Decision 10 exist to remove. This follows §Decision 4's own reasoning about the
+   `settings.mjs` re-export ("what it must not be is retained by accident") against its
+   prescription; the prescription is what changes.
+
+Two further review findings were implementation defects rather than ADR errors, and are
+noted because they are the shape this ADR keeps warning about. The removal initially
+left a **live** `limits` string in every doctor report still advertising the diagnosis
+and the plan; and it rewrote `fragment_applied`'s schema description to "legacy-only,
+nothing writes it", which is false — the field remains live for the five surviving
+fragment-rendering steps, and only the §8.1 RULE that read it was removed. A removal
+that over-claims what it removed is the same failure as one that under-scopes it.
 
 ## Consequences
 

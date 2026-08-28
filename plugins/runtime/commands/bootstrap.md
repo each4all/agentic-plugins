@@ -36,7 +36,7 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    decisions already made. Safety grading is the script's: an unsafe source
    value is shown as a labelled note, never presented as a default.
 3. **Ask.** Walk the open steps stage by stage. Ask only about steps the
-   contract makes declinable (notification, statusline — per host, egress, permission fragments,
+   contract makes declinable (notification, statusline — per host, egress,
    optional plugins, proofs), the two Stage-4 **value** steps, plus the bundle
    choice itself. Record the
    operator's decisions into a JSON answers file — an array of

@@ -780,7 +780,7 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     const { home, cwd } = await makeHome();
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
     const manifest = await manifestOf(home, plan.report.run_id);
-    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.3');
+    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.4');
 
     // And the fence itself: a run claiming a NEWER minor is refused by resume.
     const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
@@ -935,7 +935,7 @@ describe('bootstrap CLI — the ledger capacity preflight (§3.3)', () => {
     // A preflight bound that drifted BELOW the schema would refuse writes the
     // schema would accept; one that drifted ABOVE would let the effect run and
     // fail at persist — the exact failure the preflight exists to prevent.
-    const schema = JSON.parse(await readFile(join(PLUGIN_ROOT, 'data', 'schemas', 'runtime-bootstrap-run-1.3.json'), 'utf8'));
+    const schema = JSON.parse(await readFile(join(PLUGIN_ROOT, 'data', 'schemas', 'runtime-bootstrap-run-1.4.json'), 'utf8'));
     strictEqual(schema.properties.choices.maxItems, 256);
     strictEqual(schema.properties.history.maxItems, 256);
   });

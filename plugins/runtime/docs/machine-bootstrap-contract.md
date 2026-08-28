@@ -165,7 +165,11 @@ established, the step status is **`unknown`** — never `satisfied` — and it i
 surfaced as `manual-follow-up` with the exact registration command. Absence of
 evidence is never evidence of registration.
 
-### 1.3 Planner composition requires purity — five extractions, not two lifts
+### 1.3 Planner composition requires purity — four extractions, not two lifts
+
+> **ADR-0057 (2026-08-28)** removed the permission planner and its host-config
+> reader, so this section is **four** extractions rather than the five it shipped
+> with. The composition rule itself is unchanged and still governs the survivors.
 
 The existing planners **combine computation with unconditional repo-relative
 persistence**, so bootstrap cannot compose them as they stand without writing
@@ -177,8 +181,6 @@ injected:
 |---|---|---|
 | notification | `lib/notification-plan.mjs` — builds *and* persists repo-relative | pure build + injected persist |
 | egress launcher | `lib/egress-launcher-plan.mjs` — builds *and* persists repo-relative | pure build + injected persist |
-| permission (Claude **and** Codex) | private to `scripts/settings.mjs`, persists repo-relative | lift to `lib/`, pure build + injected persist |
-| `readClaudePermissionConfig` | private to `scripts/settings.mjs`; unions repo + repo-local + user into flat sets, **losing per-rule provenance** | lift to `lib/`, **and add a user-global-only read** (§4.4) |
 | plugin-management **plan half** | private to `scripts/settings.mjs`; also classifies recommendations it does not compute | lift to `lib/`, separated from the execute half, fed by §1.4 |
 
 Bootstrap persists **only** under its machine-global run (§10).
@@ -190,18 +192,16 @@ records the pre-extraction state, not the tree. Where each planner lives now:
 |---|---|---|---|
 | notification | `gatherCodexNotificationInputs` | `buildCodexNotificationPlanSection` | `writeNotificationPlanArtifact` |
 | egress launcher | `gatherEgressLauncherInputs` | `buildEgressLauncherPlanSection` | `writeEgressLauncherPlanArtifact` |
-| permission (both hosts) | `gatherPermissionPlanInputs` | `buildPermissionPlanSection` | `writePermissionAdvisoryArtifact` |
-| `readClaudePermissionConfig` | `lib/permission-config.mjs` | — | — (user-global-only reads: `lib/profile-readers.mjs` `readUserGlobalClaudePermission` / `readUserGlobalCodexPermission`, §4.4) |
+| Codex config TOML parse | `lib/codex-config.mjs` `parseCodexPermissionConfigToml` | — | — (user-global-only reads: `lib/profile-readers.mjs` `readUserGlobalClaudePermission` / `readUserGlobalCodexPermission`, §4.4) |
 | plugin-management plan half | `lib/plugin-management-plan.mjs` | — | — (execute half stays in `scripts/settings.mjs`) |
 
 Two S8a3 findings worth carrying forward, because a consumer that assumes otherwise
 will be wrong:
 
-1. **No pure build takes a `repoRoot`** — including the permission builder, whose old
-   parameter was a pure string stamped into a `[projects."…"]` header. The point is
-   capability, not referential purity: a builder that accepts a repo root can grow a
-   repo-relative read later. The Codex trust target is passed inside `gathered` as an
-   explicit `{ applicable, path }` pair. A caller with no project context sets
+1. **No pure build takes a `repoRoot`.** The point is capability, not referential
+   purity: a builder that accepts a repo root can grow a repo-relative read later. A
+   Codex trust target is passed inside `gathered` as an explicit
+   `{ applicable, path }` pair. A caller with no project context sets
    `applicable: false` and gets no `[projects]` entry — passing a null path instead
    renders a `[projects."null"]` header, because the TOML renderer stringifies whatever
    it receives.
@@ -211,12 +211,6 @@ will be wrong:
    promise a caller may rely on is: synchronous, deterministic for identical
    `gathered` + injected clock/run-id, writes nothing, holds no repository capability,
    and never reaches `doctor.mjs`. `tests/runtime/test-planner-purity.mjs` is the gate.
-
-The permission planner's **failure boundary** is narrower than it looks and is
-preserved deliberately: only usage-record enumeration degrades to the dual `blocked`
-plan. The learner, both host-config reads, artifact construction and persistence
-propagate. Bootstrap must not wrap the gatherer in a catch that converts a real fault
-into a serene "blocked" report.
 
 ### 1.4 Plugin selection input and version policy
 
@@ -429,7 +423,7 @@ registration, which can be removed after install and MUST still be probed (§1.2
 | 3 | selected bundle installed + enabled | H2 via `settings --execute-plugin-management`, **presented** |
 | 4 | model / effort defaults | `settings --apply --target user` (agentic-plugins-owned) |
 | 5 | operator observability + egress (ADR-0048 §1 — renamed from "notification + egress"; no stage inserted, nothing renumbered) | operator applies the rendered fragments |
-| 6 | permission posture, **both hosts** — Claude `~/.claude/settings.json` **and** Codex `approval_policy` / `sandbox_mode` (ADR-0038 requires first-class plans for both) | operator applies the rendered fragments |
+| 6 | *(empty — ADR-0057 removed the permission-posture stage with the advisor that rendered its fragments. The NUMBER is deliberately not reused and stages 7 and 8 are not renumbered: retained run manifests carry stage-6 rows, and renumbering would invalidate every one of them.)* | — |
 | 7 | Codex `/hooks` review + trust | operator (interactive TUI), then attestation |
 | 8 | execution proof (§8) | `runtime:doctor --execute-*` |
 
@@ -630,10 +624,10 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   expectation is also what makes the egress promotion safe: any answer naming
   `proof.egress-provider-ack` makes it applicable BEFORE the expectation is
   derived. Because the rule now refuses rather than merely filters, that
-  expectation must reflect what THIS verb observed: `resume` re-derives it when
-  its own judgement promotes `permission.<host>.applied` to `fragment_applied`,
-  so the resume that first sees the operator's applied fragment can prove it
-  instead of owing an extra cycle.
+  expectation must reflect what THIS verb observed. (Before ADR-0057 the
+  re-derivation also covered `permission.<host>.applied` promoting to
+  `fragment_applied`; with Stage 6 gone the effective selection is the only
+  judgement input that can still move mid-judgement.)
   The **same rule is asked twice**, because one boundary cannot cover both
   moments. `resume`'s proof executor re-asks it against the post-narrowing
   judgement: a decline earlier in the same answers file can narrow the selection
@@ -886,7 +880,7 @@ carries an egress channel.
 
 ```jsonc
 {
-  "schema": "agentic-machine-profile-1.2",
+  "schema": "agentic-machine-profile-1.3",
   "exported_at": "<iso-8601-utc>",
   "boundary": {
     "writes_host_config": false,
@@ -976,7 +970,8 @@ Rules:
   canonicalized before hashing.
 - **Bounded**: the artifact is capped at **64 KiB**; `permissions.claude.*` rule
   arrays are capped at **256 entries each** and sanitized through
-  `lib/permission-sanitize.mjs`. A profile exceeding a cap is refused, not
+  `lib/sanitize.mjs` (renamed from `lib/permission-sanitize.mjs` by ADR-0057
+  §Decision 3). A profile exceeding a cap is refused, not
   truncated — a silently truncated permission list is a security artifact, not a
   convenience.
 
@@ -1012,8 +1007,12 @@ Today's readers would **promote repository policy into a portable machine
 profile**:
 
 - model/effort resolution **prefers repo config over user config**;
-- `readClaudePermissionConfig` **unions** repo, repo-local, and user rules into
-  flat sets, losing per-rule provenance.
+- the settings-side Claude permission reader **unioned** repo, repo-local, and
+  user rules into flat sets, losing per-rule provenance. (That reader,
+  `readClaudePermissionConfig`, was deleted with the permission advisor by
+  ADR-0057 §Decision 4. The decision below is unaffected: it is about which
+  readers `profile export` may use, and the user-global-only readers it
+  mandates are exactly the ones that survive.)
 
 Labelling that result `scope: "machine"` would silently export one project's
 policy as another machine's global default.
@@ -1111,8 +1110,13 @@ existing behavior from one value to the whole profile.
   expectation rather than assume equality.
 - **The enums have a stated forward limit.** §4.6's tolerance forgives an unknown
   KEY from a newer minor; it does not forgive an unknown VALUE of a KNOWN key. So a
-  future 1.3 that adds, say, `session_capture = "turn-hook"` is refused outright by a
-  1.2 reader — the whole document, not just the field. That is a real cost and it is
+  future minor that adds, say, `session_capture = "turn-hook"` is refused outright by
+  the reader before it — the whole document, not just the field. **ADR-0057 §Decision 6
+  is the first real instance**: `agentic-machine-profile-1.3` widens
+  `permissions.claude.defaultMode` with `auto` and `dontAsk`, and a 1.2 reader refuses
+  a document carrying either. The minor still bumps, for IDENTITY rather than
+  tolerance — one `$id` must denote exactly one accepted language, or a historical
+  document can no longer be re-validated against the schema that admitted it. That is a real cost and it is
   accepted deliberately: `notify_channel` has carried exactly this shape since 1.0,
   and the alternative (a loose pattern) is worse, because an older runtime would then
   ACCEPT a mode it cannot support and propose it to the operator as a default. The
@@ -1152,7 +1156,7 @@ any unknown key at all. Downgrade is never attempted.
 
 ```jsonc
 {
-  "schema": "runtime-bootstrap-run-1.3",
+  "schema": "runtime-bootstrap-run-1.4",
   "run_id": "<run-id>",
   "started_at": "<iso-8601-utc>",
   "updated_at": "<iso-8601-utc>",
@@ -1307,11 +1311,13 @@ Five shapes are load-bearing and agree with §8 / §8.1:
   stales it, and resume-means-re-probe (§7) supplies the evidence on the next run.
   Absence of an `enabled` key in `[hooks.state]` means ENABLED (verified on codex-cli
   0.142.5); only an explicit `false` is disabled evidence.
-- **`steps[].fragment_applied`** marks that *this run rendered a fragment and a post-probe
-  observed the operator applying it* — distinct from a pre-existing matching config. The
-  §8.1 `permission` proof is required **iff** a `permission.*.applied` step carries
-  `fragment_applied: true`, so a machine whose permissions already matched does not trip
-  a proof it never needed.
+- **`steps[].fragment_applied`** is **LEGACY-ONLY as of ADR-0057**. It marked that *this
+  run rendered a fragment and a post-probe observed the operator applying it*, and the
+  §8.1 rule read it: the `permission` proof used to be required **iff** a
+  `permission.*.applied` step carried `fragment_applied: true`. Stage 6 is gone, nothing
+  writes the field any more, and `proof.permission` is now unconditionally applicable
+  and declinable — see §6.1 and §8.1. The field stays readable so runs planned before
+  the removal are not invalidated.
 
 ---
 
@@ -1374,12 +1380,10 @@ left to S8:
 | `statusline.claude.configured` | 5 | always | **yes** |
 | `statusline.codex.configured` | 5 | always | **yes** |
 | `egress.configured` | 5 | always | **yes** |
-| `permission.claude.applied` | 6 | always | **yes** |
-| `permission.codex.applied` | 6 | always | **yes** |
 | `hooks.codex.attested` | 7 | iff any selected plugin has `hook_bearing.codex` | no (but `not-applicable` when no Codex hook-bearing plugin is selected) |
 | `proof.deep-peer-smoke` | 8 | always | **yes** (declining caps at `configured-not-verified`) |
 | `proof.workflow-continuation` | 8 | iff `engineer` ∈ selection | **yes** (same cap) |
-| `proof.permission` | 8 | iff a `permission.*.applied` step carries `fragment_applied: true` | **yes** (same cap) |
+| `proof.permission` | 8 | always | **yes** (same cap) |
 | `proof.egress-provider-ack` | 8 | iff the operator opted in — an answer against the step in `choices[]`, a `declined` status on its row, or a recorded `egress-provider-ack` proof (ADR-0048 §3/D0.2) | **yes** (same cap) |
 
 #### 6.1.1 Stage 4 asks for a recorded POSTURE, not for a key
@@ -1533,13 +1537,12 @@ be attempted at all, never a mere stage ordering:
 | `plugin.<name>.codex.enabled` | `plugin.<name>.codex.installed` |
 | `config.model_effort` | — (agentic-plugins' own config; no host needed) |
 | `notify.configured`, `egress.configured` | — (same) |
-| `notify.codex.configured` | `host.codex.present` (a Codex-side config needs the Codex CLI — the permission-step precedent) |
-| `statusline.<h>.configured` | `host.<h>.present` (same precedent — a host-targeted config step) |
-| `permission.<h>.applied` | `host.<h>.present` |
+| `notify.codex.configured` | `host.codex.present` (a Codex-side config needs the Codex CLI) |
+| `statusline.<h>.configured` | `host.<h>.present` (a host-targeted config step) |
 | `hooks.codex.attested` | every selected Codex-hook-bearing plugin's `.codex.installed` **and** `.codex.enabled` |
 | `proof.deep-peer-smoke` | both hosts' `.authenticated`, plus `companions` `.installed` on both and `.enabled` on Codex |
 | `proof.workflow-continuation` | `engineer`'s `.installed` on both hosts and `.enabled` on Codex |
-| `proof.permission` | every applicable `permission.<h>.applied` |
+| `proof.permission` | both hosts' `.authenticated`, plus `companions` `.installed` on both and `.enabled` on Codex (ADR-0057 §Decision 5 — the same edges its sibling smoke proof carries, because it makes the same live companion invocation; the removed Stage-6 edges are replaced, not emptied) |
 | `proof.egress-provider-ack` | `egress.configured` (an ack over an unconfigured egress channel is unreachable by construction) |
 
 A **Stage-8 entry is an execution anchor**, not an evidence record: it exists so an
@@ -1602,8 +1605,8 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   underlying freeze-vs-decision reconciliation is the fragment-freeze
   follow-up.
 - **`statusline.claude.configured`** — satisfied iff the USER-layer
-  `settings.json` (`CLAUDE_CONFIG_DIR` honored; ONE shared snapshot projected
-  for both the permission and statusline consumers) carries
+  `settings.json` (`CLAUDE_CONFIG_DIR` honored; ONE shared snapshot — it served
+  the permission consumer too until ADR-0057 removed it) carries
   `statusLine: { type: "command", command: <canonical> }` where the canonical
   command is `node '<home>/.agentic-plugins/bin/agentic-statusline.mjs'` —
   forward-slash, SINGLE-quoted, shell-resolved `node` (the Claude statusLine
@@ -1797,8 +1800,8 @@ smoke proof would define an unreachable terminal state. Making the *proof* condi
 instead would be worse: it would let a machine reach `complete` having proven nothing.
 
 **Declinable**: optional plugins (any plugin not reached by a hard edge from a
-retained plugin, and not `runtime` or `companions`); notification; egress; the
-permission fragments; and the execution proofs — declining a proof caps the run at
+retained plugin, and not `runtime` or `companions`); notification; egress;
+the statuslines; and the execution proofs — declining a proof caps the run at
 `configured-not-verified` and **never** grants `complete`.
 
 Declining a plugin creates a **new effective `custom` selection** and **re-runs hard
@@ -1990,12 +1993,12 @@ ONCE and projected.
 *Scoped to the gathering on purpose, because a broader claim would be false*: the
 machine PROBE reads `$CODEX_HOME/config.toml` again for Codex hook state, so that
 file is still sampled twice per verb across the two phases, and a replacement
-between them can pair hook facts from one version with permission/notify/
-statusline facts from another. Recorded as a follow-up; the claim above is
+between them can pair hook facts from one version with notify/statusline facts
+from another. Recorded as a follow-up; the claim above is
 deliberately the narrow one the code actually keeps.
 
 *Fragment composition is handed that same reader snapshot, but is not fully bound
-by it*: the fragment builders re-read notification, egress and permission config
+by it*: the fragment builders re-read notification, egress and statusline config
 themselves. A config change between the snapshot and the render therefore still
 produces a fragment built from later bytes than the rows beside it. Named here
 rather than implied away; folding those reads into the snapshot is a follow-up.
@@ -2003,9 +2006,6 @@ rather than implied away; folding those reads into the snapshot is a follow-up.
 **The expectation's own inputs move with the snapshot**, so they are re-derived
 before the rebuild and the rows re-judged. Two of them:
 
-- `fragment_applied` — the permission fragment observed applied for the first
-  time promotes it, and §6.1 reads it to decide whether `proof.permission`
-  applies at all;
 - the **effective selection** — it is derived from `declined` step rows and
   nothing else, and §6.2 lets a satisfying observation clear a decline. A
   host-scoped refusal lives ONLY in that row (`selection.desired` is a flat name
@@ -2188,7 +2188,7 @@ verdict `attested`; the generic completion `state` is never redefined by receipt
 |---|---|---|
 | `deep-peer-smoke` | **always** | It is the only proof that the cross-host companion bridge actually works. It is always *applicable* because `companions` is mandatory in every selection (§6.2) — that rule exists precisely to keep this proof reachable. |
 | `workflow-continuation` | **iff `engineer` ∈ selection** | It exercises engineer machinery. Requiring it with no engineer installed would be unreachable. |
-| `permission` | **iff a permission fragment was applied** in stage 6 | It proves companion invocation under the newly applied host permission defaults. |
+| `permission` | **always** | ADR-0057 §Decision 5. It is the dedicated live proof that RECORDS ADR-0035 §4's no-relaxation fact — `permission_policy: {host_native_default, relaxed_by_doctor, injected_flags}`. It used to apply only when an operator had applied an advisor fragment, which made a boundary proof conditional on an advisory artifact; with the advisor gone that gate has no referent, and merely deleting it would have made the proof permanently non-applicable. |
 | `egress-provider-ack` | **iff the operator opted in** (§6.1 — an answer in `choices[]`, a `declined` row status, or a recorded ack proof) | ADR-0048 §3: it proves exactly that the pinned provider request returned HTTP 2xx + `{ok:true}` — deliberately not named "dispatch" or "delivery". Requiring it unrequested would make every non-egress machine unable to complete. |
 
 **The opt-in must carry provenance.** Both readers — the reducer and the re-probe
@@ -2238,7 +2238,7 @@ changed activation stales the proof; it never becomes `not-applicable`.
 design (folding the value in would persist a value-derived hash, which §4/ADR-0048
 forbids) — a rotated token surfaces as the executor's next real attempt failing,
 not as staleness. The "contract version" the proof binds is realized as the run
-schema id (`runtime-bootstrap-run-1.3`) plus the runtime semver already in
+schema id (`runtime-bootstrap-run-1.4`) plus the runtime semver already in
 `bound_versions` — the contract document ships inside the runtime package, so the
 runtime version pins it; no separate field exists.
 
@@ -2819,7 +2819,7 @@ following obligations join the pins below, spread across
 8. **No host-config write** — after `plan` + `seed` + `verify`,
    `~/.claude/settings.json`, `~/.codex/config.toml`, and
    `~/.agentic-plugins/config.local.toml` are **byte-identical**. (Pattern:
-   `tests/runtime/test-permission-acceptance.mjs`.)
+   `tests/runtime/test-bootstrap-cli.mjs`.)
 9. **No executor** — `plan` never invokes a plugin-management command.
 10. **Write-ahead** — kill the runner after the first H2 action; the durable record
     already names the action. (Today it would not.)
@@ -2936,8 +2936,8 @@ nobody mistakes "the contract did not say" for "the contract left it open".
 
 | Item | Constrained by |
 |---|---|
-| Exact JSON Schema files for `agentic-machine-profile-1.2` (1.1 + the trailing session-family scalars; 1.1 was 1.0 + trailing `statusline_preset`, ADR-0048 §2.1), `runtime-bootstrap-run-1.3` (1.2 + the §3.3 value-answer grammar — a SEMANTIC minor: no JSON shape changed, and the bump exists to arm the future-minor mutator fence; 1.2 was 1.1 + the egress evidence vocabulary, ADR-0048 §3), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
-| ~~Exact permission-mode enums per host~~ | **Resolved (S8a2 C0).** The **stored** enum carries whatever each host accepts, unsafe values included, because §4.5.3 shows a source machine's value as a labelled note — it must have a field to live in. Safety grading is a **present/seed-side** rule, not a second schema field: never *present* Claude `bypassPermissions`, Codex `approval_policy = "never"`, or `sandbox_mode = "danger-full-access"` as a default. Presentable Claude `defaultMode`: `default` / `acceptEdits` / `plan`. Presentable Codex `approval_policy`: `untrusted` / `on-request` / `on-failure`; `sandbox_mode`: `read-only` / `workspace-write`. |
+| Exact JSON Schema files for `agentic-machine-profile-1.3` (1.2 + the ADR-0057 `defaultMode` enum widening; 1.1 was 1.0 + trailing `statusline_preset`, ADR-0048 §2.1), `runtime-bootstrap-run-1.3` (1.2 + the §3.3 value-answer grammar — a SEMANTIC minor: no JSON shape changed, and the bump exists to arm the future-minor mutator fence; 1.2 was 1.1 + the egress evidence vocabulary, ADR-0048 §3), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
+| ~~Exact permission-mode enums per host~~ | **Resolved (S8a2 C0).** The **stored** enum carries whatever each host accepts, unsafe values included, because §4.5.3 shows a source machine's value as a labelled note — it must have a field to live in. Safety grading is a **present/seed-side** rule, not a second schema field: never *present* Claude `bypassPermissions`, Codex `approval_policy = "never"`, or `sandbox_mode = "danger-full-access"` as a default. Presentable Claude `defaultMode`: `default` / `acceptEdits` / `plan` / `auto` / `dontAsk` (ADR-0057 §Decision 6 widened the stored enum to the host's own canonical list; neither new mode is unsafe — `dontAsk` is strictly more restrictive than `default`, and `auto` keeps a classifier in the loop rather than bypassing the check). Presentable Codex `approval_policy`: `untrusted` / `on-request` / `on-failure`; `sandbox_mode`: `read-only` / `workspace-write`. |
 | The complete `minimum_version` floor table | §1.4 — two are known (`companions` 0.3.0, `engineer` 0.7.0); S8a2 C1 verifies the rest against the plugins' own changelogs. Compare **prerelease-aware** with SemVer §11 identifier ranking (numeric identifiers as JS numbers, lossy only above 2^53; beyond the shared `semverCompare`, whose prerelease tie-break ranks a release above its own prereleases but never identifiers against each other); an unknown installed version with a non-null floor stays **unresolved**, never "installed". |
 | ~~The write-ahead journal's exact transition table and the settings-artifact schema minor~~ | **Resolved (S8a1)** — §1.5 "Concrete shape" specifies the fields; artifact schema is `runtime-settings-execution-artifact-1.3` (S8a4 added the `codex_hook_review` canonical `bound_versions`/`attested_plugins`), statuses `planned → in-progress → completed/failed/refused` |
 | ~~The `probeMachineHostState()` return schema~~ | **Resolved (S8a2 C0)** — §5 `probe.hosts.<h>` pins the serialization: `cli_version`, `auth` enum (`available` / `unauthenticated` / `unknown` / `sandbox_limited`), `marketplace`, and the per-host nested `plugins` map. |

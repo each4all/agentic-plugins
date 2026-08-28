@@ -16,10 +16,11 @@
 // follow-up / unknown states directly).
 //
 // APPLICABILITY IS A FUNCTION OF FACTS, not of the run's own claims. Each entry
-// declares what it needs from an explicit context — the resolved selection, the
-// plugin-set's per-host hook_bearing, and (for the permission proof only) whether a
-// fragment was actually applied. Passing that context in keeps every rule pure and
-// testable, and keeps the "derive, never trust" boundary visible in the signature.
+// declares what it needs from an explicit context — the resolved selection and the
+// plugin-set's per-host hook_bearing. Passing that context in keeps every rule pure
+// and testable, and keeps the "derive, never trust" boundary visible in the
+// signature. ADR-0057 removed the one input that came from the run's own manifest
+// (`permissionFragmentApplied`), so nothing here reads a run's claims any more.
 
 import { hostPluginsOf } from './effective-selection.mjs';
 import { PLUGIN_SET_HOSTS, codexHookBearingPlugins, hardRequiredClosure } from './plugin-set.mjs';
@@ -68,11 +69,9 @@ export const stepIds = Object.freeze({
   // ADR-0048 §1 (notify split): `notify.configured` keeps meaning exactly the
   // LOCAL runtime notification policy (~/.agentic-plugins/config.toml notify
   // family); this one observes the CODEX-side wiring (`notify =` in
-  // $CODEX_HOME/config.toml) separately. One id per host-shaped fact, like
-  // permission.<host>.applied.
+  // $CODEX_HOME/config.toml) separately. One id per host-shaped fact.
   notifyCodexConfigured: () => 'notify.codex.configured',
   egressConfigured: () => 'egress.configured',
-  permissionApplied: (host) => `permission.${host}.applied`,
   hooksAttested: () => 'hooks.codex.attested',
   proofDeepPeerSmoke: () => 'proof.deep-peer-smoke',
   proofWorkflowContinuation: () => 'proof.workflow-continuation',
@@ -95,8 +94,8 @@ export const stepIds = Object.freeze({
  * The distinction matters because of what happens if the choice is never made.
  * Every other Stage-8 proof derives its applicability from something observable:
  * `proof.workflow-continuation` from whether `engineer` is selected,
- * `proof.permission` from whether a permission fragment was actually applied,
- * `proof.deep-peer-smoke` from nothing at all (always owed). Those cannot be
+ * `proof.permission` and `proof.deep-peer-smoke` from nothing at all (always
+ * owed — ADR-0057 §Decision 5). Those cannot be
  * "missed" — the machine already decided. An OPT-IN proof is `not-applicable`
  * until the operator asks for it, so a run whose other required proofs all pass
  * TERMINALIZES around it, and `resume` refuses a terminal run: the proof can
@@ -133,14 +132,6 @@ export const NEVER_DECLINABLE_PLUGINS = Object.freeze(['runtime', 'companions'])
  *                    who forgot to compute it made `engineer` declinable inside a
  *                    bundle whose `orchestrator` hard-requires it, and the operator
  *                    would have been offered a decline that breaks their selection.
- * @param permissionFragmentApplied
- *                    per-host booleans read from the run's OWN step states. This is the
- *                    one input that legitimately comes from the manifest: §5 and §8.1
- *                    both require the permission proof "iff a permission.*.applied step
- *                    carries fragment_applied: true", so a machine whose permissions
- *                    already matched does not trip a proof it never needed. (§6.1's
- *                    table said "is satisfied" — a looser restatement that would demand
- *                    a proof for a config this run never changed; corrected in C4.)
  * @param egressProofRequested
  *                    ADR-0048 §3 / D0.2 — the OPT-IN signal for the
  *                    `proof.egress-provider-ack` step. Callers derive it through
@@ -173,7 +164,7 @@ export const NEVER_DECLINABLE_PLUGINS = Object.freeze(['runtime', 'companions'])
  * array — `[]` is written, never omitted, so "no predecessors" and "edges missing from
  * the file" are not the same bytes.
  */
-export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentApplied = {}, egressProofRequested = false }) {
+export function deriveExpectedSteps({ pluginSet, selection, egressProofRequested = false }) {
   const plugins = [...new Set(selection.plugins ?? [])].sort();
   // DERIVED from the plugin-set's hard edges, transitively — never taken from the
   // caller (§6.2, and the registry-authority rule in this file's header).
@@ -226,7 +217,9 @@ export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentAp
     }
   }
 
-  // Stage 4–6 — agentic-plugins' own config, then the operator-applied fragments.
+  // Stage 4–5 — agentic-plugins' own config, then the operator-applied fragments.
+  // (Stage 6 was the permission posture; ADR-0057 removed it and left the number
+  // unused rather than renumbering stages 7 and 8.)
   steps.push({ id: stepIds.configModelEffort(), stage: 4, applicable: true, declinable: false, blocked_by: [] });
   // §6.1.3 — the value-carrying interview steps. DECLINABLE, unlike the posture
   // step beside them, and the difference is real: `config.model_effort` asks for
@@ -255,9 +248,6 @@ export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentAp
     steps.push({ id: stepIds.statuslineConfigured(host), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent(host)] });
   }
   steps.push({ id: stepIds.egressConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [] });
-  for (const host of PLUGIN_SET_HOSTS) {
-    steps.push({ id: stepIds.permissionApplied(host), stage: 6, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent(host)] });
-  }
 
   // Stage 7 — Codex hook attestation. Applicable IFF a RETAINED plugin is
   // Codex-hook-bearing; keys off the CODEX value, because Claude trusts plugin hooks
@@ -309,12 +299,38 @@ export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentAp
       : [],
   });
 
+  // ADR-0035 §4's live no-relaxation evidence. ADR-0057 §Decision 5 decoupled it
+  // from the removed Stage-6 advisory fragment on BOTH edges, not just the first:
+  //
+  //   - APPLICABILITY. It used to apply only when an operator had applied an
+  //     advisor fragment, which made a BOUNDARY proof conditional on an ADVISORY
+  //     artifact. With the advisor gone that gate has no referent, and merely
+  //     deleting it would have left the proof permanently non-applicable — the
+  //     §4 evidence disappearing as a side effect of removing something else.
+  //     It is now `applicable: true`, matching `proof.deep-peer-smoke`, the
+  //     proof it is structurally a sibling of.
+  //   - BLOCKERS. It used to block on the two Stage-6 steps. Emptying the array
+  //     would have been the other half of the same mistake; blocking on steps
+  //     that no longer exist would be worse. Both proofs make the SAME live
+  //     companion invocation under host policy, so this one takes the same
+  //     edges: both hosts authenticated, plus the `companions` install/enable
+  //     steps that make a companion invocation reachable at all.
+  //
+  // The NAME is deliberately unchanged. `permission` here names the host
+  // permission POLICY the proof runs under and records having not relaxed — not
+  // the permission ADVISOR that is gone. Renaming would also be a protected-path
+  // schema change that invalidated `proof.permission` rows in every retained run
+  // manifest, buying nothing.
   steps.push({
     id: stepIds.proofPermission(),
     stage: 8,
-    applicable: PLUGIN_SET_HOSTS.some((h) => permissionFragmentApplied[h] === true),
+    applicable: true,
     declinable: true,
-    blocked_by: PLUGIN_SET_HOSTS.map((h) => stepIds.permissionApplied(h)),
+    blocked_by: [
+      ...PLUGIN_SET_HOSTS.map((h) => stepIds.hostAuthenticated(h)),
+      ...companionsHosts.map((h) => stepIds.pluginInstalled('companions', h)),
+      ...(companionsHosts.includes('codex') ? [stepIds.pluginEnabled('companions')] : []),
+    ],
   });
 
   // ADR-0048 §3 — OPT-IN delivery evidence (D0.2): applicable only once the

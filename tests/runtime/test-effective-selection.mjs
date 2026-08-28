@@ -105,7 +105,7 @@ describe('runtime effective selection — which declines narrow it (§6.2)', () 
       declined('plugin.image.codex.somethingelse'),
       declined('plugin.image.solaris.installed'),
       declined('plugins.image.codex.installed'),
-      declined('permission.claude.applied'),
+      declined('statusline.claude.configured'),
       { id: 'plugin.image.codex.installed', status: 'pending' },
     ]);
     strictEqual(rows.size, 1, 'exactly one plugin has a parsed decline row');

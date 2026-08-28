@@ -2404,7 +2404,7 @@ describe('runtime doctor', () => {
       `actionable overage must raise the fault; warnings=${JSON.stringify(report.overall.warnings)}`);
   });
 
-  it('inventories the ADR-0038 permission advisory family and excludes its latest.json singleton from run counts', async () => {
+  it('still inventories the RETIRED permission advisory family (ADR-0057 §Decision 7) and excludes its latest.json singleton from run counts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-inventory-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
@@ -2436,171 +2436,19 @@ describe('runtime doctor', () => {
     ok(permission.file_count >= 1, 'latest.json is counted as a file');
     strictEqual(permission.status, 'available');
     strictEqual(permission.attention.length, 0, 'two runs are under the retention cap');
-  });
 
-  it('runs the ADR-0038 R0 permission diagnosis read-only: classifies prompt causes by host x mechanism without leaking secrets or source paths', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-diagnosis-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    await seedRepo(root);
-
-    // SECRETPROJECTSLUG is the project dir name — a stand-in for a local path
-    // segment that must never reach the report. The bearer token is a synthetic
-    // secret that must be generalized out of the stored pattern.
-    const claudeLines = [
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm run test' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'git push --force origin main' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't2', is_error: true }] }, toolUseResult: { interrupted: true } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't3', name: 'Bash', input: { command: "curl -H 'Authorization: Bearer sk-ant-EXAMPLEONLYSECRET1234567890' https://api.example.com" } }] } },
-    ].map((o) => JSON.stringify(o)).join('\n') + '\n';
-    await mkdir(join(home, '.claude', 'projects', 'SECRETPROJECTSLUG'), { recursive: true });
-    await writeFile(join(home, '.claude', 'projects', 'SECRETPROJECTSLUG', 'session-uuid.jsonl'), claudeLines);
-
-    const codexLines = [
-      { type: 'response_item', payload: { type: 'local_shell_call', call_id: 'c1', action: { type: 'exec', command: ['bash', '-lc', 'docker ps'] } } },
-      { type: 'event_msg', payload: { type: 'exec_approval_request', call_id: 'c1', command: ['bash', '-lc', 'docker ps'] } },
-    ].map((o) => JSON.stringify(o)).join('\n') + '\n';
-    await mkdir(join(home, '.codex', 'sessions', '2026', '06', '30'), { recursive: true });
-    await writeFile(join(home, '.codex', 'sessions', '2026', '06', '30', 'rollout-2026-06-30T05-00-00-abc.jsonl'), codexLines);
-
-    const report = await runDoctor({
-      repoRoot: root,
-      homeDir: home,
-      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
-      permissionDiagnosis: true,
-      now: new Date('2026-06-30T06:00:00.000Z'),
-      runner: fakeRunner(defaultRuntimeProbeMap()),
-    });
-
-    const pd = report.permission_diagnosis;
-    ok(pd.requested && pd.executed, 'requested + executed');
-    strictEqual(pd.status, 'analyzed');
-    ok(pd.hosts.includes('claude') && pd.hosts.includes('codex'), 'both hosts diagnosed');
-
-    const bashCause = pd.by_cause.find((c) => c.cause === 'claude.bash-not-allowlisted');
-    ok(bashCause, 'claude bash cause present');
-    strictEqual(bashCause.mechanism, 'bash');
-    strictEqual(bashCause.rule_count, 3); // npm run *, git push *, curl *
-    const approvalCause = pd.by_cause.find((c) => c.cause === 'codex.approval-requested');
-    ok(approvalCause, 'codex approval cause present');
-
-    ok(pd.top_patterns.some((p) => p.pattern === 'npm run *' && p.host === 'claude'), 'npm pattern surfaced');
-    ok(pd.top_patterns.some((p) => p.pattern === 'docker ps' && p.host === 'codex'), 'docker pattern surfaced');
-    ok(pd.mode_postures.some((m) => m.host === 'codex' && m.cause === 'codex.approval-requested'), 'codex approval posture');
-    ok(pd.sources_scanned.claude.used >= 1 && pd.sources_scanned.codex.used >= 1, 'records scanned per host');
-
-    // user-rejected (the git push --force interrupt) is the definite-prompt
-    // signal, surfaced structurally — not an over-claim that every call prompted.
-    strictEqual(bashCause.rejected_total, 1);
-    const gitPattern = pd.top_patterns.find((p) => p.pattern === 'git push *');
-    ok(gitPattern && gitPattern.rejected === 1, 'user-rejected count surfaced on the pattern');
-    ok(formatText(report).includes('user-rejected='), 'text surfaces the definite-prompt count');
-
-    // Privacy (ADR-0038 §5): no raw secret, no raw source path, no raw command args.
-    const serialized = JSON.stringify(report);
-    ok(!serialized.includes('EXAMPLEONLYSECRET'), 'secret in a command arg must not leak');
-    ok(!serialized.includes('SECRETPROJECTSLUG'), 'raw transcript source path must not leak');
-    ok(!serialized.includes('git push --force origin main'), 'raw command must be generalized, not stored verbatim');
-
-    const text = formatText(report);
-    ok(text.includes('Permission Diagnosis'), 'text section rendered');
-    // R0: doctor must not write a permission run artifact.
-    ok(!existsSync(join(root, '.agentic-plugins', 'runs', 'permission')), 'doctor permission diagnosis writes no artifact');
-  });
-
-  it('permission diagnosis degrades to no_records on an empty home (baseline)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-empty-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    await seedRepo(root);
-    const report = await runDoctor({
-      repoRoot: root,
-      homeDir: home,
-      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
-      permissionDiagnosis: true,
-      now: new Date('2026-06-30T06:00:00.000Z'),
-      runner: fakeRunner(defaultRuntimeProbeMap()),
-    });
-    const pd = report.permission_diagnosis;
-    strictEqual(pd.status, 'no_records');
-    strictEqual(pd.baseline_used, true);
-    deepStrictEqual(pd.by_cause, []);
-    strictEqual(report.overall.status === 'fail', false, 'no_records is not a hard failure');
-  });
-
-  it('omits the permission diagnosis unless explicitly requested', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-off-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    await seedRepo(root);
-    const report = await runDoctor({
-      repoRoot: root,
-      homeDir: home,
-      now: new Date('2026-06-30T06:00:00.000Z'),
-      runner: fakeRunner(defaultRuntimeProbeMap()),
-    });
-    strictEqual(report.permission_diagnosis.requested, false);
-    strictEqual(report.permission_diagnosis.status, 'not_requested');
-    ok(!formatText(report).includes('Permission Diagnosis'));
-  });
-
-  it('parses the --permission-diagnosis flags', () => {
-    const opts = parseArgs(['--permission-diagnosis', '--permission-diagnosis-max-files', '5', '--permission-diagnosis-max-file-bytes', '4096']);
-    strictEqual(opts.permissionDiagnosis, true);
-    strictEqual(opts.permissionDiagnosisMaxFiles, 5);
-    strictEqual(opts.permissionDiagnosisMaxFileBytes, 4096);
-    strictEqual(parseArgs([]).permissionDiagnosis, false);
-  });
-
-  it('permission diagnosis does not follow a symlinked record root (no-follow)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-symlink-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    const real = await mkdtemp(join(tmpdir(), 'runtime-doctor-realrecords-'));
-    await seedRepo(root);
-    // Real Claude records live outside the home; ~/.claude/projects is a symlink
-    // to them. A no-follow walk must NOT pick them up.
-    await mkdir(join(real, 'proj'), { recursive: true });
-    await writeFile(
-      join(real, 'proj', 'x.jsonl'),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a', name: 'Bash', input: { command: 'npm run test' } }] } }) + '\n',
-    );
-    await mkdir(join(home, '.claude'), { recursive: true });
-    await symlink(real, join(home, '.claude', 'projects'));
-
-    const report = await runDoctor({
-      repoRoot: root,
-      homeDir: home,
-      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
-      permissionDiagnosis: true,
-      now: new Date('2026-06-30T06:00:00.000Z'),
-      runner: fakeRunner(defaultRuntimeProbeMap()),
-    });
-    const pd = report.permission_diagnosis;
-    strictEqual(pd.sources_scanned.claude.found, 0, 'symlinked record root is not followed');
-    strictEqual(pd.status, 'no_records');
-  });
-
-  it('permission diagnosis skips oversized records above the per-file byte cap and reports it', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-bytecap-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    await seedRepo(root);
-    await mkdir(join(home, '.claude', 'projects', 'p'), { recursive: true });
-    await writeFile(
-      join(home, '.claude', 'projects', 'p', 'small.jsonl'),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a', name: 'Bash', input: { command: 'npm run test' } }] } }) + '\n',
-    );
-    await writeFile(join(home, '.claude', 'projects', 'p', 'huge.jsonl'), `${'x'.repeat(2000)}\n`);
-
-    const report = await runDoctor({
-      repoRoot: root,
-      homeDir: home,
-      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
-      permissionDiagnosis: true,
-      permissionDiagnosisMaxFileBytes: 1000,
-      now: new Date('2026-06-30T06:00:00.000Z'),
-      runner: fakeRunner(defaultRuntimeProbeMap()),
-    });
-    const pd = report.permission_diagnosis;
-    strictEqual(pd.sources_scanned.claude.skipped_too_large, 1, 'oversized record skipped');
-    strictEqual(pd.sources_scanned.claude.used, 1, 'only the small record was analyzed');
-    ok(pd.limits.some((l) => l.includes('oversized') || l.includes('byte cap')), 'cap is reported, not silent');
+    // ⚠ MEASURED AS INSUFFICIENT ON ITS OWN (cross-host review of this removal):
+    // everything above still passes if `permission` is dropped from the explicit
+    // registry, because `inspectRuntimeArtifactInventory` runs with
+    // `discoverUnknownFamilies: true` and gives a discovered family the same cap.
+    // That is exactly what ADR-0057 §Decision 7 says — the registration is
+    // DOCUMENTATION, not behaviour — so the declaration needs its own assertion or
+    // the decision is unpinned. Read from the source, since the list is module-private.
+    const stateReaders = await readFile(new URL('../../plugins/runtime/scripts/lib/state-readers.mjs', import.meta.url), 'utf-8');
+    const declared = stateReaders.match(/^const RUNTIME_ARTIFACT_FAMILIES = \[(.+?)\];$/m);
+    ok(declared, 'the family registry is a single literal array (the shape this assertion reads)');
+    ok(/'permission'/.test(declared[1]),
+      'the retired permission family stays DECLARED rather than being silently discovered (ADR-0057 §Decision 7)');
   });
 
   it('reports sandbox and permission readiness as unknown without an explicit peer smoke', async () => {
