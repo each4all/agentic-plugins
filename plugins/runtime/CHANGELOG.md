@@ -20,6 +20,17 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.97.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.96.0...plugin-runtime-v0.97.0) (2026-08-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **plugin/runtime:** `plugins/runtime` loses four surfaces. 1. CLI flags: `--permission-diagnosis`, `--permission-plan`, and their    `-max-files` / `-max-file-bytes` companions. 2. Report fields: `permission_diagnosis` (doctor), `permission_plan` and    `permission_plan_codex` (settings) — non-additive deletions, so the schemas    bump: `runtime-doctor-1.1` -> `1.2`, `runtime-doctor-artifact-1.1` -> `1.2`    (both readers' matched-pair lists extended together, or every retained    artifact becomes a fault), and `runtime-settings-1.25` -> `1.26`.    Two more bump for reasons the review established:    `runtime-bootstrap-run-1.3` -> `1.4` (semantic; see above) and    `agentic-machine-profile-1.2` -> `1.3` (identity). 3. Module exports: doctor's `collectUsageRecordSources`, settings'    `renderCodexConfigToml` and `parseCodexPermissionConfigToml` re-exports, and    the advisor-only half of `permission-sanitize.mjs`. `lib/permission-sanitize.mjs`    and `lib/permission-config.mjs` are gone; use `lib/sanitize.mjs` and    `lib/codex-config.mjs`. 4. Run-manifest shape: bootstrap Stage 6 disappears and `proof.permission`    changes applicability and blockers — every machine now owes that proof, or    declines it and caps at `configured-not-verified`.
+
+### Features
+
+* **plugin/runtime:** remove the permission-prompt advisor (ADR-0057) ([#752](https://github.com/each4all/agentic-plugins/issues/752)) ([9d014b7](https://github.com/each4all/agentic-plugins/commit/9d014b7ecb3df0b95e243c0f8341151c17b58791))
+
 ## [0.96.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.95.0...plugin-runtime-v0.96.0) (2026-08-27)
 
 
