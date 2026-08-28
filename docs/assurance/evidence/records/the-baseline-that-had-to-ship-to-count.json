@@ -1,0 +1,74 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-baseline-that-had-to-ship-to-count",
+  "evidence_loop": {
+    "label": "the baseline that had to ship to count — a host-truth checkpoint refreshed the only way ADR-0051 allows",
+    "summary": "Both hosts drifted (Claude Code 2.1.233->2.1.250, Codex CLI 0.147.0->0.150.1 across three minors) and the 2026-08-16 baseline first read `stale` in the retained 2026-08-18 proof. The docket predicted a fresh compat snapshot would close doctor's only warning in one command; measurement falsified it — the snapshot removed a `legacy_era` projection and exposed real host-version drift underneath, and the two docket items proved to be one job. Refreshing the file takes effect only on release: runtime resolves it from the INSTALLED plugin (ADR-0051 Decision 2), so validate:release-obligation read `outstanding_debt` between merge and tag — the documented window. The refresh also falsified a claim the baseline carried: it asserted all four hook-bearing plugins record `enabled = true` in Codex [hooks.state], while designer records a bare trusted_hash."
+  },
+  "install_method": "PERFORMED, unlike its predecessor. Both hosts moved 0.97.0 -> 0.97.1 (`claude plugin marketplace update` then `claude plugin update runtime`; `codex plugin marketplace upgrade`), verified by reading the refreshed 2026-08-28 / 2.1.250 / 0.150.1 header out of BOTH installed trees rather than trusting update output.",
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.97.1",
+      "tag": "plugin-runtime-v0.97.1",
+      "release_pr": 756,
+      "squash": "bd450b2256df40bb0ce97e49b9cdbb2bfe1417c2",
+      "marketplace_sync": "502c00b54bf22e77d739d3db5a14302a4efc6d33"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "97d7f643a905c30ce7fa72ab66a85c62481a79a8",
+      "pr": 755,
+      "note": "The refresh, typed `fix` not `docs` on purpose: a protected-asset change must route a release or the accepted bytes never reach an installed plugin — the failure AGENTS.md records against counterexample 16b1833. Four files: two baselines, two follow-ups sentences, two test pins."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260828T090207Z-ce202d",
+      "date": "2026-08-28",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:6bda22349ae0473f83d303326772c71ba6ae33b3537a8364ce395c4c5b8096c2",
+      "runtime_version": "0.97.1",
+      "installed": {
+        "claude": "0.97.1",
+        "codex": "0.97.1"
+      },
+      "host_cli": {
+        "claude": "2.1.250 (Claude Code)",
+        "codex": "codex-cli 0.150.1"
+      },
+      "readings": [
+        {
+          "key": "host_parity_baseline",
+          "value": "current; direction `exact` on both hosts; provenance.source `package` from the 0.97.1 cache copy; content_sha256 c205c62bafdfed25c8623d1a2473433799ec50bd284d66ce70a5e08cc296bcf8."
+        },
+        {
+          "key": "overall",
+          "value": "warning; hard_failures empty; one warning — latest compatibility check needs follow-up."
+        },
+        {
+          "key": "experience_parity",
+          "value": "partial 86%; weight 99/115; 5 satisfied / 3 partial / 0 blocked; manual_followup_count 1."
+        },
+        {
+          "key": "proofs",
+          "value": "permission_proof, deep_peer_smoke, and workflow_continuation_proof all executed and passed in BOTH directions; host_parity `pass`."
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available; malformed=0; count 81."
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-advice-that-argued-against-the-cure",
+      "note": "The preceding runtime loop. Its record states host_parity_baseline read `stale`/`ahead` and that refreshing it was protected-asset work a docs-only recovery may not do. This loop discharges that refusal, so the two should be read as a pair rather than as independent releases."
+    }
+  ],
+  "narrative": "Three things in this loop are worth carrying forward, and none of them is the version bump.\n\n**The cheap-win prediction was wrong, and the direction of the error is the lesson.** The docket ranked this item first on the reasoning that one `runtime:compat snapshot` would clear doctor's only warning. Running it moved the score DOWN — a live `runtime:doctor` immediately afterwards read 78% with `runtime_handoff_artifacts` BLOCKED, against 86% before. ⚠ That run was not recorded, so no artifact here backs those numbers; they are an observed live reading and nothing more. The direction is the durable part, and it holds because `legacy_era` is not a mild status but a refusal to interpret, and it had been concealing that both hosts moved. A projection that declines to judge is not evidence of health, and an item sized from a status string rather than from what it conceals can be arbitrarily mis-sized.\n\n**A document whose purpose is recording observations had gone on asserting one that was false.** The `[hooks.state]` bullet said all four hook-bearing plugins carry `enabled = true`. Designer carries a bare `trusted_hash`. Tracing it produced the more useful finding: the asymmetry was already explained here, by the 2026-07-09 fix that taught runtime to read an absent `enabled` key as enabled — designer was the first plugin trusted after the ADR-0035 host-config writer was removed, the other three carry residue from an earlier Codex. The correction is a document catching up to what the code had known for seven weeks. Before writing a correction, check whether the repository already holds the explanation.\n\n**Four cross-host review rounds converged 14 -> 6 -> 2 -> 0, and rounds two and three each found a NEW unsupported claim inside prose written to fix an unsupported claim** — `--restricted` said to leave plugins loaded (its help mentions neither plugins nor skills), designer's hooks said to be `firing` (the loop executed none), MCP verb sets called unchanged on both hosts (`codex mcp --help` was never run). A fix is unreviewed text. The rounds also caught three reader errors of the author's own — the Codex flag inventory read as 116 then 119 against a true 124 across five stages, and the Codex atom feed declared body-less on a control token that happened not to appear. All are recorded in the baseline itself rather than silently corrected.\n\nThe scope limit is the part most likely to be over-read later: this refresh re-ran the enumerated CLI evidence block and nothing else — skill invocation, subagents, sandboxing, approvals, Codex MCP, team mode, and worktrees were not exercised — and ADR-0013's trigger was NOT reassessed, only two of its signals re-checked, so the 2026-08-08 NOT FIRED verdict stays a 2026-08-08 verdict.\n\nThe artifact's `86%` and `warning` are MID-LOOP and must not be quoted as the loop's result; its `host_parity_baseline` `current` is the reading the loop exists to produce, and its corpus reading was taken by a `runtime-doctor-artifact-1.2` reader. **Other facts here are NOT readings of that artifact**, separated because `proofs[].readings` means \"emitted by that run\". The confirming run `compat-20260828T090343Z-1ee918` postdates it: `status current`, `drift none`, both hosts `matches` — the first drift-free run since the baseline went stale, and what flipped `runtime_handoff_artifacts` to satisfied. The plain `runtime:doctor` after it reads `overall` `pass` and parity 91%, 6 satisfied / 2 partial / 0 blocked, both survivors the operator-only Codex `/hooks` re-attestation; that run was NOT recorded either, so 91%/`pass` carries the same live-reading provenance as the 78% above. Byte identity was measured by hand: `diff -r` exits 0, 120 files each, digest 3f338a25... under the pinned recipe, control-verified against 0.97.0's 74f2779a... first. The packaged baseline hash moved f7e3b5fa... -> c205c62b..., a third consecutive move — the first two were side effects of ADR-0056 and ADR-0057; this one is the deliverable."
+}
