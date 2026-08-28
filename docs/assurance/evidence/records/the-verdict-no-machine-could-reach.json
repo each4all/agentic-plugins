@@ -1,0 +1,111 @@
+{
+ "schema": "evidence-record-1.0",
+ "record_id": "the-verdict-no-machine-could-reach",
+ "evidence_loop": {
+  "label": "the verdict no machine could reach — a review layer removed after it never once said yes",
+  "summary": "ADR-0053 and ADR-0054 built a compatibility-assurance plane: a human-authored grant naming an explicit cohort of (claude, codex) version tuples, matched mechanically, gating readiness. It shipped twice and answered `covered` zero times on a real machine. R1 shipped an empty grant set by design; R2 shipped one owner-ratified grant naming two tuples against a machine that had already moved past both. The reader, the integrity check, the canonical-bytes comparison and package resolution all worked — only the cohort match failed, and it failed arithmetically: Claude took 18 distinct versions at a median 2.1 days apart while the review round trip that produced R2's grant took 10.8 hours brief-to-install. Every grant was correct, and every grant was stale before or shortly after it shipped. A second cost compounded it: a grant binds to the code it was reviewed against, so fixing a bound package invalidates the grant, and the repository consistently filed audit findings instead of fixing them. ADR-0056 removes the matcher and keeps the review methodology."
+ },
+ "package_releases": [
+  {
+   "package": "plugins/runtime",
+   "version": "0.96.0",
+   "tag": "plugin-runtime-v0.96.0",
+   "release_pr": 750,
+   "squash": "0a737156210710d366ffb2152b48b9868ee0d6a0",
+   "marketplace_sync": "06ec398eb580637948945de3ca2e54e7600c0036"
+  }
+ ],
+ "feature_commits": [
+  {
+   "sha": "d28702e2363223fe21af31ac97427e3a242d759c",
+   "pr_attested": 749,
+   "note": "The removal. BREAKING: the compat and doctor artifact schemas bump and lose fields; `plugins.runtime.minimum_version` returns to null. ⚠ The squash subject carries no `(#N)` — merged with an explicit `--subject` that overrode GitHub's PR_TITLE numbering — so the PR link is attested, not derived."
+  }
+ ],
+ "hardening_commits": [],
+ "proofs": [
+  {
+   "run_id": "doctor-20260827T235051Z-c11408",
+   "date": "2026-08-27",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:4fd683ccde1054c1e4f8a041fbe684056f979dc56dd18ca949be66c0acedd3d7",
+   "runtime_version": "0.96.0",
+   "installed": {
+    "claude": "0.96.0",
+    "codex": "0.96.0"
+   },
+   "host_cli": {
+    "claude": "2.1.248 (Claude Code)",
+    "codex": "codex-cli 0.150.1"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "warning; hard_failures empty; one warning — latest compatibility check needs follow-up"
+    },
+    {
+     "key": "report_schema_version",
+     "value": "runtime-doctor-1.1 — the first report this family has ever written, and `host_parity_assurance` is absent from it. The section's absence is the change, so its absence in the artifact is the reading."
+    },
+    {
+     "key": "doctor_runs",
+     "value": "available, malformed=0, count=79 — THE READING THIS LOOP MOST NEEDED. ADR-0056 §Consequences predicted `blocked malformed=70` for a producer bumped without a dual reader in the same release, and `malformed > 0` never clears. 79 artifacts across both eras read clean."
+    },
+    {
+     "key": "experience_parity",
+     "value": "partial 86% 99/115; satisfied 5, partial 3, blocked 0; 8 criteria. The denominator moved by design (§Decision 8 dropped a weight-15 criterion no machine could satisfy), so this is NOT comparable to 0.95.0's 81% 105/130 — both halves lost the same 15. Same three partials."
+    },
+    {
+     "key": "compat_runs",
+     "value": "needs_attention; newest run reads `legacy_era` with schema_era `assurance-era` — the era gate live on a real artifact, refusing an assurance-era verdict as history instead of re-reading its `current` under this era's weaker meaning. The recorded run is genuine history, not a fault."
+    },
+    {
+     "key": "permission_proof",
+     "value": "passed; executed both directions"
+    },
+    {
+     "key": "deep_peer_smoke",
+     "value": "passed; executed both directions"
+    },
+    {
+     "key": "workflow_continuation_proof",
+     "value": "passed; executed both directions"
+    },
+    {
+     "key": "egress_ack_proof",
+     "value": "not_requested — it performs a real network send behind a second consent, and this loop had no reason to ask for one"
+    },
+    {
+     "key": "host_parity",
+     "value": "pass"
+    },
+    {
+     "key": "host_parity_baseline",
+     "value": "stale, direction ahead — the 2026-08-16 2.1.233 / 0.147.0 baseline against an observed 2.1.248 / 0.150.1. This release EDITED that protected file (cutting the assurance section) and still did not refresh the header: a refresh asserts a new reviewed observation, and this loop reviewed no host."
+    },
+    {
+     "key": "installed_byte_identity",
+     "value": "Measured, not asserted: `diff -r` between Claude's cache and Codex's SERVED marketplace tree exits 0 with no output. 126 files each — down from 0.95.0's 128, which is the removal. Whole-tree digest 725ad396… on both, under the scorecard's path-first recipe."
+    },
+    {
+     "key": "packaged_baseline_hash",
+     "value": "bdb6eeb7e5b343641905de877ac562057a7841f736c6cafd0ffa65f56fbc3285, identical across both caches and the repository. It CHANGED this loop, from 86fdf17e — the first move in four releases, because this release cut the assurance section out. A hash that was evidence of stability is now evidence of edit."
+    }
+   ]
+  }
+ ],
+ "install_method": "Performed by this recovery, and the hosts needed different verbs. Claude took a plugin-update command and reported 0.95.0 to 0.96.0 at user scope. Codex has no plugin-update subcommand at all — the observed 0.150.1 exposes add / list / marketplace / remove — so the path is a marketplace snapshot upgrade. Both verified by re-reading the installed manifests, not the command output.",
+ "narrative": "The layer removed here was not broken. It was arithmetic against a moving target, and the arithmetic never came out.\n\nADR-0053 separated two facts at the freshness site — exactness (does the packaged baseline name the versions this machine runs?) and assurance (has a human reviewed this host pair?) — and moved readiness onto the second. ADR-0054 gave assurance a record: one canonical JSON block in the packaged baseline, a grant naming an explicit cohort of complete (claude, codex) tuples, and a matcher that answers `covered` only when the observed pair is a member. The rollout was deliberately staged so the negative path would be exercised by the real gate on real machines: R1 shipped with `grants: []`, so every host read `unassured` and readiness blocked. R2 then shipped one owner-ratified grant naming claude 2.1.234 and 2.1.235 against codex 0.147.0.\n\nThe second cost is the one the residual ledger demonstrates. A grant binds to the code it was reviewed against, and revocation is append-only, so fixing a bound package invalidates the grant. An adversarial audit that finds a real defect in a bound surface therefore faces a choice between shipping the fix and keeping the grant, and this repository chose to file every time: the ledger carried at least six open rows out of one audit. A verification layer whose success path has never fired, and whose existence converts findings into deferrals, costs more than it returns.\n\nWhat survives is the review method, not the matcher. Extraction under controls plus a per-surface human disposition is how a person reads two host changelogs and reaches a defensible judgement, and that is the engine of the content reviewer this project still wants. What is gone is the attempt to have a machine ratify that judgement into a verdict it can re-derive later from version numbers.\n\nThe implementation's own finding is worth recording separately, because it is a class rather than an instance. Removing a gate does not merely subtract: it can open holes where the gate's clauses were load-bearing for something else. The cross-host review measured three, and every one of them was invisible from the ADR alone. Compat's `current` compares NORMALIZED versions, so a host printing `1.2.3.4` reads as `1.2.3` and matches a genuine `1.2.3` — a false positive the deleted assurance ladder had been catching on raw text, incidentally, on its way to a different question. `check` re-reads any selected snapshot and writes a gap in the CURRENT family, so re-reading an assurance-era snapshot minted a fresh post-assurance verdict from an observation taken under the old contract. And a stored plan could outrank a gap with no family check at all, so an assurance-era `blocked_assurance` fell through to `plan_ready`. Each was closed at its source rather than at one consumer, and each carries a mutation-verified test; two of those tests were vacuous when first written, because the defect lived in the wiring rather than in the projector they exercised, and that is recorded in the PR rather than quietly fixed.\n\nOne thing was deliberately NOT removed, and the reason generalizes. The ADR's test manifest listed `test-assurance-plane-hardening.mjs` for deletion. Four of its describes are not about assurance at all — the version-token grammar, the future-timestamp clock rule, peer-run staleness, and the exactly-one-dated-header rule — and every one of those subjects outlives the removal. Deleting the file wholesale would have deleted four guards because their neighbours went away. It is renamed and reduced instead.",
+ "relations": [
+  {
+   "type": "follows",
+   "record_id": "the-verdicts-that-never-left-the-run",
+   "note": "The immediately preceding runtime loop. Its record published the proof this one supersedes, and its 81% 105/130 reading is the one this loop's 86% 99/115 must NOT be compared against directly."
+  },
+  {
+   "type": "supersedes",
+   "record_id": "the-first-grant-and-the-cohort-it-missed",
+   "note": "That record is the R2 grant and the cohort miss it produced. This loop removes the layer that miss was measured in; the record stays, because it is the evidence the removal rests on."
+  }
+ ]
+}
