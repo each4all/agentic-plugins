@@ -1,6 +1,6 @@
 # Codex Capability Baseline
 
-Observed on 2026-08-08 with Codex CLI `0.147.0` plus official OpenAI
+Observed on 2026-08-28 with Codex CLI `0.150.1` plus official OpenAI
 developer docs. This file is a runtime-owned host-truth checkpoint, not a
 replacement for the upstream docs.
 
@@ -29,10 +29,13 @@ Official OpenAI developer docs:
 functional. A coordinated URL migration across both baseline docs and their
 test tokens is deliberately deferred to a follow-up.)
 
-Local CLI evidence (re-observed 2026-08-08 on `0.147.0`): the
-`0.145.0`→`0.147.0` span is the first Codex interval since this file began
-that touches the plugin surface substantively. Every listed surface was
-re-run live and **every verb set is unchanged**, including
+Local CLI evidence (re-observed 2026-08-28 on `0.150.1`). Two observations
+are recorded here and they have different scopes; read them as such.
+
+The first is the `0.145.0`→`0.147.0` observation made on 2026-08-08, the first
+Codex interval since this file began that touches the plugin surface
+substantively. **Every listed surface was re-run live at that time** and
+**every verb set was unchanged**, including
 `codex plugin`/`codex plugin marketplace` and the `codex plugin list --json`
 root/entry fields; `codex features list` keeps `plugin_hooks` `removed` and
 generic `hooks` `stable`, adding one `recommended_plugins` `stable`/false row.
@@ -53,9 +56,52 @@ as catalog candidates; the `.codex-plugin` manifest still wins for plugins
 that ship one, which is why our plugins load exactly as before. See the
 ADR-0013 Trigger Watch amendment in `host-parity-baseline.md` for the
 measured consequences, including the undocumented `command_migration` path
-this interval introduces.
+that interval introduced.
 
-- `codex --version` -> `codex-cli 0.147.0`
+The second is the `0.147.0`→`0.150.1` re-check made on 2026-08-28, and it is
+**bounded**: only `codex --version`, `codex --help`, `codex plugin --help`,
+`codex plugin marketplace --help`, `codex plugin list --json`, `codex features
+list`, and `~/.codex/config.toml` `[hooks.state]` were re-run. Skill
+invocation, subagent behavior, sandboxing, approvals, MCP, and every config
+surface **other than** `[hooks.state]` were not exercised, and the rows below
+that rest on them stand from the 2026-08-08 observation. Within that scope the *plugin* verb sets are unchanged
+— `codex plugin` (`add`/`list`/`marketplace`/`remove` plus `help`) and `codex
+plugin marketplace` (`add`/`list`/`upgrade`/`remove` plus `help`) — and the
+`codex plugin list --json` installed entry keeps a nine-key base (`pluginId`,
+`name`, `marketplaceName`, `source`, `version`, `installed`, `enabled`,
+`installPolicy`, `authPolicy`) plus the optional, source-backed
+`marketplaceSource`, exactly as this file already recorded that field:
+measured on this machine as ten keys for the eight git-sourced plugins and nine
+for the locally-sourced `github` plugin. The **top-level** verb set is not
+unchanged — `agents`, `queue`, and `migrate-rollouts` are additive, and runtime
+calls none of them. What moved sits below the CLI surface again, and
+this time on the **skills** side: `0.148.0` unified plugin skill loading into
+the host skills service (plugin skill roots are now loaded and watched through
+one shared loader, with the legacy core skill loader removed), and
+`codex features list` gained `skill_search` and `skill_mcp_dependency_install`
+as `stable`/true while retiring `skill_env_var_dependency_prompt`. Our
+manifests still declare `./skills/`, and nothing in the release notes says the
+declaration point moved — but **continued invocability under the replaced
+loader was not probed here**, and neither `codex plugin list` nor
+`runtime:doctor` exercises a skill, so neither is evidence for it. That
+question is already tracked as `R13` in [`follow-ups.md`](follow-ups.md) and
+stays open. The practical consequence for this file is narrower and certain: a
+future question about **which** skill roots Codex accepts must be measured
+against `0.150.1` or later, not answered from the pre-`0.148.0` discovery
+helpers this file used to describe. Two hook capabilities are unadopted: asynchronous and MCP-invoking hook
+commands (`0.148.0`) and the new `Interrupt` event (`0.150.0`); our bundled
+sets still declare `SessionStart`, `PreCompact`, and `Stop` only. Unregistered
+is all the declarations establish — `0.148.0` also changed hook **execution**
+for handlers that *are* registered (execution mode in listings, process-tree
+termination on timeout, hook-runtime refresh after a plugin change, and
+refusal of a session whose required managed hooks cannot load), and whether our
+three handlers behave identically under it was not probed; `R16` in
+[`follow-ups.md`](follow-ups.md) already tracks the runtime-refresh half.
+`0.149.0` also removed the workspace-settings gate for apps and plugins and now
+skips plugin-hook loading outright when hooks are disabled — consistent with
+the enablement model runtime already diagnoses.
+
+- `codex --version` -> `codex-cli 0.150.1`
 - `codex --help` (0.144.1 top-level surface: `exec`, `review`, `login`/`logout`,
   `mcp`, `plugin`, `mcp-server`, `app-server`, `remote-control`, `app`,
   `completion`, `update`, `doctor`, `sandbox`, `debug`, `apply`, `resume`,
@@ -168,9 +214,9 @@ this interval introduces.
 | Local plugin command shape | In CLI `0.144.1` (command set unchanged since `0.137.0`), `codex plugin` exposes `add`, `list`, `marketplace`, and `remove`; `codex plugin marketplace` exposes `add`, `list`, `upgrade`, and `remove`. Per-plugin `add` (install from a configured marketplace snapshot), `list`, and `remove` arrived in `0.137.0` beyond the prior marketplace-only surface; `0.138.0` added `--json` to `add`/`remove` and the marketplace commands plus a `marketplaceSource` field on source-backed `list --json` entries (not universal); `0.139.0` can serve available-plugin lists from the cached remote catalog before a background refresh; `0.143.0` enabled remote plugins (`remote_plugin` stable) with npm marketplace sources — additive catalog sources next to git/local marketplaces. There is still no per-plugin `update`, `enable`, `disable`, `details`, `validate`, or `prune`. | The CLI is no longer marketplace-only — it has per-plugin `add`/`list`/`remove`. Runtime `doctor`/`settings` recognize this surface as `per-plugin-and-marketplace` (ADR-0032), and `doctor` reads Codex installed-state host-natively from `codex plugin list --json` (read-only, list-authoritative-then-cache; ADR-0034) — the `0.138.0`+ additive JSON fields (including 0.144.1's `{installed, available}` root, per-entry `source` object, and remote-plugin rows) are ignored by that field-selective resolver (re-verified on `0.144.1`). `runtime:settings --execute-plugin-management` can execute `codex plugin add <plugin>@agentic-plugins` as a policy-gated H2 executor (ADR-0035 §5; see `follow-ups.md`); the cached-first available-list behavior makes the executor's read-only `--available` pre-flight potentially cache-aged, which is acceptable for a pre-flight but must not be re-labeled as source truth. Do not claim full Claude-style parity (`update`/`enable`/`disable`/`details`/`validate`/`prune` are still absent). |
 | MCP | Codex supports MCP in the CLI and IDE extension. MCP configuration is stored with other Codex config in `config.toml`, and `codex mcp` manages server entries. | Runtime may diagnose MCP availability and config paths. Runtime must not auto-add MCP servers outside an explicit future executor. |
 | Subagents | Codex subagent workflows are enabled by default, but Codex only spawns subagents when explicitly asked. Custom agents live under `~/.codex/agents/` or `.codex/agents/`, and subagents inherit the current sandbox policy. | Runtime consensus can model manual/subagent lanes, but automatic hidden fanout remains out of bounds. Any Codex subagent use must be an explicit operator or user action. |
-| Hooks | Codex hooks are a documented lifecycle extension. The `plugin_hooks` feature flag was **removed** in ~0.134.0 (PR #22552): `codex features list` on 0.144.1 still reports `plugin_hooks` as `removed` and generic `hooks` as `stable`. Plugin-bundled hooks are no longer gated by a separate flag — they load when the plugin is enabled and generic `[features].hooks` (default on) is set, declared via a `.codex-plugin/plugin.json` `hooks` entry or the default `hooks/hooks.json`, subject to `/hooks` review+trust. Plugin hook commands receive `PLUGIN_ROOT`/`PLUGIN_DATA`, and Codex still sets `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` for compatibility with existing plugin hooks. Local non-interactive help does not expose a `codex hooks` trust/query command. | Runtime should keep generic hooks, plugin enablement, manifest hook exposure, hook command portability, and hook trust/review as separate readiness facts. Do not treat plugin-bundled hooks as runtime-ready based only on generic hook support or `/hooks` `Installed` counts; `Active=0` output and `Trust: New hook - review required` are not enough to attest. Because `plugin_hooks` is removed, the former `--apply-codex-plugin-hooks` write (`[features].plugin_hooks = true`) and `codex --enable plugin_hooks` targeted a dead flag on 0.137.0; that settings write executor and the doctor `enable-codex-plugin-hooks` recommendation were removed per ADR-0035 §6, and runtime `settings`/`doctor` now report the `[features].hooks` + plugin-enablement + `/hooks` trust model read-only. `CLAUDE_PLUGIN_ROOT` in a Codex-exposed command is compatibility telemetry, not a warning by itself; a Claude adapter hook path remains a portability warning. Bare `node` hook commands are also portability warnings because a hook runner may not inherit a login-shell PATH. After the operator reviews/trusts hooks with `/hooks`, `runtime:settings --attest-codex-hook-review` may record a sanitized artifact for doctor to consume; it does not mutate or independently prove Codex trust state. **Hook-state `enabled` semantics**: in `[hooks.state."…"]`, an absent `enabled` key means ENABLED — it is what a current Codex writes on trust. Official docs describe a per-hook disable for non-managed hooks via `/hooks`; the observed disable serialization is an explicit `enabled = false`, so only an explicit `enabled = false` is a disable. Runtime must not read absence as disabled: doing so reported every hook trusted by a current Codex as disabled, and the attestation gate refuses while any expected entry is disabled, so no newly-installed hook-bearing plugin could ever be attested (observed when `designer` became the first such plugin after the ADR-0035 §6 writer removal). |
+| Hooks | Codex hooks are a documented lifecycle extension. The `plugin_hooks` feature flag was **removed** in ~0.134.0 (PR #22552): `codex features list` on 0.144.1 still reports `plugin_hooks` as `removed` and generic `hooks` as `stable`. Plugin-bundled hooks are no longer gated by a separate flag — they load when the plugin is enabled and generic `[features].hooks` (default on) is set, declared via a `.codex-plugin/plugin.json` `hooks` entry or the default `hooks/hooks.json`, subject to `/hooks` review+trust. Plugin hook commands receive `PLUGIN_ROOT`/`PLUGIN_DATA`, and Codex still sets `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` for compatibility with existing plugin hooks. Local non-interactive help does not expose a `codex hooks` trust/query command. | Runtime should keep generic hooks, plugin enablement, manifest hook exposure, hook command portability, and hook trust/review as separate readiness facts. Do not treat plugin-bundled hooks as runtime-ready based only on generic hook support or `/hooks` `Installed` counts; `Active=0` output and `Trust: New hook - review required` are not enough to attest. Because `plugin_hooks` is removed, the former `--apply-codex-plugin-hooks` write (`[features].plugin_hooks = true`) and `codex --enable plugin_hooks` targeted a dead flag on 0.137.0; that settings write executor and the doctor `enable-codex-plugin-hooks` recommendation were removed per ADR-0035 §6, and runtime `settings`/`doctor` now report the `[features].hooks` + plugin-enablement + `/hooks` trust model read-only. `CLAUDE_PLUGIN_ROOT` in a Codex-exposed command is compatibility telemetry, not a warning by itself; a Claude adapter hook path remains a portability warning. Bare `node` hook commands are also portability warnings because a hook runner may not inherit a login-shell PATH. After the operator reviews/trusts hooks with `/hooks`, `runtime:settings --attest-codex-hook-review` may record a sanitized artifact for doctor to consume; it does not mutate or independently prove Codex trust state. **Hook-state `enabled` semantics**: in `[hooks.state."…"]`, runtime treats an absent `enabled` key as ENABLED and only an explicit `enabled = false` as a disable. That was **established by behavior on Codex `0.142.5`** — a hook trusted through `/hooks` was written as a `trusted_hash` line with no `enabled` key and fired — and the 2026-08-28 `0.150.1` refresh read the file without executing a hook, so it does not re-establish that Codex still writes trust that way. Official docs describe a per-hook disable for non-managed hooks via `/hooks`, and the observed disable serialization is an explicit `enabled = false`. Runtime must not read absence as disabled: doing so reported every hook trusted by a current Codex as disabled, and the attestation gate refuses while any expected entry is disabled, so no newly-installed hook-bearing plugin could ever be attested (observed when `designer` became the first such plugin after the ADR-0035 §6 writer removal). |
 | Config | Codex reads user config from `~/.codex/config.toml`, trusted project config from `.codex/config.toml`, and system config from `/etc/codex/config.toml` on Unix. | Current `runtime:settings --apply` continues writing only `.agentic-plugins/config.toml`. The former host-native Codex write — the `--apply-codex-plugin-hooks` path for `~/.codex/config.toml` `[features].plugin_hooks = true` — was **removed per ADR-0035 §6** (it would have written a dead flag). Runtime has no Codex host-config write executor; Codex config mutation is out of scope. |
-| `[tui] notifications` | Accepts a **boolean or an array of event names**; the canonical agentic-plugins selection is `["approval-requested", "agent-turn-complete"]`. `approval-requested` (exec/patch approval and MCP elicitation coalesce to it, with delivery priority over turn-complete) is the only attention event `notify=` cannot deliver, since the `notify` payload enum has exactly one variant. Delivery is TUI-only (not `codex exec`), default condition `unfocused`, via OSC 9 / BEL and therefore terminal-emulator-dependent, with no external program and no payload. The key is a **full replace**. Source-verified in [ADR-0040](../../../docs/adr/0040-attention-and-notification-architecture.md) at `codex-cli 0.142.5` (tag `rust-v0.142.5`); **not re-verified at the `0.145.0` baseline**, and no local Codex config reference ships to check against. | `notify.codex.configured` judges this key as its second exact predicate (machine-bootstrap-contract §6.1.2), so the **value union and the event vocabulary are load-bearing for a step verdict** — hence this row, and hence the drift trigger below. Runtime renders the canonical selection as a fragment and never writes it. The default-on behaviour is deliberately **not** relied on: an absent key judges `pending`, so a change to Codex's default cannot silently flip a verdict. |
+| `[tui] notifications` | Accepts a **boolean or an array of event names**; the canonical agentic-plugins selection is `["approval-requested", "agent-turn-complete"]`. `approval-requested` (exec/patch approval and MCP elicitation coalesce to it, with delivery priority over turn-complete) is the only attention event `notify=` cannot deliver, since the `notify` payload enum has exactly one variant. Delivery is TUI-only (not `codex exec`), default condition `unfocused`, via OSC 9 / BEL and therefore terminal-emulator-dependent, with no external program and no payload. The key is a **full replace**. Source-verified in [ADR-0040](../../../docs/adr/0040-attention-and-notification-architecture.md) at `codex-cli 0.142.5` (tag `rust-v0.142.5`); **not re-verified at any baseline refresh since — the 2026-08-28 `0.150.1` refresh included** (phrased without a version on purpose: this clause has been left behind twice already), and no local Codex config reference ships to check against. | `notify.codex.configured` judges this key as its second exact predicate (machine-bootstrap-contract §6.1.2), so the **value union and the event vocabulary are load-bearing for a step verdict** — hence this row, and hence the drift trigger below. Runtime renders the canonical selection as a fragment and never writes it. The default-on behaviour is deliberately **not** relied on: an absent key judges `pending`, so a change to Codex's default cannot silently flip a verdict. |
 | Sandbox and approvals | Codex separates sandbox boundaries from approval policy. CLI help exposes `read-only`, `workspace-write`, and `danger-full-access`; approval policies include `untrusted`, `on-request`, and `never`. | Runtime doctor/settings may observe and preflight these controls, but must not relax sandbox, approval, permission, or network settings automatically. |
 
 ## Negative Baseline
@@ -215,6 +261,7 @@ Refresh this baseline when any of these change:
   `codex features list`;
 - the `[tui] notifications` accepted value union or its event-name vocabulary —
   a step verdict depends on them (§6.1.2), and the row above is recorded at
-  `0.142.5` while this baseline is observed at `0.145.0`;
+  `0.142.5`, several minors behind this file's header wherever that header
+  currently stands;
 - runtime starts writing host-native Codex config or adding plugin-hook
   integration.
