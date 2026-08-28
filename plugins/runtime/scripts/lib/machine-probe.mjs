@@ -27,7 +27,7 @@ import { readdir } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 
-import { singleLine, redactSecrets, sanitizeValue } from './permission-sanitize.mjs';
+import { singleLine, redactSecrets, sanitizeValue } from './sanitize.mjs';
 import { readJsonIfExists, readTextIfExists, resolveCodexHome } from './state-readers.mjs';
 import { semverCompare } from './semver.mjs';
 

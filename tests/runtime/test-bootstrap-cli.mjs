@@ -393,7 +393,7 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
     const { home, cwd } = await makeHome();
     const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
     const inert = join(home, 'plan-exec-inert.json');
-    await writeFile(inert, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }]));
+    await writeFile(inert, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }, { step_id: 'proof.permission', answer: 'execute' }]));
     const refused = await run(['plan', '--bundle', 'base', '--answers', inert]);
     strictEqual(refused.exitCode, EXIT.INVALID);
     ok(/not acted on under plan/.test(refused.report.error), refused.report.error);
@@ -425,33 +425,6 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
       !(res.report.warnings ?? []).some((w) => /--record for workflow-continuation/.test(w)),
       'and no executor may have reached it',
     );
-  });
-
-  it('C1 — the resume that first observes the applied fragment can execute proof.permission', async () => {
-    // `fragment_applied` is PROMOTED by the judgement, while the expectation was
-    // derived from the value stored BEFORE it — so proof.permission derived
-    // applicable:false on the very resume that earned it. That cost a silent
-    // extra cycle before, and became exit 40 once applicability was a refusal.
-    const { home, cwd } = await makeHome();
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    // Fixture precondition: the fragments are RENDERED and not yet applied, or
-    // the assertion below would hold for the wrong reason.
-    for (const host of ['claude', 'codex']) {
-      const row = plan.report.steps.find((s) => s.id === `permission.${host}.applied`);
-      strictEqual(row.status, 'pending', `${host} fragment is rendered, not applied`);
-      strictEqual(row.fragment_applied, false);
-    }
-    strictEqual(plan.report.steps.find((s) => s.id === 'proof.permission').status, 'not-applicable');
-
-    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] } }, null, 2)}\n`);
-    await writeFile(join(home, '.codex', 'config.toml'), 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n');
-    const exec = join(home, 'execute-permission.json');
-    await writeFile(exec, JSON.stringify([{ step_id: 'proof.permission', answer: 'execute' }]));
-    const res = await run(['resume', '--latest-open', '--answers', exec, '--format', 'json']);
-    notStrictEqual(res.exitCode, EXIT.INVALID, `the same resume that applies the fragment may prove it: ${res.report?.error}`);
-    strictEqual(res.report.steps.find((s) => s.id === 'proof.permission').status, 'pending',
-      'the re-derivation makes it applicable in THIS verb, not the next one');
   });
 });
 
@@ -824,6 +797,14 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     const doctorStub = async (scriptPath, args) => {
       if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
       if (scriptPath.endsWith('doctor.mjs')) {
+        // ADR-0057 §Decision 5 — `proof.permission` is now ALWAYS applicable, so a run
+        // that must terminalize `complete` owes it exactly as it owes the smoke.
+        if (args.includes('--execute-permission-proof')) {
+          return okOut(JSON.stringify({
+            permission_proof: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
+          }));
+        }
         if (args.includes('--execute-deep-peer-smoke')) {
           return okOut(JSON.stringify({
             deep_peer_smoke: {
@@ -848,7 +829,7 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     const runId = plan.report.run_id;
 
     const answersPath = join(home, 'execute-smoke.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }]));
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }, { step_id: 'proof.permission', answer: 'execute' }]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
     const proofAfterResume = resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke');
     strictEqual(proofAfterResume?.status, 'passed', `the executed smoke reduces to passed: ${JSON.stringify(proofAfterResume?.reasons)}`);
@@ -970,7 +951,7 @@ describe('runtime bootstrap CLI — lifecycle', () => {
   });
 
   it('a benign PII-shaped rule is SANITIZED into the profile, not refused', async () => {
-    // §4.1 says permission arrays are "sanitized through permission-sanitize.mjs".
+    // §4.1 says permission arrays are "sanitized through sanitize.mjs".
     // Refusing on the sanitizer's own detector made that unreachable and turned an
     // email or a git sha into a hard refusal.
     const { home, cwd } = await makeHome({ satisfied: true });
@@ -1004,7 +985,7 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     strictEqual(exported.exitCode, EXIT.OK);
     const profilePath = join(home, '.agentic-plugins', 'profiles', 'machine-a.json');
     const profile = JSON.parse(await readFile(profilePath, 'utf8'));
-    strictEqual(profile.schema, 'agentic-machine-profile-1.2');
+    strictEqual(profile.schema, 'agentic-machine-profile-1.3');
     ok(Object.values(profile.boundary).every((flag) => flag === false), 'every boundary flag is false');
     // The session family survives the real CLI read → build → write-gate → disk
     // path, and an UNSET member lands as null rather than vanishing.
@@ -1275,7 +1256,7 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     const dir = join(home, '.agentic-plugins', 'runs', 'bootstrap', bareId);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'run.json'), `${JSON.stringify({
-      schema: 'runtime-bootstrap-run-1.3',
+      schema: 'runtime-bootstrap-run-1.4',
       run_id: bareId,
       started_at: '2026-07-18T04:00:00Z',
       updated_at: '2026-07-18T04:00:00Z',
@@ -1375,10 +1356,18 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     //    complete (attest is the post-terminal door only — an open run routes
     //    through resume --answers).
     const exec = join(home, 'execute-smoke.json');
-    await writeFile(exec, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }]));
+    await writeFile(exec, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }, { step_id: 'proof.permission', answer: 'execute' }]));
     const doctorStub = async (scriptPath, args) => {
       if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
       if (scriptPath.endsWith('doctor.mjs')) {
+        // ADR-0057 §Decision 5 — `proof.permission` is now ALWAYS applicable, so a run
+        // that must terminalize `complete` owes it exactly as it owes the smoke.
+        if (args.includes('--execute-permission-proof')) {
+          return okOut(JSON.stringify({
+            permission_proof: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
+          }));
+        }
         if (args.includes('--execute-deep-peer-smoke')) {
           return okOut(JSON.stringify({
             deep_peer_smoke: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
@@ -1700,8 +1689,8 @@ describe('runtime bootstrap CLI — schema-minor migration (ADR-0048 §1)', () =
     ok(resume.exitCode !== EXIT.INVALID, JSON.stringify(resume.report.diagnostics ?? []));
 
     const migrated = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8'));
-    strictEqual(migrated.schema, 'runtime-bootstrap-run-1.3', 'the schema stamp is bumped explicitly (the old spread preserved 1.1)');
-    ok(migrated.history.some((h) => h.from === 'runtime-bootstrap-run-1.1' && h.to === 'runtime-bootstrap-run-1.3'), 'the migration is a history row, not a silent rewrite');
+    strictEqual(migrated.schema, 'runtime-bootstrap-run-1.4', 'the schema stamp is bumped explicitly (the old spread preserved 1.1)');
+    ok(migrated.history.some((h) => h.from === 'runtime-bootstrap-run-1.1' && h.to === 'runtime-bootstrap-run-1.4'), 'the migration is a history row, not a silent rewrite');
     // Registry-new steps joined the persisted run (the 1.1 world had no notify.codex.configured).
     ok(migrated.steps.some((s) => s.id === 'notify.codex.configured'), 'the ADR-0048 §1 split step was injected additively');
     // The satisfied fixture wires notify=, so the injected step judged satisfied on the same resume.
@@ -2183,6 +2172,14 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     return async (scriptPath, args) => {
       if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
       if (scriptPath.endsWith('doctor.mjs')) {
+        // ADR-0057 §Decision 5 — `proof.permission` is now ALWAYS applicable, so a run
+        // that must terminalize `complete` owes it exactly as it owes the smoke.
+        if (args.includes('--execute-permission-proof')) {
+          return okOut(JSON.stringify({
+            permission_proof: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
+          }));
+        }
         if (args.includes('--execute-deep-peer-smoke')) {
           await duringProof();
           return okOut(stdout);
@@ -2197,6 +2194,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     const path = join(home, 'execute-smoke-and-decline-egress.json');
     await writeFile(path, JSON.stringify([
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'proof.permission', answer: 'execute' },
       { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
       { step_id: 'config.notify_kinds', answer: 'decline' },
@@ -2266,50 +2264,6 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       'the step that reads raw host status is judged from the final raw too');
   });
 
-  it('applicability moves with the snapshot: a permission fragment applied DURING the proof makes proof.permission applicable in the same resume', async () => {
-    // The executor-induced applicability edge: `fragment_applied` is promoted
-    // the first time a rendered fragment is observed applied, and
-    // deriveExpectedSteps reads it to decide whether proof.permission exists at
-    // all. Observed for the first time in the FINAL snapshot, it must reach the
-    // expectation the reconstruction is built from — a reconstruction that
-    // reused the pre-execution expectation would rebuild the run around an
-    // applicability its own snapshot disproves.
-    const { home, cwd } = await makeHome();
-    const state = { installed: [...ALL_PLUGINS], hosts: ['claude', 'codex'] };
-    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json'], spySubprocess().runner);
-    const runId = plan.report.run_id;
-    // CONTROL, both halves: the fragment must be RENDERED (promotion requires a
-    // prior pointer) and the proof must start non-applicable, or the assertion
-    // below would hold with or without the reconstruction.
-    const plannedPermission = plan.report.steps.find((s) => s.id === 'permission.claude.applied');
-    strictEqual(plannedPermission?.status, 'pending', 'precondition: the permission step is unresolved at plan time');
-    ok(plannedPermission?.fragment_pointer, 'precondition: a permission fragment was rendered, so fragment_applied can be promoted later');
-    strictEqual(plan.report.steps.find((s) => s.id === 'proof.permission')?.status, 'not-applicable',
-      'precondition: with no fragment applied, the permission proof does not apply');
-
-    // The operator applies the Claude permission fragment while the smoke runs.
-    const resume = await run(
-      ['resume', '--latest-open', '--answers', await writeSmokeAnswers(home)],
-      smokeDoctorStub(async () => {
-        await writeFile(join(home, '.claude', 'settings.json'),
-          `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] } }, null, 2)}\n`);
-      }),
-    );
-
-    const permissionRow = resume.report.steps.find((s) => s.id === 'permission.claude.applied');
-    strictEqual(permissionRow?.status, 'satisfied',
-      `the mid-proof application is observed by the final readers (got ${permissionRow?.status})`);
-    strictEqual(permissionRow?.fragment_applied, true, 'and promoted, which is what the expectation reads');
-    const proofRow = resume.report.steps.find((s) => s.id === 'proof.permission');
-    ok(proofRow && proofRow.status !== 'not-applicable',
-      `the expectation is re-derived from the final snapshot, so the proof applies in THIS resume (got ${proofRow?.status})`);
-    const persisted = (await manifestOf(home, runId)).steps.find((s) => s.id === 'proof.permission');
-    ok(persisted && persisted.status !== 'not-applicable',
-      `and the run persists that applicability rather than making the operator resume twice (got ${persisted?.status})`);
-  });
-
   // The SELECTION is an expectation input too, and the final judge can move it:
   // §6.2 lets a satisfying observation clear a `declined` row, and a declined row
   // is the only evidence effectiveSelection reads. The two tests below are a pair
@@ -2343,6 +2297,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       { step_id: 'config.session', answer: 'decline' },
       { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'proof.permission', answer: 'execute' },
     ]));
     // The operator changes their mind and installs it on Codex mid-proof.
     const resume = await run(['resume', '--latest-open', '--answers', answersPath],
@@ -2388,6 +2343,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       { step_id: 'config.session', answer: 'decline' },
       { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'proof.permission', answer: 'execute' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath],
       smokeDoctorStub(async () => { state.installed = [...ALL_PLUGINS]; }));
@@ -2573,6 +2529,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       { step_id: 'config.session', answer: 'decline' },
       { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'proof.permission', answer: 'execute' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath], smokeDoctorStub(async () => {}));
     ok(!(resume.report.warnings ?? []).some((w) => /refused on codex/.test(w)),
@@ -2730,6 +2687,14 @@ describe('bootstrap attest — the receipt door judges the run as it was reduced
             doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
           }));
         }
+        // ADR-0057 §Decision 5 — `proof.permission` is now ALWAYS applicable, so a run
+        // that must terminalize `complete` owes it exactly as it owes the smoke.
+        if (args.includes('--execute-permission-proof')) {
+          return okOut(JSON.stringify({
+            permission_proof: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
+          }));
+        }
         if (args.includes('--execute-deep-peer-smoke')) {
           return okOut(JSON.stringify({
             deep_peer_smoke: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
@@ -2748,6 +2713,7 @@ describe('bootstrap attest — the receipt door judges the run as it was reduced
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
       { step_id: 'proof.egress-provider-ack', answer: 'execute' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'proof.permission', answer: 'execute' },
       // §6.1.3 — CONFIG obligations this suite is not about; declined so the run
       // can reach the terminal state whose receipt door IS the subject.
       { step_id: 'config.session', answer: 'decline' },
@@ -3519,6 +3485,14 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
       calls.push({ scriptPath, args: [...args] });
       if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
       if (scriptPath.endsWith('doctor.mjs')) {
+        // ADR-0057 §Decision 5 — `proof.permission` is now ALWAYS applicable, so a run
+        // that must terminalize `complete` owes it exactly as it owes the smoke.
+        if (args.includes('--execute-permission-proof')) {
+          return okOut(JSON.stringify({
+            permission_proof: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
+          }));
+        }
         if (serveSmoke && args.includes('--execute-deep-peer-smoke')) {
           return okOut(doctorReportWith(review, {
             deep_peer_smoke: {
@@ -3787,7 +3761,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     // about, and it is the one asserted.
   });
 
-  it('the re-judge converges a dependent the answered decline unblocked, and preserves fragment_applied', async () => {
+  it('the re-judge converges a dependent the answered decline unblocked, and legacy Stage-6 rows migrate as stated', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const stub = hookDoctorStub({ review: currentReview() });
     const { run, runId } = await planEngineering(home, cwd, stub);
@@ -3801,11 +3775,24 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     // that predecessor `declined` — which counts as resolved.
     const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
     const seeded = JSON.parse(await readFile(runPath, 'utf8'));
-    // Nothing in this fixture applies a permission fragment, so seed one: the
-    // property under test is that applyAnswers never writes fragment_applied and
-    // judgeSteps carries it across, which an all-false run cannot demonstrate.
-    seeded.steps.find((s) => s.id === 'permission.claude.applied').fragment_applied = true;
+    // ADR-0057 open-run migration, seeded here because this runtime can no longer
+    // PRODUCE a Stage-6 row: a run planned by a pre-removal runtime carries
+    // `permission.<host>.applied` rows (one with `fragment_applied: true`) that the
+    // registry no longer expects. The assertion at the end of this test pins what
+    // resume does with them.
+    seeded.steps.push(
+      { id: 'permission.claude.applied', stage: 6, status: 'satisfied', declinable: true, blocked_by: ['host.claude.present'], fragment_applied: true },
+      { id: 'permission.codex.applied', stage: 6, status: 'pending', declinable: true, blocked_by: ['host.codex.present'], fragment_applied: false },
+    );
     await writeFile(runPath, `${JSON.stringify(seeded, null, 2)}\n`);
+    // PRE-CONTROL for the absence assertion at the end of this test: an
+    // `is-empty` check passes for free if the seed never landed, so pin that
+    // the rows are really there to be dropped BEFORE the verb runs.
+    strictEqual(
+      JSON.parse(await readFile(runPath, 'utf8')).steps.filter((step) => /^permission\.[a-z]+\.applied$/.test(step.id)).length,
+      2,
+      'pre-control: the pre-removal run really carries two Stage-6 rows going in',
+    );
 
     const answersPath = join(home, 'accept-ack-decline-egress.json');
     await writeFile(answersPath, JSON.stringify([
@@ -3822,8 +3809,22 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     strictEqual(dependent?.status, 'pending', `the declined predecessor converges it (was 'blocked' before the re-judge): ${JSON.stringify(dependent)}`);
     ok(resume.report.completion.state !== 'complete', 'earlier convergence is not completion — both blocked and pending are unresolved');
 
-    strictEqual(resume.report.steps.find((s) => s.id === 'permission.claude.applied')?.fragment_applied, true,
-      'an applied fragment keeps its historical meaning across the re-judge');
+    // ADR-0057 open-run migration, MEASURED rather than assumed: `judgeSteps`
+    // rebuilds steps[] from the EXPECTATION, so rows the registry no longer emits
+    // do not survive a resume. An open pre-removal run therefore migrates by
+    // DROPPING its Stage-6 rows — it is not refused, and the operator does not
+    // re-plan. `fragment_applied` goes with them, which is why the schema now
+    // describes the field as legacy-only rather than deleting it (retained
+    // TERMINAL runs are never re-judged, so their rows keep their bytes).
+    deepStrictEqual(
+      resume.report.steps.filter((step) => /^permission\.[a-z]+\.applied$/.test(step.id)),
+      [],
+      'a pre-removal run resumes with its Stage-6 rows dropped, not refused',
+    );
+    // Non-vacuity: the seed really was there to be dropped.
+    const seededAgain = JSON.parse(await readFile(runPath, 'utf8'));
+    ok(!seededAgain.steps.some((step) => /^permission\.[a-z]+\.applied$/.test(step.id)),
+      'and the persisted manifest no longer carries them either');
   });
 
   it("doctor's machine-wide not-current verdict does NOT block a selection-scoped import", async () => {
@@ -4034,6 +4035,14 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
   const smokeDoctorStub = async (scriptPath, args) => {
     if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
     if (scriptPath.endsWith('doctor.mjs')) {
+      // ADR-0057 §Decision 5 — `proof.permission` is now ALWAYS applicable, so a run
+      // that must terminalize `complete` owes it exactly as it owes the smoke.
+      if (args.includes('--execute-permission-proof')) {
+        return okOut(JSON.stringify({
+          permission_proof: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
+          doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
+        }));
+      }
       if (args.includes('--execute-deep-peer-smoke')) {
         return okOut(JSON.stringify({
           deep_peer_smoke: {
@@ -4118,7 +4127,7 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
     // And the persisted document is still a 1.2 manifest — the narrowing needed no
     // schema addition, which is what keeps an older runtime able to read this run
     // (§4.1: an unknown non-scalar key is refused at EVERY minor).
-    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.3');
+    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.4');
     const validate = await makeValidator('runtime-bootstrap-run', { pluginRoot: PLUGIN_ROOT });
     deepStrictEqual(validate(manifest).errors, []);
   });
@@ -4616,6 +4625,66 @@ describe('runtime bootstrap CLI — report finding bound (§3.2)', () => {
 // format branch, or not at all, still passes every unit test of the bounding
 // function itself.
 
+describe('runtime bootstrap CLI — pre-removal terminal runs are HISTORY, not re-judged (ADR-0057)', () => {
+  // The open-run migration is covered above (Stage-6 rows dropped on resume). This is
+  // the OTHER half, and it is why the run schema had to move 1.3 -> 1.4 rather than
+  // changing the registry under an unchanged stamp.
+  //
+  // A run that COMPLETED before the removal recorded Stage 6 satisfied and
+  // `proof.permission` non-applicable — a legitimate `complete` under its own
+  // registry. Under the new registry that proof is always applicable, so re-judging
+  // such a run projects `configured-not-verified` over a proof it can never attach:
+  // `resume` refuses a terminal run, so there is no path that could ever satisfy it.
+  // Bumping the minor routes it to the legacy-terminal boundary instead, which
+  // presents it as immutable evidence and re-certifies nothing.
+  async function seedTerminalPreRemovalRun(home, runId) {
+    const runDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId);
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, 'run.json'), `${JSON.stringify({
+      schema: 'runtime-bootstrap-run-1.3',
+      run_id: runId,
+      started_at: '2026-08-01T00:00:00Z',
+      updated_at: '2026-08-01T00:00:00Z',
+      status: 'complete',
+      selection: { bundle: 'base', desired: ['runtime', 'companions', 'attention'], excluded: [] },
+      steps: [
+        { id: 'permission.claude.applied', stage: 6, status: 'satisfied', declinable: true, blocked_by: ['host.claude.present'], fragment_applied: true },
+        { id: 'permission.codex.applied', stage: 6, status: 'satisfied', declinable: true, blocked_by: ['host.codex.present'], fragment_applied: true },
+        { id: 'proof.permission', stage: 8, status: 'not-applicable', declinable: true, blocked_by: [] },
+      ],
+      completion: {
+        state: 'complete',
+        unsatisfied: [],
+        missing_steps: [],
+        proofs: [],
+        hook_attestation: { status: 'not-applicable', reasons: [], attested_plugins: [], bound_versions: null, artifact_pointer: null, artifact_hash: null, attested_at: null },
+      },
+      boundary: { writes_host_config: false, writes_credential: false, writes_config_local_toml: false, performs_network_request: false },
+    }, null, 2)}\n`);
+    return runDir;
+  }
+
+  for (const verb of ['status', 'verify']) {
+    it(`${verb} presents a terminal 1.3 run as legacy history instead of re-judging it against the 1.4 registry`, async () => {
+      const { home, cwd } = await makeHome({ satisfied: true });
+      const runId = 'bootstrap-20260801T000000Z-0aa001';
+      await seedTerminalPreRemovalRun(home, runId);
+
+      const result = await boot({ argv: [verb, '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+      const report = result.report;
+      // PRE-CONTROL: without the 1.3 -> 1.4 bump this branch is unreachable, because
+      // legacyTerminalReport only fires on a STRICTLY older minor. If someone reverts
+      // the bump, this assertion is what says so.
+      strictEqual(report.historical, true, `a pre-removal terminal run is historical, not current: ${JSON.stringify(report).slice(0, 400)}`);
+      strictEqual(report.legacy_schema, 'runtime-bootstrap-run-1.3');
+      ok(report.not_recertified === true, 'and nothing was re-certified against the new registry');
+      // The failure this prevents: re-judging would owe a proof the run can never attach.
+      ok(!/configured-not-verified/.test(JSON.stringify(report.completion ?? {})),
+        'the stored completion is summarized, never re-reduced into a state the run cannot leave');
+    });
+  }
+});
+
 describe('runtime bootstrap CLI — proof-directory entry names (§3.2)', () => {
   const SECRET = 'Bearer sk-SECRET-abc123';
 
@@ -4623,7 +4692,7 @@ describe('runtime bootstrap CLI — proof-directory entry names (§3.2)', () => 
     const runDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId);
     await mkdir(join(runDir, 'proof'), { recursive: true });
     await writeFile(join(runDir, 'run.json'), `${JSON.stringify({
-      schema: 'runtime-bootstrap-run-1.3',
+      schema: 'runtime-bootstrap-run-1.4',
       run_id: runId,
       started_at: '2026-07-16T00:00:00Z',
       updated_at: '2026-07-16T00:00:00Z',

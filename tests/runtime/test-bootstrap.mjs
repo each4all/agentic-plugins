@@ -869,7 +869,7 @@ describe('runtime bootstrap artifacts — abandonment (#29)', () => {
     const validate = await makeValidator('runtime-bootstrap-run');
     const verdict = validate(tombstone);
     strictEqual(verdict.ok, true, `the replacement record conforms to the run schema: ${verdict.errors.join('; ')}`);
-    strictEqual(tombstone.schema, 'runtime-bootstrap-run-1.3');
+    strictEqual(tombstone.schema, 'runtime-bootstrap-run-1.4');
     const next = await createBootstrapRun({ homeDir, repoRoot: null, now: NOW, manifest: baseManifest() });
     strictEqual(next.created, true);
     await rm(homeDir, { recursive: true, force: true });
@@ -1129,7 +1129,7 @@ describe('runtime bootstrap artifacts — fragment + proof writers', () => {
     const runId = makeBootstrapRunId(NOW);
     // The post-terminal receipt door additionally requires a CURRENT-schema,
     // schema-valid manifest (Codex review MAJOR) — the fixture declares 1.2.
-    await seedRun(homeDir, runId, { status: 'complete', schema: 'runtime-bootstrap-run-1.3' });
+    await seedRun(homeDir, runId, { status: 'complete', schema: 'runtime-bootstrap-run-1.4' });
 
     const record = {
       kind: 'deep-peer-smoke',

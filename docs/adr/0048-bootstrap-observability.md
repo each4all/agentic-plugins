@@ -36,8 +36,9 @@ leaves); this ADR carries policy and vocabulary only.
   evidence that `statusLine` is not plugin-bundlable and a future Tier 4 is an
   M1 settings-fragment plan. ADR-0041 §6 stated "runtime ships no statusline
   component". ADR-0046 fixed the bootstrap stage model (Stage 5 =
-  notification + egress; Stage 6 = permission posture) and the secrets-free
-  profile (§7).
+  notification + egress; Stage 6 = permission posture — Stage 6 was later emptied
+  by [ADR-0057](0057-permission-advisor-removal.md), which left the number unused
+  rather than renumbering stages 7 and 8) and the secrets-free profile (§7).
 - Run schema 1.1 requires `directions` on **every** proof
   (`runtime-bootstrap-run-1.1.json` — per-direction result map), and the
   zero-dependency validator deliberately excludes `oneOf`/`anyOf`/`if-then`
@@ -59,9 +60,13 @@ observability + egress" so it does not read as a miscellaneous bucket. No
 stage is inserted and nothing is renumbered.
 
 - Two **per-host, declinable** expected steps:
-  `statusline.claude.configured` and `statusline.codex.configured` (mirroring
-  the `permission.<host>.applied` split — a single combined step could
-  false-pass after only one host is configured).
+  `statusline.claude.configured` and `statusline.codex.configured` — a single
+  combined step could false-pass after only one host is configured, so a
+  host-targeted config fact gets one step per host. (This reasoning was originally
+  stated by reference to the `permission.<host>.applied` split;
+  [ADR-0057](0057-permission-advisor-removal.md) §Decision 10 deleted that referent
+  and states the reasoning directly instead. **The decision does not change** — the
+  statusline steps stay per-host.)
 - The Claude step's meaning is pinned to **"canonical configuration
   observed"** — never "statusline runs". Workspace trust, `disableAllHooks`,
   safe mode, and script failure can still block execution (host-truth record

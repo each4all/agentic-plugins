@@ -135,8 +135,6 @@ import { FINDINGS_MAX_PER_ARTIFACT, loadSchema, makeValidator } from './lib/sche
 import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
 import { gatherEgressLauncherInputs, buildEgressLauncherPlanSection, egressFragmentApplyGuidance, makeEgressLauncherRunId } from './lib/egress-launcher-plan.mjs';
-import { gatherPermissionPlanInputs, buildPermissionPlanSection } from './lib/permission-plan.mjs';
-import { makePermissionRunId } from './lib/permission-artifacts.mjs';
 
 export { RUNTIME_VERSION };
 
@@ -1026,22 +1024,6 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         recovery: `Egress activates only when channel + recipient + credential are all present (ADR-0041 §2c; a channel or token alone is inert). Follow the per-machine egress runbook — \`runtime:settings --egress-launcher-plan\` renders it any time (this run's egress fragment, when present, carries the same runbook) — and export ${EGRESS_ENV_KEYS.credential} yourself in your local shell: bootstrap renders placeholder commands only and never asks for or handles the value (ADR-0048 §4).${envOnlyHint}`,
       };
     }
-    m = id.match(/^permission\.([a-z]+)\.applied$/);
-    if (m) {
-      const host = m[1];
-      if (host === 'claude') {
-        const perm = readers?.claudePermission ?? {};
-        const present = perm.default_mode != null || (perm.allow ?? []).length > 0 || (perm.ask ?? []).length > 0 || (perm.deny ?? []).length > 0;
-        return present
-          ? { status: 'satisfied', observed: perm.default_mode ? `defaultMode=${perm.default_mode}` : 'permission rules present' }
-          : { status: 'pending' };
-      }
-      const perm = readers?.codexPermission ?? {};
-      const present = perm.approval_policy != null || perm.sandbox_mode != null;
-      return present
-        ? { status: 'satisfied', observed: [perm.approval_policy && `approval_policy=${perm.approval_policy}`, perm.sandbox_mode && `sandbox_mode=${perm.sandbox_mode}`].filter(Boolean).join(' ') }
-        : { status: 'pending' };
-    }
     if (id === stepIds.hooksAttested()) {
       // §6 — the attestation record is the evidence; a satisfied claim with a
       // stale or absent attestation is a step promoted by assertion.
@@ -1900,19 +1882,6 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     warnings.push(`egress launcher plan could not be built: ${err?.message ?? String(err)}`);
   }
 
-  // Stage 6 — BOTH permission plans (ADR-0038 first-class Claude AND Codex).
-  try {
-    const gathered = await gatherPermissionPlanInputs({ repoRoot: cwd, homeDir, env, maxFiles: 100, maxFileBytes: 8 * 1024 * 1024 });
-    const built = buildPermissionPlanSection({ gathered, now: new Date(now), runId: makePermissionRunId(now) });
-    await persist('permission-claude', built.claude, stepIds.permissionApplied('claude'),
-      'Apply the safety-graded fragment to ~/.claude/settings.json yourself (render-and-confirm; §4.5 safety grading: bypassPermissions is never a default), then resume.',
-      '~/.claude/settings.json');
-    await persist('permission-codex', built.codex, stepIds.permissionApplied('codex'),
-      'Apply the approval_policy / sandbox_mode fragment to $CODEX_HOME/config.toml yourself (never approval_policy="never" or danger-full-access as defaults), then resume.',
-      '$CODEX_HOME/config.toml');
-  } catch (err) {
-    warnings.push(`permission plans could not be built: ${err?.message ?? String(err)}`);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2317,21 +2286,6 @@ function priorJudgeMapOf(stepList) {
 function selectionRestoredWarnings(selectionRestored, { window, consequence }) {
   return (selectionRestored ?? []).map(({ host, plugins }) =>
     `${plugins.join(', ')} was refused on ${host} but is observed installed there ${window}; the refusal no longer follows from the run's own rows (§6.2 — an observation clears a decline; re-plan if the refusal was the intent). ${consequence}`);
-}
-
-/**
- * The Stage-6 permission fragment's APPLIED state, per host, read off step rows.
- * ONE implementation for the same reason as `priorJudgeMapOf` above: it is a
- * judgement INPUT — `deriveExpectedSteps` reads it to decide whether
- * `proof.permission` applies at all — and both derivation sites (the reprobe's
- * second pass, and resume's final-snapshot reconstruction) must read it
- * identically or the two expectations drift over the same rows.
- */
-function permissionFragmentAppliedFrom(rows) {
-  return Object.fromEntries(['claude', 'codex'].map((h) => [
-    h,
-    (rows ?? []).find((s) => s.id === stepIds.permissionApplied(h))?.fragment_applied === true,
-  ]));
 }
 
 // A parsed JSON value is only usable as a report/record when it is a plain
@@ -2750,11 +2704,9 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // One predicate, so the two readers cannot drift.
   const egressOptIn = egressProofRequested
     || egressProofOptedIn({ steps: manifest.steps, choices: manifest.choices, proofs: recordedProofs });
-  const storedFragmentApplied = permissionFragmentAppliedFrom(manifest.steps);
   let expected = deriveExpectedSteps({
     pluginSet,
     selection: effective,
-    permissionFragmentApplied: storedFragmentApplied,
     egressProofRequested: egressOptIn,
   });
   // Rebindable for the same reason: it is scoped to `effective`.
@@ -2798,20 +2750,8 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
 
   let steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, standing, now: ctx.now });
 
-  // SECOND PASS on the permission fragment, for the same reason the selection
-  // narrowing re-derives further down: a judgement INPUT changed during the
-  // judgement. `fragment_applied` is PROMOTED here — it marks a fragment this
-  // run rendered and a later probe observed the operator applying — while the
-  // expectation above could only read the value STORED before that observation.
-  // So on the very resume that first sees the application, `proof.permission`
-  // derived `applicable: false` over a run that had just earned it. That cost an
-  // extra cycle silently before; once applicability became a REFUSAL at the
-  // answer boundary it turned an ordinary flow — plan, apply the fragments,
-  // resume with `execute proof.permission` — into exit 40 (cross-host
-  // Refine-verify, High; reproduced). Re-derive from what was observed.
-  //
-  // The SELECTION is the second such input, and it is stale for exactly the same
-  // reason: `effective` above was derived from the STORED rows, and this judge
+  // SECOND PASS on the effective selection: a judgement INPUT changed during the
+  // judgement. It is stale because `effective` above was derived from the STORED rows, and this judge
   // re-observes them. §6.2 lets a satisfying observation clear a `declined` row,
   // a host-scoped refusal lives only in that row, and the effective selection
   // reads nothing else — so a plugin refused on a host and later installed there
@@ -2830,7 +2770,6 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // declines from `previous` and never invents one, and the derivation is asked
   // about the already-retained set, so the plugin set cannot move and `byHost`
   // only widens. Two derivations reach the fixpoint.
-  const judgedFragmentApplied = permissionFragmentAppliedFrom(steps);
   const convergedEffective = effectiveSelection({ pluginSet, selection: { desired: effective.plugins }, steps });
   const selectionMoved = !sameEffectiveSelection(effective, convergedEffective);
   // The convergence is REPORTED, not silent (cross-host Review peer, MINOR): a
@@ -2847,15 +2786,12 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     }
   }
   const applySelection = converge && selectionMoved;
-  if (applySelection || ['claude', 'codex'].some((h) => judgedFragmentApplied[h] !== storedFragmentApplied[h])) {
-    if (applySelection) {
-      effective = convergedEffective;
-      hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
-    }
+  if (applySelection) {
+    effective = convergedEffective;
+    hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
     expected = deriveExpectedSteps({
       pluginSet,
       selection: effective,
-      permissionFragmentApplied: judgedFragmentApplied,
       egressProofRequested: egressOptIn,
     });
     const graph = validateStepGraph(expected);
@@ -3347,7 +3283,6 @@ async function runResume(ctx, opts) {
     expected = deriveExpectedSteps({
       pluginSet,
       selection: effective,
-      permissionFragmentApplied: permissionFragmentAppliedFrom(steps),
       egressProofRequested: reprobe.egressOptIn,
     });
     const graph = validateStepGraph(expected);
@@ -3780,24 +3715,17 @@ async function runResume(ctx, opts) {
       standing: standingNow,
       now: ctx.now,
     });
-    const fragmentAppliedBefore = permissionFragmentAppliedFrom(steps);
     steps = judgeFinal(expected, finalHookVerdict);
 
-    // THE EXPECTATION'S OWN INPUTS MOVE WITH THE SNAPSHOT — so the second pass
-    // reprobeAgainstRun already runs against the earlier snapshot runs again
-    // here, over BOTH inputs `deriveExpectedSteps` reads. One re-derivation
-    // covering both, because they are the same question asked of two fields.
+    // THE EXPECTATION'S OWN INPUT MOVES WITH THE SNAPSHOT — so the second pass
+    // reprobeAgainstRun already runs against the earlier snapshot runs again here.
     //
-    // (1) `fragment_applied` is PROMOTED by judgeSteps when a rendered fragment is
-    // first observed applied, and the expectation reads it to decide whether
-    // `proof.permission` applies at all. An operator who applies the permission
-    // fragment while a long proof runs is observed for the first time HERE, so a
-    // reconstruction that reused the pre-execution expectation would rebuild the
-    // snapshot around an applicability the snapshot itself disproves — and, since
-    // applicability became a REFUSAL at the answer boundary, would hand the next
-    // resume an exit 40 on an ordinary flow.
+    // ADR-0057 removed the second such input: `fragment_applied` was PROMOTED here
+    // and read by the expectation to decide whether `proof.permission` applied at
+    // all. With Stage 6 gone the proof is unconditionally applicable, so only the
+    // selection can still move a judgement mid-judgement.
     //
-    // (2) The EFFECTIVE SELECTION is derived from `declined` step rows and nothing
+    // The EFFECTIVE SELECTION is derived from `declined` step rows and nothing
     // else, and §6.2 lets a satisfying observation clear a decline (judgeSteps'
     // restore rule is explicitly conditioned on `status !== 'satisfied'`). The
     // registry keeps a host-scoped decline's row in the expectation on purpose —
@@ -3824,25 +3752,20 @@ async function runResume(ctx, opts) {
     // in-run, and this reverses none — a host-scoped exclusion is re-derived by
     // EVERY verb from the rows (§6.2), so this only computes here what `status`
     // and the next `resume` would compute anyway.
-    const fragmentAppliedAfter = permissionFragmentAppliedFrom(steps);
     const convergedEffective = effectiveSelection({ pluginSet, selection: { desired: effective.plugins }, steps });
-    const fragmentMoved = ['claude', 'codex'].some((h) => fragmentAppliedAfter[h] !== fragmentAppliedBefore[h]);
     const selectionMoved = !sameEffectiveSelection(effective, convergedEffective);
-    if (fragmentMoved || selectionMoved) {
-      if (selectionMoved) {
-        warnings.push(...selectionRestoredWarnings(
-          ['claude', 'codex']
-            .map((host) => ({ host, plugins: (convergedEffective.byHost[host] ?? []).filter((name) => !(effective.byHost[host] ?? []).includes(name)) }))
-            .filter((row) => row.plugins.length > 0),
-          { window: "during this resume's doctor child", consequence: 'The selection was re-derived and the affected steps re-judged.' },
-        ));
-        effective = convergedEffective;
-        finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
-      }
+    if (selectionMoved) {
+      warnings.push(...selectionRestoredWarnings(
+        ['claude', 'codex']
+          .map((host) => ({ host, plugins: (convergedEffective.byHost[host] ?? []).filter((name) => !(effective.byHost[host] ?? []).includes(name)) }))
+          .filter((row) => row.plugins.length > 0),
+        { window: "during this resume's doctor child", consequence: 'The selection was re-derived and the affected steps re-judged.' },
+      ));
+      effective = convergedEffective;
+      finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
       expected = deriveExpectedSteps({
         pluginSet,
         selection: effective,
-        permissionFragmentApplied: fragmentAppliedAfter,
         egressProofRequested: reprobe.egressOptIn,
       });
       const graph = validateStepGraph(expected);
@@ -3932,7 +3855,7 @@ async function runResume(ctx, opts) {
       history: [
         ...(Array.isArray(m.history) ? m.history : []),
         ...(m.schema !== RUN_SCHEMA_VERSION
-          ? [{ step_id: null, from: m.schema, to: RUN_SCHEMA_VERSION, reason: 'schema migrated additively on resume (ADR-0048 §1): registry-new steps injected, fragments re-rendered', at: migrationRowAt }]
+          ? [{ step_id: null, from: m.schema, to: RUN_SCHEMA_VERSION, reason: 'schema migrated on resume: registry-new steps injected and fragments re-rendered (ADR-0048 §1 additive part), and — from a pre-1.4 run — the removed Stage-6 permission rows dropped (ADR-0057). Not purely additive any more, which is why 1.4 exists.', at: migrationRowAt }]
           : []),
         // SAME-MINOR registry growth (statusline peer B5): a runtime upgrade
         // can widen the expected-step set without a schema bump — §7 treats
@@ -4429,7 +4352,7 @@ export function boundReportFindings(report) {
 // Neutralizing a clamped value would be theatre; the guarantee there comes from
 // the projection, not from this sanitizer.
 //
-// Deliberately NOT lib/permission-sanitize's `singleLine` + `redactSecrets`
+// Deliberately NOT lib/sanitize's `singleLine` + `redactSecrets`
 // (both were tried at this boundary and withdrawn):
 //   * `singleLine` squeezes runs of whitespace, and an operator-facing path may
 //     legitimately contain two spaces;

@@ -16,9 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
 import { baselineFailure, classifyHostPairRelation, normalizeVersion, readVersionToken, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
 import { buildHostVersionProbe } from './lib/host-version-probe.mjs';
-import { sanitizeValue } from './lib/permission-sanitize.mjs';
-import { learnFromSources } from './lib/permission-usage-learner.mjs';
-import { getPromptCause } from './lib/permission-advisor-core.mjs';
+import { sanitizeValue } from './lib/sanitize.mjs';
 import { runEmit } from './notify.mjs';
 import { buildEventId, deriveRepoIdent } from './lib/notify-schema.mjs';
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
@@ -27,11 +25,6 @@ import { inspectInstalledReceivers } from './lib/receiver-inventory.mjs';
 import { egressIntentDir, safeRecordName } from './lib/egress-intent-wal.mjs';
 import { EGRESS_ATTEMPT_HASH_DOMAIN, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
 import { EGRESS_CREDENTIAL_ENV_VAR } from './lib/machine-profile.mjs';
-import { makePermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
-import {
-  PERMISSION_DIAGNOSIS_MAX_SCAN,
-  collectUsageRecordSources,
-} from './lib/permission-usage-sources.mjs';
 import {
   artifactTimestampMs,
   inspectCompatRuns,
@@ -79,11 +72,6 @@ export { CONTRACT_COMPATIBLE_MAJOR } from './lib/peer-execution-context.mjs';
 // (their single source of truth); re-exported here to preserve doctor's public surface
 // (settings.mjs / tests import PLUGIN_NAMES from doctor).
 export { PLUGIN_NAMES, parseCodexHookStateConfigToml };
-// The usage-record enumerator moved to lib/permission-usage-sources.mjs
-// (machine-bootstrap-contract.md §1.3) so a planner can reach the scan without
-// importing this host-CLI diagnostic module. Re-exported to preserve doctor's public
-// surface for existing importers.
-export { collectUsageRecordSources };
 export { TERMINAL_PEER_RUN_STATUSES, VALID_PEER_RUN_STATUSES } from './lib/state-readers.mjs';
 
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -93,12 +81,6 @@ const DEFAULT_PERMISSION_PROOF_TIMEOUT_MS = 120000;
 const DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS = 120000;
 const DEFAULT_ARTIFACT_RETENTION_CAP = 20;
 const DEFAULT_ARTIFACT_RETENTION_MAX_BYTES = 50 * 1024 * 1024;
-// ADR-0038 §1/§7 permission diagnosis (R0): per-host file cap so an opt-in
-// diagnosis bounds how many recent usage records it reads, plus a hard
-// directory-scan budget so a pathological tree can't stall doctor.
-const DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILES = 100;
-const DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILE_BYTES = 8 * 1024 * 1024;
-const PERMISSION_DIAGNOSIS_TOP_PATTERNS = 15;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // Nonterminal write-ahead settings-execution statuses (machine-bootstrap-contract.md
 // §1.5). Defined locally, not imported from settings.mjs, because settings.mjs
@@ -118,8 +100,8 @@ const DOCTOR_RUN_ID_RE = /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // inner report alone moved `doctor_runs` from `available malformed=0` to
 // `blocked malformed=70`. So the READABLE lists below are the load-bearing half,
 // and the producer constants are only their newest members.
-const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.1';
-const DOCTOR_REPORT_SCHEMA_VERSION = 'runtime-doctor-1.1';
+const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.2';
+const DOCTOR_REPORT_SCHEMA_VERSION = 'runtime-doctor-1.2';
 // ⚠ MATCHED PAIRS, NOT TWO INDEPENDENT ALLOWLISTS. The outer artifact and the
 // inner report bump together, so exactly two tuples were ever written. Checking
 // each half against its own list would additionally admit `(artifact-1.1,
@@ -129,6 +111,10 @@ const DOCTOR_REPORT_SCHEMA_VERSION = 'runtime-doctor-1.1';
 const READABLE_DOCTOR_SCHEMA_PAIRS = Object.freeze([
   Object.freeze({ artifact: 'runtime-doctor-artifact-1.0', report: 'runtime-doctor-1.0' }),
   Object.freeze({ artifact: 'runtime-doctor-artifact-1.1', report: 'runtime-doctor-1.1' }),
+  // 1.2 — ADR-0057 §Decision 11 dropped the `permission_diagnosis` section with the
+  // advisor. A non-additive field DELETION, so the pair bumps: a 1.1 reader meeting a
+  // 1.2 report would find the field absent, and the version is what says why.
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.2', report: 'runtime-doctor-1.2' }),
 ]);
 function isReadableDoctorSchemaPair(artifactSchema, reportSchema) {
   return READABLE_DOCTOR_SCHEMA_PAIRS.some((pair) => pair.artifact === artifactSchema && pair.report === reportSchema);
@@ -170,9 +156,6 @@ export async function runDoctor({
   artifactInventory = false,
   artifactRetentionCap = DEFAULT_ARTIFACT_RETENTION_CAP,
   artifactMaxBytes = DEFAULT_ARTIFACT_RETENTION_MAX_BYTES,
-  permissionDiagnosis = false,
-  permissionDiagnosisMaxFiles = DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILES,
-  permissionDiagnosisMaxFileBytes = DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILE_BYTES,
   recordArtifact = false,
   strict = false,
   runId = null,
@@ -330,19 +313,6 @@ export async function runDoctor({
   const retentionSection = artifactInventory && artifactInventorySection.executed
     ? await buildRetentionSection({ repoRoot: resolvedRepoRoot, now, artifactRetentionCap, artifactMaxBytes, inventory: artifactInventorySection })
     : { requested: Boolean(artifactInventory), executed: false, status: 'not_requested' };
-  const permissionDiagnosisSection = permissionDiagnosis
-    ? await inspectPermissionDiagnosis({
-        homeDir: resolvedHomeDir,
-        env,
-        now,
-        maxFiles: permissionDiagnosisMaxFiles,
-        maxFileBytes: permissionDiagnosisMaxFileBytes,
-      })
-    : {
-        requested: false,
-        executed: false,
-        status: 'not_requested',
-      };
   const recordedDoctorProof = buildRecordedDoctorProof({
     runs: recordedDoctorRuns,
     latest: doctorRuns.latest,
@@ -488,7 +458,6 @@ export async function runDoctor({
     artifact_inventory: artifactInventorySection,
     retention: retentionSection,
     receivers: receiverInventory,
-    permission_diagnosis: permissionDiagnosisSection,
     readiness_matrix: readinessMatrix,
     experience_parity: experienceParity,
     readiness,
@@ -500,7 +469,6 @@ export async function runDoctor({
       'Readiness sandbox/permission status remains unknown unless --sandbox-permission-probe is requested; --permission-proof records separate preflight/execution evidence.',
       'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
       'Artifact inventory is read-only; runtime:doctor never deletes or compacts generated artifacts.',
-      'Permission diagnosis is read-only (R0): it classifies prompt causes from usage records and recommends/writes nothing; runtime:settings emits the host-config plan (M1).',
       'Installed receivers are classified by reading their bytes; doctor never imports, spawns, or evaluates an installed receiver, and never follows a symlinked install path.',
     ],
   };
@@ -2424,135 +2392,6 @@ async function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifa
       artifact_pointer: pointer(repoRoot, artifactPath),
       artifact_hash: artifactHash,
     },
-  };
-}
-
-function permissionDiagnosisLimits(capNote) {
-  const limits = [
-    'runtime:doctor permission diagnosis is read-only (R0): it classifies prompt-shaped tool calls observed in usage records and recommends/writes no host config — runtime:settings emits the host-config plan (M1).',
-    'Reported counts are prompt-SHAPED candidates, not a claim each one prompted: user-rejected calls (Claude interrupt / Codex approval) are the definite "this prompted" signal, and runtime:settings cross-references the host allowlist (which doctor does not read here) to recommend only not-yet-allowed rules.',
-    'Diagnosis reads usage-record bodies but retains only generalized command patterns and counts (ADR-0038 §5); raw commands, arguments, and source paths are never surfaced.',
-    'With --record, the sanitized diagnosis is included in the doctor proof snapshot under .agentic-plugins/runs/doctor (ADR-0038 §5 owned artifact, explicit opt-in); the permission-family artifact under .agentic-plugins/runs/permission is written only by runtime:settings (M1).',
-  ];
-  if (capNote) limits.push(capNote);
-  return limits;
-}
-
-// User-rejected count parsed from the learner's evidence note ("seen Nx,
-// M user-rejected") — the definite "this prompted" signal surfaced structurally
-// so the section reports candidates vs confirmed prompts honestly (Plan-verify
-// peer MAJOR — avoid over-claiming without re-reading the host allowlist here).
-function rejectedFromNote(note) {
-  if (typeof note !== 'string') return 0;
-  const m = note.match(/(\d+)\s+user-rejected/);
-  return m ? Number(m[1]) : 0;
-}
-
-// R0 permission diagnosis: enumerate usage records, learn prompt-cause evidence,
-// and report it classified by host x mechanism — sanitized, pointer-only,
-// mutating nothing (ADR-0038 §1/§7). Evidence is shaped through an in-memory
-// permission-advisory artifact (surface=doctor) purely to reuse the slice's
-// sanitization (drops source paths, host-scopes, strict shape); nothing is
-// written to disk — the M1 artifact write belongs to runtime:settings.
-async function inspectPermissionDiagnosis({ homeDir, env, now, maxFiles, maxFileBytes }) {
-  const emptyHost = { found: 0, used: 0, scan_truncated: false, skipped_too_large: 0 };
-  let collected;
-  try {
-    collected = await collectUsageRecordSources({ homeDir, env, maxFiles, maxFileBytes });
-  } catch (err) {
-    return {
-      requested: true,
-      executed: true,
-      status: 'blocked',
-      error: err.code ?? err.message,
-      hosts: [],
-      sources_scanned: { claude: { ...emptyHost }, codex: { ...emptyHost }, capped: false },
-      by_cause: [],
-      top_patterns: [],
-      mode_postures: [],
-      baseline_used: true,
-      limits: permissionDiagnosisLimits(null),
-    };
-  }
-
-  const { sources, scanned, capped } = collected;
-  const hosts = [...new Set(sources.map((s) => s.host))];
-  const notes = [];
-  if (capped) notes.push(`per-host file cap (${maxFiles}) reached — only the most-recent records were analyzed`);
-  if (scanned.claude.scan_truncated || scanned.codex.scan_truncated) {
-    notes.push(`directory scan hit the ${PERMISSION_DIAGNOSIS_MAX_SCAN}-entry per-host safety budget — results may be partial`);
-  }
-  if (scanned.claude.skipped_too_large || scanned.codex.skipped_too_large) {
-    notes.push(`skipped oversized records above the per-file byte cap (claude ${scanned.claude.skipped_too_large}, codex ${scanned.codex.skipped_too_large})`);
-  }
-  const capNote = notes.length ? `${notes.join('; ')}.` : null;
-  const sourcesScanned = { ...scanned, capped };
-
-  if (hosts.length === 0) {
-    return {
-      requested: true,
-      executed: true,
-      status: 'no_records',
-      hosts: [],
-      sources_scanned: sourcesScanned,
-      by_cause: [],
-      top_patterns: [],
-      mode_postures: [],
-      baseline_used: true,
-      limits: permissionDiagnosisLimits(capNote),
-    };
-  }
-
-  const learner = learnFromSources(sources);
-  const artifact = makePermissionAdvisoryArtifact({
-    runId: makePermissionRunId(now),
-    surface: 'doctor',
-    hosts,
-    evidence: learner,
-    createdAt: now.toISOString(),
-  });
-  const ev = artifact.evidence;
-
-  const byCauseMap = new Map();
-  for (const rule of ev.rules) {
-    const key = `${rule.host}|${rule.cause}`;
-    const cur = byCauseMap.get(key) || { host: rule.host, cause: rule.cause, rule_count: 0, seen_total: 0, rejected_total: 0 };
-    cur.rule_count += 1;
-    cur.seen_total += rule.evidence.count;
-    cur.rejected_total += rejectedFromNote(rule.evidence.note);
-    byCauseMap.set(key, cur);
-  }
-  const byCause = [...byCauseMap.values()]
-    .map((c) => {
-      const cause = getPromptCause(c.cause);
-      return { ...c, mechanism: cause ? cause.mechanism : null, title: cause ? cause.title : null };
-    })
-    // Definite prompts (user-rejected) first, then most-seen — surfaces the
-    // strongest signal at the top without re-reading the host allowlist.
-    .sort((a, b) => b.rejected_total - a.rejected_total || b.seen_total - a.seen_total || a.host.localeCompare(b.host));
-
-  const topPatterns = ev.rules
-    .slice()
-    .sort((a, b) => b.evidence.count - a.evidence.count || a.id.localeCompare(b.id))
-    .slice(0, PERMISSION_DIAGNOSIS_TOP_PATTERNS)
-    .map((r) => ({ host: r.host, cause: r.cause, pattern: r.pattern, grade: r.grade, count: r.evidence.count, rejected: rejectedFromNote(r.evidence.note), note: r.evidence.note }));
-
-  const modePostures = ev.mode_evidence.map((m) => {
-    const cause = getPromptCause(m.cause);
-    return { host: m.host, cause: m.cause, title: cause ? cause.title : null, count: m.count };
-  });
-
-  return {
-    requested: true,
-    executed: true,
-    status: artifact.status,
-    hosts,
-    sources_scanned: sourcesScanned,
-    by_cause: byCause,
-    top_patterns: topPatterns,
-    mode_postures: modePostures,
-    baseline_used: ev.baseline_used,
-    limits: permissionDiagnosisLimits(capNote),
   };
 }
 
@@ -5676,9 +5515,6 @@ function summarizeOverall(report) {
   } else if (report.artifact_inventory?.executed && report.artifact_inventory.machine?.status === 'needs_attention') {
     warnings.push('machine-global artifact inventory exceeds retention guidance');
   }
-  if (report.permission_diagnosis?.executed && report.permission_diagnosis.status === 'blocked') {
-    warnings.push('permission diagnosis blocked');
-  }
   if (report.host_parity.status !== 'pass') {
     warnings.push(`host parity ${report.host_parity.status}`);
   }
@@ -6169,24 +6005,6 @@ export function formatText(report) {
     // Never silently hide a failed planner (Codex review MINOR).
     lines.push('Runtime Retention Plan (ADR-0047 §7 — read-only; deletes nothing)');
     lines.push(`- status: blocked — the retention planner failed: ${report.retention.error ?? 'unknown'}`);
-    lines.push('');
-  }
-  if (report.permission_diagnosis?.requested) {
-    const pd = report.permission_diagnosis;
-    lines.push('Permission Diagnosis');
-    lines.push(`- status: ${pd.status}; hosts=${(pd.hosts ?? []).join(',') || '<none>'}; baseline-used=${pd.baseline_used}`);
-    const sc = pd.sources_scanned ?? {};
-    lines.push(`- records: claude=${sc.claude?.used ?? 0}/${sc.claude?.found ?? 0}; codex=${sc.codex?.used ?? 0}/${sc.codex?.found ?? 0}; capped=${sc.capped ?? false}`);
-    for (const c of pd.by_cause ?? []) {
-      lines.push(`- ${c.host}/${c.mechanism} (${c.cause}): rules=${c.rule_count}; seen=${c.seen_total}; user-rejected=${c.rejected_total ?? 0}`);
-    }
-    for (const p of pd.top_patterns ?? []) {
-      lines.push(`  pattern: ${p.host} ${p.pattern} [${p.grade}] seen ${p.count}${p.note ? ` (${p.note})` : ''}`);
-    }
-    for (const m of pd.mode_postures ?? []) {
-      lines.push(`  posture: ${m.host}/${m.cause} (${m.title}) seen ${m.count}`);
-    }
-    for (const limit of pd.limits ?? []) lines.push(`- limit: ${limit}`);
     lines.push('');
   }
   lines.push('Ledgers');
@@ -6860,7 +6678,7 @@ export function doctorExitCode(report, { strict = false } = {}) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--permission-diagnosis] [--permission-diagnosis-max-files <n>] [--permission-diagnosis-max-file-bytes <n>] [--record] [--run-id <doctor-run-id>] [--strict]
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--record] [--run-id <doctor-run-id>] [--strict]
 Exit codes: 0 ok; 1 unexpected (no report); 2 invalid usage (no report); 10 findings (overall=fail, or overall=warning under --strict); 20 a requested proof produced no usable verdict; 30 a requested proof needs operator action outside doctor; 40 --record could not persist the artifact. Codes 10 and above still write the complete report to stdout.
 `;
 }
@@ -6887,9 +6705,6 @@ export function parseArgs(argv) {
     artifactInventory: false,
     artifactRetentionCap: DEFAULT_ARTIFACT_RETENTION_CAP,
     artifactMaxBytes: DEFAULT_ARTIFACT_RETENTION_MAX_BYTES,
-    permissionDiagnosis: false,
-    permissionDiagnosisMaxFiles: DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILES,
-    permissionDiagnosisMaxFileBytes: DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILE_BYTES,
     recordArtifact: false,
     strict: false,
     runId: null,
@@ -6945,12 +6760,6 @@ export function parseArgs(argv) {
       opts.artifactRetentionCap = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--artifact-max-bytes') {
       opts.artifactMaxBytes = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
-    } else if (arg === '--permission-diagnosis') {
-      opts.permissionDiagnosis = true;
-    } else if (arg === '--permission-diagnosis-max-files') {
-      opts.permissionDiagnosisMaxFiles = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
-    } else if (arg === '--permission-diagnosis-max-file-bytes') {
-      opts.permissionDiagnosisMaxFileBytes = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--record') {
       opts.recordArtifact = true;
     } else if (arg === '--strict') {

@@ -82,7 +82,11 @@ async function completeMachine({ bundle = 'base' } = {}) {
   const steps = expected
     .filter((s) => s.applicable && s.stage <= 7)
     .map((s) => ({ id: s.id, stage: s.stage, status: 'satisfied', declinable: s.declinable, blocked_by: s.blocked_by, fragment_applied: false }));
-  const proofs = [passingProof('deep-peer-smoke', current)];
+  // ADR-0057 §Decision 5 — `proof.permission` is now ALWAYS applicable (it was
+  // gated on an applied advisor fragment, and the advisor is gone), so every
+  // machine owes it exactly as it owes deep-peer-smoke. A baseline that omitted
+  // it would reduce to `configured-not-verified`, not `complete`.
+  const proofs = [passingProof('deep-peer-smoke', current), passingProof('permission', current)];
   if (expected.find((s) => s.id === 'proof.workflow-continuation')?.applicable) proofs.push(passingProof('workflow-continuation', current));
   return { pluginSet, selection, probe, current, steps, proofs, expected };
 }
@@ -175,7 +179,7 @@ describe('runtime completion reducer — false-pass pins (#11)', () => {
       ['blocked plugin-management step', (s) => (s.id === stepIds.pluginInstalled('companions', 'codex') ? { ...s, status: 'blocked' } : s)],
       ['unknown marketplace state', (s) => (s.id === 'marketplace.claude.registered' ? { ...s, status: 'unknown' } : s)],
       ['missing plugin', (s) => (s.id === stepIds.pluginInstalled('attention', 'claude') ? { ...s, status: 'pending' } : s)],
-      ['manual follow-up', (s) => (s.id === 'permission.claude.applied' ? { ...s, status: 'manual-follow-up' } : s)],
+      ['manual follow-up', (s) => (s.id === 'statusline.claude.configured' ? { ...s, status: 'manual-follow-up' } : s)],
     ]) {
       const result = reduce({ ...m, steps: m.steps.map(mutate) });
       strictEqual(result.state, 'incomplete', `${label} must not reach complete`);
@@ -214,7 +218,7 @@ describe('runtime completion reducer — false-pass pins (#11)', () => {
 
   it('an APPLICABLE step cannot forge `not-applicable`', async () => {
     const m = await completeMachine();
-    for (const id of ['egress.configured', 'host.codex.present', 'permission.claude.applied']) {
+    for (const id of ['egress.configured', 'host.codex.present', 'statusline.claude.configured']) {
       const result = reduce({ ...m, steps: m.steps.map((s) => (s.id === id ? { ...s, status: 'not-applicable' } : s)) });
       strictEqual(result.state, 'incomplete', `${id} applies to this selection, so it cannot exempt itself`);
       ok(result.unsatisfied.includes(id));
@@ -755,7 +759,7 @@ describe('runtime completion reducer — freshness holds against unbound evidenc
     };
     const current = currentBoundVersions({ probe, selection, runtimeVersion: RUNTIME_VERSION });
     const result = invalidateStaleSteps({
-      steps: [{ id: 'permission.claude.applied', status: 'satisfied' }],
+      steps: [{ id: 'statusline.claude.configured', status: 'satisfied' }],
       probe,
       current,
       selection,
@@ -817,10 +821,10 @@ describe('runtime completion reducer — invalidation is scoped to the selection
   // produced against a CLI they no longer run is its own failure.
   it('a manual-follow-up step is invalidated and its stale fragment cleared', async () => {
     const m = await completeMachine();
-    const steps = m.steps.map((s) => (s.id === 'permission.claude.applied' ? { ...s, status: 'manual-follow-up', fragment_pointer: '~/x/fragment', apply_command: 'apply it' } : s));
+    const steps = m.steps.map((s) => (s.id === 'statusline.claude.configured' ? { ...s, status: 'manual-follow-up', fragment_pointer: '~/x/fragment', apply_command: 'apply it' } : s));
     const { steps: next, invalidated } = invalidateStaleSteps({ steps, probe: m.probe, current: { ...m.current, claude: '2.2.0' }, selection: m.selection, at: AT });
-    ok(invalidated.includes('permission.claude.applied'));
-    const step = next.find((s) => s.id === 'permission.claude.applied');
+    ok(invalidated.includes('statusline.claude.configured'));
+    const step = next.find((s) => s.id === 'statusline.claude.configured');
     strictEqual(step.status, 'pending');
     strictEqual(step.fragment_pointer, null, 'the stale instructions are cleared, not left beside a pending status');
     strictEqual(step.apply_command, null);
@@ -1188,11 +1192,15 @@ describe('runtime completion reducer — duplicate evidence is rejected (ADR-004
     const expected = deriveExpectedSteps({ pluginSet, selection: { plugins } });
     const steps = expected.filter((s) => s.applicable).map((s) => ({ id: s.id, status: 'satisfied' }));
     const smoke = () => passingProof('deep-peer-smoke', current);
+    // ADR-0057 — `proof.permission` is always owed now, so the CONTROL needs it
+    // too; without it the control reduces to configured-not-verified and the
+    // duplicate assertion below would be comparing against a broken baseline.
+    const perm = () => passingProof('permission', current);
 
-    const control = reduceCompletion({ pluginSet, selection: { plugins }, steps, proofs: [smoke()], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION });
+    const control = reduceCompletion({ pluginSet, selection: { plugins }, steps, proofs: [smoke(), perm()], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION });
     strictEqual(control.state, 'complete', `control must be complete: ${JSON.stringify({ unsat: control.unsatisfied, missing: control.missing_steps, proofs: control.proofs.filter((p) => p.required).map((p) => [p.kind, p.status, p.reasons]) })}`);
 
-    const duplicated = reduceCompletion({ pluginSet, selection: { plugins }, steps, proofs: [smoke(), smoke()], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION });
+    const duplicated = reduceCompletion({ pluginSet, selection: { plugins }, steps, proofs: [smoke(), smoke(), perm()], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION });
     strictEqual(duplicated.state, 'incomplete', 'duplicate evidence never reduces past incomplete');
     const evaluated = duplicated.proofs.find((p) => p.kind === 'deep-peer-smoke');
     strictEqual(evaluated.status, 'failed');
@@ -1399,7 +1407,7 @@ describe('legacy completion projection — the disclosure invariant (§3.2)', ()
   });
 
   it('the projection\'s step-id grammar is the PACKAGED schema\'s, not a copy that drifted', async () => {
-    const schema = JSON.parse(await readFile(resolve('plugins/runtime/data/schemas/runtime-bootstrap-run-1.3.json'), 'utf8'));
+    const schema = JSON.parse(await readFile(resolve('plugins/runtime/data/schemas/runtime-bootstrap-run-1.4.json'), 'utf8'));
     // The projection clamps step_id against a regex written in the reducer. If
     // the schema's pattern ever moves, that copy must move with it — so the two
     // are compared here rather than trusted to stay aligned.

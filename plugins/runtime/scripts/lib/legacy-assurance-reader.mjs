@@ -20,7 +20,7 @@
 // may put any of them in a ready set — that is ADR-0056 §Decision 6 rule 1, and
 // the era field exists so rule 1 has something to key on.
 
-import { sanitizeValue } from './permission-sanitize.mjs';
+import { sanitizeValue } from './sanitize.mjs';
 
 /**
  * The nested result version historical reports carried. PRIVATE now: no producer

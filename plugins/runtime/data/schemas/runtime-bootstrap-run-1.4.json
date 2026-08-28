@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "runtime-bootstrap-run-1.3",
+  "$id": "runtime-bootstrap-run-1.4",
   "title": "Bootstrap run manifest",
-  "description": "machine-bootstrap-contract.md §5. The durable record of one machine-bootstrap run. It records CHOICES and HISTORY, never TRUTH (§7): every plan/status/resume/verify re-probes, and a recorded step is invalidated when the versions it was observed against change. Key order here IS the canonical serialization order. 1.2 (ADR-0048 §3) adds the egress evidence vocabulary: the `egress-provider-ack` proof kind with its `provider_ack` member, and the owner receipt attestation verdict on `completion`. The kind-discriminated directions↔provider_ack exclusivity is deliberately NOT expressed here — the validator has no oneOf by design (§4.1); lib/evidence-contract.mjs enforces it fail-closed at every importer/writer/reader boundary.",
+  "description": "machine-bootstrap-contract.md §5. The durable record of one machine-bootstrap run. It records CHOICES and HISTORY, never TRUTH (§7): every plan/status/resume/verify re-probes, and a recorded step is invalidated when the versions it was observed against change. Key order here IS the canonical serialization order. 1.2 (ADR-0048 §3) adds the egress evidence vocabulary: the `egress-provider-ack` proof kind with its `provider_ack` member, and the owner receipt attestation verdict on `completion`. The kind-discriminated directions↔provider_ack exclusivity is deliberately NOT expressed here — the validator has no oneOf by design (§4.1); lib/evidence-contract.mjs enforces it fail-closed at every importer/writer/reader boundary. 1.4 (ADR-0057) is a SEMANTIC bump with no shape change, and the bump is the point: the step REGISTRY changed incompatibly — Stage 6 (`permission.<host>.applied`) was removed with the permission advisor, and `proof.permission` went from fragment-gated to always-applicable with new blockers. Under an unchanged 1.3 stamp an older runtime would accept a run this runtime rewrote, restore the Stage-6 rows from its own registry, and re-enter the deleted permission-fragment path; and an already-terminal pre-removal run would be re-judged as current and owe a proof it can never attach. The bump arms the existing minor fences for both: a newer-minor run is refused rather than resumed, and a legacy-minor terminal run is presented as immutable history.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -572,7 +572,7 @@
           "maxLength": 1024
         },
         "fragment_applied": {
-          "description": "§5 — marks that THIS run rendered a fragment and a post-probe observed the operator applying it; distinct from a pre-existing matching config. The §8.1 `permission` proof is required IFF a permission.*.applied step carries true, so a machine whose permissions already matched does not trip a proof it never needed.",
+          "description": "§5 — marks that THIS run rendered a fragment and a post-probe observed the operator applying it; distinct from a pre-existing matching config. It is written on every step row and remains LIVE for every surviving fragment-rendering step (Stage 4 model/effort; Stage 5 notification, both statuslines, egress launcher). What ADR-0057 removed is the one RULE that READ it: §8.1 used to require the `permission` proof IFF a `permission.*.applied` step carried true. Stage 6 and those steps are gone and `proof.permission` is now unconditionally applicable, so nothing gates on this field any more — but it is NOT a legacy field, and a writer that stopped emitting it would break the surviving fragment steps. Stage 6 stays in the `stage` enum so pre-1.4 runs remain readable; the gap is left rather than renumbering stages 7 and 8.",
           "type": "boolean"
         },
         "failure_class": {

@@ -1,7 +1,7 @@
 // plugins/runtime/scripts/lib/toml.mjs
 //
 // TOML rendering primitives shared by the runtime planners that emit config.toml
-// fragments (notification, egress launcher, permission).
+// fragments (notification, egress launcher, statusline).
 //
 // This leaf exists because the escaper had drifted into two byte-identical copies —
 // one private to scripts/settings.mjs, one exported from lib/notification-plan.mjs with

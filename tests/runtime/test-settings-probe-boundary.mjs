@@ -44,7 +44,7 @@ const PRESENCE_KEYS = [
   // Installed-receiver classification: a local filesystem read, so it is
   // evaluated in BOTH modes rather than being a probe section.
   'receivers', 'receiver_reinstall',
-  'recommendations', 'permission_plan', 'permission_plan_codex', 'notification_plan', 'egress_launcher_plan',
+  'recommendations', 'notification_plan', 'egress_launcher_plan',
 ];
 
 function enoent() {
@@ -105,8 +105,8 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.value, 'fixture-model');
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.source, 'repo config codex_model');
     strictEqual(report.config.resolution_order[0], 'explicit command flags');
-    strictEqual(report.schema_version, 'runtime-settings-1.25');
-    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.25');
+    strictEqual(report.schema_version, 'runtime-settings-1.26');
+    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.26');
   });
 
   it('emits the dual-mode discriminator with null (never empty) probe sections', async () => {
@@ -120,15 +120,16 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     strictEqual(full.report_scope, 'full');
     deepStrictEqual(full.host_cli_probes, { status: 'run', flag: null });
 
-    // Exact 19-entry presence maps.
+    // Exact presence maps — PRESENCE_KEYS above is the contract, and the
+    // deepStrictEqual is what makes a silently added or dropped section red.
     deepStrictEqual(Object.keys(narrowed.section_presence).sort(), [...PRESENCE_KEYS].sort());
     for (const key of PROBE_SECTIONS) strictEqual(narrowed.section_presence[key], 'not_evaluated', `presence[${key}]`);
     strictEqual(narrowed.section_presence.recommendations, 'local_only');
-    strictEqual(narrowed.section_presence.permission_plan, 'not_requested');
-    for (const key of PRESENCE_KEYS.filter((k) => !PROBE_SECTIONS.includes(k) && !['recommendations', 'permission_plan', 'permission_plan_codex', 'notification_plan', 'egress_launcher_plan'].includes(k))) {
+    strictEqual(narrowed.section_presence.notification_plan, 'not_requested');
+    for (const key of PRESENCE_KEYS.filter((k) => !PROBE_SECTIONS.includes(k) && !['recommendations', 'notification_plan', 'egress_launcher_plan'].includes(k))) {
       strictEqual(narrowed.section_presence[key], 'evaluated', `presence[${key}]`);
     }
-    for (const key of PRESENCE_KEYS.filter((k) => !['permission_plan', 'permission_plan_codex', 'notification_plan', 'egress_launcher_plan'].includes(k))) {
+    for (const key of PRESENCE_KEYS.filter((k) => !['notification_plan', 'egress_launcher_plan'].includes(k))) {
       strictEqual(full.section_presence[key], 'evaluated', `full presence[${key}]`);
     }
 
@@ -206,7 +207,6 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
           apply: true,
           target: 'repo',
           desired: { codex_model: 'must-never-land' },
-          permissionPlan: true,
           notificationPlan: true,
           egressLauncherPlan: true,
           runner: recordingRunner(calls),
@@ -242,12 +242,11 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
       const before = await snapshotDir(settingsRoot);
       const codexHome = join(home, '.codex');
       await mkdir(codexHome, { recursive: true });
-      for (let mask = 0; mask < 16; mask++) {
+      for (let mask = 0; mask < 8; mask++) {
         const opts = {
           apply: Boolean(mask & 1),
-          permissionPlan: Boolean(mask & 2),
-          notificationPlan: Boolean(mask & 4),
-          egressLauncherPlan: Boolean(mask & 8),
+          notificationPlan: Boolean(mask & 2),
+          egressLauncherPlan: Boolean(mask & 4),
         };
         const report = await runSettings({
           repoRoot: root,
@@ -278,13 +277,11 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
         homeDir: home,
         env: { CODEX_HOME: codexHome },
         skipHostCliProbes: skip,
-        permissionPlan: true,
         notificationPlan: true,
         egressLauncherPlan: true,
         runner: recordingRunner([]),
       });
       strictEqual(report.dry_run, true, 'plan flags never flip dry_run');
-      ok(report.mutation_boundary.writes_allowed.includes('runs/permission'), `skip=${skip}: permission family enumerated`);
       ok(report.mutation_boundary.writes_allowed.includes('runs/notification'), `skip=${skip}: notification family enumerated`);
       ok(report.mutation_boundary.writes_allowed.includes('runs/egress-launcher'), `skip=${skip}: egress-launcher family enumerated`);
       ok(!report.mutation_boundary.writes_allowed.includes('none; dry-run only'), `skip=${skip}: "dry run" must not render as "no writes"`);
@@ -383,7 +380,7 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     const { stdout } = await execFileAsync(process.execPath, [
       SETTINGS_CLI, '--repo-root', root, '--format', 'json',
       '--skip-host-cli-probes', '--apply', '--target', 'repo', '--model', 'blackbox-model',
-      '--permission-plan', '--notification-plan', '--egress-launcher-plan',
+      '--notification-plan', '--egress-launcher-plan',
     ], bounded);
     strictEqual(await readFile(marker, 'utf8'), '', 'probe-free mode must not invoke any host CLI');
     const report = JSON.parse(stdout);

@@ -135,7 +135,8 @@ From there `runtime:bootstrap` conducts Stages 1–8: it probes both hosts, plan
 a bundle (`base` | `engineering` | `business` | `design` | `full` | `custom`),
 presents the remaining plugin installs (`attention`, `companions`, `designer`,
 `engineer`, `founder`, `image`, `orchestrator`), renders the model/effort,
-notification, and permission fragments, and verifies execution proofs. Each
+notification, statusline, and egress-launcher fragments, and verifies execution
+proofs. Each
 plugin's README documents its invocation surface and environment variables.
 
 ### Cross-machine notification egress (optional)

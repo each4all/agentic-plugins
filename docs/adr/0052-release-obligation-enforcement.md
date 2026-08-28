@@ -131,7 +131,8 @@ are:
 Everything else under `plugins/runtime/docs/` — including
 `machine-bootstrap-contract.md`, `settings-report-contract.md`,
 `artifact-policy.md`, `completion-output-contract.md`, `footer-contract.md`,
-`codex-capability-baseline.md` and `usage-records-source-map.md` — appears only
+`codex-capability-baseline.md` (and, until ADR-0057 deleted it,
+`usage-records-source-map.md`) — appears only
 inside operator-facing message strings and comments. They are documentation
 pointers, not verdict inputs.
 

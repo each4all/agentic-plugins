@@ -17,7 +17,6 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, codexHookStateAttestHint, evaluateCodexHookStateGate, formatCodexHookStateLines, runCommand, runDoctor, codexPerPluginVerbs } from './doctor.mjs';
-import { buildCrossHostPermissionPlan, renderCodexConfigToml } from './lib/permission-plan.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { resolveCodexHome } from './lib/state-readers.mjs';
 import { semverCompare } from './lib/semver.mjs';
@@ -36,18 +35,11 @@ import {
   scanRuntimeConfigLines,
   validateConfigValue,
 } from './lib/runtime-config.mjs';
-import { sanitizeValue } from './lib/permission-sanitize.mjs';
+import { sanitizeValue } from './lib/sanitize.mjs';
 import { buildCodexNotificationPlan } from './lib/notification-plan.mjs';
 import { buildEgressLauncherPlan } from './lib/egress-launcher-plan.mjs';
 import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
 
-// parseCodexPermissionConfigToml is lifted to lib/permission-config.mjs (§1.3
-// extraction 4) so the profile readers share the parser; re-export it here to keep
-// the settings public API (and its test import) unchanged.
-export { parseCodexPermissionConfigToml } from './lib/permission-config.mjs';
-// The permission planner moved to lib/permission-plan.mjs (§1.3); re-exported to
-// preserve settings' public surface for existing importers.
-export { renderCodexConfigToml };
 import {
   EXECUTABLE_PLUGIN_ACTIONS,
   EXECUTABLE_PLUGIN_CLEANUP_ACTIONS,
@@ -96,12 +88,8 @@ import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/
 // settings-report-contract.md §4 requires the constant and its pinning
 // assertions to move together (cross-host review, MAJOR — the shape changed
 // under the old identifier).
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.25';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.26';
 
-// ADR-0038 settings-claude permission plan (M1): how many recent usage records to
-// read per host, and a per-file byte cap, when building the dry-run plan.
-const DEFAULT_PERMISSION_PLAN_MAX_FILES = 100;
-const DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES = 8 * 1024 * 1024;
 // 1.1 → 1.2 (machine-bootstrap-contract.md §1.5, ADR-0046 §5): the plugin-
 // management and cleanup executors are now write-ahead — the artifact gains the
 // nonterminal `planned` / `in-progress` statuses, a per-action `journal[]`, the
@@ -167,9 +155,6 @@ export async function runSettings({
   pluginManagementHost = undefined,
   pluginManagementTimeoutMs = undefined,
   skipHostCliProbes = false,
-  permissionPlan = false,
-  permissionPlanMaxFiles = DEFAULT_PERMISSION_PLAN_MAX_FILES,
-  permissionPlanMaxFileBytes = DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
   notificationPlan = false,
   egressLauncherPlan = false,
   runId = null,
@@ -460,24 +445,6 @@ export async function runSettings({
     );
   }
 
-  // The same --permission-plan flag plans BOTH hosts (ADR-0038 §1 cross-host).
-  // The orchestrator collects/learns once and writes ONE combined cross-host
-  // advisory artifact shared by both sibling report sections.
-  let permissionPlanSection = { requested: false, executed: false, status: 'not_requested' };
-  let permissionPlanCodexSection = { requested: false, executed: false, status: 'not_requested' };
-  if (permissionPlan) {
-    const crossHostPlan = await buildCrossHostPermissionPlan({
-      repoRoot: resolvedRepoRoot,
-      homeDir: resolvedHomeDir,
-      env,
-      now,
-      maxFiles: permissionPlanMaxFiles,
-      maxFileBytes: permissionPlanMaxFileBytes,
-    });
-    permissionPlanSection = crossHostPlan.claude;
-    permissionPlanCodexSection = crossHostPlan.codex;
-  }
-
   // ADR-0040 §4 Codex notification-channel M1 plan: fragment render + plan
   // artifact only (its own runs/notification family; never host config).
   let notificationPlanSection = { requested: false, executed: false, status: 'not_requested' };
@@ -529,7 +496,7 @@ export async function runSettings({
     host_cli_probes: skipHostCliProbes
       ? { status: 'skipped', flag: '--skip-host-cli-probes' }
       : { status: 'run', flag: null },
-    section_presence: buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationPlan, egressLauncherPlan }),
+    section_presence: buildSectionPresence({ skipHostCliProbes, notificationPlan, egressLauncherPlan }),
     receivers: receiverInventory,
     receiver_reinstall: receiverReinstallStep,
     apply,
@@ -538,7 +505,7 @@ export async function runSettings({
     execute_plugin_cleanup: executePluginCleanup,
     attest_codex_hook_review: attestCodexHookReview,
     mutation_boundary: {
-      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview, permissionPlan, notificationPlan, egressLauncherPlan }),
+      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview, notificationPlan, egressLauncherPlan }),
       // The LOGICAL path plus, when they differ, the path the write actually
       // resolved to. A symlinked config is followed by design (dotfiles), so the
       // boundary has to name where the bytes went, not only where the operator
@@ -586,8 +553,6 @@ export async function runSettings({
     session_settings: sessionSettings,
     session_readiness: sessionReadiness,
     entry_readiness: entryReadiness,
-    permission_plan: permissionPlanSection,
-    permission_plan_codex: permissionPlanCodexSection,
     notification_plan: notificationPlanSection,
     egress_launcher_plan: egressLauncherPlanSection,
     artifacts: buildSettingsArtifactReport({
@@ -622,8 +587,6 @@ export async function runSettings({
       'runtime:settings does not write Codex host config; the former --apply-codex-plugin-hooks [features].plugin_hooks write was removed per ADR-0035 §6. Plugin hooks load via generic [features].hooks (default on) plus /hooks review/trust on current Codex; legacy Codex < ~0.134 requires a manual [features].plugin_hooks edit.',
       'Codex hook review/trust attestation records an operator claim only; runtime cannot mutate or independently prove active-session /hooks trust state.',
       'Claude host-native config, auth, secrets, and sandbox/permission settings are not written.',
-      'The permission plan (--permission-plan) reads the Claude allowlist read-only and writes only the agentic-plugins-owned advisory artifact; the .claude/settings.json fragment is emitted for the operator to apply, never written by runtime.',
-      'The Codex permission plan (--permission-plan) reads ~/.codex/config.toml read-only and recommends safety-graded postures (approval_policy/sandbox_mode) + bounded project-trust as a config.toml fragment; never danger-full-access, never written by runtime.',
       'The notification plan (--notification-plan) reads the user-layer ~/.codex/config.toml read-only (mandatory notify read-check; wrapper-chaining preserves an existing notifier) and renders notify=/tui.notifications fragments + receiver scripts into an agentic-plugins-owned plan artifact; host config is never written and the receiver install is an explicit user action.',
       'The egress launcher plan (--egress-launcher-plan) reads the current egress activation state and the personal ~/.claude prototype hooks read-only and records a per-machine activation runbook in an agentic-plugins-owned artifact; it NEVER writes host config, ~/.agentic-plugins/config.local.toml, the credential, or ~/.claude/settings.json, and the credential value is never read (only its presence). Applying the plan is an explicit user action (ADR-0041 §2c/§12).',
       'Companion invocation still uses companions/contract.md --model and --effort.',
@@ -677,7 +640,7 @@ function normalizeConfigValue(value, key) {
   return text;
 }
 
-function mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview, permissionPlan = false, notificationPlan = false, egressLauncherPlan = false }) {
+function mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview, notificationPlan = false, egressLauncherPlan = false }) {
   const allowed = [];
   if (apply) allowed.push('agentic-plugins-owned config files');
   if (executePluginManagement) allowed.push('allowlisted host-native plugin install/update commands');
@@ -686,7 +649,6 @@ function mutationBoundaryWritesAllowed({ apply, executePluginManagement, execute
   // Plan-artifact honesty (settings-report-contract.md §3, both modes): the
   // M1 plan flags write their own artifact families while dry_run stays
   // true — "dry run" must never render as "no writes" while they do.
-  if (permissionPlan) allowed.push('agentic-plugins-owned permission advisory artifact (runs/permission)');
   if (notificationPlan) allowed.push('agentic-plugins-owned notification plan artifact (runs/notification)');
   if (egressLauncherPlan) allowed.push('agentic-plugins-owned egress launcher plan artifact (runs/egress-launcher)');
   return allowed.length > 0 ? allowed.join('; ') : 'none; dry-run only';
@@ -696,7 +658,7 @@ function mutationBoundaryWritesAllowed({ apply, executePluginManagement, execute
 // top-level report section (22 entries). Enum: evaluated | not_evaluated |
 // not_requested | local_only. An empty container or zero counter must never
 // stand in for "not evaluated"; this map carries the semantics.
-function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationPlan, egressLauncherPlan }) {
+function buildSectionPresence({ skipHostCliProbes, notificationPlan, egressLauncherPlan }) {
   const probeState = skipHostCliProbes ? 'not_evaluated' : 'evaluated';
   return {
     clis: probeState,
@@ -721,8 +683,6 @@ function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationP
     limits: 'evaluated',
     overall: 'evaluated',
     recommendations: skipHostCliProbes ? 'local_only' : 'evaluated',
-    permission_plan: permissionPlan ? 'evaluated' : 'not_requested',
-    permission_plan_codex: permissionPlan ? 'evaluated' : 'not_requested',
     notification_plan: notificationPlan ? 'evaluated' : 'not_requested',
     egress_launcher_plan: egressLauncherPlan ? 'evaluated' : 'not_requested',
   };
@@ -2281,7 +2241,7 @@ function summarizeSettings(report) {
     // failed requested plan must never yield an unqualified local pass.
     // Probe-derived counters are null (never 0): a zero would read as
     // "evaluated and clean".
-    const blockedPlanSections = ['permission_plan', 'permission_plan_codex', 'notification_plan', 'egress_launcher_plan']
+    const blockedPlanSections = ['notification_plan', 'egress_launcher_plan']
       .map((key) => report[key])
       .filter((section) => section?.requested && ['blocked', 'failed'].includes(section.status)).length;
     return {
@@ -2639,49 +2599,6 @@ export function formatText(report) {
       lines.push(`  next: ${recommendation.next_step}`);
     }
   }
-  if (report.permission_plan?.requested) {
-    const pp = report.permission_plan;
-    lines.push('');
-    lines.push('Permission Plan (Claude, dry-run)');
-    lines.push(`- status: ${pp.status}; recommendations=${pp.recommended?.count ?? 0}; already-governed=${pp.already_allowed_count ?? 0}; baseline-used=${pp.evidence?.baseline_used ?? false}`);
-    if (pp.sources_scanned) {
-      lines.push(`- records: used=${pp.sources_scanned.used}/${pp.sources_scanned.found}; scan-truncated=${pp.sources_scanned.scan_truncated}; skipped-too-large=${pp.sources_scanned.skipped_too_large}`);
-    }
-    const rec = pp.recommended || {};
-    if (rec.allow?.length) lines.push(`- allow: ${rec.allow.join(', ')}`);
-    if (rec.deny?.length) lines.push(`- deny: ${rec.deny.join(', ')}`);
-    if (rec.ask?.length) lines.push(`- ask: ${rec.ask.join(', ')}`);
-    if (rec.default_mode) lines.push(`- defaultMode: ${rec.default_mode.value} (${rec.default_mode.reason})`);
-    for (const conflict of pp.conflicts ?? []) lines.push(`- conflict: ${conflict.item} — ${conflict.reason}`);
-    if (pp.artifact?.written) lines.push(`- artifact: ${pp.artifact.report_pointer} (latest: ${pp.artifact.latest_pointer})`);
-    if (pp.fragment_text) {
-      lines.push('- fragment (merge into .claude/settings.json, runtime never writes it):');
-      for (const fragmentLine of pp.fragment_text.split('\n')) lines.push(`    ${fragmentLine}`);
-    }
-    for (const limit of pp.limits ?? []) lines.push(`- limit: ${limit}`);
-  }
-  if (report.permission_plan_codex?.requested) {
-    const cp = report.permission_plan_codex;
-    lines.push('');
-    lines.push('Permission Plan (Codex, dry-run)');
-    lines.push(`- status: ${cp.status}; recommendations=${cp.recommended?.count ?? 0}; baseline-used=${cp.evidence?.baseline_used ?? false}`);
-    if (cp.sources_scanned) {
-      lines.push(`- records: used=${cp.sources_scanned.used}/${cp.sources_scanned.found}; scan-truncated=${cp.sources_scanned.scan_truncated}; skipped-too-large=${cp.sources_scanned.skipped_too_large}`);
-    }
-    const hc = cp.host_config || {};
-    lines.push(`- current: approval_policy=${hc.approval_policy ?? '<unset>'}; sandbox_mode=${hc.sandbox_mode ?? '<unset>'}; project-trusted=${hc.project_trusted ?? false}`);
-    const rec = cp.recommended || {};
-    if (rec.approval_policy) lines.push(`- approval_policy: ${rec.approval_policy.value} (${rec.approval_policy.reason})`);
-    if (rec.sandbox_mode) lines.push(`- sandbox_mode: ${rec.sandbox_mode.value} (${rec.sandbox_mode.reason})`);
-    if (rec.project_trust) lines.push(`- project-trust: ${rec.project_trust.path_pointer} trust_level=${rec.project_trust.trust_level} (${rec.project_trust.reason})`);
-    for (const note of cp.isolated_environment_notes ?? []) lines.push(`- isolated-env: ${note}`);
-    if (cp.artifact?.written) lines.push(`- artifact: ${cp.artifact.report_pointer} (latest: ${cp.artifact.latest_pointer})`);
-    if (cp.fragment_text) {
-      lines.push('- fragment (merge into ~/.codex/config.toml, runtime never writes it):');
-      for (const fragmentLine of cp.fragment_text.split('\n')) lines.push(`    ${fragmentLine}`);
-    }
-    for (const limit of cp.limits ?? []) lines.push(`- limit: ${limit}`);
-  }
   if (report.notification_plan?.requested) {
     const np = report.notification_plan;
     lines.push('');
@@ -2737,9 +2654,6 @@ async function readTextIfExists(path) {
     return { ok: false, path, reason: err.code ?? err.message };
   }
 }
-
-// The M1 cross-host permission planner lives in lib/permission-plan.mjs
-// (machine-bootstrap-contract.md §1.3 row 3): gather / pure build / injected persist.
 
 // Atomic write (sibling temp + same-directory rename). The write-ahead
 // settings-execution record (machine-bootstrap-contract.md §1.5) is re-written
@@ -2813,7 +2727,7 @@ function usage() {
     '  [--unset <key>[,<key>...]]  (REMOVE a config key from the selected layer(s) — the only way back to an unset posture,',
     '    e.g. a future-open notify_kinds. Removal is not user-scope-filtered: deleting a key can never activate one.)',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
-    '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--egress-launcher-plan] [--run-id <settings-run-id>]',
+    '  [--notification-plan] [--egress-launcher-plan] [--run-id <settings-run-id>]',
     '  [--expected-plan-hash <sha256>]  (§1.6 drift guard: refuse plugin-management/cleanup execution unless the freshly recomputed plan hash matches)',
     '  [--skip-host-cli-probes]  (probe-free local plan: no runDoctor / host-CLI subprocess probes; rejects --execute-*, --attest-codex-hook-review, --plugin-management-*, --run-id, --expected-plan-hash; --apply and the plan flags stay allowed)',
     '',
@@ -2844,9 +2758,6 @@ export function parseArgs(argv) {
     pluginManagementHost: undefined,
     pluginManagementTimeoutMs: undefined,
     skipHostCliProbes: false,
-    permissionPlan: false,
-    permissionPlanMaxFiles: DEFAULT_PERMISSION_PLAN_MAX_FILES,
-    permissionPlanMaxFileBytes: DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
     notificationPlan: false,
     egressLauncherPlan: false,
     runId: null,
@@ -2888,16 +2799,10 @@ export function parseArgs(argv) {
       opts.pluginManagementTimeoutMs = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--skip-host-cli-probes') {
       opts.skipHostCliProbes = true;
-    } else if (arg === '--permission-plan') {
-      opts.permissionPlan = true;
     } else if (arg === '--notification-plan') {
       opts.notificationPlan = true;
     } else if (arg === '--egress-launcher-plan') {
       opts.egressLauncherPlan = true;
-    } else if (arg === '--permission-plan-max-files') {
-      opts.permissionPlanMaxFiles = parsePositiveInt(requireValue(argv, ++i, arg), arg);
-    } else if (arg === '--permission-plan-max-file-bytes') {
-      opts.permissionPlanMaxFileBytes = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--run-id') {
       opts.runId = validateSettingsRunId(requireValue(argv, ++i, arg));
     } else if (arg === '--expected-plan-hash') {

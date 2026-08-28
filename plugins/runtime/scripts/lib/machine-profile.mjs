@@ -28,11 +28,11 @@
 import { createHash } from 'node:crypto';
 
 import { scrubSecrets } from './egress-channel.mjs';
-import { hasCredentialShape, sanitizeValue } from './permission-sanitize.mjs';
+import { hasCredentialShape, sanitizeValue } from './sanitize.mjs';
 import { CONFIG_KEY_FAMILIES, USER_SCOPE_ONLY_CONFIG_KEYS } from './runtime-config.mjs';
 import { canonicalize } from './schema-validate.mjs';
 
-export const MACHINE_PROFILE_SCHEMA_VERSION = 'agentic-machine-profile-1.2';
+export const MACHINE_PROFILE_SCHEMA_VERSION = 'agentic-machine-profile-1.3';
 export const EGRESS_CREDENTIAL_ENV_VAR = 'TELEGRAM_BOT_TOKEN';
 // ADR-0048 §2.1 — the owner-adopted six-item statusline set, carried in the
 // profile as a SCALAR preset id (1.1-additive). The id names a policy; the
@@ -61,10 +61,26 @@ export const STATUSLINE_PRESET_AGENTIC_6 = 'agentic-6';
 // nothing and keeps the written object canonical before canonicalization touches it.
 export const PROFILE_SESSION_KEYS = Object.freeze([...CONFIG_KEY_FAMILIES.session].sort());
 
-// §4.5.3 / ADR-0038 — the postures that are STORED but never PRESENTED as a default.
-// The stored enum carries them because §4.5.3 shows a source machine's value as a
-// labelled note, and a note needs a field to live in; presentation is where the safety
-// rule bites. Keeping the two lists apart is what resolves that apparent contradiction.
+// §4.5.3 / ADR-0057 (was ADR-0038, superseded) — the postures that are STORED but
+// never PRESENTED as a default. The stored enum carries them because §4.5.3 shows a
+// source machine's value as a labelled note, and a note needs a field to live in;
+// presentation is where the safety rule bites. Keeping the two lists apart is what
+// resolves that apparent contradiction. The BEHAVIOUR survives the advisor's removal
+// unchanged — it is a safety property of profile seeding, not advice — and only the
+// citation moves.
+//
+// ADR-0057 §Decision 6 widened the stored enum with the two modes the host actually
+// accepts and this schema was missing, which forces the question of whether either
+// belongs here. Neither does, and the reason is the rule's own: it refuses to
+// PROPOSE a posture that removes the safety net.
+//   * `dontAsk` ("don't prompt; DENY if not pre-approved") is strictly more
+//     restrictive than `default`. Refusing to propose it would be backwards.
+//   * `auto` ("use a model classifier to approve/deny permission prompts") keeps a
+//     decision-maker in the loop and can deny; `bypassPermissions` bypasses every
+//     check and needs `allowDangerouslySkipPermissions` to take effect at all. They
+//     are not the same category. `auto` is also the posture ADR-0057 documents as
+//     the operator's deliberate cure — a seeder that refused to reproduce it would
+//     contradict the decision that admitted it.
 export const UNSAFE_CLAUDE_MODES = Object.freeze(['bypassPermissions']);
 export const UNSAFE_CODEX_APPROVAL = Object.freeze(['never']);
 export const UNSAFE_CODEX_SANDBOX = Object.freeze(['danger-full-access']);
@@ -245,7 +261,7 @@ function observedFor(probe, host, selection) {
 // is the right precedent — but it is the EGRESS scrub, written for what may leave the
 // machine over Telegram, and its own header says so. A profile is not an egress
 // payload, and the egress scrub alone misses `password=…`, `github_pat_…`, and long
-// hex credentials that `permission-sanitize`'s redactSecrets catches. Using one
+// hex credentials that `lib/sanitize`'s redactSecrets catches. Using one
 // detector because the contract happened to name it, on an artifact it was not written
 // for, is following the citation instead of the reason.
 function isSecretShaped(text) {
@@ -526,7 +542,8 @@ export function profileHash(profile, schema) {
  * Rule 3 is the one with teeth: a source machine's `bypassPermissions`,
  * `approval_policy: "never"`, or `danger-full-access` MUST NOT be presented as a
  * default. The target's safe recommendation wins and the profile's value is shown as a
- * LABELLED NOTE — "present every value as a default" is subordinate to it (ADR-0038).
+ * LABELLED NOTE — "present every value as a default" is subordinate to it (ADR-0057,
+ * superseding ADR-0038; the seeding safety rule outlived the advisory it shipped with).
  * That is why the stored enum can carry an unsafe posture while this cannot propose it:
  * recording what a machine had and recommending it are different acts.
  */
@@ -644,7 +661,7 @@ export function seedProposals({ profile, targetDefaults = {}, validate }) {
   if (UNSAFE_CLAUDE_MODES.includes(claude.defaultMode)) {
     notes.push({
       key: 'permissions.claude.defaultMode',
-      note: `The source machine used '${claude.defaultMode}'. Not proposed as a default: the target's safe recommendation wins (§4.5.3, ADR-0038). Shown so the difference is visible, not so it is copied.`,
+      note: `The source machine used '${claude.defaultMode}'. Not proposed as a default: the target's safe recommendation wins (§4.5.3, ADR-0057). Shown so the difference is visible, not so it is copied.`,
       labelled: 'unsafe-posture-not-proposed',
       source_value: claude.defaultMode,
       proposed_instead: targetDefaults.claudeDefaultMode ?? null,
@@ -664,7 +681,7 @@ export function seedProposals({ profile, targetDefaults = {}, validate }) {
     if (unsafe.includes(codex[key])) {
       notes.push({
         key: `permissions.codex.${key}`,
-        note: `The source machine used '${codex[key]}'. Not proposed as a default (§4.5.3, ADR-0038).`,
+        note: `The source machine used '${codex[key]}'. Not proposed as a default (§4.5.3, ADR-0057).`,
         labelled: 'unsafe-posture-not-proposed',
         source_value: codex[key],
         proposed_instead: targetDefaults[targetKey] ?? null,

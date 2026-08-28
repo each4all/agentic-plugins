@@ -2,10 +2,8 @@
 
 ## Status
 
-Accepted (2026-06-27, PR #449). **Proposed to be superseded** by
-[ADR-0057](0057-permission-advisor-removal.md) (proposed 2026-08-27); this line
-becomes `Superseded by ADR-0057` in the same commit that flips ADR-0057 to
-Accepted. **§6 is NOT superseded and remains in force**: the refusal to ship a
+**Superseded by [ADR-0057](0057-permission-advisor-removal.md)** (2026-08-28).
+Accepted 2026-06-27, PR #449. **§6 is NOT superseded and remains in force**: the refusal to ship a
 permission-relaxing Guard Hook, classified by *effect* rather than by who flips
 the final switch, is a boundary decision about ADR-0035 §4 and is independent of
 whether an advisory exists. ADR-0057 §Decision 8 carries it forward verbatim.

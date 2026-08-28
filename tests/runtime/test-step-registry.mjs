@@ -135,14 +135,32 @@ describe('runtime step registry — applicability is derived, never claimed', ()
     }
   });
 
-  // §5/§8.1: the permission proof is required IFF a fragment was applied — so a
-  // machine whose permissions already matched does not trip a proof it never needed.
-  // (§6.1's table said "iff permission.*.applied is satisfied", a looser restatement
-  // that would demand the proof for a config this run never touched; corrected in C4.)
-  it('proof.permission is applicable iff a fragment was actually applied, not merely satisfied', async () => {
-    strictEqual((await derive('base')).find((s) => s.id === 'proof.permission').applicable, false);
-    const applied = await derive('base', { permissionFragmentApplied: { claude: true, codex: false } });
-    strictEqual(applied.find((s) => s.id === 'proof.permission').applicable, true);
+  // ADR-0057 §Decision 5 — the proof was decoupled from the removed Stage-6 advisory
+  // fragment on BOTH edges. Applicability first: it is now unconditional, matching
+  // `proof.deep-peer-smoke`. Merely DELETING the old gate (rather than replacing it)
+  // would have left it permanently non-applicable, so this asserts `true` on every
+  // bundle rather than on one.
+  it('proof.permission is ALWAYS applicable — the ADR-0035 §4 boundary evidence is never gated on an advisory', async () => {
+    for (const bundle of ['base', 'engineering', 'full']) {
+      strictEqual((await derive(bundle)).find((s) => s.id === 'proof.permission').applicable, true, bundle);
+    }
+  });
+
+  // The second edge, which the first draft of the decoupling would have left broken:
+  // the step used to block on the two Stage-6 rows. Emptying the array is the other
+  // half of the same mistake — a live companion proof that depends on nothing would
+  // be reported reachable on a machine with no authenticated host and no companions.
+  it('proof.permission blocks on the SAME edges as its sibling proof.deep-peer-smoke, not on nothing', async () => {
+    const by = new Map((await derive('full')).map((step) => [step.id, step]));
+    const permission = by.get('proof.permission');
+    const smoke = by.get('proof.deep-peer-smoke');
+    ok(permission.blocked_by.length > 0, 'the removed Stage-6 edges were replaced, not emptied');
+    deepStrictEqual(
+      [...permission.blocked_by].sort(),
+      [...smoke.blocked_by].sort(),
+      'both proofs make the same live companion invocation, so they carry the same edges',
+    );
+    ok(!permission.blocked_by.some((id) => id.startsWith('permission.')), 'no edge survives to a deleted Stage-6 step');
   });
 });
 
@@ -206,11 +224,11 @@ describe('runtime step registry — declinability (§6.2)', () => {
     deepStrictEqual([...hardRequiredClosure(cyclic, ['a'])].sort(), ['a', 'b']);
   });
 
-  it('notify, egress, the permission fragments, and every proof are declinable', async () => {
+  it('notify, egress and every proof are declinable', async () => {
     const steps = await derive('engineering');
     const by = new Map(steps.map((s) => [s.id, s]));
     for (const id of [
-      'notify.configured', 'egress.configured', 'permission.claude.applied', 'permission.codex.applied',
+      'notify.configured', 'egress.configured',
       'proof.deep-peer-smoke', 'proof.workflow-continuation', 'proof.permission',
     ]) {
       strictEqual(by.get(id).declinable, true, `${id} is declinable`);
@@ -251,7 +269,7 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
   // floor (§11.3); THIS is the enforcement.
   it('every step id in the §6.1 table is derivable, and every derived id is in the table', async () => {
     const rows = await parseStepTable();
-    const steps = await derive('full', { permissionFragmentApplied: { claude: true, codex: true } });
+    const steps = await derive('full');
     const derived = new Set(steps.map((s) => s.id));
 
     for (const row of rows) {
@@ -277,7 +295,7 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
 
   it("the table's declinable column agrees with the registry", async () => {
     const rows = await parseStepTable();
-    const steps = await derive('full', { permissionFragmentApplied: { claude: true, codex: true } });
+    const steps = await derive('full');
     const by = new Map(steps.map((s) => [s.id, s]));
 
     for (const row of rows) {
@@ -302,14 +320,14 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
     // bundles that make it true and false. "always" that is really conditional, or a
     // condition naming the wrong plugin, fails here.
     const cases = [
-      { bundle: 'base', fragmentApplied: {}, egressProofRequested: false },
-      { bundle: 'engineering', fragmentApplied: {}, egressProofRequested: false },
-      // The full bundle exercises BOTH manifest-legitimate opt-in seams true.
-      { bundle: 'full', fragmentApplied: { claude: true }, egressProofRequested: true },
+      { bundle: 'base', egressProofRequested: false },
+      { bundle: 'engineering', egressProofRequested: false },
+      // The full bundle exercises the one remaining manifest-legitimate opt-in seam.
+      { bundle: 'full', egressProofRequested: true },
     ];
-    for (const { bundle, fragmentApplied, egressProofRequested } of cases) {
+    for (const { bundle, egressProofRequested } of cases) {
       const plugins = resolveBundle(pluginSet, bundle);
-      const steps = deriveExpectedSteps({ pluginSet, selection: { plugins }, permissionFragmentApplied: fragmentApplied, egressProofRequested });
+      const steps = deriveExpectedSteps({ pluginSet, selection: { plugins }, egressProofRequested });
       const by = new Map(steps.map((s) => [s.id, s]));
       for (const row of rows) {
         const step = by.get(row.id);
@@ -319,7 +337,6 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
         if (/^always$/i.test(prose)) expected = true;
         else if (/iff any selected plugin has `hook_bearing.codex`/.test(prose)) expected = plugins.some((n) => pluginSet.plugins[n].hook_bearing.codex);
         else if (/iff `engineer` ∈ selection/.test(prose)) expected = plugins.includes('engineer');
-        else if (/iff a `permission\.\*\.applied` step carries `fragment_applied: true`/.test(prose)) expected = Object.values(fragmentApplied).some(Boolean);
         else if (/iff the operator opted in/.test(prose)) expected = egressProofRequested === true;
         else throw new Error(`unrecognized applicability prose for ${row.id}: "${prose}" — teach this test the phrasing rather than letting it pass unchecked`);
         strictEqual(step.applicable, expected, `${bundle}/${row.id}: table says "${prose}", registry says applicable=${step.applicable}`);
@@ -339,7 +356,7 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
       .map(([, id, id2, edges]) => ({ ids: [id, id2].filter(Boolean), edges: edges.trim() }));
     ok(rows.length >= 10, `parsed the blocked_by table (${rows.length} rows) — a vacuous parse would pass every assertion below`);
 
-    const steps = await derive('full', { permissionFragmentApplied: { claude: true, codex: true } });
+    const steps = await derive('full');
     const by = new Map(steps.map((s) => [s.id, s]));
     const expand = (id) => (id.includes('<h>') ? ['claude', 'codex'].map((h) => id.replace('<h>', h)) : [id]);
 
@@ -367,8 +384,8 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
 
     // And the specific edges the prose pins by name, in both directions.
     deepStrictEqual(by.get('host.claude.authenticated').blocked_by, ['host.claude.present']);
-    deepStrictEqual(by.get('permission.claude.applied').blocked_by, ['host.claude.present']);
-    deepStrictEqual(by.get('proof.permission').blocked_by, ['permission.claude.applied', 'permission.codex.applied']);
+    ok(by.get('proof.permission').blocked_by.includes('host.codex.authenticated'));
+    ok(by.get('proof.permission').blocked_by.includes(stepIds.pluginInstalled('companions', 'claude')));
     ok(by.get('proof.deep-peer-smoke').blocked_by.includes('host.codex.authenticated'));
     ok(by.get('proof.deep-peer-smoke').blocked_by.includes(stepIds.pluginInstalled('companions', 'claude')));
     ok(by.get('hooks.codex.attested').blocked_by.every((id) => id.startsWith('plugin.')));

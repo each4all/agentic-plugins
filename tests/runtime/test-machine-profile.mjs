@@ -82,6 +82,46 @@ describe('runtime machine profile — build (§4.1)', () => {
     strictEqual(result.ok, true, `built profile is invalid:\n  ${result.errors.join('\n  ')}`);
   });
 
+  // ADR-0057 §Decision 6 — the enum widening, with the controls that stop it
+  // passing vacuously. Measured against the real host: Claude Code 2.1.248
+  // carries ["acceptEdits","auto","bypassPermissions","default","dontAsk","plan"]
+  // as its canonical mode list in its own binary, and this schema was missing
+  // TWO of them. Before the widening, `auto` — this machine's actual posture —
+  // was rejected by the enum exactly as a nonsense string is.
+  describe('permissions.claude.defaultMode — the host-enumerated modes (ADR-0057 §Decision 6)', () => {
+    for (const mode of ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'auto', 'dontAsk']) {
+      it(`accepts \`${mode}\`, which the host accepts`, async () => {
+        const validate = await makeValidator('agentic-machine-profile');
+        const profile = build({ readers: { claudePermission: { allow: [], ask: [], deny: [], default_mode: mode, provenance: 'user-global' } } });
+        const result = validate(profile);
+        strictEqual(result.ok, true, `\`${mode}\` must validate:\n  ${result.errors.join('\n  ')}`);
+      });
+    }
+
+    it('CONTROL: still rejects a value the host does not accept — the widening admits modes, not anything', async () => {
+      const validate = await makeValidator('agentic-machine-profile');
+      const profile = build({ readers: { claudePermission: { allow: [], ask: [], deny: [], default_mode: 'nonsense-xyz', provenance: 'user-global' } } });
+      const result = validate(profile);
+      strictEqual(result.ok, false, 'an unknown mode is still an enum violation');
+      ok(result.errors.some((e) => /defaultMode/.test(e) && /enum/.test(e)), `the error names the field and the enum: ${JSON.stringify(result.errors)}`);
+    });
+
+    it('the two ADDED modes are the two that were missing, and neither is treated as unsafe to seed', async () => {
+      const schema = await loadSchema('agentic-machine-profile');
+      const declared = schema.properties.permissions.properties.claude.properties.defaultMode.enum;
+      // Enumerated from the host binary, not from memory (ADR-0057 §Decision 6).
+      for (const mode of ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'plan']) {
+        ok(declared.includes(mode), `the schema admits the host mode \`${mode}\``);
+      }
+      // `bypassPermissions` is STORED but never PRESENTED as a default; the two
+      // new modes are not in that class and must not be swept into it.
+      // `dontAsk` denies when not pre-approved (stricter than default) and
+      // `auto` keeps a classifier in the loop, so neither removes the net.
+      deepStrictEqual([...UNSAFE_CLAUDE_MODES], ['bypassPermissions'],
+        'widening the stored enum must not widen the never-proposed set');
+    });
+  });
+
   it('carries a hostname HASH, never the raw hostname (§4.2)', () => {
     const profile = build();
     match(profile.source.hostname_hash, /^[0-9a-f]{32}$/);
@@ -521,7 +561,7 @@ describe('machine profile 1.1 — statusline_preset forward-compat (ADR-0048 §2
     const warned = verdict.warnings.filter((w) => /unknown scalar key ignored/.test(w));
     strictEqual(warned.length, 1, `the ignore is WARNED, not silent: ${JSON.stringify(verdict.warnings)}`);
     match(warned[0], /\$\.member\[\d+\]/, 'located by ordinal');
-    match(warned[0], /newer schema minor \(2\) than this runtime reads \(0\)/, 'and the minor relation is stated');
+    match(warned[0], /newer schema minor \(3\) than this runtime reads \(0\)/, 'and the minor relation is stated');
     ok(!warned[0].includes('statusline_preset'), 'an undeclared key is not named back at the reader');
   });
 
@@ -557,7 +597,7 @@ describe('machine profile 1.2 — session family carriage', () => {
   it('carries all three keys as bare scalars and validates as a real artifact', async () => {
     const validate = await makeValidator('agentic-machine-profile');
     const profile = withSession(ALL_SET);
-    strictEqual(profile.schema, 'agentic-machine-profile-1.2');
+    strictEqual(profile.schema, 'agentic-machine-profile-1.3');
     strictEqual(profile.session_capture, 'stop-hook');
     strictEqual(profile.entry_brief, 'startup');
     strictEqual(profile.entry_brief_empty, 'report');
@@ -625,7 +665,7 @@ describe('machine profile 1.2 — session family carriage', () => {
     deepStrictEqual(verdict.errors, [], `the newer-minor scalars are forgiven: ${JSON.stringify(verdict.errors)}`);
     const warned = verdict.warnings.filter((w) => /unknown scalar key ignored/.test(w));
     strictEqual(warned.length, 3, `one warning per ignored key: ${JSON.stringify(verdict.warnings)}`);
-    for (const w of warned) match(w, /newer schema minor \(2\) than this runtime reads \(1\)/);
+    for (const w of warned) match(w, /newer schema minor \(3\) than this runtime reads \(1\)/);
   });
 
   it('a session OBJECT block would be REFUSED at every minor — the control that makes the bare-scalar shape load-bearing', async () => {

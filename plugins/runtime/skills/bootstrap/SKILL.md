@@ -1,6 +1,6 @@
 ---
 name: bootstrap
-description: "Machine-scoped, artifact-only bootstrap lifecycle. Use when the user wants to bring a machine from a bare host to a proven install: probe both host CLIs live, plan a bundle (base|engineering|business|design|full|custom) with hard-dependency closure, print Stage 0 commands for a missing peer host or marketplace registration, render the Stage 4-6 model/effort, notification, statusline, egress launcher, and permission plan fragments per host with backup and revert guidance, present the plugin-management command carrying its plan hash, resume with live re-probe plus proof recording through runtime:doctor --record, verify recorded proof evidence without running a proof to make itself pass, attest the owner's phone receipt, abandon a crashed run, and export/seed a portable secrets-free machine profile. bootstrap never executes; status and verify are read-only; artifacts land only under ~/.agentic-plugins; host config, credentials, and config.local.toml are never written."
+description: "Machine-scoped, artifact-only bootstrap lifecycle. Use when the user wants to bring a machine from a bare host to a proven install: probe both host CLIs live, plan a bundle (base|engineering|business|design|full|custom) with hard-dependency closure, print Stage 0 commands for a missing peer host or marketplace registration, render the Stage 4-5 model/effort, notification, statusline, and egress launcher fragments per host with backup and revert guidance, present the plugin-management command carrying its plan hash, resume with live re-probe plus proof recording through runtime:doctor --record, verify recorded proof evidence without running a proof to make itself pass, attest the owner's phone receipt, abandon a crashed run, and export/seed a portable secrets-free machine profile. bootstrap never executes; status and verify are read-only; artifacts land only under ~/.agentic-plugins; host config, credentials, and config.local.toml are never written."
 ---
 
 # Bootstrap (runtime framework primitive)
@@ -37,8 +37,15 @@ node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile seed   --profile-file
      pre-fills interview defaults. Present each as a default **requiring
      confirmation**; unsafe source values arrive as labelled notes, never
      defaults (the script safety-grades — this skill never overrides that).
+     The ceiling is named rather than implied: a source machine's Claude
+     `bypassPermissions`, Codex `approval_policy = "never"`, or
+     `sandbox_mode = "danger-full-access"` is **never proposed as a target
+     default** — it is shown as a labelled note so the difference is visible,
+     not so it is copied. Recording what a machine had and recommending it are
+     different acts (ADR-0057 §Decision 6, superseding ADR-0038; the seeding
+     safety rule outlived the advisory it shipped alongside).
    - **Ask**: only about declinable steps (notification, statusline — per
-     host, egress, permission fragments, optional plugins, proofs) and the
+     host, egress, optional plugins, proofs) and the
      bundle. Collect decisions into a JSON answers file
      `[{ "step_id", "answer": "decline"|"accept"|"execute"|"attest-receipt" }]`
      and pass it via `--answers` on `plan` or `resume` — the only two verbs

@@ -114,7 +114,7 @@ export const BOOTSTRAP_ARTIFACT_FAMILY = 'bootstrap';
 // rather than relaxing the narrowest door in the evidence writer to accommodate
 // a config-step addition. §7's terminal policy states it; a fresh plan is the
 // recovery for the config steps, and there is none for the lost receipt window.
-export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.3';
+export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.4';
 export const BOOTSTRAP_LATEST_SCHEMA_VERSION = 'runtime-bootstrap-latest-1.0';
 
 // The run-schema minor, parsed locally so the storage layer's no-downgrade guard
@@ -180,7 +180,8 @@ function resolveNowMs(now) {
 }
 
 // Built from an INJECTED clock — never read internally — so callers stay
-// deterministic in tests (the permission-artifacts precedent).
+// deterministic in tests (the precedent was the ADR-0038 permission advisory
+// artifact writer, removed by ADR-0057).
 export function makeBootstrapRunId(now) {
   const d = now instanceof Date ? now : new Date(now);
   const stamp = d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');

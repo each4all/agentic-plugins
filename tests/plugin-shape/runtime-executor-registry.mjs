@@ -679,11 +679,6 @@ export const FS_MUTATION_USERS = {
     stateRoots: ['.agentic-plugins/state/runtime/notify'],
     justification: 'ADR-0040 §1 dedupe claims: wx exclusive create + fd writeSync of the claim record, mkdir reclaim locks + their removal, claim touch/expiry (the bounded retention-deletion grant); ADR-0047 §6 renameSync for capture-verified stale-lock tombstoning and the wx-temp+rename sweep cursor',
   },
-  'permission-artifacts.mjs': {
-    primitives: ['mkdir', 'writeFile', 'rename'],
-    stateRoots: ['.agentic-plugins/runs'],
-    justification: 'ADR-0038 permission plan artifacts (temp+rename) under runs/',
-  },
 };
 
 // The only recursive removals runtime may perform, pinned to the exact

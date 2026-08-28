@@ -44,7 +44,7 @@ import { RUNTIME_VERSION } from './version.mjs';
 import { entryBriefContext } from './context.mjs';
 import { baselineFailure, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
 import { projectRecordedAssurance } from './lib/legacy-assurance-reader.mjs';
-import { sanitizeValue } from './lib/permission-sanitize.mjs';
+import { sanitizeValue } from './lib/sanitize.mjs';
 import { elapsedMsSince } from './lib/clock.mjs';
 import { isClaimExpired, isLockStale, notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
 import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
@@ -123,6 +123,10 @@ const SETTINGS_EXECUTION_NONTERMINAL_STATUSES = new Set(['planned', 'in-progress
 const READABLE_DOCTOR_SCHEMA_PAIRS = Object.freeze([
   Object.freeze({ artifact: 'runtime-doctor-artifact-1.0', report: 'runtime-doctor-1.0' }),
   Object.freeze({ artifact: 'runtime-doctor-artifact-1.1', report: 'runtime-doctor-1.1' }),
+  // 1.2 — ADR-0057 dropped `permission_diagnosis`. Landing the producer bump without
+  // this row would make every artifact recorded after the release `malformed` here,
+  // which blocks the whole Tier 2 doctor row.
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.2', report: 'runtime-doctor-1.2' }),
 ]);
 // ADR-0040 §6 scopes the dashboard to attestation RECENCY. Doctor's stricter
 // CURRENCY judgment (plugin set/version drift, disabled hook state) needs

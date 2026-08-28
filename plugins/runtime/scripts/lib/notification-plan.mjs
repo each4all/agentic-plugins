@@ -1,8 +1,10 @@
 // ADR-0040 §4 Codex notification-channel M1 plan lib.
 //
 // `runtime:settings --notification-plan` plans the two Codex-native attention
-// channels as FRAGMENTS + a recorded plan artifact, per the ADR-0038 M1
-// precedent: render + record ONLY — host config is NEVER written, and the
+// channels as FRAGMENTS + a recorded plan artifact, per the M1 precedent ADR-0038
+// established (that ADR is superseded by ADR-0057, which removed the permission
+// advisory it shipped; the render-and-record SHAPE it introduced outlived it and
+// is what this plan follows): render + record ONLY — host config is NEVER written, and the
 // rendered receiver scripts are NEVER installed by runtime (installing them at
 // the stable home location, e.g. ~/.agentic-plugins/bin/, is an explicit USER
 // action).
@@ -40,11 +42,12 @@
 // The plan artifact reuses the settings-artifact SHAPE (fresh per-run
 // directory + overwritten latest.json singleton) under its own
 // `.agentic-plugins/runs/notification/` family — the same
-// "point-in-time snapshot" reasoning as lib/permission-artifacts.mjs, and the
+// "point-in-time snapshot" reasoning the retired ADR-0038 permission advisory
+// family used (lib/permission-artifacts.mjs, removed by ADR-0057), and the
 // same reason it does NOT share the runs/settings family: doctor reads the
 // latest settings EXECUTION artifact for retry classification, and a plan run
-// overwriting that pointer would clobber it (the exact bug the ADR-0038
-// cross-host artifact consolidation fixed).
+// overwriting that pointer would clobber it (the exact bug the ADR-0038 cross-host
+// artifact consolidation fixed, recorded here as history — see ADR-0057).
 
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile, rename } from 'node:fs/promises';
@@ -699,8 +702,9 @@ function pointer(repoRoot, path) {
   return rel || basename(path);
 }
 
-// Atomic write (temp + same-directory rename) — the permission-artifacts
-// precedent: a crash can never leave a half-written plan.json / latest.json.
+// Atomic write (temp + same-directory rename): a crash can never leave a
+// half-written plan.json / latest.json. (The precedent was the ADR-0038
+// permission advisory artifact writer, removed by ADR-0057; the rule outlived it.)
 async function writeJsonAtomic(path, value) {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${randomBytes(6).toString('hex')}`;
@@ -809,7 +813,7 @@ const RECEIVER_CONTRACT = Object.freeze({
 
 // Build the Codex notification plan section (+ record the plan artifact).
 // Reads the user-layer config.toml READ-ONLY via $CODEX_HOME (mirroring the
-// sibling readCodexPermissionConfig resolution; never a hardcoded ~/.codex),
+// canonical resolveCodexHome form in state-readers.mjs; never a hardcoded ~/.codex),
 // decides direct vs wrapper-chain vs manual-merge, renders every fragment and
 // receiver script as TEXT, and persists one plan artifact per run. Never
 // writes host config; never creates the receiver install dir.
