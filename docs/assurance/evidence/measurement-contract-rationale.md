@@ -35,9 +35,11 @@ check's own `commitShas.checked`. The manifest's `discovered-md` byte total of
 ## Why the pin reads the commit, not the checkout (§2.1)
 
 Measured directly: selecting from the commit tree yields 76 files; selecting
-from the index yields 77, the extra being this contract's own document once it
-was written. A pin resolved from a checkout therefore changes as soon as anyone
-adds a document — including the lanes themselves.
+from the index yields more, and the count keeps climbing as this change adds
+documents of its own — the contract, this rationale, the inventory. That is the
+point rather than an aside: a pin resolved from a checkout changes as soon as
+anyone adds a document, including the lanes themselves, and an earlier draft of
+this sentence was already stale by one when a reviewer read it.
 
 Churn makes this worse rather than theoretical. In the 60 days before the pin
 the three stage documents were touched 52, 81 and 57 times; in the preceding 30
@@ -189,3 +191,85 @@ four further shapes. All now fail.
 
 It also found that the contract itself leaked corpus fingerprints while
 forbidding them. That is why this document exists and why it is not shared.
+
+---
+
+## The §12 margins
+
+The contract lists which clauses the corpus does not exercise; the margins live
+here, because a margin is a corpus reading and §11.2 makes the contract a shared
+input to both lanes.
+
+- **Line endings (§3.5).** No carriage-return byte occurs in any of the 76 corpus
+  files, in the working tree or in the committed blobs, and the repository
+  declares no line-ending attributes. A planted CRLF was verified detectable, so
+  the zero is a property of the corpus and not of the detector.
+- **Optional-role ties inside a binding span (§4.3 rule 2).** Under the minimal
+  binding span the required roles cannot tie by construction, and no optional
+  role in the pinned corpus has two candidates inside its span. The clause exists
+  for a document that later writes two squash shas into one release sentence.
+- **Same-extent multi-family (§3.3).** Exact-extent collisions are realisable
+  under a natural taxonomy — 269 spans in the stage documents attract two labels
+  when the taxonomy lets one pattern subsume another — but the registry's
+  exclusion clauses prevent it, and overlaps of *differing* extent measure zero.
+
+## What the second review round changed
+
+A high-effort multi-agent review of the repaired draft returned 15 findings, all
+reproduced. Four of them meant the contract could not work at all:
+
+- **The block-scope association rule pinned every verdict at `blocked`.** The
+  first draft used a character window; review one showed width changes results,
+  so the repair replaced it with the smallest enclosing markdown block. On this
+  corpus that block is a 34,000-byte table cell holding 33 tag anchors and 49 PR
+  citations: 32 of 33 anchors had more than one candidate in scope, and 87 of 87
+  run-id anchors had more than one date. Both required relations were therefore
+  `ambiguous`, and §8.3 fixed the verdict at `blocked` — no `pass` and no `fail`
+  was reachable on the contract's own pinned corpus.
+
+  The deeper fault is that replacing a distance with a container is still
+  proximity with the width hidden, and `AGENTS.md` already records that this
+  repository abandoned proximity outright for its date-to-id binding in favour of
+  a closed set of exact constructions. The repair had reintroduced a rejected
+  approach in a different guise. §4.2 now uses a minimal binding span, which
+  names no width and no container; measured on the same corpus it yields 86
+  recovered and **0 ambiguous**.
+- **`release-triple` referenced a family its own profile could not contain.** Its
+  `squash` and `marketplace_sync` roles named `commit-citation`, which was bound
+  to `discovered-md` while the relation was `stage-docs` — so the triple was
+  either never measured or unconditionally failing, depending on which reading an
+  author took. Families now carry a list of profiles, and every family measurably
+  occurs in both.
+- **The only `expected_zero` was falsified by the corpus.** It claimed
+  `content-digest` never occurs in the stage documents; measured, 23 runs of more
+  than 40 hex characters do. A conforming producer would emit 23 `unexpected`
+  rows and fail unconditionally. Worse, the claim contradicted a finding this
+  same track had already recorded — that the family has two lexical shapes and
+  the unprefixed one occurs there. `expected_zero` is now empty by measurement.
+- **The manifest digest was normative in three sections and defined nowhere.**
+  Two authors would have picked different values and every comparison would have
+  ended `not-comparable`. §2.1 now fixes the algorithm and the serialisation, and
+  the script produces and verifies it.
+
+Three tooling faults were fail-open rather than fail-closed:
+
+- `ls-tree --format=%(path)` C-quotes a non-ASCII path even under `-z`, so such a
+  file silently left the discovered profile while `verify` printed "no drift".
+  Reproduced with a Korean filename. The fix is `core.quotePath=false`, and the
+  regression test now creates a path the setting affects — the previous test set
+  the option but never exercised it.
+- A bare `pin` defaulted `--commit` to HEAD and overwrote the tracked manifest, a
+  rebaseline as a side effect of running a tool, which §10.2 rule 2 forbids.
+  Reproduced. The earlier repair had closed the flag-present-but-valueless case
+  and left this mirror live — the same half-a-fix shape twice in one change.
+- `show` rendered a manifest pinning zero files as valid and exited 0.
+
+And the registry had no validator at all, which is why three of its defects
+shipped. `scripts/check-family-registry.mjs` now gates it, and its own mutation
+suite reproduces each of the three.
+
+Two comments in the test suite claimed coverage they did not have — that all
+nine shape mutations had a known-failing ancestor when four were already caught,
+and that a gitlink exercised the non-blob branch when no gitlink is created
+anywhere. Both are corrected rather than removed, because the claim was the
+defect, not the test.

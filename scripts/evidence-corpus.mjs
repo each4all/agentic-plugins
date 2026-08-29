@@ -39,6 +39,7 @@
 //   1 — verification failed, or the pinned commit is not available here
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +70,27 @@ export const PROFILES = Object.freeze({
     rule: 'Every tracked markdown file at the repository root or under docs/, excluding generated changelogs (isShaCorpusFile in scripts/check-doc-evidence.mjs).',
   }),
 });
+
+/**
+ * The manifest's self-digest, per contract §2.1.
+ *
+ * Serialisation is fixed by the contract because it is not derivable: the digest
+ * is normative in three places there, and two authors asked to produce "the
+ * manifest digest" would otherwise pick the blob id, a hash of the file bytes,
+ * or a hash of some re-serialisation, and every comparison would end
+ * `not-comparable` before measuring anything.
+ */
+export function manifestDigest(manifest) {
+  const { digest: _omit, ...rest } = manifest;
+  const sortKeys = (v) => {
+    if (Array.isArray(v)) return v.map(sortKeys);
+    if (v && typeof v === 'object') {
+      return Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys(v[k])]));
+    }
+    return v;
+  };
+  return createHash('sha256').update(`${JSON.stringify(sortKeys(rest), null, 2)}\n`, 'utf8').digest('hex');
+}
 
 function git(repoRoot, args, opts = {}) {
   return execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8', maxBuffer: 1 << 28, ...opts });
@@ -101,7 +123,16 @@ export function commitAvailable(repoRoot, commit) {
  * the wrong one for a pin that must reproduce on another machine.
  */
 function treeEntries(repoRoot, commit) {
-  const out = git(repoRoot, ['ls-tree', '-r', '-z', '--format=%(objectmode) %(objecttype) %(objectname) %(objectsize) %(path)', commit]);
+  // `-c core.quotePath=false` is load-bearing, not tidiness. `--format=%(path)`
+  // C-quotes and octal-escapes any path with a non-ASCII byte, a tab, a quote or
+  // a backslash EVEN UNDER `-z`, so such a file arrives as the literal string
+  // `"docs/\\355\\225\\234.md"`. That no longer ends in `.md`, so
+  // `isShaCorpusFile` drops it, `unparsed` stays 0 (the row parsed — only its
+  // value was wrong), and the profile silently loses a file while `verify`
+  // prints "no drift". It is fail-OPEN, and it is exactly the
+  // two-lanes-disagree-on-membership failure this file exists to prevent
+  // (cross-host review finding, reproduced with a Korean filename).
+  const out = git(repoRoot, ['-c', 'core.quotePath=false', 'ls-tree', '-r', '-z', '--format=%(objectmode) %(objecttype) %(objectname) %(objectsize) %(path)', commit]);
   const entries = [];
   let rows = 0;
   let unparsed = 0;
@@ -166,7 +197,8 @@ export function buildManifest(repoRoot, commit) {
     profiles[id] = { membership: spec.membership, rule: spec.rule, files };
   }
 
-  return { schema: MANIFEST_SCHEMA, commit: resolved, generated_by: 'scripts/evidence-corpus.mjs', profiles };
+  const manifest = { schema: MANIFEST_SCHEMA, commit: resolved, generated_by: 'scripts/evidence-corpus.mjs', profiles };
+  return { ...manifest, digest: manifestDigest(manifest) };
 }
 
 /**
@@ -202,6 +234,12 @@ export function validateManifestShape(manifest) {
   const profiles = manifest.profiles;
   if (!profiles || typeof profiles !== 'object') { at('profiles is missing'); return findings; }
 
+  if (typeof manifest.digest !== 'string' || !/^[0-9a-f]{64}$/.test(manifest.digest)) {
+    at('digest is missing or is not a 64-character lowercase hex string (contract §2.1)');
+  } else if (manifest.digest !== manifestDigest(manifest)) {
+    at('digest does not match the manifest it accompanies');
+  }
+
   const declared = Object.keys(PROFILES).sort();
   const present = Object.keys(profiles).sort();
   if (declared.join('\u0000') !== present.join('\u0000')) {
@@ -214,6 +252,10 @@ export function validateManifestShape(manifest) {
     if (p.membership !== spec.membership) findings.push({ kind: 'manifest', profile: id, detail: `membership is ${JSON.stringify(p.membership)}, expected ${JSON.stringify(spec.membership)}` });
     if (p.rule !== spec.rule) findings.push({ kind: 'manifest', profile: id, detail: 'recorded rule text no longer matches the rule this build would apply' });
     if (!Array.isArray(p.files)) { findings.push({ kind: 'manifest', profile: id, detail: 'files is not an array' }); continue; }
+    // The pin side already refuses an empty profile; without the same rule here
+    // `show` rendered a manifest pinning zero files as valid and exited 0 — the
+    // vacuity the pin-side guard exists to prevent (cross-host review finding).
+    if (p.files.length === 0) findings.push({ kind: 'manifest', profile: id, detail: 'profile pins no files; a corpus that matches nothing is a rule failure, not a corpus state' });
     const seen = new Set();
     for (const f of p.files) {
       if (!f || typeof f.path !== 'string') { findings.push({ kind: 'manifest', profile: id, detail: 'a file entry has no path' }); continue; }
@@ -300,10 +342,21 @@ export function main(argv, repoRoot = process.cwd()) {
   if (command === 'pin') {
     let commit; let out;
     try {
-      commit = flag(argv, '--commit', 'HEAD');
+      commit = flag(argv, '--commit', null);
       out = flag(argv, '--out', MANIFEST_PATH);
     } catch (err) {
       console.error(`evidenceCorpus: ${err.message}`);
+      return 1;
+    }
+    // `--commit` has NO default. A bare `pin` used to resolve HEAD and overwrite
+    // the tracked manifest, after which `verify` reported "no drift" against the
+    // new baseline — a rebaseline as a side effect of running a tool, which
+    // contract §10.2 rule 2 forbids. The earlier fix closed only the
+    // flag-present-but-valueless case and left this mirror live (cross-host
+    // review finding, reproduced: 2cb9637/76 files became c1444e1/78 files).
+    if (commit === null) {
+      console.error('evidenceCorpus: pin requires an explicit --commit <rev>.');
+      console.error('  Re-pinning is deliberate and owner-authorised (contract §10.2 rule 2); it is never a default.');
       return 1;
     }
     const availability = commitAvailable(repoRoot, commit);
@@ -342,7 +395,7 @@ export function main(argv, repoRoot = process.cwd()) {
     }
     console.error(`evidenceCorpus: ${result.findings.length} drift finding(s) against ${manifest.commit}`);
     for (const f of result.findings) console.error(`  [${f.kind}] ${f.profile}${f.path ? ` ${f.path}` : ''}: ${f.detail}`);
-    console.error('  Contract §8: re-pin deliberately, and treat any measurement in flight as not-comparable.');
+    console.error('  Contract §10.2: a measurement in flight completes against its own pin or aborts; re-pinning is deliberate and owner-authorised. A mismatched pin is §8.2 not-comparable.');
     return 1;
   }
 

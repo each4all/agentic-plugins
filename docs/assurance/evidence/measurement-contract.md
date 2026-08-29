@@ -1,6 +1,6 @@
 # The evidence measurement contract
 
-Contract version: **1.0.0**
+Contract version: **1.1.0**
 
 This document fixes the semantics that a **typed occurrence exporter** and an
 **independently authored coverage manifest** must share in order to be
@@ -105,6 +105,17 @@ this document because a content digest is indistinguishable in prose from a
 commit citation, and this repository's commit-citation gate reads every markdown
 file under `docs/`.
 
+**The manifest digest**, which §8.2, §10.1 and §11.3 all require both artifacts to
+declare, is the manifest's own `digest` field: the SHA-256, in lowercase hex, of
+the manifest serialised with its `digest` key removed, its object keys in
+lexicographic order, two-space indentation, and a trailing newline. Both the
+algorithm and the serialisation are fixed here because neither is derivable: an
+earlier revision made the digest normative in three places while defining it
+nowhere and producing it nowhere, so two authors would have picked different
+values — the manifest blob id, a hash of the file bytes, a hash of a
+re-serialisation — and every comparison would have ended `not-comparable` before
+measuring anything. `scripts/evidence-corpus.mjs` computes and verifies it.
+
 ### 2.2 Two profiles, not interchangeable
 
 | Profile | Membership | Scope |
@@ -177,9 +188,16 @@ disagreement as `conflicting` on that single row.
 
 The family set is fixed by
 `docs/assurance/evidence/measurement/family-registry.json`. For each family it
-declares an id, its bound profile, its unit, a **recognition rule stated as a
-lexical observable**, its fields with their permitted states, its cardinality,
-and whether it is **required** (§8.1).
+declares an id, its unit, the **profiles** it is bound to, a **recognition rule
+stated as a lexical observable**, its fields with their permitted states, its
+cardinality, and whether it is **required** (§8.1). A family may be bound to more
+than one profile — most data occurs in both — while a *relation* is bound to
+exactly one (§4.1).
+
+The registry is machine-checked by `scripts/check-family-registry.mjs`, wired as
+`npm run validate:family-registry`. Without that check every defect in it ships
+silently, and §8.2 makes an occurrence whose family is not in the registry a
+structural error, so one registry typo turns a whole run `not-comparable`.
 
 Two rules govern the registry:
 
@@ -241,31 +259,61 @@ occurrence rather than on a set means a relation that loses a member is still
 the same relation, reported incomplete, rather than a different relation that
 appears missing.
 
-### 4.2 Association scope is structural, never a character window
+**Every role's family must be bound to the relation's own profile.** A relation
+cannot reference an occurrence its profile does not contain, and a registry that
+declares one is invalid — `scripts/check-family-registry.mjs` rejects it. An
+earlier revision bound two roles of a `stage-docs` relation to a family declared
+only for `discovered-md`, which left the relation either permanently incomplete
+or unconditionally failing depending on which reading an author took.
 
-A role occurrence may be associated with an anchor only if both lie in the same
-**association scope**: the smallest enclosing markdown block — a paragraph, a
-list item, a table cell, or a fenced block — of the anchor.
+### 4.2 Association is by minimal binding span
 
-A character-distance window is **prohibited**. Window width is not a neutral
-implementation detail: this repository's own tooling records that widening a
-proximity window changed which claims were found, and that choosing a different
-candidate within a window produced a false result. A dimension that provably
-changes outcomes cannot be left free (§1.1), and a structural scope is the
-statement of it that names no width.
+A relation instance is a **minimal binding span**: the shortest contiguous run of
+one file's bytes that contains
+
+- the anchor occurrence, and
+- exactly one occurrence of each **required** role's family, and
+- no second occurrence of the **anchor's own family**.
+
+Minimality is what makes this decidable: a longer span that also satisfies the
+first two conditions is not an instance, and a shorter one cannot satisfy them.
+
+**Neither a distance window nor a block scope may be used.** Both were tried and
+both fail on documents of this shape:
+
+- A character-distance window is not a neutral implementation detail. This
+  repository's own tooling records that widening one changed which claims were
+  found, and that choosing a different candidate inside one produced a false
+  result. This repository also abandoned proximity outright for its date-to-id
+  binding, in favour of a closed set of exact constructions, because agreeing and
+  disagreeing distances interleaved and no threshold separated them.
+- A **structural block scope fails the same way, and worse.** An earlier revision
+  of this contract used the smallest enclosing markdown block. That is not a
+  smaller unit here: a single table cell in the pinned corpus holds dozens of
+  anchors and dozens of candidates, so nearly every required role had more than
+  one candidate in scope and the reducer was pinned at `blocked` — the contract
+  could produce neither `pass` nor `fail` on its own corpus. Replacing a distance
+  with a container is still proximity; it just hides the width.
+
+The minimal binding span names no width and no container. It is the same shape as
+the closed-construction rule this repository converged on.
 
 ### 4.3 Candidate selection and ties
 
-Within the association scope, for each role:
+For each role of a relation instance:
 
-1. Candidates are the occurrences of that role's family satisfying the role's
-   declared position relative to the anchor.
-2. If exactly one candidate exists, it fills the role.
-3. If none exists, the role is `unresolved` if required, `not-applicable`
-   otherwise.
-4. **If more than one candidate exists, the role is `ambiguous`.** The
-   comparator does not rank, prefer the nearest, or prefer the first. Ranking is
-   the dimension that produced a false result here before; a tie is reported.
+1. The required roles are already filled: the span exists only because it
+   contains exactly one occurrence of each.
+2. An **optional** role is filled by the single occurrence of its family inside
+   the span, if there is exactly one; by `not-applicable` if there is none; and
+   by `ambiguous` if there is more than one.
+3. If **no** minimal binding span contains a given anchor, the relation is absent
+   at that anchor. A required relation absent where its anchor occurs is
+   `missed`; an anchor that carries no relation claim at all produces no row.
+4. If **two or more distinct minimal binding spans** contain the same anchor, the
+   relation is `ambiguous`. The comparator does not rank them, prefer the nearest,
+   or prefer the first — ranking is the dimension that produced a false result
+   here before.
 
 ### 4.4 Relation comparison
 
@@ -547,17 +595,23 @@ converts an independent measurement into a fitting exercise.
 
 ## 12. Stated but unexercised
 
-Fixed clauses the frozen corpus does not exercise, with the margin. A future
-author who finds an instance moves the clause into the exercised body and records
-the reading that moved it.
+Fixed clauses the frozen corpus does not exercise. **The margins are recorded in
+`measurement-contract-rationale.md`, not here**, and the reason is §1.2: a margin
+is a corpus reading, and §11.2 makes this document a shared input to both lanes.
+An earlier revision stated the margins inline — that no carriage return occurs,
+that no role lies near a cell boundary, that no family pair shares an extent — and
+each of those tells an author what the corpus contains, which is precisely what a
+clean-room author is supposed to determine alone. Naming the clause is enough to
+mark it untested; quantifying it is a leak.
 
-| Clause | Margin |
+| Clause | Why it is listed |
 |---|---|
-| §3.5's line-ending sentence — a producer must not report an index derived from CRLF-to-LF normalisation | No carriage return occurs in any pinned blob, and the repository declares no line-ending attributes. The surrounding rule *is* exercised by hard-wrap flattening; only the line-ending case is not. The corpus reading, not the detector, is what makes this zero. |
-| §4.2's table-cell scope — a table cell as an association scope boundary | Relation anchors do occur inside table cells, but every currently associated role lies far from any cell boundary, so the boundary never decides an association today. It becomes live if a cell is split, and the largest such cell has been growing. Under §4.2 the scope is structural rather than width-based, so this margin no longer depends on a window width. |
-| §3.3's same-extent multi-family case | Families in the registry can in principle claim the same extent, and the registry's exclusion clauses are written to prevent it. No pair currently does. |
+| §3.5's line-ending sentence | The corpus does not exercise line-ending normalisation. |
+| §4.2's optional-role tie rule | The corpus does not exercise an optional role with more than one candidate inside a binding span. |
+| §3.3's same-extent multi-family case | Families can in principle claim the same extent; the registry's exclusion clauses are written to prevent it. |
 
----
+A future author who finds an instance moves the clause into the exercised body
+and records the reading that moved it — in the rationale.
 
 ## 13. What this contract leaves free
 

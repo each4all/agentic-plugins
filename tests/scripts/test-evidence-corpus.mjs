@@ -21,6 +21,7 @@ import {
   PROFILES,
   buildManifest,
   commitAvailable,
+  manifestDigest,
   validateManifestShape,
   verifyManifest,
 } from '../../scripts/evidence-corpus.mjs';
@@ -29,6 +30,25 @@ import { EVIDENCE_DOCS, isShaCorpusFile } from '../../scripts/check-doc-evidence
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const manifest = () => JSON.parse(readFileSync(resolve(REPO_ROOT, MANIFEST_PATH), 'utf8'));
 const clone = (o) => JSON.parse(JSON.stringify(o));
+
+/**
+ * A manifest mutated to stand in for TREE drift, kept self-consistent.
+ *
+ * `verifyManifest` validates shape before comparing, and the shape gate now
+ * includes the self-digest (contract §2.1), so editing a manifest in place also
+ * invalidates its digest and the run stops with a digest finding before any
+ * comparison happens. That ordering is correct — an inconsistent manifest is not
+ * a trustworthy baseline — but it means a test that edits the manifest to
+ * simulate the TREE moving must re-derive the digest, or it tests tampering
+ * instead of drift. These two situations are genuinely different and the suite
+ * covers both: `drifted()` for tree drift, the shape block for tampering.
+ */
+const drifted = (mutate) => {
+  const m = clone(manifest());
+  mutate(m);
+  delete m.digest;
+  return { ...m, digest: manifestDigest(m) };
+};
 
 function gitHistoryUsable() {
   try {
@@ -59,10 +79,9 @@ test('verify reports no drift against the commit the manifest pins', { skip: !gi
 });
 
 test('a changed blob digest is reported as content drift', { skip: !gitHistoryUsable() && 'shallow clone' }, () => {
-  const m = clone(manifest());
+  let original;
+  const m = drifted((x) => { const t = x.profiles['stage-docs'].files[0]; original = t.blob; t.blob = 'f'.repeat(40); });
   const target = m.profiles['stage-docs'].files[0];
-  const original = target.blob;
-  target.blob = 'f'.repeat(40);
   const result = verifyManifest(REPO_ROOT, m);
   assert.equal(result.ran, true);
   const hit = result.findings.find((f) => f.kind === 'content' && f.path === target.path);
@@ -71,9 +90,8 @@ test('a changed blob digest is reported as content drift', { skip: !gitHistoryUs
 });
 
 test('a changed byte count is reported even when the digest is untouched', { skip: !gitHistoryUsable() && 'shallow clone' }, () => {
-  const m = clone(manifest());
+  const m = drifted((x) => { x.profiles['stage-docs'].files[0].bytes += 1; });
   const target = m.profiles['stage-docs'].files[0];
-  target.bytes = target.bytes + 1;
   const result = verifyManifest(REPO_ROOT, m);
   assert.ok(
     result.findings.some((f) => f.kind === 'content' && f.path === target.path),
@@ -82,8 +100,8 @@ test('a changed byte count is reported even when the digest is untouched', { ski
 });
 
 test('a file dropped from the manifest is reported as membership drift', { skip: !gitHistoryUsable() && 'shallow clone' }, () => {
-  const m = clone(manifest());
-  const dropped = m.profiles['discovered-md'].files.pop();
+  let dropped;
+  const m = drifted((x) => { dropped = x.profiles['discovered-md'].files.pop(); });
   const result = verifyManifest(REPO_ROOT, m);
   const hit = result.findings.find((f) => f.kind === 'membership' && f.path === dropped.path);
   assert.ok(hit, 'dropping a file from the manifest must be membership drift');
@@ -91,8 +109,7 @@ test('a file dropped from the manifest is reported as membership drift', { skip:
 });
 
 test('a file invented in the manifest is reported as membership drift', { skip: !gitHistoryUsable() && 'shallow clone' }, () => {
-  const m = clone(manifest());
-  m.profiles['discovered-md'].files.push({ path: 'docs/this-file-does-not-exist.md', blob: 'a'.repeat(40), bytes: 1 });
+  const m = drifted((x) => { x.profiles['discovered-md'].files.push({ path: 'docs/this-file-does-not-exist.md', blob: 'a'.repeat(40), bytes: 1 }); });
   const result = verifyManifest(REPO_ROOT, m);
   const hit = result.findings.find((f) => f.kind === 'membership' && f.path === 'docs/this-file-does-not-exist.md');
   assert.ok(hit, 'a manifest entry with no counterpart in the tree must be membership drift');
@@ -100,8 +117,7 @@ test('a file invented in the manifest is reported as membership drift', { skip: 
 });
 
 test('an unreadable pin fails closed rather than reporting no drift', () => {
-  const m = clone(manifest());
-  m.commit = '0'.repeat(40);
+  const m = drifted((x) => { x.commit = '0'.repeat(40); });
   const result = verifyManifest(REPO_ROOT, m);
   assert.equal(result.ran, false, 'an unresolvable pin must not report a clean run');
   assert.match(result.reason, /not readable/);
@@ -126,6 +142,10 @@ test('an empty tree throws instead of pinning an empty corpus', () => {
     g('init', '-q', '-b', 'main');
     g('config', 'user.email', 'test@example.invalid');
     g('config', 'user.name', 'test');
+    // A contributor with global commit signing on has no key for this address,
+    // so the commit below would throw an opaque execFileSync error. Four sibling
+    // test files in this repo already set this for the same reason.
+    g('config', 'commit.gpgsign', 'false');
     g('commit', '-q', '--allow-empty', '-m', 'empty');
     assert.throws(() => buildManifest(dir, 'HEAD'), /no blob entries parsed/);
   } finally {
@@ -140,6 +160,10 @@ test('an enumerated path missing from the tree throws rather than pinning a shor
     g('init', '-q', '-b', 'main');
     g('config', 'user.email', 'test@example.invalid');
     g('config', 'user.name', 'test');
+    // A contributor with global commit signing on has no key for this address,
+    // so the commit below would throw an opaque execFileSync error. Four sibling
+    // test files in this repo already set this for the same reason.
+    g('config', 'commit.gpgsign', 'false');
     mkdirSync(join(dir, 'docs'), { recursive: true });
     writeFileSync(join(dir, 'docs', 'unrelated.md'), '# unrelated\n');
     g('add', '-A');
@@ -168,9 +192,14 @@ test('the enumerated profile is a subset of the discovered rule, which is why on
 
 // --- shape validation ------------------------------------------------------
 //
-// Every case below was accepted as "no drift" before the cross-host review;
-// each is therefore a regression test with a known-failing ancestor rather
-// than a speculative one.
+// Five of these were accepted as "no drift" before the shape gate existed; the
+// other four were already caught by the content comparison and are kept as
+// belt-and-braces. An earlier version of this comment claimed all nine had a
+// known-failing ancestor, which measurement disproved: reconstructing the
+// pre-gate `verifyManifest` showed the symbolic-ref, unknown-profile,
+// short-blob and non-integer-bytes cases already produced findings, the last
+// two structurally and independent of what HEAD points at (cross-host review
+// finding). Keeping them is cheap; claiming they closed a hole was wrong.
 
 const SHAPE_MUTATIONS = [
   ['a symbolic ref is not a pin', (m) => { m.commit = 'HEAD'; }, /not a full 40-character object name/],
@@ -204,6 +233,8 @@ test('the committed manifest passes shape validation unchanged', () => {
 });
 
 test('verify refuses a structurally invalid manifest before touching git', () => {
+  // Deliberately NOT re-digested: this is the tampering case, and the shape
+  // gate must stop it before any comparison.
   const m = clone(manifest());
   m.commit = 'HEAD';
   const result = verifyManifest(REPO_ROOT, m);
@@ -222,14 +253,21 @@ test('a tree of only the enumerated documents pins both profiles cleanly', () =>
   // and refused the pin. That injection is recorded here rather than left as
   // an assertion, because a test that cannot reach a branch must say so.
   //
-  // What this case does cover: a non-blob tree entry is skipped by TYPE, not
-  // by parse failure, so a tree carrying one still pins.
+  // What this case does cover: a tree of ordinary blobs pins both profiles.
+  // It does NOT cover the `type !== 'blob'` skip — an earlier comment claimed
+  // it did via a submodule-style gitlink, but the tree built here contains only
+  // trees and blobs, and the pinned repository has no gitlink either, so that
+  // branch is unreachable in this suite (cross-host review finding).
   const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-'));
   try {
     const g = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
     g('init', '-q', '-b', 'main');
     g('config', 'user.email', 'test@example.invalid');
     g('config', 'user.name', 'test');
+    // A contributor with global commit signing on has no key for this address,
+    // so the commit below would throw an opaque execFileSync error. Four sibling
+    // test files in this repo already set this for the same reason.
+    g('config', 'commit.gpgsign', 'false');
     g('config', 'core.quotePath', 'true');
     mkdirSync(join(dir, 'docs'), { recursive: true });
     for (const doc of EVIDENCE_DOCS) {
@@ -245,6 +283,78 @@ test('a tree of only the enumerated documents pins both profiles cleanly', () =>
     const built = buildManifest(dir, 'HEAD');
     assert.equal(built.profiles['stage-docs'].files.length, EVIDENCE_DOCS.length);
     assert.ok(built.profiles['discovered-md'].files.length >= EVIDENCE_DOCS.length);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- the digest, and the path-quoting fail-open -----------------------------
+
+test('the manifest carries a self-consistent digest', () => {
+  const m = manifest();
+  assert.match(m.digest, /^[0-9a-f]{64}$/);
+  assert.equal(m.digest, manifestDigest(m), 'the committed digest must match its own manifest');
+});
+
+test('manifestDigest ignores the digest field and key order but not content', () => {
+  const m = manifest();
+  const reordered = JSON.parse(JSON.stringify({ profiles: m.profiles, commit: m.commit, schema: m.schema, generated_by: m.generated_by }));
+  assert.equal(manifestDigest(reordered), manifestDigest(m), 'key order must not change the digest');
+  const changed = clone(m);
+  changed.profiles['stage-docs'].files[0].bytes += 1;
+  assert.notEqual(manifestDigest(changed), m.digest, 'a content change must change the digest');
+});
+
+for (const [label, mutate, pattern] of [
+  ['a missing digest is rejected', (m) => { delete m.digest; }, /digest is missing/],
+  ['a malformed digest is rejected', (m) => { m.digest = 'nope'; }, /digest is missing/],
+  ['a digest that does not match its manifest is rejected', (m) => { m.digest = 'a'.repeat(64); }, /does not match/],
+  ['a profile pinning zero files is rejected on the read path', (m) => { m.profiles['stage-docs'].files = []; }, /pins no files/],
+]) {
+  test(`shape validation: ${label}`, () => {
+    const m = clone(manifest());
+    mutate(m);
+    const findings = validateManifestShape(m);
+    assert.ok(findings.some((f) => pattern.test(f.detail)), `${label}: got ${JSON.stringify(findings)}`);
+  });
+}
+
+test('a path git would C-quote still reaches the discovered profile', () => {
+  // The fail-open the cross-host review found. `ls-tree --format=%(path)`
+  // C-quotes and octal-escapes a non-ASCII path EVEN UNDER `-z`, so without
+  // `core.quotePath=false` the file arrives as a quoted literal, stops ending
+  // in `.md`, silently leaves the profile, and `verify` still says "no drift".
+  // An earlier version of this suite set `core.quotePath true` on the temp repo
+  // but never created a path the setting affects, so it proved nothing.
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-'));
+  try {
+    const g = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+    g('init', '-q', '-b', 'main');
+    g('config', 'user.email', 'test@example.invalid');
+    g('config', 'user.name', 'test');
+    g('config', 'commit.gpgsign', 'false');
+    // Force the hostile setting on, so the test fails if the fix is reverted.
+    g('config', 'core.quotePath', 'true');
+    mkdirSync(join(dir, 'docs'), { recursive: true });
+    for (const doc of EVIDENCE_DOCS) {
+      mkdirSync(join(dir, doc.split('/').slice(0, -1).join('/')), { recursive: true });
+      writeFileSync(join(dir, doc), '# stub\n');
+    }
+    const NON_ASCII = 'docs/한글-노트.md';
+    writeFileSync(join(dir, NON_ASCII), '# note\n');
+    g('add', '-A');
+    g('commit', '-q', '-m', 'non-ascii path');
+
+    const built = buildManifest(dir, 'HEAD');
+    const paths = built.profiles['discovered-md'].files.map((f) => f.path);
+    assert.ok(
+      paths.includes(NON_ASCII),
+      `the non-ASCII path must be pinned verbatim; got ${JSON.stringify(paths)}`,
+    );
+    for (const p of paths) {
+      assert.ok(!p.startsWith('"'), `no path may arrive C-quoted: ${p}`);
+      assert.ok(!p.includes('\\3'), `no path may arrive octal-escaped: ${p}`);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
