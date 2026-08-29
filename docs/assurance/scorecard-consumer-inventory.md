@@ -37,9 +37,10 @@ OUTPUT**: a consumer that keeps passing while measuring less.
 | `tests/scripts/test-doc-evidence-consistency.mjs:81,180,188` | Live enumerated corpus | Aggregate floors only | UNAFFECTED | **stays green while coverage drops** — see §3 |
 | `tests/runtime/test-cutover-audit.mjs` | Synthetic fixtures | Twelve five-cell rows | UNAFFECTED — cannot see live behaviour | same |
 
-A path sweep finds the scorecard named in **16 tracked files**. Only the rows
-above read its *content*; the remainder are prose references, navigation links,
-a workflow staging list, and test fixtures.
+A path sweep finds the scorecard named in **16 tracked files at the measured
+commit** — seventeen once this document is committed, because it names the path
+too. Only the rows above read its *content*; the remainder are prose references,
+navigation links, a workflow staging list, and test fixtures.
 
 ---
 
@@ -101,8 +102,8 @@ does not reveal it — and it is a real consumer of R-row evidence content.
 The R-row evidence cells carry **54 unique run-id tokens**: 38 doctor, 10
 settings, 5 compat, 1 bootstrap.
 
-Of those, **two are pinned by the scorecard and by nothing else** in the tracked
-tree:
+Of those, **two were pinned by the scorecard and by nothing else** in the tracked
+tree as it stood at the measured commit:
 
 | Run id | Row |
 |---|---|
@@ -114,10 +115,18 @@ moved anywhere untracked, retention would stop pinning them and they would
 become deletion candidates. A move to a *tracked* file under `docs/` keeps the
 pin, because the scan is tracked-file-wide rather than path-specific.
 
+**This document changed that reading by making it.** Quoting the two ids above
+gives each of them a second tracked pin, so re-running the measurement against a
+tree that contains this file returns zero rather than two. The finding is not
+thereby fixed: the second pin is incidental to an inventory that exists to be
+read, not a deliberate retention decision, and it disappears the moment this file
+is moved or retired. Treat the two ids as still singly pinned by design, and the
+count above as measured before this document existed.
+
 This is the one finding where the two independent sweeps disagreed. The
 cross-host peer reported 53 tokens and that all of them also occur elsewhere;
 re-measuring found 54 — its family list omitted `bootstrap` — and found the two
-above occurring nowhere else. The disagreement is recorded rather than smoothed
+above occurring nowhere else in the tree as it then stood. The disagreement is recorded rather than smoothed
 over, because it is the difference between a latent risk and a live one.
 
 ---
@@ -169,7 +178,8 @@ validates a cell link; an alternate path, environment override, or packaged copy
 of the scorecard; and any exact coverage floor pinning today's release or date
 counts.
 
-Both sweeps agreed the scorecard path appears in 16 tracked files. Remaining
-matches elsewhere in the checkout are gitignored workflow and peer-run
-artifacts, plus one inactive host-settings backup — recorded copies of the
-pathname, not executable consumers.
+Both sweeps agreed the scorecard path appeared in 16 tracked files at the
+measured commit, before this document joined them. Remaining matches elsewhere
+in the checkout are gitignored workflow and peer-run artifacts, plus one inactive
+host-settings backup — recorded copies of the pathname, not executable
+consumers.
