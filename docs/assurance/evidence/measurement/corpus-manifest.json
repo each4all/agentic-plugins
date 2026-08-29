@@ -1,0 +1,415 @@
+{
+  "schema": "evidence-measurement-corpus-1.0",
+  "commit": "2cb96373b3c82a31c35a69978d3bbf231e30fd38",
+  "generated_by": "scripts/evidence-corpus.mjs",
+  "profiles": {
+    "stage-docs": {
+      "membership": "enumerated",
+      "rule": "The three stage documents that make release and current-proof claims.",
+      "files": [
+        {
+          "path": "docs/ARCHITECTURE.md",
+          "blob": "2c2fef94fa8b66fe7cc3debeade07b3d64119cfa",
+          "bytes": 26414
+        },
+        {
+          "path": "docs/DEVELOPMENT.md",
+          "blob": "f5e07a22bcc38533b929161c5243ea61a2aba911",
+          "bytes": 130803
+        },
+        {
+          "path": "docs/assurance/omcc-cutover-scorecard.md",
+          "blob": "99b33d0e8c1dcd2693b95afa322422e2efa232f6",
+          "bytes": 144842
+        }
+      ]
+    },
+    "discovered-md": {
+      "membership": "discovered",
+      "rule": "Every tracked markdown file at the repository root or under docs/, excluding generated changelogs (isShaCorpusFile in scripts/check-doc-evidence.mjs).",
+      "files": [
+        {
+          "path": "AGENTS.md",
+          "blob": "d235349202788a4874e700458c8de07431e1ff06",
+          "bytes": 35231
+        },
+        {
+          "path": "CLAUDE.md",
+          "blob": "2289604a7e6809009bea9ef42a5411fba612ab62",
+          "bytes": 334
+        },
+        {
+          "path": "README.md",
+          "blob": "b02ec121c6073d6a10ae2cdfb61a3b4aa4c24ce6",
+          "bytes": 8490
+        },
+        {
+          "path": "docs/ARCHITECTURE.md",
+          "blob": "2c2fef94fa8b66fe7cc3debeade07b3d64119cfa",
+          "bytes": 26414
+        },
+        {
+          "path": "docs/DEVELOPMENT.md",
+          "blob": "f5e07a22bcc38533b929161c5243ea61a2aba911",
+          "bytes": 130803
+        },
+        {
+          "path": "docs/adr/0001-hexagonal-architecture.md",
+          "blob": "5b6055828ef92dc5aa1043896320d0c4c8d5d2ee",
+          "bytes": 5845
+        },
+        {
+          "path": "docs/adr/0002-adapter-contract.md",
+          "blob": "67393bc7dc59d7c0ae02b0bc608c886320bb93b9",
+          "bytes": 4736
+        },
+        {
+          "path": "docs/adr/0003-mcp-vs-companion.md",
+          "blob": "1f33a8cab7cc9f015fa1e6661807cd41ee475544",
+          "bytes": 4405
+        },
+        {
+          "path": "docs/adr/0004-companion-ownership.md",
+          "blob": "a972371b2ea9455e0d2c78be4b4e29bb8f9ecf07",
+          "bytes": 4465
+        },
+        {
+          "path": "docs/adr/0005-separate-repo-from-omcc.md",
+          "blob": "97b4c53ddf06b733997f045afe700e0515fc6229",
+          "bytes": 3374
+        },
+        {
+          "path": "docs/adr/0006-directory-layout-install-pattern.md",
+          "blob": "4612f22db08ab6f46b591a6a5564a8a20e62014d",
+          "bytes": 5316
+        },
+        {
+          "path": "docs/adr/0007-migration-cutover-plan.md",
+          "blob": "4219c1cbc88151bd37a212f689b821109665acfc",
+          "bytes": 10132
+        },
+        {
+          "path": "docs/adr/0008-companion-distribution-model.md",
+          "blob": "bab4cb0a70c854811c6577d4569d28ccfcb7bcad",
+          "bytes": 27818
+        },
+        {
+          "path": "docs/adr/0009-companion-contract-v0-1-1-prompt-file-stdin-precedence.md",
+          "blob": "ea3d799c8b7def7e27b76640701555235f86c93f",
+          "bytes": 9527
+        },
+        {
+          "path": "docs/adr/0010-plugin-boundary-policy.md",
+          "blob": "5bc4e43164ce918c4bf29b4a8164e9b4ef494335",
+          "bytes": 44697
+        },
+        {
+          "path": "docs/adr/0011-workflow-continuity-storage.md",
+          "blob": "c01da3eed02ca59cbc557a874a56972b8f55342b",
+          "bytes": 30841
+        },
+        {
+          "path": "docs/adr/0012-omcc-removal-preconditions.md",
+          "blob": "cce1188388469193c3711f6bde4f06767f309e82",
+          "bytes": 9686
+        },
+        {
+          "path": "docs/adr/0014-plugins-research-deprecation.md",
+          "blob": "8299b8ac25a877b0dd59ddc168af6797ab11f361",
+          "bytes": 22002
+        },
+        {
+          "path": "docs/adr/0015-research-archive-timeline-collapse.md",
+          "blob": "059282f561213a14f440087bce4bcd4a23657474",
+          "bytes": 14605
+        },
+        {
+          "path": "docs/adr/0016-cross-package-commit-splitting.md",
+          "blob": "e0336a08686f122707ed07d911b120a315848176",
+          "bytes": 11611
+        },
+        {
+          "path": "docs/adr/0017-stage25-continuity-and-schema-roadmap.md",
+          "blob": "ad82b9f9720954f016aecf4d0e798805e3c6bfc4",
+          "bytes": 19660
+        },
+        {
+          "path": "docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md",
+          "blob": "c9c8f4569c41986405931afc4a78b5bafebbc5ec",
+          "bytes": 21285
+        },
+        {
+          "path": "docs/adr/0019-cross-plugin-invocation-contract.md",
+          "blob": "4bc545eb1059a553aa539da97947b2d84e20c3f4",
+          "bytes": 49963
+        },
+        {
+          "path": "docs/adr/0020-engineer-integrated-workflow-umbrella.md",
+          "blob": "8eb007bea1ef6ca47838f0ff563a00e04ebcc26e",
+          "bytes": 35095
+        },
+        {
+          "path": "docs/adr/0021-codex-command-surface-parity-via-skill-wrappers.md",
+          "blob": "a0eaff49e3190496a99890e15839ff86cf4e02b9",
+          "bytes": 12174
+        },
+        {
+          "path": "docs/adr/0022-engineer-meta-skill-category.md",
+          "blob": "ea8dbc09e091c79f1d6a53e0aa6fb21a36a58552",
+          "bytes": 22135
+        },
+        {
+          "path": "docs/adr/0023-peer-runner-supervisor-layer.md",
+          "blob": "7d55324d4d456bf64a49c1ebc795b95c91c3f11d",
+          "bytes": 18469
+        },
+        {
+          "path": "docs/adr/0024-runtime-operator-control-plane.md",
+          "blob": "d8a7906561c2a254cf03816506e5396e726c6986",
+          "bytes": 10417
+        },
+        {
+          "path": "docs/adr/0025-workflow-storage-migration.md",
+          "blob": "36065372b66997b81e741fd155efef97f5ccb175",
+          "bytes": 10939
+        },
+        {
+          "path": "docs/adr/0026-runtime-compatibility-drift-and-release-notes.md",
+          "blob": "c1d4d3cc3ea07f1bd0b2175454eb1fed30d349f1",
+          "bytes": 6484
+        },
+        {
+          "path": "docs/adr/0027-decide-skill-multi-axis-evolution.md",
+          "blob": "684cb38e8b3820f2f98a84ed64e186a164c254d1",
+          "bytes": 62006
+        },
+        {
+          "path": "docs/adr/0028-engineer-phase7-commit-automation.md",
+          "blob": "e643eb887c0f6bfb3cfca66c591a0795cb6316cd",
+          "bytes": 28210
+        },
+        {
+          "path": "docs/adr/0029-entry-routing-contract-enforcement.md",
+          "blob": "c2af25c31dc0682ed6ae7dd47798fdd1fc528125",
+          "bytes": 20841
+        },
+        {
+          "path": "docs/adr/0030-codex-plugin-hooks-removal-stage-aware-migration.md",
+          "blob": "de9480d0eb22f6fc8c9384544dff8c6070567e8b",
+          "bytes": 5992
+        },
+        {
+          "path": "docs/adr/0031-activation-firing-surface-map.md",
+          "blob": "9a1f3397f67bd10b87cb2304bc8766fc26bcdf01",
+          "bytes": 9544
+        },
+        {
+          "path": "docs/adr/0031-session-level-active-handoff-layer.md",
+          "blob": "272ee3a74b42591f0d5ee864f218e8b13742ccbf",
+          "bytes": 24336
+        },
+        {
+          "path": "docs/adr/0032-codex-per-plugin-command-surface-adoption.md",
+          "blob": "c22c9748163d27559f653ea5918fac725cc439d0",
+          "bytes": 10537
+        },
+        {
+          "path": "docs/adr/0033-ci-full-test-suite-coverage.md",
+          "blob": "054bae264bb6ad191cca32c171706dbeb8dd0e6d",
+          "bytes": 8735
+        },
+        {
+          "path": "docs/adr/0034-codex-plugin-list-read-signal.md",
+          "blob": "22f79eb0635630b8897ac29137aa8232ed10dc42",
+          "bytes": 6868
+        },
+        {
+          "path": "docs/adr/0035-runtime-active-execution-boundary-policy.md",
+          "blob": "f863eb7af684c66734bcd7a308222eca6b73882d",
+          "bytes": 18137
+        },
+        {
+          "path": "docs/adr/0036-founder-persona-business-planning.md",
+          "blob": "61bbebf7ff6b010f0ab52f0d2bef350f303e61f8",
+          "bytes": 34432
+        },
+        {
+          "path": "docs/adr/0037-image-capability-plugin.md",
+          "blob": "e7acc32996a17e07b2b35608467f15fb5a480c50",
+          "bytes": 16919
+        },
+        {
+          "path": "docs/adr/0038-runtime-permission-prompt-advisory.md",
+          "blob": "0b285af1f986d0b528adb0f4fb86da4ecd4d8a0b",
+          "bytes": 16756
+        },
+        {
+          "path": "docs/adr/0039-completion-footer-activation.md",
+          "blob": "1d63631549b9796c62d000e782a05e193c54cd13",
+          "bytes": 19261
+        },
+        {
+          "path": "docs/adr/0040-operator-observability.md",
+          "blob": "8eba30554b8f092b39da5b3cd293d7b8ac8a8a37",
+          "bytes": 40642
+        },
+        {
+          "path": "docs/adr/0041-cross-machine-notification-egress.md",
+          "blob": "86c5bd833bbb567eed5fc5dc0dfda6b95bad3a19",
+          "bytes": 34984
+        },
+        {
+          "path": "docs/adr/0042-designer-persona-design-ux-workbench.md",
+          "blob": "c9973ca397206e758050750d291d79e9c6c26ac4",
+          "bytes": 34762
+        },
+        {
+          "path": "docs/adr/0043-founder-designer-footer-enablement.md",
+          "blob": "4f4b901faf04c01153d2ddf2404d3ea82f74a329",
+          "bytes": 33103
+        },
+        {
+          "path": "docs/adr/0044-session-generic-handoff-capture.md",
+          "blob": "e439b0a051d065e6002884d92a1c1e3bd1a0cb20",
+          "bytes": 45587
+        },
+        {
+          "path": "docs/adr/0045-entry-time-proposal-surfaces.md",
+          "blob": "c1d713da980483fe507fcd781f1995be16c2d54b",
+          "bytes": 41756
+        },
+        {
+          "path": "docs/adr/0046-machine-bootstrap.md",
+          "blob": "eac4b01f5adfbd49e2defcd33568151018996628",
+          "bytes": 38562
+        },
+        {
+          "path": "docs/adr/0047-notify-attention-gating-gc.md",
+          "blob": "3785f5d6a7a98de9d71ec665f287864b3bfd4171",
+          "bytes": 54050
+        },
+        {
+          "path": "docs/adr/0048-bootstrap-observability.md",
+          "blob": "4758b509f160f172e167801d46d37a40306d1d07",
+          "bytes": 18206
+        },
+        {
+          "path": "docs/adr/0049-evidence-as-data.md",
+          "blob": "70791cda184aa76e2529a61d34b39663ca625458",
+          "bytes": 30723
+        },
+        {
+          "path": "docs/adr/0050-fragment-persistence-boundary.md",
+          "blob": "952d7e598445cb193a785cb2e8ffb17410be58de",
+          "bytes": 17795
+        },
+        {
+          "path": "docs/adr/0051-host-parity-baseline-source.md",
+          "blob": "1e1963e00645282a5fca8fe8adac916b702e354b",
+          "bytes": 25483
+        },
+        {
+          "path": "docs/adr/0052-release-obligation-enforcement.md",
+          "blob": "8b0b6adfbee939da28de62471e94576c85645ca5",
+          "bytes": 35156
+        },
+        {
+          "path": "docs/adr/0053-baseline-exactness-and-compatibility-assurance.md",
+          "blob": "8d50c9dc73556590bcc1633fd391b7918664c603",
+          "bytes": 26278
+        },
+        {
+          "path": "docs/adr/0054-assurance-record-schema-and-rollout.md",
+          "blob": "01943d75cecb501855a710b1cf618afd4294c40f",
+          "bytes": 25470
+        },
+        {
+          "path": "docs/adr/0055-image-transparent-background-support.md",
+          "blob": "34371c91c285498ddcb555fe6da086b901245bb6",
+          "bytes": 13093
+        },
+        {
+          "path": "docs/adr/0056-assurance-matcher-removal.md",
+          "blob": "4862b63a38b4a51f66bc6033dd37d88d78b786ff",
+          "bytes": 23048
+        },
+        {
+          "path": "docs/adr/0057-permission-advisor-removal.md",
+          "blob": "a4f881ea7f0bdeb31558393ddaae9af23a275de6",
+          "bytes": 59839
+        },
+        {
+          "path": "docs/adr/README.md",
+          "blob": "5d47c99e571abfb798a83c0664c3f06a90fe35f3",
+          "bytes": 60897
+        },
+        {
+          "path": "docs/adr/template.md",
+          "blob": "d4ff50f3cd0a07ededd54a3419efef559fee4799",
+          "bytes": 921
+        },
+        {
+          "path": "docs/assurance/evidence/README.md",
+          "blob": "50a6da970ec4113b981d7d4996d563b083b41855",
+          "bytes": 5887
+        },
+        {
+          "path": "docs/assurance/grant-reviews/claude-2.1.234-2.1.235-codex-0.147.0.md",
+          "blob": "a46b155b323746a71070d0e02216c7cc77adf0ee",
+          "bytes": 27430
+        },
+        {
+          "path": "docs/assurance/grant-reviews/claude-2.1.236-2.1.237-codex-0.148.0.md",
+          "blob": "a11db3d9021a73bf74547673dc9804a7e32faf6d",
+          "bytes": 70420
+        },
+        {
+          "path": "docs/assurance/grant-reviews/owner-decision-second-grant.md",
+          "blob": "cf101c765b768e2833fd41ca1e4ddcc93a0c689d",
+          "bytes": 9495
+        },
+        {
+          "path": "docs/assurance/grant-reviews/owner-ratification-first-grant.md",
+          "blob": "4b5d7531228e813842fa5084be23079870509ce0",
+          "bytes": 12597
+        },
+        {
+          "path": "docs/assurance/omcc-cutover-scorecard.md",
+          "blob": "99b33d0e8c1dcd2693b95afa322422e2efa232f6",
+          "bytes": 144842
+        },
+        {
+          "path": "docs/assurance/omcc-legacy-pattern-map.md",
+          "blob": "e650e0e761ddb422429c1d536b3a1e32cf9c5f86",
+          "bytes": 12486
+        },
+        {
+          "path": "docs/assurance/runtime-consensus-dogfood-2026-05-29.md",
+          "blob": "add131bdd6ff6cd4bed84f950e28e8622af0af10",
+          "bytes": 9135
+        },
+        {
+          "path": "docs/assurance/statusline-host-truth-2026-07-22.md",
+          "blob": "aeb577466dc7fec75cfd9b6051c8b8d0c79b7aa0",
+          "bytes": 6482
+        },
+        {
+          "path": "docs/audits/2026-05-06-stage25-exit-validation.md",
+          "blob": "a3aa07867fa02ce76dd2fc00d2e8237985a930ed",
+          "bytes": 22650
+        },
+        {
+          "path": "docs/release-proofs/adr0041-headline-egress.md",
+          "blob": "3f419e1b9983429d0614b6d072e1e727f529c280",
+          "bytes": 8311
+        },
+        {
+          "path": "docs/release-proofs/adr0047-notify-gc-acceptance.md",
+          "blob": "374fe0394c3b112221eb8a7330c659f34c1a077d",
+          "bytes": 17380
+        }
+      ]
+    }
+  },
+  "digest": "f0db85799f1c940b051fe6d6a8e5f646cb891b4e58e6c7f4cbe7f0250c7ef1cc"
+}
