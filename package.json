@@ -25,6 +25,7 @@
     "validate:doc-evidence": "node scripts/check-doc-evidence.mjs",
     "validate:release-obligation": "node scripts/check-release-obligation.mjs",
     "validate:evidence-store": "node scripts/check-evidence-store.mjs",
+    "validate:evidence-corpus": "node scripts/evidence-corpus.mjs verify",
     "check:host-drift": "node scripts/check-host-version-drift.mjs",
     "sync:companions": "node scripts/sync-companion-bundles.mjs",
     "sync:marketplace": "node scripts/sync-marketplace-versions.mjs",
