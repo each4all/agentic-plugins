@@ -10,7 +10,7 @@
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -505,25 +505,27 @@ test('pin refuses to overwrite an existing pin without --rebaseline', () => {
   try {
     const out = join(dir, 'pinned.json');
     const commit = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    // A DIFFERENT commit for the second attempt. Re-pinning the same commit
-    // could not distinguish "refused" from "overwrote with identical bytes",
-    // so a write-before-refusal defect would pass (cross-host review finding).
-    const other = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD~1'], { encoding: 'utf8' }).trim();
-    assert.notEqual(commit, other, 'the two commits must differ, or this proves nothing');
 
     const first = runMain(['pin', '--commit', commit, '--out', out], REPO_ROOT);
     assert.equal(first.code, 0, `the first pin must succeed; got ${first.output}`);
-    const frozen = readFileSync(out, 'utf8');
-    assert.match(frozen, new RegExp(commit), 'the first pin must record its own commit');
+    assert.match(readFileSync(out, 'utf8'), new RegExp(commit), 'the first pin must record its own commit');
 
-    const second = runMain(['pin', '--commit', other, '--out', out], REPO_ROOT);
+    // Mark the pinned file, then re-pin the SAME commit. Comparing bytes alone
+    // could not tell "refused" from "overwrote with identical bytes", so a
+    // write-before-refusal defect would pass (cross-host review finding). A
+    // marker only the refusal preserves settles it, and unlike a second commit
+    // it needs no history beyond HEAD.
+    const marked = `${readFileSync(out, 'utf8')}\n// frozen-marker\n`;
+    writeFileSync(out, marked);
+
+    const second = runMain(['pin', '--commit', commit, '--out', out], REPO_ROOT);
     assert.equal(second.code, 1, `a bare re-pin must be refused; got ${second.output}`);
     assert.match(second.output, /already pins a corpus/);
-    assert.equal(readFileSync(out, 'utf8'), frozen, 'a refused re-pin must leave the pinned bytes untouched');
+    assert.equal(readFileSync(out, 'utf8'), marked, 'a refused re-pin must not write at all');
 
-    const forced = runMain(['pin', '--commit', other, '--out', out, '--rebaseline'], REPO_ROOT);
+    const forced = runMain(['pin', '--commit', commit, '--out', out, '--rebaseline'], REPO_ROOT);
     assert.equal(forced.code, 0, `an explicit rebaseline must succeed; got ${forced.output}`);
-    assert.notEqual(readFileSync(out, 'utf8'), frozen, 'an explicit rebaseline must actually replace the pin');
+    assert.notEqual(readFileSync(out, 'utf8'), marked, 'an explicit rebaseline must actually replace the pin');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -645,4 +647,303 @@ test('a manifest pin cannot produce a shape-invalid manifest, which is why one g
   // And the manifest the real repository produces is shape-clean, so the guard
   // has nothing to report on the live path either.
   assert.deepEqual(validateManifestShape(buildManifest(REPO_ROOT, 'HEAD')), []);
+});
+
+test('a pin does not write through a DANGLING symlink at the output path', () => {
+  // Reported by cross-host review against the check-then-write form: a symlink
+  // at the output path was followed and its target written.
+  //
+  // The dangling case is the one that discriminates, and picking the other one
+  // would have made this test decorative. A symlink pointing at an EXISTING
+  // file is refused either way, because `existsSync` resolves the link and
+  // reports true — that version was written first and its mutation did not
+  // bite. Pointing at an ABSENT file, `existsSync` reports false, so
+  // check-then-write proceeds and creates the target through the link, while
+  // exclusive create refuses on the link itself without resolving it:
+  // measured, `wx` returns EEXIST and leaves no target behind.
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-symlink-'));
+  try {
+    const target = join(dir, 'absent-target.json');
+    const link = join(dir, 'pinned.json');
+    symlinkSync(target, link);
+    const commit = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+    const refused = runMain(['pin', '--commit', commit, '--out', link], REPO_ROOT);
+    assert.equal(refused.code, 1, `a symlinked output must be refused; got ${refused.output}`);
+    assert.equal(existsSync(target), false, 'the pin must not be written through the link to its target');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- argument parsing ------------------------------------------------------
+//
+// Being lenient about the SHAPE of a flag is the same failure as being lenient
+// about its absence, and the earlier parser closed only the second. Each row
+// below silently resolved to a default; for `--out` that default is the
+// tracked frozen manifest, so three of them rebaselined the freeze this tool
+// exists to protect and exited 0 (cross-host review finding).
+//
+// Which rows discriminate, measured by restoring the old parser: the two
+// `--name=value` cases fail, and the misspelled / unknown / repeated rows do
+// not — under the old parser those resolve `--out` to the tracked manifest,
+// which then refuses because it already exists. They are kept because that
+// protection is incidental: it disappears the moment `--rebaseline` is also
+// given, which is exactly the reported failure. The rows assert the property
+// that matters either way, which is that the tracked manifest is untouched.
+
+for (const [label, argv] of [
+  ['a misspelled flag', ['pin', '--commit', 'HEAD', '--outt', '/tmp/evidence-corpus-should-not-exist.json']],
+  ['a flag this command does not take', ['pin', '--manifest', '/tmp/x.json', '--commit', 'HEAD']],
+  ['a repeated flag', ['pin', '--commit', 'HEAD', '--commit', 'HEAD~1']],
+  ['a valueless flag', ['pin', '--commit']],
+  ['a bare positional', ['pin', 'HEAD']],
+  ['a value on a boolean flag', ['pin', '--commit', 'HEAD', '--rebaseline=yes']],
+]) {
+  test(`pin refuses ${label} rather than falling back to a default`, () => {
+    const before = readFileSync(resolve(REPO_ROOT, MANIFEST_PATH), 'utf8');
+    const { code, output } = runMain(argv, REPO_ROOT);
+    assert.equal(code, 1, `${label} must be refused; got ${output}`);
+    assert.match(output, /^evidenceCorpus: /, 'every designed failure reports through the evidenceCorpus prefix');
+    // The assertion that matters: the tracked manifest is what the silent
+    // fallback would have written.
+    assert.equal(readFileSync(resolve(REPO_ROOT, MANIFEST_PATH), 'utf8'), before, 'a refused pin must not touch the tracked manifest');
+  });
+}
+
+test('the --name=value form is HONOURED, writing the path the operator named', () => {
+  // The defect was not that `--out=x` was rejected; it was that it silently
+  // resolved to the TRACKED manifest, so `--rebaseline` alongside it destroyed
+  // the freeze while reporting success about a path the operator never chose.
+  // Supporting the form is the fix, so this asserts where the bytes land.
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-eq-'));
+  try {
+    const out = join(dir, 'named.json');
+    const before = readFileSync(resolve(REPO_ROOT, MANIFEST_PATH), 'utf8');
+    const commit = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const { code, output } = runMain(['pin', `--commit=${commit}`, `--out=${out}`], REPO_ROOT);
+    assert.equal(code, 0, `got ${output}`);
+    assert.ok(existsSync(out), 'the named path must be the one written');
+    assert.equal(readFileSync(resolve(REPO_ROOT, MANIFEST_PATH), 'utf8'), before, 'the tracked manifest must be untouched');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('verify refuses --manifest=value rather than checking the default file', () => {
+  // Measured before the fix: this printed "<pinned commit> — no drift" and
+  // exited 0, having verified the default manifest — a gate reporting success
+  // about a file the operator did not name.
+  const { code, output } = runMain(['verify', '--manifest=/does/not/exist.json'], REPO_ROOT);
+  assert.equal(code, 1, `got ${output}`);
+  assert.doesNotMatch(output, /no drift/, 'it must not report on the default manifest');
+});
+
+test('an operator mistake reports through the evidenceCorpus convention, not a raw stack', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-errs-'));
+  try {
+    const missing = runMain(['verify', '--manifest', join(dir, 'absent.json')], REPO_ROOT);
+    assert.equal(missing.code, 1);
+    assert.match(missing.output, /^evidenceCorpus: no manifest at /);
+
+    const bad = join(dir, 'bad.json');
+    writeFileSync(bad, '{ not json');
+    const malformed = runMain(['verify', '--manifest', bad], REPO_ROOT);
+    assert.equal(malformed.code, 1);
+    assert.match(malformed.output, /is not valid JSON/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the verify route itself is exercised, not only its predicate', () => {
+  // `verify` is the route `npm run validate:evidence-corpus` runs, and it had
+  // no test at all — only `show` and `pin` went through main(). Its exit-code
+  // contract held only because Node's default unhandled-rejection policy
+  // happens to exit 1 (cross-host review finding).
+  const { code, output } = runMain(['verify'], REPO_ROOT);
+  assert.equal(code, 0, `the tracked manifest must verify; got ${output}`);
+  assert.match(output, /no drift/);
+});
+
+// --- the fixes the second review round produced -----------------------------
+
+test('a symlinked corpus member is refused, not pinned as its target string', () => {
+  // Git records a symlink as type `blob` with mode 120000 and the link TARGET
+  // STRING as the content, so pinning one records the blob and byte count of
+  // that string while the consuming lane reads the resolved file. Measured on
+  // an aliased note: pinned as 14 bytes, read back as 80, zero shape findings,
+  // and `verify` reporting no drift forever because both sides read the same
+  // link blob (cross-host review finding).
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-link-'));
+  try {
+    const g = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+    g('init', '-q', '-b', 'main');
+    g('config', 'user.email', 'test@example.invalid');
+    g('config', 'user.name', 'test');
+    g('config', 'commit.gpgsign', 'false');
+    for (const doc of EVIDENCE_DOCS) {
+      mkdirSync(join(dir, doc.split('/').slice(0, -1).join('/')), { recursive: true });
+      writeFileSync(join(dir, doc), '# stub\n');
+    }
+    g('add', '-A');
+    g('commit', '-q', '-m', 'stubs');
+
+    // Control: without the symlink this tree pins cleanly.
+    assert.ok(buildManifest(dir, 'HEAD').profiles['discovered-md'].files.length >= EVIDENCE_DOCS.length);
+
+    writeFileSync(join(dir, 'docs', 'target-note.md'), '# a note with content longer than its own path\n');
+    symlinkSync('target-note.md', join(dir, 'docs', 'aliased-note.md'));
+    g('add', '-A');
+    g('commit', '-q', '-m', 'symlinked member');
+    const rows = execFileSync('git', ['-C', dir, 'ls-tree', '-r', 'HEAD'], { encoding: 'utf8' });
+    assert.match(rows, /^120000 blob /m, 'setup must actually produce a symlink row');
+
+    assert.throws(() => buildManifest(dir, 'HEAD'), /mode 120000|only regular files/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an enumerated document absent from the pin is a verdict, not a thrown stack', () => {
+  // The single most likely real drift: EVIDENCE_DOCS gains a fourth stage
+  // document, or one is renamed. `buildManifest` throws for it, and
+  // `verifyManifest` used to let that escape — killing the suite on an
+  // unhandled exception and handing a programmatic caller a throw where the
+  // exported API promises {ran:false, reason} (cross-host review finding).
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-absent-'));
+  try {
+    const g = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+    g('init', '-q', '-b', 'main');
+    g('config', 'user.email', 'test@example.invalid');
+    g('config', 'user.name', 'test');
+    g('config', 'commit.gpgsign', 'false');
+    mkdirSync(join(dir, 'docs'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'unrelated.md'), '# note\n');
+    g('add', '-A');
+    g('commit', '-q', '-m', 'no stage docs');
+    const head = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+    const m = clone(manifest());
+    m.commit = head;
+    delete m.digest;
+    const result = verifyManifest(dir, { ...m, digest: manifestDigest(m) });
+    assert.equal(result.ran, false, 'it must report a reason, not throw');
+    assert.match(result.reason, /cannot be rebuilt/);
+    assert.deepEqual(result.findings, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a self-consistent manifest that no re-pin reproduces is reported', () => {
+  // Shape validation only asks whether the digest matches the manifest it
+  // accompanies, which a hand-edited file satisfies by recomputing it. The
+  // digest is the value the two lanes must agree on, so both could verify
+  // cleanly and still disagree (cross-host review finding).
+  const m = clone(manifest());
+  m.generated_by = 'hand-written-by-someone-else';
+  delete m.digest;
+  const forged = { ...m, digest: manifestDigest(m) };
+  assert.deepEqual(validateManifestShape(forged), [], 'it is self-consistent, which is the point');
+  const result = verifyManifest(REPO_ROOT, forged);
+  assert.ok(
+    result.findings.some((f) => f.kind === 'digest'),
+    `a non-reproducible digest must be a finding; got ${JSON.stringify(result.findings)}`,
+  );
+});
+
+test('a profile name containing a NUL cannot collapse the shape gate', () => {
+  // Joining ids on U+0000 and comparing strings let one crafted key stand in
+  // for both real ids, after which every per-profile rule was skipped and a
+  // zero-file manifest read as valid (cross-host review finding).
+  const collapsing = `discovered-md${String.fromCharCode(0)}stage-docs`;
+  const m = clone(manifest());
+  m.profiles = { [collapsing]: { membership: 'discovered', rule: 'x', files: [] } };
+  delete m.digest;
+  const findings = validateManifestShape({ ...m, digest: manifestDigest(m) });
+  assert.ok(findings.length > 0, 'the crafted profile name must not pass the profile-set gate');
+  assert.match(JSON.stringify(findings), /profiles are/);
+});
+
+test('--rebaseline replaces an existing pin and refuses to stand in for a first one', () => {
+  // A --rebaseline that also serves as a first pin turns the flag into a
+  // guard-skip: added once for idempotence, it disables the freeze for good
+  // with no signal (cross-host review finding).
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-first-'));
+  try {
+    const out = join(dir, 'absent.json');
+    const commit = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const { code, output } = runMain(['pin', '--commit', commit, '--out', out, '--rebaseline'], REPO_ROOT);
+    assert.equal(code, 1, `got ${output}`);
+    assert.match(output, /nothing to rebaseline/);
+    assert.equal(existsSync(out), false, 'and it must not have written one');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('--rebaseline does not write through a symlink either', () => {
+  // The unhardened branch was the one operators actually use with an
+  // operator-supplied --out: measured, it left the link in place and rewrote
+  // the target with manifest JSON (cross-host review finding).
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-relink-'));
+  try {
+    const target = join(dir, 'target.json');
+    const link = join(dir, 'pinned.json');
+    const original = 'ORIGINAL TARGET\n';
+    writeFileSync(target, original);
+    symlinkSync(target, link);
+    const commit = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const { code, output } = runMain(['pin', '--commit', commit, '--out', link, '--rebaseline'], REPO_ROOT);
+    assert.equal(code, 1, `got ${output}`);
+    assert.equal(readFileSync(target, 'utf8'), original, 'the symlink target must not be written through');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a tampered manifest is not reported as drift with rebaseline advice', () => {
+  // Reporting manifest-level findings as "drift" and then printing the
+  // rebaseline pointer aimed the operator at the one command that destroys the
+  // freeze, for a file whose correct repair is to restore it (cross-host
+  // review finding).
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-tamper-'));
+  try {
+    const m = clone(manifest());
+    m.schema = 'wrong';
+    const path = join(dir, 'tampered.json');
+    writeFileSync(path, `${JSON.stringify(m, null, 2)}\n`);
+    const { code, output } = runMain(['verify', '--manifest', path], REPO_ROOT);
+    assert.equal(code, 1);
+    assert.match(output, /manifest finding\(s\) in/);
+    assert.match(output, /Restore it; do not re-pin/);
+    assert.doesNotMatch(output, /re-pinning is deliberate/, 'rebaseline advice must not appear for tampering');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a partial clone fails closed rather than driving a lazy refetch', () => {
+  // `--filter=blob:none` is not shallow, so the shallow check passed and `-l`
+  // then needed every blob size (cross-host review finding).
+  const dir = mkdtempSync(join(tmpdir(), 'evidence-corpus-partial-'));
+  try {
+    const g = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+    g('init', '-q', '-b', 'main');
+    g('config', 'user.email', 'test@example.invalid');
+    g('config', 'user.name', 'test');
+    g('config', 'commit.gpgsign', 'false');
+    writeFileSync(join(dir, 'README.md'), '# x\n');
+    g('add', '-A');
+    g('commit', '-q', '-m', 'x');
+    // Control: an ordinary repository is available.
+    assert.equal(commitAvailable(dir, 'HEAD').ok, true);
+    g('config', 'remote.origin.promisor', 'true');
+    const result = commitAvailable(dir, 'HEAD');
+    assert.equal(result.ok, false, 'a promisor remote must fail closed');
+    assert.match(result.reason, /partial clone/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

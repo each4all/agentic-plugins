@@ -1,6 +1,13 @@
 #!/usr/bin/env node
-// The frozen corpus for the evidence measurement contract
-// (docs/assurance/evidence/measurement-contract.md §2).
+// The frozen corpus for the evidence measurement contract.
+//
+// THE NORMATIVE CONTRACT IS NOT IN THE TREE YET. It is the deliverable of a
+// later subtask on this track, and the section numbers below are FORWARD
+// references to it, not citations an operator can look up today. They are kept
+// because they name which clause each rule implements, and because the
+// alternative — inventing prose here — is the second-copy-of-a-rule failure
+// this file's own header warns about. Nothing user-facing cites them: the
+// stderr an operator reads states the rule in full instead.
 //
 // The contract pins a corpus so that a typed occurrence exporter and an
 // independently authored coverage manifest describe the SAME bytes. Two
@@ -40,11 +47,17 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { EVIDENCE_DOCS, isShaCorpusFile } from './check-doc-evidence.mjs';
+
+// Derived from this module, never from the process working directory. Every
+// sibling script in this directory does the same, and the alternative was
+// measured to matter: `cd docs && node ../scripts/evidence-corpus.mjs verify`
+// resolved the manifest to `docs/docs/...` and died with a raw ENOENT.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 export const MANIFEST_PATH = 'docs/assurance/evidence/measurement/corpus-manifest.json';
 export const MANIFEST_SCHEMA = 'evidence-measurement-corpus-1.0';
@@ -128,6 +141,25 @@ export function commitAvailable(repoRoot, commit) {
     if (git(repoRoot, ['rev-parse', '--is-shallow-repository']).trim() === 'true') {
       return { ok: false, reason: 'repository is a shallow clone (fetch-depth: 0 required)' };
     }
+    // A PARTIAL clone is not a shallow one, and this docstring claims the whole
+    // "every blob lookup misses" class. `--filter=blob:none` reports
+    // `is-shallow: false`, so the gate passed and `-l` — which needs every
+    // blob's size — then either re-downloaded the entire repository at gate
+    // time, defeating the filter, or died with raw promisor errors. Neither is
+    // the designed NOT RUN verdict (cross-host review finding).
+    // `git config --get-regexp` exits 1 when nothing matches, which
+    // `execFileSync` raises — and the surrounding catch would report that as
+    // "commit not readable". A no-match is the ordinary case, so it is read
+    // here rather than thrown.
+    let promisor = '';
+    try {
+      promisor = git(repoRoot, ['config', '--get-regexp', String.raw`^remote\..*\.promisor$`]).trim();
+    } catch {
+      promisor = '';
+    }
+    if (promisor.split('\n').some((line) => line.endsWith(' true'))) {
+      return { ok: false, reason: 'repository is a partial clone (a blobless filter cannot supply the tree sizes this pin records)' };
+    }
     git(repoRoot, ['rev-parse', '--verify', `${commit}^{commit}`]);
     return { ok: true, reason: null };
   } catch (err) {
@@ -178,7 +210,10 @@ function treeEntries(repoRoot, commit) {
   // differing only in their invalid byte collapse onto one string. Refusing is
   // right rather than conservative: nothing in this corpus has such a path, so
   // the choice is between a loud stop and a silently wrong pin.
-  const out = git(repoRoot, ['ls-tree', '-r', '-l', '-z', commit], { encoding: 'buffer' });
+  // `--full-tree` so the walk is rooted at the commit, not at the process's
+  // directory: `git ls-tree -r HEAD` from `docs/` was measured to return 13
+  // rows against 794 from the root.
+  const out = git(repoRoot, ['ls-tree', '-r', '-l', '-z', '--full-tree', commit], { encoding: 'buffer' });
   const strict = new TextDecoder('utf-8', { fatal: true });
   const records = [];
   let start = 0;
@@ -207,6 +242,20 @@ function treeEntries(repoRoot, commit) {
     if (!m) { unparsed += 1; continue; }
     const [, mode, type, blob, size, path] = m;
     if (type !== 'blob') continue;
+    // A SYMLINK is also type `blob`: git stores mode 120000 with the link
+    // TARGET STRING as the blob content. Pinning one records the blob and byte
+    // count of that string while the consuming lane reads the resolved file —
+    // measured, an aliased note pinned as 14 bytes read back as 80, with zero
+    // shape findings and `verify` reporting no drift forever, because both the
+    // pin and the re-derivation read the same link blob. A link that resolves
+    // outside the repository is admitted just as quietly. Since `mode` is not
+    // recorded, a 100644 <-> 120000 flip at an unchanged path is structurally
+    // invisible too. Refusing is the honest posture and matches the byte check
+    // above: nothing in this corpus is a symlink, so the choice is between a
+    // loud stop and a silently wrong pin.
+    if (mode !== '100644' && mode !== '100755') {
+      throw new Error(`${path} in ${commit} has mode ${mode}; only regular files can be pinned faithfully (a symlink blob holds its target string, not the file)`);
+    }
     entries.push({ path, blob, bytes: size === '-' ? null : Number(size), mode });
   }
   // A parse that yields nothing is a parser failure, not an empty repository.
@@ -273,8 +322,13 @@ export function buildManifest(repoRoot, commit) {
  * are no longer describing the same document set, a CONTENT change means the
  * bytes under an unchanged path moved, and an UNREADABLE commit means the
  * comparison cannot be made at all. Only the third is a reason to stop
- * without a verdict; the first two are the rebaseline trigger the contract
- * names in §8.
+ * without a verdict; the first two are drift the operator has to resolve.
+ *
+ * An earlier revision called them "the rebaseline trigger the contract names in
+ * §8". Checked against the draft contract, §8 is the verdict table and states no
+ * rebaseline rule at all, and its §8.2 makes a mismatched pin `not-comparable` —
+ * the opposite of a licence to re-pin. Drift is a question for the owner, not an
+ * instruction to move the baseline.
  */
 /**
  * Structural validation, run before any comparison.
@@ -299,14 +353,23 @@ export function validateManifestShape(manifest) {
   if (!profiles || typeof profiles !== 'object') { at('profiles is missing'); return findings; }
 
   if (typeof manifest.digest !== 'string' || !/^[0-9a-f]{64}$/.test(manifest.digest)) {
-    at('digest is missing or is not a 64-character lowercase hex string (contract §2.1)');
+    at('digest is missing or is not a 64-character lowercase hex string');
   } else if (manifest.digest !== manifestDigest(manifest)) {
     at('digest does not match the manifest it accompanies');
   }
 
   const declared = Object.keys(PROFILES).sort();
   const present = Object.keys(profiles).sort();
-  if (declared.join('\u0000') !== present.join('\u0000')) {
+  // Compared element-wise. Joining on U+0000 and comparing the strings looks
+  // equivalent and is not: a JSON key may itself contain U+0000, so a single
+  // profile named `"discovered-md\u0000stage-docs"` joined to the same string
+  // as the two real ids, passed this gate, and then collapsed every per-profile
+  // rule below to zero checks because neither real id was present. Measured: a
+  // manifest pinning 0 files in that shape was shape-clean and `show` rendered
+  // it (cross-host review finding).
+  const sameProfiles = declared.length === present.length
+    && declared.every((id, i) => id === present[i]);
+  if (!sameProfiles) {
     at(`profiles are [${present.join(', ')}], expected exactly [${declared.join(', ')}]`);
   }
 
@@ -339,8 +402,37 @@ export function verifyManifest(repoRoot, manifest) {
   const availability = commitAvailable(repoRoot, manifest.commit);
   if (!availability.ok) return { ran: false, reason: availability.reason, findings: [] };
 
-  const fresh = buildManifest(repoRoot, manifest.commit);
+  // `buildManifest` THROWS for several real drift shapes — an enumerated
+  // document that is absent from the pinned commit, a symlinked member, a
+  // non-UTF-8 path. Letting those escape turned the single most likely real
+  // drift (EVIDENCE_DOCS gaining a fourth stage document) into a raw stack
+  // instead of the `[membership]` finding this function's own contract
+  // promises, and killed the suite on an unhandled exception before its
+  // readable assertion (cross-host review finding).
+  let fresh;
+  try {
+    fresh = buildManifest(repoRoot, manifest.commit);
+  } catch (err) {
+    return { ran: false, reason: `the corpus at ${manifest.commit} cannot be rebuilt: ${err.message}`, findings: [] };
+  }
+
   const findings = [];
+  // The manifest's self-digest must be the one a fresh pin of the same commit
+  // produces. Shape validation only checks that the digest matches the manifest
+  // it accompanies, which a hand-edited file satisfies by recomputing it — so a
+  // manifest with an altered `generated_by`, an extra key, or a reordered files
+  // array verified clean while computing a different digest from the one this
+  // tool would write. The digest is the value the two measurement lanes must
+  // agree on, so lanes handed such a manifest would each verify successfully and
+  // then disagree for a reason no gate could attribute (cross-host review
+  // finding). `fresh` is already built; one comparison closes it.
+  if (manifest.digest !== fresh.digest) {
+    findings.push({
+      kind: 'digest',
+      profile: null,
+      detail: `the manifest's digest ${manifest.digest} is not the digest a pin of ${manifest.commit} produces (${fresh.digest}); it is self-consistent but not reproducible`,
+    });
+  }
   const profileIds = new Set([...Object.keys(fresh.profiles), ...Object.keys(manifest.profiles ?? {})]);
 
   for (const id of [...profileIds].sort()) {
@@ -366,25 +458,91 @@ export function verifyManifest(repoRoot, manifest) {
 }
 
 function readManifest(repoRoot, path) {
-  return JSON.parse(readFileSync(resolve(repoRoot, path), 'utf8'));
+  const full = resolve(repoRoot, path);
+  let text;
+  try {
+    text = readFileSync(full, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') throw new Error(`no manifest at ${path}`);
+    throw new Error(`cannot read ${path}: ${err.message}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${path} is not valid JSON: ${err.message}`);
+  }
 }
 
 /**
- * Strict flag read.
+ * The flags each command accepts. Anything else is an error, not a default.
  *
- * A missing VALUE is an error, not a fallback. The lenient form silently made
- * `verify --manifest` check the default manifest and `pin --commit` pin HEAD —
- * both of which look like the operator's intent being honoured and are not
- * (cross-host review finding).
+ * `value: false` marks a boolean flag; every other entry requires a value.
  */
-function flag(argv, name, fallback) {
-  const i = argv.indexOf(name);
-  if (i === -1) return fallback;
-  const value = argv[i + 1];
-  if (value === undefined || value.startsWith('--')) {
-    throw new Error(`${name} requires a value`);
+const COMMAND_FLAGS = Object.freeze({
+  pin: Object.freeze({ '--commit': true, '--out': true, '--rebaseline': false }),
+  show: Object.freeze({ '--manifest': true }),
+  verify: Object.freeze({ '--manifest': true }),
+});
+
+/**
+ * Parse argv strictly, against the flags the command actually accepts.
+ *
+ * A missing VALUE is an error, not a fallback. So is an unrecognised flag, a
+ * repeated flag, and a flag this command does not take. An earlier revision
+ * closed only the valueless case, using `argv.indexOf(name)` for the rest, and
+ * the docstring claimed the class was handled — measured, four routes still
+ * fell through to the default silently, and for `--out` that default is the
+ * TRACKED frozen manifest:
+ *
+ *   pin --commit <rev> --out=/tmp/mine.json --rebaseline
+ *   pin --commit <rev> --outt /tmp/mine.json --rebaseline
+ *   pin --manifest /tmp/preview.json --commit HEAD --rebaseline
+ *   pin --commit <a> --commit <b>
+ *
+ * The first three each rebaseline the freeze this tool exists to protect, exit
+ * 0, and never write the file the operator named; the fourth silently picks
+ * one. `verify --manifest=/does/not/exist.json` symmetrically reported "no
+ * drift" against the default file. Being lenient about the shape of a flag is
+ * the same failure as being lenient about its absence (cross-host review
+ * finding).
+ *
+ * `--name=value` is accepted rather than rejected: it is the form an operator
+ * is most likely to reach for, and silently ignoring it was the defect.
+ */
+function parseFlags(command, argv) {
+  const spec = COMMAND_FLAGS[command];
+  if (!spec) throw new Error(`unknown command ${JSON.stringify(command)}`);
+  const seen = new Map();
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (!token.startsWith('--')) {
+      throw new Error(`unexpected argument ${JSON.stringify(token)}; ${command} takes only flags`);
+    }
+    const eq = token.indexOf('=');
+    const name = eq === -1 ? token : token.slice(0, eq);
+    if (!(name in spec)) {
+      const accepted = Object.keys(spec).join(', ') || '(none)';
+      throw new Error(`${command} does not accept ${name}; accepted flags are ${accepted}`);
+    }
+    if (seen.has(name)) throw new Error(`${name} given more than once`);
+    if (spec[name] === false) {
+      if (eq !== -1) throw new Error(`${name} takes no value`);
+      seen.set(name, true);
+      continue;
+    }
+    let value;
+    if (eq !== -1) {
+      value = token.slice(eq + 1);
+    } else {
+      value = argv[i + 1];
+      i += 1;
+    }
+    if (value === undefined || value === '' || value.startsWith('--')) {
+      throw new Error(`${name} requires a value`);
+    }
+    seen.set(name, value);
   }
-  return value;
+  return seen;
 }
 
 function summarize(manifest) {
@@ -393,34 +551,51 @@ function summarize(manifest) {
     .join('\n  ');
 }
 
-export function main(argv, repoRoot = process.cwd()) {
+export function main(argv, repoRoot = REPO_ROOT) {
   const command = argv[0] ?? 'verify';
-  let manifestPath;
+  if (!(command in COMMAND_FLAGS)) {
+    console.error(`evidenceCorpus: unknown command "${command}" (expected pin | verify | show)`);
+    return 1;
+  }
+  let flags;
   try {
-    manifestPath = flag(argv, '--manifest', MANIFEST_PATH);
+    flags = parseFlags(command, argv.slice(1));
   } catch (err) {
     console.error(`evidenceCorpus: ${err.message}`);
     return 1;
   }
+  const manifestPath = flags.get('--manifest') ?? MANIFEST_PATH;
 
+  // Every designed failure below reports through the `evidenceCorpus:` prefix.
+  // An operator mistake — a missing manifest, malformed JSON, a missing parent
+  // directory — used to escape as a raw node:fs errno object or a SyntaxError
+  // plus a Node banner, which reads as a crashed tool rather than a refused
+  // one (cross-host review finding).
+  try {
+    return run(command, flags, manifestPath, repoRoot);
+  } catch (err) {
+    console.error(`evidenceCorpus: ${err.message}`);
+    return 1;
+  }
+}
+
+function run(command, flags, manifestPath, repoRoot) {
   if (command === 'pin') {
-    let commit; let out;
-    try {
-      commit = flag(argv, '--commit', null);
-      out = flag(argv, '--out', MANIFEST_PATH);
-    } catch (err) {
-      console.error(`evidenceCorpus: ${err.message}`);
-      return 1;
-    }
+    const commit = flags.get('--commit') ?? null;
+    const out = flags.get('--out') ?? MANIFEST_PATH;
     // `--commit` has NO default. A bare `pin` used to resolve HEAD and overwrite
     // the tracked manifest, after which `verify` reported "no drift" against the
     // new baseline — a rebaseline as a side effect of running a tool, which
     // contract §10.2 rule 2 forbids. The earlier fix closed only the
     // flag-present-but-valueless case and left this mirror live (cross-host
-    // review finding, reproduced: 2cb9637/76 files became c1444e1/78 files).
+    // review finding, reproduced at the time on the superseded branch: a
+    // 76-file pin silently became a 78-file one). The reproduction commit is
+    // deliberately not cited — it lives only on an abandoned branch and is
+    // unreachable from the integration branch, and this repository's rule is to
+    // cite the squash commit or nothing.
     if (commit === null) {
       console.error('evidenceCorpus: pin requires an explicit --commit <rev>.');
-      console.error('  Re-pinning is deliberate and owner-authorised (contract §10.2 rule 2); it is never a default.');
+      console.error('  Re-pinning is deliberate and owner-authorised; it is never a default.');
       return 1;
     }
     // The corpus is a FIXED HISTORICAL FREEZE, not a pin that tracks the
@@ -441,7 +616,7 @@ export function main(argv, repoRoot = process.cwd()) {
     // and it has to look like one at the command line. Overwriting an existing
     // manifest requires `--rebaseline`; the first pin does not.
     const outPath = resolve(repoRoot, out);
-    const rebaseline = argv.includes('--rebaseline');
+    const rebaseline = flags.has('--rebaseline');
     const availability = commitAvailable(repoRoot, commit);
     if (!availability.ok) { console.error(`evidenceCorpus: cannot pin — ${availability.reason}`); return 1; }
     const manifest = buildManifest(repoRoot, commit);
@@ -451,15 +626,23 @@ export function main(argv, repoRoot = process.cwd()) {
     // was still written and exited 0, and the operator learned about it only on
     // the next `verify` (cross-host review finding).
     //
-    // DORMANT, deliberately, and stated rather than covered: with the byte
-    // check above in place there is no longer an input that reaches here
-    // shape-invalid. `buildManifest` throws on an empty profile before
-    // returning, the duplicate-path route was only ever reachable through the
-    // lossy UTF-8 decode that now refuses, and every remaining field is
-    // constructed rather than parsed. Removing this block breaks no test, and
-    // the sibling test 'a manifest pin cannot produce a shape-invalid manifest'
-    // pins that reasoning so it is re-read rather than assumed if the builder
-    // ever stops throwing first.
+    // This guard is LIVE, and an earlier revision of this comment claimed the
+    // opposite in fifteen lines and ended with "Removing this block breaks no
+    // test" — an invitation to delete a guard that fires. The claim rested on
+    // "every remaining field is constructed rather than parsed", which is false:
+    // both `blob` and `commit` come from git output. Two reachable routes, both
+    // measured:
+    //
+    //   - A SHA-256 repository yields 64-character object names, so the
+    //     40-character shape rule rejects a genuinely full object name. The
+    //     guard fires here rather than writing a manifest the read path would
+    //     refuse (the diagnostic is misleading in that case, which is a separate
+    //     matter for whoever adds sha256 support).
+    //   - `EVIDENCE_DOCS` is exported UNFROZEN, so a duplicate entry produces a
+    //     duplicate membership row with no invalid byte anywhere.
+    //
+    // The lesson is the one this whole change is about: a dormancy claim is a
+    // measurement, not a reading of the code.
     const shape = validateManifestShape(manifest);
     if (shape.length > 0) {
       console.error(`evidenceCorpus: refusing to write an invalid manifest for ${commit}`);
@@ -480,10 +663,33 @@ export function main(argv, repoRoot = process.cwd()) {
         if (err.code !== 'EEXIST') throw err;
         console.error(`evidenceCorpus: ${out} already pins a corpus; refusing to overwrite it.`);
         console.error('  The corpus is a fixed historical freeze — later lanes compare against THIS pin.');
-        console.error('  A deliberate rebaseline is `pin --commit <rev> --rebaseline` (contract §10.2 rule 2).');
+        console.error('  A deliberate rebaseline is `pin --commit <rev> --rebaseline`.');
         return 1;
       }
     } else {
+      // The rebaseline branch is hardened too, and an earlier revision's was
+      // not — which is backwards, because this is the branch an operator
+      // reaches for with an operator-supplied `--out`.
+      //
+      // It must REPLACE something. A `--rebaseline` that also serves as a first
+      // pin turns the flag into a guard-skip: adding it for idempotence would
+      // then disable the freeze permanently with no signal.
+      let current;
+      try {
+        current = lstatSync(outPath);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+        console.error(`evidenceCorpus: ${out} does not exist; there is nothing to rebaseline.`);
+        console.error('  Drop --rebaseline to write a first pin.');
+        return 1;
+      }
+      // And it must replace a regular FILE. A plain write follows a symlink and
+      // truncates its target; measured, a `pinned.json -> target.json` link left
+      // the link in place and rewrote the target with manifest JSON.
+      if (!current.isFile()) {
+        console.error(`evidenceCorpus: ${out} is not a regular file; refusing to write through it.`);
+        return 1;
+      }
       writeFileSync(outPath, body);
     }
     console.log(`evidenceCorpus: pinned ${manifest.commit} → ${out}\n  ${summarize(manifest)}`);
@@ -516,9 +722,23 @@ export function main(argv, repoRoot = process.cwd()) {
       console.log(`evidenceCorpus: ${manifest.commit} — no drift\n  ${summarize(manifest)}`);
       return 0;
     }
-    console.error(`evidenceCorpus: ${result.findings.length} drift finding(s) against ${manifest.commit}`);
-    for (const f of result.findings) console.error(`  [${f.kind}] ${f.profile}${f.path ? ` ${f.path}` : ''}: ${f.detail}`);
-    console.error('  Contract §10.2: a measurement in flight completes against its own pin or aborts; re-pinning is deliberate and owner-authorised. A mismatched pin is §8.2 not-comparable.');
+    // Manifest-level findings are TAMPERING or version skew, not drift, and the
+    // remedy is the opposite one. Reporting them as drift and then printing the
+    // rebaseline advice pointed the operator at the single command that
+    // destroys the freeze — for a file whose correct repair is to restore it
+    // (cross-host review finding). `?? '-'` matches the two sibling printers,
+    // which this third copy had dropped.
+    const tampering = result.findings.filter((f) => f.kind === 'manifest' || f.kind === 'digest');
+    const drift = result.findings.filter((f) => f.kind !== 'manifest' && f.kind !== 'digest');
+    const label = drift.length === 0 ? 'manifest finding(s) in' : 'drift finding(s) against';
+    console.error(`evidenceCorpus: ${result.findings.length} ${label} ${manifest.commit}`);
+    for (const f of result.findings) console.error(`  [${f.kind}] ${f.profile ?? '-'}${f.path ? ` ${f.path}` : ''}: ${f.detail}`);
+    if (tampering.length > 0) {
+      console.error('  A manifest-level finding is a problem with the manifest FILE, not with the tree. Restore it; do not re-pin.');
+    }
+    if (drift.length > 0) {
+      console.error('  A measurement in flight completes against its own pin or aborts; re-pinning is deliberate and owner-authorised.');
+    }
     return 1;
   }
 
@@ -526,6 +746,12 @@ export function main(argv, repoRoot = process.cwd()) {
   return 1;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+// Both sides are realpath-resolved. Node realpaths `import.meta.url` but not
+// `process.argv[1]`, so invoking this through ANY symlinked path — a bin shim,
+// a wrapper, a symlinked checkout — made the whole guard a silent no-op:
+// measured, the script produced no output and exited 0, turning
+// `validate:evidence-corpus` into a gate that ran nothing.
+const invokedPath = process.argv[1] ? realpathSync(resolve(process.argv[1])) : null;
+if (invokedPath && realpathSync(fileURLToPath(import.meta.url)) === invokedPath) {
   (async () => { process.exitCode = main(process.argv.slice(2)); })();
 }
