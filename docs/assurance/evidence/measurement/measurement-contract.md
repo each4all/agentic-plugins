@@ -250,6 +250,14 @@ artifacts disagreeing on a version would agree on everything compared.
 Authority-derived fields are the exception, and only because §5 resolves them
 instead.
 
+Because a declared field is compared, **its value must be determined by the
+recognition rule**. A field whose permitted values are enumerated must also
+state a **precedence**, since the only reason to enumerate is that more than
+one member can apply to one occurrence — and two lanes free to pick different
+members would disagree while both following the rule. The registry declares
+both, and `scripts/check-family-registry.mjs` requires the second wherever the
+first appears.
+
 ### 3.4 Families are declared, not described
 
 The family set is fixed by `family-registry.json` in this directory. For each
@@ -547,6 +555,13 @@ Each field is in exactly one state:
 | `explicit-null` | The document affirmatively asserts there is none. |
 | `unresolved` | A value should exist but the producer could not determine it. |
 | `not-applicable` | The field does not apply here. |
+
+The registry restates these four so a reader of the registry alone can see
+them, and that restatement is **gated against this section** rather than
+against itself. An earlier revision checked only that the list was non-empty
+and then validated every family's states against the registry's own list, so a
+registry that invented a vocabulary was internally consistent and passed. The
+same applies to §3.1's two units.
 
 ### 6.1 Absence is not a state
 

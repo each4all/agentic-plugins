@@ -73,7 +73,7 @@
       "recognition": "A run of more than 40 lowercase hexadecimal characters, OR such a run introduced by a field name ending in _sha256 or by the prefix sha256:. Both lexical shapes denote the same family; a producer that recognises only one is incomplete, and a run of this length is never a commit-citation.",
       "fields": [
         { "name": "literal", "states": ["present"] },
-        { "name": "shape", "states": ["present"] }
+        { "name": "shape", "states": ["present"], "vocabulary": ["prefixed", "bare"], "precedence": "prefixed wins. The two shapes OVERLAP by construction: a prefixed run is also a bare run of the same length, so an occurrence introduced by a _sha256 field name or a sha256: prefix satisfies both readings and two lanes would otherwise label the same occurrence differently while both following the rule. `prefixed` is the value when an introducer is present; `bare` when it is not. Contract 3.3 compares this field, so an undecided value is a disagreement between artifacts that agree." }
       ]
     },
     {

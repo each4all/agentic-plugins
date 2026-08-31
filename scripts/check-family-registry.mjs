@@ -36,6 +36,10 @@ export const PROFILES = Object.freeze(['stage-docs', 'discovered-md']);
 
 /** Contract §4.3 — the four dispositions, total and mutually exclusive. */
 export const CONTRACT_DISPOSITIONS = Object.freeze(['bound', 'not-a-claim', 'ambiguous', 'incomplete']);
+/** Contract §6 — the four field states. */
+export const CONTRACT_FIELD_STATES = Object.freeze(['present', 'explicit-null', 'unresolved', 'not-applicable']);
+/** Contract §3.1 — the two units. */
+export const CONTRACT_UNITS = Object.freeze(['occurrence', 'relation']);
 
 /**
  * Contract §4.5 — the FLOOR of keys a lane's policy declaration must carry.
@@ -67,10 +71,22 @@ export function checkRegistry(repoRoot) {
     at('contract_version', 'is missing or is not a semver string');
   }
 
+  // These two lists were previously checked only for non-emptiness, and every
+  // per-family check then validated against the REGISTRY'S OWN list — so a
+  // registry declaring `units: ["banana"]` was internally consistent and
+  // passed. A vocabulary the contract fixes is gated against the contract, the
+  // way §4.3's dispositions are; the registry restates it so a reader of the
+  // registry alone can see it, and the restatement is what is checked.
   const states = Array.isArray(reg.field_states) ? reg.field_states : [];
   if (states.length === 0) at('field_states', 'is missing; §6 field states must be enumerated');
+  else if ([...states].sort().join(',') !== [...CONTRACT_FIELD_STATES].sort().join(',')) {
+    at('field_states', `is ${JSON.stringify(states)}, expected exactly ${JSON.stringify(CONTRACT_FIELD_STATES)} (§6)`);
+  }
   const units = Array.isArray(reg.units) ? reg.units : [];
   if (units.length === 0) at('units', 'is missing; §3.4 requires each family to declare a unit from a closed set');
+  else if ([...units].sort().join(',') !== [...CONTRACT_UNITS].sort().join(',')) {
+    at('units', `is ${JSON.stringify(units)}, expected exactly ${JSON.stringify(CONTRACT_UNITS)} (§3.1)`);
+  }
 
   // §4.3 — the disposition vocabulary is total and closed. Unlike `class`, this
   // one IS gated against a list: the four are fixed by the contract, and a
@@ -117,6 +133,18 @@ export function checkRegistry(repoRoot) {
       const st = Array.isArray(fld.states) ? fld.states : [];
       if (st.length === 0) at(`${q}.fields.${fld.name}.states`, 'declares no states');
       for (const one of st) if (!states.includes(one)) at(`${q}.fields.${fld.name}.states`, `state ${JSON.stringify(one)} is outside field_states`);
+      // Contract §3.3 compares declared fields, so a field whose value is not
+      // determined by the recognition rule is a disagreement waiting to happen
+      // between two artifacts that agree. A declared vocabulary needs a stated
+      // precedence, because the only reason to enumerate values is that more
+      // than one can apply.
+      if ('vocabulary' in fld) {
+        if (!Array.isArray(fld.vocabulary) || fld.vocabulary.length === 0 || fld.vocabulary.some((v) => typeof v !== 'string')) {
+          at(`${q}.fields.${fld.name}.vocabulary`, 'must be a non-empty array of strings');
+        } else if (typeof fld.precedence !== 'string' || fld.precedence.length < 20) {
+          at(`${q}.fields.${fld.name}.precedence`, 'declares a vocabulary but no precedence; §3.3 compares this field, so two lanes must not be free to pick different members for one occurrence');
+        }
+      }
     }
   }
 

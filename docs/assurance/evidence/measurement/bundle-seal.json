@@ -1,16 +1,16 @@
 {
   "contract_version": "2.0.0",
-  "digest": "b44e979975ce6d178a8682b67d861c9a78027f57372d05c02c2d0bfcfb46862d",
+  "digest": "e00c77ba3ed716232cf0c0435bb19eafed0c25d2fd5d01179ec3eb0c98b6520d",
   "files": [
     {
-      "bytes": 55337,
+      "bytes": 56235,
       "path": "docs/assurance/evidence/measurement/measurement-contract.md",
-      "sha256": "1d615bc742f9627aaee0a759f454a37bb432d3329dcaf66d6952748bebdaf222"
+      "sha256": "6f7d75e36aefaa07a73afe60b870eb15701aef86945217367c4b5420b4536dc2"
     },
     {
-      "bytes": 9933,
+      "bytes": 10472,
       "path": "docs/assurance/evidence/measurement/family-registry.json",
-      "sha256": "21af683dee461e99dbe61199b638dc239a26886c745df69ac7e90ea8400285d9"
+      "sha256": "ce93e2b813696b0f11b7bdf1600748f08b84488aacf0b8c74cf2152d4ab9eebe"
     },
     {
       "bytes": 14628,

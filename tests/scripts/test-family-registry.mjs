@@ -238,3 +238,49 @@ test('a field state outside field_states is a finding', () => {
   const r = checkMutated((reg) => { reg.families[0].fields[0].states = ['invented']; });
   assert.ok(hits(r, 'outside field_states').length > 0);
 });
+
+// --- vocabularies the contract fixes are gated against the CONTRACT ----------
+
+test('field_states and units are gated against the contract, not against themselves', () => {
+  // The earlier gate checked only non-emptiness and then validated every family
+  // against the registry's OWN list, so an invented vocabulary was internally
+  // consistent and passed. Cross-host review named that.
+  const invented = checkMutated((reg) => {
+    reg.field_states = ['banana'];
+    for (const f of reg.families) for (const fld of f.fields) fld.states = ['banana'];
+  });
+  assert.ok(hits(invented, 'field_states').length > 0, JSON.stringify(paths(invented)));
+
+  const droppedState = checkMutated((reg) => { reg.field_states = reg.field_states.filter((x) => x !== 'unresolved'); });
+  assert.ok(hits(droppedState, 'field_states').length > 0);
+
+  const inventedUnit = checkMutated((reg) => {
+    reg.units = ['banana'];
+    for (const f of reg.families) f.unit = 'banana';
+    for (const r of reg.relations) r.unit = 'banana';
+  });
+  assert.ok(hits(inventedUnit, 'units').length > 0, JSON.stringify(paths(inventedUnit)));
+});
+
+test('a declared field vocabulary must state a precedence (§3.3)', () => {
+  const shipped = SHIPPED.families.flatMap((f) => (f.fields ?? []).filter((x) => x.vocabulary).map((x) => `${f.id}.${x.name}`));
+  assert.ok(shipped.length > 0, 'the shipped registry declares no field vocabulary; this test measures nothing');
+
+  const noPrecedence = checkMutated((reg) => {
+    for (const f of reg.families) for (const fld of f.fields ?? []) delete fld.precedence;
+  });
+  assert.ok(hits(noPrecedence, 'precedence').length > 0);
+
+  const emptyVocab = checkMutated((reg) => {
+    const fld = reg.families.flatMap((f) => f.fields ?? []).find((x) => x.vocabulary);
+    fld.vocabulary = [];
+  });
+  assert.ok(hits(emptyVocab, 'vocabulary').length > 0);
+
+  // A field with NO vocabulary needs no precedence — the requirement is
+  // conditional, not universal.
+  const plain = checkMutated((reg) => {
+    for (const f of reg.families) for (const fld of f.fields ?? []) { delete fld.vocabulary; delete fld.precedence; }
+  });
+  assert.deepEqual(plain.findings, [], JSON.stringify(plain.findings));
+});
