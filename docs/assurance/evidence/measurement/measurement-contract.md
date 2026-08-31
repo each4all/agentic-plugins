@@ -277,8 +277,16 @@ The comparator enforces this structurally: for every occurrence, decoding
 An artifact may carry a short quoted context window beside a span, so a human
 can author a pin without counting bytes and so a span can be re-anchored after
 the corpus moves. It is **not** identity: the comparator resolves a quote to a
-span and compares spans. A quote that resolves to zero or to more than one span
-yields `unresolved`, never a guess.
+span and compares spans. A quote that resolves to zero spans, to more than one,
+or to a span that does not contain its own occurrence yields `unresolved`,
+never a guess — there is no nearest-match or first-match fallback, because a
+rebaseline aid that ranks candidates re-anchors a row onto the wrong occurrence,
+which is the exact error §4.4 exists to detect, introduced by the tool meant to
+survive it.
+
+Because it is an aid rather than an assertion, **an unresolvable quote is
+reported and decides no verdict.** It appears in the comparison output and in
+no reducer row.
 
 ### 3.7 Line and column are diagnostics
 
@@ -647,6 +655,8 @@ These are checked before any status is assigned, on every artifact:
 - a literal that does not equal the UTF-8 decoding of its own span (§3.5);
 - an occurrence whose family is not in the registry;
 - an artifact missing a policy declaration for a relation it reports (§4.5);
+- a missing attestation record, or one whose declared contract version, bundle
+  digest or manifest digest disagrees with the artifact it sits beside (§11.4);
 - **a missing anchor row** — an in-scope anchor (§4.1) for which the artifact
   carries no §4.3 disposition.
 
@@ -863,6 +873,12 @@ artifact.
 An attestation is a **claim by its lane**, not a proof. It makes a violation
 recorded and reviewable rather than invisible; it cannot make one impossible.
 §11.1 is what actually reduces the opportunity.
+
+What a comparator can still decide about a claim is whether it is *present* and
+whether it *agrees with the artifact beside it*, and both are structural (§8.2).
+An attestation naming a different bundle than its own artifact is not a weak
+claim but a broken one, and `prohibited_inputs_accessed` must be written even
+when empty: an empty array is a claim, an absent key is a silence.
 
 ### 11.5 Repairs during comparison are prohibited
 

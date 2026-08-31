@@ -22,7 +22,7 @@ import {
   compare, reduce, compareDisposition, roleBindingsAgree, identityKey,
   policyDigest, canonicalDigest, canonicalSerialise, bundleDigest, verifySeal,
   authorityDrift, buildAuthoritySnapshot, buildSeal, resolveCanonical,
-  resolveAuthorityFields, DISPOSITIONS, STATUSES,
+  resolveAuthorityFields, resolveQuote, DISPOSITIONS, STATUSES,
 } from '../../scripts/evidence-measurement.mjs';
 
 const REPO = new URL('../../', import.meta.url).pathname;
@@ -82,8 +82,20 @@ function policy(overrides = {}) {
   return { ...p, digest: policyDigest(p) };
 }
 
-function artifact({ id, role, anchors, occurrences, policies = [policy()], ...rest }) {
+function attestation(over = {}) {
   return {
+    contract_version: '2.0.0',
+    bundle_digest: BUNDLE,
+    manifest_digest: MANIFEST.digest,
+    artifact_digest: 'f'.repeat(64),
+    sealed_at: '2026-08-31T00:00:00Z',
+    prohibited_inputs_accessed: [],
+    ...over,
+  };
+}
+
+function artifact({ id, role, anchors, occurrences, policies = [policy()], ...rest }) {
+  const base = {
     schema: 'evidence-measurement-artifact-1.0',
     contract_version: '2.0.0',
     role,
@@ -96,6 +108,10 @@ function artifact({ id, role, anchors, occurrences, policies = [policy()], ...re
     anchors,
     ...rest,
   };
+  // §11.4 — the attestation must agree with the artifact it sits beside, so it
+  // is derived from the (possibly overridden) artifact rather than from the
+  // fixture defaults.
+  return { attestation: attestation({ bundle_digest: base.bundle_digest, manifest_digest: base.manifest_digest, contract_version: base.contract_version }), ...base };
 }
 
 const BASE_OCCS = [occ(TAG, 'package-tag'), occ(PR, 'pr-citation'), occ(SHA_FIRST, 'commit-citation'), occ(SHA_SECOND, 'commit-citation')];
@@ -633,4 +649,70 @@ test('§8.3 row 8 fires end-to-end through compare()', () => {
   // makes the block above attributable to that one missing authority entry.
   const ok = compare({ artifacts: [oracle, lane], registry, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob, runAuthority: SNAPSHOT });
   assert.equal(ok.verdict, 'pass', ok.reason ?? '');
+});
+
+
+// --- §11.4 the attestation record --------------------------------------------
+
+test('§11.4 — an artifact with no attestation is structural', () => {
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const lane = artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  delete lane.attestation;
+  const r = run([oracle, lane]);
+  assert.equal(r.verdict, 'not-comparable');
+  assert.ok(r.structural.some((s) => s.path === 'attestation'));
+});
+
+test('§11.4 — an attestation that names a different bundle than its artifact is structural', () => {
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const lane = artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  lane.attestation = { ...lane.attestation, bundle_digest: 'some-other-bundle' };
+  const r = run([oracle, lane]);
+  assert.ok(r.structural.some((s) => s.path === 'attestation.bundle_digest'));
+});
+
+test('§11.4 — an absent prohibited-inputs list is a silence, not an empty claim', () => {
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const lane = artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  delete lane.attestation.prohibited_inputs_accessed;
+  const r = run([oracle, lane]);
+  assert.ok(r.structural.some((s) => s.path === 'attestation.prohibited_inputs_accessed'));
+
+  // Control: the empty array is accepted, so the finding above is about absence.
+  const ok = run([oracle, artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] })]);
+  assert.deepEqual(ok.structural, []);
+});
+
+// --- §3.6 quoted context is resolved, never guessed --------------------------
+
+test('§3.6 — a quote that resolves to exactly one span containing the occurrence is fine', () => {
+  const r = resolveQuote(BLOBS[BLOB_ID], 'sha aaaaaaa then', SHA_FIRST);
+  assert.equal(r.state, 'present');
+  assert.ok(r.start_byte <= SHA_FIRST.start_byte && r.end_byte >= SHA_FIRST.end_byte);
+});
+
+test('§3.6 — a quote occurring more than once is unresolved, never ranked', () => {
+  const r = resolveQuote(BLOBS[BLOB_ID], 'aaaaaaa', SHA_FIRST);
+  assert.equal(r.state, 'unresolved');
+  assert.match(r.reason, /occurs 2 times/);
+});
+
+test('§3.6 — a quote occurring nowhere is unresolved', () => {
+  assert.equal(resolveQuote(BLOBS[BLOB_ID], 'not in this blob at all', SHA_FIRST).state, 'unresolved');
+});
+
+test('§3.6 — a quote that resolves away from its own occurrence is unresolved', () => {
+  const r = resolveQuote(BLOBS[BLOB_ID], 'tag plugin', SHA_FIRST);
+  assert.equal(r.state, 'unresolved');
+  assert.match(r.reason, /does not contain the occurrence span/);
+});
+
+test('§3.6 — an unresolvable quote is reported and decides no verdict', () => {
+  const withQuote = BASE_OCCS.map((o) => (o.start_byte === SHA_FIRST.start_byte ? { ...o, quoted_context: 'aaaaaaa' } : o));
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const lane = artifact({ id: 'lane', role: 'lane', occurrences: withQuote, anchors: [boundRow(SHA_FIRST)] });
+  const r = run([oracle, lane]);
+  assert.equal(r.quote_findings.length, 1);
+  assert.equal(r.quote_findings[0].state, 'unresolved');
+  assert.equal(r.verdict, 'pass', 'a rebaseline aid decides no verdict (§3.6)');
 });

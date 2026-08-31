@@ -284,6 +284,22 @@ export function validateArtifact(artifact, ctx) {
     at('manifest_digest', `is ${JSON.stringify(artifact.manifest_digest)}, the pinned manifest is ${ctx.manifestDigest} (§2.1)`);
   }
 
+  // §11.4 — the attestation is a CLAIM, not a proof, and §11.4 says so. What a
+  // comparator can still decide is whether it exists and whether it agrees with
+  // the artifact it sits beside: an attestation naming a different bundle than
+  // its own artifact is not a weak claim, it is a broken one.
+  const att = artifact.attestation;
+  if (!att || typeof att !== 'object') {
+    at('attestation', 'is missing; §11.4 requires each lane to emit one beside its artifact');
+  } else {
+    if (att.contract_version !== artifact.contract_version) at('attestation.contract_version', `is ${JSON.stringify(att.contract_version)} but the artifact declares ${JSON.stringify(artifact.contract_version)} (§11.4)`);
+    if (att.bundle_digest !== artifact.bundle_digest) at('attestation.bundle_digest', 'does not match the artifact it attests (§11.4)');
+    if (att.manifest_digest !== artifact.manifest_digest) at('attestation.manifest_digest', 'does not match the artifact it attests (§11.4)');
+    if (typeof att.artifact_digest !== 'string' || !/^[0-9a-f]{64}$/.test(att.artifact_digest)) at('attestation.artifact_digest', 'is missing or is not a sha-256 (§11.4 seal-time digest)');
+    if (typeof att.sealed_at !== 'string') at('attestation.sealed_at', 'is missing (§11.4)');
+    if (!Array.isArray(att.prohibited_inputs_accessed)) at('attestation.prohibited_inputs_accessed', 'must be an array — an empty one is a claim, an absent one is a silence (§11.4)');
+  }
+
   const relationsReported = new Set((artifact.anchors ?? []).map((a) => a.relation));
   const declared = new Map();
   for (const [i, p] of (artifact.policies ?? []).entries()) {
@@ -298,6 +314,7 @@ export function validateArtifact(artifact, ctx) {
   }
 
   const occByKey = new Map();
+  const quotes = [];
   for (const [i, o] of (artifact.occurrences ?? []).entries()) {
     const key = identityKey(o);
     if (!key) { at(`occurrences[${i}]`, 'has no well-formed physical identity (§3.2)'); continue; }
@@ -314,6 +331,13 @@ export function validateArtifact(artifact, ctx) {
     if (decoded !== o.literal) {
       at(`occurrences[${i}].literal`, `does not equal the UTF-8 decoding of its own span (§3.5): ${JSON.stringify(decoded)} vs ${JSON.stringify(o.literal)}`);
     }
+    // §3.6 — a quoted context window is a rebaseline aid, resolved to a span
+    // and never guessed at. It decides no verdict, so a quote that fails to
+    // resolve is reported rather than charged.
+    if (typeof o.quoted_context === 'string' && o.quoted_context.length > 0) {
+      const r = resolveQuote(bytes, o.quoted_context, o);
+      if (r.state !== 'present') quotes.push({ artifact: artifact.artifact_id ?? '<unnamed>', index: i, identity: { path: o.path, blob: o.blob, start_byte: o.start_byte, end_byte: o.end_byte }, state: 'unresolved', reason: r.reason });
+    }
   }
 
   const seenAnchor = new Set();
@@ -329,7 +353,31 @@ export function validateArtifact(artifact, ctx) {
     if (!ctx.relations.has(a.relation)) at(`anchors[${i}].relation`, `relation ${JSON.stringify(a.relation)} is not in the registry`);
   }
 
-  return { errors, occByKey, anchorKeys: seenAnchor, policies: declared };
+  return { errors, occByKey, anchorKeys: seenAnchor, policies: declared, quotes };
+}
+
+/**
+ * §3.6 — resolve a quoted context window to exactly one span.
+ *
+ * Zero matches or more than one yields `unresolved`. There is deliberately no
+ * nearest-match or first-match fallback: ranking candidates is the dimension
+ * that produced a false result in this repository before, and a rebaseline aid
+ * that guesses re-anchors an oracle row onto the wrong occurrence — which is
+ * precisely the error §4.4 exists to detect, introduced by the tool meant to
+ * survive it.
+ */
+export function resolveQuote(bytes, quote, occurrence) {
+  const hay = bytes.toString('utf8');
+  const hits = [];
+  for (let i = hay.indexOf(quote); i !== -1; i = hay.indexOf(quote, i + 1)) hits.push(i);
+  if (hits.length === 0) return { state: 'unresolved', reason: 'the quoted context occurs nowhere in the blob' };
+  if (hits.length > 1) return { state: 'unresolved', reason: `the quoted context occurs ${hits.length} times; it identifies no single span` };
+  const startByte = Buffer.byteLength(hay.slice(0, hits[0]), 'utf8');
+  const endByte = startByte + Buffer.byteLength(quote, 'utf8');
+  if (occurrence && (occurrence.start_byte < startByte || occurrence.end_byte > endByte)) {
+    return { state: 'unresolved', reason: `the quoted context resolves to [${startByte}, ${endByte}) which does not contain the occurrence span [${occurrence.start_byte}, ${occurrence.end_byte})` };
+  }
+  return { state: 'present', start_byte: startByte, end_byte: endByte };
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +511,7 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
     structural.push(...v.errors);
     validated.push({ artifact: a, ...v });
   }
+  const quoteFindings = validated.flatMap((v) => v.quotes ?? []);
 
   // §8.2 — artifacts must agree on the pin and the bundle before anything else.
   const seals = new Set(artifacts.map((a) => a?.bundle_digest));
@@ -572,7 +621,7 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
 
   const verdict = reduce({ structural, oracles: oracles.length, drift, rows, containment, relations, artifacts, authorityFields });
   const counts = Object.fromEntries(STATUSES.map((s) => [s, rows.filter((r) => r.status === s).length]));
-  return { verdict: verdict.verdict, reason: verdict.reason, structural, policy_findings: policyFindings, drift, containment, rows, counts, authority_fields: authorityFields };
+  return { verdict: verdict.verdict, reason: verdict.reason, structural, policy_findings: policyFindings, drift, containment, rows, counts, authority_fields: authorityFields, quote_findings: quoteFindings };
 }
 
 // ---------------------------------------------------------------------------
@@ -698,6 +747,7 @@ export function main(argv, repoRoot = REPO_ROOT) {
     for (const p of result.policy_findings) console.error(`  ${p.kind} on ${p.relation}: ${p.detail}`);
     for (const c of result.containment.slice(0, 20)) console.error(`  ${c.kind} ${c.relation}: ${c.detail}`);
     for (const u of (result.authority_fields?.unresolved ?? []).slice(0, 20)) console.error(`  unresolved ${u.family}.${u.field} ${JSON.stringify(u.literal)}: ${u.reason}`);
+    for (const q of (result.quote_findings ?? []).slice(0, 20)) console.error(`  quote unresolved ${q.artifact} occurrences[${q.index}]: ${q.reason}`);
     return result.verdict === 'pass' ? 0 : 1;
   }
 
