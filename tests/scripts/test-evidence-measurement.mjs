@@ -18,11 +18,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   compare, reduce, compareDisposition, roleBindingsAgree, identityKey,
   policyDigest, canonicalDigest, canonicalSerialise, bundleDigest, verifySeal,
   authorityDrift, buildAuthoritySnapshot, buildSeal, resolveCanonical,
   resolveAuthorityFields, resolveQuote, artifactDigest, expectedZeroCovers,
+  evaluateArtifactOnly, occurrenceKey, resolveIntegrationRef,
   CONTRACT_VERSION, DISPOSITIONS, STATUSES, VERDICTS,
 } from '../../scripts/evidence-measurement.mjs';
 
@@ -133,18 +135,22 @@ function run(artifacts, extra = {}) {
 
 // --- §7.2 the table is total -------------------------------------------------
 
-test('compareDisposition is total over all sixteen disposition pairs', () => {
-  const seen = new Set();
+test('compareDisposition returns a vocabulary status for every input, and is not constant', () => {
+  // NOTE: this is the WEAK check. `seen.size === 16` would be determined by the
+  // loops rather than by the function — a comparator returning `agreeing` for
+  // everything would satisfy it — so that assertion is gone. The authoritative
+  // test is the one further down that replays the contract's own §7.2 table.
+  const produced = new Set();
   for (const o of DISPOSITIONS) {
     for (const l of DISPOSITIONS) {
       for (const agree of [true, false]) {
-        const s = compareDisposition(o, l, agree);
-        assert.ok(STATUSES.includes(s), `(${o}, ${l}, ${agree}) -> ${s}, outside the status vocabulary`);
-        seen.add(`${o}|${l}`);
+        const got = compareDisposition(o, l, agree);
+        assert.ok(STATUSES.includes(got), `(${o}, ${l}, ${agree}) -> ${got}, outside the status vocabulary`);
+        produced.add(got);
       }
     }
   }
-  assert.equal(seen.size, 16);
+  assert.ok(produced.size >= 5, `only ${produced.size} distinct statuses reachable: ${JSON.stringify([...produced])}`);
 });
 
 test('the decision\'s two mandated cells: bound/not-a-claim is missed, the reverse is unexpected', () => {
@@ -219,23 +225,106 @@ test('E1 — `fail` is reachable with no artifact-only field anywhere', () => {
 
 test('E1 — reachability is separable from artifact availability', () => {
   // Rows 6 and 9 are the artifact-only rows. Both verdicts above were reached
-  // with those inputs empty, so a machine without the run artifacts still
-  // reaches a verdict. Here the same inputs reach `blocked` ONLY because an
-  // artifact-only authority is absent — which is what separability means.
+  // with no artifact-only field in scope, so the reducer's good outcomes do not
+  // depend on run artifacts. Here the SAME inputs move only because an
+  // artifact-only authority is absent or disagrees — which is what separability
+  // means, and it is checked through the derived shape rather than through an
+  // array an artifact could simply omit.
   const relations = new Map(REGISTRY.relations.map((r) => [r.id, r]));
   const rows = [{ relation: 'release-triple', status: 'agreeing', required: true }];
-  const clean = reduce({ structural: [], oracles: 1, drift: { drifted: false }, rows, containment: [], relations, artifacts: [{}] });
-  assert.equal(clean.verdict, 'pass');
-  const withAbsent = reduce({
-    structural: [], oracles: 1, drift: { drifted: false }, rows, containment: [], relations,
-    artifacts: [{ artifact_only_findings: [{ present: false }] }],
-  });
-  assert.equal(withAbsent.verdict, 'blocked');
-  const withDisagreement = reduce({
-    structural: [], oracles: 1, drift: { drifted: false }, rows, containment: [], relations,
-    artifacts: [{ artifact_only_findings: [{ present: true, agrees: false }] }],
-  });
-  assert.equal(withDisagreement.verdict, 'fail');
+  const base = { structural: [], oracles: 1, drift: { drifted: false }, rows, containment: [], relations, artifacts: [] };
+  assert.equal(reduce(base).verdict, 'pass');
+  assert.equal(reduce({ ...base, artifactOnly: { absent: [{ family: 'proof-run-id', field: 'artifact_present' }], disagreeing: [] } }).verdict, 'blocked');
+  assert.equal(reduce({ ...base, artifactOnly: { absent: [], disagreeing: [{ family: 'proof-run-id', field: 'artifact_present' }] } }).verdict, 'fail');
+});
+
+// --- E1 on the SHIPPED registry, not a reduced one ---------------------------
+
+test('E1 — pass, fail and blocked are all reachable on the SHIPPED registry', () => {
+  // The reduced fixture registry above omits the shipped registry's
+  // `artifact-only` family, so on its own it demonstrates reachability for a
+  // contract nobody ships. Cross-host review named that: reachability recreated
+  // by dropping the condition rather than by satisfying it. This runs the real
+  // registry, whose `proof-run-id.artifact_present` IS artifact-only and whose
+  // `proof-date-binding` IS required.
+  const shipped = JSON.parse(readFileSync(join(REPO, 'docs/assurance/evidence/measurement/family-registry.json'), 'utf8'));
+  const artifactOnlyFamilies = shipped.families.filter((f) => (f.fields ?? []).some((x) => x.qualifier === 'artifact-only'));
+  assert.ok(artifactOnlyFamilies.length > 0, 'the shipped registry no longer exercises the artifact-only case; this test measures nothing');
+
+  const RUN_LITERAL = 'doctor-20260101T000000Z-abc';
+  const DATE_LITERAL = '2026-01-01';
+  const TAG_LITERAL = 'plugin-runtime-v0.1.0';
+  const PR_LITERAL = '#100';
+  const SHA_LITERAL = 'aaaaaaa';
+  // BOTH required relations must be exercised, or §8.4's non-vacuity rule
+  // blocks the run — which is what it did on the first version of this fixture,
+  // correctly.
+  const proofText = `proof ${RUN_LITERAL} on ${DATE_LITERAL} recorded; release PR ${PR_LITERAL} squash ${SHA_LITERAL} cut tag ${TAG_LITERAL} .`;
+  const blobs = { pb: Buffer.from(proofText, 'utf8') };
+  const readProof = (id) => blobs[id] ?? null;
+  // Offsets are COMPUTED, not counted. A hand-counted span in a fixture is a
+  // second place for an off-by-one to hide, and §3.5 makes exactly that a
+  // structural error — so a miscounted fixture fails for the wrong reason.
+  const spanOf = (needle) => {
+    const at = proofText.indexOf(needle);
+    assert.notEqual(at, -1, `fixture does not contain ${needle}`);
+    assert.equal(proofText.indexOf(needle, at + 1), -1, `${needle} is not unique in the fixture`);
+    return { profile: 'stage-docs', path: 'docs/ARCHITECTURE.md', blob: 'pb', start_byte: at, end_byte: at + Buffer.byteLength(needle, 'utf8') };
+  };
+  const RUN_ID_SPAN = spanOf(RUN_LITERAL);
+  const DATE = spanOf(DATE_LITERAL);
+  const TAG = spanOf(TAG_LITERAL);
+  const PR = spanOf(PR_LITERAL);
+  const SHA = spanOf(SHA_LITERAL);
+
+  const manifest = { digest: 'm', profiles: { 'stage-docs': { files: [{ path: 'docs/ARCHITECTURE.md', blob: 'pb', bytes: proofText.length }] } } };
+  const pol = (relation, family) => { const b = { relation, anchor_domain: { family, profile: 'stage-docs', restriction: null }, class: 'annotation', parameters: {}, ranking: 'none', tie_policy: 'ambiguous' }; return { ...b, digest: policyDigest(b) }; };
+
+  const mk = (id, role, artifactState, disposition) => {
+    const base = {
+      schema: 'evidence-measurement-artifact-1.0', contract_version: shipped.contract_version, role, artifact_id: id,
+      bundle_digest: 'B', manifest_digest: 'm', corpus_commit: 'c',
+      policies: [pol('proof-date-binding', 'proof-run-id'), pol('release-triple', 'package-tag')],
+      occurrences: [
+        { ...RUN_ID_SPAN, family: 'proof-run-id', literal: RUN_LITERAL, fields: { kind: { state: 'present', value: 'doctor' }, artifact_present: artifactState } },
+        { ...DATE, family: 'iso-date', literal: DATE_LITERAL },
+        { ...TAG, family: 'package-tag', literal: TAG_LITERAL, fields: { package: { state: 'present', value: 'runtime' }, version: { state: 'present', value: '0.1.0' } } },
+        { ...PR, family: 'pr-citation', literal: PR_LITERAL },
+        { ...SHA, family: 'commit-citation', literal: SHA_LITERAL },
+      ],
+      anchors: [
+        { relation: 'proof-date-binding', anchor: RUN_ID_SPAN, disposition, roles: disposition === 'not-a-claim' ? {} : { run_id: RUN_ID_SPAN, date: DATE } },
+        { relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: { tag: TAG, release_pr: PR, squash: SHA } },
+      ],
+    };
+    return { ...base, attestation: { contract_version: base.contract_version, bundle_digest: 'B', manifest_digest: 'm', artifact_digest: artifactDigest(base), sealed_at: '2026-01-01T00:00:00Z', prohibited_inputs_accessed: [] } };
+  };
+  const run2 = (o, l) => compare({ artifacts: [o, l], registry: shipped, manifest, bundleDigest: 'B', readBlob: readProof, baseline: SNAPSHOT, runAuthority: SNAPSHOT });
+
+  // PASS — artifact present and agreeing on both sides.
+  const present = { state: 'present', value: true };
+  const passing = run2(mk('oracle', 'oracle', present, 'bound'), mk('lane', 'lane', present, 'bound'));
+  assert.deepEqual(passing.structural, [], JSON.stringify(passing.structural, null, 2));
+  assert.equal(passing.verdict, 'pass', passing.reason ?? '');
+
+  // FAIL — the lane misses a claim the oracle bound. Reached WITHOUT depending
+  // on the artifact rows, because row 4 precedes rows 6 and 9.
+  const failing = run2(mk('oracle', 'oracle', present, 'bound'), mk('lane', 'lane', present, 'not-a-claim'));
+  assert.equal(failing.verdict, 'fail', failing.reason ?? '');
+
+  // BLOCKED — the artifact is absent on this machine. This is the honest
+  // answer for the shipped registry on a machine without the run artifacts,
+  // not a defect: §2.3 says artifact-only fields are machine-dependent.
+  const absent = { state: 'not-applicable', value: null };
+  const blocked = run2(mk('oracle', 'oracle', absent, 'bound'), mk('lane', 'lane', absent, 'bound'));
+  assert.equal(blocked.verdict, 'blocked', blocked.reason ?? '');
+  assert.match(blocked.reason, /artifact-only/);
+  assert.ok(blocked.artifact_only.absent.length > 0);
+
+  // And omitting the field entirely must NOT read as present — that was the
+  // route by which a lane reached `pass` by saying nothing.
+  const silent = run2(mk('oracle', 'oracle', undefined, 'bound'), mk('lane', 'lane', undefined, 'bound'));
+  assert.equal(silent.verdict, 'blocked', silent.reason ?? '');
 });
 
 // --- §8.4 non-vacuity --------------------------------------------------------
@@ -645,7 +734,7 @@ test('§8.3 row 8 fires end-to-end through compare()', () => {
   // `aaaaaaa` is in the snapshot; the package tag is deliberately removed from
   // this one, so the tag-ref field is what blocks.
   const withoutTag = { ...SNAPSHOT, tags: {} };
-  const r = compare({ artifacts: [oracle, lane], registry, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob, runAuthority: withoutTag });
+  const r = compare({ artifacts: [oracle, lane], registry, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob, baseline: withoutTag, runAuthority: withoutTag });
   assert.equal(r.verdict, 'blocked', r.reason ?? '');
   assert.match(r.reason, /package-tag\.canonical/);
   assert.ok(r.authority_fields.resolved.some((x) => x.canonical === 'a'.repeat(40)),
@@ -653,7 +742,7 @@ test('§8.3 row 8 fires end-to-end through compare()', () => {
 
   // Control: restore the tag and the same run reaches `pass`, which is what
   // makes the block above attributable to that one missing authority entry.
-  const ok = compare({ artifacts: [oracle, lane], registry, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob, runAuthority: SNAPSHOT });
+  const ok = compare({ artifacts: [oracle, lane], registry, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob, baseline: SNAPSHOT, runAuthority: SNAPSHOT });
   assert.equal(ok.verdict, 'pass', ok.reason ?? '');
 });
 
@@ -916,4 +1005,199 @@ test('no measurement script still claims the contract is absent from the tree', 
   }
   // The premise: the contract IS in the tree, and is a bundle member.
   assert.ok(readFileSync(join(REPO, 'docs/assurance/evidence/measurement/measurement-contract.md'), 'utf8').length > 0);
+});
+
+
+// --- defects found by cross-host review of the first commit -------------------
+
+test('§3.2 — identity excludes profile, so overlapping profiles do not double it', () => {
+  const a = { profile: 'stage-docs', path: 'docs/x.md', blob: 'b1', start_byte: 1, end_byte: 5 };
+  const b = { profile: 'discovered-md', path: 'docs/x.md', blob: 'b1', start_byte: 1, end_byte: 5 };
+  assert.equal(identityKey(a), identityKey(b), 'the same bytes must be one occurrence, whichever profile names them');
+  assert.ok(!identityKey(a).includes('stage-docs'));
+
+  // The premise, measured on the shipped manifest rather than assumed: the two
+  // profiles overlap, so this is a live condition and not a hypothetical.
+  const m = JSON.parse(readFileSync(join(REPO, 'docs/assurance/evidence/measurement/corpus-manifest.json'), 'utf8'));
+  const sd = new Set(m.profiles['stage-docs'].files.map((f) => f.path));
+  const overlap = m.profiles['discovered-md'].files.filter((f) => sd.has(f.path));
+  assert.ok(overlap.length > 0, 'the profiles no longer overlap; this test measures nothing');
+});
+
+test('§3.3 — two families at one extent are two occurrences, in either array order', () => {
+  const shared = at(38, 45);
+  const twoFamilies = (order) => {
+    const list = [occ(TAG, 'package-tag'), occ(PR, 'pr-citation'),
+      { ...shared, family: 'commit-citation', literal: lit(shared) },
+      { ...shared, family: 'bare-semver', literal: lit(shared) },
+      occ(SHA_SECOND, 'commit-citation')];
+    return order === 'reversed' ? [...list].reverse() : list;
+  };
+  const reg = { ...REGISTRY, families: [...REGISTRY.families, { id: 'bare-semver' }] };
+  const mk = (id, role, order) => artifact({ id, role, occurrences: twoFamilies(order), anchors: [boundRow(shared)] });
+  const forward = compare({ artifacts: [mk('oracle', 'oracle', 'forward'), mk('lane', 'lane', 'forward')], registry: reg, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob });
+  const mixed = compare({ artifacts: [mk('oracle', 'oracle', 'forward'), mk('lane', 'lane', 'reversed')], registry: reg, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob });
+  // Both `structural` and `containment` matter here. Keyed by identity alone,
+  // the two same-extent occurrences collide and produce a FALSE "two
+  // occurrences of the same family share a physical identity" — in both orders,
+  // so an order-comparison alone would have called that agreement.
+  assert.deepEqual(forward.structural, [], JSON.stringify(forward.structural));
+  assert.deepEqual(mixed.structural, [], JSON.stringify(mixed.structural));
+  assert.deepEqual(forward.containment, []);
+  assert.deepEqual(mixed.containment, [], 'array order must not manufacture containment findings');
+  assert.equal(forward.verdict, mixed.verdict);
+});
+
+test('§2.1 — an occurrence outside the pinned profile is structural', () => {
+  const manifest = { digest: MANIFEST.digest, profiles: { 'stage-docs': { files: [{ path: 'docs/x.md', blob: BLOB_ID, bytes: BLOB_TEXT.length }] } } };
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const inside = compare({ artifacts: [oracle, artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] })], registry: REGISTRY, manifest, bundleDigest: BUNDLE, readBlob });
+  assert.deepEqual(inside.structural, [], 'the control must be clean, or the finding below is not about membership');
+
+  const foreign = BASE_OCCS.map((o, i) => (i === 0 ? { ...o, path: 'docs/not-in-the-corpus.md' } : o));
+  const outside = compare({ artifacts: [oracle, artifact({ id: 'lane', role: 'lane', occurrences: foreign, anchors: [boundRow(SHA_FIRST)] })], registry: REGISTRY, manifest, bundleDigest: BUNDLE, readBlob });
+  assert.ok(outside.structural.some((x) => /not in the pinned/.test(x.detail)), JSON.stringify(outside.structural));
+  assert.equal(outside.verdict, 'not-comparable');
+});
+
+test('§2.1 — a blob the manifest does not record for that path is structural', () => {
+  const manifest = { digest: MANIFEST.digest, profiles: { 'stage-docs': { files: [{ path: 'docs/x.md', blob: 'a-different-blob', bytes: 9 }] } } };
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const r = compare({ artifacts: [oracle, artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] })], registry: REGISTRY, manifest, bundleDigest: BUNDLE, readBlob });
+  assert.ok(r.structural.some((x) => /the manifest records/.test(x.detail)));
+});
+
+test('§4.3 — a disposition that contradicts its own roles is structural', () => {
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const bad = (anchors) => run([oracle, artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors })]);
+
+  // The exact false pass cross-host review reproduced: two `bound` rows with no
+  // roles compared equal and reached `agreeing`.
+  const emptyBound = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: {} }]);
+  assert.ok(emptyBound.structural.some((x) => /leaves required role/.test(x.detail)), JSON.stringify(emptyBound.structural));
+  assert.equal(emptyBound.verdict, 'not-comparable');
+
+  const fullIncomplete = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'incomplete', roles: { tag: TAG, release_pr: PR } }]);
+  assert.ok(fullIncomplete.structural.some((x) => /every required role is filled/.test(x.detail)));
+
+  const claimingNoClaim = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'not-a-claim', roles: { tag: TAG, release_pr: PR } }]);
+  assert.ok(claimingNoClaim.structural.some((x) => /but fills role/.test(x.detail)));
+
+  const wrongAnchor = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: { tag: PR, release_pr: PR } }]);
+  assert.ok(wrongAnchor.structural.some((x) => /does not name the anchor occurrence/.test(x.detail)));
+
+  const unknownRole = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: { tag: TAG, release_pr: PR, invented: SHA_FIRST } }]);
+  assert.ok(unknownRole.structural.some((x) => /names no role of relation/.test(x.detail)));
+});
+
+test('§11.3 — a comparator given no sealed bundle digest fails closed', () => {
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const lane = artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const r = compare({ artifacts: [oracle, lane], registry: REGISTRY, manifest: MANIFEST, bundleDigest: null, readBlob });
+  assert.ok(r.structural.some((x) => /no sealed bundle digest/.test(x.detail)));
+  assert.equal(r.verdict, 'not-comparable', 'a skipped seal check is not a passed one');
+});
+
+test('§9 — one snapshot is a check that could not run, not an absence of drift', () => {
+  const snap = { integration_ref: 'main', integration_head: 'a', commits: {}, tags: {} };
+  assert.equal(authorityDrift(snap, null).drifted, true);
+  assert.equal(authorityDrift(null, snap).drifted, true);
+  assert.equal(authorityDrift(null, null).drifted, true);
+  assert.equal(authorityDrift(snap, snap).drifted, false);
+  assert.equal(authorityDrift(null, snap).conditions[0].kind, 'baseline-absent');
+});
+
+test('§9 — every recorded tag field is compared, not just the target', () => {
+  const base = { integration_ref: 'main', integration_head: 'h', commits: {}, tags: { t: { object: 'o1', target: 'c1', subject: 's1' } } };
+  const sameTarget = (tag) => ({ ...base, tags: { t: { ...base.tags.t, ...tag } } });
+  assert.equal(authorityDrift(base, base).drifted, false, 'the control must be clean');
+  assert.ok(authorityDrift(base, sameTarget({ object: 'o2' })).conditions.some((c) => c.kind === 'tag-object-changed'));
+  assert.ok(authorityDrift(base, sameTarget({ subject: 's2' })).conditions.some((c) => c.kind === 'tag-subject-changed'));
+  assert.ok(authorityDrift(base, sameTarget({ target: 'c2' })).conditions.some((c) => c.kind === 'tag-retargeted'));
+});
+
+test('§4.5 — the declaration shape is checked, not merely its key set', () => {
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const withPolicy = (over) => run([oracle, artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)], policies: [policy(over)] })]);
+  // A finding is located by its `path` and explained by its `detail`; match on
+  // either, or an assertion passes or fails on which half carried the word.
+  const hit = (r, re) => r.structural.some((x) => re.test(x.detail) || re.test(x.path));
+  assert.ok(hit(withPolicy({ parameters: 'whatever' }), /flat object of scalars/));
+  assert.ok(hit(withPolicy({ parameters: { nested: { a: 1 } } }), /not a scalar/));
+  assert.ok(hit(withPolicy({ tie_policy: 'sometimes' }), /tie_policy/));
+  assert.ok(hit(withPolicy({ class: '' }), /non-empty mechanism name/));
+  assert.ok(hit(withPolicy({ ranking: '' }), /stated rule/));
+  assert.ok(hit(withPolicy({ anchor_domain: { family: 'package-tag' } }), /anchor_domain/));
+  // Control: all seven keys present AND well-shaped is clean.
+  assert.deepEqual(withPolicy({ parameters: { window: 200 } }).structural, []);
+});
+
+test('§7.4 — the mismatch finding names the differing keys and parameters', () => {
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const lane = artifact({
+    id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)],
+    policies: [policy({ class: 'proximity', parameters: { window: 2000, order: 'last' }, ranking: 'last-wins' })],
+  });
+  const r = run([oracle, lane]);
+  const f = r.policy_findings[0];
+  assert.deepEqual(f.differing_keys, ['class', 'parameters', 'ranking']);
+  assert.deepEqual(f.differing_parameters, ['order', 'window']);
+  assert.ok('parameters' in f.declarations.lane, 'the reported declarations must carry what differs');
+});
+
+test('§3.3 — a declared field that disagrees is a finding, not silence', () => {
+  const reg = JSON.parse(JSON.stringify(REGISTRY));
+  reg.families = [
+    { id: 'package-tag', required: true, fields: [{ name: 'version' }] },
+    { id: 'pr-citation', required: true, fields: [] },
+    { id: 'commit-citation', required: true, fields: [] },
+  ];
+  const withVersion = (v) => BASE_OCCS.map((o) => (o.family === 'package-tag' ? { ...o, fields: { version: { state: 'present', value: v } } } : o));
+  const mk = (id, role, v) => artifact({ id, role, occurrences: withVersion(v), anchors: [boundRow(SHA_FIRST)] });
+  const go = (ov, lv) => compare({ artifacts: [mk('oracle', 'oracle', ov), mk('lane', 'lane', lv)], registry: reg, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob });
+
+  assert.equal(go('0.1.0', '0.1.0').verdict, 'pass', 'the control must pass');
+  const bad = go('0.1.0', '9.9.9');
+  assert.ok(bad.containment.some((c) => c.kind === 'divergent-field' && c.field === 'version'), JSON.stringify(bad.containment));
+  assert.equal(bad.verdict, 'fail');
+});
+
+test('§9 — the integration ref prefers origin/main, which is what a detached CI checkout has', () => {
+  // A bare `main` exists on a developer clone and NOT in the detached checkout
+  // a pull-request build uses. Resolving only `main` is green locally and red
+  // in CI — reproduced against this file by cross-host review.
+  //
+  // Asserting that the answer is one of {origin/main, main} would pass whether
+  // or not the preference exists. This builds a repository carrying BOTH and
+  // requires the answer to be origin/main, then removes it and requires main —
+  // hermetic, so it holds on a machine with no remote and in CI alike.
+  const d = mkdtempSync(join(tmpdir(), 'ref-pref-'));
+  const git = (...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  try {
+    git('init', '-q', '-b', 'main');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'one');
+    const head = git('rev-parse', 'HEAD').trim();
+    git('update-ref', 'refs/remotes/origin/main', head);
+    assert.equal(resolveIntegrationRef(d), 'origin/main');
+    git('update-ref', '-d', 'refs/remotes/origin/main');
+    assert.equal(resolveIntegrationRef(d), 'main', 'main must still be the fallback');
+    git('branch', '-m', 'main', 'other');
+    assert.throws(() => resolveIntegrationRef(d), /no integration ref available/);
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+  assert.throws(() => resolveIntegrationRef(REPO, 'refs/heads/no-such-ref-here'), /no integration ref available/);
+});
+
+test('evaluateArtifactOnly reads the field state, and an omitted field is absent', () => {
+  const registry = { families: [{ id: 'proof-run-id', required: true, fields: [{ name: 'artifact_present', authority: 'run-artifact', qualifier: 'artifact-only' }] }] };
+  const occAt = (state) => ({ path: 'p', blob: 'b', start_byte: 0, end_byte: 3, family: 'proof-run-id', literal: 'abc', ...(state ? { fields: { artifact_present: state } } : {}) });
+  const mk = (role, state, value) => ({ artifact_id: role, role, occurrences: [occAt(state ? { state, value } : null)] });
+
+  assert.equal(evaluateArtifactOnly({ artifacts: [mk('oracle', 'present', 1), mk('lane', 'present', 1)], registry }).absent.length, 0);
+  assert.equal(evaluateArtifactOnly({ artifacts: [mk('oracle', 'not-applicable', null), mk('lane', 'not-applicable', null)], registry }).absent.length, 1);
+  assert.equal(evaluateArtifactOnly({ artifacts: [mk('oracle', null), mk('lane', null)], registry }).absent.length, 1, 'saying nothing is not saying present');
+  assert.equal(evaluateArtifactOnly({ artifacts: [mk('oracle', 'present', 1), mk('lane', 'present', 2)], registry }).disagreeing.length, 1);
+  // A registry declaring no artifact-only field produces nothing at all.
+  assert.deepEqual(evaluateArtifactOnly({ artifacts: [mk('lane', 'present', 1)], registry: { families: [{ id: 'proof-run-id', fields: [{ name: 'x' }] }] } }).qualified, []);
 });

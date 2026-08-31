@@ -252,6 +252,18 @@ function checkBinding(r, q, at) {
   }
   const dupes = keys.filter((k, i) => keys.indexOf(k) !== i);
   if (dupes.length > 0) at(`${q}.binding.declaration_keys`, `contains duplicate key(s) ${JSON.stringify([...new Set(dupes)])}`);
+
+  // The back door this gate exists to close is not only an allow-list of
+  // `class` values — it is ANY key here that names a rule for both lanes. A
+  // shape check that ignores unknown properties leaves `binding.rule:
+  // "minimal-span"` and `binding.allowed_classes: [...]` green, which restores
+  // the fixed vocabulary §4.2 removed without a version bump. So the block's
+  // own key set is closed, even though the lane's `class` value is not.
+  const allowed = new Set(['declared_by', 'declaration_keys', 'note']);
+  const unknown = Object.keys(b).filter((k) => !allowed.has(k));
+  if (unknown.length > 0) {
+    at(`${q}.binding`, `carries unknown propert(ies) ${JSON.stringify(unknown)}; §4.5 fixes this block's shape and §4.2 forbids it naming a rule. Allowed: ${JSON.stringify([...allowed])}.`);
+  }
 }
 
 /**

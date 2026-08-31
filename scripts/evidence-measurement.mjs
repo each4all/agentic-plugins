@@ -181,7 +181,25 @@ function git(repoRoot, args) {
  * rather than in what moved — and drift detection over two differently-selected
  * sets reports noise as movement and movement as nothing.
  */
-export function buildAuthoritySnapshot(repoRoot, { ref = 'main', now = new Date() } = {}) {
+/**
+ * Resolve the integration ref the way the rest of this repository's evidence
+ * tooling does: `origin/main` first, then `main`.
+ *
+ * A bare `main` is present in a normal clone and ABSENT in the detached
+ * checkout a pull-request build uses, so a builder that resolves only `main`
+ * is green on every developer machine and red in CI — which is exactly what a
+ * cross-host review reproduced against this file.
+ */
+export function resolveIntegrationRef(repoRoot, requested = null) {
+  const candidates = requested ? [requested] : ['origin/main', 'main'];
+  for (const c of candidates) {
+    try { git(repoRoot, ['rev-parse', '--verify', '--quiet', `${c}^{commit}`]); return c; } catch { /* try next */ }
+  }
+  throw new Error(`no integration ref available (tried ${candidates.join(', ')}); reachability cannot be judged`);
+}
+
+export function buildAuthoritySnapshot(repoRoot, { ref = null, now = new Date() } = {}) {
+  ref = resolveIntegrationRef(repoRoot, ref);
   const commits = {};
   const raw = git(repoRoot, ['rev-list', '--format=%H%x00%s', '--no-commit-header', ref]);
   for (const line of raw.split('\n')) {
@@ -231,7 +249,13 @@ export function buildAuthoritySnapshot(repoRoot, { ref = 'main', now = new Date(
 export function authorityDrift(baseline, run) {
   const conditions = [];
   const info = [];
-  if (!baseline || !run) return { drifted: false, conditions: [], info: [], reason: 'one or both snapshots absent' };
+  // §9 requires TWO snapshots. Treating an absent one as "no drift" fails open:
+  // the single most likely way to lose drift detection is to forget the
+  // baseline, and a comparator that answers `false` there reports the absence
+  // of a check as the absence of a problem.
+  if (!baseline && !run) return { drifted: true, conditions: [{ kind: 'snapshots-absent', detail: 'neither a baseline nor a run authority snapshot was supplied (§9)' }], info: [], reason: 'no snapshots' };
+  if (!baseline) return { drifted: true, conditions: [{ kind: 'baseline-absent', detail: 'no baseline snapshot; drift is the difference between two, and one cannot be differenced (§9)' }], info: [], reason: 'no baseline' };
+  if (!run) return { drifted: true, conditions: [{ kind: 'run-snapshot-absent', detail: 'no run snapshot captured at comparison time (§9)' }], info: [], reason: 'no run snapshot' };
   if (baseline.integration_ref !== run.integration_ref) {
     conditions.push({ kind: 'integration-ref-changed', detail: `${baseline.integration_ref} -> ${run.integration_ref}` });
   } else if (baseline.integration_head !== run.integration_head) {
@@ -239,8 +263,15 @@ export function authorityDrift(baseline, run) {
   }
   for (const [name, was] of Object.entries(baseline.tags ?? {})) {
     const now = run.tags?.[name];
-    if (!now) conditions.push({ kind: 'tag-removed', detail: name });
-    else if (now.target !== was.target) conditions.push({ kind: 'tag-retargeted', detail: `${name}: ${was.target} -> ${now.target}` });
+    if (!now) { conditions.push({ kind: 'tag-removed', detail: name }); continue; }
+    // All three recorded fields are compared, not just the target. An annotated
+    // tag re-created over the same commit keeps its target and changes its
+    // object; a retagged message changes its subject. Both are movements of an
+    // authority a comparison consults, and recording a field without comparing
+    // it is a check that looks present and is not.
+    if (now.target !== was.target) conditions.push({ kind: 'tag-retargeted', detail: `${name}: ${was.target} -> ${now.target}` });
+    if (now.object !== was.object) conditions.push({ kind: 'tag-object-changed', detail: `${name}: ${was.object} -> ${now.object}` });
+    if (now.subject !== was.subject) conditions.push({ kind: 'tag-subject-changed', detail: name });
   }
   for (const [sha, was] of Object.entries(baseline.commits ?? {})) {
     const now = run.commits?.[sha];
@@ -254,12 +285,31 @@ export function authorityDrift(baseline, run) {
 // §3.2 — physical identity
 // ---------------------------------------------------------------------------
 
+/**
+ * §3.2 — physical occurrence identity: (path, blob, start_byte, end_byte).
+ *
+ * `profile` is NOT part of the key, and that is a correction. Version 1.1 and
+ * the first 2.0.0 draft included it, arguing that without it identity would be
+ * corpus-global — which `path` already prevents. Measured against the shipped
+ * manifest, all three `stage-docs` files are also `discovered-md` files, so
+ * every occurrence in them held TWO identities: an oracle row anchored under
+ * one profile and a lane row under the other would never pair, and the same
+ * bytes would be counted twice. The ratified decision names four components;
+ * this is those four. Profile remains a compared field (§3.3) and a membership
+ * constraint (§2.2), not a key.
+ */
 export function identityKey(id) {
   if (!id || typeof id !== 'object') return null;
-  const { profile, path, blob, start_byte: s, end_byte: e } = id;
-  if (typeof profile !== 'string' || typeof path !== 'string' || typeof blob !== 'string') return null;
+  const { path, blob, start_byte: s, end_byte: e } = id;
+  if (typeof path !== 'string' || typeof blob !== 'string') return null;
   if (!Number.isInteger(s) || !Number.isInteger(e)) return null;
-  return `${profile}\0${path}\0${blob}\0${s}\0${e}`;
+  return `${path}\0${blob}\0${s}\0${e}`;
+}
+
+/** §3.3 — family is compared, not keyed, so the occurrence map is keyed by both. */
+export function occurrenceKey(o) {
+  const id = identityKey(o);
+  return id === null ? null : `${id}\0${o.family}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +343,9 @@ export function validateArtifact(artifact, ctx) {
     at('contract_version', `is ${JSON.stringify(artifact.contract_version)}, expected ${ctx.contractVersion} (§10.1)`);
   }
   if (artifact.role !== 'lane' && artifact.role !== 'oracle') at('role', `is ${JSON.stringify(artifact.role)}, expected "lane" or "oracle"`);
-  if (ctx.bundleDigest && artifact.bundle_digest !== ctx.bundleDigest) {
+  if (ctx.bundleDigest === null || ctx.bundleDigest === undefined) {
+    at('bundle_digest', 'cannot be checked: no sealed bundle digest was supplied to the comparator (§11.3). A comparison that skips the seal is not a sealed comparison.');
+  } else if (artifact.bundle_digest !== ctx.bundleDigest) {
     at('bundle_digest', `is ${JSON.stringify(artifact.bundle_digest)}, the sealed bundle is ${ctx.bundleDigest} (§11.3)`);
   }
   if (ctx.manifestDigest && artifact.manifest_digest !== ctx.manifestDigest) {
@@ -327,23 +379,57 @@ export function validateArtifact(artifact, ctx) {
     const keys = ctx.declarationKeys.get(p.relation) ?? [];
     for (const k of keys) if (!(k in p)) at(`policies[${i}]`, `omits declaration key ${JSON.stringify(k)} (§4.5)`);
     if (p.digest !== policyDigest(p)) at(`policies[${i}].digest`, 'does not match the declaration it seals (§4.5)');
+    // §4.5 fixes the declaration's SHAPE. Checking only that the keys are
+    // present accepts `parameters: "whatever"` and `tie_policy: "sometimes"`,
+    // which makes the declaration unstructured again — and an unstructured
+    // declaration is the bare name §4.5 exists to forbid, wearing seven keys.
+    // The `class` value is deliberately NOT checked against a list (§4.2).
+    if (typeof p.class !== 'string' || p.class.length === 0) at(`policies[${i}].class`, 'must be a non-empty mechanism name (§4.5)');
+    if (!p.parameters || typeof p.parameters !== 'object' || Array.isArray(p.parameters)) {
+      at(`policies[${i}].parameters`, 'must be a flat object of scalars; an empty object is a claim, a non-object is not a declaration (§4.5)');
+    } else {
+      for (const [k, v] of Object.entries(p.parameters)) {
+        if (v !== null && typeof v === 'object') at(`policies[${i}].parameters.${k}`, 'is not a scalar; §4.5 fixes a FLAT object so two declarations are comparable key by key');
+      }
+    }
+    if (typeof p.ranking !== 'string' || p.ranking.length === 0) at(`policies[${i}].ranking`, 'must be a stated rule or the string "none" (§4.5)');
+    if (p.tie_policy !== 'ambiguous' && p.tie_policy !== 'ranked') at(`policies[${i}].tie_policy`, `is ${JSON.stringify(p.tie_policy)}, expected "ambiguous" or "ranked" (§4.5)`);
+    const dom = p.anchor_domain;
+    if (!dom || typeof dom !== 'object' || typeof dom.family !== 'string' || typeof dom.profile !== 'string' || !('restriction' in dom)) {
+      at(`policies[${i}].anchor_domain`, 'must declare family, profile and restriction — a silent narrowing is what it exists to catch (§4.5, §4.1)');
+    }
     declared.set(p.relation, p);
   }
   for (const rel of relationsReported) {
     if (!declared.has(rel)) at('policies', `no policy declaration for relation ${JSON.stringify(rel)} it reports (§4.5, §8.2)`);
   }
 
+  // §3.3 — two occurrences of DIFFERENT families may share a physical extent, so
+  // the map is keyed by identity AND family. Keyed by identity alone the second
+  // one overwrote the first, which made the containment check in §7.1 depend on
+  // the order of an array the contract never ordered: reversing two otherwise
+  // identical artifacts produced false `divergent-occurrence` findings.
   const occByKey = new Map();
   const quotes = [];
   for (const [i, o] of (artifact.occurrences ?? []).entries()) {
-    const key = identityKey(o);
+    const key = occurrenceKey(o);
     if (!key) { at(`occurrences[${i}]`, 'has no well-formed physical identity (§3.2)'); continue; }
     if (!ctx.families.has(o.family)) at(`occurrences[${i}].family`, `family ${JSON.stringify(o.family)} is not in the registry (§8.2)`);
     if (o.end_byte <= o.start_byte) { at(`occurrences[${i}]`, `span is not a valid half-open range (${o.start_byte}, ${o.end_byte}) (§3.2)`); continue; }
-    if (occByKey.has(key) && occByKey.get(key).family === o.family) {
+    if (occByKey.has(key)) {
       at(`occurrences[${i}]`, 'two occurrences of the same family share a physical identity (§3.2)');
     }
     occByKey.set(key, o);
+    // §2.1 — the manifest is normative for MEMBERSHIP, not only integrity. An
+    // occurrence naming a path the pinned profile does not contain, or a blob
+    // the manifest does not record for that path, is measuring something
+    // outside the corpus; without this it could be compared and could pass.
+    const member = ctx.membership?.get(`${o.profile}\0${o.path}`);
+    if (ctx.membership && !member) {
+      at(`occurrences[${i}]`, `path ${JSON.stringify(o.path)} is not in the pinned ${JSON.stringify(o.profile)} profile (§2.1 membership)`);
+    } else if (member && member.blob !== o.blob) {
+      at(`occurrences[${i}].blob`, `is ${o.blob} but the manifest records ${member.blob} for this path (§2.1)`);
+    }
     const bytes = ctx.readBlob(o.blob);
     if (bytes === null || bytes === undefined) { at(`occurrences[${i}].blob`, `blob ${o.blob} could not be read; an unchecked span is not a checked one (§8.2)`); continue; }
     if (o.end_byte > bytes.length) { at(`occurrences[${i}]`, `span end ${o.end_byte} is past the blob's ${bytes.length} bytes (§3.2)`); continue; }
@@ -370,7 +456,35 @@ export function validateArtifact(artifact, ctx) {
     if (!DISPOSITIONS.includes(a.disposition)) {
       at(`anchors[${i}].disposition`, `is ${JSON.stringify(a.disposition)}, not one of ${JSON.stringify(DISPOSITIONS)} (§4.3)`);
     }
-    if (!ctx.relations.has(a.relation)) at(`anchors[${i}].relation`, `relation ${JSON.stringify(a.relation)} is not in the registry`);
+    const rel = ctx.relations.get(a.relation);
+    if (!rel) { at(`anchors[${i}].relation`, `relation ${JSON.stringify(a.relation)} is not in the registry`); continue; }
+
+    // §4.3 defines each disposition in terms of the roles it fills. Nothing
+    // checked that, so two `bound` rows carrying `roles: {}` compared equal and
+    // reached `agreeing` — a false pass reproduced by cross-host review. A
+    // disposition that contradicts its own row is malformed, not a comparison
+    // result, so it is structural.
+    const filled = new Set(Object.entries(a.roles ?? {}).filter(([, v]) => identityKey(v) !== null).map(([k]) => k));
+    const declaredRoles = new Set((rel.roles ?? []).map((r) => r.name));
+    const requiredRoles = (rel.roles ?? []).filter((r) => r.required === true).map((r) => r.name);
+    for (const name of filled) {
+      if (!declaredRoles.has(name)) at(`anchors[${i}].roles.${name}`, `names no role of relation ${JSON.stringify(a.relation)}`);
+    }
+    if (a.disposition === 'bound') {
+      const missing = requiredRoles.filter((r) => !filled.has(r));
+      if (missing.length > 0) at(`anchors[${i}]`, `is \`bound\` but leaves required role(s) ${JSON.stringify(missing)} unfilled; §4.3 defines bound as every required role filled`);
+    } else if (a.disposition === 'incomplete') {
+      const missing = requiredRoles.filter((r) => !filled.has(r));
+      if (missing.length === 0) at(`anchors[${i}]`, 'is `incomplete` but every required role is filled; §4.3 defines incomplete as a required role with no candidate');
+    } else if (a.disposition === 'not-a-claim') {
+      if (filled.size > 0) at(`anchors[${i}]`, `is \`not-a-claim\` but fills role(s) ${JSON.stringify([...filled])}; §4.3 defines it as asserting no relation at all`);
+    }
+    // The anchor role, when filled, must be the anchor occurrence itself —
+    // otherwise the row's identity and its own content disagree.
+    const anchorRoleId = a.roles?.[rel.anchor_role];
+    if (anchorRoleId && identityKey(anchorRoleId) !== key) {
+      at(`anchors[${i}].roles.${rel.anchor_role}`, 'does not name the anchor occurrence this row is keyed by (§4.1)');
+    }
   }
 
   return { errors, occByKey, anchorKeys: seenAnchor, policies: declared, quotes };
@@ -516,8 +630,16 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
   const families = new Set((registry.families ?? []).map((f) => f.id));
   const relations = new Map((registry.relations ?? []).map((r) => [r.id, r]));
   const declarationKeys = new Map((registry.relations ?? []).map((r) => [r.id, r.binding?.declaration_keys ?? []]));
+  // §2.1 membership index: (profile, path) -> the manifest's record for it.
+  // Absent when no manifest profiles are supplied, so a fixture-driven run can
+  // still exercise the rest; `ctx.membership` being null disables the check
+  // rather than silently passing every path.
+  const membership = manifest?.profiles
+    ? new Map(Object.entries(manifest.profiles).flatMap(([prof, v]) => (v.files ?? []).map((f) => [`${prof}\0${f.path}`, f])))
+    : null;
+  const fieldsByFamily = new Map((registry.families ?? []).map((f) => [f.id, f.fields ?? []]));
   const ctx = {
-    families, relations, declarationKeys, readBlob,
+    families, relations, declarationKeys, readBlob, membership, fieldsByFamily,
     contractVersion: registry.contract_version,
     bundleDigest: bundle,
     manifestDigest: manifest?.digest ?? null,
@@ -575,18 +697,41 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
     const distinct = new Set([...digests.values()].map((p) => p.digest));
     if (distinct.size > 1) {
       const domainDiffers = new Set([...digests.values()].map((p) => canonicalDigest(p.anchor_domain ?? null))).size > 1;
+      // §7.4 says the finding NAMES the keys that differ. Reporting only a
+      // digest difference tells a reader that two policies are not the same
+      // and nothing about how, which is the diagnostic value of the clause.
+      // `parameters` is compared key by key — §4.5 fixes it flat for exactly
+      // this — and is included in the reported declarations, which an earlier
+      // revision omitted while claiming to explain the difference.
+      const differingKeys = [];
+      const declKeys = new Set([...digests.values()].flatMap((p) => Object.keys(p)));
+      for (const k of [...declKeys].sort()) {
+        if (k === 'digest') continue;
+        if (new Set([...digests.values()].map((p) => canonicalDigest(p[k] ?? null))).size > 1) differingKeys.push(k);
+      }
+      const paramKeys = new Set([...digests.values()].flatMap((p) => Object.keys(p.parameters ?? {})));
+      const differingParameters = [...paramKeys].sort()
+        .filter((k) => new Set([...digests.values()].map((p) => JSON.stringify(p.parameters?.[k] ?? null))).size > 1);
       policyFindings.push({
         relation: rel,
         kind: domainDiffers ? 'anchor-domain-mismatch' : 'policy-mismatch',
-        declarations: Object.fromEntries([...digests].map(([id, p]) => [id, { class: p.class, ranking: p.ranking, tie_policy: p.tie_policy, digest: p.digest }])),
+        differing_keys: differingKeys,
+        differing_parameters: differingParameters,
+        declarations: Object.fromEntries([...digests].map(([id, p]) => [id, { class: p.class, ranking: p.ranking, tie_policy: p.tie_policy, parameters: p.parameters, anchor_domain: p.anchor_domain, digest: p.digest }])),
         detail: domainDiffers
-          ? 'the artifacts measured different anchor populations, so every ratio below is a ratio of something different (§7.4)'
-          : 'declared policies differ; row disagreements below may be explained by that difference rather than by an error (§7.4)',
+          ? `the artifacts measured different anchor populations, so every ratio below is a ratio of something different (§7.4); differing keys: ${JSON.stringify(differingKeys)}`
+          : `declared policies differ; row disagreements below may be explained by that difference rather than by an error (§7.4); differing keys: ${JSON.stringify(differingKeys)}`,
       });
     }
   }
 
-  const drift = baseline && runAuthority ? authorityDrift(baseline, runAuthority) : { drifted: false, conditions: [] };
+  // §9 requires two snapshots. A run given neither is a fixture-driven
+  // comparison and is exempted explicitly; a run given ONE is a drift check
+  // that cannot run, and authorityDrift reports that as a condition rather
+  // than as absence of drift.
+  const drift = (baseline || runAuthority)
+    ? authorityDrift(baseline, runAuthority)
+    : { drifted: false, conditions: [], info: [{ kind: 'authority-not-checked', detail: 'no snapshots supplied; §9 drift was not evaluated' }] };
 
   // §5 + §9 — resolve authority-derived fields once, for every lane, from the
   // run snapshot. A lane that resolved them itself would be consulting a third
@@ -602,17 +747,50 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
       const laneAnchors = new Map((lane.artifact.anchors ?? []).map((a) => [`${a.relation}\0${identityKey(a.anchor)}`, a]));
 
       // §7.1 — occurrence containment, one-directional by construction.
+      //
+      // Lookup is by identity AND family (§3.3 permits two families at one
+      // extent), and the ORACLE's occurrence is what says which family to look
+      // for — an identity-only lookup made this depend on array order.
       for (const a of oracle.artifact.anchors ?? []) {
         const named = [a.anchor, ...Object.values(a.roles ?? {})].filter(Boolean);
         for (const id of named) {
-          const key = identityKey(id);
-          if (!key) continue;
-          const oracleOcc = oracle.occByKey.get(key);
-          const laneOcc = lane.occByKey.get(key);
+          const idKey = identityKey(id);
+          if (!idKey) continue;
+          const oracleOcc = [...oracle.occByKey.values()].find((o) => identityKey(o) === idKey);
+          if (!oracleOcc) continue;
+          const laneOcc = lane.occByKey.get(occurrenceKey(oracleOcc));
           if (!laneOcc) {
-            containment.push({ lane: lane.artifact.artifact_id, relation: a.relation, identity: id, kind: 'absent-occurrence', detail: 'the oracle names this occurrence and the lane does not carry it (§7.1)' });
-          } else if (oracleOcc && (laneOcc.family !== oracleOcc.family || laneOcc.literal !== oracleOcc.literal)) {
-            containment.push({ lane: lane.artifact.artifact_id, relation: a.relation, identity: id, kind: 'divergent-occurrence', detail: `family/literal disagree: ${JSON.stringify([oracleOcc.family, oracleOcc.literal])} vs ${JSON.stringify([laneOcc.family, laneOcc.literal])} (§7.1)` });
+            const anyFamily = [...lane.occByKey.values()].some((o) => identityKey(o) === idKey);
+            containment.push({
+              lane: lane.artifact.artifact_id, relation: a.relation, identity: id,
+              kind: anyFamily ? 'divergent-occurrence' : 'absent-occurrence',
+              detail: anyFamily
+                ? `the lane carries this extent under a different family than ${JSON.stringify(oracleOcc.family)} (§7.1, §3.3)`
+                : 'the oracle names this occurrence and the lane does not carry it (§7.1)',
+            });
+            continue;
+          }
+          if (laneOcc.literal !== oracleOcc.literal) {
+            containment.push({ lane: lane.artifact.artifact_id, relation: a.relation, identity: id, kind: 'divergent-occurrence', detail: `literals disagree: ${JSON.stringify(oracleOcc.literal)} vs ${JSON.stringify(laneOcc.literal)} (§7.1)` });
+            continue;
+          }
+          // §3.3 — semantic FIELDS are compared, not merely family and literal.
+          // The registry declares `package`, `version`, `kind` and `shape`; with
+          // only family and literal compared, an oracle version of 0.1.0 against
+          // a lane version of 9.9.9 passed.
+          for (const fld of ctx.fieldsByFamily.get(oracleOcc.family) ?? []) {
+            if (fld.authority) continue;               // §5/§9 resolve these instead
+            if (fld.name === 'literal') continue;      // compared above
+            const ov = oracleOcc.fields?.[fld.name];
+            const lv = laneOcc.fields?.[fld.name];
+            if (ov === undefined && lv === undefined) continue;
+            if (canonicalDigest(ov ?? null) !== canonicalDigest(lv ?? null)) {
+              containment.push({
+                lane: lane.artifact.artifact_id, relation: a.relation, identity: id,
+                kind: 'divergent-field', field: fld.name,
+                detail: `field ${fld.name} disagrees: ${JSON.stringify(ov ?? null)} vs ${JSON.stringify(lv ?? null)} (§3.3, §7.1)`,
+              });
+            }
           }
         }
       }
@@ -639,9 +817,62 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
     }
   }
 
-  const verdict = reduce({ structural, oracles: oracles.length, drift, rows, containment, relations, artifacts, authorityFields, expectedZero: registry.expected_zero ?? [] });
+  const artifactOnly = evaluateArtifactOnly({ artifacts, registry });
+  const verdict = reduce({ structural, oracles: oracles.length, drift, rows, containment, relations, artifacts, authorityFields, expectedZero: registry.expected_zero ?? [], artifactOnly });
   const counts = Object.fromEntries(STATUSES.map((s) => [s, rows.filter((r) => r.status === s).length]));
-  return { verdict: verdict.verdict, reason: verdict.reason, structural, policy_findings: policyFindings, drift, containment, rows, counts, authority_fields: authorityFields, quote_findings: quoteFindings };
+  return { verdict: verdict.verdict, reason: verdict.reason, structural, policy_findings: policyFindings, drift, containment, rows, counts, authority_fields: authorityFields, quote_findings: quoteFindings, artifact_only: artifactOnly };
+}
+
+/**
+ * §2.3 + §7.5 + §8.3 rows 6 and 9 — artifact-only fields, derived rather than
+ * declared in a side channel.
+ *
+ * An earlier revision read an `artifact_only_findings` array that no clause of
+ * the contract described and no artifact was required to emit, so a lane that
+ * simply omitted it reached `pass` — reachability recreated by dropping the
+ * condition rather than by satisfying it. The state is now read where §6 puts
+ * it: on the occurrence's own field, for the families the registry qualifies
+ * `artifact-only`. A field the registry declares and the artifact does not
+ * carry is treated as ABSENT, because a run artifact nobody reported is not a
+ * run artifact anybody saw.
+ */
+export function evaluateArtifactOnly({ artifacts, registry }) {
+  const qualified = [];
+  for (const f of registry.families ?? []) {
+    for (const fld of f.fields ?? []) {
+      if (fld.qualifier === 'artifact-only') qualified.push({ family: f.id, field: fld.name, required: f.required === true });
+    }
+  }
+  const absent = [];
+  const disagreeing = [];
+  const present = [];
+  if (qualified.length === 0) return { qualified: [], absent, disagreeing, present };
+
+  const oracle = (artifacts ?? []).find((a) => a?.role === 'oracle');
+  const byIdentity = new Map();
+  for (const a of artifacts ?? []) {
+    for (const o of a.occurrences ?? []) {
+      const k = occurrenceKey(o);
+      if (k === null) continue;
+      if (!byIdentity.has(k)) byIdentity.set(k, []);
+      byIdentity.get(k).push({ artifactId: a.artifact_id, role: a.role, occ: o });
+    }
+  }
+  for (const q of qualified) {
+    for (const [key, seen] of byIdentity) {
+      if (!key.endsWith(`\0${q.family}`)) continue;
+      const states = seen.map((s) => ({ ...s, state: s.occ.fields?.[q.field]?.state ?? 'not-applicable', value: s.occ.fields?.[q.field]?.value ?? null }));
+      if (states.some((s) => s.state !== 'present')) {
+        absent.push({ family: q.family, field: q.field, required: q.required, identity: key.split('\0')[0] });
+        continue;
+      }
+      present.push({ family: q.family, field: q.field, identity: key.split('\0')[0] });
+      if (oracle && new Set(states.map((s) => JSON.stringify(s.value))).size > 1) {
+        disagreeing.push({ family: q.family, field: q.field, identity: key.split('\0')[0], values: states.map((s) => ({ artifact: s.artifactId, value: s.value })) });
+      }
+    }
+  }
+  return { qualified, absent, disagreeing, present };
 }
 
 // ---------------------------------------------------------------------------
@@ -662,7 +893,7 @@ export function expectedZeroCovers(relation, expectedZero = []) {
   return (expectedZero ?? []).some((z) => z?.family === anchorFamily && z?.profile === relation.profile);
 }
 
-export function reduce({ structural, oracles, drift, rows, containment, relations, artifacts, authorityFields = null, expectedZero = [] }) {
+export function reduce({ structural, oracles, drift, rows, containment, relations, artifacts, authorityFields = null, expectedZero = [], artifactOnly = null }) {
   if (structural.length > 0) return { verdict: 'not-comparable', reason: `structural error (§8.2): ${structural[0].path} — ${structural[0].detail}` };
   if (oracles !== 1) return { verdict: 'not-comparable', reason: 'the run has no oracle; correctness has an authority or it has no verdict (§8.3 row 2, §4.4)' };
   if (drift?.drifted) return { verdict: 'not-comparable', reason: `authority drift (§9): ${drift.conditions[0].kind} — ${drift.conditions[0].detail}` };
@@ -675,8 +906,10 @@ export function reduce({ structural, oracles, drift, rows, containment, relation
   const cont = (containment ?? []).find((c) => requiredRelations.has(c.relation));
   if (cont) return { verdict: 'fail', reason: `${cont.kind} on required relation ${cont.relation} (§8.3 row 5)` };
 
-  const artifactOnlyDisagrees = (artifacts ?? []).some((a) => (a?.artifact_only_findings ?? []).some((f) => f.present === true && f.agrees === false));
-  if (artifactOnlyDisagrees) return { verdict: 'fail', reason: 'an artifact-only authority is present and disagrees (§8.3 row 6)' };
+  if (artifactOnly?.disagreeing?.length) {
+    const d = artifactOnly.disagreeing[0];
+    return { verdict: 'fail', reason: `artifact-only field ${d.family}.${d.field} is present and disagrees (§8.3 row 6)` };
+  }
 
   const unresolved = rows.find((r) => req(r) && r.status === 'unresolved');
   if (unresolved) return { verdict: 'blocked', reason: `unresolved on required relation ${unresolved.relation} (§8.3 row 7)` };
@@ -689,8 +922,10 @@ export function reduce({ structural, oracles, drift, rows, containment, relation
     return { verdict: 'blocked', reason: `required field ${unresolvedField.family}.${unresolvedField.field} is unresolved for ${JSON.stringify(unresolvedField.literal)}: ${unresolvedField.reason} (§8.3 row 8, §9)` };
   }
 
-  const artifactOnlyAbsent = (artifacts ?? []).some((a) => (a?.artifact_only_findings ?? []).some((f) => f.present === false));
-  if (artifactOnlyAbsent) return { verdict: 'blocked', reason: 'an artifact-only authority is absent (§8.3 row 9)' };
+  if (artifactOnly?.absent?.length) {
+    const d = artifactOnly.absent[0];
+    return { verdict: 'blocked', reason: `artifact-only field ${d.family}.${d.field} names an artifact that is absent on this machine (§8.3 row 9, §2.3)` };
+  }
 
   // §8.4 — a `pass` requires an adjudicated row on every required relation,
   // unless an `expected_zero` declaration covers it. The exemption is keyed by
@@ -745,7 +980,7 @@ export function main(argv, repoRoot = REPO_ROOT) {
 
   if (command === 'authority') {
     if (sub === 'build') {
-      const snap = buildAuthoritySnapshot(repoRoot, { ref: flagValue(argv, '--ref') ?? 'main' });
+      const snap = buildAuthoritySnapshot(repoRoot, { ref: flagValue(argv, '--ref') });
       const out = flagValue(argv, '--out') ?? AUTHORITY_BASELINE_PATH;
       writeFileSync(resolve(repoRoot, out), canonicalSerialise(snap), 'utf8');
       console.log(`authority: wrote ${out} — ${snap.commit_count} commit(s), ${snap.tag_count} tag(s) at ${snap.integration_head}`);
@@ -772,13 +1007,25 @@ export function main(argv, repoRoot = REPO_ROOT) {
     if (paths.length === 0) { console.error('usage: evidence-measurement.mjs compare --artifact <path> [--artifact <path>…]'); return 2; }
     const registry = JSON.parse(readFileSync(resolve(repoRoot, REGISTRY_PATH), 'utf8'));
     const manifest = JSON.parse(readFileSync(resolve(repoRoot, MANIFEST_PATH), 'utf8'));
+    // §11.3 — the RECORDED seal is what artifacts declared against. An earlier
+    // revision computed the seal fresh and compared artifacts to that, so
+    // edited shared bytes were accepted whenever both artifacts happened to
+    // declare the recalculated digest — the check ran and could not fail. An
+    // unreadable seal left `actual` null, which disabled the artifact-side
+    // comparison entirely. Both fail closed now.
     const seal = verifySeal(repoRoot);
+    if (!seal.ok) {
+      console.error(`verdict: not-comparable — the sealed bundle does not match the tree (§11.3): ${seal.reason}`);
+      for (const d of seal.drifted) console.error(`  ${d.path}: ${d.detail}`);
+      console.error('  Re-seal deliberately (`evidence-measurement.mjs seal`) and re-run the lanes; do not compare against a bundle they did not read.');
+      return 1;
+    }
     const artifacts = paths.map((p) => JSON.parse(readFileSync(resolve(repoRoot, p), 'utf8')));
     const baselinePath = flagValue(argv, '--baseline');
     const runPath = flagValue(argv, '--run-authority');
     const baseline = baselinePath ? JSON.parse(readFileSync(resolve(repoRoot, baselinePath), 'utf8')) : null;
     const runAuthority = runPath ? JSON.parse(readFileSync(resolve(repoRoot, runPath), 'utf8')) : (baseline ? buildAuthoritySnapshot(repoRoot, { ref: baseline.integration_ref }) : null);
-    const result = compare({ artifacts, registry, manifest, bundleDigest: seal.actual, baseline, runAuthority, readBlob: gitBlobReader(repoRoot) });
+    const result = compare({ artifacts, registry, manifest, bundleDigest: seal.expected, baseline, runAuthority, readBlob: gitBlobReader(repoRoot) });
     if (json) { console.log(JSON.stringify(result, null, 2)); return result.verdict === 'pass' ? 0 : 1; }
     console.log(`verdict: ${result.verdict}${result.reason ? ` — ${result.reason}` : ''}`);
     console.log(`rows: ${JSON.stringify(result.counts)}`);

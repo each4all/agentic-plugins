@@ -88,14 +88,34 @@ test('duplicate declaration keys are a finding', () => {
   assert.ok(hits(r, 'duplicate').length > 0);
 });
 
-test('the gate holds NO allow-list: extra declaration keys and exotic values pass', () => {
-  // This is the property §4.2 depends on. An allow-list here would restore the
-  // fixed association vocabulary the contract removed, without a version bump.
+test('the gate holds NO allow-list of policy CLASSES: extra declaration keys pass', () => {
+  // This is the property §4.2 depends on. An allow-list of `class` values would
+  // restore the fixed association vocabulary the contract removed, without a
+  // version bump.
+  //
+  // The earlier version of this test was titled "exotic values pass" and only
+  // appended two strings to `declaration_keys`, which are key NAMES — it never
+  // exercised a value at all. Cross-host review named that. The declaration's
+  // `class` lives in the LANE'S artifact rather than in this registry, so the
+  // property is checked where it exists: the registry may name any keys it
+  // likes, and the comparator's own tests cover exotic `class` values.
   const r = checkMutated((reg) => {
     reg.relations[0].binding.declaration_keys.push('window_bytes', 'grammar_digest');
-    reg.relations[0].binding.note = `${reg.relations[0].binding.note} Extra keys are permitted.`;
   });
   assert.deepEqual(r.findings, [], JSON.stringify(r.findings, null, 2));
+});
+
+test('a binding block naming a RULE is rejected, whatever key it hides behind', () => {
+  // The back door: §4.2 removed the fixed vocabulary, and a shape gate that
+  // ignores unknown properties lets it back in under any new key.
+  for (const extra of [{ rule: 'minimal-span' }, { allowed_classes: ['proximity'] }, { window_bytes: 400 }]) {
+    const r = checkMutated((reg) => { Object.assign(reg.relations[0].binding, extra); });
+    const f = hits(r, 'binding');
+    assert.ok(f.length > 0, `${JSON.stringify(extra)} produced no finding`);
+    assert.match(f[0].detail, /unknown propert/);
+  }
+  // Control: the three allowed properties alone are clean.
+  assert.deepEqual(checkRegistry(REPO).findings, []);
 });
 
 // --- §4.1 the anchor domain is declared, not inferred ------------------------

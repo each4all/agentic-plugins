@@ -115,6 +115,13 @@ does not say which files are measured, and this repository contains more than
 one answer to that question (§2.2). The manifest lists the files, so "the
 corpus" is a set.
 
+**Membership is enforced, not assumed.** An occurrence naming a path the pinned
+profile does not contain, or a blob the manifest does not record for that path,
+is a structural error (§8.2). Without that check an artifact could measure a
+file outside the corpus, compare cleanly against an oracle that made the same
+excursion, and pass — the manifest would be normative in prose and decorative
+in practice.
+
 The manifest is built from the **commit's tree**, never a working tree or index,
 and its `commit` must be a full object name. A symbolic ref re-resolves on every
 run, so it names a moving corpus while claiming to have frozen one; the verifier
@@ -197,15 +204,22 @@ own (§4.3), and the occurrences it does name are still individually resolvable.
 An occurrence's **physical identity** is exactly:
 
 ```
-(profile, path, blob, start_byte, end_byte)
+(path, blob, start_byte, end_byte)
 ```
 
 - Spans are **half-open UTF-8 byte ranges over the exact blob bytes**.
-- `path` is part of the key. Without it, identity is corpus-global and a locally
-  authored pin stops being decidable.
+- `path` is part of the key. Without it, identity is corpus-global.
 - **Value is never part of identity.** Two identical lexemes at different spans
   are two occurrences, always.
 - **Family and type are not part of the key either** (§3.3).
+- **Profile is not part of the key**, and this is a correction. Version 1.1 and
+  an earlier 2.0.0 draft included it, arguing that identity would otherwise be
+  corpus-global — which `path` already prevents. The profiles of §2.2 are not
+  disjoint: a document can belong to both, and then every occurrence in it held
+  two identities, so an oracle row anchored under one profile and a lane row
+  under the other never paired and the same bytes counted twice. The ratified
+  decision names four components; these are those four. Profile remains a
+  compared field (§3.3) and a membership constraint (§2.1), not a key.
 
 Two occurrences of the *same* family may not share a physical identity. Two
 occurrences of *different* families may — see §3.3.
@@ -224,7 +238,17 @@ ledger, with nothing linking them.
 
 Because families are compared rather than keyed, two families may claim the same
 extent. The comparator pairs on physical identity first and reports the family
-disagreement on that single row.
+disagreement on that single row. Its occurrence index is therefore keyed by
+identity **and** family: keyed by identity alone, the second of two same-extent
+occurrences overwrote the first, and the result depended on the order of an
+array this contract never ordered.
+
+**"Compared" means every field the registry declares**, not family and literal
+alone. A registry that declares `package`, `version`, `kind` or `shape` and a
+comparator that ignores them is a contract asserting a check nobody runs: two
+artifacts disagreeing on a version would agree on everything compared.
+Authority-derived fields are the exception, and only because §5 resolves them
+instead.
 
 ### 3.4 Families are declared, not described
 
@@ -334,28 +358,34 @@ Which occurrence binds to which is **not fixed here**. There is no minimal
 binding span, no distance window, no block scope, no candidate ranking, and no
 tie-break. A lane may implement any extraction policy it likes.
 
-This is a reversal, and the reasons are measurements rather than taste. The
-ratified decision (`association-policy.md`, squash `8ebbe48`) records them; in
-summary:
+This is a reversal. The rule was removed by a ratified decision — the
+`association-policy.md` of §2.3, squash `8ebbe48` — taken on measurements of
+the frozen corpus after three successive rules had been adopted inside
+implementation changes with no decision step and each found wrong.
 
-- **The same clause was attempted three times and was wrong three times**, each
-  time because a rule was chosen inside an implementation change with no
-  decision step. A character-distance window changed which claims were found as
-  the width moved. A smallest-enclosing-block scope put nearly every candidate
-  in one container and pinned the reducer at `blocked`, so the contract could
-  produce neither `pass` nor `fail` on its own corpus. A minimal binding span
-  removed the ambiguity and was substantially wrong about which pairs it bound.
-- **Distance does not separate a claim from a mention.** Bindings keep being
-  added as the width grows after false ones have already appeared, so no width
-  admits every claim and excludes every mention.
-- **A lexical construction set has no stopping point on prose.** About half the
-  bindings in this corpus are joined by punctuation with no lexical marker to
-  name, and the connector tail is genuine claims rather than noise, so an
-  enumerated grammar must keep growing to stay complete. That is a treadmill,
-  not a convergence.
-- **The two relations in this registry are not alike** — one has a far more
-  diffuse introduction vocabulary and roles that are ambiguous by family — so a
-  single normative rule for both was never going to fit.
+**Those measurements are deliberately not repeated here.** They are readings of
+this corpus, and §1.2 forbids a shared input from carrying one; an earlier
+revision of this clause summarised them — a distance sweep, a share of bindings
+joined by punctuation, how one container behaved — and each sentence handed
+both lanes the same partial answer about what the corpus contains. The
+reasoning that survives in this document is the part that is true of prose
+rather than of these bytes:
+
+- **A binding rule is a claim about meaning wearing the clothes of a claim
+  about position.** Distance, containment and order are properties of a
+  document's layout; whether a token asserts a relation or merely mentions one
+  is not. A rule built from the first can agree with the second only by
+  coincidence, and nothing in the rule reports when the coincidence ends.
+- **An enumerated construction set has no stopping point over prose**, because
+  prose has no closed grammar. Completeness can be approached and cannot be
+  demonstrated, so a contract that fixes one is fixing a rule it cannot say is
+  finished.
+- **One rule for two relations assumes the relations are alike**, which is a
+  property of the specific relations rather than of relations in general, so
+  the contract has no basis for asserting it.
+
+An author who wants the corpus evidence reads the ratified decision — which is
+why §11.2 forbids a *lane* from reading it.
 
 What replaces it is an **authority that can adjudicate an association without
 being one**: an independently authored, span-level pairing oracle (§4.4).
@@ -372,7 +402,8 @@ lanes destroys their independence. Each lane declares the policy it implemented
 ### 4.3 Every in-scope anchor gets exactly one disposition
 
 For every occurrence in a relation's declared anchor domain (§4.1), an artifact
-carries **exactly one row**, whose disposition is exactly one of:
+carries **exactly one row**, whose disposition is exactly one of — and the row
+must be consistent with the roles it names, which §8.2 checks:
 
 | Disposition | Meaning |
 |---|---|
@@ -383,7 +414,16 @@ carries **exactly one row**, whose disposition is exactly one of:
 
 The four are **total and mutually exclusive** over the anchor domain.
 
-**A missing row is a structural coverage failure, not a silent pass** (§8.2).
+A disposition is defined by the roles it fills, so an artifact cannot borrow one
+it has not earned: `bound` requires every required role filled, `incomplete`
+requires at least one unfilled, and `not-a-claim` requires none filled. An
+earlier revision left this unchecked, and two `bound` rows carrying no roles at
+all compared equal and reached `agreeing`.
+
+**A missing row is a structural coverage failure, not a silent pass** (§8.2) —
+missing, that is, relative to the domain the run is measured over, which §4.4
+defines and which is *not* the same as the registry's declared domain. §4.4
+states that gap rather than leaving §4.3 to imply it away.
 This is the clause that makes recall measurable. Under a vocabulary where an
 unmatched anchor simply produces nothing, an artifact that recognises one
 construction and stays silent about everything else scores the same as one that
@@ -394,9 +434,11 @@ impossible: a lane that cannot decide must say `ambiguous`, which is a result,
 and a lane that decides there is no claim must say `not-a-claim`, which is a
 claim of its own and is checkable.
 
-The cost is stated rather than hidden: `not-a-claim` rows dominate the row count
-on this corpus, and an artifact must enumerate the whole anchor domain to
-produce them. That is the price of a recall figure that means something.
+The cost is stated rather than hidden: an artifact must enumerate the whole
+anchor domain rather than only the anchors it recognised, so it is larger — by
+however much of that domain carries no claim, which is a property of the
+documents and is not stated here (§1.2). That is the price of a recall figure
+that means something.
 
 ### 4.4 The pairing oracle is the correctness authority
 
@@ -459,6 +501,13 @@ The contract fixes the declaration's **shape**, not its content:
 | `ranking` | How the policy chooses when a role has more than one candidate, or `none` if it does not choose. |
 | `tie_policy` | What it emits when it does not choose: `ambiguous` or `ranked`. |
 | `digest` | SHA-256 over the canonical serialisation of the declaration without `digest`, using §2.1's serialisation — lexicographic keys, two-space indent, trailing newline. Not §11.3's, which digests bytes rather than a value. |
+
+The shape is **checked, not merely required** (§8.2): `parameters` must be a
+flat object of scalars, `tie_policy` must be `ambiguous` or `ranked`, `class`
+and `ranking` must be non-empty, and `anchor_domain` must carry family, profile
+and restriction. Checking only that the seven keys are *present* accepts
+`parameters: "whatever"`, which is the bare name this clause forbids wearing
+seven keys. `class` is the one value never checked against a list (§4.2).
 
 A **policy mismatch** between two artifacts in one run is a **first-class
 finding** on the run, not noise scattered across rows: it says the row-level
@@ -603,7 +652,10 @@ defect §3.3 avoids by not keying on family.
 ### 7.4 Policy declaration comparison
 
 The declarations (§4.5) of the artifacts in a run are compared by digest. A
-difference is a **run-level finding** naming the keys that differ. It never
+difference is a **run-level finding** that **names the keys that differ**, and
+`parameters` is compared key by key — §4.5 fixes it flat for exactly this.
+Reporting only that two digests differ says the policies are not the same and
+nothing about how, which is the whole diagnostic value of the clause. It never
 changes a row's status, and — with an oracle present — never changes the
 verdict. It is the diagnostic that says whether a row-level disagreement is
 explained by a declared difference.
@@ -654,6 +706,12 @@ These are checked before any status is assigned, on every artifact:
 - a span that is not a valid half-open range within its blob;
 - a literal that does not equal the UTF-8 decoding of its own span (§3.5);
 - an occurrence whose family is not in the registry;
+- an occurrence outside the pinned profile's membership, or whose blob is not
+  the one the manifest records for its path (§2.1);
+- an anchor row whose disposition contradicts the roles it names (§4.3);
+- a policy declaration whose shape does not match §4.5;
+- no sealed bundle digest supplied to the comparator, or a seal that does not
+  verify against the tree (§11.3);
 - an artifact missing a policy declaration for a relation it reports (§4.5);
 - a missing attestation record, or one whose declared contract version, bundle
   digest, manifest digest or artifact digest disagrees with the artifact it
@@ -704,13 +762,24 @@ Notes on rows that earlier revisions got wrong:
 - `authored-by-design` never reaches the reducer: by §6.3 an authored fact has
   no family, so it produces no row to be required.
 
-**Verdict reachability is a property of this reducer, not an aspiration.**
-`pass` and `fail` must both be reachable without any run artifact being present,
-or rows 6 and 9 would make every verdict a property of the machine it ran on.
-The comparator's tests demonstrate both, on fixtures declaring no `artifact-only`
-field, and demonstrate them separately from the artifact-availability rows. A
-reducer that can only reach `blocked` on its own corpus is the failure mode that
-retired version 1.0.
+**Verdict reachability is a property of this reducer, not an aspiration**, and
+it is stated precisely because the imprecise version is easy to satisfy by
+cheating.
+
+Rows 1–5, 7, 8, 10 and 11 are reachable with no `artifact-only` field in scope
+at all, which is what makes `pass` and `fail` properties of the artifacts rather
+than of the machine. Rows 6 and 9 are machine-dependent **by construction**
+(§2.3), so where the registry declares an `artifact-only` field, a machine
+without that run artifact reaches `blocked` — and that is the correct answer,
+not a defect to engineer around.
+
+Two consequences the comparator's tests must honour, because an earlier revision
+honoured neither. Reachability is demonstrated on the **shipped** registry, not
+on a reduced one with the `artifact-only` family removed; and a field the
+registry declares and an artifact omits is read as **absent**, never as
+satisfied. An artifact that reached `pass` by saying nothing about a run
+artifact would have recreated reachability by dropping the condition instead of
+meeting it.
 
 ### 8.4 `pass` cannot be vacuous
 
@@ -747,7 +816,17 @@ and the reference clock any staleness judgment uses.
 - The comparator holds **two** authority snapshots: a **baseline** captured when
   the corpus was pinned, and a **run** snapshot captured at comparison time.
   Drift is the difference. A single snapshot taken at comparison time records
-  current authority and cannot detect that it moved.
+  current authority and cannot detect that it moved — so a run offered only one
+  is `not-comparable`, not drift-free. Reporting a check that could not run as a
+  check that found nothing is the failure this bullet exists to prevent.
+- **Drift is movement, not growth.** A new commit on the integration branch and
+  a newly created tag change no authority a comparison consulted, and treating
+  them as drift would make every comparison `not-comparable` within hours of any
+  pin — the same verdict-unreachability that retired contract 1.0, by a
+  different door. A retargeted tag, a re-created tag object, a rewritten subject
+  and a commit that has stopped being reachable are movements, and every field
+  the snapshot records is compared: a field recorded and not compared is a check
+  that looks present and is not.
 - Neither snapshot is available to either authoring lane. An authority both
   lanes may consult is a third oracle; one they may consult *differently* is a
   silent divergence.
@@ -849,8 +928,21 @@ derived from this corpus (§1.2, §4.2).
 
 The three shared inputs are sealed as one **bundle digest**: the SHA-256, in
 lowercase hex, over the exact bytes of this contract, the family registry, and
-the corpus manifest, in that fixed order, each preceded by its repository-
-relative path and its byte length.
+the corpus manifest, in that fixed order.
+
+**The framing is fixed here because it is not derivable.** For each member, in
+order, the hash absorbs
+
+```
+<repository-relative path> NUL <byte length in decimal ASCII> NUL <the file's exact bytes>
+```
+
+with the path and the length encoded as UTF-8 and `NUL` the single byte 0x00.
+The length prefix is what makes concatenation unambiguous: without it, moving a
+byte from the end of one member to the start of the next leaves the digest
+unchanged. Stating only "over the bytes, in this order" would have left two
+implementations free to frame it differently and to disagree about a digest
+both computed correctly.
 
 **Declaring versions is not enough, and that is why this exists.** A contract
 version and a schema id are author-maintained strings: two lanes can hold
@@ -864,6 +956,13 @@ The digest is over bytes, so it cannot be true of two different texts.
 three files has moved a byte. Both artifacts declare the bundle digest, and a
 mismatch — between an artifact and the seal, or between two artifacts — is a
 structural error (§8.2).
+
+**The RECORDED seal is the authority, not a freshly computed one.** A comparator
+that recomputes the digest and compares artifacts against that result runs a
+check that cannot fail: edited shared bytes are accepted whenever both artifacts
+declare the recomputed value. A comparison whose seal does not verify does not
+proceed, and a comparison offered no seal at all is `not-comparable` rather than
+unsealed — a skipped check is not a passed one.
 
 The rationale-class documents of §2.3 are deliberately **not** in the bundle. A
 digest over them would make them look like a shared input.
@@ -906,30 +1005,27 @@ mid-comparison converts an independent measurement into a fitting exercise.
 
 ---
 
-## 12. Stated but unexercised
+## 12. Clauses the corpus does not exercise
 
-Fixed clauses the frozen corpus does not exercise.
+Some fixed clauses will have no instance in the frozen corpus. Recording which
+ones is worth doing — an untested clause is a clause whose first real use is in
+production — and **it cannot be done here.**
 
-**No margin is recorded — here or anywhere else in a shared input.** A margin is
-a corpus reading, and §11.2 makes this document a shared input to both lanes. An
-earlier revision stated the margins inline; the revision after that moved them
-into a companion rationale file and called the leak closed, which relocated it
-rather than closing it — a lane reading that file learns exactly what a lane
-reading this one would have. Naming the clause is enough to mark it untested;
-quantifying it is a leak wherever it is written. An author who needs a margin
-derives it after the measurement, not before.
+"Clause X has no instance in this corpus" is a reading of the corpus, and §11.2
+makes this document a shared input to every lane. Naming the clause is not a
+smaller leak than quantifying its margin: both tell an author what the corpus
+does not contain, which narrows what a correct artifact looks like without that
+author having done the work. Two earlier revisions got this wrong in two
+different ways — the first stated the margins inline; the second moved them to
+a companion rationale file, declared the leak closed, and left the *list of
+clause names* in the contract, where a lane still read it.
 
-| Clause | Why it is listed |
-|---|---|
-| §3.5's line-ending sentence | The corpus does not exercise line-ending normalisation. |
-| §3.3's same-extent multi-family case | Families can in principle claim the same extent; the registry's exclusion clauses are written to prevent it. |
-| §7.2 row 9 | An oracle `incomplete` against a lane `bound` requires an over-binding lane, which no artifact has yet produced. |
-
-A future author who finds an instance moves the clause into the exercised body
-and records the reading that moved it in a rationale-class document (§2.3),
-never here.
-
----
+**The rule, therefore, and the whole of §12:** clauses the corpus does not
+exercise are recorded in a **rationale-class** document (§2.3), produced
+**after** the measurement rather than before it, and no lane may read it
+(§11.2). This contract names none of them. An author who finds an instance
+moves the clause into the exercised body of the rationale record and notes the
+reading that moved it — there, never here.
 
 ## 13. What this contract leaves free
 
