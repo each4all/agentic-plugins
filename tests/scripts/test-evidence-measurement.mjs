@@ -22,7 +22,7 @@ import {
   compare, reduce, compareDisposition, roleBindingsAgree, identityKey,
   policyDigest, canonicalDigest, canonicalSerialise, bundleDigest, verifySeal,
   authorityDrift, buildAuthoritySnapshot, buildSeal, resolveCanonical,
-  resolveAuthorityFields, resolveQuote, DISPOSITIONS, STATUSES,
+  resolveAuthorityFields, resolveQuote, CONTRACT_VERSION, DISPOSITIONS, STATUSES, VERDICTS,
 } from '../../scripts/evidence-measurement.mjs';
 
 const REPO = new URL('../../', import.meta.url).pathname;
@@ -715,4 +715,103 @@ test('§3.6 — an unresolvable quote is reported and decides no verdict', () =>
   assert.equal(r.quote_findings.length, 1);
   assert.equal(r.quote_findings[0].state, 'unresolved');
   assert.equal(r.verdict, 'pass', 'a rebaseline aid decides no verdict (§3.6)');
+});
+
+// --- the contract prose and the code are the same object ---------------------
+//
+// Three separate defects were found during this contract's authoring where a
+// clause asserted a property the shipped code did not have. Each was found by
+// reading, which does not scale and did not catch all of them the first time.
+// These tests make the two provably the same where that is decidable.
+
+const CONTRACT_TEXT = readFileSync(join(REPO, 'docs/assurance/evidence/measurement/measurement-contract.md'), 'utf8');
+
+test('§7.2 — the contract table and compareDisposition are the same function', () => {
+  const table = CONTRACT_TEXT.match(/\| # \| Oracle \| Lane \| Status \|\n\|[-|]+\|\n((?:\|.*\|\n)+)/);
+  assert.ok(table, 'the §7.2 table could not be located; this test measures nothing without it');
+  const rows = table[1].trim().split('\n').map((line) => {
+    const cells = line.split('|').slice(1, -1).map((c) => c.trim());
+    const ticked = (c) => [...c.matchAll(/`([a-z-]+)`/g)].map((m) => m[1]);
+    const col = (c) => (c === 'any' ? [...DISPOSITIONS] : ticked(c));
+    const agrees = /identical/.test(cells[2]) ? [true] : /differ/.test(cells[2]) ? [false] : [true, false];
+    return { n: Number(cells[0]), oracle: col(cells[1]), lane: col(cells[2]), agrees, status: ticked(cells[3])[0] };
+  });
+  assert.equal(rows.length, 12, 'the prose says twelve rows');
+
+  // First match wins, exactly as the prose says.
+  const claimed = new Map();
+  for (const row of rows) {
+    assert.ok(STATUSES.includes(row.status), `row ${row.n} names a status outside the vocabulary`);
+    assert.ok(row.oracle.length > 0 && row.lane.length > 0, `row ${row.n} parsed to an empty column`);
+    for (const o of row.oracle) {
+      for (const l of row.lane) {
+        for (const a of row.agrees) {
+          const key = `${o}|${l}|${a}`;
+          if (!claimed.has(key)) claimed.set(key, { status: row.status, n: row.n });
+        }
+      }
+    }
+  }
+
+  // Totality: every (oracle, lane, rolesAgree) triple is claimed by some row.
+  const missing = [];
+  for (const o of DISPOSITIONS) for (const l of DISPOSITIONS) for (const a of [true, false]) {
+    if (!claimed.has(`${o}|${l}|${a}`)) missing.push(`${o}|${l}|${a}`);
+  }
+  assert.deepEqual(missing, [], 'the §7.2 table is not total over the disposition pairs');
+  assert.equal(claimed.size, 32);
+
+  // Agreement: the code returns exactly what the table's first match says.
+  const disagreements = [];
+  for (const [key, { status, n }] of claimed) {
+    const [o, l, a] = key.split('|');
+    const got = compareDisposition(o, l, a === 'true');
+    if (got !== status) disagreements.push(`row ${n} (${o} x ${l}, agree=${a}) says ${status}, code says ${got}`);
+  }
+  assert.deepEqual(disagreements, [], disagreements.join('; '));
+});
+
+test('§8.3 — the reducer table verdicts and row references are consistent with the code', () => {
+  const table = CONTRACT_TEXT.match(/\| # \| Condition \| Verdict \|\n\|[-|]+\|\n((?:\|.*\|\n)+)/);
+  assert.ok(table, 'the §8.3 table could not be located');
+  const rows = table[1].trim().split('\n').map((line) => {
+    const cells = line.split('|').slice(1, -1).map((c) => c.trim());
+    return { n: Number(cells[0]), verdict: (cells[2].match(/`([a-z-]+)`/) ?? [])[1] };
+  });
+  assert.ok(rows.length > 0);
+  for (const r of rows) assert.ok(VERDICTS.includes(r.verdict), `row ${r.n} names verdict ${r.verdict}`);
+  assert.equal(rows[rows.length - 1].verdict, 'pass', 'the last row must be the fall-through');
+  assert.deepEqual(rows.map((r) => r.n), rows.map((_, i) => i + 1), 'rows must be numbered consecutively from 1');
+
+  // Every row number the prose cites must exist in the table. A stale "rows
+  // 1–9" survived one revision of this document precisely because nothing
+  // checked it.
+  const cited = [...CONTRACT_TEXT.matchAll(/[Rr]ows? (\d+)(?:\s*(?:and|–|-)\s*(\d+))?/g)]
+    .flatMap((m) => (m[2] ? [Number(m[1]), Number(m[2])] : [Number(m[1])]));
+  assert.ok(cited.length > 0, 'no row citations found; this assertion measures nothing');
+  const outOfRange = cited.filter((n) => n < 1 || n > Math.max(rows.length, 12));
+  assert.deepEqual(outOfRange, [], `row citations outside every table: ${JSON.stringify(outOfRange)}`);
+});
+
+test('every § cross-reference in the contract resolves to a section it defines', () => {
+  const defined = new Set();
+  // `## 4. Relations…` and `### 4.1 Relation identity…` differ by that full
+  // stop; an earlier version of this pattern required both a stop AND a space
+  // and so parsed only the fourteen top-level headings. The size guard below
+  // is what caught it — a dangling-reference check over a mis-parsed section
+  // set reports whatever the parse happened to miss.
+  for (const m of CONTRACT_TEXT.matchAll(/^#{2,3} (\d+(?:\.\d+)?)\.? /gm)) defined.add(m[1]);
+  assert.ok(defined.size > 20, `only ${defined.size} sections parsed; the heading pattern has drifted`);
+  const refs = new Set([...CONTRACT_TEXT.matchAll(/§(\d+(?:\.\d+)?)/g)].map((m) => m[1]));
+  assert.ok(refs.size > 20, `only ${refs.size} references parsed; the reference pattern has drifted`);
+  const dangling = [...refs].filter((r) => !defined.has(r));
+  assert.deepEqual(dangling, [], `dangling §references: ${JSON.stringify(dangling)}`);
+});
+
+test('the contract declares the same version the registry and the code do', () => {
+  const declared = CONTRACT_TEXT.match(/^Contract version: \*\*(\d+\.\d+\.\d+)\*\*$/m);
+  assert.ok(declared, 'the contract does not declare a version in the expected form');
+  const registry = JSON.parse(readFileSync(join(REPO, 'docs/assurance/evidence/measurement/family-registry.json'), 'utf8'));
+  assert.equal(declared[1], registry.contract_version);
+  assert.equal(declared[1], CONTRACT_VERSION);
 });
