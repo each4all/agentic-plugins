@@ -1,0 +1,2258 @@
+{
+  "captured_at": "2026-08-31T00:37:29Z",
+  "commit_count": 1005,
+  "commits": {
+    "00818eeefbd0e268d4dd5140463747ec3fdec318": "chore: release main (#517)",
+    "00dbc800d04037e9f3178d4c3a0a51f8a802c3be": "feat(plugin/runtime): completion-output contract with per-field provenance and visible generic fallback",
+    "00e9bb5e9334ae9f530ccb675206bde706bac7b6": "docs: record post-attestation parity recovery for the attention 0.7.0 install (#605)",
+    "01316d3462f5e53289fb301a1d91feafa0dd94e4": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "01b748532da128540ecadd894d3a72fd39a5ecf3": "docs(runtime): sync 0.65.0 proof evidence (#396)",
+    "020ac92299ec54c9cf03946c287522fbe87da9b9": "feat(plugin/founder): emit ADR-0040 §5 peer-run terminal self-sensor notifications",
+    "024ec4246038a4ce54b166bb62b5bd4838c7be36": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "0281d86c4926952b4fbacc13f851e08594acaf31": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "031d3cb54f8d45766746a0808f12cf2595689926": "feat(engineer): ADR-0028 PR5 — forward-compat read tolerance + serialize preserve (#356)",
+    "03302d75f838b5cfb3a5f1ac02f38803c1b1b644": "feat(plugin/runtime): add consensus latest status lookup",
+    "0359e9185134e60156e6128f576761ffff252bef": "Merge pull request #34 from each4all/feat/adr-0014-research-deprecation",
+    "037a7fa3cb9f222c04508a627a929f649665e353": "feat(plugin/runtime): permission advisory artifact slice (ADR-0038 permission-artifacts) (#456)",
+    "03fbbbd9cf962b358491a26175384a577cfd49c7": "docs(adr): accept ADR-0048 bootstrap observability (statusline stage, shim policy, egress evidence vocabulary, credential boundary) (#628)",
+    "041488c345e78bfd863f4d29ea60b02389b758ff": "feat(runtime): add cutover readiness audit",
+    "0425b7a7963681e1c9ebd275fd5881ab98450a6a": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "043697857d9b68686ae29c964d5a7af24cb0595d": "fix(plugin/runtime): clarify cutover gate proof reuse (#296)",
+    "0467745be417f0ed26e8e2db11d17d52b4b67816": "chore: release main (#483)",
+    "04dbed438cf0f200113ce3bce62da2ff28e345c0": "feat(plugin/orchestrator): adopt ADR-0029 Active Next-Action Proposal on macro completion surfaces (orch-next-action-shape) (#467)",
+    "06727b54ffdc2fd0b173cb4ad4358515911148d3": "feat(runtime): report legacy omcc pattern map",
+    "06ec398eb580637948945de3ca2e54e7600c0036": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "0712d73a1043bab480840b0fb4649065f70f88fc": "Merge pull request #84 from each4all/docs/accept-adr-0023-peer-runner",
+    "0721685efe324341c4275e2349f4d7d21fa2da87": "feat(plugin/runtime): record consensus cancellations",
+    "072d92ed38785b5f60f37c7260166d588e0910e3": "docs(assurance): refresh cutover scorecard evidence",
+    "07d0434b12a29008a5ab22718895346d489efd0b": "chore: release main (#310)",
+    "0835bd37003b19339495341a5de832be25e12bb5": "feat(plugin/runtime): record reusable doctor proof artifacts",
+    "084848ad829386ccf67649699bea79bcd9ae426d": "feat(orchestrator+engineer): /next + /done dispatch + Phase 0 parent-linkage (ADR-0019 PR-D) (#66)",
+    "0849592919282880262ca4d205caf8e226a6cc2a": "docs(runtime): refresh host-parity baseline to Claude Code 2.1.201 / Codex 0.142.5",
+    "0869b3a0877fd264d02cd653e9d66252a81a243e": "feat(plugin/image): refine-loop — feedback regeneration via compose reuse (ADR-0037) (#445)",
+    "087793adc088005892fad35605ef4a24ec5ed325": "docs(adr): propose ADR-0027 decide skill multi-axis evolution (#346)",
+    "08850e43954983ce33909d13a66bba5830039a86": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "088750d1ee5d90df65a9f5cec1fda5efd08860d9": "fix(plugin/runtime): detect unavailable plugin surfaces",
+    "08b1c93cfb3a6c9992dc18fc43fc75e07e756191": "chore: release main",
+    "09370a843c6e8c66a360c6bc268543feb972485c": "chore: release main",
+    "09ef80549e3e9003f6d410b30b1745f0c4915eb3": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "0a59c962382ea7b3a43ac65dbf3690b05e7b8da5": "feat(engineer): ADR-0028 Phase 7 commit automation — PR2 Layer 1+3 (#350)",
+    "0a699a7c13b77c9a47cf1dcaf53dadfeaa851e72": "chore: release main",
+    "0a737156210710d366ffb2152b48b9868ee0d6a0": "chore: release main (#750)",
+    "0a8733fdba4519de38a7d3e5fd53d864e6b41d85": "fix(plugin/runtime): harden consensus timeout UX",
+    "0a96c066a6bc557526f862a71f67cb64fb2a97d7": "feat(runtime): add consensus convergence taxonomy",
+    "0acd4f0003ef752a8ad299583f79188ec77c9021": "docs(adr+DEVELOPMENT): ADR-0022 Accepted + meta-skill cascade (2026-05-12) (#79)",
+    "0b2019a0e90904c9f44cd6ec164ab0624472e083": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "0b67c557a65be8ef1a062d9aabd5606aa40e9537": "docs(runtime): sync 0.66.0 proof evidence (#407)",
+    "0b8983986aec3902da7b4f67f12c2b07481549c0": "chore: release main (#544)",
+    "0b98de6e5f9138f1da28ab3339bc04c1d3a18fec": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "0bdbdd5dfbd969603ee25df47ffd881d77181537": "fix(plugin/runtime): fold codex Review findings — retention-apply data-loss blockers (containment, TOCTOU, lock, plan-hash, fail-closed scan)",
+    "0be24b736e914e2b8cc27a4522039b93404b0c48": "chore: release main",
+    "0be3ae5468c3f5961ee0e78edba09a217bb912bf": "docs(adr): propose ADR-0057 — remove the permission-prompt advisor (#748)",
+    "0c2733979e3413cb2a6a295eb93b5d169b7b9ee4": "docs(adr): ADR-0045 S8a release-proof evidence — runtime 0.83.0 first capable entry-brief release + doc-freshness recovery (#601)",
+    "0c479f5515a83a33a1ebefb51b56c3014c9ac8db": "test(footer-activation): ADR-0039 acceptance gate (host-free, cross-persona×host) + flip Status to Accepted (acceptance) (#468)",
+    "0c784c3b2552b336a01dc9e67851e86a0ccd3642": "feat(plugin/runtime): add doctor deep peer smoke executor",
+    "0cb184e5b0add96e6986be2da843d9bc97cb0c23": "fix(plugin/designer): drop the withdrawn todo-tool dependency from command runbooks",
+    "0cdb894fa26ce5a83176190e87a1ee7c7d699220": "feat(plugin/runtime): execute settings plugin management",
+    "0d27a80e9cb930a9d365dfffd2aefc985499d618": "chore: release main (#672)",
+    "0d462234945e9156ee8506bf9f74d8ba2a01c440": "fix(plugin/runtime): spend the evidence budget per reason, and render what the profile verbs computed (#665)",
+    "0d4995da1b63017ae15726ada2027e81a6427948": "feat(plugin/orchestrator): emit ADR-0040 §5 peer-run terminal self-sensor notifications",
+    "0dd1da5f858fa04a4fc5f6834b00575289e68f8d": "docs(plugin/runtime): record the ADR-0047 §2 Claude Stop-payload probe matrix (2.1.216)",
+    "0de9f12bf65a3979f7741bfe016b05145fdc4408": "feat(plugin/runtime)!: remove --apply-codex-plugin-hooks host-config write executor (ADR-0035 §6)",
+    "0e3567807c4ffc1be6f99387730b6c7e22797daa": "docs: align to the installed 0.88.0 proof and record the one-snapshot loop (#664)",
+    "0eb724160b6180703737b0be28c73f104ae2b776": "docs(adr): propose 0008 companion distribution model (#8)",
+    "0eb8807643677085e301de98523e6de74cc80eb5": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "0ec41448a7f8235cb0ea37530f445c386d32f8c8": "feat(plugin/attention): hook-only L1 Claude attention sensors per ADR-0040 §3",
+    "0f2c4834c54e65f23306281a8ba75d9853ac1ca5": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "0f3f50beda1b3b321a5d80c7b125cf3ddb869541": "fix(plugin/engineer): dirty-tree gates see untracked files under status.showUntrackedFiles=no",
+    "0f45d0a9ce63df1e95a3deaadbff817bdd28cb47": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "0f8d84f97b1b8fcafb7b4b601294562402afccc2": "chore: release main (#603)",
+    "0f9ead208e77c4cf856b7e37ec20c488b597440d": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "0fac743f76cee962ed2759737fefc93851fa8e1f": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "106a7bf88a584d00ce9e7fcbbba267de74e951da": "fix(plugin/runtime): bring packaged skill descriptions under the Codex cap and gate the rule set (#671)",
+    "108a57dd08987ba669bc6a4646ee1f9893b404c6": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "110515597c60682ef9540e73d5b61236a70d8537": "docs(DEVELOPMENT): ADR-0012 cond 1 satisfied + ADR-0019 cascade snapshot (2026-05-11) (#68)",
+    "110e17fcfd237e9afec747e0cab3eb9ad4629f68": "docs(adr): ADR-0052 — enforce the baseline release obligation by history/tag reconciliation",
+    "1124d6cbf3e9cbe931771dfe841c3afdc543e049": "feat(evidence): frozen corpus substrate, byte-safe and freeze-enforced",
+    "117712d948800a92a910d7a3d034616c88b53a93": "docs: align runtime docs to 0.83.1 with the re-recorded installed proof (#608)",
+    "117d7379417401db3707c8e8bc75bfc58d868fcc": "fix(release-please): correct extra-files path scope (package-relative + root-absolute) (#28)",
+    "11db53a0da4a7108a3dc482c65575efb61da6079": "fix(runtime): harden ADR-0041 §2d egress transport for IPv6-broken hosts",
+    "11f4232b4fe53b334d2d1523ccd9ade978dd6715": "docs: align runtime docs to 0.70.1 with re-recorded doctor proof (#470)",
+    "120525883942b166107ab79fddb34caf24367d80": "docs(assurance): verify the grant review brief, and correct what its controls missed (#714)",
+    "123e9a090a07ba1260d6655daa39baa836eb6956": "feat(plugin/runtime): ADR-0047 §7 citation-aware retention planner (read-only) + doctor/dashboard adoption",
+    "132439f10ba7a1555254fca4b21247ff85877f24": "feat(runtime): ADR-0041 §2d keystone global-fetch executor gate (#492)",
+    "134eec5aab08449d6ed2c8404897a5b83a993a49": "docs(adr): amend 0008 § (b) for codex-cli 0.128.0 marketplace clone path (#16)",
+    "137f8c420a798d9a3f339b02b78f1d2563c57d2b": "chore: initial repository scaffolding",
+    "13cbcfc93938447c316413b0ae4524b59c45e139": "fix(plugin/engineer): state when Stop evaluates the archive gates",
+    "13fed73e0e9a66a08c14710a3a60eb5787044bc4": "feat(plugin/runtime): add read-only doctor",
+    "1424051a85909513168f001eb097f2f8025b5a74": "test(runtime): guard cutover scorecard freshness",
+    "14248d637d4b0ae3c2f5570a4519a5c367917338": "chore: Stage 1 exit cleanup (Phase 5b findings) (#21)",
+    "1484b1ad7f81bde4d477f26d88469140323e8b1d": "feat(plugin/runtime): record cutover dogfood evidence",
+    "14e8253e0de8a08ce25cbfba10bb6f371a000642": "feat(plugin/engineer): add peer-runner primitive",
+    "151a78ecc1950dbe93b743bed28da364be8ba500": "feat(plugin/runtime): add cutover completion audit",
+    "15402b4388309a4507b6caf5f1fa5b20c8fba564": "docs(adr): add ADR-0016 cross-package commit splitting convention",
+    "15a5087943ce9832bc37078a0d7b9226eaabf2d5": "docs(plugin/runtime): sync runtime v0.12 state",
+    "15eb4f3ecd3d9a091af84aee218f194b8f60506d": "feat(plugin/orchestrator): ADR-0031 activation sidecar — fire session-handoff from macro terminal surfaces (#432)",
+    "160b3d8b2a012c040224bf80f3d4719724d18aaf": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "161a0a84e3f83b9663c4d0329d5207f6395bf1fe": "chore: release main",
+    "16451d221ec612ea68d41ec2af4c8b61bd1c86fe": "docs(plugins/engineer): marketplace + manifest descriptions/keywords for /engineer:start (ADR-0020 PR 4) (#73)",
+    "1674294ae37b1bddddd8154f161fc6b8d9cb2fd9": "feat(plugin/runtime): report context source freshness",
+    "16748ba126e2df0093b7d93458460ae45c4f6be6": "docs(adr): add ADR-0036 founder persona (L3) for new-business planning (#419)",
+    "167fd4a79d61a757550eef165fc8ac00654c3025": "feat(plugin/runtime): let a machine record host-native model/effort as its posture",
+    "16b1833c051b12220aa6d5f812c8ac2383b36c79": "docs: post-0.89.0 freshness recovery — installed proof, dual host-baseline refresh, evidence record (#677)",
+    "16ceb8d8a4703bd1020fb9cf7d533ce58bd5562b": "docs: align runtime docs to 0.85.0 / attention 0.9.0 with a re-recorded proof and a dual host-drift baseline refresh (#622)",
+    "16d2fbc1882c9838b099228d9fccfc2dcf8542e6": "chore: release main",
+    "16d5c413ed4a8feadbfaef7c2bf236b2508c876a": "feat(plugin/runtime)!: report doctor findings through a diagnostic exit-code ladder (#743)",
+    "16dcaa83402808df1f6af9c1cec8ec567733c482": "test: guard checkpoint re-injection once across all three personas",
+    "1761b5046f382ee534d976bc98730ba1af874afc": "feat(plugin/engineer): emit ADR-0040 §5 peer-run terminal self-sensor notifications",
+    "176478f51565667a9e003192acf6f27feafde98d": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "17abd8d70bcb68baf40c1b7dafce2f301ddba901": "docs(image): re-test the transparent-background prohibition against codex 0.148.0",
+    "17e96d64751d1c47714ad93ae89245c8a9d2d695": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "18176f990b1ae881813e079749129dc196a2c074": "docs: align runtime docs to the installed 0.86.2 state with a re-recorded proof and corrected release triples (#643)",
+    "187bc56b2a37cbeddb6dd0d001102d14380721ba": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "18bd342080d3dae41dc0f8e3ffea96769f7fb043": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "193dc1af14e97d5a498592c86696cfd72b2e385b": "docs(runtime): sync 0.60.0 proof evidence",
+    "1a3c5c68b5e6c09a5af6af86f8d9b04546befc95": "feat(plugin/runtime): ADR-0047 §7 retention-apply — M1 deleting executor + runtime:retention CLI",
+    "1a78dc7ee08d3ab2d59c58532626a3058e4e9d27": "chore: release main",
+    "1a94a11e11e9d6c99db5f02d42bdbdc51bd3a327": "fix(plugin/orchestrator): stop declaring a context state the sidecar never measured",
+    "1abcdae013fcbd9db9224e0a1c67d28bac657950": "fix(plugin/engineer): re-verify a peer run immediately before deleting it",
+    "1b6c569c25b367762470fd29af53ba3a05e55baf": "chore: release main (#630)",
+    "1bce17c4dc737c72b14cee1ca349bf2ad2cf012e": "fix(plugin/runtime): surface Claude plugin manual followups",
+    "1c064421b7f7d97d992f80f0bcf516cae602371f": "chore: release main",
+    "1c22d9fc1be8a9dd6452e0297462021bf3a38a6c": "docs(runtime): refresh host-parity baseline to Claude Code 2.1.207 (#550)",
+    "1c2af4093bc6fbeef040168abe3961b3a53ef67c": "docs: post-release recovery for plugin-runtime-v0.96.0 (#751)",
+    "1c77d21ee23bd8c75cf78fd227ccae1f55932b0a": "chore: release main",
+    "1ca3603f15ff309d045a0b274f1bac9fba444f1c": "feat(plugin/image): investigate — visual reference gathering runbook (ADR-0037) (#442)",
+    "1cc71cb2bd0611b451f278703a672cb8f3473ea6": "test(plugin/engineer): enforce verb entry path parity",
+    "1d023907ed2e3232e2950c9dad2f3cf3d46e0269": "chore: release main (#559)",
+    "1d20f8223cae57ceeeff6e1223255f00f3088994": "docs(runtime): record attention Codex-hook posture resolution (relocation) (#547)",
+    "1d35eeaaf43f79b36e2a78b70bd56e0f88c72d63": "docs(runtime): refresh host-parity baseline to 2.1.206/0.144.1, repair evidence-block drift (#537)",
+    "1d38cbe363bf088a7723dae6ec233763d785a3bb": "feat(plugin/designer): copy-trim non-dispatch workflow machinery + hooks (ADR-0042 PR2) (#522)",
+    "1d4e8d4e6f2e1b1fef661b18cf42008a6d53cea8": "docs(adr): author ADR-0043 founder/designer projection + footer enablement (#553)",
+    "1db108e13b1a5b4ea52dbe331d8a0eee9bf6a657": "feat(plugin/runtime): recognize designer in the doctor/settings plugin inventory (ADR-0042 RT) (#528)",
+    "1dc3bc4b6810f3f2cf437f1fedaa8de6bc6385a1": "feat(plugin/runtime): ADR-0047 §6 bounded expired-claim sweep + withReclaimLock exclusivity repair",
+    "1e0f024bcbc3fe5f7ab30e91e2098363b66cb551": "docs(runtime): refresh version + doctor proof to 0.74.0 after ADR-0041 §2d transport-fix release (#506)",
+    "1e25e5efee958a0eb475fe7d68a850f155caa5d5": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "1ea63fcd87b8145e4b2e38e7c9b3ee5f9689e208": "feat(plugins/engineer): $engineer:start macro skill mirror (ADR-0021) (#75)",
+    "1f0a1a33dd79a463e2a3a24d4ae5135a6938cf41": "feat(plugin/runtime): select latest open consensus runs",
+    "1f7b5712707545cdf0ab4aca73c93401c337ac49": "fix(runtime): refresh Claude compatibility baseline",
+    "1f7eff4402d89a69694b7a9af5ad8088872dde76": "chore: release main",
+    "1f86db9f99004be04aace404f98e760ccd4d9d52": "docs(plugin/runtime): clarify Codex hook trust boundary",
+    "1fc1579a00bb872d0d7b675ea40ec9c6e618a2cd": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "20348779e5240820109f52363354927dfa0aaadf": "docs(adr): add ADR-0014 (plugins/research deprecation, amends ADR-0010)",
+    "203a8c83575554cbf61551edec6dbb1d7aaf5020": "docs(runtime): sync 0.59.1 proof evidence (#341)",
+    "2055f45d09b864a57d1e70700da628dacc82b125": "docs(plugin/orchestrator): append runtime completion footer guidance",
+    "205c2e8496584261e6abaf2385442e8d7b166855": "Merge pull request #42 from each4all/release-please--branches--main",
+    "208545cb0a0c6243914748e86f6d3dffe9e87789": "chore: release main (#666)",
+    "20b7c3fafce9c75a55e48ca74dd22fbd90e98c60": "chore: release main",
+    "20c326a4fec5f50b8c4514e00c4e4e37f1407496": "docs(runtime): sync 0.68.0 proof evidence (#429)",
+    "20cb6290e0af9dc4ebc824a9e639a9e1ff4b23a2": "fix(plugin/orchestrator): scope checkpoint and resume re-injection to post-compact",
+    "20ebed7421408a16ddb7387aed7829ffbb9f8c39": "feat(plugin/runtime): packaged host-parity baseline as the single authority (ADR-0051) (#685)",
+    "20f2a0945164cd2bcbed4e9fbb3214b344d31575": "feat(plugin/designer): critique skill — quality lenses + vision/privacy/criteria (ADR-0042 PR5A) (#525)",
+    "2121d361a44aa7a362afc9ca7dc0ba38b4d2a0c3": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "2122010475ff62ce360722732fc5aa7ceb897193": "docs(runtime): record post-attestation parity recovery for the 0.80.0 install (#561)",
+    "2138cc80ec02dbf9e241447c78049567f71670ee": "chore: release main",
+    "219bc151f073e94a3e42b8fbf53b5cdafb9ea1b8": "docs: post-0.92.0 recovery — the receiver change, observed rather than believed (#733)",
+    "21c3d3170e98d76461471bfff0a4f42f6a989c83": "test(plugin/runtime): usage-record source map + fixtures (ADR-0038 usage-records) (#454)",
+    "229b2153002b821ffcb9753beec52c643718fc7b": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "22d17f6768e13130fb000bb82a603336d399ab88": "docs(adr): amend ADR-0049 — provenance classes, tag-time derivation, and record timing (#649)",
+    "23c99aebd8f7aa1ac51895028b8e69ddb85badfd": "refactor(runtime): S8a3 — lift the permission planner to lib/ (§1.3 row 3) (#579)",
+    "23de1b1162e4ceda399cd682ad36350ffaee1bf0": "feat(attention): ADR-0041 §4 populate cross-machine routing fields on sensor events",
+    "2401da62d5bb730d2671a8e962b54106c1cbeee9": "feat(plugins/engineer): static Claude adapter subagent definitions",
+    "24202f906130e871279773bf63e720846210a7d9": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "24cbf1f3c9ecbc37e8a461c428fb0e46f45cd39d": "docs(adr): mark ADR-0027 and ADR-0028 as Accepted (series complete) (#358)",
+    "25510716292ef7f1f7d63612e6faca5bb66019b3": "chore: release main (#14)",
+    "258283721cd465adb4852fd6eb50a53322cdf2d8": "docs(runtime): refresh host-parity baseline to Codex 0.137.0 / Claude 2.1.168 (#389)",
+    "25d95316be461ac4cbb08f2852a8ea923d9acbfc": "Merge pull request #232 from each4all/release-please--branches--main",
+    "267cd336ecc5f40518fd54ba089bb5ae951da875": "feat(runtime): S8a1 — harden existing doctor/settings production surfaces (#576)",
+    "26a06958ff8ee99303e814147618a4008c110fdb": "feat(companions): add contract.md draft (Stage 1 wire spec) (#1)",
+    "271a072faf339d1d964ec55f087cf1c9ef350062": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "271c5aebc81e01380de81c9d64a2c4f355338f91": "chore: release main (#695)",
+    "277d40347919a7569e8e05da4a0f4bf62c3c6db4": "feat(runtime): record consensus quality policy",
+    "27a3addbb3ef5597024b2ca5cbdf68cb59b72450": "feat(plugin/engineer): route command ensembles through peer-runner",
+    "27fb308d8410ce92f85c00b90c99d796912f35c9": "Merge pull request #40 from each4all/docs/adr-0017-stage25-continuity-roadmap",
+    "28b5d87662bdc00beb8f52d3e5f1811fb970556e": "fix(plugin/runtime): clarify Codex hook active count boundary",
+    "28b5eb80b7fb2a2b742032ac1090b3c4a21e12cd": "chore(plugin/research)!: archive at Stage 2.5+ (timeline collapse per ADR-0014 Amendment)",
+    "28d8abdb6f68534c1e6e5b9fcc221fcad782314d": "chore(plugin/runtime): sync 0.29.0 release metadata (#216)",
+    "28e2525b7cececfbfb55558b3f73d56937ac94fe": "docs(plugin/runtime): close the sweep-preview follow-up row",
+    "28ee42b7a54414dab7b1c5b2b430d6490b77a754": "fix(plugin/runtime): resolve peer context without host-CLI probes (#534)",
+    "28fe2f5f2d9a939d4b158e8a787a1e4369a61df0": "docs(adr): propose peer-runner supervisor layer",
+    "293fdff2cf53b69124e063858dfaae3108797e47": "fix(plugin/runtime): surface consensus round policy (#309)",
+    "295effcd79b8c49f379c5bef4fd573cb5a80e2d4": "docs(adr): ADR-0041 §2d — record release-dogfood real-delivery proof (ship gate satisfied) (#504)",
+    "29638f0c3fd3ae1673ae3ec989ad9f2868dba2c6": "test: cover ADR-0040 §5 peer-run terminal self-sensor per persona",
+    "29a2e9d442269fc70075f58ffe5322af2064e1a9": "feat(plugin/runtime): execute consensus companions",
+    "29b5250f10db628f91fb31fd4583287bc68e70af": "fix(plugin/runtime): surface doctor manual followups",
+    "29b924127d169b83b304d738d87de15892d6b142": "chore: release main (#215)",
+    "29bb5b10d52783a192ab805239bae2062a3eb5c3": "feat(runtime): S8a4 — repair the §8.2 Codex /hooks attestation dead pipe end-to-end",
+    "2a63326d5cfacec2135450e3f5d3d20ddda551f2": "chore: release main",
+    "2a6b5d52160e7abc1b2c7477ffef0d6af50e8c75": "chore: release main",
+    "2ab731026acd6dd930eb4478509ba7ee027378c2": "Merge pull request #39 from each4all/docs/audit-2026-05-06-stage25-exit-validation",
+    "2abc35e03d872a3a2b7618f55704359771b62e8c": "feat(plugin/engineer): code-emit the completion footer on the terminal path (ADR-0039 engineer-wire) (#464)",
+    "2aeb41d8ea5c93bbe9d45076c3be476278dff68c": "feat(plugin/designer): investigate+frame + design-brief contract + SD4 privacy gate (ADR-0042 PR3) (#523)",
+    "2b6d540f3d712075832459ef3c68b2c0e6667ac5": "docs(DEVELOPMENT): ADR-0012 condition matrix progress update (#58)",
+    "2b9450f598c13e288c4bd593cee50ce1ff95d81f": "feat(tests/cross-host): cross-host integration test contract (ADR-0018 §sub-5) (#54)",
+    "2ba238173fa0ef6af2231f3a37667cb29ddd7f96": "docs(adr): ADR-0038 runtime permission-prompt advisory (#449)",
+    "2c0193cf000cd5737c240e92e73e26bb8ce29eb3": "feat(plugin/engineer): mirror the Active Next-Action Proposal completion shape into verb skills (ADR-0029 PR-D) (#365)",
+    "2c3805214b6e48dc071be0fce3ff66c62b041e1d": "docs: post-0.93.0 recovery — the trust label an untrusted document could write (#736)",
+    "2cb96373b3c82a31c35a69978d3bbf231e30fd38": "docs: post-release recovery for plugin-runtime-v0.97.1 (#757)",
+    "2cd24f9a209e6d816d9ce12221a735a12d4a760a": "feat(plugin/orchestrator): code-emit the completion footer on the terminal path (ADR-0039 orch-wire) (#466)",
+    "2cdf964f8cbf488b7b5a819d8549b5102f0aa7e0": "feat(plugin/runtime): record Codex hook review attestation",
+    "2cf47fa0d9a36df2e5f8b1788d52292ba3e318d6": "chore: release main",
+    "2d03c4816c541037c7d4c1d2c7a897a451a41dbf": "docs(plugin/orchestrator): clarify codex hook boundary",
+    "2d0f200de359ab91bc8ab67f4755e6e608d15588": "ci: hang-repro v4 — extend emit trace to fs WriteStream lifecycle",
+    "2d6a66793a16234ebc58d2b94690797f6002eacf": "docs: post-0.90.2 recovery — installed proof, an owner-amended stop clause, and a named baseline follow-up",
+    "2d75dfee52df6ba54337a9f0deeb7c759ae9cd67": "docs(adr): add ADR-0042 designer persona (L3) — code-first design/UX workbench (#519)",
+    "2d93af61f2784b75bd478e614eaa4d94b69b40fe": "chore(release): single-source-of-truth for plugin versions (extra-files + drift guard) (#22)",
+    "2dc2aef1eb8e37ad4666d69bc9960b642f2139c7": "chore: release main (#512)",
+    "2df14d560a9f9fcde9d496b46171dcb097c5f07a": "feat(plugin/designer): emit terminal handoff sidecar + completion footer (ADR-0043 S4)",
+    "2df789c5a3e902e88b9cc657406ac57427aad4c9": "test(peer-runner): handle unverifiable cancel fingerprints",
+    "2e8d15173f70f212d11291c800b95cc301254155": "feat(runtime): add consensus peer roles",
+    "2eea2b3dd95459d88dda915d4f39c4f2399e1eab": "fix(plugin/runtime): refresh host parity baseline to Claude 2.1.233",
+    "2f4b4b0c9f79f0745d2230f5530aa6e9b1db23ca": "feat(plugin/engineer): ADR-0031 session-level handoff projection (engineer-wiring) (#380)",
+    "2f9b65d0f50933a2d90a09bfc1c979c95312b748": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "2fac66fad01e3b99948e36690ed13ae4324df3f0": "feat(plugin/runtime): add ADR-0040 §4 runtime:settings --notification-plan Codex M1 fragment plan (#478)",
+    "2fe7158db272339f6c6718ac863490d59c71776a": "feat(plugin/runtime): add consensus execution remediation",
+    "303a32fbb80b394495859b28db5454db8067df54": "docs(runtime): sync runtime 0.51.0 release references (#295)",
+    "3040a13c99e43b7dd9e1f25d00d800051e69b38e": "feat(plugin/engineer): scaffold L3 persona plugin with 6 cognitive verbs (Stage 2 Deliverable C) (#27)",
+    "304e3d9e9e640664ffda77f7a14cd2240f0e3e3a": "Merge pull request #47 from each4all/feat/engineer-checkpoint",
+    "30af96181bb64742c3fae1e1c80802388c882d3f": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "30ca39dc17c886ded425c15f1086ce7233c54fb6": "docs: correct the session-end reading of the Stop hook",
+    "31033224405f3eb6ccedd1eeb669cddcc4d65b64": "docs(release-proofs): record ADR-0047 Release B rollback levers + flip acceptance verdict to owner-accepted (#626)",
+    "31149bb688bfbca6616f88555e909805129c3b08": "feat(plugin/engineer): validation + dogfood + Stage 2 exit evidence (Stage 2 Deliverable E) (#32)",
+    "31a01babb1119280a9065b1cbba426a653e362bc": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "31cbccc864d739b69c33c4ce24823162e7e71a38": "chore: release main (#474)",
+    "327c86f2dc2af30a46b77f3a2e7a2383157e1944": "feat(plugin/runtime): add host-parity-baseline freshness check to runtime:doctor (#374)",
+    "337181bb637f58ef3092f9dda5fb14c73af2173a": "chore: release main (#493)",
+    "3384d1d9b3b39b3850e06c3171b12e9202799b17": "fix(plugin/runtime): honest unsupported workflow_kind report at session handoff (#431)",
+    "33cf68d20913a4fe313e25a3b7fd4b04664944a6": "chore: release main (#71)",
+    "34236313f44f1c257c2e164c69a8658b7aaf603e": "docs(plugin/runtime): post-attention-0.7.0 freshness — dual-host baseline refresh + installed proof doctor-20260720T105456Z-e1f9a9 (#604)",
+    "342466dbfc9c79d84b4db194fd86dac3b861a4b3": "docs(adr): add ADR-0039 completion/handoff footer activation (#463)",
+    "342d3ab540093e76d35605b7c2a533d2e62f3570": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "34a67886a2031577a52d7e0009796d84d6c2c533": "chore: release main (#384)",
+    "34f0ed8ba3b8ff03ac31b8c9146d5e79af6824d9": "docs(plugin/runtime): clarify Codex hook trust observability",
+    "34f9623eb143773d3e6db77bfb32c42031c26394": "docs(release-proofs): clarify notify_kinds steady-state in ADR-0047 Release B acceptance proof (#625)",
+    "354a95d40dd8b3aad396c110770194382e70820b": "fix(plugin/runtime): refresh host-parity baseline to Claude Code 2.1.227",
+    "356a6098cc9915ce6ea77233126496ef5cf69106": "feat(plugin/image): frame — ImageBrief schema + gpt-image-2 validation (ADR-0037) (#441)",
+    "358a75ae860da3a5d32824a8307a844ff3fbec4f": "fix(plugin/runtime): judge tui.notifications as the second half of notify.codex.configured (#661)",
+    "36057ad93e8460f75fe8057ecdb50ecbf841a71a": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "360a71fb61b3cbd4190d7dfca08e7a39246fd952": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "3615bbc24fe0c851a7b58a269976562b094ea183": "feat(plugins/orchestrator): MVP scaffolding (ADR-0018 §sub-1) (#53)",
+    "3615dcce612bb99d6688b6fe157747593b156df1": "fix(plugin/runtime): judge egress.configured by activation semantics + env-only egress runbook on uid-less machines (#629)",
+    "361952c9dceb0f9f39558ccf97d126d38c9a7134": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "365c2a75e163ff986bb89aad940ff59375af8637": "chore: release main",
+    "365fb9648755b7605d4f30d75b5ce58266bbd326": "feat(plugin/attention): ADR-0047 §2/§3/§9 bounded Stop finality classifier + §4 headline producers",
+    "3694a9f9a6125dfd0f748dcbe5e57fee2455a9c0": "fix(plugin/runtime): append-only egress WAL and displaced-lock exclusion",
+    "375f5ad603d9d5561729945bf61269485dd1b09b": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "376a3fda687a60116f9b48dac5199d3a3f1a5def": "fix(companions): extend AUTH_REGEX for Claude Code CLI 2.1.128 wording (companions v0.1.2) (#20)",
+    "378ce223bca21ce5e695545479e82187c85da5c9": "docs(runtime): refresh post-0.80.1-release doc freshness with the installed proof (#575)",
+    "383dc140e94756eecc199a4f952104746fb8691b": "fix(plugin/runtime): one machine snapshot per verb, judged and reported once (#663)",
+    "384f424df5e986d665b343d5b106222869ccf400": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "38e59bbdaed4f4b5b265b845e6d68cf95e8c413a": "docs(adr): ADR-0053 — the baseline has no assurance verdict",
+    "38e96747e23f99831fb277f438da71d699d91940": "docs: align runtime docs to 0.70.0 with re-recorded doctor proof (#461)",
+    "38fedafb6d2cde0da3df4e609b801327bf110798": "chore: release main (#699)",
+    "3903490a6c5367360a2f4d23fa70ba581c2cd7c0": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "3927fb6c4762e92c5debd90ccfef2e6c8141db9d": "Merge pull request #36 from each4all/release-please--branches--main",
+    "39ec15e2f65c0da18c37b747439568a604ecbd9a": "docs(runtime): refresh host parity baseline to Claude 2.1.161 / Codex 0.136.0 (#369)",
+    "3a200bc720e6b3481cc44e2a9b1ed21fb8bf2ce8": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "3a72219510518ac847565bace1c958c91655f67f": "chore: release main",
+    "3a919052b1ccac57cb1d34d4231e0185555a6ae7": "chore: release main",
+    "3ade878d3e09c92d7426f36fe4647d456f990796": "feat(plugin/runtime): report experience parity score",
+    "3b0529bff9ce6012d514844dbd32d9599e0fdd5e": "chore: release main",
+    "3b389496d49e144969c4bbed0a08a318983de163": "chore: release main",
+    "3b454ea53113d7bd9b51131d2d52a55fb62bc869": "feat(plugin/runtime): remove fixed consensus peer cap",
+    "3b759155aedf0eba2f8a644786356dc2aab30ce0": "fix(plugin/runtime): narrow the effective selection when a plugin is declined",
+    "3b8ed8d64b8e2c1f03950e120e04d683c7cd0532": "feat(plugin/attention): S5 — Stop sensor session-capture spawn, publisher floor 0.82.0 pin, hot-path budget contract (ADR-0044 §2/§13) (#595)",
+    "3c1157f4392d38c42b1dbfab4e0ecf015888cd00": "feat(plugin/runtime): persist settings execution artifacts",
+    "3c1575348312b608713a14454b16db0165568f66": "Merge pull request #44 from each4all/feat/engineer-schema-1.1",
+    "3c22185a8ef609c3d21f94dd4d49ecb4a928c469": "fix(plugin/runtime): hand the raw readers to the pre-sanitize secret gate (#737)",
+    "3c2617cd4d88b95a7b85a2fc4cb32c026addf120": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "3cef315ce205202d94cd238db8f0b27e4c841459": "refactor(plugins/orchestrator): plan.md Phase 3 → Completion fold (#55)",
+    "3d54f8257b36c28aacaa791ed17fd9f4a544c898": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "3d6ffb39565efe7821bbeea9665e5c95c7c12541": "fix(plugin/runtime): classify operator precondition failures",
+    "3da3fa33985829c098f25fe2ef1e331b03f4b668": "docs(runtime): sync runtime 0.51.1 release references (#298)",
+    "3dcb6b8616ede5b16c1dc0cf99900ab2a88a22e3": "chore: release main",
+    "3dd7180cb25639975c946603ddbf8dd3b7d31c24": "fix(plugin/engineer): register peer-runner child observers synchronously with spawn",
+    "3ddef5b67d2ddc9e96451666b93245d399711737": "docs(assurance): record statusline host-parity truth (Codex [tui].status_line + Claude statusLine gates) (#627)",
+    "3ea869a7ace7afd265bff34c4faffcc18af92020": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "3ee710006e39a9fc76ac89c6ad28c60b7e1606ce": "docs(adr): supersede ADR-0014 timeline portion with ADR-0015",
+    "3f44364795b54f08f751a63c26260a5dfa7e961a": "Merge pull request #38 from each4all/docs/adr-0016-cross-package-commit-splitting",
+    "405f582f01e8ee032955c7b776597641830d189a": "docs(adr): ADR-0018 Stage 3+ architecture (Accepted) (#50)",
+    "4064e27ab21217c6691bc69d39067dabebfdfa3b": "chore: release main (#230)",
+    "40775527a20ac028666e76d86f1cdeea3711c138": "feat(plugin/engineer): add cited-brief profile to investigate (absorbs plugins/research)",
+    "4088679231fabc586027c28f07078da7f562160f": "chore: release main",
+    "40a59b72df3bca402ed0e55fa90e714a08691da5": "docs: record the post-attestation proof restoring parity to ready 100% (#670)",
+    "40b03f5fc57eb8c9cb8ebef19febb7e3bc0f472f": "docs(adr): ADR-0045 — entry-time proposal surfaces, one arbitrated pointer-only entry brief (S6) (#584)",
+    "40bef336f536de3877f7854379b854bb59822fc0": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "413ea3221e3d3b988e91a320de300d957611cbe0": "chore: release main",
+    "417bee682deb9d35120d1b8754d78fedb02b697c": "feat(runtime): S4 — session-capture readiness: shared half-enabled-chain diagnosis in doctor/settings, dynamic publisher-floor declaration, ADR-0044 §10 operator docs + ADR pointers (#592)",
+    "41a13e1bf6b89d82e7357d89443c2ab3fb9141ad": "chore: release main",
+    "41aa5212b833abf23acbe56f946fc1e2e6a8883f": "test(scripts): pin the archive-timing statement at every site",
+    "41b8e0a4234c5dd5e1d536175fab5bbd197de2f7": "docs(plugin/orchestrator): surface footer completion state",
+    "421a8364873973a5b89e375c12e60a1704c17d37": "feat(plugin/runtime): add ADR-0040 §6 runtime:dashboard Tier 1+2 aggregate operator view (#479)",
+    "42376ce600f27b067511a57fb6516f1b0d60c15e": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "42b0e06714791d3d15c969fe41aee1a939a65377": "chore: release main",
+    "42bbad34bd34dbc887b8bd97254dda06edaea3af": "docs(runtime): S1 — probed Claude SessionStart matrix in host-parity baseline (#587)",
+    "434da18dcf45d48d757c0a4e48d428a71003b693": "fix(plugin/runtime): dirty-tree gates see untracked files under status.showUntrackedFiles=no",
+    "435926738ea7a3f6ade6ab0a4556d3931d5e65f7": "docs(runtime): refresh host-parity baseline to Claude Code 2.1.208 (#571)",
+    "443ad73eb6a00aa664e7618af6fdc378f9401922": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "44510b9f2cb02490753399a42f53fe98b114a034": "docs(runtime): sync runtime 0.50.0 release references",
+    "447aa0c17876e3b879985d311ec24438aa75da7f": "chore: release main",
+    "447ed635d11d83e48460603300f0aafa2372a33c": "chore: sync marketplace catalog versions after release (image 0.2.0, runtime 0.69.0) (#448)",
+    "447fa7f1e3826fe5588ddec7fb1407862e1696a5": "chore(plugin/runtime): sync 0.31.6 release metadata",
+    "44833f03e486b6997dd96defa870b60b2507b55a": "fix(plugin/runtime): show cutover footer reason",
+    "44cc7dd689cad68fe44d8062c9d3a61327186859": "chore: release main",
+    "44ec1b116839eb1c2ae4236a89b330a935dfad89": "feat(plugin/runtime): clarify Codex cache materialization",
+    "44faffa84c835b400b4e7dea15572bdabdba09ea": "docs(plugin/orchestrator): clarify Codex Stop hook fallback",
+    "451e52ef03eb74538d344c15474cf9720e6ab22e": "feat(plugin/runtime): localize footer guidance commands",
+    "45624bf2254a591fa676f3fc6ca404a99ae46e8d": "feat(plugin/runtime): S7b — ADR-0045 entry-brief arbiter (§16 lattice + pointer-only brief + user-scope-only session keys + context CLI) (#599)",
+    "458c01b4c24f9ab49b61c0d6004c834f8ff54b8c": "docs: post-0.95.0 recovery — the verdicts that never left the run (#745)",
+    "45b62176b84cb9994a9ff4a576f7e4ca495a4b3a": "fix(plugin/founder): make the peer-run sweep preview state what --apply deletes",
+    "45ffa24580da8287fa30725440e4e629bcf7a90f": "docs(plugin/runtime): ADR-0047 Release B acceptance evidence — safe GC plan/apply proof + owner-gated release sequence (#620)",
+    "460a6b859e34b4736a74022a5ec186097212ee8b": "feat(plugin/designer): scaffold designer persona plugin (ADR-0042 PR1) (#520)",
+    "46365247b6fa4c17ea91e2845ca516e8417eedeb": "chore: release main (#368)",
+    "465858ab1dcc1fa7287fa140994a72755131ab8d": "feat(plugins/engineer): /engineer:resume (ADR-0017 PR2)",
+    "466981d21a74926169140ee5a7d6874b16f42872": "fix(plugin/runtime): show scorecard blocker details",
+    "46c6b9960d89a93dcd7f8c03df15b159bc446b7f": "feat(plugin/runtime): add consensus artifact scaffold",
+    "46c81fb12640bee51f458b8e2e3e81f985b480fc": "feat(plugin/runtime): add read-only worktree planner",
+    "470ec184b2b670b2f99dc44f096a63db660f8933": "chore: release main",
+    "476481164fdd15c114efa3df5b37f93aa97ac276": "feat(plugin/attention): enrich founder/designer terminal Stops via the four-persona sensor set (ADR-0043 §3)",
+    "47817bf67c195e751f2b80f38172133ad33443c5": "docs(adr): ADR-0044 — session-generic handoff capture firing point (S5) (#583)",
+    "479693e847e5a7f2c2d0862d67de73bfe5afa93c": "chore: release main (#738)",
+    "47bc9c9a24b5bf8aac18970afedf3d5ee30c763a": "chore: release main (#704)",
+    "47d61c88e390cafd6403813f103506f8dede7b4b": "feat(plugin/image): support transparent backgrounds, verified in the returned pixels (#729)",
+    "48160f19ffa342342e8760bc44e5da8e287669f7": "docs(runtime): refresh post-release doc freshness for plugin-runtime 0.71.0 (#480)",
+    "4833198ebc8464deadec964161c93834164c8727": "feat(plugin/runtime): add probe-free --skip-host-cli-probes settings mode (S2B) (#540)",
+    "483a6691d51741e4f45ef40de1b48f2db3fbb069": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "487de9abee2aa76b7a05dd125b26a1edc87cf367": "feat(kit): hook-only plugin-shape lint category + attention registration surfaces (ADR-0040 §3)",
+    "48c589be1eacba694f4409e54615b397812d5e8a": "chore: release main (#430)",
+    "48db4f3751c3e02287b02a92151227d4b226586b": "docs(adr): ADR-0054 — the assurance record, measured rather than argued (#702)",
+    "48e1cd9457876c8db953dfed1d0b6bf7feb43507": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "48f50d2d23c2208beaf220c3798ef62ca8977eea": "chore: release main (#711)",
+    "491acd3d6f51f7148f7f919bca508306e3688777": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "4926f717234563acbe15557ea3c627455efcd1de": "docs(adr): flip ADR-0044/0045/0046 to Accepted (#586)",
+    "492d966ca0f26fc79ebfe764352397edd123ebb1": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "49649f9e6a0a66ea17f93d114b29bd565937db65": "feat(plugin/orchestrator): route plan ensembles through peer-runner",
+    "49a4cb9cd434dc88147f450ad616d0f7f4282651": "chore: release main",
+    "49a88d7b5cf471fb576e7f079e254dacf4afba7d": "fix(plugin/founder): scope checkpoint re-injection to post-compact on both hosts",
+    "49b31fcb261d027070a3b764520fe82f878fa730": "docs(runtime): refresh version + doctor proof to 0.73.0 after ADR-0041 E1 release (#498)",
+    "4a23a5bed6c91062c5c7fb421f5534dfdb528810": "chore: release main (#686)",
+    "4a34ae04a36faa4b892b2ed330485ce4742bf743": "docs(runtime): refresh version + doctor proof to 0.77.1 after the Codex hook-state fix (#532)",
+    "4a463bf488c3aec3e2c6d60c38ed9f98f6b91f32": "feat(plugin/runtime): adopt Codex per-plugin command surface (ADR-0032) (#390)",
+    "4a76e89b8418137eb38c17db886b9fc80e07d294": "fix(plugin/runtime): include cleanup in manual followups",
+    "4ac05c95e95e045ed439727ae0e182897b9286ac": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "4ad051c9eb705c23aa159d616a669bad08cf9a7b": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "4b7af1b518fe8e0700abf8968a60b7f07e0b25fc": "chore: release main (#415)",
+    "4bb25a5aa9c86278fb28c967145e22b28b802794": "docs(adr): ADR-0051 — host-parity baseline source (#684)",
+    "4bd1b4d12b8b22ebb1ec0fc64e925e437f5a1dd6": "chore: release main",
+    "4bf4ed90a03b42fa0a1ae80347d999c64a95b128": "fix(runtime): ADR-0041 E1 acceptance gate — scrub-before-cap + cross-host egress acceptance (#497)",
+    "4c09df7f4198e0cea781ac5b057b01b6b1cad12c": "chore: release main",
+    "4c1b6d88a15eb2d36ed9fe3d08e979249406b1ee": "ci: bound test runs with --test-timeout and per-step timeouts (CI hang defense)",
+    "4c8e59f6d36179c8042f4c8db20492859c06884f": "feat(plugin/orchestrator): meet completion-output contract on macro terminal flags",
+    "4d1eb52113777bfc2085fa0c69a74a7065cb7cee": "Merge pull request #233 from each4all/fix/runtime-hook-active-column-guidance",
+    "4d2962c63118adad9da0972d65a4cb8471638ad3": "docs(plugin/orchestrator): add PR readiness footer guidance",
+    "4d9805eceeca67a49516788275b8dc02181d8d2a": "docs: post-0.94.0 recovery — the interview loop, proven on both hosts (#740)",
+    "4e6d6f8282c7246878b2a301ad94ce6227119905": "feat(plugin/runtime): clarify cutover dogfood window",
+    "4e6ee69ae0ec69b5e7fde081c9b068d8b28c117e": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "4e8e574c001c0de66bc8c874088d027c03b876ec": "docs: post-0.91.1 recovery — the assurance plane's first verdict is a refusal (#712)",
+    "4ebfa02eb6c07283e8bd6aa74593634596d6849a": "chore(release-please): narrow extra-files routing + add marketplace sync",
+    "4edc79653176642317bb311e55d591bf9432c5a7": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "4ede66f88c8189137872e17dd2e78feb642955e8": "docs: post-0.90.3 recovery — a current baseline, and the operator action it left open (#700)",
+    "4ee876459c90513a8004fc5c51e7e7688b919316": "fix(plugin/runtime): close the false-assurance paths ST5 reproduced, including the mirrors the first fix left",
+    "4f1571477bea3ed355826cbab7bcb2ddd2e4241d": "docs(runtime): decide the machine-bootstrap vehicle — ADR-0046 + machine-bootstrap-contract.md (S7)",
+    "4faa2da2399f36655a03a7647bf961fd707f4292": "docs(adr): ADR-0047 response-needed signal + bounded notify/artifact GC (Proposed) (#609)",
+    "4fbebea64f4ffef1c72cf44fc01a20c7d79feec2": "feat(runtime): ADR-0041 §2d node:https pinned-egress executor guard (guard-transport) (#500)",
+    "4fe318b2ef22d83de7416b377db700f9a313630c": "chore: release main",
+    "502c00b54bf22e77d739d3db5a14302a4efc6d33": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "516134f12252cc686f27049dd2eaa872c06ace9b": "chore(plugin/runtime): sync 0.31.7 release metadata",
+    "518c4e770442f7d406ab5203be6bf8819e5563f9": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "51c312ba2199798c7f1a89b4515c00e0b95a395c": "docs(runtime): sync 0.61.0 proof evidence (observed parity partial pending /hooks re-attestation) (#367)",
+    "51d7dbdedfe9aebeab38d5cc034aa501d9952dc9": "Merge pull request #41 from each4all/feat/engineer-static-subagents-and-docs-truth",
+    "51db10fc8110f0da34a1cfab76f93fc004aa93b7": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "5215c714b02575fe683020dc79b277c1c561bf3e": "docs(orchestrator): stage-aware Codex hook-gate wording in session-handoff (ADR-0035 §6)",
+    "53c710674514d04b7d96266614cf9d4f4c628198": "chore: release main (#531)",
+    "53de0f11a3302da91013551ed4d538178d2cfdd0": "fix(plugin/orchestrator): add Codex-native lifecycle hooks",
+    "53e6cd4c81aae67cf47c73f68598558861d61554": "test(tests/plugin-shape): orchestrator stale-token audit to all docs (#57)",
+    "549fdda2c868885272fa1ae1986c1952561c0a67": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "54c30f5189f573e814dec42835117b8a96c779e2": "Merge pull request #35 from each4all/chore/release-please-marketplace-routing",
+    "54df328e5fd467235e68c6d46362b35fecd5cede": "chore: release main",
+    "54f39c0c1d0caa82383f5e882de2f6413e32993c": "feat(plugin/runtime): response-needed kind contract + Codex shuttle remap (ADR-0047 §1/§5)",
+    "550e93d91b0a4dd61f9f99a19cece513a833899b": "fix(plugin/runtime): accept migrate subcommand after flags",
+    "552e634f6c925def2381e792017cfe60f8e38925": "feat(runtime): ADR-0041 channel — Telegram E1 egress (pinned fetch + buildEgressPayload + egress secret-scrub) (#496)",
+    "55352815cd64d6abd109c5deb0468e8e2bfa7929": "Merge pull request #235 from each4all/fix/runtime-hook-parity-next-action",
+    "553ac79f064128314d3d5261cb3138bc35252f25": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "554989a35f1c7f36f63ce38fa16075f4a10d20d5": "chore: release main",
+    "558f78ab2dc26f3f3e284b6c7b05f3a18fcea033": "chore: release main (#556)",
+    "55ab43cc2a0116ebdd55588e94967acde4a0e597": "chore: release main",
+    "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e": "chore: release main (#679)",
+    "560527f5a9d994930c89d7e2ee3b9efad5c8352d": "feat(plugin/runtime): ADR-0047 §5 standing notification watch in runtime:compat plan (#611)",
+    "5648edcf3b73cae4902f74b65c8413a9c044de40": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "5657a40578ea34e2bfdacd8d5f8c20fddb9e065c": "test(acceptance): hermetic, guarded, diagnosable subprocess spawns (#533)",
+    "568250eacd64d47b99b4dda2f4567c4052aeecb8": "docs(runtime): sync 0.51.4 release evidence",
+    "568b8a2b00dda0f6c2afa44796ce774dca5a6ac1": "fix: plan host auth remediation in runtime settings",
+    "56ae15cd6df895c9a83a5baf5cd99fd9f7e5100c": "feat(plugin/companions): wrap canonical companions as installable plugin (#9)",
+    "5755e97097c1b5963982802e0da02b150740d8ea": "fix(plugin/founder): drop the future-session promise from the checkpoint description",
+    "578936b43ad832c9721bb51c221852bdb20b41db": "feat(plugin/founder): emit terminal handoff sidecar + completion footer (ADR-0043 S3)",
+    "57d23ecd75855cc43ee50b01fc318ceb61ebdfd4": "ci: add temporary hang-repro stress workflow (investigation, dispatch-only)",
+    "5811017a596b1dd0559e3d5a29d06884b518a019": "ci: hang-repro v3 — trace ChildProcess emit lifecycle to separate import-orphan vs close-orphan",
+    "583dc713ef66402cc87cc957672d25af633a74db": "docs(runtime): sync 0.58.1 hook evidence",
+    "589a62cc0b873f61582849afd4c437853f6ee0f4": "docs(assurance): the second grant deferred, and the one host that moves (#721)",
+    "58c86967eef12cc21400722291afbfc93ec39f0a": "chore: release main",
+    "5900c7f5302eb74b16a9603cc23c3d03bc35e113": "fix(plugin/founder): register peer-runner child observers synchronously with spawn",
+    "592fa1acc4e86949fdb8df69dd4f594e1aec9949": "fix(plugin/runtime): the first assurance grant, and the R1 assertions it replaces (#716)",
+    "594c7ca0862e37dbb61d05bf1ad6360899f6a8c4": "chore: release main",
+    "595acd776bdfe24f3937b73c532363e1706aa784": "Merge pull request #46 from each4all/feat/engineer-resume",
+    "595cba621c1b1534853137c13806066e1ebbd4af": "fix(plugin/engineer): correct the Codex resolver reason and the checkpoint re-injection scope (#678)",
+    "596517eeadef7474a18c82ed91a2669a9667f5d3": "chore: release main",
+    "599cf20c0cd0ca3679cea00d4f9470eed0427075": "chore: release main",
+    "59dc9914640b264fe8af98e9acc1739855646f92": "docs(adr): mark ADR-0035 Accepted (#401)",
+    "5ad6fb6adc04059435970c30e99bf8cf5166394d": "feat(plugin/runtime): support manual consensus peer lanes",
+    "5af386ef9acd8f01fcbcc89812d192047df253dc": "feat(runtime): S8a2 — machine-bootstrap core + schemas",
+    "5b2ef2b0251ba131b1020a78b82348628633109e": "fix(plugin/runtime): surface codex hook review followups",
+    "5b840bdf496a267bcb1c02c3efa0d5278c142f35": "docs(plugin/runtime): record S9-gate SessionStart re-validation on Claude 2.1.215",
+    "5b84e93553fe7380fe7c55b88b4d2ff455dc44f8": "feat(runtime): add cutover operator verification (#342)",
+    "5baf20156aed565e969b44932beaa1353e551c90": "feat(plugin/engineer): ADR-0031 activation sidecar — fire session-handoff from set-terminal (#428)",
+    "5bb88c1a572eb3365b197a22496898830e8b187c": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "5bc96e62bac6db037fb78385e56b69ab9b6c9b4c": "feat(plugin/engineer): ADR-0031 hook backstop — late re-surface session-handoff from Stop/SessionStart (#433)",
+    "5c6dae8f93d3254a97bfdd41246032260c986e55": "feat(plugin/runtime): S7a — ADR-0045 entry-brief bounded read layer (versioned tolerant parsers + bounded scans) (#598)",
+    "5c7bba1a0b5e8dbb414a6fb1edc1926382336fb6": "chore: release main (#31)",
+    "5c7e3e0ee51f92c6c1bf3b3a247cc747bd5a89a0": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "5c8cf79e697065bcadfdf4e5a070a4f2c9328763": "fix(plugin/runtime): one disclosure invariant at the artifact → report boundary (#662)",
+    "5cc428b574ae67a7a7d09aa493712fe463ef6e84": "feat(plugin/runtime): add completion footer helper",
+    "5d01e6a5113b13546cc2401e1b026652fef86162": "feat(companions): add claude-companion.mjs (Codex → Claude bridge) (#2)",
+    "5d56f93d7b78ce3a169241430d9631bb4d66bfe6": "docs(adr): add ADR-0031 session-level active handoff layer (projection model) (#376)",
+    "5d8ae8dfe1f4185ed3924610895c8a2990211118": "feat(plugin/designer): start macro + 3 meta skills + shared references + L4 profiles (ADR-0042 PR6) (#527)",
+    "5d974ed37805e13d66803360338a18003699febf": "feat(plugin/runtime): add workflow storage migration command",
+    "5e0d1229528f660f1174bb688b834ab99ae0f408": "fix(plugin/runtime): surface Codex hook review blockers",
+    "5ee8024dd5c8ed8295c3091356fe1effc93174c3": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "5f9e6b6c2c9190bfc22a78e04f6ee1987ed96ae5": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "5fa0c9e5b49acafebf6c4085212f35867da4d764": "feat(runtime): ADR-0041 §4 optional cross-machine routing fields in the event schema",
+    "6003378a4508b6c0e9aa8b5596bcba90674a13c6": "chore: release main",
+    "6073f3099d97b88df08db64f841a603025002af2": "feat(plugin/runtime): add host parity diagnostics",
+    "61299cf9bb35cb5f66d2cc0a2be3ac213be0edba": "docs(adr): ADR-0056 — remove the assurance grant/cohort matcher, keep the review (#744)",
+    "614bf156b5e2ed2e11410b8e11f26f6160a6b57b": "feat(plugin/founder): copy-trim workflow machinery + hooks + tests (ADR-0036 PR2) (#422)",
+    "61d008c91b31c407f30ddd3be64c160711e9d554": "chore: release main (#452)",
+    "61fb100f4cfbd27f1c422285c278eef1b2aa655e": "docs(runtime): refresh post-0.82.0-release doc freshness with the installed proof (#593)",
+    "631282f905009adab30e8141b62111ad96895ded": "docs(runtime): sync 0.58.0 release evidence",
+    "63baf4bf81a1baa22127a32685ebfe0b0cc4dfd9": "chore: release main",
+    "653110aacbb713ad87a6e9cea61e9c4613a58734": "fix(plugin/designer): stop declaring a context state the sidecar never measured",
+    "6562ebebee63c9238746071312f58072764766b3": "chore: release main",
+    "6571bd4af0f20d1c71aa010c2b55bc6bd12ddbb6": "feat(plugins/engineer): /engineer:peer-now + ensemble_results wiring (ADR-0017 PR5) (#49)",
+    "65e14cfc4bd50f017e4f4293c1b5c8c138b7f618": "docs(runtime): sync 0.62.0 proof evidence (#375)",
+    "6651c5cf6a24e89818a2c3f01897e44f82b71ddf": "feat(plugin/runtime): compat observes assurance, freezes it, and every reader validates the family",
+    "668c325f8db5eced788ddb36adc1d154c3b4ccf2": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "66ab289050f59315d8889b0c250c0f495a08efde": "feat(engineer): ADR-0028 PR3 — A5/N4/M3 phase7 boundary fixes + schema 1.3 (#352)",
+    "66dec730b66c7ced35bb768d8454da5987500c90": "docs(runtime): sync 0.57.0 release evidence",
+    "66e938e5ad64fcab1c107ff08b601a8d9edaf84b": "docs(runtime): sync 0.51.3 release evidence",
+    "6738657c745e29032815e8884e51c98a2d0b23fd": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "67b125242815f1a272c6da551132f227dd1b337c": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "67bbc54f70e65f5b968e3b5c07b424af3934ffaa": "fix(plugin/runtime): one grammar for answer applicability, asked at both boundaries",
+    "67c2e1f4279ad820db106503964af9e54163a39a": "fix(plugin/runtime): classify Claude-hook-only plugins as claude_adapter_only in the Codex hook check",
+    "67ca92adde76671ece289287a6e05770a957a792": "feat(plugins/engineer): schema 1.1 reader + ensemble bookkeeping helpers (ADR-0017 PR1)",
+    "681450006611c669cc18c515376199b6e7fa6c52": "ci(runtime): add scheduled host-version drift gate (#385)",
+    "681faec872c103dd09570d69bae10dfcbcadb839": "docs: kit/README truth + ARCHITECTURE.md kit/ tree + AGENTS.md cross-references",
+    "682ef9ee4520b62d502ee621ac7d32c4e68c9a91": "docs: align runtime docs to 0.86.0 with the ADR-0048 installed proof, live-fire egress delivery-attested dogfood, and a host-drift baseline refresh (#636)",
+    "691934b172f3d69d95f20bdc46cb74c6c666594f": "feat(plugin/engineer): wire ADR-0027 PR4 weighting + sensitivity (#354)",
+    "698caa4f9ef78d36684b123f789972bf59edfa3e": "chore: release main (#157)",
+    "6a6d5efac46dbd1964781a62cfe6c09f496ad1fb": "docs(adr): add ADR-0041 cross-machine notification egress (Proposed) (#490)",
+    "6abe4be44380702cd24e94a71d78311c971a5840": "fix(plugin/orchestrator): drop the withdrawn todo-tool dependency from command runbooks",
+    "6ad5d4bd8f39201e739b5b89df6507a38d134e3e": "feat(runtime): add opt-in closed-vocabulary headline egress field (ADR-0041 §3a) (#511)",
+    "6ba290244fc6942502c55a2f73426ac6f8e3d34f": "chore: clean release notes for Codex hooks",
+    "6ba5f21a33f096b100fd568eec964ae69f0f988c": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "6bd016559acfee245c96e93aa9124777ab3eb0a5": "chore: release main",
+    "6beb71f9b392293380cebb71ba91b7cdcc4b6ae2": "chore: release main (#340)",
+    "6bf7e6d79c535cab585a2df9919926a788a7f108": "chore(release-please): force first release at 0.1.0 via release-as (#13)",
+    "6c7937c2e25fb884fd614bde313473de11f44e47": "chore: release main",
+    "6cfaa459b713c1294529d6c67f97316b2da92e14": "docs(readme): add companion-layer status section (#5)",
+    "6d2760464d6c8cbacceab0ebeb20458c8583bbb6": "chore: sync release catalog docs",
+    "6d4b716a79ebef1f077bca6cfe3ddbdee073e9e2": "chore: release main",
+    "6d5357464507019b5849142f2ad8e9ce96795383": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "6d53cabca273336d528baea95c8aef495fce6237": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "6d82617e3eec07233dcce396b5ef4fe93123cf06": "chore: release main (#574)",
+    "6da8d91fd1bf36eab7584a92b40201b553f24c22": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "6e4a31cec534f08f0ed75d601d07aa49fd3d92e9": "chore: release main",
+    "6ea62086fe7c0b820582a7aeec365f30c11fa3ea": "chore: release main (#660)",
+    "6f42f4c8ae5ca6d9238a1bb28d6c27be02c8ec4c": "feat(plugin/runtime): diagnose workflow storage homes",
+    "6fa5adf888ecf693c7cdce30c567a4daca90b84b": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "702760c1180081172ef84ff62d8d6e065b6b5933": "docs(runtime): sync 0.67.0 proof evidence (#416)",
+    "70385f864a8bd89486554959515dff5aa8fc723f": "feat(plugin/runtime): surface context handoff guidance in footer",
+    "705b65cc348044859263d3d8b3adea57d9fdc0e6": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "707ac83d7b3014918effa6fb09fd59153d4c8511": "Merge pull request #81 from each4all/feat/engineer-peer-runner",
+    "70ba21072d9c92eaa12448d0a523dc6102461f95": "chore: release main (#723)",
+    "70e0461d7ebc94ac9e48e31d9a7bf45d5d54e03d": "feat(plugin/runtime): both readiness paths gate on assurance, and the minimum runtime floor",
+    "70e75964a203ef7a6d54d196231896504c26edc9": "feat(plugins/engineer): schema 1.1-additive workflow_type field (ADR-0020 PR 2) (#70)",
+    "717c4c3c93fab3c42f6ba70e7392c6196568c791": "chore: release main (#589)",
+    "71bf91fe15f4b9795418da0635f5c795a362796b": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "71fc7a8009129d29d375b9478157ac106a8bbbec": "chore: release main (#398)",
+    "7201b4b37a823d51c46544cc498dfb53ce313f41": "docs(companions): post-Stage-1 cleanup — drop \"forthcoming\" markers, mirror AUTH_REGEX guard (#4)",
+    "72301b48bc8116e5ee70042fd2fa151056ef002e": "chore(plugin/runtime): sync 0.30.0 release metadata",
+    "72482c3ce3378ec45febb13c71ab04e00ac6ec57": "feat(scripts): derive stage-doc runtime versions and gate the relations the freshness check cannot see (#644)",
+    "724eb0f24675f47df9d6f211d4e54c77f25a0e0d": "docs(assurance): mark scorecard R4 satisfied after parity attestation (#372)",
+    "7295d13959f26e96b1073b5d503a9b9b8e56a7cb": "docs(adr): ADR-0037 — image capability plugin (Codex-integrated gpt-image)",
+    "73127e3dd84deb7e3aed579d05a81f84b885a7d5": "fix(plugin/runtime): ADR-0048 integration — leaves aligned to code canon, three-leg egress evidence, one presented [tui] source (macro 8/9) (#635)",
+    "734d857ba6f8daa2d20bd3fd999b843d3683cc30": "chore: release main",
+    "73ac7bc45a1c14ef2c8d15480d6ae51eae158918": "docs(adr): amend ADR-0041 §3a for opt-in closed-vocabulary headline token (#510)",
+    "73b2a755d419004f890b0e8b191121852ddb04aa": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "73b88c140ab8cb979c706cbde406d25d72822663": "fix(plugin/runtime): fold signal-runtime Review findings — chain-aware re-render, shuttle semver hardening",
+    "741e3ddda963731d6adbf5e84967c22300f817bf": "fix(plugin/runtime): make Codex peer-direction hook-gate readiness warning stage-aware (ADR-0030) (#410)",
+    "742e18cf307c03983cc558bdf88554efa6de09fd": "test(plugin/runtime): enforce command skill parity",
+    "7466812109e823c5077e577cade4ae25a3e56f94": "feat(runtime): surface compat drift in doctor",
+    "74943c468e3850ee93f9c9d2a9fcf39ea73e474c": "feat(plugin/engineer): ADR-0031 branch-deletion orphan sweep for Stop-archive (#383)",
+    "749b7051575827fbeb600ab56cd90ef5a9e573b3": "feat(plugin/founder): scaffold founder persona plugin (ADR-0036 PR1) (#420)",
+    "74dd62326e85d72116af702d5dd9714503d6c532": "feat(plugin/designer): decide + compose skills + decide engine (ADR-0042 PR4) (#524)",
+    "7526e34fcb28a095df49a8aee5f82b49f8f1c09b": "docs(plugin/engineer): clarify Codex Stop hook fallback",
+    "75b94cbc6b676fd047312d6883f186e9aec15e28": "feat(plugin/runtime): describe consensus peer lanes",
+    "75f377050a952bd59e9e0b7cee615c8b307f3b66": "feat(plugin/engineer): add peer-now run controls",
+    "7667c7cf84b95884102c64a1928d270c4fed8b0d": "docs: wire the ADR-0049 store into the doc-evidence gate and discharge its implementation notes (#651)",
+    "769b527d9fc54b533e8fb3e552040fda735103a6": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "76dbcf1466f68eff06e81ed6629f27a58a55bce4": "docs(adr): flip ADR-0043 to Accepted on authoring-PR merge (#554)",
+    "770b3535fb67b34682eea6a41813354f2015ea97": "ci: serialize plugin-shape test suite",
+    "7759e84102bb653aef76034a47ea92827a504ac1": "chore: release main (#155)",
+    "7761312200ec17f5e36e9fe108841416cee3a67a": "docs(dev): align stale cutover-state claims + sync 0.67.0-native doctor proof (#417)",
+    "778fc5b91c5080a77f3bf4a11af652fee0962fd1": "docs(runtime): sync 0.52.0 release evidence",
+    "78cfe2d965fa66d70a5dde50a07863f195e956d7": "chore: release main (#552)",
+    "79003cc49b7d8d7b6ec71f1f599d7ac744634d70": "feat(plugin/runtime): packaged host-version comparator and direction vocabulary",
+    "79359e5e1dd4de83829e7c0706421c6549012c45": "docs(runtime): align runtime docs to 0.74.1 with re-recorded doctor proof (#509)",
+    "79761d63db827d489238123b91dfeae3103ceab7": "fix(attention): widen egress emitter spawn timeout to cover the 8s notify budget",
+    "797c427cc3685662f2b35da8f31cc122b25d73d7": "chore: release main (#371)",
+    "79a48ad45146a3d2605db59259f7654b6e989d52": "feat(plugin/runtime): guide cutover evidence from footer",
+    "79d61449ea8cee6416d6d853076d4ef40a15bb4f": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "7a50a6f7a1fad3d2c78e996d58e8af35146d17c0": "fix(plugin/runtime): warn at plan time that a non-opted-in proof can never be attached after the run terminalizes (#741)",
+    "7a5a6dd072bff630783b2a639619dc0c557b3782": "feat(plugin/designer): refine skill — bounded convergence loop + Refine-verify ensemble (ADR-0042 PR5B) (#526)",
+    "7aa292936ec1551f0cf0d272604c8193ae2e416c": "feat(plugin/runtime): add PR handling readiness footer",
+    "7adb9ef04eb40f3ca67310594fcbb40284aa6b0e": "chore: release main (#577)",
+    "7b0bdfba93238e4e873765e0c86ac11f1b228f72": "docs(assurance): the R3 brief re-verified, and the four surfaces a source-literal zero missed (#720)",
+    "7b343643b8c117e7c81e6b1017be05249f387a58": "test(plugin/engineer): keep start peer wording host-neutral",
+    "7bfc428b5618c5317d17c1641d5f29822f79ca72": "chore: release main (#62)",
+    "7c4d62819b9b0a1619c8df4d7fda6deabb625867": "feat(plugins/engineer): parent-writeback helper + Stop hook integration (ADR-0019 PR-C) (#65)",
+    "7c5da9e042ac4a3ed001c64a11f2047e44a55bf9": "test(cross-host): cover checkpoint handoff continuity",
+    "7ca095187f891e5a1a8430caff0c7a3f9fc48132": "docs(plugin/runtime): record the 2026-08-08 ADR-0013 trigger assessment (not fired) (#676)",
+    "7d3da5035d0830270fed942abcc3650c16a68d04": "docs: align runtime docs to 0.76.0 with re-recorded doctor proof (#518)",
+    "7d77e929e73d716e5d5dac24b3e602cfc7b047db": "ci: trigger hang-repro on investigation-branch push (dispatch needs default-branch registration)",
+    "7dce7fe17973d6abc0ceaf6682089c8b3043697a": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "7de8b816b9b737fc43729c891d8c34ac25a5420b": "chore: release main",
+    "7e8e05c6233b448fed8339b542c96568c923fab3": "chore: release main (#29)",
+    "7eb053d18c26d2dfbdfdbc5430ca06069a200dea": "docs: align to the installed 0.87.0 proof and record the selection/posture loop",
+    "7f5710a5274c1fd9a46fafe4a1ef7779e5593454": "feat(runtime): S3b — session-capture publisher: publish-session transaction, fs-mutation guard modeling, mutation-verified suite (#591)",
+    "7fae56fc22687bb8a94cdc4021f2956f2b776e56": "fix(plugin/runtime): compare egress WAL paths by identity, not spelling (#674)",
+    "7fc7e633c4981ee9c1437bc2541f0ebbe78d80d9": "chore: release main (#656)",
+    "7fea680f19bf7fee798f7c276a34810e36e5fa2a": "chore: release main",
+    "80b677086f59d26a4d58e3efebff42d1a11093de": "feat(engineer): ADR-0028 Phase 7 commit automation — PR1 Layer 2 (#349)",
+    "80fbb60d59d956144c787bc9d2902807c25f28c1": "docs(dev): ADR-0012 cond 3/4 satisfied + cutover declaration (omcc -> agentic-plugins) (#373)",
+    "8177812b686e62ffd92ba4931264c74c96d4a36f": "feat(runtime): clarify cutover audit gates",
+    "81c724c8dd685b03a463206b659c7677bb60858e": "feat(plugin/image): scaffold lean L2 image capability per ADR-0037 (#438)",
+    "8243de53edaf5f8663fede3894f468433bbc93b9": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "826528c24a1b1e97217a5943c3c29e3f9c339e16": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "82cf98143897f50bbd265b95465a8b61618e228d": "chore: release main (#638)",
+    "839704eafbbd711d2bdd16f713495341d313c7c1": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "83ada8f8d0e4a349f572462af33c86dcabe3f77b": "refactor(plugin/runtime): extract doctor state readers into lib/state-readers.mjs (ADR-0040 §6 prerequisite) (#477)",
+    "83cc65235cb5bf41e089f441dbf6bd8bb924c02c": "fix(plugin/runtime): show cutover follow-up commands",
+    "83f1c3ca606c6098f6de598dec5b43f657a0f665": "feat(plugin/designer): real-topic dogfood, ADR-0042 Accepted flip, de-incubation (ADR-0042 PR7) (#529)",
+    "84b2c86fdece6703288218eeb9719f4fb68d3b80": "feat(plugin/runtime): statusline adapter — agentic-6 policy, per-host exact probes, render-only shim (ADR-0048, macro 6/9) (#633)",
+    "84de4864463cfcec6cf7083b37863c717f3e4c1b": "docs(adr): correct the ADR-0052 heading to name the adopted option",
+    "84fee3b504a724ad5a7903177753abaec1affecf": "docs: ADR-0041 §3a headline release sign-off + runtime 0.75.0 doc-freshness (#515)",
+    "857ebc788770650888609c73079fe1b7c1b73a4b": "feat(plugin/runtime): add doctor readiness matrix",
+    "85831f5bc4c92401ecbaa80accd59b596db95df7": "ci: raise host workflow timeouts",
+    "85bbd3d0955021fa09326d507e769732bf55c1da": "feat(plugin/engineer): name phase and failed gates in terminal completion flags",
+    "85fee0a04ad9255562f90a67bbb114aecc5cd37e": "docs(adr): accept ADR-0049 — a forward-only evidence record store (#646)",
+    "8637217e2b9d687cdba266d9068c9146b592602f": "fix(plugin/founder): stop declaring a context state the sidecar never measured",
+    "86609de2fd3560eef4434954a27aad0be532f5ed": "feat(plugin/runtime): codify compat policy ADR",
+    "86adabbb2e5d5a205173c88ef9c1f104f6920146": "docs: align to the installed 0.88.1 proof and record the presentation-and-persistence loop (#669)",
+    "86f75e99631ed1a385ce18188f9366f320ea2669": "feat(plugin/runtime): add ADR-0040 §2 notify_* settings keys via generic key-family differ (#475)",
+    "8712eb9b647fe76a4303b94434efbc3f419338b3": "feat(runtime): S8a5 — per-handler Codex hook-disabled evidence (#581)",
+    "874ec809d306b4546a8e0fbd4e2a9d7024d51687": "feat(plugin/image): decide — variant selection + safe retention (ADR-0037) (#443)",
+    "87898f0f5798636e629c9e5178ee10016cfd3e3c": "chore: release main",
+    "878ab411c4b0e5143e15acae02fdea5b26dc9813": "fix(plugin/runtime): surface Codex hook trust boundary",
+    "87cc0c71a8c843724fb8191e9c9ffb83eb48ec67": "chore: release main",
+    "885671138a7cecf3214f722e6206a8573ea0c9d4": "docs(plugin/engineer): clarify codex hook boundary",
+    "88af7e8760afa7e6852e958fe1d3cd459f8f9c90": "docs: align to the installed 0.86.3 proof, author the first evidence record, and floor the store (#654)",
+    "88ff06281e71f252b68bd49a3bc81aa07a46d36b": "docs(assurance): the R3 grant review, and the two surfaces the plan did not name (#719)",
+    "8908e84d940e26ae5717f0d5b77889b551edc503": "feat(plugin/runtime): add context budget check",
+    "8973b1ad03f578c4d8f66a348b87bf417c60d221": "chore: release main",
+    "89a9ea93933923129e34bd362fbf3cde5f0d6a18": "feat(plugin/runtime): add ADR-0040 §2 notify.mjs emitter with built-in channels and §4 registry pinning (#476)",
+    "89c16ad85cb5d2b01217b82c04e4437ba1a0e675": "fix(runtime): close the permission-advisor defect class — secret leak, danger-rule bypass, cross-bucket governance, and their two mirrors (S1)",
+    "8ad960cf8ba9c5dcd3477e77117d89ae126bc642": "feat(engineer): add entry routing decision contract",
+    "8b6a685763342f2fabeaaa0ef62d33eaa258d3f3": "feat(plugins/orchestrator): single-subtask update API (ADR-0019 PR-C0) (#64)",
+    "8b7d887f94d116993f2f18ee7b52356b7e8c6ef6": "feat(runtime): S3a — session-capture staging executors: note (--text/--file/--clear) + status --slot, explicit hook-grade output-mode split (#590)",
+    "8ba23f3a829f6c181acde92e1c0e0b80dfc1bc91": "feat(plugin/runtime): add plan-only doctor deep peer smoke preflight",
+    "8ba4c68d1ab84ee03fe90768a8c324d33d03f678": "Merge pull request #85 from each4all/feat/engineer-peer-now-controls",
+    "8bf71c2649634a4f4cd8fd23b8aba8d17e83fb1a": "feat(plugins/orchestrator): schema 1.1 bump + plan producers (ADR-0019 PR-B) (#63)",
+    "8c5e62bb6b0dff3411b0629e3b5230db3eb06c51": "docs(adr+DEVELOPMENT): ADR-0021 Accepted + cross-host parity cascade (2026-05-12) (#76)",
+    "8c704e918b7145d1f8cb46785165347b927e2cbc": "feat(plugin/engineer): add Active Next-Action Proposal section to entry-routing contract (ADR-0029 PR-A) (#362)",
+    "8c9789a3fa7b67f2e3e1031f446b8389ec745fdf": "chore: release main (#689)",
+    "8ca4651f45b2ce4b81111b96b3f9079aa188b623": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "8ccf35582ae79ce9423452f309297229c9a5cf16": "fix(plugin/orchestrator): reject blocked_by cycles centrally, not just self-cycles",
+    "8d53f7abc1c9e61400807fd3798b83982997f7c5": "chore(release-please): reset manifest to 0.0.0 and drop pre-major patch bump (#11)",
+    "8e068cf3baaee59a9b473f9d3c802e869c798f4c": "docs(runtime): refresh version + doctor proof to 0.78.1 (attention hook sets) (#545)",
+    "8e39de894011b8ed2ed8667f5ca158f4e0eded00": "Merge pull request #43 from each4all/docs/adr-0017-status-accepted",
+    "8e48e1412031d821a07061212419a6a5a1f48648": "feat(runtime): ADR-0041 §6/§7 egress semantics (taxonomy + claim-finalization + attempt-mirror + dashboard) (#495)",
+    "8e74ed6b463fe54dc8a00a260682dbec9fdd3f0a": "feat(plugin/runtime): gate cutover on experience parity",
+    "8ebbe48065083e981aa6f2a7f31db64a08e8b8a6": "docs(evidence): decide the association policy — the rule is not the contract's job",
+    "8f19e8cd6d450d164a10362420b85066f3580fd3": "docs(runtime): sync runtime 0.49.0 release references",
+    "8f1e953fc8abcd7eb438be3966f77ca27268e2d5": "feat(plugin/runtime): detect dirty context handoffs",
+    "8f8301c53518cd00ff2c6d456f17b97e336aab7e": "chore: release main (#226)",
+    "909a7ceed6425d8b465ab14958b758bb04484f58": "chore: release main",
+    "909d65691f4ec3112edc8b23eb8b7a6596fb9a6f": "feat(scripts): ADR-0049 evidence record schema and provenance-driven validator (#650)",
+    "90a4b6e4254a781e5ae8ce41e479d268b1207f98": "docs(plugin/engineer): append runtime completion footer guidance",
+    "9128c955839015bcfa65dfa60b80d7e1b3f2424f": "feat(plugins/engineer): branch-keyed active workflow lookup (ADR-0018 §sub-2) (#52)",
+    "915a3512259f8ca2caf48e5b848cedf479bdcf6e": "fix(plugin/founder): dirty-tree gates see untracked files under status.showUntrackedFiles=no",
+    "917423988686cd7cbe813b937406e76308ebf4e7": "fix(plugin/orchestrator): dirty-tree gates see untracked files under status.showUntrackedFiles=no",
+    "91953081616c46e0f60bb345d4ffa0e605265828": "docs(AGENTS): refresh ADR range references after 0017 addition",
+    "91d1de92ffed7496bad9f25d03359ade39453673": "feat(plugin/engineer): add decision-axes registry + parser skeleton (ADR-0027 PR2) (#347)",
+    "91eb38d7b2ea1b94e426a90eaf9a82b4c301397d": "docs(plugin/engineer): surface footer completion state",
+    "926ec0186ae5d7e4e5d40b6e24316343bda5db0d": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "932c1355a38cda511a32cb429c572eb040706370": "refactor(plugin/runtime): S6 — extract host-localization into a shared leaf module (ADR-0045 §10) (#597)",
+    "93695471d6043a7b6f064c8f697f5dfc7ebce200": "ci(release): allow release PR catalog lag (#308)",
+    "937912e761fe1cc18d122d969aa7dbb72dfdbf92": "docs: refresh runtime proof references to plugin-runtime 0.72.1",
+    "93b3bb7fa824cb0dcbe60fddf2ca933aa3bf9c9b": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "944fd4e04c6e9f55d1b4958c4bbe6d5e5075aa46": "docs(adr): amend ADR-0010 per ADR-0014 (research deprecation cascade)",
+    "946068226dae96aa042d2ebc626710f64cde5470": "feat(plugin/attention): ADR-0045 S9 — SessionStart entry sensor + entry-brief floor pin",
+    "949aa658b899354f2b3932d8e9a871e55e84d778": "fix(plugin/runtime): fold codex Review findings — sweep-then-act concession, capture-verified lock removal, bounded preprocessing",
+    "94de99076d1c9066285a40b5a8dafdb097a6703e": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "952af142f43e6cb316fd216aaf3eebe37157baed": "feat(plugin/attention): mirror response-needed into the copy-not-import notify vocabulary (ADR-0047 §1)",
+    "9576b572fe92ba9a0a8892489ae47399be679cb1": "feat(plugin/runtime): add doctor sandbox permission probe",
+    "958f4a0a984d5da4fdeac9a9c56eebc6e7548e7b": "chore: release main",
+    "95e5b048b55e26cc599a780fca7d1e4aba2dd7a4": "chore: release main (#717)",
+    "960c8bc0c4e9a073e7df93e269c8a4e7286c2956": "feat(runtime): S8b — wire the runtime:bootstrap public surface (tenth runtime command) (#582)",
+    "970667c6d643607aaff66ba05ca2692eb3323bf2": "chore: release main (#411)",
+    "97990393217474d2ccb0e42013b051529a59639b": "fix(plugin/designer): drop the future-session promise from the checkpoint description",
+    "97d7f643a905c30ce7fa72ab66a85c62481a79a8": "fix(plugin/runtime): refresh host parity baseline to Claude 2.1.250 / Codex 0.150.1 (#755)",
+    "97e1b474b240fdcc111475f9a84090884f8ad420": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "982669200e8f605cb2b528c385929ba088e4850a": "docs(plugin/designer): reflect landed attention enrichment in the runtime-integration note",
+    "98be8a43536e689d80bd6f53510badc1e1c62f2a": "chore: release main",
+    "98d364d0f62868ad99e163c439ebd59b3b4e5cb9": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "9945a0213b0405fac6f755e82c4221e3f06de9fd": "feat(plugin/orchestrator): mirror lifecycle commands as codex skills",
+    "994bf5bf00f48caeb68a54cc4083ebb6d2883f72": "chore: release main (#391)",
+    "9a47cf332d60650061b56a712de14964a0939c33": "chore: release main",
+    "9a6994419d28541e777d25b6585d2d15fab60d66": "chore: release main (#607)",
+    "9abddc65e611922090d531400c0e176da9c56398": "chore: release main (#653)",
+    "9af688a6efd5947cf9a626d9fbee6b78e3f42c9b": "docs(image): close out repo docs for the shipped image capability (ADR-0037) (#446)",
+    "9ba44bf29212eee7844be3f1da8d597f9547eb3a": "docs(plugin/runtime): refresh host-parity baseline to Claude 2.1.197 / Codex 0.142.4 (#462)",
+    "9bdc4f55f550a1f210e9dc4a1bc2fd1f214b477a": "docs(adr): propose runtime operator track",
+    "9be7501f17b8ff953e13e19cf97fda7540a1da32": "chore: release main (#735)",
+    "9bebc2e29dd939cbb53db5d98fde7b3809f8e58b": "chore: release main",
+    "9c318d76d19b6eb36b6c213b60d1b53eae8cd294": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "9cc769e2075a2f1f659f7210b6eef4562d0018d1": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "9d014b7ecb3df0b95e243c0f8341151c17b58791": "feat(plugin/runtime)!: remove the permission-prompt advisor (ADR-0057) (#752)",
+    "9dc3eff21d8b4bf45d8759043a93f12aa3252817": "feat(runtime): S2 — session-capture foundation: contract, schemas, session config family (#588)",
+    "9de9b5d0f3f43996f37ac81cc0f228562f69bfce": "docs: align runtime docs to 0.69.0 with re-recorded doctor proof (#450)",
+    "9e002213011bc630d7150a50712d819eaa0fefab": "fix(plugin/runtime): point parity followup to hook attestation (#227)",
+    "9e2af7d80999cb93aa4539940b18d40a701f44c0": "chore: release main (#642)",
+    "9e6c9e5bccc5d22edc27ba5c68822c61c04c121f": "chore: release main (#566)",
+    "9ef8c7d2ff16155c26382867f8ef7835001c2867": "fix(plugin/research): wrap agents/openai.yaml fields in interface: block per Codex skill schema (#19)",
+    "9f05b2e9ad9f6a8cec82ea3ba69a7f9639b09d3d": "Merge pull request #78 from each4all/release-please--branches--main",
+    "9f7d54ee16dfe7b3293d14dba3d0dcb67d6d4d94": "fix(plugin/runtime): flag stalled consensus progress",
+    "9fa6aa73608e78cbb8c09892c9d3005ebf0dcc61": "fix(plugin/engineer): stop declaring a context state the sidecar never measured",
+    "9fac6e39892b38fc92106b9d8077a81f1f67d95f": "chore: release main",
+    "9fd523c5c27e25064b6770e329ce216ce39305b6": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "a02ff3fbfb7432bdb56369bd487ec7a3fbf7e62d": "feat(plugins/engineer): /engineer:start lifecycle macro + diagnose-redundancy + workflow_type SessionStart fix (ADR-0020 PR 3) (#72)",
+    "a04b90ecbd3ff747f5d87e2b685a7cc6fe81107b": "chore: release main",
+    "a0a14cac024c9b18f38a63a1a69d6b8c081e0f21": "docs(audit): Stage 2.5+ exit validation report — 6 dimensions",
+    "a0c8c287f18d53314090434e3d38daa129828fd9": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "a0e8f6a2d32e5fe741ea4965b01dac0620dd90b7": "feat(companions+plugin/companions): extract canonical discovery library (Deliverable B) (#25)",
+    "a0ef1e3a66f3516def0f2d209a853242039729ce": "fix(plugin/orchestrator): state when Stop evaluates the archive gates",
+    "a10c99c484e501ac859497091c4d9fe1bf437070": "test(adr-0040): cross-host black-box acceptance gate + Status Accepted",
+    "a14425618c622fbdafd57d43ec2a14c6d0d24a49": "docs(plugin/engineer): session-level continue-vs-fresh preflight (ADR-0031 contract) (#377)",
+    "a164f137370cded5403bcbe20bd7e4668bda01ea": "docs(runtime): record plugin-founder v0.4.0 S3 footer-onboarding rollout proof (#564)",
+    "a25d6bc13dafc657b428e98b9e5f12b3247c8f66": "feat(plugin/runtime): doctor R0 permission diagnosis (ADR-0038 doctor-diagnose) (#457)",
+    "a2b7422880cacbeb678eba3b0c86ec82a5616f3f": "feat(runtime): add explicit release-note URL fetch",
+    "a2b7bc719b2424b91ecd6714baadc14fc6da6280": "docs(runtime): refresh version + doctor proof to 0.77.2 (#536)",
+    "a30229f2e154cb806d9269d2f1e1371dfa38a83e": "feat(plugin/runtime): show doctor hook review targets",
+    "a37491be89032813cb77788cf581c2dd25b6df5b": "feat(plugin/engineer): wire ADR-0027 PR3 sizing (compact preset + ritual depth) (#351)",
+    "a3afba38535f5ed3b3d1a82a781d5f1c430be3c8": "docs(stage-2): Deliverable A foundation (#23)",
+    "a3df149a3acc5b5ed6c21705bbad2722c0b80565": "chore: release main",
+    "a3e217b5527faf26bb92b656864e01534825fa45": "docs(runtime): sync 0.59.0 proof evidence",
+    "a428d8b8f81a88e27e62fad1d759dc4ba87fc34c": "Merge pull request #241 from each4all/docs/codex-hook-auto-fallback-wording",
+    "a430c14fea996625393d7abbf2f2c8a500b129af": "test(peer-runner): stabilize cancel readiness checks",
+    "a432f77bbbcf6e21642fbeb4b129e18cbc898747": "test(scripts): pin untracked-file visibility for every dirty-tree producer",
+    "a43f535ec328b05c1b15e60e0c91c6b5dca91baa": "chore: release main (#348)",
+    "a446b6820392b811594ff60a488867b304dcce7e": "docs(runtime): sync 0.55.0 release evidence",
+    "a479e17407d9974a70a521b2d63067f25a373f8a": "Merge branch 'main' into feat/engineer-checkpoint",
+    "a4a605310dcb30646c83b813fb3dc754328453bc": "docs: make the squash message come from the PR, not the branch commits (#647)",
+    "a4d8bbf6af0b227ef3fa5cd8879821fb063b1f3b": "test(companions): enforce cross-host contract parity",
+    "a52658303ab80e8201571e699d99abf286e39c4a": "feat(plugin/runtime): recognize founder in the doctor/settings plugin inventory (ADR-0036)",
+    "a5a90a089caa95b23ae1278273ea868c56c29f42": "chore: release main",
+    "a5cbace75694a860351fd5650650c8c4e690a6b1": "docs(assurance): sync cutover parity attestation",
+    "a5dea94868b38d3eceff711cf3f584b67b004e0e": "docs(adr): map ADR-0031 activation firing surfaces (sidecar completion-script wiring) (#426)",
+    "a6a3f850aec48814c4ce8ff71d2ec3368180daae": "feat(plugin/runtime): add host parity baseline",
+    "a6ab4421ff73344e8aff2f4165ec6ba71c8791e8": "docs(adr): flip ADR-0047 to Accepted on authoring-PR merge (#610)",
+    "a7919b08f80a836689929c0118f880fcff33e6af": "feat(plugin/image): critique-vision — vision evaluation via codex-companion (ADR-0037) (#444)",
+    "a79debad26d6a08d5cc220c434523bc44ff31e45": "Merge pull request #234 from each4all/release-please--branches--main",
+    "a7be4a728b6b33ef80a94c86ae5acfe749299b95": "docs(runtime): record plugin-attention v0.5.0 four-persona sensor rollout proof",
+    "a7ca00fd09d4a10517037450c4b0e5f06743bb29": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "a7ef410016aab277bd70f1d8907fae3fb7d26a32": "fix(plugin/engineer): drop the future-session promise from the checkpoint description and correct the hook README",
+    "a7f9b870c649b68f53454a859eb985ac9658afc3": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "a8491f3da89e5f9cf0000239e415cb3e9c14979f": "docs(runtime): land probe-free settings report contract (S2A) (#539)",
+    "a8554a5ca08c1e43db9d081f435583c0624303a6": "docs(adr): S4a — record plugin-runtime 0.82.0 as ADR-0044 first capable released version (#594)",
+    "a858737d13cc319a2f4dda0b9c7d647f88785351": "chore: release main (#45)",
+    "a86cb4a89093f9a547eec75a6d2e0af622b32500": "chore: release main (#18)",
+    "a881eb7f261c07fa2960722e1ab1dc4213ea1650": "fix(plugin/engineer): add Codex-native lifecycle hooks",
+    "a90bfdf039ca71394c14c491a142bf302022204d": "fix(plugin/runtime): read an absent Codex hook `enabled` key as enabled, not disabled (#530)",
+    "a92430f3c9dcf3553dd4e603b3b20ac0be109a18": "chore: release main",
+    "a94edda166334021d79cde0468d86f7ac62614dd": "feat(plugin/runtime): usage-record learner C engine (ADR-0038 usage-learner) (#455)",
+    "a973d05da3c248aa8eb164d9f4a9a1a88a889e95": "feat(plugin/runtime): carry the session-config family in the portable machine profile (#734)",
+    "aa31d054eb3fb754f28863367fcc367a1e2a94b5": "fix: classify Claude auth JSON failures",
+    "aa49e24da2b47a05505008f81fbe4caf6b1e5b31": "fix(scripts): give the commit-sha gate its own discovered corpus and an audited extractor (#697)",
+    "aab5a24468e84d2bf480e546ded92fe571ca3591": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "aaf376d12573c36f74a699c8f4ba1f4ad64344a8": "fix(plugin/runtime): fold attention into doctor's expected Codex hook sets (#543)",
+    "aaf4744670387b0099976da10eced2b24916ae3f": "fix(plugin/runtime): harden the baseline resolver and remove the consumer status fall-through",
+    "ab38b88c40094dee1df5384be7287496d62d5153": "docs(adr): amend ADR-0031 — active firing via completion-script sidecar (#427)",
+    "ab58e25d6b6b5ef30d0556f9b56581c9e057e420": "chore: release main",
+    "abeb113090ffcbbacb046da63755f7e2d4171a20": "feat(plugin/runtime): add cutover condition advice",
+    "ac0132e0753dfe8d718bc297f72372190fd48da1": "chore: release main",
+    "ac5539f64afe68c5b4d3272540364b473f69eef5": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "ac5803a9906d68317f51c1166835e8e3ddf0a673": "feat(plugin/runtime): egress-ack-proof doctor executor — the one real-network Stage-8 proof (ADR-0048 §3, macro 7/9) (#634)",
+    "acaa734fa343ad49c7dddb83b6391c44e6a60d9e": "feat(orchestrator): port ADR-0028 forward-compat — read tolerance + serialize preserve (#357)",
+    "ad0036f3886763c6decc9d18f495dff7c43caa63": "feat(plugin/runtime): link consensus execution prompts",
+    "ad1dc27b0ba6e10edb68b3c6d34c50a93477d50a": "ci: add per-host test workflows and marketplace catalog validator (#7)",
+    "ae7f724fb72737265dd12d4cb714f79a86eaa250": "chore: release main (#465)",
+    "af1232641404d47fd74767025ffb3f10f07a6e47": "feat(plugin/engineer): adapters + minimal continuity (Stage 2 Deliverable D) (#30)",
+    "af36d83f19078159c54a7c4b5d13fa885bb74094": "feat(plugin/runtime): add ADR-0040 §1 notify-schema contract lib (event schema + atomic TTL dedupe) (#473)",
+    "af57b996dcfd00477b715544031b0c1444978453": "docs(adr+DEVELOPMENT): ADR-0020 Accepted + Cond 3 trigger candidate fired (2026-05-12) (#74)",
+    "af620df40d54f385f933923ad0004a3962babb33": "fix(plugin/runtime): egress-proof opt-in from provenance, not the derived row",
+    "afcc0ad9fc59ae99b1235c59c4de785a83c8e648": "docs: post-0.90.0 freshness recovery — the ADR-0051 ceiling lifted (#687)",
+    "afdab5916d23995ba3fea4f775f1455bd9b2e464": "fix(plugin/runtime): classify sandboxed peer proof failures",
+    "b0db587d741d7f4147d17ec379eb9ea91ec05f6d": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "b1019e34d8cfa8bbf0d7d8d93d805b4df7ee197f": "chore: add package.json with Node engines, scripts, and bin entries (#6)",
+    "b107c6e987a81f4543345c56c2b52db9158eb996": "docs(assurance): record runtime:consensus dogfood evidence for consensus-20260529T123635Z-8722ee (#359)",
+    "b14abe6e52e94dcdbc3b21b499182de5a83ad60b": "docs(adr): add ADR-0040 operator situational awareness (#472)",
+    "b1d66e383aee74853df7c025a866211bcae7e6e8": "docs: record the 0.90.1 post-release proof and the loop that could not outrun the host",
+    "b1f620c90610f704e5f06578de086d69a83a4b19": "feat(plugin/runtime): expand footer context lookup",
+    "b210cf5512231165dbcea29fee7531bff51171a6": "feat(runtime): add completion-state footer contract",
+    "b21a3584b15c41b03bf8ef1c380de43087730fb8": "chore: release main",
+    "b2481b28336cd40a66166546459bb044ca228f41": "docs(plugin/runtime): ADR-0047 Release B published — acceptance step 1 done (runtime 0.85.0 / attention 0.9.0) (#621)",
+    "b2995707cfa130e3fb443d3dc866636aa1dda690": "docs(DEVELOPMENT): Stage 2.5+ snapshot + ADR-0012 cond-4 functional satisfied (#59)",
+    "b32afbe8a92e22b3d95a038685bb0dd00d46f836": "feat(plugin/runtime): read codex installed-state from plugin list (ADR-0034) (#394)",
+    "b340bbef6850bcbaa14d1a1abf5f351e617e44c4": "docs(assurance): the first grant's cohort miss, measured on the machine",
+    "b388ba2414cc0e8d32b3e9e81c3f3e5647a45dda": "feat(plugin/orchestrator): support canonical workflow state home",
+    "b3ae47f3845747ac5ae71a1fe918c3e59352c5cd": "feat(plugin/runtime): use Claude plugin CLI management (#214)",
+    "b4208c6c56307f1bf01b0ecad9c8c018da74c83d": "fix(plugin/designer): scope checkpoint re-injection to post-compact on both hosts",
+    "b456e047bd46214ee397b410f2c7e8862e918c05": "feat(plugin/orchestrator): add meta command parity",
+    "b4ad651629979b7be1986aa54e4bedd53af320b3": "chore: release main",
+    "b4b91c40936055a27feaa1a652f1a76f4df92189": "docs(plugin/runtime): scope the sweep agreement claim and record the undateable-cap conflict",
+    "b4bb1c4fd7516a76aeb023d2b53c35d5ae31d458": "docs(adr): ADR-0017 status Proposed → Accepted",
+    "b4d3a86920f5ecf70dc58bd52044c98c7a95aacf": "docs(runtime): sync 0.53.0 release evidence",
+    "b551e0dd07f6938b7f7b1011304f87efc478f946": "fix(plugin/runtime): preflight Claude plugin surface",
+    "b55ce5363442e8e337ae50f7d8e094113cc4e957": "fix(plugin/runtime): read the Codex /hooks attestation from the path doctor emits, and judge it by selection",
+    "b5766d7f52fef2b68b39e1b23a885a9335f19318": "fix(plugin/designer): make the peer-run sweep preview state what --apply deletes",
+    "b598b0a5271211c919141343e4e5c67ccb0a9a8a": "fix(plugin/runtime): make Codex plugin_hooks readiness stage-aware (ADR-0030) (#370)",
+    "b68d17cdc495977719332eb7a3734dfa4dd1c8e9": "fix: resolve Codex hook Node lookup",
+    "b6a012aa2e3e2c3074822a5b9955c8c363352f11": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "b6abf9fc6edd9ff18ceebc2658d296b704a0a4dd": "docs(runtime): refresh codex-capability baseline to 0.144.1, gate cross-doc drift (#538)",
+    "b6bf6fd6686ae0e11dc81d34983747d36ca3837b": "chore: release main (#747)",
+    "b6caba4c195180b9921573ba6ed188a25b29d903": "Merge pull request #237 from each4all/fix/codex-hook-command-portability",
+    "b723a019560f7f88a5cf4443e46de67dd18f9b2f": "chore: release main",
+    "b72f28bef380940dc3c59add6f945023f8cefafe": "chore: release main (#569)",
+    "b79954a085d01a4151b669ad06161b51b9e1bdb2": "fix(plugin/founder): re-verify a peer run immediately before deleting it",
+    "b8ad2b328186fac63aadfca7995b10373b19f2c7": "feat(plugin/runtime): the assurance semantic matcher — membership, bindings, negative-wins, and a tombstone gate",
+    "b8b258d2cf2fa469fa8d209b607e3ca97958673c": "chore: release main",
+    "b92cc1d49b62be60d950dde74137b81729aff75b": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "b984dc8b327e45f636e9c98828ab6110f826f330": "fix(plugin/runtime): egress-ack intent WAL - machine-global fingerprint-scoped fence + strict wire-disposition gate (#637)",
+    "b99486380077374b0a80c45b6c1fd68b485b29f4": "chore: release main (#26)",
+    "b99f7da6959ded6f58d8c3b20775bb6e795551d2": "feat(runtime): add artifact-only egress-launcher activation plan to settings (ADR-0041 §12) (#516)",
+    "b9ac64a6ee0616d1b28e9236adfc8518e1041936": "chore: release main",
+    "ba1c20127541b65c93772ee317330511a78be4f9": "fix(plugin/runtime): prerelease tie-break + build-metadata strip in shared semverCompare (§18 comparator follow-up)",
+    "ba4f5ffce6562b25d00bfbd054481e4bf556f0ca": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "ba518f3a854e8fbd42f0d774a02ae6e4477b865c": "docs(adr): propose workflow storage migration",
+    "ba7d0976fb90fa87bd910fb0b20f9520635ef29d": "chore: release main",
+    "bb5bc093bb8461c022d292aa157709bde52ed698": "chore: release main (#421)",
+    "bb69cfb354064ac1ff12f07560502225e629ef8a": "fix(plugin/runtime): distinguish sandbox-limited auth probes",
+    "bcdd90d7667905b72142e894dfa33ea75c0e722c": "fix(plugin/runtime): align Codex hook alias diagnostics",
+    "bce70714ac52a3f58e8c5939cba862e081443a62": "chore: release main (#439)",
+    "bd3ff0eab6219235d95b1e384a0d9aedc5435641": "fix(plugin/runtime): report Codex marketplace-cache-only state",
+    "bd450b2256df40bb0ce97e49b9cdbb2bfe1417c2": "chore: release main (#756)",
+    "bd8d35864c3c8879ee741a7f58e566eb2a4ce1bd": "docs(runtime): refresh version + doctor proof to 0.78.0 (R1) (#542)",
+    "be86355ec944e5033897c9dc304b65e618a89a03": "fix(plugin/designer): register peer-runner child observers synchronously with spawn",
+    "beb4917685277a9d3c418ff9d52b56d8729119e8": "chore: release main (#548)",
+    "bef093a52bdaf08e5f992d2d2c82f6b66e8321d1": "docs(adr): ADR-0020 engineer integrated workflow umbrella (Proposed) (#69)",
+    "bff4c41fd24aa3b9191cacaf3fbd972de72d49ed": "docs(assurance): mark quality defaults satisfied",
+    "c0d5c0b622d690ae3a23f83ba5c317089fe4be6b": "feat(orchestrator+engineer): /finalize + /abort + macro stop-archive A1-A4 (ADR-0019 PR-E) (#67)",
+    "c13877c01aec369256c28ac372f2151799115e65": "chore: release main (#535)",
+    "c160dec5bab46f2052d7f50ef2a861a3fb9deec3": "chore: release main",
+    "c19f87e36e4325376058484dc5ba55d72e4dd791": "test(runtime): ADR-0041 §2d acceptance-gate — node:https-shape injection seam + deterministic leak/outcome/fail-closed gates (#503)",
+    "c1d43b43730c05fb08e6bd398f25427d305de0e4": "feat(runtime): add compatibility drift planner",
+    "c299ce9888beddb5874dff4a3e7a316761baf4b4": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "c2a84134803a7e6ccd057217f99527b389a4bb77": "feat(plugin/runtime): unify permission-advisor sanitize helpers (ADR-0038 sanitize-util) (#451)",
+    "c2b4e35310ed502166e7dbf86fedd839a493536a": "fix(plugin/orchestrator): make the peer-run sweep preview state what --apply deletes",
+    "c2bc0f99bbbb20b44df8264977c320d6730ffcda": "chore: release main (#616)",
+    "c32d76b3c8ed8aefaecd0a625863c18c38729491": "feat(plugin/runtime): read-only cross-checkout legacy egress-intent discovery (#675)",
+    "c330698e0c6183e4c70026631779880710e93857": "fix(plugin/runtime): report codex hook feature parity",
+    "c3a7a69c35ed34e8fecc75314a94d3de3337c8d9": "fix(companions): classify claude profile-expiry and codex 401 auth wordings",
+    "c3e636eda28d1ea7cf4d2069d5abd4b0ca56f078": "feat(plugin/runtime): settings M1 Claude permission plan (ADR-0038 settings-claude) (#458)",
+    "c494456fb2f6a941b582d755609d18ad2fce5356": "docs(runtime): sync 0.63.0 proof evidence (#382)",
+    "c4dd7124928da13e30abbfd4842367ea4b7937f3": "feat(plugins/engineer): meta-skill category mirror (ADR-0022) (#77)",
+    "c526efe7e7bff5f1047ad947be6de8e742c5847b": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "c535c1ae97fd8f0e5dd9a3c66a2e2479332561c4": "feat(plugin/runtime): doctor reports integrity, exactness and assurance as three facts",
+    "c5475a0966d5c1898418f6f69e04e5af8b0bcda3": "feat(plugin/runtime): project effective settings resolution",
+    "c549ed281d16fc2410e492233af8ed4c0cfb5460": "fix(plugin/runtime): render Stage-8 proofs once from the reducer — control vs evidence",
+    "c56503c5821225a6f5cd15b97124341c08615570": "test(plugin/orchestrator): enforce plan entry path parity",
+    "c6465d8eb4a0fa849ea605684b7e06a15aa9c089": "fix(plugin/attention): fold codex Review findings — TOCTOU-free bounded reads, scan-completeness hardening",
+    "c653734e675311c0248a77b9e278d12d8844d675": "chore: release main",
+    "c6988bad16bd9ef5250df273249b3ee91a676558": "Merge pull request #83 from each4all/feat/orchestrator-peer-runner",
+    "c6c1372362691a3d50877b9acf3b5f9289b41be5": "feat(plugin/engineer): wire standalone verb completions to the Active Next-Action Proposal (ADR-0029 PR-B) (#363)",
+    "c6e9a46d4b027db6c04a0a3893a57477cd12a3e7": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "c71a2890c6dd626c3adb58637923cf5297c0029c": "feat(plugin/runtime): add workflow continuation proof",
+    "c75e6ea86f4380f7400786ad8dddc2b08f3f21e6": "docs(runtime): sync 0.64.0 proof evidence (#392)",
+    "c763006561f1044e1eaa1455ac38f3fa58469eb4": "feat(plugin/orchestrator): ADR-0031 hook backstop — late re-surface macro session-handoff from Stop/SessionStart (#434)",
+    "c7c6117cc6f8d8c1f7179b4f257565663471386c": "chore: release main (#228)",
+    "c7d6c1935de86039889a2d2caaf4716992702ccb": "Merge pull request #236 from each4all/release-please--branches--main",
+    "c8511b0524035f863a05fc15fe2a7f9a2f8ac147": "feat(plugin/runtime): add host cli install guidance",
+    "c87dc81f6f82f06ae3c0486ee1374c447de642df": "fix(plugin/runtime): report context-state measurement provenance instead of a fabricated risk (#730)",
+    "c896cc2f1554a0dade5671108603459e0de396d9": "chore: release main (#395)",
+    "c8a0bd678d57750dad7ee1dd0c2f2f9c769b5466": "fix(plugin/engineer): cover non-verb selected_next (commit / owner-decision) in the next_command proposal field (ADR-0029 contract cleanup) (#364)",
+    "c8b7d1cc1695b6f07267fb072974c303817ccfcf": "feat(plugin/runtime): wire Codex codex plugin add executor (ADR-0035 §5/§6) (#403)",
+    "c8b95731b47960d7c3328cb1bed875f1d893319f": "docs(plugin/runtime): ADR-0047 Release A shipped — 0.84.0 installed proof + doc-freshness recovery (#614)",
+    "c909f2411e234c4766d05899a9e7355469708735": "feat(plugin/runtime): add context artifact scaffold",
+    "c92ca5ede986cab01ec1b76d73c1a15af885644e": "chore: release main",
+    "c94c5ddd66c410c10ca396bf196f341c81ec57de": "feat(plugin/runtime): classify installed receivers from their bytes, never by running them (#732)",
+    "c9f17d48229ce3e44560e486f7c8dc9757e82c00": "fix(plugin/runtime): route cross-script Codex install-state consumers through the list-authoritative resolver (ADR-0034) (#397)",
+    "ca4bd32c6c4a4cac9423b3eee694dba6cb73f7d8": "feat(plugin/runtime): show codex hook review targets",
+    "ca53aacd56cd584973abfdc0edc762225ec44f30": "fix(plugin/runtime): clarify Codex hook attestation follow-up (#225)",
+    "ca84f16458b5ecd5376904a618ccc7f1028c24aa": "feat(plugin/runtime): add runtime:consensus ratify for converged-run owner ratification (#414)",
+    "cae86dafa6f7bdd5021d47d003f956b1c32f3b0d": "chore: release main",
+    "cb4f9f29d464619a3e63909b4d2aba3930add270": "feat(plugin/runtime): link latest open consensus in footer",
+    "cb720e795945a972432843ad9aebd3837d09b863": "feat(plugin/runtime): extend workflow-projection seam to four personas (ADR-0043 S2) (#555)",
+    "cb9bb458519a1c1fc11b210fd726da5d92861c00": "feat(plugin/runtime): add settings planner",
+    "cbb282ee37413d51f334150af0b8926421ee372b": "chore: release main (#563)",
+    "cc9dcc94fe01e057bb9fac5485472b76e34d5797": "feat(plugin/engineer): surface a compact multi-axis lens at non-decide-verb 2+-branch points (ADR-0029 PR-C §2) (#366)",
+    "ccf667010c9b0bc4038ee998548faf721edae7ad": "docs: refresh host baseline to Codex 0.142.0 + record resolved Codex /hooks re-attestation (#436)",
+    "cd27d2dea49481e58dc3d9c97acd03cedd95cafc": "refactor(plugin/runtime): notify axis — mode-bound exact wiring probe + per-OS receiver argv (ADR-0048 §1) (#632)",
+    "cdb94e787214b5694a2b5c966019fcfd77d97a25": "feat(plugin/runtime): add context handoff guidance",
+    "cdd246d8a73e726d3be2459361258e56adc240a7": "docs(plugin/engineer): reflect the four-persona projection seam in entry-routing-contract (ADR-0043)",
+    "ce094c8f4b8dedf87a0c8a1e83d313fa1290ba31": "docs(runtime): refresh host parity baseline to Claude Code 2.1.173 (#418)",
+    "ce68fa7f1e430b98bf017ad96708475fcb28b6a9": "docs(adr): ADR-0019 cross-plugin invocation contract (Proposed) (#60)",
+    "ce7c91bb96376d4f1ec17cd835a2f9e22fddf1c4": "docs(runtime): record plugin-designer v0.3.0 S4 footer-onboarding rollout proof (#567)",
+    "ce9f390df26f8e0fb962ead4d966a2a977a80272": "feat(plugin/runtime): add consensus guidance to footer",
+    "ceb2fb91c53bf52e404e7bf69c3d4db2c2a4879a": "fix(plugin/attention): relocate Claude hook registration to a manifest-declared adapters path (#546)",
+    "cfb6fa6c9d8f5c45d9a5a2c3b90526d83b4e020b": "feat(plugins/engineer): Stop hook auto-archive (ADR-0017 PR4) (#48)",
+    "cfc73baf5c6302b48bea2830b4faaf9097ce45bb": "docs(runtime): S8c — released-0.81.0 acceptance evidence, Stage 0 README block, content-token enforcement (#585)",
+    "cfd1846182d9ca5e15fbb4aa6b0cb035c3f24b98": "chore: release main",
+    "d028a1b3b83a7c9214094d799186ab4fc599ca26": "docs(adr): add 0017 stage25 continuity roadmap + DEVELOPMENT.md condition progress",
+    "d0828e4cda5503cdf98833eca5ce31558c6a0b9d": "fix(plugin/designer): dirty-tree gates see untracked files under status.showUntrackedFiles=no",
+    "d0a4d104331adf8e0f0c0a7655eda2a50c37c347": "feat(plugin/founder): founder L3 persona — new-business planning workbench (ADR-0036)",
+    "d0aa6707572babf46385f7146ed03e0cba145c5f": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "d18de28031c0093c3991345ac204ecdd4fccb68c": "docs(runtime): sync 0.54.0 release evidence",
+    "d21a23c9f1aebe8471c6fc14da66e4d70289b84e": "docs: align runtime docs to the installed 0.86.1 state with a re-recorded proof and a 2.1.220 host-parity baseline",
+    "d231aa24964b9b869734db3164b57b4743d83d59": "docs(adr): ADR-0050 — fragment persistence boundary (immutable fragments, one commit point) (#667)",
+    "d267ebdf973223f24eefbe6df10fc7595e883979": "docs(runtime): record workflow continuation proof",
+    "d28702e2363223fe21af31ac97427e3a242d759c": "feat(plugin/runtime)!: remove the assurance grant/cohort matcher (ADR-0056)",
+    "d2ead172e03aac042cb258a8eaa8d01d6ac5614c": "fix(plugin/engineer): make the peer-run sweep preview state what --apply deletes",
+    "d3705d215327bce96d904b60232e901bed6ff7de": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "d3e68e47b2d2312e19f1c331acc46f212ec1af8f": "docs(runtime): record plugin-runtime v0.80.0 S9 completion-output-contract release/install/proof loop (#560)",
+    "d406fdb238bc34e0a338cdb0bbc1ad0865bb5e77": "docs: record the persona host-claim correction evidence loop (#681)",
+    "d4334065cdbe84a4ac9ba024e4d82faf3754ad18": "fix(plugin/runtime): show Codex hook attestation limits (#231)",
+    "d45cab7244e786fc4db74d99d24fe116a7e06508": "docs(audit): clarify C1-C4 framing distinct from ADR-0012 condition matrix",
+    "d482e22b5b6dc3be1176ed819065f33866391702": "chore: release main",
+    "d49d91c52993b35429b6a57495d668e20212d6a7": "chore: release main",
+    "d49f74e696bf8eb1fd1c934bd588dde305bed23d": "docs(assurance): inventory every consumer of the scorecard R-rows (#759)",
+    "d4db9ce2c1559abe87da5480ca37401f492990c0": "docs: record ADR-0047 Release B real notify/GC matrix acceptance (owner-exercised §5) (#624)",
+    "d52143bbaff6bb46803f999c15a59c0038563d0f": "fix(plugin/runtime): inspect manifest-declared Codex hooks",
+    "d56b89d36de8a6a0d9b2d9469d6d17aa17a54d4a": "chore: release main (#404)",
+    "d577677c365ab53a17bc1817127c7206f95e4ebe": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "d5b3951289c1b720e15e2d11725be9e854beaa4e": "chore: release main",
+    "d606618368b8517a03763739a2a4de19f38e2356": "chore: release main",
+    "d60b7c856ffe5d8711b9f1933043b772d82812f2": "docs(adr): accept ADR-0023 peer-runner supervisor",
+    "d6a786f2dd4b03a7dba4b47c312aa907d28f9372": "chore: release main",
+    "d6bd200fe6226122779b8cb62437a4de92374e49": "docs(runtime): record plugin-runtime v0.79.0 four-persona-seam release/install/proof loop (#557)",
+    "d70c64d4328a5877fab9f745065a28803bcc32a0": "docs: align Codex hook-gate wording to the ADR-0030 stage-aware model (engineer + orchestrator) (#409)",
+    "d72b16eefc4a505cddce151017e465056ab3aa9b": "chore(release-please): remove release-as after first 0.1.0 release (#15)",
+    "d7b2aa5b0d07523e2e92fd0e47372aecaf41f87d": "docs: record ADR-0047 Release B parity restoration (partial 91% -> ready 100% after /hooks re-attestation) (#623)",
+    "d93d23e88aa346e55044379fa6fadcebb4d799db": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "d99c8579ab8a8e11bfc2467cef6b317c83eaaeca": "fix(companions): guard cooperative peer-invocation nesting without a contract change",
+    "d9a8a7d9a26b45464de36e2cdd034f9e611e97b2": "chore: release main (#612)",
+    "d9b6e932ad1977bb88f76cd2c6a9d50c7ca15dd8": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "d9c85d0cb1aaedba53e8795edb9c356f1ed9e004": "docs(runtime): sync 0.66.1 proof evidence (#412)",
+    "d9f01c473f1eff160291c2bb133fa3f631848955": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "da426277eeb619383f45d3da08137ebc079ee7b1": "fix(plugin/runtime): use local date for cutover dogfood",
+    "da60fd3f468f1023d76e28cb6fbee7c2afa13aef": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "da7b8d9c739316ac8e5ecaacd6fef1a9cb2c76a3": "docs(assurance): owner ratification of the first assurance grant, retargeted after the host moved mid-review (#715)",
+    "da7fa28dafa5b035228030e4271a9bdb1d495dec": "docs(assurance): refresh scorecard R4 proof citation to the 0.71.0 release-gate evidence (#481)",
+    "dabd898659eed7251792a19c2da17fbbc4e71e85": "feat(plugins/engineer): /engineer:checkpoint + schema 1.1 latest_checkpoint emit (ADR-0017 PR3)",
+    "daed1b028d8f272ac94cbaef651c0104f4da6292": "chore: release main (#297)",
+    "daedb08ed1cca6d30388fffb7d684b62e151928f": "feat(ci): enforce the ADR-0051 release obligation by history/tag reconciliation (#693)",
+    "dafa25978a6dbb80f204e19a71bda53d61e33149": "fix(plugin/founder): state when Stop evaluates the archive gates",
+    "db32184b83819a361821fcbd3bd63e3e12f0be55": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "dba7e1a4a334e4ed5bac75baefde81f732bb8b77": "feat(runtime): report consensus round output completeness",
+    "dbcb983d2bb1c9783c99c485931fd38f3791f92a": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "dbcfc26dddcf7c146ea9361cf0857963ac9d2543": "fix(plugin/companions): sync companion bundles for the claude expiry / codex 401 auth wordings",
+    "dbe289a405aff623e8e110941a98ed91e53126b7": "docs(runtime): sync 0.51.5 release evidence",
+    "dc49ef0fe89163fa467fb8f4d2f3558feac3694d": "docs(adr): finalize Stage 2 ADRs + reserve ADR-0013 number",
+    "dcbaf0c6789e0107c7376b6637a92c4715400a21": "chore: release main (#508)",
+    "ddb43d4553ca19cc87071ffdeb230bfe37f468f1": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "de20853d591f887a96e1c0826dca2002c95f0ca8": "feat(plugin/runtime): S8 — ADR-0045 dashboard entry advisory + entry-brief readiness diagnosis (§7 snapshot-only advisory + §18 half-enabled states + trusted-host threading) (#600)",
+    "df364a99a450e855aad8605dd23284d7d61d4ce6": "feat(attention): born opt-in closed-vocabulary headline token on Stop workflow-terminal events (ADR-0041 §3a producer-headline) (#513)",
+    "dfae3fcff2b8f4fe9af2f91c79a3fada971bc4d3": "feat(plugin/runtime): validate artifact ignore policy",
+    "dfbcf434821fda05be3093d4211297860522c286": "docs(adr): propose ADR-0029 — extend entry-routing contract enforcement to standalone verbs (#361)",
+    "e004dbb90af1699b13c73a60641a022abb761e5e": "test(runtime): add ADR-0041 §3a headline opt-in acceptance gate (#514)",
+    "e0068dae4300121cd0730c792b92d65bd41f94f1": "docs(adr): amend ADR-0035 §4 + ADR-0041 §2d for E1 node:https transport (#499)",
+    "e00fb1c0bcf868820fe64c38aa9f3d94deda3f5a": "feat(plugin/runtime): host-neutral permission-advisor core (ADR-0038 advisor-core) (#453)",
+    "e023551a29bb9318ce88c75cda15a479c537e26c": "chore: release main",
+    "e051a90f70305ee3edab447662ca5c1eaed49b3e": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "e0689ac6fc1ff20f28f3c3a0be341ada3d469f9e": "feat(plugin/runtime): record consensus owner decisions",
+    "e08146bcb22acc517918adebe42608a0e54a3b8f": "feat(plugin/runtime): guide consensus status next actions",
+    "e0f4572cef150d6cd42295a77934dbf511153735": "test(plugin/orchestrator): keep plan peer wording host-neutral",
+    "e13c1a18419e77a68b8a62c5062e5761b022c178": "chore(plugin/runtime): sync 0.31.5 release metadata",
+    "e1406c9eea6bf3e3a6bf0ed489520c36dfc71d22": "fix(plugin/designer): state when Stop evaluates the archive gates",
+    "e1d8f7789bba538db058f5607af4076507430033": "fix(plugin/runtime): report running consensus execution",
+    "e249ac7caca9f35834e9ff7a24e642c6140916d8": "chore: release main (#596)",
+    "e2ef48953e96682fcb85f3fee2d48d7a17c41c47": "Merge pull request #80 from each4all/docs/peer-runner-supervisor-design",
+    "e351888028c93c683005a59d006a63e33f3a0bf2": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "e3b400bd7d36e1fb9c334b9796b0afbfd3de6622": "chore: release main",
+    "e3dc09fe448edfd89f531b9b37e502e378918d85": "docs(plugin/engineer): add PR readiness footer guidance",
+    "e3e36fc7b71b2f8d4df9b290113e8b966f5abf1f": "docs(runtime): record the attention 0.4.1 relocation install proof (parity 100%) (#549)",
+    "e3ffd3730d291fc5176cb5426bf4ff979e160113": "chore: release main",
+    "e4254791c9122c1f7d90e5951544db85eeb96b23": "feat(runtime): ADR-0041 §2c E1 egress config layer (verified-local reader + activation loader) (#491)",
+    "e46256b1f3bcb7c452551447228b78e388152e49": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "e4fc393def0e3a641477389fcdec6594184ea74a": "docs: host freshness recovery — baseline 2.1.186/0.141.0 (#388) + runtime 0.68.1 doc alignment (#435)",
+    "e4ff3df2760895c69cddc1809dd97b6369f42382": "fix(plugin/orchestrator): re-verify a peer run immediately before deleting it",
+    "e52bdded40d4c2cc8956cec47121e70d1e73185b": "docs(runtime): align current state docs",
+    "e53a206aa2e5b74c236e31a6e3156f3a807e457c": "test(runtime): add ADR-0035 §4 active-execution boundary guard (#402)",
+    "e54b7fd9157141067a072cd6dcdc40bdf21e2ab1": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "e56392118a7b33addbffd16a83ce36779aa4f1a1": "fix(plugin/founder): drop the withdrawn todo-tool dependency from command runbooks",
+    "e629aae7a74d5609aaa7903c42e347b0211ec195": "fix(runtime): report disabled Codex hook state (#339)",
+    "e6367f09f97ddad2283440c8d7158d64a47fc4f7": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "e648a8fe6ef6cd10742d5c22b09a056920965a58": "Merge pull request #238 from each4all/release-please--branches--main",
+    "e6c1b269c12f0075b5ce8c7425ea41ef19d4082f": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "e6cd6379ee8caa810eb8a07d950c6b194ae2ea7e": "feat(runtime): require release note coverage for host drift",
+    "e6cdcab78789bd2f345013c282f22b6faa0ca40d": "feat(plugin/runtime): add image to PLUGIN_NAMES so doctor/settings diagnose it (#447)",
+    "e6e53fb0e888ca9b6c1368f287b6246859210a1a": "feat(plugin/runtime): delegate receiver behaviour to a packaged API so installed bytes cannot stale (#731)",
+    "e72b54144ec5bc5b10d92f6361e291b28bc348f8": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "e77b5d0e12a44453784641ab808d008ef6cf56ee": "chore: release main (#502)",
+    "e7984338b2536c0e18363c10eb59a48babd1cb22": "feat(companions): add codex-companion.mjs (Claude → Codex bridge) (#3)",
+    "e80ed84565fc8326b8baf6c6e401b746de0f26f5": "fix: diagnose Codex plugin hook readiness",
+    "e8a9b44d03a2b899251fe5befe0099aed65e92bc": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "e8d8fdcc718337df279030a3fb064dbd1e9e845f": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "e8f3b8de966e97c009cf2dc5b23cd820d66350e4": "chore: release main",
+    "e8f6d2b79d49ec7b6ca9e865cd642da4734d2997": "feat(plugin/runtime): the assurance record — schema, baseline section, and structural reader",
+    "e92cbb3031ecb590ee8202674ef1aa84cab8d577": "feat(engineer): add quality-first start defaults",
+    "e954eb2589715f4ae5fef89e676dcd2e9615fd0a": "ci: gate full test suite via node --test discovery + guard (ADR-0033) (#393)",
+    "e993d244f17753ab2320e345cbd48a66499c825f": "docs(runtime): refresh v0.5.0 current state",
+    "e9af55a70e36549b3b32fd797fe0ab9fce33795d": "chore: release main (#387)",
+    "e9b1a270d54fc2b3824136416b0fe594937acdcf": "feat(plugin/runtime): add Codex capability baseline",
+    "e9d5a1cddee2f8c317f317782945ae7e1fce93ce": "fix(plugin/runtime): fold codex Review findings — retention fail-closed hardening, pins-exceed-cap, self-pin, plan-hash determinism",
+    "e9dd726a62993695a6f9d5ffa56d98d5ce90d2fa": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "ea24c678606603d46e502e3bd36f0fd148c9efe0": "feat(plugin/engineer): mirror ADR-0031 session-handoff preflight into Codex verb skills (#386)",
+    "ea77bc07984484af4305ee96e539abc0fa5ee67f": "docs(plugins/orchestrator): state.mjs JSDoc engineer parity restoration (#56)",
+    "eace036b62622616dd522206ccf2e1ea9ca2d30a": "feat(plugin/runtime): add doctor permission proof",
+    "eaf195f34f31553bd70781a42034c49a3e436b71": "feat(engineer): ADR-0028 PR4 — phase7 boundary fixes (N2/N4-quoted/A4/N1/A2) + ADR forward-compat (#353)",
+    "eb0077625e451ff1a78d9f981547f334f642e986": "feat(plugin/runtime): apply Codex plugin hook setting",
+    "eb3c4857738f1346f758d7a2a81417f15263bfe7": "feat(plugins/engineer): /engineer:resume drift dirty case enrichment (ADR-0018 §sub-3) (#51)",
+    "eb480f36b3e2694842ac368c2a1dcdebbb256454": "fix(plugin/attention): SIGKILL kill bound on both Stop-seam spawns + build-metadata-safe semver copy",
+    "eb59c9dc2bdb9a7395c80d169a078efbc3f72c93": "test(companions): document bidirectional quickstart",
+    "ebbfca183cfff7993304e02d8c676cc2b3683136": "feat(plugin/image): compose-core — generative core via codex-companion (ADR-0037) (#440)",
+    "ebfd0eca66c8e4e92bf9a78f9555bb59a00bdfcb": "fix(plugin/companions): sync companion bundles for the peer-nesting guard",
+    "ec0438d661028fac4695f0d20b95b82b52fcc568": "docs(runtime): refresh host-parity baseline to Codex 0.139.0 / Claude 2.1.170 (#408)",
+    "ec4b92a067fa5692d36a131cc92d2889dfde2502": "chore: release main (#541)",
+    "ece9b56e98a14ef2e0e2e6af924ba7682692c08f": "chore: release main (#379)",
+    "ed14d23c5d3036fc90b9fff79e5ad0c9c7e5e8d3": "feat(runtime): ADR-0041 §2d fetch→node:https E1 egress transport (impl-transport) (#501)",
+    "ee0a40bc947a786de0f096529d754d06fea06f46": "feat(plugin/runtime): settings M1 Codex permission plan + cross-host artifact (ADR-0038 settings-codex) (#459)",
+    "efcb66d900f4231f6df802caa8dd5b0e7efd55f3": "chore: release main (#521)",
+    "efd59dc0c838038779b47edb060116ea3b7d3723": "test(runtime): guard ADR-0012 proof freshness",
+    "efd80e166b68590e4f0ae41c3f4b375666936a09": "Merge pull request #82 from each4all/feat/engineer-peer-runner-command-integration",
+    "efe057ea40bc11685a6c8c7d23b310824b60d40a": "chore: release main",
+    "f02a2c22111cbb27b3d7b7ebeb44bf38cd4b55f5": "chore: release main (#753)",
+    "f080d493c533a558553837e63963e2d8f49e7028": "ci: hang-repro v2 — SIGUSR2 diagnostic report of hung test-file process",
+    "f0b476425d9cd7cc6a4f489dc8811c40eab1e288": "docs: post-release recovery for plugin-runtime-v0.97.0 (#754)",
+    "f109e6f0bbbca21b79e7248e43a1ff47843987cf": "feat(plugin/runtime): add context host handoff commands",
+    "f13f5dd8a27725c7886f1f7b2f7185560454616a": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "f1496f21125caa7a9b17c7027efa09e467e67ac2": "chore: release main",
+    "f19b394310363279a76cad6d065e1c9ab3654afc": "feat(plugin/runtime): explain cutover gate blockers",
+    "f1c398fb7873b04b18d4424882314cb9fce83269": "feat(plugin/research): first reference plugin (Stage 1 exit, Claude direction) (#17)",
+    "f2448e4204ffae64f3338eed761cbb854f5be863": "fix(plugin/designer): re-verify a peer run immediately before deleting it",
+    "f24727beb1e63fd15a314b5d14e0c5f98f5f75fc": "chore(docs): sync stage doc runtime versions to release-please-manifest",
+    "f3010bf29a8d615e153275dabbb9267ecfa08bfc": "docs(runtime): record §4 guard deferral decision + consensus owner-lever UX gap (#413)",
+    "f39cec6c9edb5a7dd83e50dc6789f620c598330c": "feat(plugin/runtime): add retired plugin cleanup executor",
+    "f3bdc956f8f955a158da13a0de948286bba61f43": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "f3ee97f3878a5fde8e04f28490fa5887943c6cf5": "docs(plugin/orchestrator): align Codex hook parity wording",
+    "f48d6efb78e92f3a5ce1df977af28c7be1f0ba72": "fix(runtime): host-localize persona plugin commands in the completion footer (#469)",
+    "f528bb54f36e69e35dde5f17fc4338585b221e55": "docs(runtime): sync 0.65.1 proof evidence (#399)",
+    "f54d70c01328f137af9abf1559cc33cf638047e8": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "f5c44b3d0242f5931a99d67960c9f959e20276b8": "feat(plugin/engineer): support canonical workflow state home",
+    "f5dcec5a50618eb3b5598ae6b181111cd185a568": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "f5ea9176270593613f8c48e3691c400b9f4765c6": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "f62541591f458dbf11317ec1eebd58aea018ea75": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "f65ab31f8fd94ac786cec5ef165f0f2863b0f42b": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "f6775a8b6c2f5d92c03306d64e854366d4b2250e": "feat(plugin/runtime): add doctor artifact inventory",
+    "f693d8d7d44e99eceb1fe67bb284a95ab61eee4d": "docs(adr): amend the SessionStart re-injection claims and guard the docs layer",
+    "f6e021839f8a2b5cff93d9f925d734a7fd1d3d9a": "docs(adr): add ADR-0035 runtime active-execution boundary policy (#400)",
+    "f78935a110b51212cbbf9122bdd7d63888cfa428": "feat(plugin/runtime): ADR-0031 session-level continue-vs-fresh seam (#378)",
+    "f78987718b0af98a6db075df80eaed26ea710d88": "docs(adr): amend ADR-0039/0043 — the footer contract passes no --context-state",
+    "f79508505ee21fdc36e34e04a611573cca2be8e2": "feat(plugin/runtime): a value-carrying bootstrap interview for the session family and notify_kinds (#739)",
+    "f7af83eb6378079235bdd37328f595a11bce5da0": "feat(engineer): ADR-0027 PR5 — validation contract (axis_awareness + surface parity) (#355)",
+    "f804ea19935a0b063aab9cf91695e1666374edea": "chore: release main (#487)",
+    "f82003fd31f12b45e6814116ad8bd9eed938cddf": "feat(plugin/orchestrator): ADR-0031 session-level handoff projection (orchestrator-wiring) (#381)",
+    "f8760dfdc98e95fc5fe60e2ce15c8042cf45b755": "chore: release main",
+    "f8b375db44434502de138bc04e269890aa37f5bb": "chore: release main",
+    "f8e30bf2fe8ab49ac8350eb03adf13d32cc26eeb": "docs(runtime): sync runtime 0.51.2 release evidence",
+    "f8ee09a57e29456c0409e725419f51e7d6287108": "chore: release main (#742)",
+    "f988ade9e381050dfb2c41f4d5b306b9bac50964": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "f9af71167b1e2f978e6e8fd4202d62dc9d7278b3": "docs(assurance): grant review brief for claude 2.1.234 / codex 0.147.0 (#713)",
+    "f9e7d0777ae61d212646f25d881029ce4bc7d14f": "feat(plugin/runtime): run schema 1.2 + evidence-contract vnext (ADR-0048 common base) (#631)",
+    "f9f80546b9674ef83dd1bdbc4dbd561773ec3b53": "docs(adr): accept runtime operator track",
+    "fa2a9c7b6100a684d7699e63f3590d39492070da": "feat(plugins/engineer): schema 1.1 parent-linkage fields (ADR-0019 PR-A) (#61)",
+    "fa8eb0c062799502bc09eafc483d6cc549869ba2": "chore(ci): move workflows to Node 24",
+    "faa9f5b5a9e9e78ee230ef18da42f27a2a7a1791": "feat(plugin/runtime): add owner_decision_briefing to consensus status (#360)",
+    "faad7c9c9749300a28762c26af6b2fce8869144f": "fix(plugin/orchestrator): register peer-runner child observers synchronously with spawn",
+    "fad15932abfd3eec202ed87003a87a912815de53": "chore: release main",
+    "fb84276299194bd079c9ccbbb418e7f600d2ffec": "feat(plugin/runtime): add latest context status lookup",
+    "fbe21b109124928f476f4f281045632eef7e0bd3": "test(plugin/runtime): ADR-0038 permission advisor acceptance verification (acceptance-verify) (#460)",
+    "fc2334bec26066d3db4cd294b397457d5266fa2e": "docs(runtime): sync 0.56.0 release evidence",
+    "fc3b592d4ffa5f54c1c6b36f4b56fa9367ebd6d7": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "fc5fbcd94c592106a8cdcdb25122aeaaa6e22e2d": "docs: record parity ready 100% after /hooks re-attestation and 0.142.5 proof re-record (#471)",
+    "fcb1db61b59457d6d9059f65a7c4d99fce5f65e0": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "fd381b4b7c5f837848ba8a18479ec40350d144ad": "test: S9 follow-up hardening tests — semver unit suite, strict-floor prerelease cases, signal-trap hardening",
+    "fd78ab90c4891f0c75f3c304856865b110e7d71c": "chore(marketplace): sync catalog versions to release-please-manifest",
+    "fd7ab8e25065e292085668bce505db6b507186a2": "chore: release main (#683)",
+    "fde570788c96a2446de33d2fc11e01dd35aa10f7": "chore: resolve Phase 5 critique findings (cited-brief + tests + docs)",
+    "fe1732037ec5c6033995a14878242fc1454c5cbd": "fix(plugin/runtime): surface hook attestation in next actions (#229)",
+    "fe52ab828caaf9f270be9444d6d63a7a515fceaa": "feat(plugin/runtime): recognize attention in the plugin inventory (ADR-0040 §3)",
+    "feeeafb20fa23acaf4aa7026a16385a6c344d31a": "fix(plugin/engineer): drop the withdrawn todo-tool dependency from command runbooks",
+    "ff32a1bef8d099277dc4cb9dfd519bc7193c5cd9": "chore(marketplace): sync catalog versions to release-please-manifest"
+  },
+  "contract_version": "2.0.0",
+  "integration_head": "8ebbe48065083e981aa6f2a7f31db64a08e8b8a6",
+  "integration_ref": "main",
+  "schema": "evidence-measurement-authority-1.0",
+  "tag_count": 248,
+  "tags": {
+    "companions-v0.1.0": {
+      "object": "25510716292ef7f1f7d63612e6faca5bb66019b3",
+      "subject": "chore: release main (#14)",
+      "target": "25510716292ef7f1f7d63612e6faca5bb66019b3"
+    },
+    "companions-v0.2.0": {
+      "object": "a86cb4a89093f9a547eec75a6d2e0af622b32500",
+      "subject": "chore: release main (#18)",
+      "target": "a86cb4a89093f9a547eec75a6d2e0af622b32500"
+    },
+    "companions-v0.3.0": {
+      "object": "b99486380077374b0a80c45b6c1fd68b485b29f4",
+      "subject": "chore: release main (#26)",
+      "target": "b99486380077374b0a80c45b6c1fd68b485b29f4"
+    },
+    "companions-v0.3.1": {
+      "object": "70ba21072d9c92eaa12448d0a523dc6102461f95",
+      "subject": "chore: release main (#723)",
+      "target": "70ba21072d9c92eaa12448d0a523dc6102461f95"
+    },
+    "plugin-attention-v0.2.0": {
+      "object": "0467745be417f0ed26e8e2db11d17d52b4b67816",
+      "subject": "chore: release main (#483)",
+      "target": "0467745be417f0ed26e8e2db11d17d52b4b67816"
+    },
+    "plugin-attention-v0.3.0": {
+      "object": "337181bb637f58ef3092f9dda5fb14c73af2173a",
+      "subject": "chore: release main (#493)",
+      "target": "337181bb637f58ef3092f9dda5fb14c73af2173a"
+    },
+    "plugin-attention-v0.3.1": {
+      "object": "dcbaf0c6789e0107c7376b6637a92c4715400a21",
+      "subject": "chore: release main (#508)",
+      "target": "dcbaf0c6789e0107c7376b6637a92c4715400a21"
+    },
+    "plugin-attention-v0.4.0": {
+      "object": "2dc2aef1eb8e37ad4666d69bc9960b642f2139c7",
+      "subject": "chore: release main (#512)",
+      "target": "2dc2aef1eb8e37ad4666d69bc9960b642f2139c7"
+    },
+    "plugin-attention-v0.4.1": {
+      "object": "beb4917685277a9d3c418ff9d52b56d8729119e8",
+      "subject": "chore: release main (#548)",
+      "target": "beb4917685277a9d3c418ff9d52b56d8729119e8"
+    },
+    "plugin-attention-v0.5.0": {
+      "object": "b72f28bef380940dc3c59add6f945023f8cefafe",
+      "subject": "chore: release main (#569)",
+      "target": "b72f28bef380940dc3c59add6f945023f8cefafe"
+    },
+    "plugin-attention-v0.6.0": {
+      "object": "e249ac7caca9f35834e9ff7a24e642c6140916d8",
+      "subject": "chore: release main (#596)",
+      "target": "e249ac7caca9f35834e9ff7a24e642c6140916d8"
+    },
+    "plugin-attention-v0.7.0": {
+      "object": "0f8d84f97b1b8fcafb7b4b601294562402afccc2",
+      "subject": "chore: release main (#603)",
+      "target": "0f8d84f97b1b8fcafb7b4b601294562402afccc2"
+    },
+    "plugin-attention-v0.7.1": {
+      "object": "9a6994419d28541e777d25b6585d2d15fab60d66",
+      "subject": "chore: release main (#607)",
+      "target": "9a6994419d28541e777d25b6585d2d15fab60d66"
+    },
+    "plugin-attention-v0.8.0": {
+      "object": "d9a8a7d9a26b45464de36e2cdd034f9e611e97b2",
+      "subject": "chore: release main (#612)",
+      "target": "d9a8a7d9a26b45464de36e2cdd034f9e611e97b2"
+    },
+    "plugin-attention-v0.9.0": {
+      "object": "c2bc0f99bbbb20b44df8264977c320d6730ffcda",
+      "subject": "chore: release main (#616)",
+      "target": "c2bc0f99bbbb20b44df8264977c320d6730ffcda"
+    },
+    "plugin-companions-v0.1.0": {
+      "object": "25510716292ef7f1f7d63612e6faca5bb66019b3",
+      "subject": "chore: release main (#14)",
+      "target": "25510716292ef7f1f7d63612e6faca5bb66019b3"
+    },
+    "plugin-companions-v0.2.0": {
+      "object": "a86cb4a89093f9a547eec75a6d2e0af622b32500",
+      "subject": "chore: release main (#18)",
+      "target": "a86cb4a89093f9a547eec75a6d2e0af622b32500"
+    },
+    "plugin-companions-v0.3.0": {
+      "object": "b99486380077374b0a80c45b6c1fd68b485b29f4",
+      "subject": "chore: release main (#26)",
+      "target": "b99486380077374b0a80c45b6c1fd68b485b29f4"
+    },
+    "plugin-companions-v0.3.1": {
+      "object": "7e8e05c6233b448fed8339b542c96568c923fab3",
+      "subject": "chore: release main (#29)",
+      "target": "7e8e05c6233b448fed8339b542c96568c923fab3"
+    },
+    "plugin-companions-v0.4.0": {
+      "object": "3927fb6c4762e92c5debd90ccfef2e6c8141db9d",
+      "subject": "Merge pull request #36 from each4all/release-please--branches--main",
+      "target": "3927fb6c4762e92c5debd90ccfef2e6c8141db9d"
+    },
+    "plugin-companions-v0.4.1": {
+      "object": "70ba21072d9c92eaa12448d0a523dc6102461f95",
+      "subject": "chore: release main (#723)",
+      "target": "70ba21072d9c92eaa12448d0a523dc6102461f95"
+    },
+    "plugin-designer-v0.2.0": {
+      "object": "efcb66d900f4231f6df802caa8dd5b0e7efd55f3",
+      "subject": "chore: release main (#521)",
+      "target": "efcb66d900f4231f6df802caa8dd5b0e7efd55f3"
+    },
+    "plugin-designer-v0.2.1": {
+      "object": "78cfe2d965fa66d70a5dde50a07863f195e956d7",
+      "subject": "chore: release main (#552)",
+      "target": "78cfe2d965fa66d70a5dde50a07863f195e956d7"
+    },
+    "plugin-designer-v0.3.0": {
+      "object": "9e6c9e5bccc5d22edc27ba5c68822c61c04c121f",
+      "subject": "chore: release main (#566)",
+      "target": "9e6c9e5bccc5d22edc27ba5c68822c61c04c121f"
+    },
+    "plugin-designer-v0.3.1": {
+      "object": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+      "subject": "chore: release main (#666)",
+      "target": "208545cb0a0c6243914748e86f6d3dffe9e87789"
+    },
+    "plugin-designer-v0.3.2": {
+      "object": "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e",
+      "subject": "chore: release main (#679)",
+      "target": "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e"
+    },
+    "plugin-designer-v0.3.3": {
+      "object": "fd7ab8e25065e292085668bce505db6b507186a2",
+      "subject": "chore: release main (#683)",
+      "target": "fd7ab8e25065e292085668bce505db6b507186a2"
+    },
+    "plugin-designer-v0.3.4": {
+      "object": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "subject": "chore: release main (#699)",
+      "target": "38fedafb6d2cde0da3df4e609b801327bf110798"
+    },
+    "plugin-designer-v0.3.5": {
+      "object": "70ba21072d9c92eaa12448d0a523dc6102461f95",
+      "subject": "chore: release main (#723)",
+      "target": "70ba21072d9c92eaa12448d0a523dc6102461f95"
+    },
+    "plugin-designer-v0.3.6": {
+      "object": "b6bf6fd6686ae0e11dc81d34983747d36ca3837b",
+      "subject": "chore: release main (#747)",
+      "target": "b6bf6fd6686ae0e11dc81d34983747d36ca3837b"
+    },
+    "plugin-engineer-v0.10.0": {
+      "object": "c160dec5bab46f2052d7f50ef2a861a3fb9deec3",
+      "subject": "chore: release main",
+      "target": "c160dec5bab46f2052d7f50ef2a861a3fb9deec3"
+    },
+    "plugin-engineer-v0.10.1": {
+      "object": "470ec184b2b670b2f99dc44f096a63db660f8933",
+      "subject": "chore: release main",
+      "target": "470ec184b2b670b2f99dc44f096a63db660f8933"
+    },
+    "plugin-engineer-v0.10.2": {
+      "object": "e648a8fe6ef6cd10742d5c22b09a056920965a58",
+      "subject": "Merge pull request #238 from each4all/release-please--branches--main",
+      "target": "e648a8fe6ef6cd10742d5c22b09a056920965a58"
+    },
+    "plugin-engineer-v0.11.0": {
+      "object": "9fac6e39892b38fc92106b9d8077a81f1f67d95f",
+      "subject": "chore: release main",
+      "target": "9fac6e39892b38fc92106b9d8077a81f1f67d95f"
+    },
+    "plugin-engineer-v0.12.0": {
+      "object": "09370a843c6e8c66a360c6bc268543feb972485c",
+      "subject": "chore: release main",
+      "target": "09370a843c6e8c66a360c6bc268543feb972485c"
+    },
+    "plugin-engineer-v0.12.1": {
+      "object": "594c7ca0862e37dbb61d05bf1ad6360899f6a8c4",
+      "subject": "chore: release main",
+      "target": "594c7ca0862e37dbb61d05bf1ad6360899f6a8c4"
+    },
+    "plugin-engineer-v0.13.0": {
+      "object": "a43f535ec328b05c1b15e60e0c91c6b5dca91baa",
+      "subject": "chore: release main (#348)",
+      "target": "a43f535ec328b05c1b15e60e0c91c6b5dca91baa"
+    },
+    "plugin-engineer-v0.14.0": {
+      "object": "46365247b6fa4c17ea91e2845ca516e8417eedeb",
+      "subject": "chore: release main (#368)",
+      "target": "46365247b6fa4c17ea91e2845ca516e8417eedeb"
+    },
+    "plugin-engineer-v0.15.0": {
+      "object": "ece9b56e98a14ef2e0e2e6af924ba7682692c08f",
+      "subject": "chore: release main (#379)",
+      "target": "ece9b56e98a14ef2e0e2e6af924ba7682692c08f"
+    },
+    "plugin-engineer-v0.16.0": {
+      "object": "34a67886a2031577a52d7e0009796d84d6c2c533",
+      "subject": "chore: release main (#384)",
+      "target": "34a67886a2031577a52d7e0009796d84d6c2c533"
+    },
+    "plugin-engineer-v0.17.0": {
+      "object": "e9af55a70e36549b3b32fd797fe0ab9fce33795d",
+      "subject": "chore: release main (#387)",
+      "target": "e9af55a70e36549b3b32fd797fe0ab9fce33795d"
+    },
+    "plugin-engineer-v0.18.0": {
+      "object": "48c589be1eacba694f4409e54615b397812d5e8a",
+      "subject": "chore: release main (#430)",
+      "target": "48c589be1eacba694f4409e54615b397812d5e8a"
+    },
+    "plugin-engineer-v0.19.0": {
+      "object": "ae7f724fb72737265dd12d4cb714f79a86eaa250",
+      "subject": "chore: release main (#465)",
+      "target": "ae7f724fb72737265dd12d4cb714f79a86eaa250"
+    },
+    "plugin-engineer-v0.2.0": {
+      "object": "7e8e05c6233b448fed8339b542c96568c923fab3",
+      "subject": "chore: release main (#29)",
+      "target": "7e8e05c6233b448fed8339b542c96568c923fab3"
+    },
+    "plugin-engineer-v0.20.0": {
+      "object": "0467745be417f0ed26e8e2db11d17d52b4b67816",
+      "subject": "chore: release main (#483)",
+      "target": "0467745be417f0ed26e8e2db11d17d52b4b67816"
+    },
+    "plugin-engineer-v0.20.1": {
+      "object": "78cfe2d965fa66d70a5dde50a07863f195e956d7",
+      "subject": "chore: release main (#552)",
+      "target": "78cfe2d965fa66d70a5dde50a07863f195e956d7"
+    },
+    "plugin-engineer-v0.21.0": {
+      "object": "1d023907ed2e3232e2950c9dad2f3cf3d46e0269",
+      "subject": "chore: release main (#559)",
+      "target": "1d023907ed2e3232e2950c9dad2f3cf3d46e0269"
+    },
+    "plugin-engineer-v0.21.1": {
+      "object": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+      "subject": "chore: release main (#666)",
+      "target": "208545cb0a0c6243914748e86f6d3dffe9e87789"
+    },
+    "plugin-engineer-v0.21.2": {
+      "object": "0d27a80e9cb930a9d365dfffd2aefc985499d618",
+      "subject": "chore: release main (#672)",
+      "target": "0d27a80e9cb930a9d365dfffd2aefc985499d618"
+    },
+    "plugin-engineer-v0.21.3": {
+      "object": "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e",
+      "subject": "chore: release main (#679)",
+      "target": "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e"
+    },
+    "plugin-engineer-v0.21.4": {
+      "object": "fd7ab8e25065e292085668bce505db6b507186a2",
+      "subject": "chore: release main (#683)",
+      "target": "fd7ab8e25065e292085668bce505db6b507186a2"
+    },
+    "plugin-engineer-v0.21.5": {
+      "object": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "subject": "chore: release main (#699)",
+      "target": "38fedafb6d2cde0da3df4e609b801327bf110798"
+    },
+    "plugin-engineer-v0.21.6": {
+      "object": "70ba21072d9c92eaa12448d0a523dc6102461f95",
+      "subject": "chore: release main (#723)",
+      "target": "70ba21072d9c92eaa12448d0a523dc6102461f95"
+    },
+    "plugin-engineer-v0.21.7": {
+      "object": "b6bf6fd6686ae0e11dc81d34983747d36ca3837b",
+      "subject": "chore: release main (#747)",
+      "target": "b6bf6fd6686ae0e11dc81d34983747d36ca3837b"
+    },
+    "plugin-engineer-v0.3.0": {
+      "object": "5c7bba1a0b5e8dbb414a6fb1edc1926382336fb6",
+      "subject": "chore: release main (#31)",
+      "target": "5c7bba1a0b5e8dbb414a6fb1edc1926382336fb6"
+    },
+    "plugin-engineer-v0.4.0": {
+      "object": "3927fb6c4762e92c5debd90ccfef2e6c8141db9d",
+      "subject": "Merge pull request #36 from each4all/release-please--branches--main",
+      "target": "3927fb6c4762e92c5debd90ccfef2e6c8141db9d"
+    },
+    "plugin-engineer-v0.5.0": {
+      "object": "205c2e8496584261e6abaf2385442e8d7b166855",
+      "subject": "Merge pull request #42 from each4all/release-please--branches--main",
+      "target": "205c2e8496584261e6abaf2385442e8d7b166855"
+    },
+    "plugin-engineer-v0.6.0": {
+      "object": "a858737d13cc319a2f4dda0b9c7d647f88785351",
+      "subject": "chore: release main (#45)",
+      "target": "a858737d13cc319a2f4dda0b9c7d647f88785351"
+    },
+    "plugin-engineer-v0.7.0": {
+      "object": "7bfc428b5618c5317d17c1641d5f29822f79ca72",
+      "subject": "chore: release main (#62)",
+      "target": "7bfc428b5618c5317d17c1641d5f29822f79ca72"
+    },
+    "plugin-engineer-v0.8.0": {
+      "object": "33cf68d20913a4fe313e25a3b7fd4b04664944a6",
+      "subject": "chore: release main (#71)",
+      "target": "33cf68d20913a4fe313e25a3b7fd4b04664944a6"
+    },
+    "plugin-engineer-v0.9.0": {
+      "object": "9f05b2e9ad9f6a8cec82ea3ba69a7f9639b09d3d",
+      "subject": "Merge pull request #78 from each4all/release-please--branches--main",
+      "target": "9f05b2e9ad9f6a8cec82ea3ba69a7f9639b09d3d"
+    },
+    "plugin-founder-v0.2.0": {
+      "object": "bb5bc093bb8461c022d292aa157709bde52ed698",
+      "subject": "chore: release main (#421)",
+      "target": "bb5bc093bb8461c022d292aa157709bde52ed698"
+    },
+    "plugin-founder-v0.3.0": {
+      "object": "0467745be417f0ed26e8e2db11d17d52b4b67816",
+      "subject": "chore: release main (#483)",
+      "target": "0467745be417f0ed26e8e2db11d17d52b4b67816"
+    },
+    "plugin-founder-v0.3.1": {
+      "object": "78cfe2d965fa66d70a5dde50a07863f195e956d7",
+      "subject": "chore: release main (#552)",
+      "target": "78cfe2d965fa66d70a5dde50a07863f195e956d7"
+    },
+    "plugin-founder-v0.4.0": {
+      "object": "cbb282ee37413d51f334150af0b8926421ee372b",
+      "subject": "chore: release main (#563)",
+      "target": "cbb282ee37413d51f334150af0b8926421ee372b"
+    },
+    "plugin-founder-v0.4.1": {
+      "object": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+      "subject": "chore: release main (#666)",
+      "target": "208545cb0a0c6243914748e86f6d3dffe9e87789"
+    },
+    "plugin-founder-v0.4.2": {
+      "object": "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e",
+      "subject": "chore: release main (#679)",
+      "target": "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e"
+    },
+    "plugin-founder-v0.4.3": {
+      "object": "fd7ab8e25065e292085668bce505db6b507186a2",
+      "subject": "chore: release main (#683)",
+      "target": "fd7ab8e25065e292085668bce505db6b507186a2"
+    },
+    "plugin-founder-v0.4.4": {
+      "object": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "subject": "chore: release main (#699)",
+      "target": "38fedafb6d2cde0da3df4e609b801327bf110798"
+    },
+    "plugin-founder-v0.4.5": {
+      "object": "70ba21072d9c92eaa12448d0a523dc6102461f95",
+      "subject": "chore: release main (#723)",
+      "target": "70ba21072d9c92eaa12448d0a523dc6102461f95"
+    },
+    "plugin-founder-v0.4.6": {
+      "object": "b6bf6fd6686ae0e11dc81d34983747d36ca3837b",
+      "subject": "chore: release main (#747)",
+      "target": "b6bf6fd6686ae0e11dc81d34983747d36ca3837b"
+    },
+    "plugin-image-v0.2.0": {
+      "object": "bce70714ac52a3f58e8c5939cba862e081443a62",
+      "subject": "chore: release main (#439)",
+      "target": "bce70714ac52a3f58e8c5939cba862e081443a62"
+    },
+    "plugin-image-v0.3.0": {
+      "object": "70ba21072d9c92eaa12448d0a523dc6102461f95",
+      "subject": "chore: release main (#723)",
+      "target": "70ba21072d9c92eaa12448d0a523dc6102461f95"
+    },
+    "plugin-orchestrator-v0.10.0": {
+      "object": "48c589be1eacba694f4409e54615b397812d5e8a",
+      "subject": "chore: release main (#430)",
+      "target": "48c589be1eacba694f4409e54615b397812d5e8a"
+    },
+    "plugin-orchestrator-v0.11.0": {
+      "object": "ae7f724fb72737265dd12d4cb714f79a86eaa250",
+      "subject": "chore: release main (#465)",
+      "target": "ae7f724fb72737265dd12d4cb714f79a86eaa250"
+    },
+    "plugin-orchestrator-v0.12.0": {
+      "object": "0467745be417f0ed26e8e2db11d17d52b4b67816",
+      "subject": "chore: release main (#483)",
+      "target": "0467745be417f0ed26e8e2db11d17d52b4b67816"
+    },
+    "plugin-orchestrator-v0.12.1": {
+      "object": "78cfe2d965fa66d70a5dde50a07863f195e956d7",
+      "subject": "chore: release main (#552)",
+      "target": "78cfe2d965fa66d70a5dde50a07863f195e956d7"
+    },
+    "plugin-orchestrator-v0.13.0": {
+      "object": "1d023907ed2e3232e2950c9dad2f3cf3d46e0269",
+      "subject": "chore: release main (#559)",
+      "target": "1d023907ed2e3232e2950c9dad2f3cf3d46e0269"
+    },
+    "plugin-orchestrator-v0.13.1": {
+      "object": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+      "subject": "chore: release main (#666)",
+      "target": "208545cb0a0c6243914748e86f6d3dffe9e87789"
+    },
+    "plugin-orchestrator-v0.13.2": {
+      "object": "fd7ab8e25065e292085668bce505db6b507186a2",
+      "subject": "chore: release main (#683)",
+      "target": "fd7ab8e25065e292085668bce505db6b507186a2"
+    },
+    "plugin-orchestrator-v0.13.3": {
+      "object": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "subject": "chore: release main (#699)",
+      "target": "38fedafb6d2cde0da3df4e609b801327bf110798"
+    },
+    "plugin-orchestrator-v0.13.4": {
+      "object": "70ba21072d9c92eaa12448d0a523dc6102461f95",
+      "subject": "chore: release main (#723)",
+      "target": "70ba21072d9c92eaa12448d0a523dc6102461f95"
+    },
+    "plugin-orchestrator-v0.13.5": {
+      "object": "b6bf6fd6686ae0e11dc81d34983747d36ca3837b",
+      "subject": "chore: release main (#747)",
+      "target": "b6bf6fd6686ae0e11dc81d34983747d36ca3837b"
+    },
+    "plugin-orchestrator-v0.2.0": {
+      "object": "a858737d13cc319a2f4dda0b9c7d647f88785351",
+      "subject": "chore: release main (#45)",
+      "target": "a858737d13cc319a2f4dda0b9c7d647f88785351"
+    },
+    "plugin-orchestrator-v0.3.0": {
+      "object": "7bfc428b5618c5317d17c1641d5f29822f79ca72",
+      "subject": "chore: release main (#62)",
+      "target": "7bfc428b5618c5317d17c1641d5f29822f79ca72"
+    },
+    "plugin-orchestrator-v0.4.0": {
+      "object": "9f05b2e9ad9f6a8cec82ea3ba69a7f9639b09d3d",
+      "subject": "Merge pull request #78 from each4all/release-please--branches--main",
+      "target": "9f05b2e9ad9f6a8cec82ea3ba69a7f9639b09d3d"
+    },
+    "plugin-orchestrator-v0.5.0": {
+      "object": "16d2fbc1882c9838b099228d9fccfc2dcf8542e6",
+      "subject": "chore: release main",
+      "target": "16d2fbc1882c9838b099228d9fccfc2dcf8542e6"
+    },
+    "plugin-orchestrator-v0.6.0": {
+      "object": "c160dec5bab46f2052d7f50ef2a861a3fb9deec3",
+      "subject": "chore: release main",
+      "target": "c160dec5bab46f2052d7f50ef2a861a3fb9deec3"
+    },
+    "plugin-orchestrator-v0.7.0": {
+      "object": "413ea3221e3d3b988e91a320de300d957611cbe0",
+      "subject": "chore: release main",
+      "target": "413ea3221e3d3b988e91a320de300d957611cbe0"
+    },
+    "plugin-orchestrator-v0.7.1": {
+      "object": "470ec184b2b670b2f99dc44f096a63db660f8933",
+      "subject": "chore: release main",
+      "target": "470ec184b2b670b2f99dc44f096a63db660f8933"
+    },
+    "plugin-orchestrator-v0.7.2": {
+      "object": "e648a8fe6ef6cd10742d5c22b09a056920965a58",
+      "subject": "Merge pull request #238 from each4all/release-please--branches--main",
+      "target": "e648a8fe6ef6cd10742d5c22b09a056920965a58"
+    },
+    "plugin-orchestrator-v0.7.3": {
+      "object": "594c7ca0862e37dbb61d05bf1ad6360899f6a8c4",
+      "subject": "chore: release main",
+      "target": "594c7ca0862e37dbb61d05bf1ad6360899f6a8c4"
+    },
+    "plugin-orchestrator-v0.8.0": {
+      "object": "a43f535ec328b05c1b15e60e0c91c6b5dca91baa",
+      "subject": "chore: release main (#348)",
+      "target": "a43f535ec328b05c1b15e60e0c91c6b5dca91baa"
+    },
+    "plugin-orchestrator-v0.9.0": {
+      "object": "ece9b56e98a14ef2e0e2e6af924ba7682692c08f",
+      "subject": "chore: release main (#379)",
+      "target": "ece9b56e98a14ef2e0e2e6af924ba7682692c08f"
+    },
+    "plugin-research-v0.2.0": {
+      "object": "a86cb4a89093f9a547eec75a6d2e0af622b32500",
+      "subject": "chore: release main (#18)",
+      "target": "a86cb4a89093f9a547eec75a6d2e0af622b32500"
+    },
+    "plugin-research-v0.3.0": {
+      "object": "b99486380077374b0a80c45b6c1fd68b485b29f4",
+      "subject": "chore: release main (#26)",
+      "target": "b99486380077374b0a80c45b6c1fd68b485b29f4"
+    },
+    "plugin-research-v0.3.1": {
+      "object": "7e8e05c6233b448fed8339b542c96568c923fab3",
+      "subject": "chore: release main (#29)",
+      "target": "7e8e05c6233b448fed8339b542c96568c923fab3"
+    },
+    "plugin-runtime-v0.10.0": {
+      "object": "161a0a84e3f83b9663c4d0329d5207f6395bf1fe",
+      "subject": "chore: release main",
+      "target": "161a0a84e3f83b9663c4d0329d5207f6395bf1fe"
+    },
+    "plugin-runtime-v0.11.0": {
+      "object": "d5b3951289c1b720e15e2d11725be9e854beaa4e",
+      "subject": "chore: release main",
+      "target": "d5b3951289c1b720e15e2d11725be9e854beaa4e"
+    },
+    "plugin-runtime-v0.12.0": {
+      "object": "596517eeadef7474a18c82ed91a2669a9667f5d3",
+      "subject": "chore: release main",
+      "target": "596517eeadef7474a18c82ed91a2669a9667f5d3"
+    },
+    "plugin-runtime-v0.12.1": {
+      "object": "1c064421b7f7d97d992f80f0bcf516cae602371f",
+      "subject": "chore: release main",
+      "target": "1c064421b7f7d97d992f80f0bcf516cae602371f"
+    },
+    "plugin-runtime-v0.12.2": {
+      "object": "44cc7dd689cad68fe44d8062c9d3a61327186859",
+      "subject": "chore: release main",
+      "target": "44cc7dd689cad68fe44d8062c9d3a61327186859"
+    },
+    "plugin-runtime-v0.13.0": {
+      "object": "08b1c93cfb3a6c9992dc18fc43fc75e07e756191",
+      "subject": "chore: release main",
+      "target": "08b1c93cfb3a6c9992dc18fc43fc75e07e756191"
+    },
+    "plugin-runtime-v0.13.1": {
+      "object": "41a13e1bf6b89d82e7357d89443c2ab3fb9141ad",
+      "subject": "chore: release main",
+      "target": "41a13e1bf6b89d82e7357d89443c2ab3fb9141ad"
+    },
+    "plugin-runtime-v0.14.0": {
+      "object": "3a919052b1ccac57cb1d34d4231e0185555a6ae7",
+      "subject": "chore: release main",
+      "target": "3a919052b1ccac57cb1d34d4231e0185555a6ae7"
+    },
+    "plugin-runtime-v0.15.0": {
+      "object": "54df328e5fd467235e68c6d46362b35fecd5cede",
+      "subject": "chore: release main",
+      "target": "54df328e5fd467235e68c6d46362b35fecd5cede"
+    },
+    "plugin-runtime-v0.16.0": {
+      "object": "734d857ba6f8daa2d20bd3fd999b843d3683cc30",
+      "subject": "chore: release main",
+      "target": "734d857ba6f8daa2d20bd3fd999b843d3683cc30"
+    },
+    "plugin-runtime-v0.17.0": {
+      "object": "4088679231fabc586027c28f07078da7f562160f",
+      "subject": "chore: release main",
+      "target": "4088679231fabc586027c28f07078da7f562160f"
+    },
+    "plugin-runtime-v0.18.0": {
+      "object": "87cc0c71a8c843724fb8191e9c9ffb83eb48ec67",
+      "subject": "chore: release main",
+      "target": "87cc0c71a8c843724fb8191e9c9ffb83eb48ec67"
+    },
+    "plugin-runtime-v0.19.0": {
+      "object": "cfd1846182d9ca5e15fbb4aa6b0cb035c3f24b98",
+      "subject": "chore: release main",
+      "target": "cfd1846182d9ca5e15fbb4aa6b0cb035c3f24b98"
+    },
+    "plugin-runtime-v0.2.0": {
+      "object": "1a78dc7ee08d3ab2d59c58532626a3058e4e9d27",
+      "subject": "chore: release main",
+      "target": "1a78dc7ee08d3ab2d59c58532626a3058e4e9d27"
+    },
+    "plugin-runtime-v0.20.0": {
+      "object": "3a72219510518ac847565bace1c958c91655f67f",
+      "subject": "chore: release main",
+      "target": "3a72219510518ac847565bace1c958c91655f67f"
+    },
+    "plugin-runtime-v0.21.0": {
+      "object": "7759e84102bb653aef76034a47ea92827a504ac1",
+      "subject": "chore: release main (#155)",
+      "target": "7759e84102bb653aef76034a47ea92827a504ac1"
+    },
+    "plugin-runtime-v0.22.0": {
+      "object": "698caa4f9ef78d36684b123f789972bf59edfa3e",
+      "subject": "chore: release main (#157)",
+      "target": "698caa4f9ef78d36684b123f789972bf59edfa3e"
+    },
+    "plugin-runtime-v0.23.0": {
+      "object": "ab58e25d6b6b5ef30d0556f9b56581c9e057e420",
+      "subject": "chore: release main",
+      "target": "ab58e25d6b6b5ef30d0556f9b56581c9e057e420"
+    },
+    "plugin-runtime-v0.24.0": {
+      "object": "6bd016559acfee245c96e93aa9124777ab3eb0a5",
+      "subject": "chore: release main",
+      "target": "6bd016559acfee245c96e93aa9124777ab3eb0a5"
+    },
+    "plugin-runtime-v0.25.0": {
+      "object": "b9ac64a6ee0616d1b28e9236adfc8518e1041936",
+      "subject": "chore: release main",
+      "target": "b9ac64a6ee0616d1b28e9236adfc8518e1041936"
+    },
+    "plugin-runtime-v0.26.0": {
+      "object": "413ea3221e3d3b988e91a320de300d957611cbe0",
+      "subject": "chore: release main",
+      "target": "413ea3221e3d3b988e91a320de300d957611cbe0"
+    },
+    "plugin-runtime-v0.26.1": {
+      "object": "4c09df7f4198e0cea781ac5b057b01b6b1cad12c",
+      "subject": "chore: release main",
+      "target": "4c09df7f4198e0cea781ac5b057b01b6b1cad12c"
+    },
+    "plugin-runtime-v0.26.2": {
+      "object": "599cf20c0cd0ca3679cea00d4f9470eed0427075",
+      "subject": "chore: release main",
+      "target": "599cf20c0cd0ca3679cea00d4f9470eed0427075"
+    },
+    "plugin-runtime-v0.26.3": {
+      "object": "470ec184b2b670b2f99dc44f096a63db660f8933",
+      "subject": "chore: release main",
+      "target": "470ec184b2b670b2f99dc44f096a63db660f8933"
+    },
+    "plugin-runtime-v0.26.4": {
+      "object": "c92ca5ede986cab01ec1b76d73c1a15af885644e",
+      "subject": "chore: release main",
+      "target": "c92ca5ede986cab01ec1b76d73c1a15af885644e"
+    },
+    "plugin-runtime-v0.26.5": {
+      "object": "447aa0c17876e3b879985d311ec24438aa75da7f",
+      "subject": "chore: release main",
+      "target": "447aa0c17876e3b879985d311ec24438aa75da7f"
+    },
+    "plugin-runtime-v0.26.6": {
+      "object": "a3df149a3acc5b5ed6c21705bbad2722c0b80565",
+      "subject": "chore: release main",
+      "target": "a3df149a3acc5b5ed6c21705bbad2722c0b80565"
+    },
+    "plugin-runtime-v0.27.0": {
+      "object": "ba7d0976fb90fa87bd910fb0b20f9520635ef29d",
+      "subject": "chore: release main",
+      "target": "ba7d0976fb90fa87bd910fb0b20f9520635ef29d"
+    },
+    "plugin-runtime-v0.27.1": {
+      "object": "e8f3b8de966e97c009cf2dc5b23cd820d66350e4",
+      "subject": "chore: release main",
+      "target": "e8f3b8de966e97c009cf2dc5b23cd820d66350e4"
+    },
+    "plugin-runtime-v0.27.2": {
+      "object": "1f7eff4402d89a69694b7a9af5ad8088872dde76",
+      "subject": "chore: release main",
+      "target": "1f7eff4402d89a69694b7a9af5ad8088872dde76"
+    },
+    "plugin-runtime-v0.27.3": {
+      "object": "6d4b716a79ebef1f077bca6cfe3ddbdee073e9e2",
+      "subject": "chore: release main",
+      "target": "6d4b716a79ebef1f077bca6cfe3ddbdee073e9e2"
+    },
+    "plugin-runtime-v0.27.4": {
+      "object": "d6a786f2dd4b03a7dba4b47c312aa907d28f9372",
+      "subject": "chore: release main",
+      "target": "d6a786f2dd4b03a7dba4b47c312aa907d28f9372"
+    },
+    "plugin-runtime-v0.27.5": {
+      "object": "6e4a31cec534f08f0ed75d601d07aa49fd3d92e9",
+      "subject": "chore: release main",
+      "target": "6e4a31cec534f08f0ed75d601d07aa49fd3d92e9"
+    },
+    "plugin-runtime-v0.27.6": {
+      "object": "e3ffd3730d291fc5176cb5426bf4ff979e160113",
+      "subject": "chore: release main",
+      "target": "e3ffd3730d291fc5176cb5426bf4ff979e160113"
+    },
+    "plugin-runtime-v0.27.7": {
+      "object": "42b0e06714791d3d15c969fe41aee1a939a65377",
+      "subject": "chore: release main",
+      "target": "42b0e06714791d3d15c969fe41aee1a939a65377"
+    },
+    "plugin-runtime-v0.28.0": {
+      "object": "4bd1b4d12b8b22ebb1ec0fc64e925e437f5a1dd6",
+      "subject": "chore: release main",
+      "target": "4bd1b4d12b8b22ebb1ec0fc64e925e437f5a1dd6"
+    },
+    "plugin-runtime-v0.29.0": {
+      "object": "29b924127d169b83b304d738d87de15892d6b142",
+      "subject": "chore: release main (#215)",
+      "target": "29b924127d169b83b304d738d87de15892d6b142"
+    },
+    "plugin-runtime-v0.3.0": {
+      "object": "e3b400bd7d36e1fb9c334b9796b0afbfd3de6622",
+      "subject": "chore: release main",
+      "target": "e3b400bd7d36e1fb9c334b9796b0afbfd3de6622"
+    },
+    "plugin-runtime-v0.30.0": {
+      "object": "c653734e675311c0248a77b9e278d12d8844d675",
+      "subject": "chore: release main",
+      "target": "c653734e675311c0248a77b9e278d12d8844d675"
+    },
+    "plugin-runtime-v0.31.0": {
+      "object": "a92430f3c9dcf3553dd4e603b3b20ac0be109a18",
+      "subject": "chore: release main",
+      "target": "a92430f3c9dcf3553dd4e603b3b20ac0be109a18"
+    },
+    "plugin-runtime-v0.31.1": {
+      "object": "b21a3584b15c41b03bf8ef1c380de43087730fb8",
+      "subject": "chore: release main",
+      "target": "b21a3584b15c41b03bf8ef1c380de43087730fb8"
+    },
+    "plugin-runtime-v0.31.2": {
+      "object": "8f8301c53518cd00ff2c6d456f17b97e336aab7e",
+      "subject": "chore: release main (#226)",
+      "target": "8f8301c53518cd00ff2c6d456f17b97e336aab7e"
+    },
+    "plugin-runtime-v0.31.3": {
+      "object": "c7c6117cc6f8d8c1f7179b4f257565663471386c",
+      "subject": "chore: release main (#228)",
+      "target": "c7c6117cc6f8d8c1f7179b4f257565663471386c"
+    },
+    "plugin-runtime-v0.31.4": {
+      "object": "4064e27ab21217c6691bc69d39067dabebfdfa3b",
+      "subject": "chore: release main (#230)",
+      "target": "4064e27ab21217c6691bc69d39067dabebfdfa3b"
+    },
+    "plugin-runtime-v0.31.5": {
+      "object": "25d95316be461ac4cbb08f2852a8ea923d9acbfc",
+      "subject": "Merge pull request #232 from each4all/release-please--branches--main",
+      "target": "25d95316be461ac4cbb08f2852a8ea923d9acbfc"
+    },
+    "plugin-runtime-v0.31.6": {
+      "object": "a79debad26d6a08d5cc220c434523bc44ff31e45",
+      "subject": "Merge pull request #234 from each4all/release-please--branches--main",
+      "target": "a79debad26d6a08d5cc220c434523bc44ff31e45"
+    },
+    "plugin-runtime-v0.31.7": {
+      "object": "c7d6c1935de86039889a2d2caaf4716992702ccb",
+      "subject": "Merge pull request #236 from each4all/release-please--branches--main",
+      "target": "c7d6c1935de86039889a2d2caaf4716992702ccb"
+    },
+    "plugin-runtime-v0.31.8": {
+      "object": "e648a8fe6ef6cd10742d5c22b09a056920965a58",
+      "subject": "Merge pull request #238 from each4all/release-please--branches--main",
+      "target": "e648a8fe6ef6cd10742d5c22b09a056920965a58"
+    },
+    "plugin-runtime-v0.31.9": {
+      "object": "d606618368b8517a03763739a2a4de19f38e2356",
+      "subject": "chore: release main",
+      "target": "d606618368b8517a03763739a2a4de19f38e2356"
+    },
+    "plugin-runtime-v0.32.0": {
+      "object": "9bebc2e29dd939cbb53db5d98fde7b3809f8e58b",
+      "subject": "chore: release main",
+      "target": "9bebc2e29dd939cbb53db5d98fde7b3809f8e58b"
+    },
+    "plugin-runtime-v0.33.0": {
+      "object": "98be8a43536e689d80bd6f53510badc1e1c62f2a",
+      "subject": "chore: release main",
+      "target": "98be8a43536e689d80bd6f53510badc1e1c62f2a"
+    },
+    "plugin-runtime-v0.33.1": {
+      "object": "4fe318b2ef22d83de7416b377db700f9a313630c",
+      "subject": "chore: release main",
+      "target": "4fe318b2ef22d83de7416b377db700f9a313630c"
+    },
+    "plugin-runtime-v0.34.0": {
+      "object": "2a63326d5cfacec2135450e3f5d3d20ddda551f2",
+      "subject": "chore: release main",
+      "target": "2a63326d5cfacec2135450e3f5d3d20ddda551f2"
+    },
+    "plugin-runtime-v0.35.0": {
+      "object": "49a4cb9cd434dc88147f450ad616d0f7f4282651",
+      "subject": "chore: release main",
+      "target": "49a4cb9cd434dc88147f450ad616d0f7f4282651"
+    },
+    "plugin-runtime-v0.36.0": {
+      "object": "7fea680f19bf7fee798f7c276a34810e36e5fa2a",
+      "subject": "chore: release main",
+      "target": "7fea680f19bf7fee798f7c276a34810e36e5fa2a"
+    },
+    "plugin-runtime-v0.37.0": {
+      "object": "1c77d21ee23bd8c75cf78fd227ccae1f55932b0a",
+      "subject": "chore: release main",
+      "target": "1c77d21ee23bd8c75cf78fd227ccae1f55932b0a"
+    },
+    "plugin-runtime-v0.38.0": {
+      "object": "87898f0f5798636e629c9e5178ee10016cfd3e3c",
+      "subject": "chore: release main",
+      "target": "87898f0f5798636e629c9e5178ee10016cfd3e3c"
+    },
+    "plugin-runtime-v0.39.0": {
+      "object": "3b389496d49e144969c4bbed0a08a318983de163",
+      "subject": "chore: release main",
+      "target": "3b389496d49e144969c4bbed0a08a318983de163"
+    },
+    "plugin-runtime-v0.4.0": {
+      "object": "6562ebebee63c9238746071312f58072764766b3",
+      "subject": "chore: release main",
+      "target": "6562ebebee63c9238746071312f58072764766b3"
+    },
+    "plugin-runtime-v0.40.0": {
+      "object": "09370a843c6e8c66a360c6bc268543feb972485c",
+      "subject": "chore: release main",
+      "target": "09370a843c6e8c66a360c6bc268543feb972485c"
+    },
+    "plugin-runtime-v0.41.0": {
+      "object": "6003378a4508b6c0e9aa8b5596bcba90674a13c6",
+      "subject": "chore: release main",
+      "target": "6003378a4508b6c0e9aa8b5596bcba90674a13c6"
+    },
+    "plugin-runtime-v0.42.0": {
+      "object": "3b0529bff9ce6012d514844dbd32d9599e0fdd5e",
+      "subject": "chore: release main",
+      "target": "3b0529bff9ce6012d514844dbd32d9599e0fdd5e"
+    },
+    "plugin-runtime-v0.43.0": {
+      "object": "2cf47fa0d9a36df2e5f8b1788d52292ba3e318d6",
+      "subject": "chore: release main",
+      "target": "2cf47fa0d9a36df2e5f8b1788d52292ba3e318d6"
+    },
+    "plugin-runtime-v0.44.0": {
+      "object": "909a7ceed6425d8b465ab14958b758bb04484f58",
+      "subject": "chore: release main",
+      "target": "909a7ceed6425d8b465ab14958b758bb04484f58"
+    },
+    "plugin-runtime-v0.45.0": {
+      "object": "fad15932abfd3eec202ed87003a87a912815de53",
+      "subject": "chore: release main",
+      "target": "fad15932abfd3eec202ed87003a87a912815de53"
+    },
+    "plugin-runtime-v0.46.0": {
+      "object": "cae86dafa6f7bdd5021d47d003f956b1c32f3b0d",
+      "subject": "chore: release main",
+      "target": "cae86dafa6f7bdd5021d47d003f956b1c32f3b0d"
+    },
+    "plugin-runtime-v0.47.0": {
+      "object": "f8760dfdc98e95fc5fe60e2ce15c8042cf45b755",
+      "subject": "chore: release main",
+      "target": "f8760dfdc98e95fc5fe60e2ce15c8042cf45b755"
+    },
+    "plugin-runtime-v0.48.0": {
+      "object": "9a47cf332d60650061b56a712de14964a0939c33",
+      "subject": "chore: release main",
+      "target": "9a47cf332d60650061b56a712de14964a0939c33"
+    },
+    "plugin-runtime-v0.48.1": {
+      "object": "0a699a7c13b77c9a47cf1dcaf53dadfeaa851e72",
+      "subject": "chore: release main",
+      "target": "0a699a7c13b77c9a47cf1dcaf53dadfeaa851e72"
+    },
+    "plugin-runtime-v0.49.0": {
+      "object": "958f4a0a984d5da4fdeac9a9c56eebc6e7548e7b",
+      "subject": "chore: release main",
+      "target": "958f4a0a984d5da4fdeac9a9c56eebc6e7548e7b"
+    },
+    "plugin-runtime-v0.5.0": {
+      "object": "efe057ea40bc11685a6c8c7d23b310824b60d40a",
+      "subject": "chore: release main",
+      "target": "efe057ea40bc11685a6c8c7d23b310824b60d40a"
+    },
+    "plugin-runtime-v0.50.0": {
+      "object": "20b7c3fafce9c75a55e48ca74dd22fbd90e98c60",
+      "subject": "chore: release main",
+      "target": "20b7c3fafce9c75a55e48ca74dd22fbd90e98c60"
+    },
+    "plugin-runtime-v0.51.0": {
+      "object": "3dcb6b8616ede5b16c1dc0cf99900ab2a88a22e3",
+      "subject": "chore: release main",
+      "target": "3dcb6b8616ede5b16c1dc0cf99900ab2a88a22e3"
+    },
+    "plugin-runtime-v0.51.1": {
+      "object": "daed1b028d8f272ac94cbaef651c0104f4da6292",
+      "subject": "chore: release main (#297)",
+      "target": "daed1b028d8f272ac94cbaef651c0104f4da6292"
+    },
+    "plugin-runtime-v0.51.2": {
+      "object": "a5a90a089caa95b23ae1278273ea868c56c29f42",
+      "subject": "chore: release main",
+      "target": "a5a90a089caa95b23ae1278273ea868c56c29f42"
+    },
+    "plugin-runtime-v0.51.3": {
+      "object": "365c2a75e163ff986bb89aad940ff59375af8637",
+      "subject": "chore: release main",
+      "target": "365c2a75e163ff986bb89aad940ff59375af8637"
+    },
+    "plugin-runtime-v0.51.4": {
+      "object": "7de8b816b9b737fc43729c891d8c34ac25a5420b",
+      "subject": "chore: release main",
+      "target": "7de8b816b9b737fc43729c891d8c34ac25a5420b"
+    },
+    "plugin-runtime-v0.51.5": {
+      "object": "07d0434b12a29008a5ab22718895346d489efd0b",
+      "subject": "chore: release main (#310)",
+      "target": "07d0434b12a29008a5ab22718895346d489efd0b"
+    },
+    "plugin-runtime-v0.52.0": {
+      "object": "0be24b736e914e2b8cc27a4522039b93404b0c48",
+      "subject": "chore: release main",
+      "target": "0be24b736e914e2b8cc27a4522039b93404b0c48"
+    },
+    "plugin-runtime-v0.53.0": {
+      "object": "d482e22b5b6dc3be1176ed819065f33866391702",
+      "subject": "chore: release main",
+      "target": "d482e22b5b6dc3be1176ed819065f33866391702"
+    },
+    "plugin-runtime-v0.54.0": {
+      "object": "b8b258d2cf2fa469fa8d209b607e3ca97958673c",
+      "subject": "chore: release main",
+      "target": "b8b258d2cf2fa469fa8d209b607e3ca97958673c"
+    },
+    "plugin-runtime-v0.55.0": {
+      "object": "2a6b5d52160e7abc1b2c7477ffef0d6af50e8c75",
+      "subject": "chore: release main",
+      "target": "2a6b5d52160e7abc1b2c7477ffef0d6af50e8c75"
+    },
+    "plugin-runtime-v0.56.0": {
+      "object": "b4ad651629979b7be1986aa54e4bedd53af320b3",
+      "subject": "chore: release main",
+      "target": "b4ad651629979b7be1986aa54e4bedd53af320b3"
+    },
+    "plugin-runtime-v0.57.0": {
+      "object": "6c7937c2e25fb884fd614bde313473de11f44e47",
+      "subject": "chore: release main",
+      "target": "6c7937c2e25fb884fd614bde313473de11f44e47"
+    },
+    "plugin-runtime-v0.58.0": {
+      "object": "b723a019560f7f88a5cf4443e46de67dd18f9b2f",
+      "subject": "chore: release main",
+      "target": "b723a019560f7f88a5cf4443e46de67dd18f9b2f"
+    },
+    "plugin-runtime-v0.58.1": {
+      "object": "594c7ca0862e37dbb61d05bf1ad6360899f6a8c4",
+      "subject": "chore: release main",
+      "target": "594c7ca0862e37dbb61d05bf1ad6360899f6a8c4"
+    },
+    "plugin-runtime-v0.59.0": {
+      "object": "f1496f21125caa7a9b17c7027efa09e467e67ac2",
+      "subject": "chore: release main",
+      "target": "f1496f21125caa7a9b17c7027efa09e467e67ac2"
+    },
+    "plugin-runtime-v0.59.1": {
+      "object": "6beb71f9b392293380cebb71ba91b7cdcc4b6ae2",
+      "subject": "chore: release main (#340)",
+      "target": "6beb71f9b392293380cebb71ba91b7cdcc4b6ae2"
+    },
+    "plugin-runtime-v0.6.0": {
+      "object": "e023551a29bb9318ce88c75cda15a479c537e26c",
+      "subject": "chore: release main",
+      "target": "e023551a29bb9318ce88c75cda15a479c537e26c"
+    },
+    "plugin-runtime-v0.60.0": {
+      "object": "8973b1ad03f578c4d8f66a348b87bf417c60d221",
+      "subject": "chore: release main",
+      "target": "8973b1ad03f578c4d8f66a348b87bf417c60d221"
+    },
+    "plugin-runtime-v0.61.0": {
+      "object": "a43f535ec328b05c1b15e60e0c91c6b5dca91baa",
+      "subject": "chore: release main (#348)",
+      "target": "a43f535ec328b05c1b15e60e0c91c6b5dca91baa"
+    },
+    "plugin-runtime-v0.62.0": {
+      "object": "797c427cc3685662f2b35da8f31cc122b25d73d7",
+      "subject": "chore: release main (#371)",
+      "target": "797c427cc3685662f2b35da8f31cc122b25d73d7"
+    },
+    "plugin-runtime-v0.63.0": {
+      "object": "ece9b56e98a14ef2e0e2e6af924ba7682692c08f",
+      "subject": "chore: release main (#379)",
+      "target": "ece9b56e98a14ef2e0e2e6af924ba7682692c08f"
+    },
+    "plugin-runtime-v0.64.0": {
+      "object": "994bf5bf00f48caeb68a54cc4083ebb6d2883f72",
+      "subject": "chore: release main (#391)",
+      "target": "994bf5bf00f48caeb68a54cc4083ebb6d2883f72"
+    },
+    "plugin-runtime-v0.65.0": {
+      "object": "c896cc2f1554a0dade5671108603459e0de396d9",
+      "subject": "chore: release main (#395)",
+      "target": "c896cc2f1554a0dade5671108603459e0de396d9"
+    },
+    "plugin-runtime-v0.65.1": {
+      "object": "71fc7a8009129d29d375b9478157ac106a8bbbec",
+      "subject": "chore: release main (#398)",
+      "target": "71fc7a8009129d29d375b9478157ac106a8bbbec"
+    },
+    "plugin-runtime-v0.66.0": {
+      "object": "d56b89d36de8a6a0d9b2d9469d6d17aa17a54d4a",
+      "subject": "chore: release main (#404)",
+      "target": "d56b89d36de8a6a0d9b2d9469d6d17aa17a54d4a"
+    },
+    "plugin-runtime-v0.66.1": {
+      "object": "970667c6d643607aaff66ba05ca2692eb3323bf2",
+      "subject": "chore: release main (#411)",
+      "target": "970667c6d643607aaff66ba05ca2692eb3323bf2"
+    },
+    "plugin-runtime-v0.67.0": {
+      "object": "4b7af1b518fe8e0700abf8968a60b7f07e0b25fc",
+      "subject": "chore: release main (#415)",
+      "target": "4b7af1b518fe8e0700abf8968a60b7f07e0b25fc"
+    },
+    "plugin-runtime-v0.68.0": {
+      "object": "bb5bc093bb8461c022d292aa157709bde52ed698",
+      "subject": "chore: release main (#421)",
+      "target": "bb5bc093bb8461c022d292aa157709bde52ed698"
+    },
+    "plugin-runtime-v0.68.1": {
+      "object": "48c589be1eacba694f4409e54615b397812d5e8a",
+      "subject": "chore: release main (#430)",
+      "target": "48c589be1eacba694f4409e54615b397812d5e8a"
+    },
+    "plugin-runtime-v0.69.0": {
+      "object": "bce70714ac52a3f58e8c5939cba862e081443a62",
+      "subject": "chore: release main (#439)",
+      "target": "bce70714ac52a3f58e8c5939cba862e081443a62"
+    },
+    "plugin-runtime-v0.7.0": {
+      "object": "d49d91c52993b35429b6a57495d668e20212d6a7",
+      "subject": "chore: release main",
+      "target": "d49d91c52993b35429b6a57495d668e20212d6a7"
+    },
+    "plugin-runtime-v0.70.0": {
+      "object": "61d008c91b31c407f30ddd3be64c160711e9d554",
+      "subject": "chore: release main (#452)",
+      "target": "61d008c91b31c407f30ddd3be64c160711e9d554"
+    },
+    "plugin-runtime-v0.70.1": {
+      "object": "ae7f724fb72737265dd12d4cb714f79a86eaa250",
+      "subject": "chore: release main (#465)",
+      "target": "ae7f724fb72737265dd12d4cb714f79a86eaa250"
+    },
+    "plugin-runtime-v0.71.0": {
+      "object": "31cbccc864d739b69c33c4ce24823162e7e71a38",
+      "subject": "chore: release main (#474)",
+      "target": "31cbccc864d739b69c33c4ce24823162e7e71a38"
+    },
+    "plugin-runtime-v0.72.0": {
+      "object": "0467745be417f0ed26e8e2db11d17d52b4b67816",
+      "subject": "chore: release main (#483)",
+      "target": "0467745be417f0ed26e8e2db11d17d52b4b67816"
+    },
+    "plugin-runtime-v0.72.1": {
+      "object": "f804ea19935a0b063aab9cf91695e1666374edea",
+      "subject": "chore: release main (#487)",
+      "target": "f804ea19935a0b063aab9cf91695e1666374edea"
+    },
+    "plugin-runtime-v0.73.0": {
+      "object": "337181bb637f58ef3092f9dda5fb14c73af2173a",
+      "subject": "chore: release main (#493)",
+      "target": "337181bb637f58ef3092f9dda5fb14c73af2173a"
+    },
+    "plugin-runtime-v0.74.0": {
+      "object": "e77b5d0e12a44453784641ab808d008ef6cf56ee",
+      "subject": "chore: release main (#502)",
+      "target": "e77b5d0e12a44453784641ab808d008ef6cf56ee"
+    },
+    "plugin-runtime-v0.74.1": {
+      "object": "dcbaf0c6789e0107c7376b6637a92c4715400a21",
+      "subject": "chore: release main (#508)",
+      "target": "dcbaf0c6789e0107c7376b6637a92c4715400a21"
+    },
+    "plugin-runtime-v0.75.0": {
+      "object": "2dc2aef1eb8e37ad4666d69bc9960b642f2139c7",
+      "subject": "chore: release main (#512)",
+      "target": "2dc2aef1eb8e37ad4666d69bc9960b642f2139c7"
+    },
+    "plugin-runtime-v0.76.0": {
+      "object": "00818eeefbd0e268d4dd5140463747ec3fdec318",
+      "subject": "chore: release main (#517)",
+      "target": "00818eeefbd0e268d4dd5140463747ec3fdec318"
+    },
+    "plugin-runtime-v0.77.0": {
+      "object": "efcb66d900f4231f6df802caa8dd5b0e7efd55f3",
+      "subject": "chore: release main (#521)",
+      "target": "efcb66d900f4231f6df802caa8dd5b0e7efd55f3"
+    },
+    "plugin-runtime-v0.77.1": {
+      "object": "53c710674514d04b7d96266614cf9d4f4c628198",
+      "subject": "chore: release main (#531)",
+      "target": "53c710674514d04b7d96266614cf9d4f4c628198"
+    },
+    "plugin-runtime-v0.77.2": {
+      "object": "c13877c01aec369256c28ac372f2151799115e65",
+      "subject": "chore: release main (#535)",
+      "target": "c13877c01aec369256c28ac372f2151799115e65"
+    },
+    "plugin-runtime-v0.78.0": {
+      "object": "ec4b92a067fa5692d36a131cc92d2889dfde2502",
+      "subject": "chore: release main (#541)",
+      "target": "ec4b92a067fa5692d36a131cc92d2889dfde2502"
+    },
+    "plugin-runtime-v0.78.1": {
+      "object": "0b8983986aec3902da7b4f67f12c2b07481549c0",
+      "subject": "chore: release main (#544)",
+      "target": "0b8983986aec3902da7b4f67f12c2b07481549c0"
+    },
+    "plugin-runtime-v0.79.0": {
+      "object": "558f78ab2dc26f3f3e284b6c7b05f3a18fcea033",
+      "subject": "chore: release main (#556)",
+      "target": "558f78ab2dc26f3f3e284b6c7b05f3a18fcea033"
+    },
+    "plugin-runtime-v0.8.0": {
+      "object": "c160dec5bab46f2052d7f50ef2a861a3fb9deec3",
+      "subject": "chore: release main",
+      "target": "c160dec5bab46f2052d7f50ef2a861a3fb9deec3"
+    },
+    "plugin-runtime-v0.80.0": {
+      "object": "1d023907ed2e3232e2950c9dad2f3cf3d46e0269",
+      "subject": "chore: release main (#559)",
+      "target": "1d023907ed2e3232e2950c9dad2f3cf3d46e0269"
+    },
+    "plugin-runtime-v0.80.1": {
+      "object": "6d82617e3eec07233dcce396b5ef4fe93123cf06",
+      "subject": "chore: release main (#574)",
+      "target": "6d82617e3eec07233dcce396b5ef4fe93123cf06"
+    },
+    "plugin-runtime-v0.81.0": {
+      "object": "7adb9ef04eb40f3ca67310594fcbb40284aa6b0e",
+      "subject": "chore: release main (#577)",
+      "target": "7adb9ef04eb40f3ca67310594fcbb40284aa6b0e"
+    },
+    "plugin-runtime-v0.82.0": {
+      "object": "717c4c3c93fab3c42f6ba70e7392c6196568c791",
+      "subject": "chore: release main (#589)",
+      "target": "717c4c3c93fab3c42f6ba70e7392c6196568c791"
+    },
+    "plugin-runtime-v0.83.0": {
+      "object": "e249ac7caca9f35834e9ff7a24e642c6140916d8",
+      "subject": "chore: release main (#596)",
+      "target": "e249ac7caca9f35834e9ff7a24e642c6140916d8"
+    },
+    "plugin-runtime-v0.83.1": {
+      "object": "9a6994419d28541e777d25b6585d2d15fab60d66",
+      "subject": "chore: release main (#607)",
+      "target": "9a6994419d28541e777d25b6585d2d15fab60d66"
+    },
+    "plugin-runtime-v0.84.0": {
+      "object": "d9a8a7d9a26b45464de36e2cdd034f9e611e97b2",
+      "subject": "chore: release main (#612)",
+      "target": "d9a8a7d9a26b45464de36e2cdd034f9e611e97b2"
+    },
+    "plugin-runtime-v0.85.0": {
+      "object": "c2bc0f99bbbb20b44df8264977c320d6730ffcda",
+      "subject": "chore: release main (#616)",
+      "target": "c2bc0f99bbbb20b44df8264977c320d6730ffcda"
+    },
+    "plugin-runtime-v0.86.0": {
+      "object": "1b6c569c25b367762470fd29af53ba3a05e55baf",
+      "subject": "chore: release main (#630)",
+      "target": "1b6c569c25b367762470fd29af53ba3a05e55baf"
+    },
+    "plugin-runtime-v0.86.1": {
+      "object": "82cf98143897f50bbd265b95465a8b61618e228d",
+      "subject": "chore: release main (#638)",
+      "target": "82cf98143897f50bbd265b95465a8b61618e228d"
+    },
+    "plugin-runtime-v0.86.2": {
+      "object": "9e2af7d80999cb93aa4539940b18d40a701f44c0",
+      "subject": "chore: release main (#642)",
+      "target": "9e2af7d80999cb93aa4539940b18d40a701f44c0"
+    },
+    "plugin-runtime-v0.86.3": {
+      "object": "9abddc65e611922090d531400c0e176da9c56398",
+      "subject": "chore: release main (#653)",
+      "target": "9abddc65e611922090d531400c0e176da9c56398"
+    },
+    "plugin-runtime-v0.87.0": {
+      "object": "7fc7e633c4981ee9c1437bc2541f0ebbe78d80d9",
+      "subject": "chore: release main (#656)",
+      "target": "7fc7e633c4981ee9c1437bc2541f0ebbe78d80d9"
+    },
+    "plugin-runtime-v0.88.0": {
+      "object": "6ea62086fe7c0b820582a7aeec365f30c11fa3ea",
+      "subject": "chore: release main (#660)",
+      "target": "6ea62086fe7c0b820582a7aeec365f30c11fa3ea"
+    },
+    "plugin-runtime-v0.88.1": {
+      "object": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+      "subject": "chore: release main (#666)",
+      "target": "208545cb0a0c6243914748e86f6d3dffe9e87789"
+    },
+    "plugin-runtime-v0.89.0": {
+      "object": "0d27a80e9cb930a9d365dfffd2aefc985499d618",
+      "subject": "chore: release main (#672)",
+      "target": "0d27a80e9cb930a9d365dfffd2aefc985499d618"
+    },
+    "plugin-runtime-v0.9.0": {
+      "object": "63baf4bf81a1baa22127a32685ebfe0b0cc4dfd9",
+      "subject": "chore: release main",
+      "target": "63baf4bf81a1baa22127a32685ebfe0b0cc4dfd9"
+    },
+    "plugin-runtime-v0.90.0": {
+      "object": "4a23a5bed6c91062c5c7fb421f5534dfdb528810",
+      "subject": "chore: release main (#686)",
+      "target": "4a23a5bed6c91062c5c7fb421f5534dfdb528810"
+    },
+    "plugin-runtime-v0.90.1": {
+      "object": "8c9789a3fa7b67f2e3e1031f446b8389ec745fdf",
+      "subject": "chore: release main (#689)",
+      "target": "8c9789a3fa7b67f2e3e1031f446b8389ec745fdf"
+    },
+    "plugin-runtime-v0.90.2": {
+      "object": "271c5aebc81e01380de81c9d64a2c4f355338f91",
+      "subject": "chore: release main (#695)",
+      "target": "271c5aebc81e01380de81c9d64a2c4f355338f91"
+    },
+    "plugin-runtime-v0.90.3": {
+      "object": "38fedafb6d2cde0da3df4e609b801327bf110798",
+      "subject": "chore: release main (#699)",
+      "target": "38fedafb6d2cde0da3df4e609b801327bf110798"
+    },
+    "plugin-runtime-v0.91.0": {
+      "object": "47bc9c9a24b5bf8aac18970afedf3d5ee30c763a",
+      "subject": "chore: release main (#704)",
+      "target": "47bc9c9a24b5bf8aac18970afedf3d5ee30c763a"
+    },
+    "plugin-runtime-v0.91.1": {
+      "object": "48f50d2d23c2208beaf220c3798ef62ca8977eea",
+      "subject": "chore: release main (#711)",
+      "target": "48f50d2d23c2208beaf220c3798ef62ca8977eea"
+    },
+    "plugin-runtime-v0.91.2": {
+      "object": "95e5b048b55e26cc599a780fca7d1e4aba2dd7a4",
+      "subject": "chore: release main (#717)",
+      "target": "95e5b048b55e26cc599a780fca7d1e4aba2dd7a4"
+    },
+    "plugin-runtime-v0.92.0": {
+      "object": "70ba21072d9c92eaa12448d0a523dc6102461f95",
+      "subject": "chore: release main (#723)",
+      "target": "70ba21072d9c92eaa12448d0a523dc6102461f95"
+    },
+    "plugin-runtime-v0.93.0": {
+      "object": "9be7501f17b8ff953e13e19cf97fda7540a1da32",
+      "subject": "chore: release main (#735)",
+      "target": "9be7501f17b8ff953e13e19cf97fda7540a1da32"
+    },
+    "plugin-runtime-v0.94.0": {
+      "object": "479693e847e5a7f2c2d0862d67de73bfe5afa93c",
+      "subject": "chore: release main (#738)",
+      "target": "479693e847e5a7f2c2d0862d67de73bfe5afa93c"
+    },
+    "plugin-runtime-v0.95.0": {
+      "object": "f8ee09a57e29456c0409e725419f51e7d6287108",
+      "subject": "chore: release main (#742)",
+      "target": "f8ee09a57e29456c0409e725419f51e7d6287108"
+    },
+    "plugin-runtime-v0.96.0": {
+      "object": "0a737156210710d366ffb2152b48b9868ee0d6a0",
+      "subject": "chore: release main (#750)",
+      "target": "0a737156210710d366ffb2152b48b9868ee0d6a0"
+    },
+    "plugin-runtime-v0.97.0": {
+      "object": "f02a2c22111cbb27b3d7b7ebeb44bf38cd4b55f5",
+      "subject": "chore: release main (#753)",
+      "target": "f02a2c22111cbb27b3d7b7ebeb44bf38cd4b55f5"
+    },
+    "plugin-runtime-v0.97.1": {
+      "object": "bd450b2256df40bb0ce97e49b9cdbb2bfe1417c2",
+      "subject": "chore: release main (#756)",
+      "target": "bd450b2256df40bb0ce97e49b9cdbb2bfe1417c2"
+    }
+  }
+}

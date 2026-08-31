@@ -1,0 +1,148 @@
+{
+  "schema": "evidence-measurement-families-2.0",
+  "contract_version": "2.0.0",
+  "note": "Declares WHAT KINDS of datum are measured and over WHICH anchor population, never WHICH instances and never how one occurrence binds to another. Every recognition rule below is a lexical observable statable without reading this corpus. Association is deliberately absent: contract 4.2 fixes no rule, and each relation's `binding` block declares the shape of the policy each lane must declare for itself (contract 4.5) rather than naming a rule for both to obey. See measurement-contract.md 1.2 for the shareable/not-shareable test.",
+  "field_states": ["present", "explicit-null", "unresolved", "not-applicable"],
+  "units": ["occurrence", "relation"],
+  "dispositions": ["bound", "not-a-claim", "ambiguous", "incomplete"],
+  "families": [
+    {
+      "id": "commit-citation",
+      "unit": "occurrence",
+      "profiles": ["stage-docs", "discovered-md"],
+      "required": true,
+      "cardinality": "many",
+      "recognition": "A maximal run of 7 to 40 lowercase hexadecimal characters whose immediate neighbours on both sides are neither alphanumeric nor U+2026, and whose left neighbour is not a hyphen. A run longer than 40 is not a citation and no window inside it is one.",
+      "fields": [
+        { "name": "literal", "states": ["present"] },
+        { "name": "canonical", "states": ["present", "unresolved"], "authority": "object-name" }
+      ]
+    },
+    {
+      "id": "package-tag",
+      "unit": "occurrence",
+      "profiles": ["stage-docs", "discovered-md"],
+      "required": true,
+      "cardinality": "many",
+      "recognition": "A token of the form plugin-<package>-v<major>.<minor>.<patch>, optionally enclosed in code delimiters. The package segment is read from the token, never from a list.",
+      "fields": [
+        { "name": "literal", "states": ["present"] },
+        { "name": "package", "states": ["present"] },
+        { "name": "version", "states": ["present"] },
+        { "name": "canonical", "states": ["present", "unresolved"], "authority": "tag-ref" }
+      ]
+    },
+    {
+      "id": "pr-citation",
+      "unit": "occurrence",
+      "profiles": ["stage-docs", "discovered-md"],
+      "required": true,
+      "cardinality": "many",
+      "recognition": "A number sign immediately followed by 2 to 4 decimal digits, terminated by a non-word character. A link wrapper around it does not change the occurrence; the span is the number-sign token itself.",
+      "fields": [{ "name": "literal", "states": ["present"] }]
+    },
+    {
+      "id": "proof-run-id",
+      "unit": "occurrence",
+      "profiles": ["stage-docs", "discovered-md"],
+      "required": true,
+      "cardinality": "many",
+      "recognition": "A token of the form <kind>-<YYYYMMDD>T<HHMMSS>Z-<lowercase hex>, where <kind> is read from the token and is not constrained to a list. Its date component is part of the identifier and is never separately an iso-date occurrence.",
+      "fields": [
+        { "name": "literal", "states": ["present"] },
+        { "name": "kind", "states": ["present"] },
+        { "name": "artifact_present", "states": ["present", "not-applicable"], "authority": "run-artifact", "qualifier": "artifact-only" }
+      ]
+    },
+    {
+      "id": "iso-date",
+      "unit": "occurrence",
+      "profiles": ["stage-docs", "discovered-md"],
+      "required": true,
+      "cardinality": "many",
+      "recognition": "A token of the form <YYYY>-<MM>-<DD> with an OPTIONAL trailing Z, bounded by non-word characters on the left and, on the right, by a non-word character or the end of the blob; a trailing Z is part of the token rather than a boundary. Any occurrence wholly inside a proof-run-id span is excluded.",
+      "fields": [{ "name": "literal", "states": ["present"] }],
+      "note": "The optional trailing Z is a correction. The 1.1 rule required a non-word boundary on the right, which a trailing Z is not, so the rule silently excluded a form this repository's own tooling explicitly accepts. Two lanes reading the 1.1 rule literally would have enumerated a smaller population than the one being checked, and the shortfall would have read as agreement."
+    },
+    {
+      "id": "content-digest",
+      "unit": "occurrence",
+      "profiles": ["stage-docs", "discovered-md"],
+      "required": true,
+      "cardinality": "many",
+      "recognition": "A run of more than 40 lowercase hexadecimal characters, OR such a run introduced by a field name ending in _sha256 or by the prefix sha256:. Both lexical shapes denote the same family; a producer that recognises only one is incomplete, and a run of this length is never a commit-citation.",
+      "fields": [
+        { "name": "literal", "states": ["present"] },
+        { "name": "shape", "states": ["present"] }
+      ]
+    },
+    {
+      "id": "bare-semver",
+      "unit": "occurrence",
+      "profiles": ["stage-docs", "discovered-md"],
+      "required": false,
+      "cardinality": "many",
+      "recognition": "A token of the form <major>.<minor>.<patch> bounded by characters that are not word characters, hyphens, or full stops, and not wholly inside a package-tag span.",
+      "fields": [{ "name": "literal", "states": ["present"] }],
+      "note": "Declared not-required: an accepted decision records that binding a bare semver to a package was attempted and withdrawn as undecidable. It is measured so a producer emitting it is not charged with an unexpected occurrence, and it decides no verdict."
+    }
+  ],
+  "relations": [
+    {
+      "id": "release-triple",
+      "unit": "relation",
+      "profile": "stage-docs",
+      "required": true,
+      "anchor_role": "tag",
+      "anchor_domain": {
+        "family": "package-tag",
+        "profile": "stage-docs",
+        "restriction": null,
+        "note": "The WHOLE family is in scope; no package segment is privileged. Restricting the domain to the one package a live gate happens to check would rebuild that gate's blind spot inside the measurement's own definition of scope, and recall against a population chosen to match the incumbent measures nothing. The cost is a larger anchor domain for a hand-authored oracle to adjudicate, and contract 4.3 requires a disposition for every one of them."
+      },
+      "roles": [
+        { "name": "tag", "family": "package-tag", "required": true },
+        { "name": "release_pr", "family": "pr-citation", "required": true },
+        { "name": "squash", "family": "commit-citation", "required": false },
+        { "name": "marketplace_sync", "family": "commit-citation", "required": false }
+      ],
+      "role_family_collisions": [
+        {
+          "family": "commit-citation",
+          "roles": ["squash", "marketplace_sync"],
+          "note": "Acknowledged, not repaired. Two roles share one family, so family membership alone cannot say which role an occurrence fills; only the pairing oracle can, by annotation (contract 4.4). A lane that assigns these roles by family will assign both to the same occurrence wherever a span carries one commit citation, and contract 7.2 will report that as mispaired rather than as agreement."
+        }
+      ],
+      "binding": {
+        "declared_by": "lane",
+        "declaration_keys": ["relation", "anchor_domain", "class", "parameters", "ranking", "tie_policy", "digest"],
+        "note": "NOT a rule and NOT a vocabulary to gate. Contract 1.1 records that association failed the inclusion rule's third condition, and 4.2 removes it from the contract entirely; a 1.x registry named `minimal-span` here and that value is now meaningless. This block declares only the SHAPE of the policy declaration each lane emits for this relation (contract 4.5). check-family-registry.mjs validates that shape and deliberately checks no `class` value against an allowed set — an allow-list here would restore by the back door the fixed vocabulary 4.2 removed."
+      }
+    },
+    {
+      "id": "proof-date-binding",
+      "unit": "relation",
+      "profile": "stage-docs",
+      "required": true,
+      "anchor_role": "run_id",
+      "anchor_domain": {
+        "family": "proof-run-id",
+        "profile": "stage-docs",
+        "restriction": null,
+        "note": "The WHOLE family is in scope; no run kind is privileged. The recognition rule reads <kind> from the token rather than from a list, so the family admits every kind this repository emits, and every association rule considered before this contract reasoned about one of them. A coverage figure computed as an all-kind population minus a one-kind extractor's matches is not about a single population, and no such figure is derivable from this registry."
+      },
+      "roles": [
+        { "name": "run_id", "family": "proof-run-id", "required": true },
+        { "name": "date", "family": "iso-date", "required": true }
+      ],
+      "role_family_collisions": [],
+      "binding": {
+        "declared_by": "lane",
+        "declaration_keys": ["relation", "anchor_domain", "class", "parameters", "ranking", "tie_policy", "digest"],
+        "note": "See release-triple.binding. The two relations are not alike and are not required to share a policy; contract 4.2 records why a single normative rule for both was never going to fit."
+      }
+    }
+  ],
+  "expected_zero": [],
+  "expected_zero_note": "Empty by declaration. A (family, profile) pair belongs here only when the family is recognisable in that profile and the profile is known never to carry it, and no pair in this registry is declared that way. NO COUNT, RATIO OR OCCURRENCE READING JUSTIFIES THAT EMPTINESS HERE, and none may be added: this file is a shared input under contract 11.2, so a sentence reporting what was measured to occur would hand both lanes the same reading of the corpus and end their independence. A 1.1 revision carried exactly such a sentence. The mechanism stays for a family that later needs it, and contract 3.4 keeps an undeclared zero a finding."
+}

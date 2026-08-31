@@ -1,0 +1,22 @@
+{
+  "contract_version": "2.0.0",
+  "digest": "8df701137a99db5ed6739d8387067a428dbcb6e79d730590b24078f10686ad31",
+  "files": [
+    {
+      "bytes": 47146,
+      "path": "docs/assurance/evidence/measurement/measurement-contract.md",
+      "sha256": "a931bf977f1cce940597410380992907e2b56552f8933d2875fb7b8d42cff3cc"
+    },
+    {
+      "bytes": 9933,
+      "path": "docs/assurance/evidence/measurement/family-registry.json",
+      "sha256": "21af683dee461e99dbe61199b638dc239a26886c745df69ac7e90ea8400285d9"
+    },
+    {
+      "bytes": 14628,
+      "path": "docs/assurance/evidence/measurement/corpus-manifest.json",
+      "sha256": "bb37afe56191f5824e4f4b0fb1d013773b3bf8f034096fe49f826a1ae7dd038e"
+    }
+  ],
+  "schema": "evidence-measurement-bundle-1.0"
+}
