@@ -815,3 +815,40 @@ test('the contract declares the same version the registry and the code do', () =
   assert.equal(declared[1], registry.contract_version);
   assert.equal(declared[1], CONTRACT_VERSION);
 });
+
+test('every § citation in the measurement scripts resolves too', () => {
+  // The scripts cite clauses rather than restating them, which is the right
+  // shape and creates exactly one hazard: a renumbered contract turns every
+  // citation into a pointer to something else, silently. evidence-corpus.mjs
+  // landed BEFORE the contract existed and carried forward references; when the
+  // contract arrived its header still said the contract was not in the tree.
+  const defined = new Set();
+  for (const m of CONTRACT_TEXT.matchAll(/^#{2,3} (\d+(?:\.\d+)?)\.? /gm)) defined.add(m[1]);
+  assert.ok(defined.size > 20, `only ${defined.size} sections parsed; the heading pattern has drifted`);
+
+  const sources = ['scripts/evidence-corpus.mjs', 'scripts/evidence-measurement.mjs', 'scripts/check-family-registry.mjs'];
+  const dangling = [];
+  let total = 0;
+  for (const rel of sources) {
+    const src = readFileSync(join(REPO, rel), 'utf8');
+    for (const r of new Set([...src.matchAll(/§(\d+(?:\.\d+)?)/g)].map((m) => m[1]))) {
+      total += 1;
+      if (!defined.has(r)) dangling.push(`${rel}: §${r}`);
+    }
+  }
+  assert.ok(total > 10, `only ${total} citations found across ${sources.length} files; the pattern has drifted`);
+  assert.deepEqual(dangling, [], `dangling citations: ${JSON.stringify(dangling)}`);
+});
+
+test('no measurement script still claims the contract is absent from the tree', () => {
+  // A one-line guard against the specific staleness above. It is narrow on
+  // purpose: the general problem (prose going out of date) is not decidable,
+  // and a wider phrase list would be the closed-vocabulary guard this
+  // repository has watched fail before.
+  for (const rel of ['scripts/evidence-corpus.mjs', 'scripts/evidence-measurement.mjs', 'scripts/check-family-registry.mjs']) {
+    const src = readFileSync(join(REPO, rel), 'utf8');
+    assert.ok(!/NOT IN THE TREE YET/.test(src), `${rel} still says the contract is not in the tree`);
+  }
+  // The premise: the contract IS in the tree, and is a bundle member.
+  assert.ok(readFileSync(join(REPO, 'docs/assurance/evidence/measurement/measurement-contract.md'), 'utf8').length > 0);
+});
