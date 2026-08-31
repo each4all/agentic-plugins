@@ -190,16 +190,42 @@ function git(repoRoot, args) {
  * is green on every developer machine and red in CI — which is exactly what a
  * cross-host review reproduced against this file.
  */
+export const INTEGRATION_BRANCH = 'main';
+const INTEGRATION_ALIASES = Object.freeze([`origin/${INTEGRATION_BRANCH}`, INTEGRATION_BRANCH]);
+
 export function resolveIntegrationRef(repoRoot, requested = null) {
-  const candidates = requested ? [requested] : ['origin/main', 'main'];
+  // A requested ref that NAMES the integration branch is a logical name, not a
+  // literal one, and falls through the same alias list. This is the second half
+  // of the same defect: fixing only the default left the committed baseline
+  // recording `integration_ref: "main"`, which a rebuild then resolved
+  // literally — green on a clone that has a local `main`, and a hard throw in
+  // the detached checkout CI uses. Any other ref is honoured exactly.
+  const candidates = (requested === null || INTEGRATION_ALIASES.includes(requested))
+    ? [...INTEGRATION_ALIASES]
+    : [requested];
   for (const c of candidates) {
     try { git(repoRoot, ['rev-parse', '--verify', '--quiet', `${c}^{commit}`]); return c; } catch { /* try next */ }
   }
   throw new Error(`no integration ref available (tried ${candidates.join(', ')}); reachability cannot be judged`);
 }
 
+/**
+ * The name a snapshot RECORDS, as opposed to the ref it resolved through.
+ *
+ * A snapshot is compared against one taken elsewhere (§9), so it must record a
+ * name that means the same thing in both places. `origin/main` and `main` are
+ * the same branch seen from two checkout shapes; recording whichever one this
+ * machine happened to have would make every cross-machine comparison report an
+ * `integration-ref-changed` that is a difference in checkout rather than in
+ * authority.
+ */
+export function logicalIntegrationRef(resolved) {
+  return INTEGRATION_ALIASES.includes(resolved) ? INTEGRATION_BRANCH : resolved;
+}
+
 export function buildAuthoritySnapshot(repoRoot, { ref = null, now = new Date() } = {}) {
-  ref = resolveIntegrationRef(repoRoot, ref);
+  const resolved = resolveIntegrationRef(repoRoot, ref);
+  ref = resolved;
   const commits = {};
   const raw = git(repoRoot, ['rev-list', '--format=%H%x00%s', '--no-commit-header', ref]);
   for (const line of raw.split('\n')) {
@@ -218,8 +244,9 @@ export function buildAuthoritySnapshot(repoRoot, { ref = null, now = new Date() 
   return {
     schema: AUTHORITY_SCHEMA,
     contract_version: CONTRACT_VERSION,
-    integration_ref: ref,
-    integration_head: git(repoRoot, ['rev-parse', ref]).trim(),
+    integration_ref: logicalIntegrationRef(resolved),
+    resolved_ref: resolved,
+    integration_head: git(repoRoot, ['rev-parse', resolved]).trim(),
     captured_at: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
     commit_count: Object.keys(commits).length,
     tag_count: Object.keys(tags).length,

@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-08-31T00:37:29Z",
+  "captured_at": "2026-08-31T01:26:45Z",
   "commit_count": 1005,
   "commits": {
     "00818eeefbd0e268d4dd5140463747ec3fdec318": "chore: release main (#517)",
@@ -1011,6 +1011,7 @@
   "contract_version": "2.0.0",
   "integration_head": "8ebbe48065083e981aa6f2a7f31db64a08e8b8a6",
   "integration_ref": "main",
+  "resolved_ref": "origin/main",
   "schema": "evidence-measurement-authority-1.0",
   "tag_count": 248,
   "tags": {

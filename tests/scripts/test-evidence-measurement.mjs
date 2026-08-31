@@ -24,7 +24,7 @@ import {
   policyDigest, canonicalDigest, canonicalSerialise, bundleDigest, verifySeal,
   authorityDrift, buildAuthoritySnapshot, buildSeal, resolveCanonical,
   resolveAuthorityFields, resolveQuote, artifactDigest, expectedZeroCovers,
-  evaluateArtifactOnly, occurrenceKey, resolveIntegrationRef,
+  evaluateArtifactOnly, occurrenceKey, resolveIntegrationRef, logicalIntegrationRef,
   CONTRACT_VERSION, DISPOSITIONS, STATUSES, VERDICTS,
 } from '../../scripts/evidence-measurement.mjs';
 
@@ -610,7 +610,11 @@ test('§9 — the shipped baseline is enumerated and self-consistent', () => {
   assert.ok(snap.commit_count > 0 && snap.tag_count > 0);
   assert.match(snap.integration_head, /^[0-9a-f]{40}$/);
   // Live git must still agree with it, or the committed baseline is a fiction.
+  assert.equal(snap.integration_ref, 'main', 'the recorded name must be the logical one, or it is not portable');
+  // Rebuilding through the RECORDED name must work in both checkout shapes —
+  // this line threw in a detached clone before `main` became a logical alias.
   const live = buildAuthoritySnapshot(REPO, { ref: snap.integration_ref });
+  assert.equal(live.integration_ref, snap.integration_ref);
   assert.equal(authorityDrift(snap, live).drifted, false);
 });
 
@@ -1173,15 +1177,33 @@ test('§9 — the integration ref prefers origin/main, which is what a detached 
   // hermetic, so it holds on a machine with no remote and in CI alike.
   const d = mkdtempSync(join(tmpdir(), 'ref-pref-'));
   const git = (...a) => execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  // A hermetic repo: no local `main` once detached, exactly the CI shape.
   try {
     git('init', '-q', '-b', 'main');
     git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'one');
     const head = git('rev-parse', 'HEAD').trim();
     git('update-ref', 'refs/remotes/origin/main', head);
     assert.equal(resolveIntegrationRef(d), 'origin/main');
+    // A REQUESTED 'main' is a logical branch name and must fall through the same
+    // aliases. This is the mirror of the defect above: fixing only the default
+    // left the committed baseline recording `integration_ref: "main"`, which a
+    // rebuild resolved literally — green on a clone with a local `main`, and a
+    // hard throw in the detached checkout CI uses. Reproduced in a detached
+    // clone before this assertion existed.
+    git('checkout', '-q', '--detach', head);
+    git('branch', '-q', '-D', 'main');
+    git('update-ref', 'refs/remotes/origin/main', head);
+    assert.equal(resolveIntegrationRef(d, 'main'), 'origin/main', 'a requested logical name must fall through');
+    assert.equal(resolveIntegrationRef(d, null), 'origin/main');
+    // The recorded name is the logical one, so two checkout shapes compare equal.
+    assert.equal(logicalIntegrationRef('origin/main'), 'main');
+    assert.equal(logicalIntegrationRef('main'), 'main');
+    assert.equal(logicalIntegrationRef('refs/heads/other'), 'refs/heads/other');
+    const snap = buildAuthoritySnapshot(d, { ref: 'main' });
+    assert.equal(snap.integration_ref, 'main');
+    assert.equal(snap.resolved_ref, 'origin/main');
+
     git('update-ref', '-d', 'refs/remotes/origin/main');
-    assert.equal(resolveIntegrationRef(d), 'main', 'main must still be the fallback');
-    git('branch', '-m', 'main', 'other');
     assert.throws(() => resolveIntegrationRef(d), /no integration ref available/);
   } finally {
     rmSync(d, { recursive: true, force: true });
