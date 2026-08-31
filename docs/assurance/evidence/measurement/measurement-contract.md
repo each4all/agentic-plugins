@@ -656,7 +656,8 @@ These are checked before any status is assigned, on every artifact:
 - an occurrence whose family is not in the registry;
 - an artifact missing a policy declaration for a relation it reports (§4.5);
 - a missing attestation record, or one whose declared contract version, bundle
-  digest or manifest digest disagrees with the artifact it sits beside (§11.4);
+  digest, manifest digest or artifact digest disagrees with the artifact it
+  sits beside (§11.4);
 - **a missing anchor row** — an in-scope anchor (§4.1) for which the artifact
   carries no §4.3 disposition.
 
@@ -716,6 +717,15 @@ retired version 1.0.
 A `pass` additionally requires that **every required relation produced at least
 one adjudicated row** — a row whose status is not `not-adjudicated` — unless an
 `expected_zero` declaration covers it.
+
+**"Covers" is keyed**, because an unkeyed exemption excuses everything: a
+declaration covers a relation when its `family` is the relation's **anchor
+family** and its `profile` is the relation's **own profile**. A declaration for
+a different profile, or for a role family that is not the anchor, excuses
+nothing. This is the other half of §3.4's rule — an *undeclared* zero is a
+finding, and a *declared* one is what keeps a legitimately empty relation from
+reading as a vacuous pass in one direction and as a coverage failure in the
+other.
 
 Two vacuity routes are closed by that one sentence, and it is §8.3 row 10 that
 enforces it. Without it, two empty artifacts satisfy rows 1–9 and fall through
@@ -864,6 +874,15 @@ Each lane emits an attestation alongside its artifact recording: the contract
 version, the bundle digest and the manifest digest it worked against; the digest
 of its own artifact at seal time; the seal timestamp; and a statement of which
 of §11.2's prohibited inputs it had access to, if any.
+
+**The artifact digest is defined here because it is not derivable**, for the
+same reason §2.1 fixes the manifest digest: it is the SHA-256, in lowercase hex,
+over §2.1's serialisation of the artifact **with its `attestation` key
+removed**. The exclusion is structural, not stylistic — the attestation carries
+the digest, so a digest over the whole document could never be computed by the
+lane that has to write it. Two authors left to choose would pick the file bytes,
+a re-serialisation, or a blob id, and every comparison would end
+`not-comparable` before measuring anything.
 
 Both artifacts are **sealed** — digest recorded — before either is disclosed to
 the comparator. An artifact whose digest changes after the other was disclosed

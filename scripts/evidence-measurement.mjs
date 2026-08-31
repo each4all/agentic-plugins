@@ -99,6 +99,22 @@ export function policyDigest(policy) {
   return canonicalDigest(rest);
 }
 
+/**
+ * Contract §11.4 — an artifact's seal-time digest, over everything BUT its own
+ * attestation.
+ *
+ * The exclusion is not a convenience: the attestation carries this digest, so
+ * a digest over the whole document could never be computed by the lane that
+ * has to write it. §2.1's serialisation is used, for the reason §2.1 gives —
+ * "the digest of its own artifact" is not derivable, and two authors asked for
+ * it would pick the file bytes, a re-serialisation, or a blob id, and every
+ * comparison would end `not-comparable` before measuring anything.
+ */
+export function artifactDigest(artifact) {
+  const { attestation: _omit, ...rest } = artifact ?? {};
+  return canonicalDigest(rest);
+}
+
 // ---------------------------------------------------------------------------
 // §11.3 — the sealed bundle
 // ---------------------------------------------------------------------------
@@ -295,7 +311,11 @@ export function validateArtifact(artifact, ctx) {
     if (att.contract_version !== artifact.contract_version) at('attestation.contract_version', `is ${JSON.stringify(att.contract_version)} but the artifact declares ${JSON.stringify(artifact.contract_version)} (§11.4)`);
     if (att.bundle_digest !== artifact.bundle_digest) at('attestation.bundle_digest', 'does not match the artifact it attests (§11.4)');
     if (att.manifest_digest !== artifact.manifest_digest) at('attestation.manifest_digest', 'does not match the artifact it attests (§11.4)');
-    if (typeof att.artifact_digest !== 'string' || !/^[0-9a-f]{64}$/.test(att.artifact_digest)) at('attestation.artifact_digest', 'is missing or is not a sha-256 (§11.4 seal-time digest)');
+    if (typeof att.artifact_digest !== 'string' || !/^[0-9a-f]{64}$/.test(att.artifact_digest)) {
+      at('attestation.artifact_digest', 'is missing or is not a sha-256 (§11.4 seal-time digest)');
+    } else if (att.artifact_digest !== artifactDigest(artifact)) {
+      at('attestation.artifact_digest', 'does not match the artifact it seals — §11.4 makes a post-disclosure change invalidate the comparison, and this is what detects one');
+    }
     if (typeof att.sealed_at !== 'string') at('attestation.sealed_at', 'is missing (§11.4)');
     if (!Array.isArray(att.prohibited_inputs_accessed)) at('attestation.prohibited_inputs_accessed', 'must be an array — an empty one is a claim, an absent one is a silence (§11.4)');
   }
@@ -619,7 +639,7 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
     }
   }
 
-  const verdict = reduce({ structural, oracles: oracles.length, drift, rows, containment, relations, artifacts, authorityFields });
+  const verdict = reduce({ structural, oracles: oracles.length, drift, rows, containment, relations, artifacts, authorityFields, expectedZero: registry.expected_zero ?? [] });
   const counts = Object.fromEntries(STATUSES.map((s) => [s, rows.filter((r) => r.status === s).length]));
   return { verdict: verdict.verdict, reason: verdict.reason, structural, policy_findings: policyFindings, drift, containment, rows, counts, authority_fields: authorityFields, quote_findings: quoteFindings };
 }
@@ -628,7 +648,21 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
 // §8.3 — the reducer
 // ---------------------------------------------------------------------------
 
-export function reduce({ structural, oracles, drift, rows, containment, relations, artifacts, authorityFields = null }) {
+/**
+ * §3.4 / §8.4 — does an `expected_zero` declaration cover this relation?
+ *
+ * An undeclared zero is a finding (§3.4); a DECLARED one is the mechanism that
+ * keeps a legitimately empty relation from reading as a vacuous pass in one
+ * direction and as a coverage failure in the other.
+ */
+export function expectedZeroCovers(relation, expectedZero = []) {
+  const anchorRole = (relation?.roles ?? []).find((r) => r.name === relation.anchor_role);
+  const anchorFamily = relation?.anchor_domain?.family ?? anchorRole?.family;
+  if (!anchorFamily) return false;
+  return (expectedZero ?? []).some((z) => z?.family === anchorFamily && z?.profile === relation.profile);
+}
+
+export function reduce({ structural, oracles, drift, rows, containment, relations, artifacts, authorityFields = null, expectedZero = [] }) {
   if (structural.length > 0) return { verdict: 'not-comparable', reason: `structural error (§8.2): ${structural[0].path} — ${structural[0].detail}` };
   if (oracles !== 1) return { verdict: 'not-comparable', reason: 'the run has no oracle; correctness has an authority or it has no verdict (§8.3 row 2, §4.4)' };
   if (drift?.drifted) return { verdict: 'not-comparable', reason: `authority drift (§9): ${drift.conditions[0].kind} — ${drift.conditions[0].detail}` };
@@ -658,12 +692,17 @@ export function reduce({ structural, oracles, drift, rows, containment, relation
   const artifactOnlyAbsent = (artifacts ?? []).some((a) => (a?.artifact_only_findings ?? []).some((f) => f.present === false));
   if (artifactOnlyAbsent) return { verdict: 'blocked', reason: 'an artifact-only authority is absent (§8.3 row 9)' };
 
-  // §8.4 — a `pass` requires an adjudicated row on every required relation.
-  for (const id of requiredRelations) {
+  // §8.4 — a `pass` requires an adjudicated row on every required relation,
+  // unless an `expected_zero` declaration covers it. The exemption is keyed by
+  // (anchor family, relation profile): a relation whose anchor family is
+  // declared never to occur in that profile has no anchors, so it has no rows,
+  // and charging it would make a correct artifact fail.
+  for (const [id, rel] of relations) {
+    if (rel?.required !== true) continue;
     const adjudicated = rows.some((r) => r.relation === id && r.status !== 'not-adjudicated');
-    if (!adjudicated) {
-      return { verdict: 'blocked', reason: `required relation ${id} produced no adjudicated row; a pass here would be vacuous (§8.4)` };
-    }
+    if (adjudicated) continue;
+    if (expectedZeroCovers(rel, expectedZero)) continue;
+    return { verdict: 'blocked', reason: `required relation ${id} produced no adjudicated row; a pass here would be vacuous (§8.4)` };
   }
   return { verdict: 'pass', reason: null };
 }

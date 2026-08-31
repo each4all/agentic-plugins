@@ -22,7 +22,8 @@ import {
   compare, reduce, compareDisposition, roleBindingsAgree, identityKey,
   policyDigest, canonicalDigest, canonicalSerialise, bundleDigest, verifySeal,
   authorityDrift, buildAuthoritySnapshot, buildSeal, resolveCanonical,
-  resolveAuthorityFields, resolveQuote, CONTRACT_VERSION, DISPOSITIONS, STATUSES, VERDICTS,
+  resolveAuthorityFields, resolveQuote, artifactDigest, expectedZeroCovers,
+  CONTRACT_VERSION, DISPOSITIONS, STATUSES, VERDICTS,
 } from '../../scripts/evidence-measurement.mjs';
 
 const REPO = new URL('../../', import.meta.url).pathname;
@@ -82,18 +83,6 @@ function policy(overrides = {}) {
   return { ...p, digest: policyDigest(p) };
 }
 
-function attestation(over = {}) {
-  return {
-    contract_version: '2.0.0',
-    bundle_digest: BUNDLE,
-    manifest_digest: MANIFEST.digest,
-    artifact_digest: 'f'.repeat(64),
-    sealed_at: '2026-08-31T00:00:00Z',
-    prohibited_inputs_accessed: [],
-    ...over,
-  };
-}
-
 function artifact({ id, role, anchors, occurrences, policies = [policy()], ...rest }) {
   const base = {
     schema: 'evidence-measurement-artifact-1.0',
@@ -108,10 +97,27 @@ function artifact({ id, role, anchors, occurrences, policies = [policy()], ...re
     anchors,
     ...rest,
   };
-  // §11.4 — the attestation must agree with the artifact it sits beside, so it
-  // is derived from the (possibly overridden) artifact rather than from the
-  // fixture defaults.
-  return { attestation: attestation({ bundle_digest: base.bundle_digest, manifest_digest: base.manifest_digest, contract_version: base.contract_version }), ...base };
+  // §11.4 — the attestation is derived from the (possibly overridden) artifact
+  // rather than from fixture defaults, and its artifact_digest is COMPUTED.
+  // A constant here would have made every fixture fail the seal check, which is
+  // how the check announced itself when it landed.
+  return {
+    ...base,
+    attestation: {
+      contract_version: base.contract_version,
+      bundle_digest: base.bundle_digest,
+      manifest_digest: base.manifest_digest,
+      artifact_digest: artifactDigest(base),
+      sealed_at: '2026-08-31T00:00:00Z',
+      prohibited_inputs_accessed: [],
+    },
+  };
+}
+
+/** Re-seal after a test mutates an artifact, so the seal check is not what fires. */
+function reseal(a) {
+  const { attestation: att, ...rest } = a;
+  return { ...rest, attestation: { ...att, artifact_digest: artifactDigest(rest) } };
 }
 
 const BASE_OCCS = [occ(TAG, 'package-tag'), occ(PR, 'pr-citation'), occ(SHA_FIRST, 'commit-citation'), occ(SHA_SECOND, 'commit-citation')];
@@ -669,6 +675,65 @@ test('§11.4 — an attestation that names a different bundle than its artifact 
   lane.attestation = { ...lane.attestation, bundle_digest: 'some-other-bundle' };
   const r = run([oracle, lane]);
   assert.ok(r.structural.some((s) => s.path === 'attestation.bundle_digest'));
+});
+
+test('§11.4 — an artifact edited after sealing is structural', () => {
+  // This is the post-disclosure edit §11.4 says invalidates a comparison. The
+  // artifact stays perfectly well-formed; only its seal stops matching.
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const lane = artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const edited = { ...lane, anchors: [boundRow(SHA_SECOND)] };   // seal not recomputed
+  const r = run([oracle, edited]);
+  assert.ok(r.structural.some((s) => s.path === 'attestation.artifact_digest'),
+    JSON.stringify(r.structural.map((x) => x.path)));
+
+  // Control: the same edit WITH a fresh seal passes the seal check, and the
+  // comparison then reports the pairing difference instead.
+  const ok = run([oracle, reseal(edited)]);
+  assert.deepEqual(ok.structural, []);
+  assert.equal(ok.rows[0].status, 'mispaired');
+});
+
+test('§11.4 — artifactDigest excludes the attestation it is carried by', () => {
+  const a = artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const { attestation: att, ...rest } = a;
+  assert.equal(att.artifact_digest, artifactDigest(rest));
+  assert.equal(artifactDigest(a), artifactDigest(rest), 'the attestation must not feed its own digest');
+});
+
+// --- §3.4 / §8.4 expected_zero ------------------------------------------------
+
+test('§8.4 — a declared expected_zero excuses a required relation with no rows', () => {
+  const rel = REGISTRY.relations[0];
+  const relations = new Map([[rel.id, { ...rel, anchor_domain: { family: 'package-tag', profile: 'stage-docs', restriction: null } }]]);
+  const base = { structural: [], oracles: 1, drift: { drifted: false }, rows: [], containment: [], relations, artifacts: [] };
+
+  // Undeclared: blocked, because a relation that produced nothing and said
+  // nothing about why is indistinguishable from an omission (§3.4).
+  assert.equal(reduce(base).verdict, 'blocked');
+
+  // Declared for the anchor family in this relation's profile: excused.
+  const excused = reduce({ ...base, expectedZero: [{ family: 'package-tag', profile: 'stage-docs', reason: 'declared for this test' }] });
+  assert.equal(excused.verdict, 'pass', excused.reason ?? '');
+
+  // Declared for the WRONG profile: not excused.
+  const wrong = reduce({ ...base, expectedZero: [{ family: 'package-tag', profile: 'discovered-md', reason: 'wrong profile' }] });
+  assert.equal(wrong.verdict, 'blocked');
+
+  // Declared for a family that is not this relation's anchor: not excused.
+  const otherFamily = reduce({ ...base, expectedZero: [{ family: 'pr-citation', profile: 'stage-docs', reason: 'not the anchor' }] });
+  assert.equal(otherFamily.verdict, 'blocked');
+});
+
+test('expectedZeroCovers keys on the anchor family and the relation profile', () => {
+  const rel = { id: 'r', profile: 'stage-docs', anchor_role: 'tag', roles: [{ name: 'tag', family: 'package-tag' }], anchor_domain: { family: 'package-tag', profile: 'stage-docs' } };
+  assert.equal(expectedZeroCovers(rel, [{ family: 'package-tag', profile: 'stage-docs' }]), true);
+  assert.equal(expectedZeroCovers(rel, [{ family: 'package-tag', profile: 'discovered-md' }]), false);
+  assert.equal(expectedZeroCovers(rel, []), false);
+  // Falls back to the anchor ROLE's family when no anchor_domain is declared,
+  // so a registry mid-migration is not silently excused by the absence of a key.
+  const noDomain = { ...rel, anchor_domain: undefined };
+  assert.equal(expectedZeroCovers(noDomain, [{ family: 'package-tag', profile: 'stage-docs' }]), true);
 });
 
 test('§11.4 — an absent prohibited-inputs list is a silence, not an empty claim', () => {
