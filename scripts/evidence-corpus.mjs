@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 // The frozen corpus for the evidence measurement contract.
 //
-// THE NORMATIVE CONTRACT IS NOT IN THE TREE YET. It is the deliverable of a
-// later subtask on this track, and the section numbers below are FORWARD
-// references to it, not citations an operator can look up today. They are kept
-// because they name which clause each rule implements, and because the
-// alternative — inventing prose here — is the second-copy-of-a-rule failure
-// this file's own header warns about. Nothing user-facing cites them: the
+// The normative contract is `docs/assurance/evidence/measurement/
+// measurement-contract.md`, at version 2.0.0. The section numbers below are
+// citations an operator can look up; they were forward references when this
+// file landed ahead of the contract, and the contract has since arrived. They
+// name which clause each rule implements rather than restating it, because a
+// second copy of a rule is a second rule. Nothing user-facing cites them: the
 // stderr an operator reads states the rule in full instead.
+//
+// This file is a member of the sealed bundle's INPUT — it produces the corpus
+// manifest — but is not itself in the bundle (contract §11.3). Changing the
+// manifest it emits changes the bundle digest, so `npm run
+// validate:evidence-bundle` is what notices.
 //
 // The contract pins a corpus so that a typed occurrence exporter and an
 // independently authored coverage manifest describe the SAME bytes. Two
@@ -69,9 +74,12 @@ export const MANIFEST_SCHEMA = 'evidence-measurement-corpus-1.0';
  * existing checks are not sensitive to the same documents, and forcing one
  * universe either discards the narrower check's coverage signal or admits
  * files the wider one was measured to be harmed by. The contract keeps both
- * and binds each claim family to the profile it is actually checked against
- * (contract §2.2), so a family is never compared against a corpus that does
- * not carry it.
+ * and binds each unit to the profile(s) it is actually checked against
+ * (contract §2.2): a FAMILY takes one or more profiles, a RELATION exactly
+ * one. Both halves matter here — a family recognisable in both profiles that
+ * declared only one would be looked for by one lane where the other never
+ * looks. Contract 1.1 stated the two halves inconsistently in two places; 2.0.0
+ * states them once, and `scripts/check-family-registry.mjs` enforces them.
  */
 export const PROFILES = Object.freeze({
   'stage-docs': Object.freeze({
@@ -325,10 +333,12 @@ export function buildManifest(repoRoot, commit) {
  * without a verdict; the first two are drift the operator has to resolve.
  *
  * An earlier revision called them "the rebaseline trigger the contract names in
- * §8". Checked against the draft contract, §8 is the verdict table and states no
+ * §8". Checked against the contract, §8 is the verdict table and states no
  * rebaseline rule at all, and its §8.2 makes a mismatched pin `not-comparable` —
  * the opposite of a licence to re-pin. Drift is a question for the owner, not an
- * instruction to move the baseline.
+ * instruction to move the baseline. Contract 2.0.0 §10.3 sharpens this further:
+ * growth discovered after the freeze needs a version change and an explicit
+ * rebaseline, never a silent one.
  */
 /**
  * Structural validation, run before any comparison.
