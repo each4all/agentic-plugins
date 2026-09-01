@@ -928,6 +928,17 @@ repository access at the pinned commit can read the incumbent detector, the
 excluded evidence records, and this repository's history, all of which reveal
 the shape of a correct answer.
 
+`scripts/evidence-bundle.mjs build` produces one and `verify` checks it. The
+check runs in **both directions**, and both are needed: every file the manifest
+names is present with the bytes it names, **and** no file is present that the
+manifest and §11.2's May list do not account for. A bundle carrying one extra
+file is not a bundle, and a builder that only checked the first direction would
+report a clean delivery over a leak.
+
+A lane is pointed at the bundle **directory**, not at the repository. Clearing a
+session's memory is not a substitute: the forbidden material is reachable from
+the repository by reading, so the isolation has to be that it is not there.
+
 ### 11.2 What each lane may and may not see
 
 **May**: this contract, the family registry, the corpus manifest, and its
