@@ -1,11 +1,11 @@
 {
   "contract_version": "2.0.0",
-  "digest": "e00c77ba3ed716232cf0c0435bb19eafed0c25d2fd5d01179ec3eb0c98b6520d",
+  "digest": "3c7d34b1bb7eb08bef6de1f9778852bd373519c206225e2624a10f1248ca806e",
   "files": [
     {
-      "bytes": 56235,
+      "bytes": 56904,
       "path": "docs/assurance/evidence/measurement/measurement-contract.md",
-      "sha256": "6f7d75e36aefaa07a73afe60b870eb15701aef86945217367c4b5420b4536dc2"
+      "sha256": "4b0299d8f69131302d951509893af9bfed339c4edd3c065a88e969da41598df2"
     },
     {
       "bytes": 10472,
