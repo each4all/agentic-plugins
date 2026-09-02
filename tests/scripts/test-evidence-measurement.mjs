@@ -22,7 +22,8 @@ import { execFileSync } from 'node:child_process';
 import {
   compare, reduce, compareDisposition, roleBindingsAgree, identityKey,
   policyDigest, canonicalDigest, canonicalSerialise, bundleDigest, verifySeal,
-  authorityDrift, buildAuthoritySnapshot, buildSeal, resolveCanonical,
+  authorityDrift, buildAuthoritySnapshot, buildSeal, resolveCanonical, BUNDLE_FILES,
+  ARTIFACT_SCHEMA_PATH,
   resolveAuthorityFields, resolveQuote, artifactDigest, expectedZeroCovers,
   evaluateArtifactOnly, occurrenceKey, resolveIntegrationRef, logicalIntegrationRef,
   CONTRACT_VERSION, DISPOSITIONS, STATUSES, VERDICTS,
@@ -37,7 +38,7 @@ const REPO = new URL('../../', import.meta.url).pathname;
 //                0         1         2         3         4         5         6
 //                0123456789012345678901234567890123456789012345678901234567890
 const BLOB_TEXT = 'tag plugin-runtime-v0.1.0 pr #100 sha aaaaaaa then again aaaaaaa end';
-const BLOB_ID = 'b1';
+const BLOB_ID = 'b'.repeat(40);      // schema-valid: an object name, not a nickname
 const BLOBS = { [BLOB_ID]: Buffer.from(BLOB_TEXT, 'utf8') };
 const readBlob = (id) => BLOBS[id] ?? null;
 
@@ -52,7 +53,9 @@ const SHA_SECOND = at(57, 64);// aaaaaaa  (second — same literal, different sp
 const occ = (span, family) => ({ ...span, family, literal: lit(span) });
 
 const REGISTRY = {
-  contract_version: '2.0.0',
+  // Derived, not literal: a hardcoded version turns every fixture red on a
+  // contract bump for a reason that has nothing to do with what it tests.
+  contract_version: CONTRACT_VERSION,
   families: [
     { id: 'package-tag' }, { id: 'pr-citation' }, { id: 'commit-citation' },
   ],
@@ -69,8 +72,10 @@ const REGISTRY = {
     binding: { declared_by: 'lane', declaration_keys: ['relation', 'anchor_domain', 'class', 'parameters', 'ranking', 'tie_policy', 'digest'] },
   }],
 };
-const MANIFEST = { digest: 'manifest-digest-fixture' };
-const BUNDLE = 'bundle-digest-fixture';
+const MANIFEST = { digest: 'd'.repeat(64) };
+const BUNDLE = 'e'.repeat(64);
+const CORPUS_COMMIT = 'c'.repeat(40);
+const ARTIFACT_SCHEMA_JSON = JSON.parse(readFileSync(join(REPO, ARTIFACT_SCHEMA_PATH), 'utf8'));
 
 function policy(overrides = {}) {
   const p = {
@@ -88,12 +93,12 @@ function policy(overrides = {}) {
 function artifact({ id, role, anchors, occurrences, policies = [policy()], ...rest }) {
   const base = {
     schema: 'evidence-measurement-artifact-1.0',
-    contract_version: '2.0.0',
+    contract_version: CONTRACT_VERSION,
     role,
     artifact_id: id,
     bundle_digest: BUNDLE,
     manifest_digest: MANIFEST.digest,
-    corpus_commit: 'c0ffee',
+    corpus_commit: CORPUS_COMMIT,
     policies,
     occurrences,
     anchors,
@@ -130,7 +135,9 @@ const boundRow = (squashSpan) => ({
 });
 
 function run(artifacts, extra = {}) {
-  return compare({ artifacts, registry: REGISTRY, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob, ...extra });
+  // The schema is passed in, so every fixture below is also a conformance case.
+  // Omitting it would ship a schema that nothing in this suite ever applied.
+  return compare({ artifacts, registry: REGISTRY, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob, artifactSchema: ARTIFACT_SCHEMA_JSON, ...extra });
 }
 
 // --- §7.2 the table is total -------------------------------------------------
@@ -523,9 +530,10 @@ test('§11.3 — the bundle digest is over bytes: stable across runs, moved by o
   // string would not have moved — which is the whole argument for §11.3.
   const d = mkdtempSync(join(tmpdir(), 'bundle-byte-'));
   try {
-    const files = ['docs/assurance/evidence/measurement/measurement-contract.md',
-                   'docs/assurance/evidence/measurement/family-registry.json',
-                   'docs/assurance/evidence/measurement/corpus-manifest.json'];
+    // Derived from BUNDLE_FILES, not listed. A hardcoded list silently stops
+    // covering the bundle the moment a member is added — which happened when
+    // the artifact schema became the fourth.
+    const files = [...BUNDLE_FILES];
     for (const f of files) {
       mkdirSync(join(d, f.slice(0, f.lastIndexOf('/'))), { recursive: true });
       writeFileSync(join(d, f), readFileSync(join(REPO, f)));
@@ -633,7 +641,8 @@ test('§2.1 serialisation orders integer-like keys lexicographically', () => {
 
 test('§11.3 — buildSeal records every bundle member with its own byte digest', () => {
   const seal = buildSeal(REPO);
-  assert.equal(seal.files.length, 3);
+  assert.equal(seal.files.length, BUNDLE_FILES.length);
+  assert.ok(BUNDLE_FILES.length >= 4, 'the schema must be a sealed member (§3.8, §11.3)');
   for (const f of seal.files) {
     assert.match(f.sha256, /^[0-9a-f]{64}$/);
     assert.equal(f.bytes, readFileSync(join(REPO, f.path)).length);
@@ -1222,4 +1231,32 @@ test('evaluateArtifactOnly reads the field state, and an omitted field is absent
   assert.equal(evaluateArtifactOnly({ artifacts: [mk('oracle', 'present', 1), mk('lane', 'present', 2)], registry }).disagreeing.length, 1);
   // A registry declaring no artifact-only field produces nothing at all.
   assert.deepEqual(evaluateArtifactOnly({ artifacts: [mk('lane', 'present', 1)], registry: { families: [{ id: 'proof-run-id', fields: [{ name: 'x' }] }] } }).qualified, []);
+});
+
+
+test('§8.2/§3.8 — the schema catches what no other comparator check looks at', () => {
+  // These three are well-formed as far as every hand-written check in the
+  // comparator is concerned: the bundle digests match, the pins match, the
+  // spans decode, the families are registered. Only the schema sees them — so
+  // if schema validation were skipped, the run would reach a verdict on an
+  // artifact nothing had validated.
+  const oracle = artifact({ id: 'oracle', role: 'oracle', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] });
+  const onlySchema = [
+    ['an unknown top-level property', (a) => ({ ...a, surprise: 'a field no clause defines' })],
+    ['a sealed_at that is not an instant', (a) => ({ ...a, attestation: { ...a.attestation, sealed_at: '2026-09-02' } })],
+    ['a qualifier outside §7.5', (a) => ({ ...a, anchors: a.anchors.map((x) => ({ ...x, qualifiers: ['invented'] })) })],
+  ];
+  for (const [label, mutate] of onlySchema) {
+    // Reseal AFTER mutating, or §11.4's artifact_digest fires first and the
+    // control below reports not-comparable for a reason that is not the schema.
+    const lane = reseal(mutate(artifact({ id: 'lane', role: 'lane', occurrences: BASE_OCCS, anchors: [boundRow(SHA_FIRST)] })));
+    const withSchema = run([oracle, lane]);
+    assert.ok(withSchema.structural.length > 0, `the schema missed: ${label}`);
+    assert.equal(withSchema.verdict, 'not-comparable');
+
+    // CONTROL: the same artifact with NO schema supplied reaches a verdict,
+    // which is exactly what makes the schema load-bearing here.
+    const without = compare({ artifacts: [oracle, lane], registry: REGISTRY, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob });
+    assert.equal(without.verdict, 'pass', `${label}: expected the non-schema path to be blind to this`);
+  }
 });

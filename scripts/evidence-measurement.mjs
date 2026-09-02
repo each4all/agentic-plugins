@@ -37,6 +37,7 @@
 //   2 — usage error
 
 import { createHash } from 'node:crypto';
+import { validate as validateAgainstSchema } from './json-schema-mini.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -49,13 +50,14 @@ export const MEASUREMENT_DIR = 'docs/assurance/evidence/measurement';
 export const CONTRACT_PATH = `${MEASUREMENT_DIR}/measurement-contract.md`;
 export const REGISTRY_PATH = `${MEASUREMENT_DIR}/family-registry.json`;
 export const MANIFEST_PATH = `${MEASUREMENT_DIR}/corpus-manifest.json`;
+export const ARTIFACT_SCHEMA_PATH = `${MEASUREMENT_DIR}/artifact-schema.json`;
 export const SEAL_PATH = `${MEASUREMENT_DIR}/bundle-seal.json`;
 export const AUTHORITY_BASELINE_PATH = `${MEASUREMENT_DIR}/authority-baseline.json`;
 
 export const ARTIFACT_SCHEMA = 'evidence-measurement-artifact-1.0';
 export const SEAL_SCHEMA = 'evidence-measurement-bundle-1.0';
 export const AUTHORITY_SCHEMA = 'evidence-measurement-authority-1.0';
-export const CONTRACT_VERSION = '2.0.0';
+export const CONTRACT_VERSION = '2.1.0';
 
 /** Contract §4.3 — the four dispositions. */
 export const DISPOSITIONS = Object.freeze(['bound', 'not-a-claim', 'ambiguous', 'incomplete']);
@@ -119,7 +121,16 @@ export function artifactDigest(artifact) {
 // §11.3 — the sealed bundle
 // ---------------------------------------------------------------------------
 
-export const BUNDLE_FILES = Object.freeze([CONTRACT_PATH, REGISTRY_PATH, MANIFEST_PATH]);
+/**
+ * §11.3 — the sealed bundle, four members as of contract 2.1.0.
+ *
+ * The artifact schema joined them because prose is not a shape two independent
+ * authors can emit compatibly: the contract described the artifact's fields and
+ * shipped nothing a producer could validate against, so two lanes would have
+ * emitted two wire forms and the comparator would have rejected both as
+ * structural errors — a run that never happens rather than a run that fails.
+ */
+export const BUNDLE_FILES = Object.freeze([CONTRACT_PATH, REGISTRY_PATH, MANIFEST_PATH, ARTIFACT_SCHEMA_PATH]);
 
 /**
  * Digest the three shared inputs as one bundle, over BYTES.
@@ -366,6 +377,16 @@ export function validateArtifact(artifact, ctx) {
 
   if (!artifact || typeof artifact !== 'object') return [{ artifact: '<unreadable>', path: '', detail: 'artifact is not an object' }];
   if (artifact.schema !== ARTIFACT_SCHEMA) at('schema', `is ${JSON.stringify(artifact.schema)}, expected ${ARTIFACT_SCHEMA}`);
+
+  // §8.2's "schema mismatch" used to be an id comparison, which accepts any
+  // shape that carries the right string. With the schema a sealed bundle member
+  // (§11.3), the artifact is validated against it — and a producer can validate
+  // against the same file before sealing, which is the point of shipping it.
+  if (ctx.artifactSchema) {
+    for (const f of validateAgainstSchema(ctx.artifactSchema, artifact)) {
+      at(f.path.replace(/^\$\.?/, '') || 'artifact', `${f.detail} (§8.2, artifact-schema.json)`);
+    }
+  }
   if (artifact.contract_version !== ctx.contractVersion) {
     at('contract_version', `is ${JSON.stringify(artifact.contract_version)}, expected ${ctx.contractVersion} (§10.1)`);
   }
@@ -653,7 +674,7 @@ export function roleBindingsAgree(relationRoles, oracleRoles = {}, laneRoles = {
 // The comparison
 // ---------------------------------------------------------------------------
 
-export function compare({ artifacts, registry, manifest, bundleDigest: bundle, baseline = null, runAuthority = null, readBlob }) {
+export function compare({ artifacts, registry, manifest, bundleDigest: bundle, baseline = null, runAuthority = null, readBlob, artifactSchema = null }) {
   const families = new Set((registry.families ?? []).map((f) => f.id));
   const relations = new Map((registry.relations ?? []).map((r) => [r.id, r]));
   const declarationKeys = new Map((registry.relations ?? []).map((r) => [r.id, r.binding?.declaration_keys ?? []]));
@@ -667,6 +688,7 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
   const fieldsByFamily = new Map((registry.families ?? []).map((f) => [f.id, f.fields ?? []]));
   const ctx = {
     families, relations, declarationKeys, readBlob, membership, fieldsByFamily,
+    artifactSchema,
     contractVersion: registry.contract_version,
     bundleDigest: bundle,
     manifestDigest: manifest?.digest ?? null,
@@ -1034,6 +1056,7 @@ export function main(argv, repoRoot = REPO_ROOT) {
     if (paths.length === 0) { console.error('usage: evidence-measurement.mjs compare --artifact <path> [--artifact <path>…]'); return 2; }
     const registry = JSON.parse(readFileSync(resolve(repoRoot, REGISTRY_PATH), 'utf8'));
     const manifest = JSON.parse(readFileSync(resolve(repoRoot, MANIFEST_PATH), 'utf8'));
+    const artifactSchema = JSON.parse(readFileSync(resolve(repoRoot, ARTIFACT_SCHEMA_PATH), 'utf8'));
     // §11.3 — the RECORDED seal is what artifacts declared against. An earlier
     // revision computed the seal fresh and compared artifacts to that, so
     // edited shared bytes were accepted whenever both artifacts happened to
@@ -1052,7 +1075,7 @@ export function main(argv, repoRoot = REPO_ROOT) {
     const runPath = flagValue(argv, '--run-authority');
     const baseline = baselinePath ? JSON.parse(readFileSync(resolve(repoRoot, baselinePath), 'utf8')) : null;
     const runAuthority = runPath ? JSON.parse(readFileSync(resolve(repoRoot, runPath), 'utf8')) : (baseline ? buildAuthoritySnapshot(repoRoot, { ref: baseline.integration_ref }) : null);
-    const result = compare({ artifacts, registry, manifest, bundleDigest: seal.expected, baseline, runAuthority, readBlob: gitBlobReader(repoRoot) });
+    const result = compare({ artifacts, registry, manifest, bundleDigest: seal.expected, baseline, runAuthority, readBlob: gitBlobReader(repoRoot), artifactSchema });
     if (json) { console.log(JSON.stringify(result, null, 2)); return result.verdict === 'pass' ? 0 : 1; }
     console.log(`verdict: ${result.verdict}${result.reason ? ` — ${result.reason}` : ''}`);
     console.log(`rows: ${JSON.stringify(result.counts)}`);

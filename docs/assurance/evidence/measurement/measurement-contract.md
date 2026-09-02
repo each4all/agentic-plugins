@@ -1,12 +1,12 @@
 # The evidence measurement contract
 
-Contract version: **2.0.0**
+Contract version: **2.1.0**
 
 This document fixes the semantics that a **typed occurrence exporter** and an
 **independently authored span-level pairing oracle** must share in order to be
-compared. With the two machine-readable files it names — the corpus manifest
-and the family registry — it is the only thing they may share, and the three
-are sealed together as one bundle (§11.3).
+compared. With the three machine-readable files it names — the corpus manifest,
+the family registry, and the artifact schema — it is the only thing they may
+share, and the four are sealed together as one bundle (§11.3).
 
 It names **no expected value**: no commit, tag, run id, record id, or count
 that either side should produce. §1.2 states the test, and why the corpus pin
@@ -323,6 +323,36 @@ no reducer row.
 ### 3.7 Line and column are diagnostics
 
 Line and column may be reported for humans and are never compared.
+
+### 3.8 The wire shape is a schema, not a description
+
+`artifact-schema.json` in this directory fixes the shape an artifact is emitted
+in, and is a **sealed bundle member** (§11.3). Every producer validates against
+it before sealing; the comparator validates against it before anything else
+(§8.2).
+
+**Version 2.0.0 described these fields in prose and shipped nothing to emit
+against**, which is the defect this section repairs. Two independent authors
+reading the same description produce two wire forms — a role left unfilled as
+`null` in one and absent in the other, a field as a bare value here and a
+`{state, value}` object there — and the comparator rejects both as structural
+errors. That is a run that never happens rather than a run that fails, and §8.4
+already names that difference as the one that matters.
+
+A schema is **protocol, not a corpus reading** (§1.2): it says what shape a
+claim takes and nothing about which claims this corpus contains, so sharing it
+costs no independence. It is the one shared input a lane consults while
+authoring rather than only when sealing.
+
+Two shape rules are decisions rather than transcription, and are stated here:
+
+- **An unfilled role is absent, never null.** §4.3 makes which roles are filled
+  part of a disposition's meaning, so two spellings of one fact would be two
+  things for lanes to differ about.
+- **The schema constrains shape and cannot constrain semantics.** That a `bound`
+  row fills every required role (§4.3), that a literal decodes from its own span
+  (§3.5), and that an occurrence lies inside the pinned profile (§2.1) are all
+  comparator checks. A schema pass is necessary and never sufficient.
 
 ---
 
@@ -714,7 +744,8 @@ to be required.
 
 These are checked before any status is assigned, on every artifact:
 
-- schema or contract-version mismatch;
+- an artifact that does not validate against `artifact-schema.json` (§3.8), or
+  a contract-version mismatch;
 - **bundle digest mismatch, or differing bundle seals between the artifacts**
   (§11.3);
 - corpus manifest digest mismatch, or differing pins between the artifacts;
@@ -867,8 +898,11 @@ is regenerated only by a deliberate rebaseline (§10.2 rule 2).
 
 Both artifacts declare this contract's version, the corpus manifest digest, and
 the bundle digest (§11.3) before comparison. A mismatch is a structural error
-(§8.2). Adding or changing a family, relation, disposition, status, or reducer
-row is a version change.
+(§8.2). Adding or changing a family, relation, disposition, status, reducer row,
+or shared bundle member is a version change. 2.1.0 added the artifact schema
+(§3.8) as the fourth member: additive, so no earlier artifact is invalidated —
+there were none — and the bundle digest necessarily moves, which is what §11.3
+exists to make visible.
 
 ### 10.2 Rules
 
@@ -941,8 +975,8 @@ the repository by reading, so the isolation has to be that it is not there.
 
 ### 11.2 What each lane may and may not see
 
-**May**: this contract, the family registry, the corpus manifest, and its
-selected-blob bundle.
+**May**: this contract, the family registry, the corpus manifest, the artifact
+schema (§3.8), and its selected-blob bundle.
 
 **May not**: the other lane's artifact or any part of it; the comparator's
 output; either authority snapshot (§9); the other lane's intermediate totals,
@@ -952,9 +986,9 @@ derived from this corpus (§1.2, §4.2).
 
 ### 11.3 The sealed bundle
 
-The three shared inputs are sealed as one **bundle digest**: the SHA-256, in
-lowercase hex, over the exact bytes of this contract, the family registry, and
-the corpus manifest, in that fixed order.
+The four shared inputs are sealed as one **bundle digest**: the SHA-256, in
+lowercase hex, over the exact bytes of this contract, the family registry, the
+corpus manifest, and the artifact schema (§3.8), in that fixed order.
 
 **The framing is fixed here because it is not derivable.** For each member, in
 order, the hash absorbs
@@ -979,7 +1013,7 @@ The digest is over bytes, so it cannot be true of two different texts.
 
 `scripts/evidence-measurement.mjs seal` computes it and writes
 `bundle-seal.json` in this directory; `seal --verify` fails when any of the
-three files has moved a byte. Both artifacts declare the bundle digest, and a
+four files has moved a byte. Both artifacts declare the bundle digest, and a
 mismatch — between an artifact and the seal, or between two artifacts — is a
 structural error (§8.2).
 
