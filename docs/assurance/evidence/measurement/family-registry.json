@@ -1,6 +1,6 @@
 {
   "schema": "evidence-measurement-families-2.0",
-  "contract_version": "2.0.0",
+  "contract_version": "2.1.0",
   "note": "Declares WHAT KINDS of datum are measured and over WHICH anchor population, never WHICH instances and never how one occurrence binds to another. Every recognition rule below is a lexical observable statable without reading this corpus. Association is deliberately absent: contract 4.2 fixes no rule, and each relation's `binding` block declares the shape of the policy each lane must declare for itself (contract 4.5) rather than naming a rule for both to obey. See measurement-contract.md 1.2 for the shareable/not-shareable test.",
   "field_states": ["present", "explicit-null", "unresolved", "not-applicable"],
   "units": ["occurrence", "relation"],

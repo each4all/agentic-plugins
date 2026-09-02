@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-plugins.invalid/evidence/measurement/artifact-schema-1.0.json",
+  "title": "Evidence measurement artifact",
+  "description": "The wire shape a lane or an oracle emits. Contract 2.1.0 adds this as the fourth sealed bundle member: the contract describes these fields in prose, and prose is not a shape two independent authors can emit compatibly. Nothing here is corpus-derived — a schema is protocol under contract 1.2, and says nothing about what the corpus contains.",
+  "type": "object",
+  "required": ["schema", "contract_version", "role", "artifact_id", "bundle_digest", "manifest_digest", "corpus_commit", "policies", "occurrences", "anchors", "attestation"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "evidence-measurement-artifact-1.0" },
+    "contract_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "role": {
+      "enum": ["lane", "oracle"],
+      "description": "Contract 4.4. A run has at most one oracle; without one it has no correctness verdict."
+    },
+    "artifact_id": { "type": "string", "minLength": 1 },
+    "bundle_digest": { "$ref": "#/$defs/sha256" },
+    "manifest_digest": { "$ref": "#/$defs/sha256" },
+    "corpus_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "policies": { "type": "array", "items": { "$ref": "#/$defs/policy" } },
+    "occurrences": { "type": "array", "items": { "$ref": "#/$defs/occurrence" } },
+    "anchors": { "type": "array", "items": { "$ref": "#/$defs/anchor" } },
+    "attestation": { "$ref": "#/$defs/attestation" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "identity": {
+      "title": "Physical occurrence identity",
+      "description": "Contract 3.2 — (path, blob, start_byte, end_byte). Profile is NOT part of the key; it is carried on an occurrence for membership (contract 2.1) and is optional on a role binding, where it decides nothing.",
+      "type": "object",
+      "required": ["path", "blob", "start_byte", "end_byte"],
+      "additionalProperties": false,
+      "properties": {
+        "profile": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "blob": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "field_value": {
+      "description": "Contract 6 — a field is in exactly one state. `value` is absent when the state is not `present`.",
+      "type": "object",
+      "required": ["state"],
+      "additionalProperties": false,
+      "properties": {
+        "state": { "enum": ["present", "explicit-null", "unresolved", "not-applicable"] },
+        "value": { "type": ["string", "number", "boolean", "null"] }
+      }
+    },
+    "occurrence": {
+      "type": "object",
+      "required": ["profile", "path", "blob", "start_byte", "end_byte", "family", "literal"],
+      "additionalProperties": false,
+      "properties": {
+        "profile": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "blob": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 1 },
+        "family": { "type": "string", "minLength": 1 },
+        "literal": {
+          "type": "string",
+          "description": "Contract 3.5 — must equal the UTF-8 decoding of the span. The comparator checks it against the blob; the schema can only require that it is present."
+        },
+        "fields": {
+          "type": "object",
+          "description": "Contract 3.3 — the registry's declared fields, compared. Keyed by field name.",
+          "additionalProperties": { "$ref": "#/$defs/field_value" }
+        },
+        "quoted_context": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Contract 3.6 — a rebaseline aid, resolved to a span and never guessed at. Decides no verdict."
+        },
+        "line": { "type": "integer", "minimum": 1, "description": "Contract 3.7 — diagnostic, never compared." },
+        "column": { "type": "integer", "minimum": 1, "description": "Contract 3.7 — diagnostic, never compared." }
+      }
+    },
+    "anchor": {
+      "description": "Contract 4.3 — exactly one row per in-scope anchor, and the disposition must be consistent with the roles it names. The schema fixes the shape; the comparator checks the consistency, which a schema cannot express.",
+      "type": "object",
+      "required": ["relation", "anchor", "disposition", "roles"],
+      "additionalProperties": false,
+      "properties": {
+        "relation": { "type": "string", "minLength": 1 },
+        "anchor": { "$ref": "#/$defs/identity" },
+        "disposition": { "enum": ["bound", "not-a-claim", "ambiguous", "incomplete"] },
+        "roles": {
+          "type": "object",
+          "description": "Role name to the identity filling it. An UNFILLED ROLE IS ABSENT, never null: contract 4.3 makes which roles are filled part of the disposition's meaning, and two wire spellings of one fact are two things for a lane to differ about. Only filled roles appear.",
+          "additionalProperties": { "$ref": "#/$defs/identity" }
+        },
+        "qualifiers": {
+          "type": "array",
+          "items": { "enum": ["authored-by-design", "artifact-only"] },
+          "description": "Contract 7.5 — annotates a row, never replaces its status."
+        },
+        "provenance": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Contract 4.4 property 2 — how this row was adjudicated. An oracle records it per row."
+        }
+      }
+    },
+    "policy": {
+      "description": "Contract 4.5 — structured and digested, never a bare name. `class` is deliberately free text: contract 4.2 removed the fixed vocabulary, and an enum here would restore it.",
+      "type": "object",
+      "required": ["relation", "anchor_domain", "class", "parameters", "ranking", "tie_policy", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "relation": { "type": "string", "minLength": 1 },
+        "anchor_domain": {
+          "type": "object",
+          "required": ["family", "profile", "restriction"],
+          "additionalProperties": false,
+          "properties": {
+            "family": { "type": "string", "minLength": 1 },
+            "profile": { "type": "string", "minLength": 1 },
+            "restriction": { "type": ["string", "null"] }
+          }
+        },
+        "class": { "type": "string", "minLength": 1 },
+        "parameters": {
+          "type": "object",
+          "description": "Flat: every value is a scalar. Contract 4.5 fixes it flat so two declarations are comparable key by key.",
+          "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+        },
+        "ranking": { "type": "string", "minLength": 1 },
+        "tie_policy": { "enum": ["ambiguous", "ranked"] },
+        "digest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "attestation": {
+      "description": "Contract 11.4 — a claim by its lane, not a proof. What a comparator can decide is that it exists and agrees with the artifact beside it.",
+      "type": "object",
+      "required": ["contract_version", "bundle_digest", "manifest_digest", "artifact_digest", "sealed_at", "prohibited_inputs_accessed"],
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "bundle_digest": { "$ref": "#/$defs/sha256" },
+        "manifest_digest": { "$ref": "#/$defs/sha256" },
+        "artifact_digest": { "$ref": "#/$defs/sha256" },
+        "sealed_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+        "prohibited_inputs_accessed": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Empty is a claim; absent is a silence. Contract 11.4 requires it written either way."
+        }
+      }
+    }
+  }
+}

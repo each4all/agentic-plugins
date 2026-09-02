@@ -1,21 +1,26 @@
 {
-  "contract_version": "2.0.0",
-  "digest": "3c7d34b1bb7eb08bef6de1f9778852bd373519c206225e2624a10f1248ca806e",
+  "contract_version": "2.1.0",
+  "digest": "de28cedddfec3c2aaf60d92e64cde1cea4649ffac8bfe13eb1580d0db7a7d3c5",
   "files": [
     {
-      "bytes": 56904,
+      "bytes": 58981,
       "path": "docs/assurance/evidence/measurement/measurement-contract.md",
-      "sha256": "4b0299d8f69131302d951509893af9bfed339c4edd3c065a88e969da41598df2"
+      "sha256": "ad7ca83ce9d491cabe2d1f9d180c85d776dcb11b03141f0d19392467d89fac4d"
     },
     {
       "bytes": 10472,
       "path": "docs/assurance/evidence/measurement/family-registry.json",
-      "sha256": "ce93e2b813696b0f11b7bdf1600748f08b84488aacf0b8c74cf2152d4ab9eebe"
+      "sha256": "116eca5f2e1440754d956835d337ae381d1d50f19b46fd6f33f42f37997a9dc4"
     },
     {
       "bytes": 14628,
       "path": "docs/assurance/evidence/measurement/corpus-manifest.json",
       "sha256": "bb37afe56191f5824e4f4b0fb1d013773b3bf8f034096fe49f826a1ae7dd038e"
+    },
+    {
+      "bytes": 8247,
+      "path": "docs/assurance/evidence/measurement/artifact-schema.json",
+      "sha256": "b8a6f36d0473cf9ebd5d4a2b006c346679438eb51b404f46a884f9eb6b946d23"
     }
   ],
   "schema": "evidence-measurement-bundle-1.0"
