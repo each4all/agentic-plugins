@@ -99,6 +99,10 @@ function artifact({ id, role, anchors, occurrences, policies = [policy()], ...re
     bundle_digest: BUNDLE,
     manifest_digest: MANIFEST.digest,
     corpus_commit: CORPUS_COMMIT,
+    // §2.3 (2.2.0) — these fixtures stand in for the bundle delivery model,
+    // which carries no run artifacts, so the honest scope is out-of-scope.
+    // Tests that need §8.3 rows 6/9 opt into `in-scope` explicitly.
+    artifact_only_scope: 'out-of-scope',
     policies,
     occurrences,
     anchors,
@@ -129,9 +133,12 @@ function reseal(a) {
 
 const BASE_OCCS = [occ(TAG, 'package-tag'), occ(PR, 'pr-citation'), occ(SHA_FIRST, 'commit-citation'), occ(SHA_SECOND, 'commit-citation')];
 
+// §4.3 (2.2.0) — the anchor role (`tag`) is filled by the row's `anchor` and is
+// NOT repeated here. Two annotators taking opposite conventions from 2.1.0's
+// silence manufactured a role-binding difference on every otherwise-agreeing row.
 const boundRow = (squashSpan) => ({
   relation: 'release-triple', anchor: TAG, disposition: 'bound',
-  roles: { tag: TAG, release_pr: PR, squash: squashSpan },
+  roles: { release_pr: PR, squash: squashSpan },
 });
 
 function run(artifacts, extra = {}) {
@@ -287,9 +294,10 @@ test('E1 — pass, fail and blocked are all reachable on the SHIPPED registry', 
   const manifest = { digest: 'm', profiles: { 'stage-docs': { files: [{ path: 'docs/ARCHITECTURE.md', blob: 'pb', bytes: proofText.length }] } } };
   const pol = (relation, family) => { const b = { relation, anchor_domain: { family, profile: 'stage-docs', restriction: null }, class: 'annotation', parameters: {}, ranking: 'none', tie_policy: 'ambiguous' }; return { ...b, digest: policyDigest(b) }; };
 
-  const mk = (id, role, artifactState, disposition) => {
+  const mk = (id, role, artifactState, disposition, scope = 'in-scope') => {
     const base = {
       schema: 'evidence-measurement-artifact-1.0', contract_version: shipped.contract_version, role, artifact_id: id,
+      artifact_only_scope: scope,
       bundle_digest: 'B', manifest_digest: 'm', corpus_commit: 'c',
       policies: [pol('proof-date-binding', 'proof-run-id'), pol('release-triple', 'package-tag')],
       occurrences: [
@@ -300,38 +308,54 @@ test('E1 — pass, fail and blocked are all reachable on the SHIPPED registry', 
         { ...SHA, family: 'commit-citation', literal: SHA_LITERAL },
       ],
       anchors: [
-        { relation: 'proof-date-binding', anchor: RUN_ID_SPAN, disposition, roles: disposition === 'not-a-claim' ? {} : { run_id: RUN_ID_SPAN, date: DATE } },
-        { relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: { tag: TAG, release_pr: PR, squash: SHA } },
+        { relation: 'proof-date-binding', anchor: RUN_ID_SPAN, disposition, roles: disposition === 'not-a-claim' ? {} : { date: DATE } },
+        { relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: { release_pr: PR, squash: SHA } },
       ],
     };
     return { ...base, attestation: { contract_version: base.contract_version, bundle_digest: 'B', manifest_digest: 'm', artifact_digest: artifactDigest(base), sealed_at: '2026-01-01T00:00:00Z', prohibited_inputs_accessed: [] } };
   };
   const run2 = (o, l) => compare({ artifacts: [o, l], registry: shipped, manifest, bundleDigest: 'B', readBlob: readProof, baseline: SNAPSHOT, runAuthority: SNAPSHOT });
 
-  // PASS — artifact present and agreeing on both sides.
   const present = { state: 'present', value: true };
-  const passing = run2(mk('oracle', 'oracle', present, 'bound'), mk('lane', 'lane', present, 'bound'));
-  assert.deepEqual(passing.structural, [], JSON.stringify(passing.structural, null, 2));
-  assert.equal(passing.verdict, 'pass', passing.reason ?? '');
-
-  // FAIL — the lane misses a claim the oracle bound. Reached WITHOUT depending
-  // on the artifact rows, because row 4 precedes rows 6 and 9.
-  const failing = run2(mk('oracle', 'oracle', present, 'bound'), mk('lane', 'lane', present, 'not-a-claim'));
-  assert.equal(failing.verdict, 'fail', failing.reason ?? '');
-
-  // BLOCKED — the artifact is absent on this machine. This is the honest
-  // answer for the shipped registry on a machine without the run artifacts,
-  // not a defect: §2.3 says artifact-only fields are machine-dependent.
   const absent = { state: 'not-applicable', value: null };
-  const blocked = run2(mk('oracle', 'oracle', absent, 'bound'), mk('lane', 'lane', absent, 'bound'));
-  assert.equal(blocked.verdict, 'blocked', blocked.reason ?? '');
-  assert.match(blocked.reason, /artifact-only/);
-  assert.ok(blocked.artifact_only.absent.length > 0);
 
-  // And omitting the field entirely must NOT read as present — that was the
-  // route by which a lane reached `pass` by saying nothing.
-  const silent = run2(mk('oracle', 'oracle', undefined, 'bound'), mk('lane', 'lane', undefined, 'bound'));
-  assert.equal(silent.verdict, 'blocked', silent.reason ?? '');
+  // ── THE DELIVERY MODEL THAT ACTUALLY SHIPS ────────────────────────────────
+  // §11.1 hands a lane the corpus blobs and the shared inputs and nothing else,
+  // so no bundle-delivered artifact can ever report an artifact-only field
+  // `present`. 2.1.0 read that as "absent on this machine" and blocked at row
+  // 9, which made `pass` unreachable for EVERY clean-room run — the same
+  // verdict-unreachability that retired 1.0. 2.2.0's scope declaration is the
+  // correction, and this is the case that proves it.
+  const outPass = run2(mk('oracle', 'oracle', undefined, 'bound', 'out-of-scope'),
+                       mk('lane', 'lane', undefined, 'bound', 'out-of-scope'));
+  assert.deepEqual(outPass.structural, [], JSON.stringify(outPass.structural, null, 2));
+  assert.equal(outPass.artifact_only.scope, 'out-of-scope');
+  assert.equal(outPass.verdict, 'pass', outPass.reason ?? '');
+
+  const outFail = run2(mk('oracle', 'oracle', undefined, 'bound', 'out-of-scope'),
+                       mk('lane', 'lane', undefined, 'not-a-claim', 'out-of-scope'));
+  assert.equal(outFail.verdict, 'fail', outFail.reason ?? '');
+
+  // ── AN IN-SCOPE RUN, WHERE ROWS 6 AND 9 DO APPLY ──────────────────────────
+  const inPass = run2(mk('oracle', 'oracle', present, 'bound'), mk('lane', 'lane', present, 'bound'));
+  assert.equal(inPass.verdict, 'pass', inPass.reason ?? '');
+
+  const inFail = run2(mk('oracle', 'oracle', present, 'bound'), mk('lane', 'lane', present, 'not-a-claim'));
+  assert.equal(inFail.verdict, 'fail', inFail.reason ?? '');
+
+  const inBlocked = run2(mk('oracle', 'oracle', absent, 'bound'), mk('lane', 'lane', absent, 'bound'));
+  assert.equal(inBlocked.verdict, 'blocked', inBlocked.reason ?? '');
+  assert.match(inBlocked.reason, /artifact-only/);
+
+  // In an IN-SCOPE run, omitting the field must not read as present.
+  const inSilent = run2(mk('oracle', 'oracle', undefined, 'bound'), mk('lane', 'lane', undefined, 'bound'));
+  assert.equal(inSilent.verdict, 'blocked', inSilent.reason ?? '');
+
+  // ── THE SCOPE IS A PROPERTY OF THE RUN, NOT OF ONE SIDE ───────────────────
+  const split = run2(mk('oracle', 'oracle', undefined, 'bound', 'out-of-scope'),
+                     mk('lane', 'lane', present, 'bound', 'in-scope'));
+  assert.equal(split.verdict, 'not-comparable');
+  assert.ok(split.structural.some((x) => x.path === 'artifact_only_scope'), JSON.stringify(split.structural));
 });
 
 // --- §8.4 non-vacuity --------------------------------------------------------
@@ -1090,16 +1114,17 @@ test('§4.3 — a disposition that contradicts its own roles is structural', () 
   assert.ok(emptyBound.structural.some((x) => /leaves required role/.test(x.detail)), JSON.stringify(emptyBound.structural));
   assert.equal(emptyBound.verdict, 'not-comparable');
 
-  const fullIncomplete = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'incomplete', roles: { tag: TAG, release_pr: PR } }]);
+  const fullIncomplete = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'incomplete', roles: { release_pr: PR } }]);
   assert.ok(fullIncomplete.structural.some((x) => /every required role is filled/.test(x.detail)));
 
-  const claimingNoClaim = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'not-a-claim', roles: { tag: TAG, release_pr: PR } }]);
+  const claimingNoClaim = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'not-a-claim', roles: { release_pr: PR } }]);
   assert.ok(claimingNoClaim.structural.some((x) => /but fills role/.test(x.detail)));
 
-  const wrongAnchor = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: { tag: PR, release_pr: PR } }]);
-  assert.ok(wrongAnchor.structural.some((x) => /does not name the anchor occurrence/.test(x.detail)));
+  const repeatsAnchor = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: { tag: TAG, release_pr: PR } }]);
+  assert.ok(repeatsAnchor.structural.some((x) => /repeats the anchor role/.test(x.detail)),
+    JSON.stringify(repeatsAnchor.structural));
 
-  const unknownRole = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: { tag: TAG, release_pr: PR, invented: SHA_FIRST } }]);
+  const unknownRole = bad([{ relation: 'release-triple', anchor: TAG, disposition: 'bound', roles: { release_pr: PR, invented: SHA_FIRST } }]);
   assert.ok(unknownRole.structural.some((x) => /names no role of relation/.test(x.detail)));
 });
 

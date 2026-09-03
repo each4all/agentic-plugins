@@ -29,6 +29,7 @@ const artifact = (over = {}) => ({
   contract_version: CONTRACT_VERSION,
   role: 'lane',
   artifact_id: 'lane-1',
+  artifact_only_scope: 'out-of-scope',
   bundle_digest: sha256('e'),
   manifest_digest: sha256('d'),
   corpus_commit: sha1('c'),
@@ -165,6 +166,7 @@ test('the schema rejects each malformation the contract names', () => {
     ['a corpus commit that is not an object name', { corpus_commit: 'c0ffee' }],
     ['an attestation key that is present but empty', { attestation: {} }],
     ['an unknown top-level property', { surprise: 1 }],
+    ['an artifact_only_scope outside §2.3', { artifact_only_scope: 'maybe' }],
     ['a disposition outside §4.3', { anchors: [{ relation: 'r', anchor: identity(), disposition: 'maybe', roles: {} }] }],
     ['a null role binding (§3.8: absent, never null)', { anchors: [{ relation: 'r', anchor: identity(), disposition: 'bound', roles: { tag: null } }] }],
     ['a non-scalar policy parameter', { policies: [policy({ parameters: { nested: { a: 1 } } })] }],
@@ -213,4 +215,25 @@ test('the schema accepts what the contract permits as optional', () => {
 test('§3.8/§11.3 — the schema is a sealed bundle member', () => {
   assert.ok(BUNDLE_FILES.includes(ARTIFACT_SCHEMA_PATH), 'the schema must be sealed with the other shared inputs');
   assert.equal(BUNDLE_FILES.length, 4);
+});
+
+
+test('§2.3 (2.2.0) — artifact_only_scope is required and closed', () => {
+  assert.ok(SCHEMA.required.includes('artifact_only_scope'));
+  for (const v of ['in-scope', 'out-of-scope']) {
+    assert.deepEqual(validate(SCHEMA, artifact({ artifact_only_scope: v })), [], `${v} was rejected`);
+  }
+  assert.ok(validate(SCHEMA, without(artifact(), 'artifact_only_scope')).length > 0, 'omitting the scope must be a finding');
+  assert.ok(validate(SCHEMA, artifact({ artifact_only_scope: 'sometimes' })).length > 0);
+});
+
+test('§4.3 (2.2.0) — the schema cannot forbid the anchor role, and says so', () => {
+  // The registry decides which role is the anchor, per relation, so a schema
+  // that fixed one shape would be wrong for the other relation. The comparator
+  // rejects it instead, and the schema's description records that division —
+  // an undocumented gap here would read as the schema permitting it on purpose.
+  const withAnchorRole = artifact({ anchors: [{ relation: 'release-triple', anchor: identity(), disposition: 'bound', roles: { tag: identity() } }] });
+  assert.deepEqual(validate(SCHEMA, withAnchorRole), [], 'the schema is not the place this is caught');
+  assert.match(SCHEMA.$defs.anchor.properties.roles.description, /NON-ANCHOR roles only/);
+  assert.match(SCHEMA.$defs.anchor.properties.roles.description, /comparator rejects/);
 });

@@ -1,6 +1,6 @@
 # The evidence measurement contract
 
-Contract version: **2.1.0**
+Contract version: **2.2.0**
 
 This document fixes the semantics that a **typed occurrence exporter** and an
 **independently authored span-level pairing oracle** must share in order to be
@@ -177,6 +177,23 @@ halves.
   untracked, so a measurement that read them would return different answers on
   different machines. Fields that depend on them carry the `artifact-only`
   qualifier (§7.5) and are governed by §8.3's artifact rows.
+
+  **A clean-room run therefore has no artifact-only scope at all**, and the
+  contract says so rather than leaving a lane to discover it. §11.1 delivers the
+  corpus blobs and the shared inputs and nothing else, so no bundle-delivered
+  artifact can ever report such a field `present`. Version 2.1.0 read that
+  absence as "the artifact is missing on this machine" and blocked at §8.3 row
+  9 — which made `pass` **unreachable for every clean-room run**, the same
+  verdict-unreachability that retired version 1.0, arriving through the delivery
+  model instead of through the association rule. Two independent annotators each
+  hit it, and one named it exactly: `present` is a claim it cannot make and
+  `not-applicable` is false, because the field does apply.
+
+  The resolution is a scope declaration rather than a repair of the reading. A
+  run declares `artifact_only_scope` as `in-scope` or `out-of-scope`; a
+  bundle-delivered run is `out-of-scope`, its artifact-only fields are neither
+  compared nor blocked on, and the report says so. Out of scope is not the same
+  as satisfied, and §8.4 keeps it from manufacturing a pass on its own.
 - **`association-policy.md` in this directory, and its harness
   `scripts/measure-association-policy.mjs` with the test that pins it, are
   rationale-class.** They contain readings of the frozen corpus — connector
@@ -458,6 +475,20 @@ requires at least one unfilled, and `not-a-claim` requires none filled. An
 earlier revision left this unchecked, and two `bound` rows carrying no roles at
 all compared equal and reached `agreeing`.
 
+**Those three rules are read over the NON-ANCHOR roles**, and the anchor role
+never appears in `roles` at all: it is filled by the row's own `anchor`, and
+repeating it there is a second spelling of one fact. Version 2.1.0 left this
+unsaid and two independent annotators took opposite conventions from the same
+text — one spelled the anchor into `roles` on every row, the other never did.
+Compared, that produced a role-binding difference on **every** row where both
+had otherwise agreed: a finding manufactured entirely by wire shape.
+
+The stronger argument is the one that makes the rule necessary rather than
+merely tidy. If the anchor role counted as filled by construction, then
+`not-a-claim` — which requires **none** filled — would be unrepresentable, since
+every row has an anchor. One reading of 2.1.0 therefore made a disposition the
+contract requires impossible to emit.
+
 **A missing row is a structural coverage failure, not a silent pass** (§8.2) —
 missing, that is, relative to the domain the run is measured over, which §4.4
 defines and which is *not* the same as the registry's declared domain. §4.4
@@ -685,9 +716,14 @@ Three of them carry the decision's comparison semantics directly: **oracle
 
 ### 7.3 Role binding comparison
 
-Role bindings are identical when, for every role the relation declares, the two
-sides name the same physical identity (§3.2) or both leave it unfilled. A
-`mispaired` row carries the differing roles as detail.
+Role bindings are identical when, for every **non-anchor** role the relation
+declares, the two sides name the same physical identity (§3.2) or both leave it
+unfilled. A `mispaired` row carries the differing roles as detail.
+
+The anchor role is excluded because it carries no judgment: its value is the
+row's own identity, so comparing it measures wire shape rather than pairing
+(§4.3). It cannot appear in `roles` at all, and an artifact that puts it there
+is malformed (§8.2) rather than disagreeing.
 
 A pairing disagreement is **one row, not two**. Reporting it as a `missed` on
 one role and an `unexpected` on another would split one difference into two
@@ -786,10 +822,10 @@ Evaluated in order; **the first matching row wins**.
 | 3 | Any authority-drift condition (§9), including `baseline-stale` | `not-comparable` |
 | 4 | Any row on a required relation is `mispaired`, `missed` or `unexpected` | `fail` |
 | 5 | Any occurrence-containment finding (§7.1) on a required relation | `fail` |
-| 6 | Any compared field's authority is `artifact-only`, its artifact is present, and it disagrees | `fail` |
+| 6 | The run is `artifact_only` `in-scope`, an artifact is present, and it disagrees | `fail` |
 | 7 | Any row on a required relation is `unresolved` | `blocked` |
 | 8 | Any required field is `unresolved` (§6) | `blocked` |
-| 9 | Any compared field's authority is `artifact-only` and its artifact is absent | `blocked` |
+| 9 | The run is `artifact_only` `in-scope` and an artifact is absent | `blocked` |
 | 10 | §8.4's non-vacuity condition is not met | `blocked` |
 | 11 | Otherwise | `pass` |
 
@@ -801,6 +837,11 @@ Notes on rows that earlier revisions got wrong:
   not decide the verdict" and "artifact-only can fail". Present-and-disagreeing
   fails, absent blocks, present-and-agreeing is silent. It never *alone* decides
   a `pass`.
+- **Both rows are conditioned on the run's artifact-only scope** (§2.3). An
+  `out-of-scope` run skips them entirely, because the delivery model excluded
+  the authority by construction and a check that cannot ever pass is not a
+  check. This is the correction that made `pass` reachable for a clean-room run
+  at all.
 - **Row 2 is new in 2.0.0** and is the reducer's statement of §4.4: correctness
   has an authority or it has no verdict.
 - **`not-adjudicated` appears in no row.** It is counted, reported, and cannot
@@ -812,20 +853,24 @@ Notes on rows that earlier revisions got wrong:
 it is stated precisely because the imprecise version is easy to satisfy by
 cheating.
 
-Rows 1–5, 7, 8, 10 and 11 are reachable with no `artifact-only` field in scope
-at all, which is what makes `pass` and `fail` properties of the artifacts rather
-than of the machine. Rows 6 and 9 are machine-dependent **by construction**
-(§2.3), so where the registry declares an `artifact-only` field, a machine
-without that run artifact reaches `blocked` — and that is the correct answer,
-not a defect to engineer around.
+Rows 1–5, 7, 8, 10 and 11 are reachable with no `artifact-only` field in scope,
+which is what makes `pass` and `fail` properties of the artifacts rather than of
+the machine. Rows 6 and 9 apply only to an `in-scope` run (§2.3), where the
+authority was actually delivered; there, a machine without that run artifact
+reaches `blocked`, and that is the correct answer.
 
-Two consequences the comparator's tests must honour, because an earlier revision
-honoured neither. Reachability is demonstrated on the **shipped** registry, not
-on a reduced one with the `artifact-only` family removed; and a field the
-registry declares and an artifact omits is read as **absent**, never as
-satisfied. An artifact that reached `pass` by saying nothing about a run
-artifact would have recreated reachability by dropping the condition instead of
-meeting it.
+Three consequences the comparator's tests must honour, because earlier revisions
+honoured none of them:
+
+- Reachability is demonstrated on the **shipped** registry, not on a reduced one
+  with the `artifact-only` family removed.
+- In an `in-scope` run, a field the registry declares and an artifact omits is
+  read as **absent**, never as satisfied.
+- **Reachability is demonstrated under the delivery model that actually ships.**
+  Version 2.1.0's test proved `pass` on a fixture reporting an artifact-only
+  field `present`, which no bundle-delivered artifact can produce — so the
+  demonstration was of a run nobody could perform. A reachability proof over an
+  unreachable input is not a proof.
 
 ### 8.4 `pass` cannot be vacuous
 

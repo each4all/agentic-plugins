@@ -1,16 +1,16 @@
 {
-  "contract_version": "2.1.0",
-  "digest": "de28cedddfec3c2aaf60d92e64cde1cea4649ffac8bfe13eb1580d0db7a7d3c5",
+  "contract_version": "2.2.0",
+  "digest": "c7e68f04e450fa1e6fa7497fce3ca36e077e2f38fecc34605ee5d79e242c219f",
   "files": [
     {
-      "bytes": 58981,
+      "bytes": 61778,
       "path": "docs/assurance/evidence/measurement/measurement-contract.md",
-      "sha256": "ad7ca83ce9d491cabe2d1f9d180c85d776dcb11b03141f0d19392467d89fac4d"
+      "sha256": "07e74cff952f68695ff6888282c01a1d1220e36f567c121acc8053f70e6c1936"
     },
     {
       "bytes": 10472,
       "path": "docs/assurance/evidence/measurement/family-registry.json",
-      "sha256": "116eca5f2e1440754d956835d337ae381d1d50f19b46fd6f33f42f37997a9dc4"
+      "sha256": "187ea65c98547d6eda5be331b0cef4a6969dea0cb4d8ab6c452bcec334bfd313"
     },
     {
       "bytes": 14628,
@@ -18,9 +18,9 @@
       "sha256": "bb37afe56191f5824e4f4b0fb1d013773b3bf8f034096fe49f826a1ae7dd038e"
     },
     {
-      "bytes": 8247,
+      "bytes": 8913,
       "path": "docs/assurance/evidence/measurement/artifact-schema.json",
-      "sha256": "b8a6f36d0473cf9ebd5d4a2b006c346679438eb51b404f46a884f9eb6b946d23"
+      "sha256": "bd1bfdb49540dbed3090d503c6d35c9b2d0e2fbf55d6b4d78ebbe09de387aa7b"
     }
   ],
   "schema": "evidence-measurement-bundle-1.0"
