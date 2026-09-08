@@ -1,507 +1,448 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import test from 'node:test';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import test from 'node:test';
 
 import {
-  BUNDLE_MEMBERS,
-  RELEASE_POLICY_PARAMETERS,
-  PROOF_DATE_POLICY_PARAMETERS,
-  assertArtifactSemantics,
-  buildAnchors,
-  canonicalDigest,
-  canonicalSerialize,
+  artifactDigest,
+  buildArtifact,
+  canonicalJson,
   computeBundleDigest,
-  createPolicies,
-  scanBuffer,
-  semanticErrors,
-  validateJsonSchema,
+  declarationDigest,
+  makeAnchors,
+  POLICY_PARAMETERS,
+  recognizeDocument,
+  validateAgainstSchema,
+  validateArtifactSemantics,
 } from './exporter.mjs';
 
-const OUT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.dirname(OUT_DIR);
-const BUNDLE_ROOT = path.join(ROOT, 'bundle');
-const MEASUREMENT_DIR = path.join(BUNDLE_ROOT, 'docs/assurance/evidence/measurement');
-const artifact = JSON.parse(readFileSync(path.join(OUT_DIR, 'artifact.json'), 'utf8'));
-const schema = JSON.parse(readFileSync(path.join(MEASUREMENT_DIR, 'artifact-schema.json'), 'utf8'));
-const manifest = JSON.parse(readFileSync(path.join(MEASUREMENT_DIR, 'corpus-manifest.json'), 'utf8'));
-const registry = JSON.parse(readFileSync(path.join(MEASUREMENT_DIR, 'family-registry.json'), 'utf8'));
-const syntheticBlob = '0'.repeat(40);
+const run = promisify(execFile);
+const workspace = new URL('../', import.meta.url);
+const bundle = new URL('../bundle/', import.meta.url);
+const registryUrl = new URL(
+  'docs/assurance/evidence/measurement/family-registry.json',
+  bundle,
+);
+const schemaUrl = new URL(
+  'docs/assurance/evidence/measurement/artifact-schema.json',
+  bundle,
+);
+const manifestUrl = new URL(
+  'docs/assurance/evidence/measurement/corpus-manifest.json',
+  bundle,
+);
+const sharedPaths = [
+  'docs/assurance/evidence/measurement/measurement-contract.md',
+  'docs/assurance/evidence/measurement/family-registry.json',
+  'docs/assurance/evidence/measurement/corpus-manifest.json',
+  'docs/assurance/evidence/measurement/artifact-schema.json',
+];
 
-function clone(value) {
+const [registry, schema, manifest] = await Promise.all(
+  [registryUrl, schemaUrl, manifestUrl].map(async (url) =>
+    JSON.parse(await readFile(url, 'utf8')),
+  ),
+);
+
+const builtPromise = buildArtifact({ sealedAt: new Date('2026-09-03T00:00:00Z') });
+const fakeBlob = '0'.repeat(40);
+
+function synthetic(text, path = 'synthetic.md') {
+  return recognizeDocument({
+    path,
+    blob: fakeBlob,
+    profile: 'stage-docs',
+    bytes: Buffer.from(text, 'utf8'),
+  });
+}
+
+function deepClone(value) {
   return structuredClone(value);
 }
 
-function withoutAttestation(value) {
-  const copy = { ...value };
-  delete copy.attestation;
-  return copy;
-}
-
-function reseal(value) {
-  value.attestation.artifact_digest = canonicalDigest(withoutAttestation(value));
-  return value;
-}
-
-function scan(text, manifestPath = 'fixture.md') {
-  const buffer = Buffer.from(text, 'utf8');
-  return {
-    buffer,
-    occurrences: scanBuffer({
-      buffer,
-      path: manifestPath,
-      blob: syntheticBlob,
-      profile: 'stage-docs',
-    }),
-  };
-}
-
-function physicalKey(value) {
-  return [value.path, value.blob, value.start_byte, value.end_byte].join('\0');
-}
-
-function fieldCounts(values, key) {
-  const result = {};
-  for (const value of values) result[value[key]] = (result[value[key]] ?? 0) + 1;
-  return result;
-}
-
-test('canonical serializer sorts integer-like keys lexically and retains the final LF', () => {
-  const declaration = {
-    relation: 'r',
-    anchor_domain: { family: 'f', profile: 'p', restriction: null },
-    class: 'x',
-    parameters: { 2: 'two', 10: 'ten', '01': 'zero-one' },
-    ranking: 'none',
-    tie_policy: 'ambiguous',
-  };
-  const encoded = canonicalSerialize(declaration);
-  assert.ok(encoded.indexOf('"01"') < encoded.indexOf('"10"'));
-  assert.ok(encoded.indexOf('"10"') < encoded.indexOf('"2"'));
-  assert.equal(encoded.endsWith('\n'), true);
+test('canonical JSON sorts integer-like keys lexically at every level and ends in one newline', () => {
+  const value = { 2: 'outer-two', 10: { 2: 'inner-two', 10: 'inner-ten' } };
   assert.equal(
-    canonicalDigest(declaration),
-    '856a48011b11e7195876f51fa4f649a09447cbaf610320b3670dd1250d69e939',
+    canonicalJson(value),
+    '{\n' +
+      '  "10": {\n' +
+      '    "10": "inner-ten",\n' +
+      '    "2": "inner-two"\n' +
+      '  },\n' +
+      '  "2": "outer-two"\n' +
+      '}\n',
+  );
+  assert.ok(!canonicalJson(value).endsWith('\n\n'));
+});
+
+test('manifest, policy, artifact, and byte-framed bundle digests use their distinct rules', async () => {
+  const { digest, ...withoutDigest } = manifest;
+  const manifestHash = createHash('sha256')
+    .update(canonicalJson(withoutDigest), 'utf8')
+    .digest('hex');
+  assert.equal(manifestHash, digest);
+
+  const members = new Map(
+    await Promise.all(
+      sharedPaths.map(async (path) => [path, await readFile(new URL(path, bundle))]),
+    ),
+  );
+  const delivery = JSON.parse(await readFile(new URL('bundle-manifest.json', bundle), 'utf8'));
+  assert.equal(computeBundleDigest(members), delivery.bundle_digest);
+
+  const { artifact } = await builtPromise;
+  assert.equal(artifact.attestation.artifact_digest, artifactDigest(artifact));
+  const attestationOnlyMutation = deepClone(artifact);
+  attestationOnlyMutation.attestation.sealed_at = '2099-01-01T00:00:00Z';
+  assert.equal(artifactDigest(attestationOnlyMutation), artifactDigest(artifact));
+  const materialMutation = deepClone(artifact);
+  materialMutation.artifact_id += '-changed';
+  assert.notEqual(artifactDigest(materialMutation), artifactDigest(artifact));
+
+  const policy = artifact.policies[0];
+  assert.equal(policy.digest, declarationDigest(policy));
+  const changedPolicy = deepClone(policy);
+  changedPolicy.parameters.label_gap_code_units += 1;
+  assert.notEqual(declarationDigest(changedPolicy), policy.digest);
+});
+
+test('maximal hex rules enforce long-run separation, hyphen and ellipsis boundaries, and EOF', () => {
+  const long = 'a'.repeat(41);
+  const document = synthetic(`abcdef0 ${long} -bcdef12 …cdef123 ddddddd- eeeeeee`);
+  const commits = document.occurrences.filter((item) => item.family === 'commit-citation');
+  const digests = document.occurrences.filter((item) => item.family === 'content-digest');
+  assert.deepEqual(commits.map((item) => item.literal), ['abcdef0', 'ddddddd', 'eeeeeee']);
+  assert.equal(commits.at(-1).end_byte, document.bytes.length);
+  assert.deepEqual(digests.map((item) => item.literal), [long]);
+});
+
+test('package tags and PR links exclude wrappers, reject contained semver, and honor PR termination', () => {
+  const document = synthetic('`plugin-any-package-v12.3.4` [#123](x) #12345 #99');
+  const tags = document.occurrences.filter((item) => item.family === 'package-tag');
+  const prs = document.occurrences.filter((item) => item.family === 'pr-citation');
+  const semvers = document.occurrences.filter((item) => item.family === 'bare-semver');
+  assert.equal(tags.length, 1);
+  assert.equal(tags[0].literal, 'plugin-any-package-v12.3.4');
+  assert.equal(tags[0].fields.package.value, 'any-package');
+  assert.equal(tags[0].fields.version.value, '12.3.4');
+  assert.deepEqual(prs.map((item) => item.literal), ['#123']);
+  assert.equal(semvers.length, 0);
+  assert.ok(!prs.some((item) => item.literal === '#99'), 'a PR token at EOF is not terminated');
+});
+
+test('ISO dates include trailing Z and suppress ISO-shaped text inside proof-run IDs', () => {
+  const text = '2026-09-03Z x-2026-09-04-20260904T010203Z-abc123 2026-09-05';
+  const document = synthetic(text);
+  const runs = document.occurrences.filter((item) => item.family === 'proof-run-id');
+  const dates = document.occurrences.filter((item) => item.family === 'iso-date');
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].fields.kind.value, 'x-2026-09-04');
+  assert.deepEqual(dates.map((item) => item.literal), ['2026-09-03Z', '2026-09-05']);
+});
+
+test('content-digest precedence classifies both introducer forms as prefixed', () => {
+  const first = 'a'.repeat(64);
+  const second = 'b'.repeat(64);
+  const third = 'c'.repeat(64);
+  const document = synthetic(`"content_sha256": "${first}"\nsha256:${second}\n${third}`);
+  const digests = document.occurrences.filter((item) => item.family === 'content-digest');
+  assert.deepEqual(
+    digests.map((item) => item.fields.shape.value),
+    ['prefixed', 'prefixed', 'bare'],
+  );
+  assert.deepEqual(digests.map((item) => item.literal), [first, second, third]);
+});
+
+test('byte coordinates survive non-ASCII prefixes and CRLF, including first/final-byte tokens', () => {
+  const text = 'plugin-alpha-v1.2.3 é\r\nabcdef0';
+  const document = synthetic(text);
+  const tag = document.occurrences.find((item) => item.family === 'package-tag');
+  const commit = document.occurrences.find((item) => item.family === 'commit-citation');
+  assert.equal(tag.start_byte, 0);
+  assert.equal(commit.end_byte, Buffer.byteLength(text));
+  assert.notEqual(commit.start_byte, text.indexOf('abcdef0'));
+  for (const occurrence of document.occurrences) {
+    assert.equal(
+      document.bytes.subarray(occurrence.start_byte, occurrence.end_byte).toString('utf8'),
+      occurrence.literal,
+    );
+  }
+  assert.throws(
+    () => recognizeDocument({ path: 'bad.md', blob: fakeBlob, profile: 'stage-docs', bytes: Buffer.from([0xff]) }),
+    /encoded data|encoding|UTF-8/iu,
   );
 });
 
-test('bundle seal uses the contract 11.3 order, paths, NULs, lengths, and exact bytes', () => {
-  const independent = createHash('sha256');
-  for (const member of BUNDLE_MEMBERS) {
-    const bytes = readFileSync(path.join(BUNDLE_ROOT, member));
-    independent.update(Buffer.from(member));
-    independent.update(Buffer.from([0]));
-    independent.update(Buffer.from(String(bytes.length), 'ascii'));
-    independent.update(Buffer.from([0]));
-    independent.update(bytes);
-  }
-  const expected = 'de28cedddfec3c2aaf60d92e64cde1cea4649ffac8bfe13eb1580d0db7a7d3c5';
-  assert.equal(independent.digest('hex'), expected);
-  assert.equal(computeBundleDigest(BUNDLE_ROOT), expected);
-
-  const incorrectlyPrefixed = createHash('sha256');
-  for (const member of BUNDLE_MEMBERS) {
-    const bytes = readFileSync(path.join(BUNDLE_ROOT, member));
-    incorrectlyPrefixed.update(Buffer.from(`bundle/${member}\0${bytes.length}\0`));
-    incorrectlyPrefixed.update(bytes);
-  }
-  assert.notEqual(incorrectlyPrefixed.digest('hex'), expected);
+test('word boundaries use the declared ECMAScript ASCII judgment before Korean text', () => {
+  const text = '0.128.0이';
+  const document = synthetic(text);
+  const semver = document.occurrences.find((item) => item.family === 'bare-semver');
+  assert.equal(semver.literal, '0.128.0');
+  assert.equal(semver.start_byte, 0);
+  assert.equal(semver.end_byte, Buffer.byteLength('0.128.0'));
+  assert.equal(
+    document.bytes.subarray(semver.start_byte, semver.end_byte).toString('utf8'),
+    semver.literal,
+  );
 });
 
-test('the dependency-free schema checker accepts the artifact and rejects distinct wire defects', () => {
-  assert.deepEqual(validateJsonSchema(artifact, schema), []);
-
-  const missingRole = clone(artifact);
-  delete missingRole.role;
-  assert.match(validateJsonSchema(missingRole, schema).join('\n'), /missing required property role/);
-
-  const nestedParameter = clone(artifact);
-  nestedParameter.policies[0].parameters.max_gap_bytes = { nested: 320 };
-  assert.match(validateJsonSchema(nestedParameter, schema).join('\n'), /expected type string\|number\|boolean\|null/);
-
-  const unknownProperty = clone(artifact);
-  unknownProperty.surprise = true;
-  assert.match(validateJsonSchema(unknownProperty, schema).join('\n'), /unexpected property surprise/);
-
-  const fractionalTimestamp = clone(artifact);
-  fractionalTimestamp.attestation.sealed_at = '2026-09-02T01:02:03.000Z';
-  assert.match(validateJsonSchema(fractionalTimestamp, schema).join('\n'), /does not match pattern/);
+test('wrapped and indented release construction binds exact labeled roles', () => {
+  const document = synthetic(
+    '- Published release PR [#123](https://invalid) squash `abcdef0`,\n' +
+      '  tag `plugin-alpha-v1.2.3`, marketplace sync `bcdef12`.\n',
+  );
+  const rows = makeAnchors(registry, new Map([[document.path, document]]));
+  const row = rows.find((item) => item.relation === 'release-triple');
+  assert.equal(row.disposition, 'bound');
+  assert.deepEqual(Object.keys(row.roles).sort(), ['marketplace_sync', 'release_pr', 'squash']);
+  const literals = Object.fromEntries(
+    Object.entries(row.roles).map(([name, role]) => {
+      const occurrence = document.occurrences.find(
+        (item) =>
+          item.path === role.path &&
+          item.start_byte === role.start_byte &&
+          item.end_byte === role.end_byte,
+      );
+      return [name, occurrence.literal];
+    }),
+  );
+  assert.deepEqual(literals, {
+    marketplace_sync: 'bcdef12',
+    release_pr: '#123',
+    squash: 'abcdef0',
+  });
 });
 
-test('the emitted artifact passes schema plus semantic validation', () => {
-  assert.doesNotThrow(() => assertArtifactSemantics(artifact, {
-    bundleRoot: BUNDLE_ROOT,
-    manifest,
+test('unranked duplicate release candidates yield one ambiguous anchor row', () => {
+  const document = synthetic(
+    '- release PR #123 and release PR #124, tag plugin-alpha-v1.2.3.\n',
+  );
+  const rows = makeAnchors(registry, new Map([[document.path, document]]));
+  const releaseRows = rows.filter((item) => item.relation === 'release-triple');
+  assert.equal(releaseRows.length, 1);
+  assert.equal(releaseRows[0].disposition, 'ambiguous');
+  assert.deepEqual(releaseRows[0].roles, {});
+});
+
+test('an explicit plural tag list binds every listed anchor to the shared release PR', () => {
+  const document = synthetic(
+    '- release PR #123 squash abcdef0, tags plugin-alpha-v1.2.3 and ' +
+      'plugin-beta-v2.3.4, marketplace sync bcdef12.\n',
+  );
+  const rows = makeAnchors(registry, new Map([[document.path, document]]))
+    .filter((item) => item.relation === 'release-triple');
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((row) => row.disposition === 'bound'));
+  assert.equal(new Set(rows.map((row) => row.roles.release_pr.start_byte)).size, 1);
+});
+
+test('claim cues without a required candidate are incomplete, while bare mentions are not claims', () => {
+  const releaseClaim = synthetic('Shipped with plugin-alpha-v1.2.3.\n', 'release-claim.md');
+  const releaseMention = synthetic('Token plugin-beta-v2.3.4.\n', 'release-mention.md');
+  const proofClaim = synthetic(
+    'Evidence run doctor-20260903T010203Z-abc123.\n',
+    'proof-claim.md',
+  );
+  const proofMention = synthetic(
+    'doctor-20260903T010203Z-abc123\n',
+    'proof-mention.md',
+  );
+  const documents = new Map(
+    [releaseClaim, releaseMention, proofClaim, proofMention].map((document) => [
+      document.path,
+      document,
+    ]),
+  );
+  const rows = makeAnchors(registry, documents);
+  const byPath = new Map(rows.map((row) => [row.anchor.path, row]));
+  assert.equal(byPath.get('release-claim.md').disposition, 'incomplete');
+  assert.equal(byPath.get('release-mention.md').disposition, 'not-a-claim');
+  assert.equal(byPath.get('proof-claim.md').disposition, 'incomplete');
+  assert.equal(byPath.get('proof-mention.md').disposition, 'not-a-claim');
+});
+
+test('wrapped proof-date connector binds, while a two-date cell remains ambiguous', () => {
+  const boundDocument = synthetic(
+    '- Proof recorded on 2026-09-03Z as\n' +
+      '  `doctor-20260903T010203Z-abc123`.\n',
+    'bound.md',
+  );
+  const boundRows = makeAnchors(registry, new Map([[boundDocument.path, boundDocument]]));
+  const bound = boundRows.find((item) => item.relation === 'proof-date-binding');
+  assert.equal(bound.disposition, 'bound');
+  assert.ok(bound.roles.date);
+
+  const ambiguousDocument = synthetic(
+    '| proof 2026-09-03 and 2026-09-04 doctor-20260903T010203Z-abc123 |\n',
+    'ambiguous.md',
+  );
+  const ambiguousRows = makeAnchors(
     registry,
-    schema,
-  }));
-  assert.equal(artifact.role, 'lane');
-  assert.equal(artifact.manifest_digest, 'b2f1433af69131779bc1b2cc9e69f6a54709714e89145f9498a1c3959e6a7ebc');
-  assert.equal(artifact.corpus_commit, 'd49f74e696bf8eb1fd1c934bd588dde305bed23d');
-  assert.deepEqual(artifact.attestation.prohibited_inputs_accessed, []);
+    new Map([[ambiguousDocument.path, ambiguousDocument]]),
+  );
+  const ambiguous = ambiguousRows.find((item) => item.relation === 'proof-date-binding');
+  assert.equal(ambiguous.disposition, 'ambiguous');
+  assert.deepEqual(ambiguous.roles, {});
 });
 
-test('all selected files independently match manifest byte counts and Git blob IDs', () => {
-  const files = new Map();
-  for (const profile of Object.values(manifest.profiles)) {
-    for (const file of profile.files) files.set(file.path, file);
-  }
-  assert.equal(files.size, 77);
-  for (const file of files.values()) {
-    const bytes = readFileSync(path.join(BUNDLE_ROOT, file.path));
-    const blob = createHash('sha1')
-      .update(Buffer.from(`blob ${bytes.length}\0`))
-      .update(bytes)
-      .digest('hex');
-    assert.equal(bytes.length, file.bytes, file.path);
-    assert.equal(blob, file.blob, file.path);
-  }
+test('proof-date policy declaration names every implemented directional joiner', () => {
+  const parameters = POLICY_PARAMETERS['proof-date-binding'];
+  assert.equal(
+    parameters.date_before_anchor_joiners,
+    'as|for|by; optional only when a left cue is present',
+  );
+  assert.equal(
+    parameters.clause_boundaries,
+    'semicolon unconditionally; .?! only before whitespace or clause end',
+  );
+  const document = synthetic(
+    '2026-09-03 for doctor-20260903T010203Z-abc123.\n',
+    'directional.md',
+  );
+  const row = makeAnchors(registry, new Map([[document.path, document]]))
+    .find((item) => item.relation === 'proof-date-binding');
+  assert.equal(row.disposition, 'bound');
 });
 
-test('every emitted span is an exact fatal-UTF-8 round trip on a verbatim manifest path', () => {
-  const fileByPath = new Map();
-  for (const profile of Object.values(manifest.profiles)) {
-    for (const file of profile.files) fileByPath.set(file.path, file);
-  }
-  const buffers = new Map();
-  const identities = new Set();
+test('code-fenced relation-looking text is inventoried but is not asserted as a claim', () => {
+  const document = synthetic(
+    '```text\nrelease PR #123 tag plugin-alpha-v1.2.3\n' +
+      'doctor-20260903T010203Z-abc123 on 2026-09-03\n```\n',
+  );
+  const rows = makeAnchors(registry, new Map([[document.path, document]]));
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((row) => row.disposition === 'not-a-claim'));
+});
+
+test('equal lexemes at distinct source spans remain distinct physical occurrences', async () => {
+  const { artifact } = await builtPromise;
+  const repeated = artifact.occurrences.filter(
+    (item) =>
+      item.path === 'docs/assurance/omcc-cutover-scorecard.md' &&
+      item.family === 'package-tag' &&
+      item.literal === 'plugin-runtime-v0.97.1',
+  );
+  assert.ok(repeated.length >= 2, 'the pinned corpus control must exercise repeated lexemes');
+  assert.equal(
+    new Set(repeated.map((item) => `${item.start_byte}:${item.end_byte}`)).size,
+    repeated.length,
+  );
+});
+
+test('artifact passes the sealed schema and schema mutations fail for behavior-specific reasons', async () => {
+  const { artifact } = await builtPromise;
+  assert.deepEqual(validateAgainstSchema(artifact, schema), []);
+
+  const missingRoot = deepClone(artifact);
+  delete missingRoot.role;
+  assert.ok(validateAgainstSchema(missingRoot, schema).some((error) => /missing required key role/u.test(error)));
+
+  const extraRoot = deepClone(artifact);
+  extraRoot.surprise = true;
+  assert.ok(validateAgainstSchema(extraRoot, schema).some((error) => /additional property/u.test(error)));
+
+  const nullRole = deepClone(artifact);
+  const bound = nullRole.anchors.find((row) => row.disposition === 'bound');
+  const roleName = Object.keys(bound.roles)[0];
+  bound.roles[roleName] = null;
+  assert.ok(validateAgainstSchema(nullRole, schema).some((error) => /expected type object/u.test(error)));
+
+  const nestedParameter = deepClone(artifact);
+  nestedParameter.policies[0].parameters.nested = { forbidden: true };
+  assert.ok(validateAgainstSchema(nestedParameter, schema).some((error) => /expected type/u.test(error)));
+});
+
+test('every corpus span round-trips, every emitted path is verbatim, and every anchor is total exactly once', async () => {
+  const { artifact, documents } = await builtPromise;
   const decoder = new TextDecoder('utf-8', { fatal: true });
   for (const occurrence of artifact.occurrences) {
-    assert.equal(occurrence.path.startsWith('bundle/'), false, occurrence.path);
-    const file = fileByPath.get(occurrence.path);
-    assert.ok(file, occurrence.path);
-    assert.equal(occurrence.blob, file.blob);
-    const buffer = buffers.get(occurrence.path) ?? readFileSync(path.join(BUNDLE_ROOT, occurrence.path));
-    buffers.set(occurrence.path, buffer);
-    assert.ok(Number.isSafeInteger(occurrence.start_byte));
-    assert.ok(Number.isSafeInteger(occurrence.end_byte));
-    assert.ok(occurrence.start_byte >= 0 && occurrence.start_byte < occurrence.end_byte);
-    assert.ok(occurrence.end_byte <= buffer.length);
+    assert.ok(!occurrence.path.startsWith('bundle/'));
+    const bytes = documents.get(occurrence.path).bytes;
     assert.equal(
-      decoder.decode(buffer.subarray(occurrence.start_byte, occurrence.end_byte)),
+      decoder.decode(bytes.subarray(occurrence.start_byte, occurrence.end_byte)),
       occurrence.literal,
-      `${occurrence.path}:${occurrence.start_byte}-${occurrence.end_byte}`,
     );
-    const key = `${occurrence.family}\0${physicalKey(occurrence)}`;
-    assert.equal(identities.has(key), false, key);
-    identities.add(key);
   }
-  assert.equal(artifact.occurrences.length, 3416);
-});
 
-test('recognition inventory locks every family multiplicity, including dot-delimited tags and shape precedence', () => {
-  assert.deepEqual(fieldCounts(artifact.occurrences, 'family'), {
-    'bare-semver': 1244,
-    'commit-citation': 576,
-    'content-digest': 42,
-    'iso-date': 557,
-    'package-tag': 168,
-    'pr-citation': 465,
-    'proof-run-id': 364,
-  });
-  const rangePath = 'docs/adr/0049-evidence-as-data.md';
-  const rangeTags = artifact.occurrences.filter((item) => item.path === rangePath
-    && ['plugin-runtime-v0.85.0', 'plugin-runtime-v0.86.2'].includes(item.literal));
-  assert.deepEqual(rangeTags.map((item) => item.literal).sort(), [
-    'plugin-runtime-v0.85.0',
-    'plugin-runtime-v0.86.2',
-  ]);
-  const digestShapes = fieldCounts(
-    artifact.occurrences
-      .filter((item) => item.family === 'content-digest')
-      .map((item) => ({ shape: item.fields.shape.value })),
-    'shape',
-  );
-  assert.deepEqual(digestShapes, { bare: 40, prefixed: 2 });
-});
-
-test('overlapping profiles do not duplicate physical occurrences and stage paths retain stage-docs', () => {
-  const stagePaths = new Set(manifest.profiles['stage-docs'].files.map((file) => file.path));
-  for (const occurrence of artifact.occurrences) {
-    assert.equal(occurrence.profile, stagePaths.has(occurrence.path) ? 'stage-docs' : 'discovered-md');
-  }
-  const physicalAndFamily = artifact.occurrences.map((item) => `${item.family}\0${physicalKey(item)}`);
-  assert.equal(new Set(physicalAndFamily).size, physicalAndFamily.length);
-});
-
-test('policy declarations expose every implemented control and each digest verifies', () => {
-  const generated = createPolicies(registry);
-  assert.deepEqual(artifact.policies, generated);
-  const release = artifact.policies.find((item) => item.relation === 'release-triple');
-  const proof = artifact.policies.find((item) => item.relation === 'proof-date-binding');
-  assert.deepEqual(Object.keys(release.parameters).sort(), [
-    'disposition_precedence',
-    'max_gap_bytes',
-    'pr_cue_gap_bytes',
-    'pr_cues',
-    'record_boundary',
-    'reverse_pr_connector_bytes',
-    'squash_cue_gap_bytes',
-    'squash_cues',
-    'sync_cue_gap_bytes',
-    'sync_cues',
-    'tag_cue_gap_bytes',
-    'tag_group_connectors',
-    'tag_group_gap_bytes',
-  ]);
-  assert.deepEqual(release.parameters, RELEASE_POLICY_PARAMETERS);
-  assert.deepEqual(Object.keys(proof.parameters).sort(), [
-    'construction_order',
-    'date_equivalence',
-    'disposition_precedence',
-    'full_timestamp_fallback',
-    'group_child_separators',
-    'hard_boundaries',
-    'label_nouns',
-    'markdown_decorations_removed',
-    'max_gap_bytes',
-    'scope',
-    'whitespace_normalization',
-  ]);
-  assert.deepEqual(proof.parameters, PROOF_DATE_POLICY_PARAMETERS);
-  for (const policy of artifact.policies) {
-    const declaration = { ...policy };
-    delete declaration.digest;
-    assert.equal(policy.digest, canonicalDigest(declaration));
+  for (const relation of registry.relations) {
+    const expected = artifact.occurrences.filter(
+      (item) =>
+        item.profile === relation.anchor_domain.profile &&
+        item.family === relation.anchor_domain.family,
+    );
+    const rows = artifact.anchors.filter((item) => item.relation === relation.id);
+    assert.equal(rows.length, expected.length);
+    assert.equal(
+      new Set(rows.map((row) => `${row.anchor.path}:${row.anchor.start_byte}:${row.anchor.end_byte}`)).size,
+      rows.length,
+    );
   }
 });
 
-test('attestation digest excludes all attestation bytes but covers every measurement byte', () => {
-  assert.equal(artifact.attestation.artifact_digest, canonicalDigest(withoutAttestation(artifact)));
-  const attestationOnly = clone(artifact);
-  attestationOnly.attestation.sealed_at = '2030-01-02T03:04:05Z';
-  attestationOnly.attestation.prohibited_inputs_accessed = ['synthetic-test-marker'];
-  assert.equal(canonicalDigest(withoutAttestation(attestationOnly)), artifact.attestation.artifact_digest);
-
-  const measurementMutation = clone(artifact);
-  measurementMutation.artifact_id += '-changed';
-  assert.notEqual(canonicalDigest(withoutAttestation(measurementMutation)), artifact.attestation.artifact_digest);
-});
-
-test('exactly one row covers each of the 437 anchors, with locked policy dispositions', () => {
-  assert.equal(artifact.anchors.length, 437);
-  const counts = {};
-  const rowKeys = new Set();
-  for (const row of artifact.anchors) {
-    const key = `${row.relation}\0${physicalKey(row.anchor)}`;
-    assert.equal(rowKeys.has(key), false, key);
-    rowKeys.add(key);
-    const countKey = `${row.relation}:${row.disposition}`;
-    counts[countKey] = (counts[countKey] ?? 0) + 1;
-  }
-  assert.deepEqual(counts, {
-    'proof-date-binding:bound': 125,
-    'proof-date-binding:incomplete': 2,
-    'proof-date-binding:not-a-claim': 165,
-    'release-triple:bound': 117,
-    'release-triple:incomplete': 11,
-    'release-triple:not-a-claim': 17,
-  });
-});
-
-test('semantic checker rejects missing and duplicated anchor rows rather than treating silence as pass', () => {
-  const missing = clone(artifact);
-  missing.anchors.shift();
-  reseal(missing);
-  assert.match(semanticErrors(missing, { bundleRoot: BUNDLE_ROOT, manifest, registry, schema }).join('\n'), /expected exactly one row/);
-
-  const duplicated = clone(artifact);
-  duplicated.anchors.push(clone(duplicated.anchors[0]));
-  reseal(duplicated);
-  assert.match(semanticErrors(duplicated, { bundleRoot: BUNDLE_ROOT, manifest, registry, schema }).join('\n'), /duplicate rows/);
-});
-
-test('semantic checker enforces field states and all disposition/role implications', () => {
-  const badField = clone(artifact);
-  const unresolvedOccurrence = badField.occurrences.find((item) => item.fields.canonical?.state === 'unresolved');
-  unresolvedOccurrence.fields.canonical.value = 'invented';
-  reseal(badField);
-  assert.match(semanticErrors(badField, { bundleRoot: BUNDLE_ROOT, manifest, registry, schema }).join('\n'), /non-present field carries value/);
-
-  const badBound = clone(artifact);
-  const bound = badBound.anchors.find((item) => item.relation === 'release-triple' && item.disposition === 'bound');
-  delete bound.roles.release_pr;
-  reseal(badBound);
-  assert.match(semanticErrors(badBound, { bundleRoot: BUNDLE_ROOT, manifest, registry, schema }).join('\n'), /bound row misses required role/);
-
-  const badIncomplete = clone(artifact);
-  const incomplete = badIncomplete.anchors.find((item) => item.relation === 'release-triple' && item.disposition === 'incomplete');
-  const stagePr = badIncomplete.occurrences.find((item) => item.family === 'pr-citation'
-    && manifest.profiles['stage-docs'].files.some((file) => file.path === item.path));
-  incomplete.roles.release_pr = {
-    profile: 'stage-docs',
-    path: stagePr.path,
-    blob: stagePr.blob,
-    start_byte: stagePr.start_byte,
-    end_byte: stagePr.end_byte,
+test('semantic validator rejects deleted coverage and each disposition/role contradiction', async () => {
+  const built = await builtPromise;
+  const context = {
+    manifest: built.manifest,
+    registry: built.registry,
+    documents: built.documents,
+    bundleDigest: built.bundleDigest,
   };
-  reseal(badIncomplete);
-  assert.match(semanticErrors(badIncomplete, { bundleRoot: BUNDLE_ROOT, manifest, registry, schema }).join('\n'), /incomplete row fills every required role/);
+  assert.doesNotThrow(() => validateArtifactSemantics(built.artifact, context));
 
-  const badNegative = clone(artifact);
-  const negative = badNegative.anchors.find((item) => item.disposition === 'not-a-claim');
-  const relation = registry.relations.find((item) => item.id === negative.relation);
-  negative.roles[relation.anchor_role] = clone(negative.anchor);
-  reseal(badNegative);
-  assert.match(semanticErrors(badNegative, { bundleRoot: BUNDLE_ROOT, manifest, registry, schema }).join('\n'), /not-a-claim row fills roles/);
-});
+  const missingAnchor = deepClone(built.artifact);
+  missingAnchor.anchors.pop();
+  missingAnchor.attestation.artifact_digest = artifactDigest(missingAnchor);
+  assert.throws(() => validateArtifactSemantics(missingAnchor, context), /missing anchor row|anchor total mismatch/u);
 
-test('byte mapping survives non-ASCII prefixes, CRLF, indentation, hard wraps, and repeated values', () => {
-  const text = '한글…\r\n>   abcdef0\r\n> and abcdef0';
-  const { buffer, occurrences } = scan(text);
-  const commits = occurrences.filter((item) => item.family === 'commit-citation');
-  assert.equal(commits.length, 2);
-  assert.deepEqual(commits.map((item) => item.start_byte), [buffer.indexOf('abcdef0'), buffer.lastIndexOf('abcdef0')]);
-  assert.notEqual(commits[0].start_byte, text.indexOf('abcdef0'));
-  for (const occurrence of commits) {
-    assert.equal(buffer.subarray(occurrence.start_byte, occurrence.end_byte).toString('utf8'), occurrence.literal);
-  }
-});
-
-test('recognised spans can begin at byte zero and end at the final blob byte', () => {
-  const { buffer, occurrences } = scan('abcdef0 middle 2026-09-02');
-  const commit = occurrences.find((item) => item.family === 'commit-citation');
-  const date = occurrences.find((item) => item.family === 'iso-date');
-  assert.equal(commit.start_byte, 0);
-  assert.equal(commit.literal, 'abcdef0');
-  assert.equal(date.end_byte, buffer.length);
-  assert.equal(date.literal, '2026-09-02');
-});
-
-test('delimiters and code fences never leak into tag, PR, or digest spans', () => {
-  const digest = 'a'.repeat(64);
-  const text = `\`plugin-demo-v1.2.3\` [#42]\n\`\`\`text\nsha256:${digest}\n\`\`\``;
-  const { occurrences } = scan(text);
-  const tag = occurrences.filter((item) => item.family === 'package-tag');
-  const pr = occurrences.filter((item) => item.family === 'pr-citation');
-  const digests = occurrences.filter((item) => item.family === 'content-digest');
-  assert.deepEqual(tag.map((item) => item.literal), ['plugin-demo-v1.2.3']);
-  assert.deepEqual(pr.map((item) => item.literal), ['#42']);
-  assert.deepEqual(digests.map((item) => item.literal), [digest]);
-  assert.equal(digests[0].fields.shape.value, 'prefixed');
-  assert.equal(occurrences.some((item) => item.family === 'bare-semver' && item.literal === '1.2.3'), false);
-});
-
-test('proof compact dates are excluded while a separate ISO date retains trailing Z', () => {
-  const { occurrences } = scan('on 2026-09-02Z as doctor-20260902T010203Z-abc123');
-  const runs = occurrences.filter((item) => item.family === 'proof-run-id');
-  const dates = occurrences.filter((item) => item.family === 'iso-date');
-  assert.equal(runs.length, 1);
-  assert.equal(runs[0].fields.kind.value, 'doctor');
-  assert.deepEqual(dates.map((item) => item.literal), ['2026-09-02Z']);
-});
-
-test('commit boundaries, overlong hashes, PR termination, and multiline digest precedence are load-bearing', () => {
-  const forty = 'a'.repeat(40);
-  const fortyOne = 'b'.repeat(41);
-  const digest = 'c'.repeat(64);
-  const text = `abcdef0… -1234567 ${forty} ${fortyOne} #12]\ncontent_sha256\n\`${digest}\` #34`;
-  const { occurrences } = scan(text);
-  assert.deepEqual(
-    occurrences.filter((item) => item.family === 'commit-citation').map((item) => item.literal),
-    [forty],
+  const boundMissingRole = deepClone(built.artifact);
+  const boundRow = boundMissingRole.anchors.find(
+    (row) => row.relation === 'release-triple' && row.disposition === 'bound',
   );
-  assert.deepEqual(
-    occurrences.filter((item) => item.family === 'pr-citation').map((item) => item.literal),
-    ['#12'],
+  delete boundRow.roles.release_pr;
+  boundMissingRole.attestation.artifact_digest = artifactDigest(boundMissingRole);
+  assert.throws(() => validateArtifactSemantics(boundMissingRole, context), /bound row missing required role/u);
+
+  const incompleteFilled = deepClone(built.artifact);
+  const incompleteRow = incompleteFilled.anchors.find(
+    (row) => row.relation === 'release-triple' && row.disposition === 'incomplete',
   );
-  const digests = occurrences.filter((item) => item.family === 'content-digest');
-  assert.deepEqual(digests.map((item) => item.literal), [fortyOne, digest]);
-  assert.deepEqual(digests.map((item) => item.fields.shape.value), ['bare', 'prefixed']);
+  const pr = incompleteFilled.occurrences.find((item) => item.family === 'pr-citation');
+  incompleteRow.roles.release_pr = {
+    path: pr.path,
+    blob: pr.blob,
+    start_byte: pr.start_byte,
+    end_byte: pr.end_byte,
+  };
+  incompleteFilled.attestation.artifact_digest = artifactDigest(incompleteFilled);
+  assert.throws(() => validateArtifactSemantics(incompleteFilled, context), /incomplete row fills every required role/u);
+
+  const falseNotClaim = deepClone(built.artifact);
+  const notClaimRow = falseNotClaim.anchors.find(
+    (row) => row.relation === 'release-triple' && row.disposition === 'not-a-claim',
+  );
+  notClaimRow.roles.release_pr = {
+    path: pr.path,
+    blob: pr.blob,
+    start_byte: pr.start_byte,
+    end_byte: pr.end_byte,
+  };
+  falseNotClaim.attestation.artifact_digest = artifactDigest(falseNotClaim);
+  assert.throws(() => validateArtifactSemantics(falseNotClaim, context), /not-a-claim row fills a role/u);
+
+  const repeatedAnchorRole = deepClone(built.artifact);
+  const releaseRow = repeatedAnchorRole.anchors.find((row) => row.relation === 'release-triple');
+  releaseRow.roles.tag = { ...releaseRow.anchor };
+  repeatedAnchorRole.attestation.artifact_digest = artifactDigest(repeatedAnchorRole);
+  assert.throws(() => validateArtifactSemantics(repeatedAnchorRole, context), /anchor role repeated/u);
 });
 
-test('release policy binds a cue-delimited record, marks a missing release PR incomplete, and ignores a mention', () => {
-  const boundText = 'release PR #12 squash abcdef0, tags plugin-a-v1.2.3 and plugin-b-v2.3.4, marketplace sync 1234567.';
-  const boundScan = scan(boundText);
-  const boundRows = buildAnchors(
-    boundScan.occurrences,
-    new Map([['fixture.md', boundScan.buffer]]),
-    registry,
-  ).filter((item) => item.relation === 'release-triple');
-  assert.equal(boundRows.length, 2);
-  for (const row of boundRows) {
-    assert.equal(row.disposition, 'bound');
-    assert.deepEqual(Object.keys(row.roles).sort(), ['marketplace_sync', 'release_pr', 'squash', 'tag']);
-  }
-  assert.equal(physicalKey(boundRows[0].roles.release_pr), physicalKey(boundRows[1].roles.release_pr));
-
-  const incompleteScan = scan('release tag plugin-a-v1.2.3.');
-  const incompleteRow = buildAnchors(
-    incompleteScan.occurrences,
-    new Map([['fixture.md', incompleteScan.buffer]]),
-    registry,
-  ).find((item) => item.relation === 'release-triple');
-  assert.equal(incompleteRow.disposition, 'incomplete');
-  assert.deepEqual(Object.keys(incompleteRow.roles), ['tag']);
-
-  const mentionScan = scan('installed plugin-a-v1.2.3.');
-  const mentionRow = buildAnchors(
-    mentionScan.occurrences,
-    new Map([['fixture.md', mentionScan.buffer]]),
-    registry,
-  ).find((item) => item.relation === 'release-triple');
-  assert.equal(mentionRow.disposition, 'not-a-claim');
-  assert.deepEqual(mentionRow.roles, {});
-});
-
-test('unranked release-role multiplicity emits ambiguous instead of selecting a repeated candidate', () => {
-  const text = 'release PR #12 squash abcdef0 squash 1234567, tag plugin-a-v1.2.3.';
-  const scanned = scan(text);
-  const row = buildAnchors(
-    scanned.occurrences,
-    new Map([['fixture.md', scanned.buffer]]),
-    registry,
-  ).find((item) => item.relation === 'release-triple');
-  assert.equal(row.disposition, 'ambiguous');
-  assert.equal(Object.hasOwn(row.roles, 'release_pr'), true);
-  assert.equal(Object.hasOwn(row.roles, 'squash'), false);
-});
-
-test('proof-date policy binds one physical match, refuses two equal matches, and does not invent a missing date', () => {
-  const uniqueScan = scan('2026-01-02 as run-20260102T000000Z-a');
-  const unique = buildAnchors(
-    uniqueScan.occurrences,
-    new Map([['fixture.md', uniqueScan.buffer]]),
-    registry,
-  ).find((item) => item.relation === 'proof-date-binding');
-  assert.equal(unique.disposition, 'bound');
-  assert.deepEqual(Object.keys(unique.roles).sort(), ['date', 'run_id']);
-
-  const repeatedScan = scan('2026-01-02 run-20260102T000000Z-a 2026-01-02');
-  const repeated = buildAnchors(
-    repeatedScan.occurrences,
-    new Map([['fixture.md', repeatedScan.buffer]]),
-    registry,
-  ).find((item) => item.relation === 'proof-date-binding');
-  assert.equal(repeated.disposition, 'ambiguous');
-  assert.deepEqual(Object.keys(repeated.roles), ['run_id']);
-
-  const missingScan = scan('artifact run-20260102T000000Z-a retained');
-  const missing = buildAnchors(
-    missingScan.occurrences,
-    new Map([['fixture.md', missingScan.buffer]]),
-    registry,
-  ).find((item) => item.relation === 'proof-date-binding');
-  assert.equal(missing.disposition, 'not-a-claim');
-  assert.deepEqual(missing.roles, {});
-
-  const weakProximityScan = scan('2026-07-25 baseline moved while compat-20260725T020139Z-f0cc72 remained');
-  const weakProximity = buildAnchors(
-    weakProximityScan.occurrences,
-    new Map([['fixture.md', weakProximityScan.buffer]]),
-    registry,
-  ).find((item) => item.relation === 'proof-date-binding');
-  assert.equal(weakProximity.disposition, 'not-a-claim');
-
-  const timestampScan = scan('settings-20260712T015100Z-312fbb (attested 2026-07-12T01:51Z)');
-  const timestamp = buildAnchors(
-    timestampScan.occurrences,
-    new Map([['fixture.md', timestampScan.buffer]]),
-    registry,
-  ).find((item) => item.relation === 'proof-date-binding');
-  assert.equal(timestampScan.occurrences.some((item) => item.family === 'iso-date'), false);
-  assert.equal(timestamp.disposition, 'incomplete');
-  assert.deepEqual(Object.keys(timestamp.roles), ['run_id']);
+test('the runnable exporter rewrites artifact.json and the written artifact validates', async () => {
+  await run(process.execPath, ['out/exporter.mjs'], { cwd: fileURLToPath(workspace) });
+  const written = JSON.parse(await readFile(new URL('artifact.json', import.meta.url), 'utf8'));
+  assert.deepEqual(validateAgainstSchema(written, schema), []);
+  assert.equal(written.role, 'lane');
+  assert.equal(written.attestation.artifact_digest, artifactDigest(written));
 });
