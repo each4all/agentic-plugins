@@ -1,0 +1,64 @@
+<task>
+Author lane S1 of a two-lane independent measurement.
+
+The full brief is `TASK.md` in your working directory. READ IT FIRST and follow
+it; this block only restates what is easiest to skip.
+
+Everything you may read is under `bundle/`. That is deliberate and is the point
+of the exercise: a second lane is authored independently from the same bundle,
+and a third step compares the two. Do not look outside this workspace, and do
+not search for this project online. If you do read something outside it, say so
+in the attestation rather than leaving the field empty.
+
+Read `bundle/docs/assurance/evidence/measurement/measurement-contract.md`
+before writing code. It is the specification; the summary in TASK.md is not.
+
+Build:
+  out/exporter.mjs     runnable as `node out/exporter.mjs`, writes out/artifact.json
+  out/artifact.json    validates against bundle/.../artifact-schema.json, role: "lane"
+  out/tests.mjs        runnable as `node --test out/tests.mjs`
+  out/NOTES.md         what you implemented, what you decided, what you could not
+
+The three things most likely to go wrong:
+
+1. YOU choose the extraction policy (contract 4.2). The contract deliberately
+   fixes no rule for binding one occurrence to another. Decide, implement, and
+   then DECLARE what you implemented in the structured, digested form 4.5
+   requires — `parameters` must name every tunable you have.
+
+2. EVERY in-scope anchor gets exactly one row (contract 4.3). The registry
+   declares each relation's anchor domain. A missing row is a structural
+   failure, not a silent pass. `ambiguous` is a legitimate result; a guessed
+   binding is not.
+
+3. Spans are byte offsets that must round-trip: decoding bytes[start:end] as
+   UTF-8 must equal the literal you report (contract 3.5). Emit manifest paths
+   verbatim — `docs/ARCHITECTURE.md`, not `bundle/docs/ARCHITECTURE.md`.
+
+Node 24 is available. No network, no dependencies.
+</task>
+
+<structured_output_contract>
+Report at the end:
+1. What extraction policy you implemented, and why you chose it over what you rejected.
+2. Anchor counts you emitted per relation, per disposition.
+3. Anything the contract left you unable to decide, and what you did instead.
+4. Whether every span round-tripped, and how you checked.
+5. Anything you read outside `bundle/`.
+</structured_output_contract>
+
+<verification_loop>
+Before reporting done:
+  node out/exporter.mjs
+  node --test out/tests.mjs
+and verify out/artifact.json against the schema with a check you write.
+For every test you wrote, ask whether it would still pass if the behaviour it
+names were deleted; if it would, it is not testing that behaviour.
+</verification_loop>
+
+<grounding_rules>
+Cite the contract clause for every design decision that the contract governs.
+Where you made a choice the contract leaves free, say so explicitly and label it
+as your judgment rather than as a requirement.
+Do not invent a binding you cannot justify from the bytes in front of you.
+</grounding_rules>
