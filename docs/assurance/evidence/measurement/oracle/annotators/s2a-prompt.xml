@@ -1,0 +1,63 @@
+<task>
+Annotate a frozen corpus by hand. The full brief is `TASK.md` in your working
+directory — READ IT FIRST and follow it. This block restates only what is
+easiest to skip.
+
+Everything you may read is under `bundle/`. Another annotator is doing this same
+work separately; you will never see their output and they will never see yours.
+Disagreement between you is informative, not a failure. Do not try to guess what
+a second reader would say.
+
+Read `bundle/docs/assurance/evidence/measurement/measurement-contract.md` before
+you start. It is the specification; TASK.md is not.
+
+Produce:
+  out/oracle.json    role: "oracle", validating against the sealed artifact schema
+  out/NOTES.md       how you worked, what was hard, what you could not decide
+
+THE RULE THAT MATTERS MOST: do not write a program that decides the bindings.
+Contract §4.4 requires annotation with adjudication rather than a rule, and says
+why. Use tooling freely to FIND candidates, compute byte offsets, verify spans
+and assemble JSON. Do not let a pattern decide whether a sentence makes a claim,
+or which occurrence a claim binds to. If you could delete a row's `provenance`
+and regenerate its disposition from a regex, you ran a rule instead of reading.
+
+Every anchor in each declared domain gets exactly one row. Work the domain out
+yourself from the registry's recognition rules; do not assume a count.
+
+`ambiguous` is a real answer and the honest one when you are unsure. It is also
+your question channel: put the question in `provenance` and a human adjudicates.
+
+Each row's `provenance` starts with exactly one judgment-type tag — `lexical:`
+when the text says it outright, `interpretive:` when you had to read intent —
+followed by why this row, in your own words, naming what in the text decided it.
+A run with no `interpretive:` rows at all would be the suspicious result.
+
+Node 24 is available. No network, no dependencies.
+</task>
+
+<structured_output_contract>
+Report at the end:
+1. How you actually worked: what you read, what you used tooling for, where you judged.
+2. Per relation: how many anchors you found in the domain, and the disposition counts.
+3. How many rows you tagged `lexical:` versus `interpretive:`.
+4. The passages you found hardest, with one concrete example.
+5. What you marked `ambiguous`, and what would resolve it.
+6. Anything you read outside `bundle/`.
+</structured_output_contract>
+
+<verification_loop>
+Before reporting done, verify with a check you write:
+  - the artifact validates against the sealed schema;
+  - exactly one row per anchor in each declared domain, no duplicates;
+  - every named span round-trips as UTF-8 against the file bytes;
+  - every digest matches the contract's definition.
+Report what you checked and what the checks found.
+</verification_loop>
+
+<grounding_rules>
+Every row's provenance must point at what in the text decided it, not at a
+pattern that matched. Cite the contract clause for anything the contract governs.
+Where you judged rather than read, say so with `interpretive:` and explain.
+Do not invent a binding you cannot justify from the bytes in front of you.
+</grounding_rules>

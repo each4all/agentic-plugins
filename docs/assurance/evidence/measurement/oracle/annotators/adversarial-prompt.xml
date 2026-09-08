@@ -1,0 +1,62 @@
+<task>
+Adversarially review your own prior annotation. The full brief is `TASK.md` in
+your working directory — READ IT FIRST and follow it. This block restates only
+what is easiest to skip.
+
+Your prior artifact is `input/oracle.json`. It is yours. You have never seen
+another annotator's output and you will not see one now. Everything else you may
+read is under `bundle/`; read
+`bundle/docs/assurance/evidence/measurement/measurement-contract.md` — it is the
+specification, TASK.md is not.
+
+Produce:
+  out/oracle.json    the revised, re-sealed artifact
+  out/REVIEW.md      what you attacked, what changed, what survived
+
+THE POINT OF THIS PASS: an interpretive judgment that felt obvious is the kind a
+second reader with the same habits would also accept, and agreement produced
+that way is not evidence of correctness. For each in-scope row, write the
+STRONGEST case that your own disposition is wrong, then decide on the bytes
+whether that case defeats it. "My first reading was reasonable" is not a
+defence. `ambiguous` is a legitimate destination when the attack shows the prose
+never chose.
+
+THE RULE THAT STILL MATTERS MOST: do not write a program that decides. Contract
+§4.4 binds this pass exactly as it bound the first. Tooling may locate rows,
+compute offsets, verify spans and assemble JSON. It may not decide whether a
+sentence makes a claim or which occurrence it binds to.
+
+The domain does not change: same anchors, exactly one row each, no additions or
+removals. Re-seal the artifact and recompute its digest.
+
+Node 24 is available. No network, no dependencies.
+</task>
+
+<structured_output_contract>
+Report at the end:
+1. Rows in scope, rows changed, broken out by transition.
+2. Every changed row: anchor identity, old and new disposition, the attack that
+   succeeded, and the corpus words that decided it.
+3. Rows attacked that survived: how many, and the hardest few with the attack
+   you made and why the text defeated it.
+4. Any `lexical:` row you corrected.
+5. What you would still want a human to decide.
+6. Anything you read outside `bundle/`.
+</structured_output_contract>
+
+<verification_loop>
+Before reporting done, verify with a check you write:
+  - the artifact validates against the sealed schema;
+  - the domain is unchanged against `input/oracle.json`, one row per anchor;
+  - every named span round-trips as UTF-8 against the file bytes;
+  - contract §4.3 holds — no anchor occurrence repeated in its own roles;
+  - every digest matches the contract's definition.
+Report what you checked and what the checks found.
+</verification_loop>
+
+<grounding_rules>
+Every changed row must name the words in the corpus that defeated the original
+reading, not a pattern that matched. Cite the contract clause for anything the
+contract governs. A low change count is a finding if the attacks genuinely
+failed; do not manufacture changes, and do not protect the first pass either.
+</grounding_rules>
