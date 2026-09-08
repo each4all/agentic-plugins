@@ -2,7 +2,9 @@
 
 Machine-checkable records of the facts that back this repository's assurance
 claims. Decided by [ADR-0049](../../adr/0049-evidence-as-data.md), as amended
-2026-07-27.
+2026-07-27 and 2026-09-09 — the second amendment withdraws the contingency
+premise, retires the withdrawal trigger, and splits precondition 1 into its
+three clauses; see [ADR-0058](../../adr/0058-evidence-store-disposition.md).
 
 ```
 docs/assurance/evidence/
@@ -94,8 +96,12 @@ self-referencing relation, and no relation to a record that does not exist.
 A shallow clone **fails** rather than skipping — a git-backed check that no-ops
 reads as coverage — and that verdict is reached before any per-record early
 exit, so a filename typo cannot hide it. An empty store is the one case that
-returns before the history check: with no records there is nothing git-backed
-to check.
+returns before the history check — but it is **not** unchecked: the
+forward-only floor runs first and is derived from git, so an empty working
+tree fails with one finding per record still present on the integration base.
+What the early return skips is the per-record work, which has nothing to act
+on. The floor reads the *current* base, so it does not survive a deletion that
+lands on the integration branch.
 
 ## Authoring
 

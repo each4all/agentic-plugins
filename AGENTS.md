@@ -317,7 +317,8 @@ the header of `scripts/sync-doc-versions.mjs` for why.
 
 **Each evidence loop also gets a record** under
 `docs/assurance/evidence/records/`, per
-[ADR-0049](docs/adr/0049-evidence-as-data.md) as amended 2026-07-27. The
+[ADR-0049](docs/adr/0049-evidence-as-data.md) as amended 2026-07-27 and
+2026-09-09. The
 record is keyed by the loop, not the release — a loop may span several
 releases, and a release may appear in several loops — and every field
 declares its provenance so a gate knows whether it may assert the field.

@@ -11,6 +11,15 @@ Accepted
 > and the first live record is dated to the first release loop that
 > follows the schema, authored after that loop's release completes.
 
+> Amended 2026-09-09 — see [Amendments](#amendments). Decision 6's
+> precondition 2 is recorded met; precondition 1 is **not** replaced —
+> its coverage half was never built and stands unmet, its exporter half
+> is partly answered, and a third clause is added for the
+> claim-versus-mention discriminator. In Consequences the "value is
+> entirely contingent on the follow-up landing" premise is **withdrawn as
+> measured-false** and the withdrawal trigger is retired and replaced. See
+> [ADR-0058](0058-evidence-store-disposition.md).
+
 ## Context
 
 The stage docs (`docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`,
@@ -211,10 +220,17 @@ preconditions must be met before that ADR can honestly be written:
   expected record ids, proof ids, tags, and field identities: if
   extractor and renderer omit the same field, the diff is empty and the
   field is gone.
+  **Split into three clauses by Amendment 2026-09-09, and NOT lowered** —
+  the coverage manifest this bullet requires was never built and that
+  clause stands unmet; the exporter was built and returned `fail` for a
+  reason this bullet does not name. See
+  [ADR-0058](0058-evidence-store-disposition.md) §Decision 2.
 - **A resolution for the single-line table constraint**, satisfying
   `cutover-audit.mjs` and the five-cell row pin, or a design that moves
   the evidence out of those rows into a standalone section that the rows
   link to.
+  **Met** — `docs/assurance/scorecard-evidence-design.md`; see Amendment
+  2026-09-09.
 
 ## Consequences
 
@@ -236,9 +252,15 @@ is a sixth record of the same facts. The duplication the ADR's own
 Context identifies as the root cause is not reduced; it is increased by
 one, and the store's value is entirely contingent on the deferred
 follow-up landing. If that follow-up never lands, this decision is net
-negative and the store should be withdrawn rather than maintained —
+negative and the store should be withdrawn rather than maintained
+*(these two sentences are **withdrawn as measured-false** by Amendment
+2026-09-09: the store's proof-artifact verification and three derived
+checks stand alone and do not depend on the follow-up; the sixth-copy
+cost above is unchanged and still accurate)* —
 **withdrawal trigger: two consecutive release loops in which the store is
-authored but the follow-up ADR has not been opened.** The recurring
+authored but the follow-up ADR has not been opened.** *(Retired and replaced
+by Amendment 2026-09-09 — crossed at the second qualifying loop and
+continued to nineteen, and unfireable once the follow-up ADR exists.)* The recurring
 post-release recovery PR is not eliminated by this decision.
 
 Secondary costs: schema and validator work; a per-release authoring step
@@ -452,7 +474,10 @@ also why this decision does not remove that PR.
 The withdrawal trigger in Consequences needs no reinterpretation: it
 already counts only loops "in which the store is authored", so
 acceptance and the schema landing never counted. What this item adds is
-which loop is the first that can be counted.
+which loop is the first that can be counted. *(Superseded by Amendment
+2026-09-09 — that trigger is retired, so there is no longer a counter for
+this item to date. The post-release authoring position this item
+establishes is unaffected and remains operative.)*
 
 **4. Membership of every per-loop array is authored, and even entry
 fields split by class.**
@@ -542,3 +567,106 @@ reserves for the renderer/migration follow-up, which is the ADR a reader
 actually needs pointing at. If the follow-up disagrees, it supersedes
 from a position of knowing the schema — this Amendment does not
 foreclose that.
+
+
+### 2026-09-09 — the preconditions measured: one met, one split and still unmet, and a trigger that had already died
+
+**Trigger**: [ADR-0058](0058-evidence-store-disposition.md), written
+against the two preconditions Decision 6 defers behind. It takes the ADR
+number this ADR reserved **without being the ADR it was reserved for** —
+the renderer/migration decision still cannot be written, and ADR-0058
+declines to be it. ADR-0058 carries the measurements; this Amendment
+records what changes here. Its first draft was corrected by a cross-host
+review that disproved nine of its claims, and items 2 and 3 below are
+what survived that.
+
+**1. Precondition 2 is met.** `docs/assurance/scorecard-evidence-design.md`
+resolves the single-line table constraint: each evidence cell becomes an
+authored bounded claim plus a pointer to a same-file record section under
+an anchor derived from the row id, held in place by four
+mutation-verified assertions. Its implementation is independent — it does
+not wait on rendering, and rendering no longer waits on it.
+
+**2. Precondition 1 is split into three clauses and is NOT lowered.** The
+bullet reads as one requirement and is two: an exporter *and* an
+independent coverage manifest pinning expected record ids, proof ids,
+tags and field identities. Only the exporter was built. Measured: the
+corpus manifest's entries carry `path`, `blob` and `bytes`, and the string
+`record_id` appears zero times in the manifest, in the oracle, and in the
+lane artifact. **The coverage clause therefore stands unmet**, and the
+circularity this bullet exists to prevent is still unguarded.
+
+The exporter clause was answered in part. Required-role pairing is
+perfect across the 201 anchors both sides bound — all five `mispaired`
+rows differ on an optional role only — but the verdict is `fail`, and its
+156 disagreements are not one thing: **116** are one side seeing a claim
+where the other sees none, and **40** are rows where both see a claim and
+the exporter did not supply a required binding. The 40 are ordinary
+extractor work. The 116 are not: a rule can locate the right occurrence
+and cannot judge whether a sentence asserts a relation or merely mentions
+one.
+
+ADR-0058 §Decision 2 therefore states precondition 1 as **(a)** the
+unbuilt coverage manifest, **(b)** the exporter with its 40-row residue,
+and **(c)** a new clause — an adjudicated source of truth for the
+claim-versus-mention discriminator, or a scope restriction to relation
+families where it does not arise. Any future verdict must state or
+measure its own error bar: this one rests on 156 rows two annotators
+agreed on and both self-reported `interpretive`.
+
+Decision 6's operative condition is unchanged by this: two preconditions,
+both required, neither met.
+
+**3. The contingency premise is withdrawn, and the withdrawal trigger is
+retired and replaced.** Consequences states that the store's "value is
+entirely contingent on the deferred follow-up landing" and that without
+it "this decision is net negative". Measured, the store is the only
+reader in the repository that opens each cited *historical* doctor
+artifact and verifies its bytes (23 of 23 on the maintainer checkout),
+and it enforces the tag-time package/version binding, the
+null-`marketplace_sync` claim, and the forward-only floor — none of which
+depends on rendering. **The premise is withdrawn as measured-false. The
+headline cost it sits beside — on landing this adds a sixth copy, and the
+recurring recovery PR is not eliminated — is unchanged and still
+accurate.**
+
+The trigger counted "two consecutive release loops in which the store is
+authored but the follow-up ADR has not been opened". It was crossed at the
+second qualifying loop and ran to nineteen — 19 authored records, ADRs
+0050–0057 each a different subject — and opening ADR-0058 makes the
+counted condition permanently false, so it can never fire again however
+long rendering stays blocked. It measured whether a document exists.
+
+The replacement, stated in ADR-0058 §Decision 5, is **two consecutive
+`plugin-runtime` release tags within the store era that appear in no
+record's `package_releases[]`**, with an explicit evaluation contract. It
+is derived-only, so it needs none of the authored membership judgment item
+4 above protects; it cannot be retired by writing a document; and it is
+published measured clean (19 runtime tags in era, 0 uncovered). ADR-0058
+also records what it does **not** establish — it is a minimum tag-coverage
+floor, not proof that loops are being authored, and a consolidation
+control there shows the trigger staying clean while the store loses every
+verified proof.
+
+**Unchanged**: Decision 1 (forward-only, keyed by evidence loop, closed
+schema), Decision 2 (every field declares its provenance), Decision 3
+(typed, plural relations), Decision 4 (gates validate only what their
+source can back, including the `observed`-not-verified-in-CI asymmetry),
+**Decision 5 (no rendering, no generated regions, the prose stays
+hand-written)**, and Decision 6's structure and gating condition — the
+renderer and the historical migration remain deferred behind two
+preconditions that are still not both met.
+
+**Form — Amendment, over a second recorded dissent.** The cross-host
+review of ADR-0058 argued for partial supersedure of Decision 6, on the
+ground that a draft replacing precondition 1 while declaring itself the
+reserved follow-up would leave a reader here needing another document for
+the operative rule. Against that draft the argument was sound. It is not
+adopted against this one, because the same review's coverage-manifest
+finding removed its premise: precondition 1 is added to rather than
+replaced, Decision 6's gating condition is untouched, ADR-0058 explicitly
+declines to be the reserved follow-up, and clauses (a)/(b)/(c) are stated
+in full above — so a reader landing here gets the operative rule without
+leaving. The dissent is recorded for the same reason the 2026-07-27 one
+was: if the renderer ADR later disagrees, it supersedes from a position of
+knowing what the coverage clause costs.
