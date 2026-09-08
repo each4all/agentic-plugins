@@ -29,8 +29,10 @@ import {
   checkReleaseTriples,
   checkProofCitations,
   checkCommitShas,
+  corpusBlobIndex,
   discoverShaCorpus,
   extractCitedShas,
+  isCorpusBlobReference,
   isShaCorpusFile,
   gitHistoryAvailable,
   runAllChecks,
@@ -748,5 +750,79 @@ describe('doc evidence — R4 commit shas', () => {
       deepStrictEqual(results.proofCitations, checkProofCitations(REPO_ROOT));
       deepStrictEqual(results.commitShas, checkCommitShas(REPO_ROOT));
     });
+  });
+});
+
+describe('doc evidence — R4 exempts corpus blob references, and only those', () => {
+  // The rule is exercised on a CONSTRUCTED set as well as the real manifest,
+  // for the reason `isShaCorpusFile` is split out from its walk: a test that
+  // only ever sees the real manifest passes whether the membership rule says
+  // anything or not.
+  it('matches a manifest blob exactly and by abbreviation, and nothing else', () => {
+    const index = new Set([
+      '99b33d0e8c1dcd2693b95afa322422e2efa232f6',
+      'f5e07a22bcc38533b929161c5243ea61a2aba911',
+    ]);
+    strictEqual(isCorpusBlobReference('99b33d0e8c1dcd2693b95afa322422e2efa232f6', index), true);
+    strictEqual(isCorpusBlobReference('99b33d0', index), true, 'abbreviations are how the records cite');
+    strictEqual(isCorpusBlobReference('f5e07a2', index), true);
+    // A token that merely resolves to SOME blob is not exempt — the exemption
+    // is keyed on the frozen manifest, which is what keeps a mistyped commit
+    // sha from being excused by naming an arbitrary object.
+    strictEqual(isCorpusBlobReference('effcf38982446274fe6c8d675040ef96c3c783a6', index), false);
+    strictEqual(isCorpusBlobReference('deadbee', index), false);
+    // Not a suffix or substring rule.
+    strictEqual(isCorpusBlobReference('9b33d0e', index), false);
+  });
+
+  it('is fail-closed: an unreadable manifest exempts nothing', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'blob-index-'));
+    try {
+      // No manifest at this root at all.
+      strictEqual(corpusBlobIndex(dir).size, 0);
+      // Present but malformed.
+      mkdirSync(resolve(dir, 'docs/assurance/evidence/measurement'), { recursive: true });
+      writeFileSync(resolve(dir, 'docs/assurance/evidence/measurement/corpus-manifest.json'), 'not json');
+      strictEqual(corpusBlobIndex(dir).size, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('no manifest blob is also a commit, so no real commit can be exempted', () => {
+    const index = corpusBlobIndex(REPO_ROOT);
+    ok(index.size > 0, 'the manifest must be readable for this assertion to mean anything');
+    const types = execFileSync('git', ['-C', REPO_ROOT, 'cat-file', '--batch-check'], {
+      input: `${[...index].join('\n')}\n`, encoding: 'utf8',
+    }).split('\n').filter(Boolean).map((line) => line.split(' ')[1]);
+    strictEqual(types.length, index.size);
+    deepStrictEqual([...new Set(types)], ['blob'], 'a manifest entry that is also a commit would make the exemption unsafe');
+  });
+
+  it('masks no citation the gate is already checking', () => {
+    const index = corpusBlobIndex(REPO_ROOT);
+    const prefixes = new Set([...index].map((blob) => blob.slice(0, 7)));
+    const masked = [];
+    for (const file of discoverShaCorpus(REPO_ROOT)) {
+      // The oracle records are the reason the exemption exists; every OTHER
+      // document is the population it must not touch.
+      if (file.startsWith('docs/assurance/evidence/measurement/oracle/')) continue;
+      const text = readFileSync(resolve(REPO_ROOT, file), 'utf8');
+      for (const sha of extractCitedShas(text)) {
+        if (prefixes.has(sha.slice(0, 7))) masked.push(`${file}: ${sha}`);
+      }
+    }
+    deepStrictEqual(masked, []);
+  });
+
+  it('skips the references, counts them separately, and still reports zero findings', () => {
+    const result = checkCommitShas(REPO_ROOT);
+    ok(result.ran, result.reason ?? '');
+    ok(result.corpusBlobRefs > 0, 'the oracle records cite corpus blobs; a zero here means the exemption stopped matching');
+    deepStrictEqual(result.findings, []);
+    // Skipped tokens must not inflate the verified count — a report that
+    // folded them into `checked` would claim to have verified what it skipped.
+    const withBlobs = checkCommitShas(REPO_ROOT).checked;
+    strictEqual(withBlobs, result.checked);
   });
 });

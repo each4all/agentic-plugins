@@ -116,6 +116,7 @@ export const EVIDENCE_DOCS = [
  * tree happens to hold — the same machine-independence requirement that
  * makes reachability judge from the integration branch below.
  */
+export const CORPUS_MANIFEST_PATH = 'docs/assurance/evidence/measurement/corpus-manifest.json';
 export const SHA_CORPUS_DIRS = Object.freeze(['docs']);
 export const SHA_CORPUS_EXCLUDED_BASENAME = 'CHANGELOG.md';
 
@@ -637,6 +638,70 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
  * stable under adversarial review and have caught two real dangling
  * citations. Those stay; the guess does not.
  */
+/**
+ * The frozen corpus manifest's blob ids, as a prefix-searchable index.
+ *
+ * R4 asks whether a cited commit sha resolves and is reachable. A blob id is
+ * not a commit citation at all, but the extractor cannot see intent — it sees
+ * a hex token — so a document that names a corpus blob is reported as citing a
+ * commit that "resolves to a blob". The evidence-measurement artifacts do
+ * exactly that: contract 3.2 makes physical identity `(path, blob, start_byte,
+ * end_byte)`, so an annotator recording a span names the blob, and the
+ * annotators' review records are verbatim third-party output that this
+ * repository must not edit — rewriting one to satisfy a gate would destroy the
+ * provenance contract 4.4 requires.
+ *
+ * The exemption is keyed on the MANIFEST rather than on "resolves to a blob",
+ * and the difference is the whole safety argument. "Any blob" would excuse a
+ * mistyped commit sha that happens to name some object; the manifest is a
+ * closed set of 77 entries fixed by the corpus pin, so a token is exempt only
+ * when it names a file the frozen corpus actually contains. That is an
+ * identifier comparison, which is the standard the surviving checks in this
+ * module are built to.
+ *
+ * Measured before adopting it, on the manifest at pin `d49f74e`:
+ *
+ *   - 0 of the 77 manifest blob ids is also a commit object, so no real commit
+ *     can be exempted by naming one.
+ *   - 0 of the 578 citation tokens already in the discovered corpus has a
+ *     7-character prefix matching a manifest blob's, so the exemption masks no
+ *     citation this gate is checking today.
+ *
+ * Prefix matching is required because the records abbreviate (`99b33d0`), and
+ * it is bounded by the extractor's own 7-character floor. A future citation
+ * colliding with one of 77 fixed prefixes is ~3e-7 per token, and the
+ * consequence is one un-gated citation rather than a wrong answer.
+ *
+ * Fail-closed: an unreadable or malformed manifest yields an EMPTY index, so
+ * every token is gated exactly as before. The exemption can only ever be as
+ * wide as a manifest this repository actually committed.
+ */
+export function corpusBlobIndex(repoRoot) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(resolve(repoRoot, CORPUS_MANIFEST_PATH), 'utf8'));
+  } catch {
+    return new Set();
+  }
+  const blobs = new Set();
+  for (const profile of Object.values(manifest?.profiles ?? {})) {
+    for (const file of profile?.files ?? []) {
+      if (typeof file?.blob === 'string' && /^[0-9a-f]{40}$/.test(file.blob)) blobs.add(file.blob);
+    }
+  }
+  return blobs;
+}
+
+/**
+ * Membership, split from the index that answers it so the rule is testable on
+ * a constructed set rather than only through the real manifest.
+ */
+export function isCorpusBlobReference(token, index) {
+  if (index.has(token)) return true;
+  for (const blob of index) if (blob.startsWith(token)) return true;
+  return false;
+}
+
 export function checkCommitShas(repoRoot, { docs = null } = {}) {
   const availability = gitHistoryAvailable(repoRoot);
   if (!availability.ok) {
@@ -767,8 +832,15 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
     });
   }
 
+  const corpusBlobs = corpusBlobIndex(repoRoot);
+  let corpusBlobRefs = 0;
+
   for (const { file, text } of documents) {
     for (const sha of extractCitedShas(text)) {
+      // Not a citation this check is about — see `corpusBlobIndex`. Counted
+      // separately rather than folded into `checked`, so the report never
+      // claims to have verified a token it deliberately skipped.
+      if (isCorpusBlobReference(sha, corpusBlobs)) { corpusBlobRefs += 1; continue; }
       checked += 1;
       const type = objectType.get(sha);
       if (type !== 'commit') {
@@ -807,7 +879,7 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
 
     }
   }
-  return { ran: true, reason: null, findings, checked, reachabilityBase, corpusFiles };
+  return { ran: true, reason: null, findings, checked, reachabilityBase, corpusFiles, corpusBlobRefs };
 }
 
 /**
@@ -856,6 +928,7 @@ if (invokedAsCLI) {
         // documents is visible in the report rather than only as a
         // suspiciously round claim count.
         r.corpusFiles ? `over ${r.corpusFiles.length} discovered file(s)` : null,
+        r.corpusBlobRefs ? `${r.corpusBlobRefs} corpus blob reference(s) skipped (not commit citations)` : null,
         r.reachabilityBase && r.reachabilityBase !== 'origin/main' ? `reachability base ${r.reachabilityBase} (weaker than origin/main)` : null,
         // The store reports how much of itself was actually verified. An
         // observed field whose doctor artifact is gone is `unverified`, and
