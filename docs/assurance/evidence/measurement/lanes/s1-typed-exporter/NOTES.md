@@ -2,140 +2,174 @@
 
 ## Outcome
 
-`exporter.mjs` scans the 77 unique manifest files once and emits 3,416 typed
-occurrences plus exactly 437 anchor rows. The artifact has `role: "lane"` and
-uses manifest paths verbatim. It does not resolve commit or tag literals against
-live state, as required by contract §5.
+`exporter.mjs` enumerates all seven registry families over the manifest corpus,
+emits one occurrence per `(path, blob, start_byte, end_byte, family)`, applies
+two independently chosen relation policies, and writes a canonical
+`artifact.json` with `role: "lane"`. It validates the sealed inputs, Git blob
+IDs, schema, relation totality, role consistency, digests, and span round trips
+before writing.
 
-The exporter includes a dependency-free validator for every assertion keyword
-used by the sealed JSON Schema, followed by semantic checks the schema cannot
-express: manifest membership and blobs, registry fields and states, physical
-identity uniqueness, UTF-8 span round trips, policy and attestation digests,
-role/disposition consistency, and total anchor coverage (contract §§2.1, 3.2,
-3.5, 3.8, 4.3, 4.5, 6, 8.2, and 11.4).
+The emitted occurrence inventory has 3,416 rows. The required relation anchor
+rows are:
 
-## Extraction policy
-
-Association is lane judgment, not a contract requirement (contract §4.2 and
-§13). I implemented separate construction grammars because the relations have
-different lexical evidence.
-
-For `release-triple`, a package tag carries a claim only when an explicit
-`tag`/`tags` cue or a cue-connected tag group introduces it. A direct `release
-PR` cue starts a record and the next such cue ends it; a 320-byte maximum gap
-prevents a record from absorbing distant prose. A reverse `PR ... released ...
-tag` form is also recognized. `squash` is eligible only between that record's PR
-and tag; marketplace-sync cues are eligible after the tag. A unique candidate
-fills a role. Any unranked multiplicity is `ambiguous`; an explicit tag claim
-without a release-PR candidate is `incomplete`; text without the tag
-construction is `not-a-claim`. This is the structured policy declared and
-digested under contract §4.5.
-
-I rejected nearest-PR/nearest-commit ranking. The corpus contains feature PRs,
-release PRs, feature squashes, release squashes, marketplace syncs, and stage-doc
-syncs near one another; distance would silently choose a physical occurrence
-without enough lexical evidence. I also rejected line and paragraph containment
-because hard wrapping and extremely long Markdown rows make those containers
-unstable. These are lane judgments permitted by contract §4.2, not normative
-rules.
-
-For `proof-date-binding`, the compact date in the run ID is only an equality
-guard. A separate registry-valid ISO date must also participate in one of the
-declared connector constructions: DATE-AS, RUN-ON, DATE-DIRECT,
-RUN-PARENTHETICAL, DATE-LABELLED, or a labelled parenthetical group. The grammar
-uses a 256-byte maximum gap and rejects period, semicolon, question mark,
-exclamation mark, table-cell, and blank-line boundaries, except for the declared
-semicolon-separated labelled-group form. Markdown decoration and ASCII
-whitespace are normalized only while matching connectors; emitted coordinates
-always point to original bytes (contract §3.5). Distinct surviving candidates
-are never ranked and would be `ambiguous` (contract §§4.2–4.3).
-
-I rejected value-plus-proximity alone. A same-calendar date can describe a
-nearby baseline or narrative event rather than the run. A full timestamp such as
-`YYYY-MM-DDTHH:MMZ` is not an `iso-date` occurrence because `T` is a word
-neighbor under the registry rule (contract §3.4); when that timestamp is
-connector-qualified, the row is `incomplete` rather than inventing a date role
-(contract §4.3).
-
-Every numerical limit, construction vocabulary, normalization choice, record
-boundary, and disposition precedence used by these association grammars appears
-as a flat scalar in the corresponding policy's `parameters`. Policy digests use
-contract §2.1 canonical serialization with their own `digest` omitted, as
-required by §4.5.
-
-## Recognition and representation decisions
-
-Family recognition follows the registry rather than the association grammars
-(contract §3.4). In particular: commit runs are maximal and reject a left
-hyphen, alphanumeric or U+2026 neighbors; content digests are longer than 40
-hex characters and `prefixed` wins; PR tokens require a real terminating
-non-word character; proof IDs do not contribute an internal ISO date; and bare
-semvers inside package tags are excluded. The two sides of
-`plugin-runtime-v0.85.0..plugin-runtime-v0.86.2` are both package tags because
-the package-tag rule does not impose the bare-semver family's full-stop
-boundary.
-
-All registry-declared fields are emitted. Commit/tag canonical fields are
-`unresolved`, and proof `artifact_present` is `not-applicable`; no value is
-carried for a non-present field state (contract §§3.3, 5, and 6).
-
-The three stage files also belong to `discovered-md`. Because same-family
-occurrences may not duplicate one physical identity (contract §3.2), they are
-scanned once and labeled `stage-docs`; the remaining files are labeled
-`discovered-md`. The schema offers one scalar profile and the contract does not
-state a precedence for overlapping membership, so this is lane judgment. It
-keeps every relation anchor and role in the relations' declared stage profile
-(contract §§2.2 and 4.1).
-
-The registry does not spell out complete character grammars for `<package>` or
-`<kind>`, nor whether every use of “word” is Unicode-wide. I used ASCII token
-characters for package/kind/word boundaries and Unicode letters/numbers for the
-commit rule's “alphanumeric.” I did not derive allowlists from observed values.
-These parser interpretations are the only recognition details the inputs left
-unable to decide; parser implementation itself is free under contract §13.
-
-## Counts
-
-| Relation | Bound | Not a claim | Ambiguous | Incomplete | Total |
+| Relation | Total | `bound` | `not-a-claim` | `ambiguous` | `incomplete` |
 |---|---:|---:|---:|---:|---:|
-| `release-triple` | 117 | 17 | 0 | 11 | 145 |
-| `proof-date-binding` | 125 | 165 | 0 | 2 | 292 |
+| `release-triple` | 145 | 87 | 12 | 16 | 30 |
+| `proof-date-binding` | 292 | 125 | 50 | 4 | 113 |
 
-Every in-scope anchor has exactly one row, including negative and incomplete
-results, as required by contract §4.3.
+## Extraction policies
 
-## Spans, digests, and verification
+The contract deliberately leaves association policy free (§4.2, §13). The
+choices below are therefore lane S1 judgments, not contract requirements. Each
+policy is emitted in the structured §4.5 form, every implementation threshold
+and grammar choice that can be varied is named in its flat `parameters` object,
+and its digest is SHA-256 over the §2.1 canonical serialization without
+`digest` (§4.5).
 
-Regex indices are converted through a complete UTF-16-index-to-UTF-8-byte map.
-Before writing, the exporter fatally decodes every `bytes[start:end]` and
-requires equality with `literal`; the tests independently repeat this for all
-3,416 occurrences. Every span round-tripped (contract §§3.2 and 3.5).
+Both policies parse a smallest Markdown structural clause: a pipe-delimited
+table cell, a list item including indented continuations, or a blank-line
+bounded paragraph, then a semicolon/sentence-bounded clause within it. Fenced
+code is inventoried as occurrences but relation-looking text inside it is
+`not-a-claim`. The precise fence, list, cell, paragraph, and sentence choices
+are declared as parameters (§4.5).
 
-Canonical JSON is emitted by a custom recursive serializer. It writes keys
-directly in lexical order, including integer-like keys that JavaScript would
-otherwise reorder, with two-space indentation and a final newline (contract
-§2.1). Bundle framing follows §11.3 exactly; artifact sealing removes the whole
-`attestation` key per §11.4.
+For `release-triple`, an anchor is claim-bearing when it is explicitly linked
+by `tag`/`tags`, including an explicit punctuation/`and` tag list; when it is
+the sole tag in a clause containing a labeled `release PR`, `release pull
+request`, or `released as PR`; or when its clause has the explicit action cue
+`released`, `published`, `cut`, or `shipped` within the declared 96-code-unit
+prefix. Required and optional candidates must follow their lexical labels
+through Markdown wrappers, whitespace, and punctuation only. The optional
+commit roles use distinct `squash` and `marketplace sync` labels; family alone
+never assigns either role, because the registry declares their family collision
+and §4.3 requires actual role consistency. A required PR candidate missing from
+an otherwise recognized construction is `incomplete`; text outside a recognized
+construction is `not-a-claim`; multiplicity or an optional-role identity
+collision is `ambiguous`; exactly one required PR candidate is `bound`.
 
-Verification commands:
+For `proof-date-binding`, a date candidate must be in the same structural clause
+and either the same table-cell clause or connected within the declared 120-code-
+unit limit by an explicit lexical form such as `RUN on DATE`, `DATE as RUN`,
+`RUN (DATE)`, `dated`, or `recorded on`. A claim cue with no candidate is
+`incomplete`; no cue is `not-a-claim`; one candidate is `bound`; more than one
+is `ambiguous`.
+
+Both declarations say `ranking: none` and `tie_policy: ambiguous`. I chose this
+over nearest/first-candidate ranking because §4.2 explicitly does not supply a
+proximity or tie rule, repeated values make a positional guess unsafe (§3.2),
+and §4.3 provides `ambiguous` for an unranked multiplicity. I rejected global
+file/paragraph proximity because it crosses claim boundaries, and rejected
+manual per-occurrence enumeration because that would be a corpus-fitted
+annotation policy rather than the declared reusable construction mechanism.
+
+Every package tag and proof run ID in the registry's unrestricted `stage-docs`
+anchor domains receives exactly one row, as required by §4.1 and §4.3. The
+anchor role is never repeated in `roles`, and unfilled roles are absent rather
+than `null` (§3.8, §4.3).
+
+## Recognition and coordinates
+
+Family recognition follows the registry lexical observables (§3.4). Package-tag
+and proof-run spans are found before the explicit bare-semver and ISO-date
+containment exclusions. Hex runs are first made maximal so runs longer than 40
+become one `content-digest`, never commit-citation windows. A prefixed content
+digest wins over bare in accordance with the registry's required field
+precedence (§3.3–§3.4).
+
+All source matching occurs on strict UTF-8 decoded text with a complete mapping
+from JavaScript string boundaries back to source byte boundaries. The artifact
+uses only half-open byte ranges over the original bytes (§3.2, §3.5). A fatal
+UTF-8 decoder checks every emitted `bytes[start_byte:end_byte]` and requires it
+to equal `literal` before output. All 3,416 spans round-tripped. Tests exercise
+non-ASCII prefixes, a Korean boundary, CRLF, hard wraps, indentation, repeat
+values, byte zero, end-of-file, delimiters, inline code, and code fences (§3.5).
+
+The three stage documents also belong to `discovered-md`. Because profile is not
+physical identity and same-family occurrences may not duplicate one physical
+identity (§3.2), they are emitted once. The contract supplies no scalar-profile
+precedence for an occurrence in overlapping profiles; as a lane judgment I use
+`stage-docs` for shared paths so the relation anchors carry their relation's
+profile, and `discovered-md` otherwise.
+
+Locally observable fields are emitted in `fields`, including `literal`. I did
+not resolve `canonical`: §3.3 exempts authority-derived fields from lane
+comparison, §5 assigns resolution to the comparator, and §9 withholds authority
+snapshots from lanes. Likewise, `artifact_present` is omitted when
+`artifact_only_scope` is `out-of-scope`: §2.3 says it still applies (so
+`not-applicable` would be false) but is neither compared nor blocked in this
+delivery model.
+
+## Underspecified lexical judgments
+
+The following were not decidable from a more formal lexical definition in the
+contract/registry, so I made and tested these lane judgments instead of
+inventing corpus-specific exceptions:
+
+- “word character” and “alphanumeric” use ECMAScript's ASCII `\w`-style
+  vocabulary. This means `0.128.0` immediately followed by Korean `이` is a
+  `bare-semver`. The source byte mapping still ends before the Korean bytes.
+- A PR citation at end-of-blob is not recognized. The rule says it must be
+  terminated by a non-word character, unlike the ISO-date rule, which expressly
+  permits end-of-blob.
+- A package segment accepts one or more Unicode letters/numbers separated by
+  `.`, `_`, or `-`; an outer word/hyphen boundary is required. Sentence `.` is
+  allowed after the patch component, while `.DIGIT` is rejected as a fourth
+  version component. Code delimiters are wrappers, not span bytes.
+- A proof-run kind accepts Unicode letters/numbers plus `_` and `-`, is parsed
+  against the fixed timestamp suffix, and the lowercase-hex suffix is maximal
+  and nonempty. No run-kind allow-list is used.
+- A `_sha256` introducer is a same-line letter/underscore field name ending in
+  `_sha256`, followed by `:`, `=`, or a table `|` separator and Markdown/quote
+  wrappers. `sha256:` must be directly adjacent to the hex run. Only the hex
+  run is the occurrence literal.
+- Start/end of blob count as boundaries except for the explicitly strict PR
+  termination judgment above.
+
+These are parser choices permitted by §13, but they can affect the population,
+so they are stated rather than hidden. The overlap-profile scalar choice and the
+out-of-scope authority-field representation are the two wire-level gaps I could
+not derive from the supplied contract.
+
+## Integrity, schema, and attestation
+
+Canonical JSON is emitted recursively with lexicographic keys, two-space
+indentation, and one trailing newline (§2.1). It is manually serialized so
+JavaScript cannot reorder integer-like keys numerically. The exporter verifies:
+
+- the manifest self-digest under §2.1;
+- the exact four-member, NUL/decimal-length framed bundle digest under §11.3,
+  against the recorded delivery seal;
+- every policy digest under §4.5; and
+- the artifact digest over the artifact with `attestation` removed under §11.4.
+
+The dependency-free schema checker implements every assertion used by the
+sealed `artifact-schema.json` and fails closed on an unsupported assertion. A
+second semantic pass covers the checks the schema cannot express: manifest
+membership/blob equality (§2.1), valid and round-tripping spans (§3.5), known
+families/roles, unique physical-family occurrences (§3.2–§3.3), policy shape and
+digests (§4.5), disposition/role consistency and total anchor coverage (§4.3),
+and attestation equality (§11.4).
+
+No network access, repository history, other lane output, oracle, comparator
+output, authority snapshot, rationale-class association document, or other
+§11.2 prohibited project input was read. `TASK.md` was the sole external input
+read outside `bundle/`; the user required it to be read first, and it is named
+in `attestation.prohibited_inputs_accessed` under the user's stricter reporting
+instruction. Self-authored files under `out/` were subsequently read only for
+verification.
+
+## Verification
+
+The required commands pass:
 
 ```text
 node out/exporter.mjs
 node --test out/tests.mjs
 ```
 
-The tests include schema mutations, semantic mutations, missing/duplicate
-anchors, repeated literals, non-ASCII prefixes, CRLF and hard wraps, first- and
-last-byte spans, code delimiters/fences, boundary negatives, ambiguous
-synthetic candidates, connector-negative proximity, and the full-timestamp
-incomplete form.
-
-## Clean-room attestation
-
-No §11.2 prohibited input, other lane output, oracle, comparator result,
-authority snapshot, rationale-class association policy, project history, or
-network source was accessed. `attestation.prohibited_inputs_accessed` is
-therefore `[]` (contract §11.4). Outside `bundle/`, I read the required
-`TASK.md` task brief and the lane-authored files under `out/` during
-verification; neither supplied corpus-derived measurement evidence.
-
+The test suite contains behavior-sensitive positive and negative controls for
+each item it names. In particular, deleting canonical key ordering, maximal-run
+handling, wrapper exclusion, non-ASCII byte mapping, repeated-occurrence
+identity, wrapped construction binding, ambiguity, code-fence handling, schema
+enforcement, a disposition invariant, or any anchor row makes its corresponding
+test fail.

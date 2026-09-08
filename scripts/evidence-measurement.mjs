@@ -57,7 +57,7 @@ export const AUTHORITY_BASELINE_PATH = `${MEASUREMENT_DIR}/authority-baseline.js
 export const ARTIFACT_SCHEMA = 'evidence-measurement-artifact-1.0';
 export const SEAL_SCHEMA = 'evidence-measurement-bundle-1.0';
 export const AUTHORITY_SCHEMA = 'evidence-measurement-authority-1.0';
-export const CONTRACT_VERSION = '2.1.0';
+export const CONTRACT_VERSION = '2.2.0';
 
 /** Contract §4.3 — the four dispositions. */
 export const DISPOSITIONS = Object.freeze(['bound', 'not-a-claim', 'ambiguous', 'incomplete']);
@@ -512,9 +512,12 @@ export function validateArtifact(artifact, ctx) {
     // reached `agreeing` — a false pass reproduced by cross-host review. A
     // disposition that contradicts its own row is malformed, not a comparison
     // result, so it is structural.
+    // Dispositions are read over the NON-ANCHOR roles (§4.3): the anchor is
+    // filled by construction, so counting it would make `not-a-claim` — which
+    // requires none filled — impossible to emit on any row.
     const filled = new Set(Object.entries(a.roles ?? {}).filter(([, v]) => identityKey(v) !== null).map(([k]) => k));
     const declaredRoles = new Set((rel.roles ?? []).map((r) => r.name));
-    const requiredRoles = (rel.roles ?? []).filter((r) => r.required === true).map((r) => r.name);
+    const requiredRoles = (rel.roles ?? []).filter((r) => r.required === true && r.name !== rel.anchor_role).map((r) => r.name);
     for (const name of filled) {
       if (!declaredRoles.has(name)) at(`anchors[${i}].roles.${name}`, `names no role of relation ${JSON.stringify(a.relation)}`);
     }
@@ -527,11 +530,11 @@ export function validateArtifact(artifact, ctx) {
     } else if (a.disposition === 'not-a-claim') {
       if (filled.size > 0) at(`anchors[${i}]`, `is \`not-a-claim\` but fills role(s) ${JSON.stringify([...filled])}; §4.3 defines it as asserting no relation at all`);
     }
-    // The anchor role, when filled, must be the anchor occurrence itself —
-    // otherwise the row's identity and its own content disagree.
-    const anchorRoleId = a.roles?.[rel.anchor_role];
-    if (anchorRoleId && identityKey(anchorRoleId) !== key) {
-      at(`anchors[${i}].roles.${rel.anchor_role}`, 'does not name the anchor occurrence this row is keyed by (§4.1)');
+    // §4.3 (2.2.0) — the anchor role is filled by the row's `anchor` and must
+    // NOT be repeated in `roles`. A schema cannot express this, because the
+    // registry decides which role is the anchor per relation.
+    if (a.roles && Object.prototype.hasOwnProperty.call(a.roles, rel.anchor_role)) {
+      at(`anchors[${i}].roles.${rel.anchor_role}`, 'repeats the anchor role, which the row\'s `anchor` already fills; §4.3 forbids the second spelling');
     }
   }
 
@@ -659,7 +662,17 @@ export function compareDisposition(oracle, lane, rolesAgree) {
   return 'unexpected';                                                        // 12
 }
 
-/** §7.3 — bindings agree when every declared role names the same identity, or neither does. */
+/**
+ * §7.3 — bindings agree when every NON-ANCHOR role names the same identity, or
+ * neither does.
+ *
+ * The anchor role is excluded because it carries no judgment: its value is the
+ * row's own identity. Comparing it measured wire shape rather than pairing, and
+ * two independent annotators taking opposite conventions from §4.3's silence
+ * produced a role-binding difference on every row where they had otherwise
+ * agreed — hundreds of findings manufactured by spelling. 2.2.0 forbids the
+ * anchor role in `roles` outright (§4.3); this is the comparison half of that.
+ */
 export function roleBindingsAgree(relationRoles, oracleRoles = {}, laneRoles = {}) {
   const differing = [];
   for (const role of relationRoles) {
@@ -709,6 +722,8 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
   if (seals.size > 1) structural.push({ artifact: '<run>', path: 'bundle_digest', detail: `artifacts declare ${seals.size} different bundle digests (§8.2)` });
   const pins = new Set(artifacts.map((a) => a?.corpus_commit));
   if (pins.size > 1) structural.push({ artifact: '<run>', path: 'corpus_commit', detail: `artifacts declare ${pins.size} different corpus pins (§8.2)` });
+  const scopes = new Set(artifacts.map((a) => a?.artifact_only_scope));
+  if (scopes.size > 1) structural.push({ artifact: '<run>', path: 'artifact_only_scope', detail: `artifacts disagree about whether run artifacts were delivered (${[...scopes].join(', ')}); §2.3 makes that a property of the run, not of one side` });
 
   const oracles = validated.filter((v) => v.artifact.role === 'oracle');
   const lanes = validated.filter((v) => v.artifact.role === 'lane');
@@ -848,7 +863,7 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
         const la = laneAnchors.get(key);
         if (!la) continue; // already structural
         const rel = relations.get(oa.relation);
-        const roleNames = (rel?.roles ?? []).map((x) => x.name);
+        const roleNames = (rel?.roles ?? []).map((x) => x.name).filter((n) => n !== rel?.anchor_role);
         const { agree, differing } = roleBindingsAgree(roleNames, oa.roles, la.roles);
         const status = compareDisposition(oa.disposition, la.disposition, agree);
         rows.push({
@@ -886,6 +901,17 @@ export function compare({ artifacts, registry, manifest, bundleDigest: bundle, b
  * run artifact anybody saw.
  */
 export function evaluateArtifactOnly({ artifacts, registry }) {
+  // §2.3 (2.2.0) — a run whose delivery model excluded the run artifacts has no
+  // artifact-only scope, and rows 6 and 9 do not apply. A bundle-delivered
+  // clean-room run is always out of scope: §11.1 delivers corpus blobs and
+  // shared inputs and nothing else, so no artifact can ever report such a field
+  // `present`. 2.1.0 read that as "absent on this machine" and blocked, which
+  // made `pass` unreachable for every clean-room run — the verdict
+  // unreachability that retired 1.0, arriving through the delivery model.
+  const scopes = new Set((artifacts ?? []).map((a) => a?.artifact_only_scope));
+  if (scopes.size === 1 && scopes.has('out-of-scope')) {
+    return { qualified: [], absent: [], disagreeing: [], present: [], scope: 'out-of-scope' };
+  }
   const qualified = [];
   for (const f of registry.families ?? []) {
     for (const fld of f.fields ?? []) {
@@ -895,7 +921,7 @@ export function evaluateArtifactOnly({ artifacts, registry }) {
   const absent = [];
   const disagreeing = [];
   const present = [];
-  if (qualified.length === 0) return { qualified: [], absent, disagreeing, present };
+  if (qualified.length === 0) return { qualified: [], absent, disagreeing, present, scope: 'in-scope' };
 
   const oracle = (artifacts ?? []).find((a) => a?.role === 'oracle');
   const byIdentity = new Map();
@@ -921,7 +947,7 @@ export function evaluateArtifactOnly({ artifacts, registry }) {
       }
     }
   }
-  return { qualified, absent, disagreeing, present };
+  return { qualified, absent, disagreeing, present, scope: 'in-scope' };
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
   "title": "Evidence measurement artifact",
   "description": "The wire shape a lane or an oracle emits. Contract 2.1.0 adds this as the fourth sealed bundle member: the contract describes these fields in prose, and prose is not a shape two independent authors can emit compatibly. Nothing here is corpus-derived — a schema is protocol under contract 1.2, and says nothing about what the corpus contains.",
   "type": "object",
-  "required": ["schema", "contract_version", "role", "artifact_id", "bundle_digest", "manifest_digest", "corpus_commit", "policies", "occurrences", "anchors", "attestation"],
+  "required": ["schema", "contract_version", "role", "artifact_id", "artifact_only_scope", "bundle_digest", "manifest_digest", "corpus_commit", "policies", "occurrences", "anchors", "attestation"],
   "additionalProperties": false,
   "properties": {
     "schema": { "const": "evidence-measurement-artifact-1.0" },
@@ -14,6 +14,10 @@
       "description": "Contract 4.4. A run has at most one oracle; without one it has no correctness verdict."
     },
     "artifact_id": { "type": "string", "minLength": 1 },
+    "artifact_only_scope": {
+      "enum": ["in-scope", "out-of-scope"],
+      "description": "Contract 2.3 — whether this run's delivery model included the untracked run artifacts an `artifact-only` field depends on. A bundle-delivered clean-room run is `out-of-scope`: 11.1 delivers corpus blobs and shared inputs and nothing else, so no such field can ever be `present`, and 8.3 rows 6 and 9 do not apply. Out of scope is not the same as satisfied."
+    },
     "bundle_digest": { "$ref": "#/$defs/sha256" },
     "manifest_digest": { "$ref": "#/$defs/sha256" },
     "corpus_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
@@ -88,7 +92,7 @@
         "disposition": { "enum": ["bound", "not-a-claim", "ambiguous", "incomplete"] },
         "roles": {
           "type": "object",
-          "description": "Role name to the identity filling it. An UNFILLED ROLE IS ABSENT, never null: contract 4.3 makes which roles are filled part of the disposition's meaning, and two wire spellings of one fact are two things for a lane to differ about. Only filled roles appear.",
+          "description": "Role name to the identity filling it, for the NON-ANCHOR roles only. The anchor role never appears here: it is filled by the row's own `anchor`, and repeating it is a second spelling of one fact (contract 4.3). A schema cannot name which role is the anchor, since the registry decides that per relation, so the comparator rejects an anchor role found here as malformed rather than as a disagreement. An UNFILLED ROLE IS ABSENT, never null.",
           "additionalProperties": { "$ref": "#/$defs/identity" }
         },
         "qualifiers": {

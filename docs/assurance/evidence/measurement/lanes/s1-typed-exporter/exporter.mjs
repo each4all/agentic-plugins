@@ -1,368 +1,324 @@
-#!/usr/bin/env node
-
 import { createHash } from 'node:crypto';
-import {
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, posix, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const MODULE_PATH = fileURLToPath(import.meta.url);
-const ROOT = path.dirname(path.dirname(MODULE_PATH));
-const DEFAULT_BUNDLE_ROOT = path.join(ROOT, 'bundle');
-const MEASUREMENT_DIR = 'docs/assurance/evidence/measurement';
+const OUT_DIR = dirname(fileURLToPath(import.meta.url));
+const WORKSPACE = resolve(OUT_DIR, '..');
+const BUNDLE_ROOT = join(WORKSPACE, 'bundle');
 
-export const BUNDLE_MEMBERS = [
-  `${MEASUREMENT_DIR}/measurement-contract.md`,
-  `${MEASUREMENT_DIR}/family-registry.json`,
-  `${MEASUREMENT_DIR}/corpus-manifest.json`,
-  `${MEASUREMENT_DIR}/artifact-schema.json`,
-];
-
-export const RELEASE_POLICY_PARAMETERS = Object.freeze({
-  disposition_precedence: 'ambiguous over incomplete over bound; no construction is not-a-claim',
-  max_gap_bytes: 320,
-  pr_cue_gap_bytes: 48,
-  pr_cues: 'release PR|released as PR|PR ... released ... tag',
-  record_boundary: 'a direct release-PR cue starts a record and the next direct release-PR cue ends it',
-  reverse_pr_connector_bytes: 160,
-  squash_cue_gap_bytes: 32,
-  squash_cues: 'squash between the record release PR and tag',
-  sync_cue_gap_bytes: 48,
-  sync_cues: 'marketplace sync|marketplace sync commit|unqualified sync|unqualified sync commit after tag',
-  tag_cue_gap_bytes: 64,
-  tag_group_gap_bytes: 200,
-  tag_group_connectors: 'punctuation|and|alongside',
+const INPUT_PATHS = Object.freeze({
+  contract: 'docs/assurance/evidence/measurement/measurement-contract.md',
+  registry: 'docs/assurance/evidence/measurement/family-registry.json',
+  manifest: 'docs/assurance/evidence/measurement/corpus-manifest.json',
+  schema: 'docs/assurance/evidence/measurement/artifact-schema.json',
 });
 
-export const PROOF_DATE_POLICY_PARAMETERS = Object.freeze({
-  construction_order: 'DATE-AS|RUN-ON|DATE-DIRECT|RUN-PARENTHETICAL|DATE-LABELLED|LABELLED-GROUP',
-  date_equivalence: 'YYYYMMDD in run id equals YYYY-MM-DD with optional trailing Z',
-  disposition_precedence: 'ambiguous over bound over incomplete over not-a-claim',
-  full_timestamp_fallback: 'YYYY-MM-DDTHH:MM[:SS]Z connected by a direct form yields incomplete',
-  group_child_separators: 'opening parenthesis|semicolon|comma',
-  hard_boundaries: 'period|semicolon|question mark|exclamation mark|table-cell bar|blank line',
-  label_nouns: 'run|record|proof|attestation|artifact|snapshot|datapoint',
-  markdown_decorations_removed: 'backtick|asterisk|underscore|square brackets',
-  max_gap_bytes: 256,
-  scope: 'same blob',
-  whitespace_normalization: 'collapse ASCII whitespace for connector matching only',
-});
+const BUNDLE_MEMBERS = Object.freeze([
+  INPUT_PATHS.contract,
+  INPUT_PATHS.registry,
+  INPUT_PATHS.manifest,
+  INPUT_PATHS.schema,
+]);
 
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+// The registry uses the regex term "word character" without defining a
+// Unicode expansion. This lane adopts ECMAScript \w's ASCII vocabulary.
+const WORD_RE = /[A-Za-z0-9_]/u;
+const ALNUM_RE = /[A-Za-z0-9]/u;
+const JSON_SCHEMA_ANNOTATIONS = new Set([
+  '$schema',
+  '$id',
+  '$defs',
+  'title',
+  'description',
+]);
+const JSON_SCHEMA_ASSERTIONS = new Set([
+  '$ref',
+  'type',
+  'required',
+  'additionalProperties',
+  'properties',
+  'items',
+  'enum',
+  'const',
+  'pattern',
+  'minLength',
+  'minimum',
+]);
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
 }
 
-function canonicalBody(value, level) {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') {
+function isPlainObject(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function canonicalValue(value, depth, ancestors) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
     return JSON.stringify(value);
   }
   if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new TypeError('canonical JSON cannot encode a non-finite number');
+    assert(Number.isFinite(value), 'canonical JSON cannot contain a non-finite number');
     return JSON.stringify(value);
   }
+  assert(typeof value !== 'bigint', 'canonical JSON cannot contain bigint');
+  assert(typeof value !== 'undefined', 'canonical JSON cannot contain undefined');
+  assert(typeof value !== 'function', 'canonical JSON cannot contain functions');
+  assert(typeof value !== 'symbol', 'canonical JSON cannot contain symbols');
+  assert(value && typeof value === 'object', 'canonical JSON received an unsupported value');
+  assert(!ancestors.has(value), 'canonical JSON cannot contain a cycle');
+
+  ancestors.add(value);
+  const indentation = '  '.repeat(depth);
+  const childIndentation = '  '.repeat(depth + 1);
+  let result;
+
   if (Array.isArray(value)) {
-    if (value.length === 0) return '[]';
-    const childIndent = '  '.repeat(level + 1);
-    const closeIndent = '  '.repeat(level);
-    return `[\n${value.map((item) => `${childIndent}${canonicalBody(item, level + 1)}`).join(',\n')}\n${closeIndent}]`;
-  }
-  if (isPlainObject(value)) {
+    if (value.length === 0) {
+      result = '[]';
+    } else {
+      const members = value.map(
+        (member) => `${childIndentation}${canonicalValue(member, depth + 1, ancestors)}`,
+      );
+      result = `[\n${members.join(',\n')}\n${indentation}]`;
+    }
+  } else {
+    assert(isPlainObject(value), 'canonical JSON only accepts plain objects');
     const keys = Object.keys(value).sort();
-    if (keys.length === 0) return '{}';
-    const childIndent = '  '.repeat(level + 1);
-    const closeIndent = '  '.repeat(level);
-    const members = keys.map((key) => {
-      if (value[key] === undefined) throw new TypeError(`canonical JSON cannot encode undefined at ${key}`);
-      return `${childIndent}${JSON.stringify(key)}: ${canonicalBody(value[key], level + 1)}`;
-    });
-    return `{\n${members.join(',\n')}\n${closeIndent}}`;
+    if (keys.length === 0) {
+      result = '{}';
+    } else {
+      const members = keys.map((key) => {
+        const member = canonicalValue(value[key], depth + 1, ancestors);
+        return `${childIndentation}${JSON.stringify(key)}: ${member}`;
+      });
+      result = `{\n${members.join(',\n')}\n${indentation}}`;
+    }
   }
-  throw new TypeError(`canonical JSON cannot encode ${typeof value}`);
+
+  ancestors.delete(value);
+  return result;
 }
 
-// Contract 2.1: lexicographic object keys at every depth, two spaces, final LF.
-// This emits members directly rather than sorting into a plain JS object, because
-// JSON.stringify reorders integer-index-looking keys numerically.
-export function canonicalSerialize(value) {
-  return `${canonicalBody(value, 0)}\n`;
+/** Contract §2.1 canonical serialization. */
+export function canonicalJson(value) {
+  return `${canonicalValue(value, 0, new Set())}\n`;
 }
 
-export function sha256Hex(bytes) {
-  return createHash('sha256').update(bytes).digest('hex');
+export function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
 }
 
-export function canonicalDigest(value) {
-  return sha256Hex(Buffer.from(canonicalSerialize(value), 'utf8'));
-}
-
-export function gitBlobId(bytes) {
+export function gitBlobOid(bytes) {
   return createHash('sha1')
-    .update(Buffer.from(`blob ${bytes.length}\0`, 'utf8'))
+    .update(`blob ${bytes.length}\0`, 'utf8')
     .update(bytes)
     .digest('hex');
 }
 
-// Contract 11.3: exact member bytes, fixed order, repository-relative paths,
-// decimal byte lengths, and NUL delimiters.
-export function computeBundleDigest(bundleRoot = DEFAULT_BUNDLE_ROOT) {
+export function declarationDigest(declaration) {
+  const { digest: _discarded, ...withoutDigest } = declaration;
+  return sha256(Buffer.from(canonicalJson(withoutDigest), 'utf8'));
+}
+
+export function artifactDigest(artifact) {
+  const { attestation: _discarded, ...withoutAttestation } = artifact;
+  return sha256(Buffer.from(canonicalJson(withoutAttestation), 'utf8'));
+}
+
+export function computeBundleDigest(memberBytes) {
   const hash = createHash('sha256');
-  for (const member of BUNDLE_MEMBERS) {
-    const bytes = readFileSync(path.join(bundleRoot, member));
-    hash.update(Buffer.from(member, 'utf8'));
+  for (const memberPath of BUNDLE_MEMBERS) {
+    const bytes = memberBytes.get(memberPath);
+    assert(Buffer.isBuffer(bytes), `missing sealed bundle member ${memberPath}`);
+    hash.update(memberPath, 'utf8');
     hash.update(Buffer.from([0]));
-    hash.update(Buffer.from(String(bytes.length), 'ascii'));
+    hash.update(String(bytes.length), 'utf8');
     hash.update(Buffer.from([0]));
     hash.update(bytes);
   }
   return hash.digest('hex');
 }
 
-function makeCharToByteMap(text) {
-  const map = new Uint32Array(text.length + 1);
-  let byte = 0;
-  for (let index = 0; index < text.length;) {
-    map[index] = byte;
-    const point = text.codePointAt(index);
-    const character = String.fromCodePoint(point);
-    if (character.length === 2) map[index + 1] = byte;
-    byte += Buffer.byteLength(character, 'utf8');
-    index += character.length;
-    map[index] = byte;
+function previousCodePoint(text, index) {
+  if (index <= 0) return null;
+  let start = index - 1;
+  const last = text.charCodeAt(start);
+  if (last >= 0xdc00 && last <= 0xdfff && start > 0) {
+    const first = text.charCodeAt(start - 1);
+    if (first >= 0xd800 && first <= 0xdbff) start -= 1;
   }
-  return map;
+  return String.fromCodePoint(text.codePointAt(start));
 }
 
-function characterBefore(text, index) {
-  if (index === 0) return null;
-  const low = text.charCodeAt(index - 1);
-  if (low >= 0xdc00 && low <= 0xdfff && index >= 2) return text.slice(index - 2, index);
-  return text[index - 1];
-}
-
-function characterAfter(text, index) {
+function nextCodePoint(text, index) {
   if (index >= text.length) return null;
   return String.fromCodePoint(text.codePointAt(index));
 }
 
-function isAlphanumeric(character) {
-  return character !== null && /^[\p{L}\p{N}]$/u.test(character);
-}
-
-function isWordCharacter(character) {
-  return character !== null && /^[A-Za-z0-9_]$/.test(character);
-}
-
-function isPackageTokenCharacter(character) {
-  return character !== null && /^[A-Za-z0-9_-]$/.test(character);
-}
-
-function present(value) {
-  return { state: 'present', value };
-}
-
-function unresolved() {
-  return { state: 'unresolved' };
-}
-
-function notApplicable() {
-  return { state: 'not-applicable' };
-}
-
-function contentDigestShape(text, start) {
-  const prefix = text.slice(0, start);
-  if (/sha256:\s*[`'\"]?\s*$/i.test(prefix)) return 'prefixed';
-  if (/[A-Za-z0-9_.-]+_sha256\b(?:[\s:`'\"=]*)$/i.test(prefix)) return 'prefixed';
-  return 'bare';
-}
-
-function occurrenceSort(left, right) {
-  return left.path.localeCompare(right.path)
-    || left.start_byte - right.start_byte
-    || left.end_byte - right.end_byte
-    || left.family.localeCompare(right.family)
-    || left.profile.localeCompare(right.profile);
-}
-
-/**
- * Apply the registry's lexical observables to one exact blob. Recognised token
- * bodies are ASCII, but char-to-byte mapping is retained so non-ASCII text and
- * CRLF before a token cannot leak character offsets into the artifact (§3.5).
- */
-export function scanBuffer({ buffer, path: manifestPath, blob, profile }) {
-  const decoder = new TextDecoder('utf-8', { fatal: true });
-  const text = decoder.decode(buffer);
-  const charToByte = makeCharToByteMap(text);
-  const occurrences = [];
-
-  function add(family, start, end, extraFields = {}) {
-    const literal = text.slice(start, end);
-    occurrences.push({
-      profile,
-      path: manifestPath,
-      blob,
-      start_byte: charToByte[start],
-      end_byte: charToByte[end],
-      family,
-      literal,
-      fields: {
-        literal: present(literal),
-        ...extraFields,
-      },
-      _start_char: start,
-      _end_char: end,
-    });
+function buildByteMap(text) {
+  const offsets = new Uint32Array(text.length + 1);
+  let byteOffset = 0;
+  let index = 0;
+  offsets[0] = 0;
+  while (index < text.length) {
+    const codePoint = text.codePointAt(index);
+    const width = codePoint > 0xffff ? 2 : 1;
+    const encodedWidth = Buffer.byteLength(String.fromCodePoint(codePoint), 'utf8');
+    offsets[index] = byteOffset;
+    if (width === 2) offsets[index + 1] = byteOffset;
+    index += width;
+    byteOffset += encodedWidth;
+    offsets[index] = byteOffset;
   }
+  return offsets;
+}
 
-  const proofSpans = [];
-  const proofPattern = /[A-Za-z0-9][A-Za-z0-9_-]*-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+/g;
-  for (const match of text.matchAll(proofPattern)) {
-    const start = match.index;
-    const end = start + match[0].length;
-    const left = characterBefore(text, start);
-    const right = characterAfter(text, end);
-    if ((left !== null && /^[A-Za-z0-9_-]$/.test(left))
-        || (right !== null && /^[A-Za-z0-9_-]$/.test(right))) continue;
-    const dateMarker = match[0].search(/-[0-9]{8}T[0-9]{6}Z-/);
-    const kind = match[0].slice(0, dateMarker);
-    proofSpans.push({ start, end });
-    add('proof-run-id', start, end, {
-      kind: present(kind),
-      artifact_present: notApplicable(),
-    });
-  }
-
-  const packageSpans = [];
-  const packagePattern = /plugin-([A-Za-z0-9][A-Za-z0-9._-]*?)-v([0-9]+)\.([0-9]+)\.([0-9]+)/g;
-  for (const match of text.matchAll(packagePattern)) {
-    const start = match.index;
-    const end = start + match[0].length;
-    const right = characterAfter(text, end);
-    // A full stop may delimit prose or the two sides of a `tag..tag` range.
-    // Reject only a dot that actually continues the numeric version.
-    if (isPackageTokenCharacter(characterBefore(text, start))
-        || isPackageTokenCharacter(right)
-        || (right === '.' && /^[0-9]$/.test(characterAfter(text, end + 1) ?? ''))) continue;
-    packageSpans.push({ start, end });
-    add('package-tag', start, end, {
-      package: present(match[1]),
-      version: present(`${match[2]}.${match[3]}.${match[4]}`),
-      canonical: unresolved(),
-    });
-  }
-
-  const hexadecimalPattern = /[0-9a-f]+/g;
-  for (const match of text.matchAll(hexadecimalPattern)) {
-    const start = match.index;
-    const end = start + match[0].length;
-    if (match[0].length > 40) {
-      add('content-digest', start, end, {
-        shape: present(contentDigestShape(text, start)),
-      });
-      continue;
+function makeLines(text) {
+  const lines = [];
+  let start = 0;
+  let activeFence = null;
+  while (start <= text.length) {
+    const newline = text.indexOf('\n', start);
+    const contentEnd = newline === -1 ? text.length : newline;
+    const end = newline === -1 ? text.length : newline + 1;
+    const content = text.slice(start, contentEnd).replace(/\r$/, '');
+    const marker = content.match(/^\s*(`{3,}|~{3,})/u)?.[1] ?? null;
+    let fenced = activeFence !== null;
+    if (marker !== null) {
+      fenced = true;
+      const markerKind = marker[0];
+      if (activeFence === null) activeFence = markerKind;
+      else if (activeFence === markerKind) activeFence = null;
     }
-    if (match[0].length < 7) continue;
-    const left = characterBefore(text, start);
-    const right = characterAfter(text, end);
-    if (left === '-' || left === '\u2026' || right === '\u2026'
-        || isAlphanumeric(left) || isAlphanumeric(right)) continue;
-    add('commit-citation', start, end, { canonical: unresolved() });
+    lines.push({ start, contentEnd, end, content, fenced });
+    if (newline === -1) break;
+    start = end;
   }
-
-  const prPattern = /#[0-9]{2,4}/g;
-  for (const match of text.matchAll(prPattern)) {
-    const start = match.index;
-    const end = start + match[0].length;
-    const right = characterAfter(text, end);
-    // The registry says "terminated by a non-word character"; unlike the date
-    // rule it does not admit end-of-blob as an alternative.
-    if (right === null || isWordCharacter(right)) continue;
-    add('pr-citation', start, end);
-  }
-
-  const datePattern = /[0-9]{4}-[0-9]{2}-[0-9]{2}Z?/g;
-  for (const match of text.matchAll(datePattern)) {
-    const start = match.index;
-    const end = start + match[0].length;
-    if (isWordCharacter(characterBefore(text, start))
-        || isWordCharacter(characterAfter(text, end))) continue;
-    if (proofSpans.some((span) => start >= span.start && end <= span.end)) continue;
-    add('iso-date', start, end);
-  }
-
-  const semverPattern = /[0-9]+\.[0-9]+\.[0-9]+/g;
-  for (const match of text.matchAll(semverPattern)) {
-    const start = match.index;
-    const end = start + match[0].length;
-    const forbiddenBoundary = (character) => character !== null && /^[A-Za-z0-9_.-]$/.test(character);
-    if (forbiddenBoundary(characterBefore(text, start))
-        || forbiddenBoundary(characterAfter(text, end))) continue;
-    if (packageSpans.some((span) => start >= span.start && end <= span.end)) continue;
-    add('bare-semver', start, end);
-  }
-
-  return occurrences.sort(occurrenceSort);
+  return lines;
 }
 
-function stripInternalOccurrenceFields(occurrence) {
-  const { _start_char, _end_char, ...wire } = occurrence;
-  return wire;
+function lineIndexAt(lines, index) {
+  let low = 0;
+  let high = lines.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const line = lines[middle];
+    if (index < line.start) high = middle - 1;
+    else if (index >= line.end && middle < lines.length - 1) low = middle + 1;
+    else return middle;
+  }
+  return Math.max(0, Math.min(lines.length - 1, low));
 }
 
-function manifestPathIndex(manifest) {
-  const index = new Map();
-  for (const [profile, declaration] of Object.entries(manifest.profiles)) {
-    for (const file of declaration.files) {
-      const prior = index.get(file.path);
-      if (prior && (prior.blob !== file.blob || prior.bytes !== file.bytes)) {
-        throw new Error(`manifest profiles disagree for ${file.path}`);
-      }
-      if (prior) prior.profiles.add(profile);
-      else index.set(file.path, { ...file, profiles: new Set([profile]) });
+function recordFor(document, index) {
+  const { text, lines } = document;
+  const lineNumber = lineIndexAt(lines, index);
+  const line = lines[lineNumber];
+  const trimmed = line.content.trimStart();
+
+  if (line.fenced) {
+    return { start: line.start, end: line.contentEnd, kind: 'code-fence', fenced: true };
+  }
+  if (trimmed.startsWith('|')) {
+    return { start: line.start, end: line.contentEnd, kind: 'table-row', fenced: false };
+  }
+
+  const bulletPattern = /^(\s*)(?:[-+*]|[0-9]+[.)])\s+/u;
+  let listStart = -1;
+  for (let cursor = lineNumber; cursor >= 0; cursor -= 1) {
+    if (lines[cursor].content.trim() === '') break;
+    if (bulletPattern.test(lines[cursor].content)) {
+      listStart = cursor;
+      break;
     }
   }
-  return index;
-}
-
-/**
- * Scan each physical file once. For overlapping profile membership the
- * stage-docs label is retained because both relations use that profile; this
- * avoids duplicate same-family physical identities (§3.2).
- */
-export function scanCorpus(bundleRoot, manifest) {
-  const files = manifestPathIndex(manifest);
-  const occurrences = [];
-  const buffers = new Map();
-  for (const [manifestPath, file] of [...files.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    const buffer = readFileSync(path.join(bundleRoot, manifestPath));
-    if (buffer.length !== file.bytes) throw new Error(`byte length mismatch for ${manifestPath}`);
-    if (gitBlobId(buffer) !== file.blob) throw new Error(`git blob mismatch for ${manifestPath}`);
-    buffers.set(manifestPath, buffer);
-    const profile = file.profiles.has('stage-docs')
-      ? 'stage-docs'
-      : [...file.profiles].sort()[0];
-    occurrences.push(...scanBuffer({
-      buffer,
-      path: manifestPath,
-      blob: file.blob,
-      profile,
-    }));
+  if (listStart >= 0) {
+    const baseIndent = lines[listStart].content.match(bulletPattern)[1].length;
+    let listEnd = listStart + 1;
+    while (listEnd < lines.length && lines[listEnd].content.trim() !== '') {
+      const nextBullet = lines[listEnd].content.match(bulletPattern);
+      if (nextBullet && nextBullet[1].length <= baseIndent) break;
+      listEnd += 1;
+    }
+    const last = lines[listEnd - 1];
+    return {
+      start: lines[listStart].start,
+      end: last.contentEnd,
+      kind: 'list-item',
+      fenced: false,
+    };
   }
+
+  let first = lineNumber;
+  let last = lineNumber;
+  while (first > 0 && lines[first - 1].content.trim() !== '') first -= 1;
+  while (last + 1 < lines.length && lines[last + 1].content.trim() !== '') last += 1;
   return {
-    buffers,
-    occurrences: occurrences.sort(occurrenceSort).map(stripInternalOccurrenceFields),
+    start: lines[first].start,
+    end: lines[last].contentEnd,
+    kind: 'paragraph',
+    fenced: false,
   };
 }
 
-function physicalKey(identity) {
-  return `${identity.path}\0${identity.blob}\0${identity.start_byte}\0${identity.end_byte}`;
+function clauseFor(document, anchor) {
+  let record = recordFor(document, anchor._charStart);
+  if (record.kind === 'code-fence') return record;
+
+  if (record.kind === 'table-row') {
+    const row = document.text.slice(record.start, record.end);
+    const anchorLocal = anchor._charStart - record.start;
+    const previousPipe = row.lastIndexOf('|', Math.max(0, anchorLocal - 1));
+    const nextPipe = row.indexOf('|', anchorLocal);
+    record = {
+      start: record.start + (previousPipe < 0 ? 0 : previousPipe + 1),
+      end: record.start + (nextPipe < 0 ? row.length : nextPipe),
+      kind: 'table-cell',
+      fenced: false,
+    };
+  }
+
+  const local = document.text.slice(record.start, record.end);
+  const anchorLocal = anchor._charStart - record.start;
+  const boundaries = [0];
+  for (let index = 0; index < local.length; index += 1) {
+    const character = local[index];
+    if (character === ';') {
+      boundaries.push(index + 1);
+      continue;
+    }
+    if (character === '.' || character === '?' || character === '!') {
+      const after = nextCodePoint(local, index + 1);
+      if (after === null || /\s/u.test(after)) boundaries.push(index + 1);
+    }
+  }
+  boundaries.push(local.length);
+  const unique = [...new Set(boundaries)].sort((a, b) => a - b);
+  let start = 0;
+  let end = local.length;
+  for (let index = 0; index < unique.length - 1; index += 1) {
+    if (anchorLocal >= unique[index] && anchorLocal < unique[index + 1]) {
+      start = unique[index];
+      end = unique[index + 1];
+      break;
+    }
+  }
+  return {
+    start: record.start + start,
+    end: record.start + end,
+    kind: `${record.kind}-clause`,
+    fenced: false,
+  };
 }
 
-function identity(occurrence, profile) {
+function identity(occurrence) {
   return {
-    profile,
     path: occurrence.path,
     blob: occurrence.blob,
     start_byte: occurrence.start_byte,
@@ -370,695 +326,819 @@ function identity(occurrence, profile) {
   };
 }
 
-function spanGap(left, right) {
-  if (left.end_byte < right.start_byte) return right.start_byte - left.end_byte;
-  if (right.end_byte < left.start_byte) return left.start_byte - right.end_byte;
-  return 0;
+function physicalKey(occurrence) {
+  return [
+    occurrence.path,
+    occurrence.blob,
+    occurrence.start_byte,
+    occurrence.end_byte,
+  ].join('\0');
 }
 
-function asciiLookBehind(buffer, endByte, byteCount) {
-  return buffer.subarray(Math.max(0, endByte - byteCount), endByte).toString('utf8');
+function familyPhysicalKey(occurrence) {
+  return `${occurrence.family}\0${physicalKey(occurrence)}`;
 }
 
-function hasDirectReleasePrCue(buffer, occurrence) {
-  const prefix = asciiLookBehind(buffer, occurrence.start_byte, RELEASE_POLICY_PARAMETERS.pr_cue_gap_bytes);
-  return /(?:\brelease\s+PR|\breleased\s+as\s+PR)\s*(?:\[|`)?\s*$/i.test(prefix);
+function state(value) {
+  return { state: 'present', value };
 }
 
-function hasBarePrCue(buffer, occurrence) {
-  const prefix = asciiLookBehind(buffer, occurrence.start_byte, RELEASE_POLICY_PARAMETERS.pr_cue_gap_bytes);
-  return /\bPR\s*(?:\[|`)?\s*$/i.test(prefix);
+function matchAll(regex, text) {
+  regex.lastIndex = 0;
+  return [...text.matchAll(regex)];
 }
 
-function hasSquashCue(buffer, occurrence) {
-  const prefix = asciiLookBehind(buffer, occurrence.start_byte, RELEASE_POLICY_PARAMETERS.squash_cue_gap_bytes);
-  return /\bsquash\s*(?:\[|`)?\s*$/i.test(prefix);
-}
-
-function hasSyncCue(buffer, occurrence) {
-  const prefix = asciiLookBehind(buffer, occurrence.start_byte, RELEASE_POLICY_PARAMETERS.sync_cue_gap_bytes);
-  if (/\bmarketplace\s+sync(?:\s+commit)?\s*(?:\[|`)?\s*$/i.test(prefix)) return true;
-  const match = prefix.match(/\bsync(?:\s+commit)?\s*(?:\[|`)?\s*$/i);
-  if (!match) return false;
-  const preceding = prefix.slice(0, match.index).trimEnd().at(-1);
-  return preceding === undefined || !/[A-Za-z0-9-]/.test(preceding);
-}
-
-function directTagCue(buffer, anchor) {
-  const before = asciiLookBehind(buffer, anchor.start_byte, RELEASE_POLICY_PARAMETERS.tag_cue_gap_bytes);
-  return /\b(?:release\s+|cut(?:ting)?\s+)?tags?\s*(?:`)?\s*$/i.test(before);
-}
-
-function tagGroupClaim(buffer, anchor, packageTags) {
-  const earlierSeeds = packageTags.filter((candidate) => candidate.path === anchor.path
-    && candidate.start_byte < anchor.start_byte
-    && anchor.start_byte - candidate.end_byte <= RELEASE_POLICY_PARAMETERS.tag_group_gap_bytes
-    && directTagCue(buffer, candidate));
-  for (const seed of earlierSeeds) {
-    const bridge = buffer.subarray(seed.end_byte, anchor.start_byte).toString('utf8');
-    const withoutTags = bridge.replace(/plugin-[A-Za-z0-9][A-Za-z0-9._-]*?-v[0-9]+\.[0-9]+\.[0-9]+/g, '');
-    if (/^(?:(?:and|alongside)\b|[\s`'\",/+&()[\]{}:;—–-])*$/i.test(withoutTags)) return true;
-  }
-  const immediatePrefix = asciiLookBehind(buffer, anchor.start_byte, RELEASE_POLICY_PARAMETERS.tag_cue_gap_bytes);
-  return earlierSeeds.length > 0 && /\b(?:and|alongside)\s*`?\s*$/i.test(immediatePrefix);
-}
-
-function reverseReleasePrCandidates(buffer, anchor, prOccurrences) {
-  const maxGap = RELEASE_POLICY_PARAMETERS.max_gap_bytes;
-  return prOccurrences.filter((candidate) => candidate.path === anchor.path
-    && candidate.end_byte <= anchor.start_byte
-    && spanGap(anchor, candidate) <= maxGap
-    && hasBarePrCue(buffer, candidate)
-    && (() => {
-      const between = buffer.subarray(candidate.end_byte, anchor.start_byte);
-      if (between.length > RELEASE_POLICY_PARAMETERS.reverse_pr_connector_bytes) return false;
-      if (!/(?:\breleased\b[\s\S]*\btags?\b|\bcut(?:ting)?\s+tags?\b)/i.test(between.toString('utf8'))) return false;
-      return !prOccurrences.some((other) => other.path === anchor.path
-        && other.start_byte > candidate.start_byte
-        && other.start_byte < anchor.start_byte);
-    })());
-}
-
-function candidatesNear(anchor, familyOccurrences, maxGap, predicate = () => true) {
-  return familyOccurrences.filter((candidate) => candidate.path === anchor.path
-    && spanGap(anchor, candidate) <= maxGap
-    && predicate(candidate));
-}
-
-function releaseAnchorRow(anchor, byFamily, buffers, relation) {
-  const buffer = buffers.get(anchor.path);
-  const maxGap = RELEASE_POLICY_PARAMETERS.max_gap_bytes;
-  const prOccurrences = byFamily.get('pr-citation') ?? [];
-  const directPrs = prOccurrences.filter((candidate) => candidate.path === anchor.path
-    && candidate.end_byte <= anchor.start_byte
-    && spanGap(anchor, candidate) <= maxGap
-    && hasDirectReleasePrCue(buffer, candidate))
-    .sort((left, right) => left.start_byte - right.start_byte);
-  // Direct release-PR cues delimit records. The final cue preceding the tag is
-  // therefore the start of the containing construction, not a proximity tie-break.
-  const prCandidates = directPrs.length > 0
-    ? [directPrs.at(-1)]
-    : reverseReleasePrCandidates(buffer, anchor, prOccurrences);
-  const packageTags = byFamily.get('package-tag') ?? [];
-  const carriesClaim = directTagCue(buffer, anchor)
-    || tagGroupClaim(buffer, anchor, packageTags);
-  if (!carriesClaim) {
-    return {
-      relation: relation.id,
-      anchor: identity(anchor, relation.profile),
-      disposition: 'not-a-claim',
-      roles: {},
-    };
-  }
-
-  const roles = { [relation.anchor_role]: identity(anchor, relation.profile) };
-  if (prCandidates.length === 1) roles.release_pr = identity(prCandidates[0], relation.profile);
-
-  const squashCandidates = prCandidates.length === 1
-    ? (byFamily.get('commit-citation') ?? []).filter((candidate) => candidate.path === anchor.path
-      && candidate.start_byte >= prCandidates[0].end_byte
-      && candidate.end_byte <= anchor.start_byte
-      && hasSquashCue(buffer, candidate))
-    : [];
-  if (squashCandidates.length === 1) roles.squash = identity(squashCandidates[0], relation.profile);
-
-  const nextDirectPr = prOccurrences
-    .filter((candidate) => candidate.path === anchor.path
-      && candidate.start_byte > anchor.start_byte
-      && hasDirectReleasePrCue(buffer, candidate))
-    .sort((left, right) => left.start_byte - right.start_byte)[0];
-  const recordEnd = Math.min(
-    buffer.length,
-    anchor.end_byte + maxGap,
-    nextDirectPr?.start_byte ?? Number.POSITIVE_INFINITY,
+function isInside(candidateStart, candidateEnd, containers) {
+  return containers.some(
+    (container) => candidateStart >= container._charStart && candidateEnd <= container._charEnd,
   );
-  const syncCandidates = prCandidates.length === 1
-    ? (byFamily.get('commit-citation') ?? []).filter((candidate) => candidate.path === anchor.path
-      && candidate.start_byte >= anchor.end_byte
-      && candidate.end_byte <= recordEnd
-      && hasSyncCue(buffer, candidate))
-    : [];
-  if (syncCandidates.length === 1) roles.marketplace_sync = identity(syncCandidates[0], relation.profile);
+}
 
-  const hasUnrankedMultiplicity = prCandidates.length > 1
-    || squashCandidates.length > 1
-    || syncCandidates.length > 1;
+function contentDigestShape(text, charStart) {
+  const lineStart = text.lastIndexOf('\n', charStart - 1) + 1;
+  const before = text.slice(lineStart, charStart);
+  if (before.endsWith('sha256:')) return 'prefixed';
+  const fieldIntroducer = /(?:^|[^\p{L}\p{N}_])[\p{L}_][\p{L}\p{N}_]*_sha256["'`]?\s*(?::|=|\|)\s*["'`]?\s*$/u;
+  return fieldIntroducer.test(before) ? 'prefixed' : 'bare';
+}
+
+function occurrenceFromMatch(context, family, match, fields = {}) {
+  const charStart = match.index;
+  const charEnd = charStart + match[0].length;
+  const startByte = context.byteMap[charStart];
+  const endByte = context.byteMap[charEnd];
+  const literal = context.bytes.subarray(startByte, endByte).toString('utf8');
+  assert(literal === match[0], `internal byte mapping failed for ${family} in ${context.path}`);
   return {
-    relation: relation.id,
-    anchor: identity(anchor, relation.profile),
-    disposition: hasUnrankedMultiplicity
-      ? 'ambiguous'
-      : (prCandidates.length === 0 ? 'incomplete' : 'bound'),
+    profile: context.profile,
+    path: context.path,
+    blob: context.blob,
+    start_byte: startByte,
+    end_byte: endByte,
+    family,
+    literal,
+    fields: { literal: state(literal), ...fields },
+    _charStart: charStart,
+    _charEnd: charEnd,
+  };
+}
+
+/**
+ * Apply the registry's lexical observables to one exact UTF-8 blob (§3.4–3.5).
+ * The few underspecified tokenization judgments are documented in NOTES.md.
+ */
+export function recognizeDocument({ path, blob, profile, bytes }) {
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const text = decoder.decode(bytes);
+  const byteMap = buildByteMap(text);
+  assert(byteMap[text.length] === bytes.length, `UTF-8 map length mismatch for ${path}`);
+  const context = { path, blob, profile, bytes, text, byteMap };
+  const occurrences = [];
+
+  const packagePattern = /(?<![\p{L}\p{N}_-])plugin-([\p{L}\p{N}]+(?:[._-][\p{L}\p{N}]+)*)-v([0-9]+)\.([0-9]+)\.([0-9]+)(?![\p{L}\p{N}_-]|\.[0-9])/gu;
+  const packageTags = matchAll(packagePattern, text).map((match) =>
+    occurrenceFromMatch(context, 'package-tag', match, {
+      package: state(match[1]),
+      version: state(`${match[2]}.${match[3]}.${match[4]}`),
+    }),
+  );
+  occurrences.push(...packageTags);
+
+  const proofPattern = /(?<![\p{L}\p{N}_-])([\p{L}\p{N}][\p{L}\p{N}_-]*)-([0-9]{8})T([0-9]{6})Z-([0-9a-f]+)(?![\p{L}\p{N}_-])/gu;
+  const proofRuns = matchAll(proofPattern, text).map((match) =>
+    occurrenceFromMatch(context, 'proof-run-id', match, { kind: state(match[1]) }),
+  );
+  occurrences.push(...proofRuns);
+
+  for (const match of matchAll(/[0-9a-f]+/g, text)) {
+    const length = match[0].length;
+    const start = match.index;
+    const end = start + length;
+    if (length > 40) {
+      occurrences.push(
+        occurrenceFromMatch(context, 'content-digest', match, {
+          shape: state(contentDigestShape(text, start)),
+        }),
+      );
+      continue;
+    }
+    if (length < 7) continue;
+    const left = previousCodePoint(text, start);
+    const right = nextCodePoint(text, end);
+    if (left !== null && (ALNUM_RE.test(left) || left === '\u2026' || left === '-')) continue;
+    if (right !== null && (ALNUM_RE.test(right) || right === '\u2026')) continue;
+    occurrences.push(occurrenceFromMatch(context, 'commit-citation', match));
+  }
+
+  const prPattern = /#[0-9]{2,4}/g;
+  for (const match of matchAll(prPattern, text)) {
+    const end = match.index + match[0].length;
+    const right = nextCodePoint(text, end);
+    // Judgment: "terminated by a non-word character" requires an actual byte;
+    // unlike the ISO-date rule, EOF is not named as a boundary.
+    if (right === null || WORD_RE.test(right)) continue;
+    occurrences.push(occurrenceFromMatch(context, 'pr-citation', match));
+  }
+
+  const isoPattern = /[0-9]{4}-[0-9]{2}-[0-9]{2}Z?/g;
+  for (const match of matchAll(isoPattern, text)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    const left = previousCodePoint(text, start);
+    const right = nextCodePoint(text, end);
+    if (left !== null && WORD_RE.test(left)) continue;
+    if (right !== null && WORD_RE.test(right)) continue;
+    if (isInside(start, end, proofRuns)) continue;
+    occurrences.push(occurrenceFromMatch(context, 'iso-date', match));
+  }
+
+  const semverPattern = /[0-9]+\.[0-9]+\.[0-9]+/g;
+  for (const match of matchAll(semverPattern, text)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    const left = previousCodePoint(text, start);
+    const right = nextCodePoint(text, end);
+    if (left !== null && (WORD_RE.test(left) || left === '-' || left === '.')) continue;
+    if (right !== null && (WORD_RE.test(right) || right === '-' || right === '.')) continue;
+    if (isInside(start, end, packageTags)) continue;
+    occurrences.push(occurrenceFromMatch(context, 'bare-semver', match));
+  }
+
+  occurrences.sort(compareOccurrences);
+  return {
+    path,
+    blob,
+    profile,
+    bytes,
+    text,
+    byteMap,
+    lines: makeLines(text),
+    occurrences,
+  };
+}
+
+function compareOccurrences(left, right) {
+  return (
+    compareStrings(left.path, right.path) ||
+    left.start_byte - right.start_byte ||
+    left.end_byte - right.end_byte ||
+    compareStrings(left.family, right.family) ||
+    compareStrings(left.profile, right.profile)
+  );
+}
+
+function compareStrings(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function wireOccurrence(occurrence) {
+  const {
+    _charStart: _discardedStart,
+    _charEnd: _discardedEnd,
+    ...wire
+  } = occurrence;
+  return wire;
+}
+
+function occurrencesInRange(occurrences, family, range) {
+  return occurrences.filter(
+    (occurrence) =>
+      occurrence.family === family &&
+      occurrence._charStart >= range.start &&
+      occurrence._charEnd <= range.end,
+  );
+}
+
+function labelsInRange(text, range, pattern) {
+  const local = text.slice(range.start, range.end);
+  return matchAll(pattern, local).map((match) => ({
+    start: range.start + match.index,
+    end: range.start + match.index + match[0].length,
+  }));
+}
+
+function labeledCandidates(document, occurrences, range, family, pattern, maxGap) {
+  const candidates = occurrencesInRange(occurrences, family, range);
+  const labels = labelsInRange(document.text, range, pattern);
+  return candidates.filter((candidate) =>
+    labels.some(
+      (label) => {
+        if (label.end > candidate._charStart || candidate._charStart - label.end > maxGap) {
+          return false;
+        }
+        // A label binds through Markdown wrappers and punctuation, not through
+        // another word/token. This admits `release PR [#12]` and
+        // `squash `abcdef0`` without letting a label capture every later
+        // occurrence of the same family in the clause.
+        const connector = document.text.slice(label.end, candidate._charStart);
+        return /^[\s`*_"'\[\]{}():=<>/\\|,+\-–—]*$/u.test(connector);
+      },
+    ),
+  );
+}
+
+function uniqueByPhysical(occurrences) {
+  const byKey = new Map();
+  for (const occurrence of occurrences) byKey.set(physicalKey(occurrence), occurrence);
+  return [...byKey.values()];
+}
+
+export const POLICY_PARAMETERS = Object.freeze({
+  'release-triple': Object.freeze({
+    candidate_scope: 'smallest Markdown table-cell, list-item, or paragraph clause',
+    clause_boundaries: 'semicolon unconditionally; .?! only before whitespace or clause end',
+    code_fence_disposition: 'not-a-claim',
+    fence_markers: 'three or more backticks or tildes',
+    fence_line_start: 'optional whitespace followed by a fence marker',
+    fence_close: 'same marker character; delimiter lines are fenced',
+    fence_trailing_text: 'ignored for opening and closing detection',
+    list_item_markers: '-|+|*|decimal followed by . or )',
+    list_anchor_assignment: 'nearest preceding item marker since the last blank line',
+    list_item_termination: 'blank line or next same-or-lower-indented item',
+    paragraph_termination: 'blank line',
+    table_cell_delimiter: 'literal vertical bar',
+    table_row_start: 'first non-whitespace character is a vertical bar',
+    lexical_matching_case: 'Unicode case-insensitive for labels and claim cues',
+    label_gap_code_units: 96,
+    label_connector_characters: 'whitespace ` * _ quotes [] {} () : = <> / backslash | , + - en-dash em-dash',
+    release_pr_labels: 'release PR|release pull request|released as PR',
+    claim_cues: 'released|published|cut|shipped',
+    claim_cue_direction: 'preceding anchor in same structural clause',
+    claim_cue_gap_code_units: 96,
+    tag_labels: 'tag|tags',
+    tag_list_gap_code_units: 192,
+    tag_list_joiners: 'case-insensitive word and plus label-connector characters',
+    squash_labels: 'squash|squash commit',
+    marketplace_sync_labels: 'marketplace sync|marketplace sync commit',
+    singleton_unlabelled_anchor_requires_labeled_release_pr: true,
+    shared_role_identity_policy: 'ambiguous',
+    zero_required_candidate_on_claim: 'incomplete',
+    no_admitted_claim_predicate: 'not-a-claim',
+  }),
+  'proof-date-binding': Object.freeze({
+    candidate_scope: 'smallest Markdown table-cell, list-item, or paragraph clause',
+    clause_boundaries: 'semicolon unconditionally; .?! only before whitespace or clause end',
+    code_fence_disposition: 'not-a-claim',
+    fence_markers: 'three or more backticks or tildes',
+    fence_line_start: 'optional whitespace followed by a fence marker',
+    fence_close: 'same marker character; delimiter lines are fenced',
+    fence_trailing_text: 'ignored for opening and closing detection',
+    list_item_markers: '-|+|*|decimal followed by . or )',
+    list_anchor_assignment: 'nearest preceding item marker since the last blank line',
+    list_item_termination: 'blank line or next same-or-lower-indented item',
+    paragraph_termination: 'blank line',
+    table_cell_delimiter: 'literal vertical bar',
+    table_row_start: 'first non-whitespace character is a vertical bar',
+    lexical_matching_case: 'Unicode case-insensitive for connectors and claim cues',
+    date_candidate_gap_code_units: 120,
+    date_left_context_code_units: 32,
+    date_after_anchor_connectors: "opening parenthesis '('|on|dated|date|recorded on|was recorded on",
+    date_before_anchor_left_cues: 'on|dated|date',
+    date_before_anchor_joiners: 'as|for|by; optional only when a left cue is present',
+    date_connector_wrapper_characters: 'whitespace ` * _ quotes [] {} , : ; () - en-dash em-dash',
+    table_cell_rule: 'every ISO date in the same semicolon/sentence-bounded cell clause is a candidate',
+    claim_cues: 'recorded|proof|evidence|snapshot|run|current|historical|date',
+    zero_date_candidate_on_claim: 'incomplete',
+    no_admitted_claim_predicate: 'not-a-claim',
+  }),
+});
+
+export function makePolicies(registry) {
+  return registry.relations.map((relation) => {
+    const declaration = {
+      relation: relation.id,
+      anchor_domain: {
+        family: relation.anchor_domain.family,
+        profile: relation.anchor_domain.profile,
+        restriction: relation.anchor_domain.restriction,
+      },
+      class: 'markdown-lexical-construction-grammar',
+      parameters: { ...POLICY_PARAMETERS[relation.id] },
+      ranking: 'none; all candidates admitted by a construction remain unranked',
+      tie_policy: 'ambiguous',
+    };
+    return { ...declaration, digest: declarationDigest(declaration) };
+  });
+}
+
+function releaseTripleRow(anchor, document, documentOccurrences) {
+  const clause = clauseFor(document, anchor);
+  if (clause.fenced) {
+    return { relation: 'release-triple', anchor: identity(anchor), disposition: 'not-a-claim', roles: {} };
+  }
+
+  const parameters = POLICY_PARAMETERS['release-triple'];
+  const gap = parameters.label_gap_code_units;
+  const anchors = occurrencesInRange(documentOccurrences, 'package-tag', clause);
+  const releasePrs = uniqueByPhysical(
+    labeledCandidates(
+      document,
+      documentOccurrences,
+      clause,
+      'pr-citation',
+      /\b(?:release\s+(?:PR|pull\s+request)|released\s+as\s+PR)\b/giu,
+      gap,
+    ),
+  );
+  const tagLabels = labelsInRange(document.text, clause, /\btags?\b/giu);
+  const explicitlyTagged = tagLabels.some((label) => {
+    if (
+      label.end > anchor._charStart ||
+      anchor._charStart - label.end > parameters.tag_list_gap_code_units
+    ) {
+      return false;
+    }
+    let connector = document.text.slice(label.end, anchor._charStart);
+    const interveningAnchors = anchors
+      .filter(
+        (candidate) =>
+          candidate._charStart >= label.end && candidate._charEnd <= anchor._charStart,
+      )
+      .sort((left, right) => right._charStart - left._charStart);
+    for (const intervening of interveningAnchors) {
+      const start = intervening._charStart - label.end;
+      const end = intervening._charEnd - label.end;
+      connector = `${connector.slice(0, start)}${connector.slice(end)}`;
+    }
+    connector = connector.replace(/\band\b/giu, '');
+    return /^[\s`*_"'\[\]{}():=<>/\\|,+\-–—]*$/u.test(connector);
+  });
+  const singletonConstruction = anchors.length === 1 && releasePrs.length > 0;
+  const actionClaim = labelsInRange(
+    document.text,
+    clause,
+    /\b(?:released|published|cut|shipped)\b/giu,
+  ).some(
+    (cue) =>
+      cue.end <= anchor._charStart &&
+      anchor._charStart - cue.end <= parameters.claim_cue_gap_code_units,
+  );
+  const isClaim = explicitlyTagged || singletonConstruction || actionClaim;
+
+  if (!isClaim) {
+    return { relation: 'release-triple', anchor: identity(anchor), disposition: 'not-a-claim', roles: {} };
+  }
+
+  const squash = uniqueByPhysical(
+    labeledCandidates(
+      document,
+      documentOccurrences,
+      clause,
+      'commit-citation',
+      /\bsquash(?:\s+commit)?\b/giu,
+      gap,
+    ),
+  );
+  const marketplace = uniqueByPhysical(
+    labeledCandidates(
+      document,
+      documentOccurrences,
+      clause,
+      'commit-citation',
+      /\bmarketplace\s+sync(?:\s+commit)?\b/giu,
+      gap,
+    ),
+  );
+
+  const optionalCollision = squash.some((left) =>
+    marketplace.some((right) => physicalKey(left) === physicalKey(right)),
+  );
+  if (releasePrs.length > 1 || squash.length > 1 || marketplace.length > 1 || optionalCollision) {
+    return { relation: 'release-triple', anchor: identity(anchor), disposition: 'ambiguous', roles: {} };
+  }
+
+  const roles = {};
+  if (releasePrs.length === 1) roles.release_pr = identity(releasePrs[0]);
+  if (squash.length === 1) roles.squash = identity(squash[0]);
+  if (marketplace.length === 1) roles.marketplace_sync = identity(marketplace[0]);
+  return {
+    relation: 'release-triple',
+    anchor: identity(anchor),
+    disposition: releasePrs.length === 1 ? 'bound' : 'incomplete',
     roles,
   };
 }
 
-function normalizedConnector(buffer, earlier, later, { allowSemicolon = false } = {}) {
-  if (later.start_byte < earlier.end_byte) return null;
-  const gap = buffer.subarray(earlier.end_byte, later.start_byte);
-  if (gap.length > PROOF_DATE_POLICY_PARAMETERS.max_gap_bytes) return null;
-  const source = gap.toString('utf8');
-  const hardPunctuation = allowSemicolon ? /[.?!|]/ : /[.;?!|]/;
-  if (hardPunctuation.test(source) || /\n[ \t]*\n/.test(source)) return null;
-  return source.replace(/[`*_\[\]]/g, '').replace(/[ \t\r\n\f\v]+/g, ' ').trim();
-}
-
-const CONNECTOR_PUNCTUATION = '[,:()\\-–— ]*';
-const LABEL_NOUNS = '(?:run|record|proof|attestation|artifact|snapshot|datapoint)';
-
-export function classifyDirectDateConstruction(buffer, date, anchor) {
-  if (date.end_byte <= anchor.start_byte) {
-    const connector = normalizedConnector(buffer, date, anchor);
-    if (connector === null) return null;
-    const dateAs = new RegExp(`(?:^|\\b)as\\s*${CONNECTOR_PUNCTUATION}$`, 'i');
-    const dateDirect = new RegExp(`^${CONNECTOR_PUNCTUATION}$`);
-    const dateLabelled = new RegExp(`\\b${LABEL_NOUNS}(?:\\s+(?:recorded|as))*\\s*${CONNECTOR_PUNCTUATION}$`, 'i');
-    if (dateAs.test(connector)) return 'DATE-AS';
-    if (dateDirect.test(connector)) return 'DATE-DIRECT';
-    if (dateLabelled.test(connector)) return 'DATE-LABELLED';
-    return null;
+function proofDateRow(anchor, document, documentOccurrences) {
+  const clause = clauseFor(document, anchor);
+  if (clause.fenced) {
+    return { relation: 'proof-date-binding', anchor: identity(anchor), disposition: 'not-a-claim', roles: {} };
   }
-  if (anchor.end_byte <= date.start_byte) {
-    const connector = normalizedConnector(buffer, anchor, date);
-    if (connector === null) return null;
-    const runOn = new RegExp(`^${CONNECTOR_PUNCTUATION}(?:(?:recorded|attested)\\s+)?(?:on|at)${CONNECTOR_PUNCTUATION}$`, 'i');
-    const runParenthetical = new RegExp(`^${CONNECTOR_PUNCTUATION}(?:(?:recorded|attested)${CONNECTOR_PUNCTUATION})?$`, 'i');
-    if (runOn.test(connector)) return 'RUN-ON';
-    if (runParenthetical.test(connector)) return 'RUN-PARENTHETICAL';
-    return null;
-  }
-  return null;
-}
 
-function isInsideOpenInlineGroup(source, openingIndex) {
-  let inCode = false;
-  let depth = 0;
-  for (let index = openingIndex; index < source.length; index += 1) {
-    if (source[index] === '`') {
-      inCode = !inCode;
-      continue;
-    }
-    if (inCode) continue;
-    if (source[index] === '(') depth += 1;
-    else if (source[index] === ')') depth -= 1;
-  }
-  return depth > 0;
-}
-
-export function labelledGroupConstruction(buffer, date, anchor) {
-  if (date.end_byte > anchor.start_byte) return false;
-  const connector = normalizedConnector(buffer, date, anchor, { allowSemicolon: true });
-  if (connector === null || !connector.includes(';')) return false;
-  const raw = buffer.subarray(date.end_byte, anchor.start_byte).toString('utf8');
-  const openingPattern = new RegExp(`\\b${LABEL_NOUNS}\\s*\\(`, 'i');
-  const openingMatch = openingPattern.exec(raw.replace(/[`*_\[\]]/g, ''));
-  if (!openingMatch) return false;
-  // Locate the corresponding opening parenthesis in the unnormalised bytes;
-  // decoration removal does not remove parentheses, and requiring an open
-  // group at the anchor prevents a later sentence from borrowing the date.
-  const openingIndex = raw.indexOf('(', Math.max(0, openingMatch.index));
-  if (openingIndex < 0 || !isInsideOpenInlineGroup(raw, openingIndex)) return false;
-  const lastSeparator = Math.max(raw.lastIndexOf(';'), raw.lastIndexOf(','), raw.lastIndexOf('('));
-  const child = raw.slice(lastSeparator + 1)
-    .replace(/[`*_\[\]]/g, '')
-    .replace(/[ \t\r\n\f\v]+/g, ' ')
-    .trim();
-  return new RegExp(`\\b(?:run|record|proof|attestation|artifact|snapshot)\\s*$`, 'i').test(child);
-}
-
-const fullTimestampCache = new WeakMap();
-
-function fullTimestampSpans(buffer, pathName, blob, profile) {
-  if (fullTimestampCache.has(buffer)) return fullTimestampCache.get(buffer);
-  const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
-  const spans = [];
-  for (const match of text.matchAll(/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2})?Z/g)) {
-    const startByte = Buffer.byteLength(text.slice(0, match.index), 'utf8');
-    spans.push({
-      profile,
-      path: pathName,
-      blob,
-      start_byte: startByte,
-      end_byte: startByte + Buffer.byteLength(match[0], 'utf8'),
-      literal: match[0],
+  const parameters = POLICY_PARAMETERS['proof-date-binding'];
+  const datesInClause = occurrencesInRange(documentOccurrences, 'iso-date', clause);
+  let candidates;
+  if (clause.kind === 'table-cell-clause') {
+    candidates = datesInClause;
+  } else {
+    candidates = datesInClause.filter((date) => {
+      const left = anchor._charStart < date._charStart ? anchor : date;
+      const right = left === anchor ? date : anchor;
+      const connector = document.text.slice(left._charEnd, right._charStart);
+      const distance = connector.length;
+      if (distance > parameters.date_candidate_gap_code_units) return false;
+      if (left === anchor) {
+        return /^[\s`*_"'\[\]{},:;()\-–—]*(?:\(|(?:was\s+)?recorded\s+on\b|on\b|dated\b|date\b)[\s`*_"'\[\]{},:;()\-–—]*$/iu.test(connector);
+      }
+      const beforeDate = document.text.slice(
+        Math.max(clause.start, date._charStart - parameters.date_left_context_code_units),
+        date._charStart,
+      );
+      const wrappersOnlyOrJoin = /^[\s`*_"'\[\]{},:;()\-–—]*(?:(?:as|for|by)\b)?[\s`*_"'\[\]{},:;()\-–—]*$/iu;
+      const explicitJoin = /^[\s`*_"'\[\]{},:;()\-–—]*(?:as|for|by)\b[\s`*_"'\[\]{},:;()\-–—]*$/iu;
+      return (
+        (/\b(?:on|dated|date)\s*$/iu.test(beforeDate) && wrappersOnlyOrJoin.test(connector)) ||
+        explicitJoin.test(connector)
+      );
     });
   }
-  fullTimestampCache.set(buffer, spans);
-  return spans;
-}
+  candidates = uniqueByPhysical(candidates);
 
-function proofDateAnchorRow(anchor, byFamily, relation, buffer) {
-  const dateParts = anchor.literal.match(/-([0-9]{4})([0-9]{2})([0-9]{2})T/);
-  if (!dateParts) throw new Error(`proof-run-id did not retain its date component: ${anchor.literal}`);
-  const expected = `${dateParts[1]}-${dateParts[2]}-${dateParts[3]}`;
-  const candidatesByIdentity = new Map();
-  for (const candidate of byFamily.get('iso-date') ?? []) {
-    if (candidate.path !== anchor.path || candidate.literal.slice(0, 10) !== expected) continue;
-    if (classifyDirectDateConstruction(buffer, candidate, anchor)
-        || labelledGroupConstruction(buffer, candidate, anchor)) {
-      candidatesByIdentity.set(physicalKey(candidate), candidate);
-    }
-  }
-  const candidates = [...candidatesByIdentity.values()];
   if (candidates.length > 1) {
-    return {
-      relation: relation.id,
-      anchor: identity(anchor, relation.profile),
-      disposition: 'ambiguous',
-      roles: { [relation.anchor_role]: identity(anchor, relation.profile) },
-    };
+    return { relation: 'proof-date-binding', anchor: identity(anchor), disposition: 'ambiguous', roles: {} };
   }
   if (candidates.length === 1) {
     return {
-      relation: relation.id,
-      anchor: identity(anchor, relation.profile),
+      relation: 'proof-date-binding',
+      anchor: identity(anchor),
       disposition: 'bound',
-      roles: {
-        [relation.anchor_role]: identity(anchor, relation.profile),
-        date: identity(candidates[0], relation.profile),
-      },
+      roles: { date: identity(candidates[0]) },
     };
   }
 
-  const connectedFullTimestamps = fullTimestampSpans(
-    buffer,
-    anchor.path,
-    anchor.blob,
-    relation.profile,
-  ).filter((candidate) => candidate.literal.slice(0, 10) === expected
-    && classifyDirectDateConstruction(buffer, candidate, anchor));
-  if (connectedFullTimestamps.length > 0) {
-    return {
-      relation: relation.id,
-      anchor: identity(anchor, relation.profile),
-      disposition: 'incomplete',
-      roles: { [relation.anchor_role]: identity(anchor, relation.profile) },
-    };
-  }
-
+  const withoutAnchor =
+    document.text.slice(clause.start, anchor._charStart) +
+    document.text.slice(anchor._charEnd, clause.end);
+  const claimCue = /\b(?:recorded|proof|evidence|snapshot|run|current|historical|date)\b/iu.test(withoutAnchor);
   return {
-    relation: relation.id,
-    anchor: identity(anchor, relation.profile),
-    disposition: 'not-a-claim',
+    relation: 'proof-date-binding',
+    anchor: identity(anchor),
+    disposition: claimCue ? 'incomplete' : 'not-a-claim',
     roles: {},
   };
 }
 
-export function buildAnchors(occurrences, buffers, registry, manifest = null) {
-  const byFamily = new Map();
-  for (const occurrence of occurrences) {
-    const values = byFamily.get(occurrence.family) ?? [];
-    values.push(occurrence);
-    byFamily.set(occurrence.family, values);
-  }
-  let membership = null;
-  if (manifest) {
-    membership = new Map(Object.entries(manifest.profiles).map(([profile, declaration]) => [
-      profile,
-      new Set(declaration.files.map((file) => file.path)),
-    ]));
-  }
-  const anchors = [];
+/** Contract §4.3 total rows over each registry-declared anchor domain. */
+export function makeAnchors(registry, documents) {
+  const rows = [];
   for (const relation of registry.relations) {
-    if (relation.anchor_domain.restriction !== null) {
-      throw new Error(`unsupported non-null anchor restriction for ${relation.id}`);
-    }
-    const domain = (byFamily.get(relation.anchor_domain.family) ?? []).filter((occurrence) => {
-      if (!membership) return occurrence.profile === relation.anchor_domain.profile;
-      return membership.get(relation.anchor_domain.profile)?.has(occurrence.path);
-    });
-    for (const anchor of domain) {
-      if (relation.id === 'release-triple') {
-        anchors.push(releaseAnchorRow(anchor, byFamily, buffers, relation));
-      } else if (relation.id === 'proof-date-binding') {
-        anchors.push(proofDateAnchorRow(anchor, byFamily, relation, buffers.get(anchor.path)));
-      } else {
-        throw new Error(`no lane policy implemented for relation ${relation.id}`);
-      }
-    }
-  }
-  return anchors;
-}
-
-export function createPolicies(registry) {
-  return registry.relations.map((relation) => {
-    let declaration;
-    if (relation.id === 'release-triple') {
-      declaration = {
-        relation: relation.id,
-        anchor_domain: {
-          family: relation.anchor_domain.family,
-          profile: relation.anchor_domain.profile,
-          restriction: relation.anchor_domain.restriction,
-        },
-        class: 'lexical-cue construction grammar',
-        parameters: { ...RELEASE_POLICY_PARAMETERS },
-        ranking: 'construction boundaries assign a record; within it no candidates are ranked and only cardinality-one role sets are filled',
-        tie_policy: 'ambiguous',
-      };
-    } else if (relation.id === 'proof-date-binding') {
-      declaration = {
-        relation: relation.id,
-        anchor_domain: {
-          family: relation.anchor_domain.family,
-          profile: relation.anchor_domain.profile,
-          restriction: relation.anchor_domain.restriction,
-        },
-        class: 'connector construction grammar',
-        parameters: { ...PROOF_DATE_POLICY_PARAMETERS },
-        ranking: 'none; construction-qualified physical candidates are deduplicated but never proximity-ranked',
-        tie_policy: 'ambiguous',
-      };
-    } else {
-      throw new Error(`no policy declaration implemented for ${relation.id}`);
-    }
-    return { ...declaration, digest: canonicalDigest(declaration) };
-  });
-}
-
-function resolveLocalReference(rootSchema, reference) {
-  if (!reference.startsWith('#/')) throw new Error(`only local schema references are supported: ${reference}`);
-  return reference.slice(2).split('/').reduce((value, part) => {
-    const key = part.replaceAll('~1', '/').replaceAll('~0', '~');
-    return value[key];
-  }, rootSchema);
-}
-
-function typeMatches(value, type) {
-  if (type === 'null') return value === null;
-  if (type === 'array') return Array.isArray(value);
-  if (type === 'object') return isPlainObject(value);
-  if (type === 'integer') return Number.isInteger(value);
-  if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
-  return typeof value === type;
-}
-
-/** A dependency-free validator for every assertion keyword used by the sealed schema. */
-export function validateJsonSchema(instance, rootSchema) {
-  const errors = [];
-  function check(value, schema, pointer) {
-    if (schema.$ref) {
-      check(value, resolveLocalReference(rootSchema, schema.$ref), pointer);
-      return;
-    }
-    if (schema.const !== undefined && JSON.stringify(value) !== JSON.stringify(schema.const)) {
-      errors.push(`${pointer}: expected const ${JSON.stringify(schema.const)}`);
-    }
-    if (schema.enum && !schema.enum.some((member) => JSON.stringify(member) === JSON.stringify(value))) {
-      errors.push(`${pointer}: value is not in enum`);
-    }
-    if (schema.type) {
-      const types = Array.isArray(schema.type) ? schema.type : [schema.type];
-      if (!types.some((type) => typeMatches(value, type))) {
-        errors.push(`${pointer}: expected type ${types.join('|')}`);
-        return;
-      }
-    }
-    if (typeof value === 'string') {
-      if (schema.minLength !== undefined && [...value].length < schema.minLength) {
-        errors.push(`${pointer}: shorter than minLength`);
-      }
-      if (schema.pattern && !(new RegExp(schema.pattern, 'u')).test(value)) {
-        errors.push(`${pointer}: does not match pattern ${schema.pattern}`);
-      }
-    }
-    if (typeof value === 'number' && schema.minimum !== undefined && value < schema.minimum) {
-      errors.push(`${pointer}: smaller than minimum`);
-    }
-    if (Array.isArray(value) && schema.items) {
-      value.forEach((item, index) => check(item, schema.items, `${pointer}/${index}`));
-    }
-    if (isPlainObject(value)) {
-      for (const required of schema.required ?? []) {
-        if (!Object.hasOwn(value, required)) errors.push(`${pointer}: missing required property ${required}`);
-      }
-      const properties = schema.properties ?? {};
-      for (const [key, child] of Object.entries(value)) {
-        if (Object.hasOwn(properties, key)) check(child, properties[key], `${pointer}/${key}`);
-        else if (schema.additionalProperties === false) errors.push(`${pointer}: unexpected property ${key}`);
-        else if (isPlainObject(schema.additionalProperties)) {
-          check(child, schema.additionalProperties, `${pointer}/${key}`);
+    const anchorFamily = relation.anchor_domain.family;
+    const profile = relation.anchor_domain.profile;
+    for (const document of documents.values()) {
+      if (document.profile !== profile) continue;
+      for (const anchor of document.occurrences.filter((item) => item.family === anchorFamily)) {
+        if (relation.id === 'release-triple') {
+          rows.push(releaseTripleRow(anchor, document, document.occurrences));
+        } else if (relation.id === 'proof-date-binding') {
+          rows.push(proofDateRow(anchor, document, document.occurrences));
+        } else {
+          throw new Error(`no lane policy implementation for relation ${relation.id}`);
         }
       }
     }
   }
-  check(instance, rootSchema, '#');
+  rows.sort(
+    (left, right) =>
+      compareStrings(left.relation, right.relation) ||
+      compareStrings(left.anchor.path, right.anchor.path) ||
+      left.anchor.start_byte - right.anchor.start_byte ||
+      left.anchor.end_byte - right.anchor.end_byte,
+  );
+  return rows;
+}
+
+function jsonPointerResolve(root, reference) {
+  assert(reference.startsWith('#/'), `only local JSON Schema references are supported: ${reference}`);
+  let current = root;
+  for (const rawPart of reference.slice(2).split('/')) {
+    const part = rawPart.replace(/~1/g, '/').replace(/~0/g, '~');
+    assert(current && Object.hasOwn(current, part), `unresolvable JSON Schema reference ${reference}`);
+    current = current[part];
+  }
+  return current;
+}
+
+function schemaTypeMatches(value, type) {
+  switch (type) {
+    case 'null': return value === null;
+    case 'array': return Array.isArray(value);
+    case 'object': return isPlainObject(value);
+    case 'integer': return Number.isFinite(value) && Number.isInteger(value);
+    case 'number': return Number.isFinite(value) && typeof value === 'number';
+    case 'string': return typeof value === 'string';
+    case 'boolean': return typeof value === 'boolean';
+    default: throw new Error(`unsupported JSON Schema type ${type}`);
+  }
+}
+
+function schemaEqual(left, right) {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function validateSchemaNode(value, node, root, instancePath, errors) {
+  assert(isPlainObject(node), `invalid JSON Schema node at ${instancePath}`);
+  for (const keyword of Object.keys(node)) {
+    assert(
+      JSON_SCHEMA_ANNOTATIONS.has(keyword) || JSON_SCHEMA_ASSERTIONS.has(keyword),
+      `unsupported JSON Schema keyword ${keyword}`,
+    );
+  }
+  if (node.$ref) {
+    validateSchemaNode(value, jsonPointerResolve(root, node.$ref), root, instancePath, errors);
+    return;
+  }
+
+  if (node.type !== undefined) {
+    const types = Array.isArray(node.type) ? node.type : [node.type];
+    if (!types.some((type) => schemaTypeMatches(value, type))) {
+      errors.push(`${instancePath}: expected type ${types.join('|')}`);
+      return;
+    }
+  }
+  if (node.const !== undefined && !schemaEqual(value, node.const)) {
+    errors.push(`${instancePath}: value does not equal const`);
+  }
+  if (node.enum && !node.enum.some((candidate) => schemaEqual(value, candidate))) {
+    errors.push(`${instancePath}: value is outside enum`);
+  }
+  if (typeof value === 'string') {
+    if (node.pattern && !new RegExp(node.pattern, 'u').test(value)) {
+      errors.push(`${instancePath}: string does not match ${node.pattern}`);
+    }
+    if (node.minLength !== undefined && [...value].length < node.minLength) {
+      errors.push(`${instancePath}: string is shorter than ${node.minLength}`);
+    }
+  }
+  if (typeof value === 'number' && node.minimum !== undefined && value < node.minimum) {
+    errors.push(`${instancePath}: number is below ${node.minimum}`);
+  }
+  if (Array.isArray(value) && node.items) {
+    value.forEach((member, index) =>
+      validateSchemaNode(member, node.items, root, `${instancePath}/${index}`, errors),
+    );
+  }
+  if (isPlainObject(value)) {
+    const properties = node.properties ?? {};
+    for (const required of node.required ?? []) {
+      if (!Object.hasOwn(value, required)) errors.push(`${instancePath}: missing required key ${required}`);
+    }
+    for (const [key, member] of Object.entries(value)) {
+      const childPath = `${instancePath}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`;
+      if (Object.hasOwn(properties, key)) {
+        validateSchemaNode(member, properties[key], root, childPath, errors);
+      } else if (node.additionalProperties === false) {
+        errors.push(`${childPath}: additional property is forbidden`);
+      } else if (isPlainObject(node.additionalProperties)) {
+        validateSchemaNode(member, node.additionalProperties, root, childPath, errors);
+      }
+    }
+  }
+}
+
+/** Validate the exact subset of Draft 2020-12 used by the sealed schema (§3.8). */
+export function validateAgainstSchema(value, schema) {
+  const errors = [];
+  validateSchemaNode(value, schema, schema, '$', errors);
   return errors;
 }
 
-function withoutKey(object, key) {
-  return Object.fromEntries(Object.entries(object).filter(([name]) => name !== key));
+function safeManifestPath(manifestPath) {
+  return (
+    manifestPath.length > 0 &&
+    !manifestPath.startsWith('/') &&
+    !manifestPath.startsWith('bundle/') &&
+    posix.normalize(manifestPath) === manifestPath &&
+    !manifestPath.split('/').includes('..')
+  );
 }
 
-function deepEqual(left, right) {
-  return canonicalSerialize(left) === canonicalSerialize(right);
+async function loadInputs(bundleRoot = BUNDLE_ROOT) {
+  const byteEntries = await Promise.all(
+    BUNDLE_MEMBERS.map(async (memberPath) => [memberPath, await readFile(join(bundleRoot, memberPath))]),
+  );
+  const memberBytes = new Map(byteEntries);
+  const parse = (memberPath) => JSON.parse(memberBytes.get(memberPath).toString('utf8'));
+  const registry = parse(INPUT_PATHS.registry);
+  const manifest = parse(INPUT_PATHS.manifest);
+  const schema = parse(INPUT_PATHS.schema);
+  const delivery = JSON.parse(await readFile(join(bundleRoot, 'bundle-manifest.json'), 'utf8'));
+  return { memberBytes, registry, manifest, schema, delivery };
 }
 
-/**
- * Checks the semantic requirements that JSON Schema cannot express (§3.8),
- * including byte round trips, field completeness, policy digests, dispositions,
- * and total anchor coverage.
- */
-export function semanticErrors(artifact, {
-  bundleRoot = DEFAULT_BUNDLE_ROOT,
-  manifest,
-  registry,
-  schema,
-} = {}) {
-  const loadedManifest = manifest ?? JSON.parse(readFileSync(path.join(bundleRoot, MEASUREMENT_DIR, 'corpus-manifest.json'), 'utf8'));
-  const loadedRegistry = registry ?? JSON.parse(readFileSync(path.join(bundleRoot, MEASUREMENT_DIR, 'family-registry.json'), 'utf8'));
-  const loadedSchema = schema ?? JSON.parse(readFileSync(path.join(bundleRoot, MEASUREMENT_DIR, 'artifact-schema.json'), 'utf8'));
-  const errors = validateJsonSchema(artifact, loadedSchema);
-  if (errors.length > 0) return errors;
-
-  const manifestWithoutDigest = withoutKey(loadedManifest, 'digest');
-  if (canonicalDigest(manifestWithoutDigest) !== loadedManifest.digest) errors.push('manifest: declared digest does not verify');
-  if (artifact.contract_version !== loadedRegistry.contract_version) errors.push('artifact: contract version differs from registry');
-  if (artifact.manifest_digest !== loadedManifest.digest) errors.push('artifact: manifest digest mismatch');
-  if (artifact.corpus_commit !== loadedManifest.commit) errors.push('artifact: corpus commit mismatch');
-  if (artifact.bundle_digest !== computeBundleDigest(bundleRoot)) errors.push('artifact: bundle digest mismatch');
-  if (artifact.attestation.contract_version !== artifact.contract_version) errors.push('attestation: contract version mismatch');
-  if (artifact.attestation.bundle_digest !== artifact.bundle_digest) errors.push('attestation: bundle digest mismatch');
-  if (artifact.attestation.manifest_digest !== artifact.manifest_digest) errors.push('attestation: manifest digest mismatch');
-  const artifactWithoutAttestation = withoutKey(artifact, 'attestation');
-  if (artifact.attestation.artifact_digest !== canonicalDigest(artifactWithoutAttestation)) {
-    errors.push('attestation: artifact digest mismatch');
+async function verifyAndReadCorpus(manifest, bundleRoot = BUNDLE_ROOT) {
+  const pathEntries = new Map();
+  for (const [profile, profileDeclaration] of Object.entries(manifest.profiles)) {
+    for (const entry of profileDeclaration.files) {
+      assert(safeManifestPath(entry.path), `unsafe or rewritten manifest path ${entry.path}`);
+      const existing = pathEntries.get(entry.path);
+      if (existing) {
+        assert(existing.blob === entry.blob, `profile blob mismatch for ${entry.path}`);
+        assert(existing.bytes === entry.bytes, `profile byte-count mismatch for ${entry.path}`);
+        existing.profiles.add(profile);
+      } else {
+        pathEntries.set(entry.path, { ...entry, profiles: new Set([profile]) });
+      }
+    }
   }
 
-  const familyById = new Map(loadedRegistry.families.map((family) => [family.id, family]));
-  const relationById = new Map(loadedRegistry.relations.map((relation) => [relation.id, relation]));
-  const files = manifestPathIndex(loadedManifest);
-  const profileMembership = new Map(Object.entries(loadedManifest.profiles).map(([profile, declaration]) => [
-    profile,
-    new Map(declaration.files.map((file) => [file.path, file])),
-  ]));
-  const buffers = new Map();
-  const occurrenceIndex = new Map();
-  const sameFamilyIdentities = new Set();
+  const results = await Promise.all(
+    [...pathEntries.values()].map(async (entry) => {
+      const bytes = await readFile(join(bundleRoot, entry.path));
+      assert(bytes.length === entry.bytes, `byte count mismatch for ${entry.path}`);
+      assert(gitBlobOid(bytes) === entry.blob, `Git blob mismatch for ${entry.path}`);
+      // Judgment forced by the scalar wire field and overlapping profiles:
+      // stage-docs wins so relation anchors carry their relation profile.
+      const profile = entry.profiles.has('stage-docs') ? 'stage-docs' : 'discovered-md';
+      return recognizeDocument({ path: entry.path, blob: entry.blob, profile, bytes });
+    }),
+  );
+  return new Map(results.map((document) => [document.path, document]));
+}
 
+function manifestMembership(manifest) {
+  const membership = new Map();
+  for (const [profile, declaration] of Object.entries(manifest.profiles)) {
+    for (const entry of declaration.files) membership.set(`${profile}\0${entry.path}`, entry);
+  }
+  return membership;
+}
+
+function validateFieldValues(occurrence, family) {
+  const declaredFields = new Map(family.fields.map((field) => [field.name, field]));
+  for (const [name, fieldValue] of Object.entries(occurrence.fields ?? {})) {
+    assert(declaredFields.has(name), `undeclared field ${name} on ${occurrence.family}`);
+    const declaration = declaredFields.get(name);
+    assert(declaration.states.includes(fieldValue.state), `invalid state for ${occurrence.family}.${name}`);
+    assert(
+      fieldValue.state === 'present' ? Object.hasOwn(fieldValue, 'value') : !Object.hasOwn(fieldValue, 'value'),
+      `field value/state mismatch for ${occurrence.family}.${name}`,
+    );
+    if (declaration.vocabulary && fieldValue.state === 'present') {
+      assert(declaration.vocabulary.includes(fieldValue.value), `invalid vocabulary for ${occurrence.family}.${name}`);
+    }
+  }
+  for (const declaration of family.fields) {
+    if (declaration.authority) continue;
+    assert(Object.hasOwn(occurrence.fields ?? {}, declaration.name), `missing field ${occurrence.family}.${declaration.name}`);
+  }
+}
+
+/** Semantic checks that the schema cannot express (§3.8, §8.2). */
+export function validateArtifactSemantics(artifact, { manifest, registry, documents, bundleDigest }) {
+  assert(artifact.contract_version === registry.contract_version, 'artifact contract version mismatch');
+  assert(artifact.role === 'lane', 'lane exporter emitted a non-lane role');
+  assert(artifact.artifact_only_scope === 'out-of-scope', 'clean-room artifact-only scope must be out-of-scope');
+  assert(artifact.bundle_digest === bundleDigest, 'artifact bundle digest mismatch');
+  assert(artifact.manifest_digest === manifest.digest, 'artifact manifest digest mismatch');
+  assert(artifact.corpus_commit === manifest.commit, 'artifact corpus commit mismatch');
+  assert(artifact.attestation.contract_version === artifact.contract_version, 'attestation contract mismatch');
+  assert(artifact.attestation.bundle_digest === artifact.bundle_digest, 'attestation bundle mismatch');
+  assert(artifact.attestation.manifest_digest === artifact.manifest_digest, 'attestation manifest mismatch');
+  assert(artifact.attestation.artifact_digest === artifactDigest(artifact), 'attestation artifact digest mismatch');
+
+  const membership = manifestMembership(manifest);
+  const familyById = new Map(registry.families.map((family) => [family.id, family]));
+  const seenOccurrences = new Set();
+  const occurrenceByFamilyIdentity = new Map();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
   for (const occurrence of artifact.occurrences) {
+    assert(familyById.has(occurrence.family), `unknown family ${occurrence.family}`);
     const family = familyById.get(occurrence.family);
-    if (!family) {
-      errors.push(`occurrence: unknown family ${occurrence.family}`);
-      continue;
-    }
-    if (!family.profiles.includes(occurrence.profile)) {
-      errors.push(`occurrence: family ${family.id} is not bound to profile ${occurrence.profile}`);
-    }
-    const member = profileMembership.get(occurrence.profile)?.get(occurrence.path);
-    if (!member || member.blob !== occurrence.blob) errors.push(`occurrence: membership/blob mismatch at ${occurrence.path}`);
-    const file = files.get(occurrence.path);
-    if (!file || file.blob !== occurrence.blob) errors.push(`occurrence: path/blob absent from manifest at ${occurrence.path}`);
-    let buffer = buffers.get(occurrence.path);
-    if (!buffer && file) {
-      buffer = readFileSync(path.join(bundleRoot, occurrence.path));
-      buffers.set(occurrence.path, buffer);
-    }
-    if (!Number.isSafeInteger(occurrence.start_byte) || !Number.isSafeInteger(occurrence.end_byte)
-        || occurrence.start_byte < 0 || occurrence.start_byte >= occurrence.end_byte
-        || !buffer || occurrence.end_byte > buffer.length) {
-      errors.push(`occurrence: invalid byte range at ${occurrence.path}:${occurrence.start_byte}-${occurrence.end_byte}`);
-    } else {
-      try {
-        const decoded = new TextDecoder('utf-8', { fatal: true })
-          .decode(buffer.subarray(occurrence.start_byte, occurrence.end_byte));
-        if (decoded !== occurrence.literal) errors.push(`occurrence: literal round trip failed at ${physicalKey(occurrence)}`);
-      } catch {
-        errors.push(`occurrence: span is not valid UTF-8 at ${physicalKey(occurrence)}`);
-      }
-    }
-    const fields = occurrence.fields ?? {};
-    const declaredFields = new Map(family.fields.map((field) => [field.name, field]));
-    for (const field of family.fields) {
-      if (!Object.hasOwn(fields, field.name)) errors.push(`occurrence: missing ${family.id}.${field.name}`);
-    }
-    for (const [name, fieldValue] of Object.entries(fields)) {
-      const declaration = declaredFields.get(name);
-      if (!declaration) {
-        errors.push(`occurrence: undeclared ${family.id}.${name}`);
-        continue;
-      }
-      if (!declaration.states.includes(fieldValue.state)) errors.push(`occurrence: invalid state for ${family.id}.${name}`);
-      const hasValue = Object.hasOwn(fieldValue, 'value');
-      if (fieldValue.state === 'present' && !hasValue) errors.push(`occurrence: present field lacks value ${family.id}.${name}`);
-      if (fieldValue.state !== 'present' && hasValue) errors.push(`occurrence: non-present field carries value ${family.id}.${name}`);
-    }
-    if (fields.literal?.state !== 'present' || fields.literal?.value !== occurrence.literal) {
-      errors.push(`occurrence: registry literal field differs from root literal at ${physicalKey(occurrence)}`);
-    }
-    const familyIdentity = `${occurrence.family}\0${physicalKey(occurrence)}`;
-    if (sameFamilyIdentities.has(familyIdentity)) errors.push(`occurrence: duplicate same-family physical identity ${familyIdentity}`);
-    sameFamilyIdentities.add(familyIdentity);
-    const values = occurrenceIndex.get(physicalKey(occurrence)) ?? [];
-    values.push(occurrence);
-    occurrenceIndex.set(physicalKey(occurrence), values);
+    assert(family.profiles.includes(occurrence.profile), `family/profile mismatch for ${occurrence.family}`);
+    const member = membership.get(`${occurrence.profile}\0${occurrence.path}`);
+    assert(member, `occurrence outside profile: ${occurrence.profile}:${occurrence.path}`);
+    assert(member.blob === occurrence.blob, `occurrence blob mismatch for ${occurrence.path}`);
+    const document = documents.get(occurrence.path);
+    assert(document, `occurrence path unavailable ${occurrence.path}`);
+    assert(occurrence.start_byte < occurrence.end_byte, `empty/reversed span in ${occurrence.path}`);
+    assert(occurrence.end_byte <= document.bytes.length, `span outside blob in ${occurrence.path}`);
+    const decoded = decoder.decode(document.bytes.subarray(occurrence.start_byte, occurrence.end_byte));
+    assert(decoded === occurrence.literal, `span does not round-trip in ${occurrence.path}`);
+    const key = familyPhysicalKey(occurrence);
+    assert(!seenOccurrences.has(key), `duplicate same-family physical occurrence ${key}`);
+    seenOccurrences.add(key);
+    occurrenceByFamilyIdentity.set(key, occurrence);
+    validateFieldValues(occurrence, family);
   }
 
+  assert(artifact.policies.length === registry.relations.length, 'policy count does not match relations');
   const policiesByRelation = new Map();
   for (const policy of artifact.policies) {
-    const values = policiesByRelation.get(policy.relation) ?? [];
-    values.push(policy);
-    policiesByRelation.set(policy.relation, values);
-    const declaration = withoutKey(policy, 'digest');
-    if (policy.digest !== canonicalDigest(declaration)) errors.push(`policy: digest mismatch for ${policy.relation}`);
-  }
-  for (const relation of loadedRegistry.relations) {
-    const policies = policiesByRelation.get(relation.id) ?? [];
-    if (policies.length !== 1) errors.push(`policy: expected exactly one declaration for ${relation.id}`);
-    else {
-      const expectedDomain = {
-        family: relation.anchor_domain.family,
-        profile: relation.anchor_domain.profile,
-        restriction: relation.anchor_domain.restriction,
-      };
-      if (!deepEqual(policies[0].anchor_domain, expectedDomain)) errors.push(`policy: anchor domain mismatch for ${relation.id}`);
+    assert(!policiesByRelation.has(policy.relation), `duplicate policy ${policy.relation}`);
+    policiesByRelation.set(policy.relation, policy);
+    assert(policy.digest === declarationDigest(policy), `policy digest mismatch for ${policy.relation}`);
+    for (const value of Object.values(policy.parameters)) {
+      assert(value === null || ['string', 'number', 'boolean'].includes(typeof value), 'policy parameters must be flat scalars');
     }
-  }
-  for (const relation of policiesByRelation.keys()) {
-    if (!relationById.has(relation)) errors.push(`policy: unknown relation ${relation}`);
   }
 
   const rowsByRelationAndAnchor = new Map();
   for (const row of artifact.anchors) {
-    const relation = relationById.get(row.relation);
-    if (!relation) {
-      errors.push(`anchor: unknown relation ${row.relation}`);
-      continue;
-    }
+    const relation = registry.relations.find((item) => item.id === row.relation);
+    assert(relation, `unknown relation ${row.relation}`);
     const rowKey = `${row.relation}\0${physicalKey(row.anchor)}`;
-    const prior = rowsByRelationAndAnchor.get(rowKey) ?? [];
-    prior.push(row);
-    rowsByRelationAndAnchor.set(rowKey, prior);
-    const anchorOccurrences = occurrenceIndex.get(physicalKey(row.anchor)) ?? [];
-    if (!anchorOccurrences.some((item) => item.family === relation.anchor_domain.family)) {
-      errors.push(`anchor: anchor occurrence missing/wrong family for ${rowKey}`);
+    assert(!rowsByRelationAndAnchor.has(rowKey), `duplicate anchor row ${rowKey}`);
+    rowsByRelationAndAnchor.set(rowKey, row);
+    const roles = new Map(relation.roles.map((role) => [role.name, role]));
+    assert(!Object.hasOwn(row.roles, relation.anchor_role), `anchor role repeated for ${row.relation}`);
+    for (const [roleName, roleIdentity] of Object.entries(row.roles)) {
+      assert(roles.has(roleName), `unknown role ${row.relation}.${roleName}`);
+      const role = roles.get(roleName);
+      assert(roleName !== relation.anchor_role, `anchor role repeated for ${row.relation}`);
+      const occurrenceKey = `${role.family}\0${physicalKey(roleIdentity)}`;
+      assert(occurrenceByFamilyIdentity.has(occurrenceKey), `role identity absent from inventory: ${row.relation}.${roleName}`);
     }
-    if (!profileMembership.get(relation.profile)?.has(row.anchor.path)) errors.push(`anchor: outside relation profile for ${rowKey}`);
-    const roleDeclarations = new Map(relation.roles.map((role) => [role.name, role]));
-    for (const [name, binding] of Object.entries(row.roles)) {
-      const role = roleDeclarations.get(name);
-      if (!role) {
-        errors.push(`anchor: unknown role ${row.relation}.${name}`);
-        continue;
-      }
-      const roleOccurrences = occurrenceIndex.get(physicalKey(binding)) ?? [];
-      if (!roleOccurrences.some((item) => item.family === role.family)) {
-        errors.push(`anchor: binding missing/wrong family for ${row.relation}.${name}`);
-      }
-      if (!profileMembership.get(relation.profile)?.has(binding.path)) errors.push(`anchor: role outside relation profile for ${row.relation}.${name}`);
-      if (binding.profile !== undefined && binding.profile !== relation.profile) errors.push(`anchor: role profile mismatch for ${row.relation}.${name}`);
-    }
-    if (Object.hasOwn(row.roles, relation.anchor_role)
-        && physicalKey(row.roles[relation.anchor_role]) !== physicalKey(row.anchor)) {
-      errors.push(`anchor: anchor role does not name anchor for ${rowKey}`);
-    }
-    const missingRequired = relation.roles.filter((role) => role.required && !Object.hasOwn(row.roles, role.name));
-    if (row.disposition === 'bound' && missingRequired.length > 0) errors.push(`anchor: bound row misses required role for ${rowKey}`);
-    if (row.disposition === 'incomplete' && missingRequired.length === 0) errors.push(`anchor: incomplete row fills every required role for ${rowKey}`);
-    if (row.disposition === 'not-a-claim' && Object.keys(row.roles).length !== 0) errors.push(`anchor: not-a-claim row fills roles for ${rowKey}`);
+    const requiredNonAnchor = relation.roles.filter(
+      (role) => role.required && role.name !== relation.anchor_role,
+    );
+    const allRequiredFilled = requiredNonAnchor.every((role) => Object.hasOwn(row.roles, role.name));
+    if (row.disposition === 'bound') assert(allRequiredFilled, `bound row missing required role ${rowKey}`);
+    if (row.disposition === 'incomplete') assert(!allRequiredFilled, `incomplete row fills every required role ${rowKey}`);
+    if (row.disposition === 'not-a-claim') assert(Object.keys(row.roles).length === 0, `not-a-claim row fills a role ${rowKey}`);
   }
 
-  for (const relation of loadedRegistry.relations) {
-    if (relation.anchor_domain.restriction !== null) {
-      errors.push(`anchor: semantic validator cannot enumerate restriction for ${relation.id}`);
-      continue;
+  for (const relation of registry.relations) {
+    const policy = policiesByRelation.get(relation.id);
+    assert(policy, `missing policy ${relation.id}`);
+    assert(schemaEqual(policy.anchor_domain, {
+      family: relation.anchor_domain.family,
+      profile: relation.anchor_domain.profile,
+      restriction: relation.anchor_domain.restriction,
+    }), `policy anchor domain mismatch for ${relation.id}`);
+    const anchors = artifact.occurrences.filter(
+      (occurrence) =>
+        occurrence.family === relation.anchor_domain.family &&
+        occurrence.profile === relation.anchor_domain.profile,
+    );
+    for (const anchor of anchors) {
+      const key = `${relation.id}\0${physicalKey(anchor)}`;
+      assert(rowsByRelationAndAnchor.has(key), `missing anchor row ${key}`);
     }
-    const memberPaths = profileMembership.get(relation.anchor_domain.profile);
-    const expectedAnchors = artifact.occurrences.filter((occurrence) => occurrence.family === relation.anchor_domain.family
-      && memberPaths?.has(occurrence.path));
-    for (const anchor of expectedAnchors) {
-      const rowKey = `${relation.id}\0${physicalKey(anchor)}`;
-      const rows = rowsByRelationAndAnchor.get(rowKey) ?? [];
-      if (rows.length !== 1) errors.push(`anchor: expected exactly one row for ${rowKey}, found ${rows.length}`);
-    }
-    for (const [rowKey, rows] of rowsByRelationAndAnchor) {
-      if (!rowKey.startsWith(`${relation.id}\0`)) continue;
-      if (rows.length > 1) errors.push(`anchor: duplicate rows for ${rowKey}`);
-      const expected = expectedAnchors.some((anchor) => physicalKey(anchor) === physicalKey(rows[0].anchor));
-      if (!expected) errors.push(`anchor: row outside domain for ${rowKey}`);
-    }
+    const relationRows = artifact.anchors.filter((row) => row.relation === relation.id);
+    assert(relationRows.length === anchors.length, `anchor total mismatch for ${relation.id}`);
   }
-  return errors;
 }
 
-export function assertArtifactSemantics(artifact, options) {
-  const errors = semanticErrors(artifact, options);
-  if (errors.length > 0) throw new Error(`artifact validation failed:\n- ${errors.join('\n- ')}`);
-}
+export async function buildArtifact({ bundleRoot = BUNDLE_ROOT, sealedAt = new Date() } = {}) {
+  const { memberBytes, registry, manifest, schema, delivery } = await loadInputs(bundleRoot);
+  const { digest: recordedManifestDigest, ...manifestWithoutDigest } = manifest;
+  const computedManifestDigest = sha256(Buffer.from(canonicalJson(manifestWithoutDigest), 'utf8'));
+  assert(computedManifestDigest === recordedManifestDigest, 'manifest self-digest does not verify');
 
-function secondPrecisionTimestamp(date = new Date()) {
-  return date.toISOString().replace(/\.[0-9]{3}Z$/, 'Z');
-}
+  const bundleDigest = computeBundleDigest(memberBytes);
+  assert(bundleDigest === delivery.bundle_digest, 'computed bundle digest disagrees with recorded delivery seal');
+  assert(delivery.manifest_digest === manifest.digest, 'delivery manifest digest mismatch');
+  assert(delivery.corpus_commit === manifest.commit, 'delivery corpus commit mismatch');
+  assert(delivery.contract_version === registry.contract_version, 'delivery contract version mismatch');
 
-export function buildArtifact({
-  bundleRoot = DEFAULT_BUNDLE_ROOT,
-  sealedAt = secondPrecisionTimestamp(),
-} = {}) {
-  const manifest = JSON.parse(readFileSync(path.join(bundleRoot, MEASUREMENT_DIR, 'corpus-manifest.json'), 'utf8'));
-  const registry = JSON.parse(readFileSync(path.join(bundleRoot, MEASUREMENT_DIR, 'family-registry.json'), 'utf8'));
-  const schema = JSON.parse(readFileSync(path.join(bundleRoot, MEASUREMENT_DIR, 'artifact-schema.json'), 'utf8'));
-  const { buffers, occurrences } = scanCorpus(bundleRoot, manifest);
-  const policies = createPolicies(registry);
-  const anchors = buildAnchors(occurrences, buffers, registry, manifest);
-  const artifactWithoutAttestation = {
+  const documents = await verifyAndReadCorpus(manifest, bundleRoot);
+  const occurrences = [...documents.values()]
+    .flatMap((document) => document.occurrences)
+    .sort(compareOccurrences)
+    .map(wireOccurrence);
+  const policies = makePolicies(registry);
+  const anchors = makeAnchors(registry, documents);
+
+  const artifact = {
     schema: 'evidence-measurement-artifact-1.0',
     contract_version: registry.contract_version,
     role: 'lane',
-    artifact_id: 'lane-s1-byte-first-construction-grammar-v1',
-    bundle_digest: computeBundleDigest(bundleRoot),
+    artifact_id: 'lane-s1-markdown-lexical-grammar-v1',
+    artifact_only_scope: 'out-of-scope',
+    bundle_digest: bundleDigest,
     manifest_digest: manifest.digest,
     corpus_commit: manifest.commit,
     policies,
     occurrences,
     anchors,
   };
-  const artifact = {
-    ...artifactWithoutAttestation,
-    attestation: {
-      contract_version: registry.contract_version,
-      bundle_digest: artifactWithoutAttestation.bundle_digest,
-      manifest_digest: manifest.digest,
-      artifact_digest: canonicalDigest(artifactWithoutAttestation),
-      sealed_at: sealedAt,
-      prohibited_inputs_accessed: [],
-    },
+  artifact.attestation = {
+    contract_version: artifact.contract_version,
+    bundle_digest: artifact.bundle_digest,
+    manifest_digest: artifact.manifest_digest,
+    artifact_digest: artifactDigest(artifact),
+    sealed_at: sealedAt.toISOString().replace(/\.\d{3}Z$/u, 'Z'),
+    // TASK.md was required reading and is outside bundle/. It is named here
+    // under the user's stricter reporting instruction even though it is the
+    // task brief, not one of contract §11.2's prohibited measurement inputs.
+    prohibited_inputs_accessed: ['TASK.md'],
   };
-  assertArtifactSemantics(artifact, { bundleRoot, manifest, registry, schema });
-  return artifact;
+
+  const schemaErrors = validateAgainstSchema(artifact, schema);
+  assert(schemaErrors.length === 0, `artifact schema validation failed:\n${schemaErrors.join('\n')}`);
+  validateArtifactSemantics(artifact, { manifest, registry, documents, bundleDigest });
+  return { artifact, schema, manifest, registry, documents, bundleDigest };
 }
 
-export function main() {
-  const artifact = buildArtifact();
-  const outDir = path.join(ROOT, 'out');
-  mkdirSync(outDir, { recursive: true });
-  writeFileSync(path.join(outDir, 'artifact.json'), canonicalSerialize(artifact), 'utf8');
-  const counts = new Map();
-  for (const row of artifact.anchors) {
-    const key = `${row.relation}:${row.disposition}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  process.stdout.write(`wrote out/artifact.json (${artifact.occurrences.length} occurrences, ${artifact.anchors.length} anchors)\n`);
-  for (const [key, count] of [...counts.entries()].sort()) process.stdout.write(`${key} ${count}\n`);
+export async function main() {
+  const { artifact } = await buildArtifact();
+  await writeFile(join(OUT_DIR, 'artifact.json'), canonicalJson(artifact), 'utf8');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === MODULE_PATH) main();
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
+if (invokedPath === import.meta.url) {
+  main().catch((error) => {
+    console.error(error.stack ?? error.message);
+    process.exitCode = 1;
+  });
+}
