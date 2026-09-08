@@ -27,6 +27,7 @@ import {
   resolveAuthorityFields, resolveQuote, artifactDigest, expectedZeroCovers,
   evaluateArtifactOnly, occurrenceKey, resolveIntegrationRef, logicalIntegrationRef,
   CONTRACT_VERSION, DISPOSITIONS, STATUSES, VERDICTS,
+  MANIFEST_PATH, REGISTRY_PATH, AUTHORITY_BASELINE_PATH, gitBlobReader,
 } from '../../scripts/evidence-measurement.mjs';
 
 const REPO = new URL('../../', import.meta.url).pathname;
@@ -1284,4 +1285,92 @@ test('§8.2/§3.8 — the schema catches what no other comparator check looks at
     const without = compare({ artifacts: [oracle, lane], registry: REGISTRY, manifest: MANIFEST, bundleDigest: BUNDLE, readBlob });
     assert.equal(without.verdict, 'pass', `${label}: expected the non-schema path to be blind to this`);
   }
+});
+
+// The precondition-1 plan requires that a mismatched baseline be REFUSED
+// rather than silently rebased if a release or recovery lands mid-flight. That
+// was verified once by hand against the committed artifacts; without a test it
+// would regress silently, and the regression would look like a comparison that
+// simply kept working.
+//
+// Each case must reach `not-comparable`, and the control must NOT — a suite
+// where every input refuses proves nothing about refusal.
+test('the comparator refuses a mismatched baseline rather than rebasing onto it', () => {
+  const readBlob = gitBlobReader(REPO);
+  const registry = JSON.parse(readFileSync(join(REPO, REGISTRY_PATH), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(REPO, MANIFEST_PATH), 'utf8'));
+  const schema = JSON.parse(readFileSync(join(REPO, ARTIFACT_SCHEMA_PATH), 'utf8'));
+  const baseline = JSON.parse(readFileSync(join(REPO, AUTHORITY_BASELINE_PATH), 'utf8'));
+  const oracle = JSON.parse(readFileSync(join(REPO, 'docs/assurance/evidence/measurement/oracle/oracle.json'), 'utf8'));
+  const lane = JSON.parse(readFileSync(join(REPO, 'docs/assurance/evidence/measurement/lanes/s1-typed-exporter/artifact.json'), 'utf8'));
+  const seal = verifySeal(REPO);
+  assert.ok(seal.ok, 'the sealed bundle must verify for this test to mean anything');
+
+  // The run snapshot is always built. §9's failure case is being offered ONE
+  // snapshot, not none: "a single snapshot taken at comparison time records
+  // current authority and cannot detect that it moved". Dropping both would
+  // test a different thing, and an earlier draft of this test did exactly
+  // that and reported the wrong reason for its own pass.
+  const runSnapshot = buildAuthoritySnapshot(REPO, { ref: baseline.integration_ref });
+  const run = (artifacts, { base = baseline } = {}) => compare({
+    artifacts, registry, manifest, bundleDigest: seal.expected,
+    baseline: base, runAuthority: runSnapshot,
+    readBlob, artifactSchema: schema,
+  });
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+
+  // Control. If this ever reads `not-comparable`, every assertion below is
+  // vacuous — they would all be reporting the control's own refusal.
+  assert.equal(run([oracle, lane]).verdict, 'fail', 'control: the committed pair compares and fails on findings');
+
+  const badBundle = clone(oracle);
+  badBundle.bundle_digest = '0'.repeat(64);
+  badBundle.attestation.bundle_digest = '0'.repeat(64);
+  assert.equal(run([badBundle, lane]).verdict, 'not-comparable', 'a bundle digest the seal does not carry (§8.2, §11.3)');
+
+  const otherBundle = clone(lane);
+  otherBundle.bundle_digest = '1'.repeat(64);
+  otherBundle.attestation.bundle_digest = '1'.repeat(64);
+  assert.equal(run([oracle, otherBundle]).verdict, 'not-comparable', 'two artifacts declaring different bundles');
+
+  const badManifest = clone(oracle);
+  badManifest.manifest_digest = '2'.repeat(64);
+  badManifest.attestation.manifest_digest = '2'.repeat(64);
+  assert.equal(run([badManifest, lane]).verdict, 'not-comparable', 'a manifest digest that is not the pinned one (§2.1)');
+
+  const badVersion = clone(oracle);
+  badVersion.contract_version = '2.1.0';
+  badVersion.attestation.contract_version = '2.1.0';
+  assert.equal(run([badVersion, lane]).verdict, 'not-comparable', 'an artifact sealed against a superseded contract (§10.1)');
+
+  // §9: one snapshot records current authority and cannot detect that it
+  // moved, so a run offered only one is not drift-free.
+  assert.equal(run([oracle, lane], { base: null }).verdict, 'not-comparable', 'a run snapshot with no baseline to difference it against (§9)');
+
+  // Movement, not growth: a retargeted tag is drift.
+  const drifted = clone(baseline);
+  const tag = Object.keys(drifted.tags ?? {})[0];
+  assert.ok(tag, 'the baseline must carry tags for the drift case to exercise anything');
+  drifted.tags[tag] = { ...drifted.tags[tag], target: 'f'.repeat(40) };
+  assert.equal(run([oracle, lane], { base: drifted }).verdict, 'not-comparable', 'a retargeted tag is authority drift (§9)');
+});
+
+// The verdict document reports zeros for containment and for value
+// disagreement. A zero is a claim about the reader unless the set it was
+// computed over is populated, so the population is asserted here rather than
+// left to the report's prose.
+test('the precondition-1 zeros are computed over a populated set', () => {
+  const oracle = JSON.parse(readFileSync(join(REPO, 'docs/assurance/evidence/measurement/oracle/oracle.json'), 'utf8'));
+  const lane = JSON.parse(readFileSync(join(REPO, 'docs/assurance/evidence/measurement/lanes/s1-typed-exporter/artifact.json'), 'utf8'));
+  const laneByKey = new Map(lane.occurrences.map((o) => [occurrenceKey(o), o]));
+  let shared = 0;
+  let comparedFields = 0;
+  for (const o of oracle.occurrences) {
+    const l = laneByKey.get(occurrenceKey(o));
+    if (!l) continue;
+    shared += 1;
+    for (const name of Object.keys(o.fields ?? {})) if (l.fields?.[name]) comparedFields += 1;
+  }
+  assert.equal(shared, oracle.occurrences.length, 'every oracle occurrence must be present in the lane for containment to have compared it');
+  assert.ok(comparedFields > 0, 'declared fields must actually be compared, or a zero finding count says nothing');
 });
