@@ -52,12 +52,16 @@ BASE_BRANCH="origin/main"
 FEATURE=""
 # Token-level parsing — portable across GNU/BSD shell environments
 # (macOS BSD sed does not support `\+` in basic regex; bash positional
-# iteration sidesteps that compatibility surface). `set -f` disables
-# glob expansion for the unquoted `set -- $ARGUMENTS` split — without
-# this guard, an `*` or `?` token would glob-expand into matching
-# filenames and corrupt FEATURE before it lands in --original-request
-# (Codex Phase 6 re-review MAJOR).
-set -f
+# iteration sidesteps that compatibility surface). `set -o noglob`
+# disables glob expansion for the unquoted split — without this guard,
+# an `*`, `?` or `[...]` token would glob-expand into matching filenames
+# (or abort the block outright under zsh's NOMATCH) and corrupt FEATURE
+# before it lands in --original-request (Codex Phase 6 re-review MAJOR).
+# NOT `set -f`: measured 2026-09-09, that form does not set `noglob`
+# in zsh (`zsh -c 'set -f; setopt | grep -c noglob'` reports 0), so the
+# guard was inert on a zsh default shell while working in bash. The
+# `-o` form is honored by both.
+set -o noglob
 set -- $ARGUMENTS
 SKIP_NEXT=0
 for tok in "$@"; do
@@ -76,7 +80,7 @@ for tok in "$@"; do
     FEATURE="$FEATURE $tok"
   fi
 done
-set +f
+set +o noglob
 [ -z "$FEATURE" ] && { echo "✗ /engineer:start requires a feature description (got '--base-branch' only)"; exit 1; }
 ```
 

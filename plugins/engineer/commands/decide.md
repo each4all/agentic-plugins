@@ -113,15 +113,19 @@ export AGENTIC_DECIDE_CONTEXT_FILE
 # `$ARGUMENTS` is the verbatim user input from the slash command.
 # We expand it unquoted so the shell word-tokenizes flags / body
 # tokens for the CLI; quoted body words in the user's input are
-# preserved by shell quoting rules. `set -f` disables pathname
+# preserved by shell quoting rules. `set -o noglob` disables pathname
 # expansion (globbing) during the expansion so body tokens like
-# `*.md` reach the CLI literally instead of being expanded against
-# the cwd — restore globbing immediately after.
-set -f
+# `*.md`, `B냐?` or `[A]` reach the CLI literally instead of being
+# expanded against the cwd — restore globbing immediately after.
+# NOT `set -f`: measured 2026-09-09, that form does not set `noglob`
+# in zsh (`zsh -c 'set -f; setopt | grep -c noglob'` reports 0), so the
+# guard was inert on a zsh default shell while working in bash. The
+# `-o` form is honored by both.
+set -o noglob
 node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \
   > "$AGENTIC_DECIDE_CONTEXT_FILE" 2>"$DECIDE_RESOLVE_ERR"
 RESOLVE_RC=$?
-set +f
+set +o noglob
 
 # Surface warnings + diagnostics on stderr for the LLM and user.
 [ -s "$DECIDE_RESOLVE_ERR" ] && cat "$DECIDE_RESOLVE_ERR" >&2
