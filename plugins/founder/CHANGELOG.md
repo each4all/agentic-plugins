@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.7](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.6...plugin-founder-v0.4.7) (2026-09-09)
+
+
+### Bug Fixes
+
+* **plugins:** make the runbook globbing guard work under zsh ([#773](https://github.com/each4all/agentic-plugins/issues/773)) ([27a980d](https://github.com/each4all/agentic-plugins/commit/27a980d51debf5d0f3f82b70770963fca5c853f6))
+
 ## [0.4.6](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.5...plugin-founder-v0.4.6) (2026-08-27)
 
 
