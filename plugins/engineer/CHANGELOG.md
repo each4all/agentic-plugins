@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.8](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.7...plugin-engineer-v0.21.8) (2026-09-09)
+
+
+### Bug Fixes
+
+* **plugins:** make the runbook globbing guard work under zsh ([#773](https://github.com/each4all/agentic-plugins/issues/773)) ([27a980d](https://github.com/each4all/agentic-plugins/commit/27a980d51debf5d0f3f82b70770963fca5c853f6))
+
 ## [0.21.7](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.6...plugin-engineer-v0.21.7) (2026-08-27)
 
 
