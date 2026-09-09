@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 <!--
 No supersedure. This decides a mechanism the runbooks never had an explicit
