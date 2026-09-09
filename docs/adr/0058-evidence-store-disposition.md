@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 <!--
 Amends ADR-0049 (§Decision 6's precondition 1 is ADDED TO, not replaced;
@@ -202,11 +202,24 @@ that then does anything with the artifact.
 a cost this ADR creates.** The scan is bounded at 1 MiB per tracked file
 and fails closed on an oversized text source. Exactly one tracked file
 exceeds that cap — the retained lane artifact, at 1,627,462 bytes — so a
-live `planRetention` run reports `scan_complete: false` and authorizes
-**zero** deletions across all three families. Control: re-running the scan
-with only that file removed from the tracked-file list returns
-`incomplete: []`. Retention is therefore not pinning selectively; it is
-declining to act at all, and §Decision 6 is what put it in that state.
+live `planRetention` run reports `scan_complete: false`. Control:
+re-running the scan with only that file removed returns `incomplete: []`.
+
+**That is a latent trap, not a live cost, and an earlier revision of this
+ADR got the causality backwards.** A control at the *plan* level, which
+that revision did not run, produces an identical plan either way: with the
+scan complete and with it incomplete, all three families report
+`actionable_excess: 0`, `deletable_bytes: 0`, and — decisively —
+`actionable_withheld_scan_incomplete: []`. The incomplete scan is
+withholding nothing. Retention authorizes no deletion because the entire
+over-cap overage is **pinned** (doctor 82 of 82, settings 40 of 40, compat
+37 of 39), not because the scan failed.
+
+Structurally it cannot become a live cost in the other direction either:
+the over-cap artifact contains 83 run-id tokens, 8 of them only past the
+cap, so reading it properly can only **add** pins. Fixing the scan can
+never increase what retention may delete. The trap bites when some run is
+unpinned *and* over cap *and* age-cleared — which nothing is today.
 
 **2. "The store's unique contribution is that it hashes proof
 artifacts."** Understated in two directions.
@@ -374,6 +387,23 @@ the retention scan is fail-closed because of what §Decision 6 retains,
 and tag coverage is a floor rather than a proof of loop authoring. Both
 are carried above.
 
+**A tenth claim fell after that, and it was this ADR's own.** The review's
+retention finding is true — the scan *is* fail-closed — and the revision
+that adopted it went one step further, writing that retention therefore
+"authorizes no deletions". Neither the review nor that revision ran the
+control at the level where the claim lives. Run since, at the plan level:
+with the scan complete and with it incomplete, all three families report
+the same `actionable_excess: 0`, `deletable_bytes: 0` and
+`actionable_withheld_scan_incomplete: []`. Zero deletions is caused by the
+overage being pinned, not by the failed scan.
+
+The lesson is narrower than "verify the peer" and is recorded because it
+recurs: a control at the level of the *cause* (the scan reporting
+`incomplete: []` once the file is excluded) does not establish the
+*effect*. The effect needs its own control, and this one inverts the
+conclusion — fixing the scan can only add pins, so it could never have
+widened deletion in the first place.
+
 One review recommendation is **not adopted** — partial supersedure of
 ADR-0049 Decision 6 — and §Decision 7 gives the reason: the review's own
 coverage-manifest finding removes the premise the recommendation rested
@@ -522,21 +552,25 @@ verdict document's reproduction command is inert without them);
 (24 exemptions measured above); and precondition 1 (a) and (c) start from
 them rather than from nothing.
 
-**Retention is the price, it is being paid now, and it is not left
+**Retention carries a latent cost, and it is named rather than left
 implicit.** The retained lane artifact is the only tracked file over the
 citation scanner's 1 MiB per-file cap, so `scan_complete` is `false` and
-retention authorizes no deletions in any family. Retaining the substrate
-therefore costs an operating capability, not just disk. The disposition
-is: **accept it for now and fix it in the scanner or the artifact, not by
-deleting evidence.** Three routes exist and none is decided here —
-chunking or compressing the artifact below the cap, teaching the scanner
-to stream a file larger than the cap instead of failing it closed, or
-declaring the measurement tree a non-citation source with an explicit
-exclusion. The first two keep the fail-closed property that makes the
-scanner trustworthy; the third trades it for a scoped exception and is the
-one that needs the most care. Whichever is taken, it is a runtime change
-with its own review, and it should not wait long: a retention planner that
-can never act is a gate that has quietly stopped running.
+the planner reports the reason. Measured at the plan level, that state
+currently withholds **nothing** — see §"Three claims … corrected", item 1
+— and fixing it could only add pins, never widen deletion. So the cost is
+a dormant one: the planner is fail-closed in a direction that is safe, and
+stays that way until a run is simultaneously unpinned, over cap, and
+age-cleared.
+
+The disposition is: **fix it in the scanner or the artifact, not by
+deleting evidence, and on ordinary priority rather than urgently.** Three
+routes exist and none is decided here — chunking or compressing the
+artifact below the cap, teaching the scanner to stream a file larger than
+the cap instead of failing it closed, or declaring the measurement tree a
+non-citation source with an explicit exclusion. The first two keep the
+fail-closed property that makes the scanner trustworthy; the third trades
+it for a scoped exception and is the one that needs the most care.
+Whichever is taken, it is a runtime change with its own review.
 
 Three further consequences follow, and are the operative part of this
 decision:
@@ -614,9 +648,11 @@ satisfiable for the full relation set — in which case rendering is
 permanently limited to the scope-restricted half. About 4.5 MB of
 committed evidence is retained for a precondition that returned `fail`, 13
 of its markdown files sit permanently in the discovered sha corpus, and
-**one of its files currently disables retention's ability to authorize any
-deletion**. That last cost is accepted on a stated intention to fix it,
-which is a debt this decision creates rather than discharges.
+**one of its files puts the retention citation scan in a fail-closed
+state**. That state withholds nothing today and can only ever narrow, not
+widen, what retention may delete; it is accepted on a stated intention to
+fix it, which is a dormant debt this decision creates rather than
+discharges.
 
 **Neutral.** The store's justification changes shape without changing its
 behaviour: no schema change, no validator change, no record rewrite, and
@@ -706,10 +742,11 @@ Not part of the decision, but required when it lands:
   `docs/assurance/evidence/schema/evidence-record-1.0.json`, is left alone
   deliberately — its pointer reads "Decision 1-4, as amended 2026-07-27",
   and Decisions 1–4 are among what the new Amendment leaves unchanged.
-- **The retention scan must be unblocked.** Whichever route §Decision 6
-  names is taken, it is a runtime change with its own review and should
-  be opened promptly: today `planRetention` reports `scan_complete: false`
-  and authorizes no deletions in any family.
+- **The retention scan should be unblocked, on ordinary priority.**
+  Whichever route §Decision 6 names is taken, it is a runtime change with
+  its own review. It is not urgent: `planRetention` reports
+  `scan_complete: false`, but a plan-level control shows the flag
+  withholding nothing today.
 - `scripts/check-doc-evidence.mjs`'s stale comment above `runAllChecks`
   ("`checkStore` returns before any git work when there are no records")
   is corrected: the forward-only floor spends two git invocations before
