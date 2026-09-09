@@ -102,14 +102,18 @@ DECIDE_RESOLVE_ERR="$(mktemp -t founder-decide-resolve.XXXXXX).err"
 export AGENTIC_DECIDE_CONTEXT_FILE
 
 # `$ARGUMENTS` is the verbatim user input. Expand unquoted so the shell
-# word-tokenizes flags / body tokens for the CLI; `set -f` disables
-# globbing during expansion so body tokens like `*` reach the CLI
-# literally — restore globbing immediately after.
-set -f
+# word-tokenizes flags / body tokens for the CLI; `set -o noglob`
+# disables globbing during expansion so body tokens like `*`, `B냐?` or
+# `[A]` reach the CLI literally — restore globbing immediately after.
+# NOT `set -f`: measured 2026-09-09, that form does not set `noglob`
+# in zsh (`zsh -c 'set -f; setopt | grep -c noglob'` reports 0), so the
+# guard was inert on a zsh default shell while working in bash. The
+# `-o` form is honored by both.
+set -o noglob
 node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \
   > "$AGENTIC_DECIDE_CONTEXT_FILE" 2>"$DECIDE_RESOLVE_ERR"
 RESOLVE_RC=$?
-set +f
+set +o noglob
 
 [ -s "$DECIDE_RESOLVE_ERR" ] && cat "$DECIDE_RESOLVE_ERR" >&2
 rm -f "$DECIDE_RESOLVE_ERR"
