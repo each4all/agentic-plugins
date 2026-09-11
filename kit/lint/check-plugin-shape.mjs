@@ -77,7 +77,7 @@
 // folded in here as the kit/lint surface matures.
 
 import { readFile, realpath, stat, readdir } from 'node:fs/promises';
-import { isAbsolute, normalize, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 
 const args = process.argv.slice(2);
 if (args.length !== 1) {
@@ -742,6 +742,270 @@ async function checkSkillFrontmatter(label, path) {
   }
 }
 
+// --- Skill agent manifest conformance (Codex plugin-validation rule set) ---
+//
+// Mirrors validate_skill_agent_manifest in the plugin validator Codex bundles
+// at skills/.system/plugin-creator/scripts/validate_plugin.py (read directly
+// from disk 2026-09-10; those bytes match the copy embedded in codex-cli
+// 0.154.0). The rules, in its order:
+//   payload must be a mapping
+//   top-level keys subset of {interface, policy, dependencies}
+//   interface must be a mapping (otherwise Codex stops there)
+//   interface keys subset of {display_name, short_description, icon_small,
+//     icon_large, brand_color, default_prompt}
+//   display_name, short_description: a string, non-empty after stripping
+//   icon_small, icon_large: when present, a non-empty relative path that stays
+//     inside the plugin and names an existing file
+//   brand_color: when present, a string matching #RRGGBB
+//   default_prompt: when present, a string, non-empty after stripping
+//   policy: when present, a mapping; keys subset of
+//     {allow_implicit_invocation}; that value, when present, a boolean
+//   dependencies: when present, a mapping; keys subset of {tools}
+// "When present" follows Python's payload.get(): an absent key and an
+// explicit null are the same thing, and both skip the check.
+//
+// Why this file is checked at all. `allow_implicit_invocation` is read ONLY
+// from inside `policy`. A copy at the top level is never read as policy, so a
+// skill carrying it there stays implicitly invocable while appearing to opt
+// out — which is what shipped in runtime:cutover, and it was the one packaged
+// skill of 55 that a Codex session listed. The text-level
+// /allow_implicit_invocation:\s*false/ assertions in tests/plugin-shape cannot
+// see that: the string is present at either nesting.
+//
+// This linter carries no YAML dependency (see the header note), so the reader
+// below accepts the flat two-level mapping shape these manifests use and
+// reports anything it cannot decide — block scalars, flow collections,
+// anchors, aliases, tabs, deeper nesting, a colon with no separating space —
+// as unmeasurable rather than interpreting it. Plain scalars are classified
+// through the same plainScalarKind() resolver the frontmatter check uses, so
+// `False`, `yes` and `~` are read the way PyYAML reads them rather than by
+// spelling.
+const AGENT_TOP_KEYS = ['dependencies', 'interface', 'policy'];
+const AGENT_INTERFACE_KEYS = [
+  'brand_color',
+  'default_prompt',
+  'display_name',
+  'icon_large',
+  'icon_small',
+  'short_description',
+];
+const AGENT_POLICY_KEYS = ['allow_implicit_invocation'];
+const AGENT_DEPENDENCY_KEYS = ['tools'];
+const AGENT_STRING_REQUIRED = ['display_name', 'short_description'];
+const AGENT_ASSET_FIELDS = ['icon_small', 'icon_large'];
+const AGENT_HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+// Drop a trailing comment. PyYAML only starts one at a `#` preceded by
+// whitespace, so `a#b` stays the string "a#b" — matching that keeps a plain
+// scalar containing a hash from being truncated.
+function stripPlainComment(text) {
+  const at = text.search(/(^|\s)#/);
+  return at === -1 ? text : text.slice(0, at);
+}
+
+// Classify one value region. Returns {kind:'null'} | {kind:'scalar', ...} |
+// {error}. `scalar.isString` is what Codex's isinstance(value, str) sees.
+function parseAgentScalar(region) {
+  const text = pythonStrip(region);
+  if (text === '') return { kind: 'null' };
+  if (/^[|>]/.test(text)) return { error: 'block scalar (| or >) is not measurable by this check' };
+  if (/^[[{]/.test(text)) return { error: 'flow collection ([ or {) is not measurable by this check' };
+  if (/^[&*]/.test(text)) return { error: 'anchor or alias is not measurable by this check' };
+  if (text.startsWith('"') || text.startsWith("'")) {
+    const quote = text[0];
+    // Let a trailing comment past the closing quote through; PyYAML allows it
+    // and parseSingleLineScalar would otherwise call it trailing content.
+    let end = -1;
+    for (let i = 1; i < text.length; i++) {
+      if (text[i] === '\\' && quote === '"') { i += 1; continue; }
+      if (text[i] === quote) {
+        if (quote === "'" && text[i + 1] === "'") { i += 1; continue; }
+        end = i;
+        break;
+      }
+    }
+    const body = end === -1 ? text : text.slice(0, end + 1);
+    const rest = end === -1 ? '' : pythonStrip(text.slice(end + 1));
+    if (rest !== '' && !rest.startsWith('#')) {
+      return { error: 'unexpected content after the closing quote — PyYAML rejects this as invalid YAML' };
+    }
+    const parsed = parseSingleLineScalar(body);
+    if (parsed.error) return { error: parsed.error };
+    return { kind: 'scalar', value: parsed.value, isString: true };
+  }
+  const plain = stripPlainComment(text);
+  const stripped = pythonStrip(plain);
+  if (stripped === '') return { kind: 'null' };
+  const resolved = plainScalarKind(stripped);
+  if (resolved === 'null') return { kind: 'null' };
+  if (resolved === 'a YAML structure indicator' || resolved === 'a nested mapping' || resolved === 'a YAML directive') {
+    return { error: `value reads as ${resolved} — not measurable by this check` };
+  }
+  return { kind: 'scalar', value: stripped, isString: resolved === null, resolved };
+}
+
+// Read the document into Map<string, node>, where a node is
+// {kind:'map', entries} | {kind:'sequence'} | {kind:'null'} |
+// {kind:'scalar', ...}. Returns a string on failure.
+function parseAgentDocument(text) {
+  const top = new Map();
+  let current = null;
+  for (const raw of text.split('\n')) {
+    if (raw.includes('\t')) return 'tab character is not measurable by this check — indent with spaces';
+    if (pythonStrip(raw) === '') continue;
+    if (pythonStrip(raw).startsWith('#')) continue;
+    if (/^(---|\.\.\.)(\s|$)/.test(raw)) return 'multi-document YAML is not measurable by this check';
+    const indent = raw.length - raw.replace(/^ +/, '').length;
+    if (indent !== 0 && indent !== 2) {
+      return `indentation of ${indent} space(s) is not measurable by this check — use top-level keys plus two-space children`;
+    }
+    const body = raw.slice(indent);
+    if (body.startsWith('- ') || body === '-') {
+      if (indent === 0) return 'a top-level sequence is not a mapping';
+      if (current === null) return 'indented line before any top-level key';
+      const node = top.get(current);
+      if (node.kind === 'map' && node.entries.size > 0) return `key "${current}" mixes mapping entries and sequence items`;
+      top.set(current, { kind: 'sequence' });
+      continue;
+    }
+    // A mapping key needs its colon followed by a space or the end of line.
+    // Without that, `a:b` is one plain scalar to YAML, not an entry — the
+    // difference between `policy` holding a mapping and holding a string.
+    const parsed = /^([^:]+):(?:[ ](.*))?$/.exec(body);
+    if (!parsed) {
+      return `unparsable line: "${pythonStrip(body).slice(0, 48)}" — a mapping key needs a space after its colon`;
+    }
+    const key = pythonStrip(parsed[1]).replace(/^(["'])(.*)\1$/, '$2');
+    const value = parseAgentScalar(parsed[2] ?? '');
+    if (value.error) return `${current === null || indent === 0 ? key : `${current}.${key}`}: ${value.error}`;
+
+    if (indent === 0) {
+      if (top.has(key)) return `duplicate top-level key "${key}"`;
+      top.set(key, value.kind === 'null' ? { kind: 'map', entries: new Map(), empty: true } : value);
+      current = key;
+      continue;
+    }
+    if (current === null) return 'indented line before any top-level key';
+    const node = top.get(current);
+    if (node.kind !== 'map') return `key "${current}" carries a scalar, so "${key}" beneath it is not measurable by this check`;
+    if (node.entries.has(key)) return `duplicate key "${current}.${key}"`;
+    node.entries.set(key, value);
+  }
+  // A top-level key with neither an inline value nor children is null to
+  // PyYAML, not an empty mapping.
+  for (const [key, node] of top) {
+    if (node.kind === 'map' && node.empty && node.entries.size === 0) top.set(key, { kind: 'null' });
+  }
+  return top;
+}
+
+async function checkSkillAgentManifest(label, path, skillDir) {
+  let content;
+  try {
+    content = await readFile(path, 'utf8');
+  } catch (err) {
+    errors.push(`${label}: read failed: ${err.message}`);
+    return;
+  }
+  const doc = parseAgentDocument(content.replace(/\r\n?/g, '\n'));
+  if (typeof doc === 'string') {
+    errors.push(`${label}: ${doc}`);
+    return;
+  }
+  if (doc.size === 0) {
+    errors.push(`${label}: agent YAML must be an object`);
+    return;
+  }
+
+  for (const key of [...doc.keys()].sort()) {
+    if (!AGENT_TOP_KEYS.includes(key)) {
+      errors.push(`${label}: field \`${key}\` is not accepted by plugin validation`);
+    }
+  }
+
+  const iface = doc.get('interface');
+  if (iface === undefined || iface.kind !== 'map') {
+    errors.push(`${label}: field \`interface\` must be an object`);
+  } else {
+    for (const key of [...iface.entries.keys()].sort()) {
+      if (!AGENT_INTERFACE_KEYS.includes(key)) {
+        errors.push(`${label}: field \`interface.${key}\` is not accepted by plugin validation`);
+      }
+    }
+    for (const key of AGENT_STRING_REQUIRED) {
+      const node = iface.entries.get(key);
+      if (node === undefined || node.kind !== 'scalar' || !node.isString || pythonStrip(node.value) === '') {
+        errors.push(`${label}: field \`interface.${key}\` must be non-empty`);
+      }
+    }
+    const prompt = iface.entries.get('default_prompt');
+    if (prompt !== undefined && prompt.kind !== 'null' && (!prompt.isString || pythonStrip(prompt.value) === '')) {
+      errors.push(`${label}: field \`interface.default_prompt\` must be non-empty`);
+    }
+    const colour = iface.entries.get('brand_color');
+    if (colour !== undefined && colour.kind !== 'null' && (!colour.isString || !AGENT_HEX_COLOR_RE.test(colour.value))) {
+      errors.push(`${label}: field \`interface.brand_color\` must use \`#RRGGBB\``);
+    }
+    for (const key of AGENT_ASSET_FIELDS) {
+      const node = iface.entries.get(key);
+      if (node === undefined || node.kind === 'null') continue;
+      await checkAgentAssetPath(`${label}: field \`interface.${key}\``, node, skillDir);
+    }
+  }
+
+  for (const [key, allowed] of [['policy', AGENT_POLICY_KEYS], ['dependencies', AGENT_DEPENDENCY_KEYS]]) {
+    const node = doc.get(key);
+    if (node === undefined || node.kind === 'null') continue;
+    if (node.kind !== 'map') {
+      errors.push(`${label}: field \`${key}\` must be an object`);
+      continue;
+    }
+    for (const child of [...node.entries.keys()].sort()) {
+      if (!allowed.includes(child)) {
+        errors.push(`${label}: field \`${key}.${child}\` is not accepted by plugin validation`);
+      }
+    }
+  }
+
+  const policy = doc.get('policy');
+  if (policy !== undefined && policy.kind === 'map') {
+    const flag = policy.entries.get('allow_implicit_invocation');
+    if (flag !== undefined && flag.kind !== 'null' && flag.resolved !== 'a boolean') {
+      errors.push(`${label}: field \`policy.allow_implicit_invocation\` must be a boolean`);
+    }
+  }
+}
+
+// Mirrors validate_asset_path: a non-empty relative path, no empty/./..
+// segment, resolving inside the plugin, naming an existing file. The base is
+// the skill directory and the allowed root is the plugin directory, matching
+// the validator's (skill_root, plugin_root) arguments.
+async function checkAgentAssetPath(label, node, skillDir) {
+  if (node.kind !== 'scalar' || !node.isString || pythonStrip(node.value) === '') {
+    errors.push(`${label} must be a non-empty relative path`);
+    return;
+  }
+  const candidate = node.value.replace(/\\/g, '/');
+  const parts = candidate.split('/');
+  if (candidate.startsWith('/') || parts.some((part) => part === '' || part === '.' || part === '..')) {
+    errors.push(`${label} must stay inside the plugin archive`);
+    return;
+  }
+  const resolved = resolve(skillDir, candidate);
+  if (escapesPluginDir(resolved)) {
+    errors.push(`${label} must stay inside the plugin archive`);
+    return;
+  }
+  let info;
+  try {
+    info = await stat(resolved);
+  } catch {
+    errors.push(`${label} points to a missing file`);
+    return;
+  }
+  if (!info.isFile()) errors.push(`${label} points to a missing file`);
+}
+
 // Scan the manifest-declared skills root and the conventional one. Codex
 // itself uses the declared root and falls back to the conventional one;
 // checking both is deliberately broader, so a skill directory that is
@@ -761,6 +1025,10 @@ const conventionalSkillsRoot = resolve(PLUGIN_DIR, 'skills');
 if (!skillsRoots.includes(conventionalSkillsRoot)) skillsRoots.push(conventionalSkillsRoot);
 
 const seenSkillFiles = new Set();
+// Agent manifests are deduplicated on their OWN real path. Keying them off
+// the SKILL.md dedup would skip a distinct manifest whenever two skill
+// directories share a symlinked SKILL.md.
+const seenAgentFiles = new Set();
 const scanBudget = { dirs: 0, entries: 0 };
 for (const root of skillsRoots) {
   let files;
@@ -775,6 +1043,18 @@ for (const root of skillsRoots) {
     // Deduplicate by real path so two roots aliased by a symlink do not
     // report the same file twice.
     const key = (await containedRealPath(file)) ?? file;
+    // Codex reads the skill's invocation policy from the sibling agent
+    // manifest, not from SKILL.md, so it is checked here — before the
+    // frontmatter dedup, and against its own seen-set.
+    const skillDir = dirname(file);
+    const agentPath = resolve(skillDir, 'agents', 'openai.yaml');
+    if (await exists(agentPath)) {
+      const agentKey = (await containedRealPath(agentPath)) ?? agentPath;
+      if (!seenAgentFiles.has(agentKey)) {
+        seenAgentFiles.add(agentKey);
+        await checkSkillAgentManifest(relative(PLUGIN_DIR, agentPath).split(sep).join('/'), agentPath, skillDir);
+      }
+    }
     if (seenSkillFiles.has(key)) continue;
     seenSkillFiles.add(key);
     await checkSkillFrontmatter(relative(PLUGIN_DIR, file).split(sep).join('/'), file);

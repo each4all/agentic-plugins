@@ -719,4 +719,217 @@ describe('kit/lint/check-plugin-shape — skill frontmatter', () => {
     strictEqual(result.code, 1);
     ok(result.stderr.includes('skills/demo/SKILL.md:'), `stderr=${result.stderr}`);
   });
+  const result_includes = (r, needle) => r.stderr.includes(needle);
+
+  // --- Skill agent manifest (agents/openai.yaml) ---------------------------
+  //
+  // Codex reads a skill's invocation policy from this file, not from SKILL.md.
+  // The repository shipped one manifest (runtime:cutover) whose
+  // `allow_implicit_invocation` sat at the top level instead of inside
+  // `policy` — the only place Codex reads it — so the skill stayed implicitly
+  // invocable while appearing to opt out, and it was the one packaged skill of
+  // 55 that a Codex session listed. The text-level
+  // /allow_implicit_invocation:\s*false/ assertions in tests/plugin-shape
+  // passed throughout, because the string is present at either nesting.
+  //
+  // Every expectation below was derived by running BOTH implementations over
+  // the same fixture and comparing the verdicts, not by reading the rules and
+  // predicting. The harness is kit/lint/tests/differential-vs-codex.py; at the
+  // time of writing it reported 38 of 38 cases in agreement. Re-run it against
+  // a new Codex release rather than trusting these expectations to still hold.
+  const agentFile = (body) => body;
+  const validAgent = [
+    'interface:',
+    '  display_name: "Demo"',
+    '  short_description: "A demo skill"',
+    '  default_prompt: "Use $demo:demo to do the thing."',
+    '',
+    'policy:',
+    '  allow_implicit_invocation: false',
+    '',
+  ].join('\n');
+  const withAgent = (yaml, extra = {}) => ({
+    'demo/SKILL.md': skillFile('demo', 'A demo skill.'),
+    'demo/agents/openai.yaml': agentFile(yaml),
+    ...extra,
+  });
+
+  it('accepts a conformant agent manifest', async () => {
+    const dir = await makeSkillPlugin({ skills: withAgent(validAgent) });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('accepts a skill that ships no agent manifest', async () => {
+    // Deliberate: presence is the caller's gate, and Codex's validator is only
+    // reached for a manifest that exists. This pins the choice.
+    const dir = await makeSkillPlugin({
+      skills: { 'demo/SKILL.md': skillFile('demo', 'A demo skill with no agent manifest.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('rejects allow_implicit_invocation at the top level instead of under policy', async () => {
+    // The exact shape that shipped in runtime:cutover.
+    const dir = await makeSkillPlugin({
+      skills: withAgent(
+        ['display_name: Demo', 'description: A demo skill.', 'allow_implicit_invocation: false', ''].join('\n'),
+      ),
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(
+      result.stderr.includes('field `allow_implicit_invocation` is not accepted by plugin validation'),
+      `the misplaced policy key must be named; stderr=${result.stderr}`,
+    );
+    ok(result.stderr.includes('field `interface` must be an object'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a policy key whose colon has no separating space', async () => {
+    // `allow_implicit_invocation:false` is ONE plain scalar to YAML, so
+    // `policy` holds a string and Codex rejects it — while the text-level
+    // regex in tests/plugin-shape still matches. This is the same
+    // looks-opted-out-but-is-not defect in a different spelling.
+    const dir = await makeSkillPlugin({
+      skills: withAgent(validAgent.replace('allow_implicit_invocation: false', 'allow_implicit_invocation:false')),
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('a mapping key needs a space after its colon'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects an unknown interface key', async () => {
+    const dir = await makeSkillPlugin({
+      skills: withAgent(validAgent.replace('  default_prompt:', '  prompt:')),
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(
+      result.stderr.includes('field `interface.prompt` is not accepted by plugin validation'),
+      `stderr=${result.stderr}`,
+    );
+  });
+
+  it('rejects an empty required interface field', async () => {
+    const dir = await makeSkillPlugin({ skills: withAgent(validAgent.replace('"A demo skill"', '""')) });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('field `interface.short_description` must be non-empty'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects an empty default_prompt but accepts an absent one', async () => {
+    const empty = await runLint(
+      await makeSkillPlugin({ skills: withAgent(validAgent.replace('"Use $demo:demo to do the thing."', '""')) }),
+    );
+    strictEqual(empty.code, 1);
+    ok(result_includes(empty, 'field `interface.default_prompt` must be non-empty'), `stderr=${empty.stderr}`);
+    const absent = await runLint(
+      await makeSkillPlugin({
+        skills: withAgent(validAgent.replace('  default_prompt: "Use $demo:demo to do the thing."\n', '')),
+      }),
+    );
+    strictEqual(absent.code, 0, `an absent optional field is not an error; stderr=${absent.stderr}`);
+  });
+
+  it('rejects a dependencies sequence and accepts a tools mapping', async () => {
+    // Codex requires `dependencies` to be a mapping whose only key is `tools`.
+    // An earlier revision of this check treated the subtree as opaque and
+    // accepted a sequence; the differential run caught it.
+    const seq = await runLint(
+      await makeSkillPlugin({ skills: withAgent(`${validAgent}\ndependencies:\n  - some-package\n`) }),
+    );
+    strictEqual(seq.code, 1);
+    ok(result_includes(seq, 'field `dependencies` must be an object'), `stderr=${seq.stderr}`);
+    const bad = await runLint(
+      await makeSkillPlugin({ skills: withAgent(`${validAgent}\ndependencies:\n  packages: "x"\n`) }),
+    );
+    strictEqual(bad.code, 1);
+    ok(result_includes(bad, 'field `dependencies.packages` is not accepted'), `stderr=${bad.stderr}`);
+    const good = await runLint(
+      await makeSkillPlugin({ skills: withAgent(`${validAgent}\ndependencies:\n  tools: "x"\n`) }),
+    );
+    strictEqual(good.code, 0, `stderr=${good.stderr}`);
+  });
+
+  it('rejects an icon path that names no file, escapes the plugin, or is absolute', async () => {
+    for (const [value, expected] of [
+      ['"missing.png"', 'points to a missing file'],
+      ['"../../../etc/passwd"', 'must stay inside the plugin archive'],
+      ['"/etc/passwd"', 'must stay inside the plugin archive'],
+      ['""', 'must be a non-empty relative path'],
+    ]) {
+      const dir = await makeSkillPlugin({
+        skills: withAgent(validAgent.replace('policy:', `  icon_small: ${value}\n\npolicy:`)),
+      });
+      const result = await runLint(dir);
+      strictEqual(result.code, 1, `${value} must be rejected; stderr=${result.stderr}`);
+      ok(result_includes(result, expected), `${value}: stderr=${result.stderr}`);
+    }
+  });
+
+  it('accepts an icon path that names a real file inside the plugin', async () => {
+    const dir = await makeSkillPlugin({
+      skills: withAgent(validAgent.replace('policy:', '  icon_small: "icon.png"\n\npolicy:'), {
+        'demo/icon.png': 'not really a png',
+      }),
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('reads booleans the way YAML does, not by spelling', async () => {
+    for (const literal of ['False', 'yes', 'off']) {
+      const dir = await makeSkillPlugin({
+        skills: withAgent(validAgent.replace('allow_implicit_invocation: false', `allow_implicit_invocation: ${literal}`)),
+      });
+      const result = await runLint(dir);
+      strictEqual(result.code, 0, `${literal} is a YAML boolean; stderr=${result.stderr}`);
+    }
+    const quoted = await runLint(
+      await makeSkillPlugin({
+        skills: withAgent(validAgent.replace('allow_implicit_invocation: false', 'allow_implicit_invocation: "false"')),
+      }),
+    );
+    strictEqual(quoted.code, 1);
+    ok(result_includes(quoted, 'field `policy.allow_implicit_invocation` must be a boolean'), `stderr=${quoted.stderr}`);
+  });
+
+  it('accepts comments, including one trailing a boolean', async () => {
+    const dir = await makeSkillPlugin({
+      skills: withAgent(
+        `# leading comment\n${validAgent.replace('allow_implicit_invocation: false', 'allow_implicit_invocation: false # explicit only')}`,
+      ),
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('rejects a block scalar in a measured interface field rather than guessing at it', async () => {
+    const dir = await makeSkillPlugin({
+      skills: withAgent(
+        ['interface:', '  display_name: "Demo"', '  short_description: |', '    two', '    lines', ''].join('\n'),
+      ),
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result_includes(result, 'block scalar (| or >) is not measurable by this check'), `stderr=${result.stderr}`);
+  });
+
+  it('checks a second manifest that shares a symlinked SKILL.md', async () => {
+    // The frontmatter scan deduplicates SKILL.md by real path. Keying the
+    // manifest check off that set would skip the second skill's own manifest.
+    const dir = await makeSkillPlugin({
+      skills: {
+        'one/SKILL.md': skillFile('one', 'First demo skill.'),
+        'one/agents/openai.yaml': agentFile(validAgent),
+        'two/agents/openai.yaml': agentFile('allow_implicit_invocation: false\n'),
+      },
+    });
+    await symlink(join(dir, 'skills/one/SKILL.md'), join(dir, 'skills/two/SKILL.md'));
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `the second manifest must still be checked; stderr=${result.stderr}`);
+    ok(result_includes(result, 'skills/two/agents/openai.yaml'), `stderr=${result.stderr}`);
+  });
+
 });
