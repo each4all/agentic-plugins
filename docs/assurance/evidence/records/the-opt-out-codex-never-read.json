@@ -1,0 +1,187 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-opt-out-codex-never-read",
+  "evidence_loop": {
+    "label": "the opt-out Codex never read, and an install that moved under its first proof",
+    "summary": "The cutover skill's agents/openai.yaml carried allow_implicit_invocation, display_name, description and prompt at the top level with no interface mapping: five errors against the validator Codex ships, which nothing in this repository checked. Codex reads allow_implicit_invocation only inside `policy`, so runtime:cutover stayed implicitly invocable while appearing to opt out, and it was the one packaged skill of 55 a Codex session listed, which an earlier investigation had read as a Codex loader limit. The fix restructures the manifest and adds a structural kit/lint check that mirrors Codex's validator, its rules fixed by differential comparison (38 of 38 fixtures agreeing against codex-cli 0.154.0) after a first revision derived from the binary's strings carried five defects. The sixteen existing text-level assertions passed both before and after the fix."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.97.2",
+      "tag": "plugin-runtime-v0.97.2",
+      "release_pr": 778,
+      "squash": "b844c6c450f6f75fe45259a0435e841f1aaca46a",
+      "marketplace_sync": "5689fb3a6e4675ffa7f447a874a9d31b4720af02"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "7213a7c3005017e702027b2d0dee2d1dbc0c5441",
+      "pr": 777,
+      "note": "Moves allow_implicit_invocation under `policy` in the cutover skill's agents/openai.yaml and adds checkSkillAgentManifest() to kit/lint, mirroring validate_skill_agent_manifest in Codex's plugin-creator validator. Reverting the manifest makes lint exit 1 with Codex's five errors."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260912T223726Z-a4b168",
+      "date": "2026-09-12",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:039b7589c35f7c7933bb1895ba9ce6c6ee9ed8093639f0ebe1f97080eb0fc1b6",
+      "runtime_version": "0.97.2",
+      "installed": {
+        "claude": "0.97.2",
+        "codex": "0.97.1"
+      },
+      "host_cli": {
+        "claude": "2.1.268 (Claude Code)",
+        "codex": "codex-cli 0.154.0"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning; hard_failures empty; warnings host parity warning"
+        },
+        {
+          "key": "host_parity",
+          "value": "warning; issue_count 1; difference_count 2; issues: installed_plugin_stale (warning): Codex cache version=0.97.1, source=0.97.2"
+        },
+        {
+          "key": "experience_parity.host_plugin_availability",
+          "value": "claude=installed/0.97.2, codex=installed/0.97.1"
+        },
+        {
+          "key": "plugins.runtime.installed.codex_resolved",
+          "value": "decision fallback; source cache; list_probe_status unsupported; cache latest version_dir 0.97.1"
+        },
+        {
+          "key": "clis.codex.plugin_list_command_status",
+          "value": "blocked; exit_code null; error_code ETIMEDOUT"
+        },
+        {
+          "key": "proofs",
+          "value": "permission_proof, deep_peer_smoke and workflow_continuation_proof each passed, executed in both directions (claude_to_codex, codex_to_claude)"
+        },
+        {
+          "key": "experience_parity",
+          "value": "ready 100%; weight 115/115; satisfied 8, partial 0, not_verified 0, blocked 0; manual_followup_count 0"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale; direction ahead; baseline 2026-08-28 2.1.250 / 0.150.1; observed 2.1.268 / 0.154.0; provenance.source package (runtime_version 0.97.2); content_sha256 c205c62bafdfed25c8623d1a2473433799ec50bd284d66ce70a5e08cc296bcf8"
+        },
+        {
+          "key": "recorded_doctor_proof",
+          "value": "not_reusable; run doctor-20260910T015734Z-ca0ca9; 4 reason(s)"
+        },
+        {
+          "key": "recorded_doctor_proof.reason.0",
+          "value": "runtime version mismatch: recorded=0.97.1, current=0.97.2"
+        },
+        {
+          "key": "recorded_doctor_proof.reason.1",
+          "value": "runtime source mismatch: recorded=0.97.1, current=0.97.2"
+        },
+        {
+          "key": "recorded_doctor_proof.reason.2",
+          "value": "runtime claude_cache mismatch: recorded=0.97.1, current=0.97.2"
+        },
+        {
+          "key": "recorded_doctor_proof.reason.3",
+          "value": "claude version mismatch: recorded=2.1.267 (Claude Code), current=2.1.268 (Claude Code)"
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available; count 83; malformed 0"
+        }
+      ]
+    },
+    {
+      "run_id": "doctor-20260912T224114Z-477c02",
+      "date": "2026-09-12",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:8c022c87316d43a52fd19c5f8cb9b04ea34fd031345761a67c38b6fe7d58ef51",
+      "runtime_version": "0.97.2",
+      "installed": {
+        "claude": "0.97.2",
+        "codex": "0.97.2"
+      },
+      "host_cli": {
+        "claude": "2.1.268 (Claude Code)",
+        "codex": "codex-cli 0.154.0"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "pass; hard_failures empty; warnings empty"
+        },
+        {
+          "key": "proofs",
+          "value": "permission_proof, deep_peer_smoke and workflow_continuation_proof each passed, executed in both directions (claude_to_codex, codex_to_claude)"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; issue_count 0; difference_count 2"
+        },
+        {
+          "key": "experience_parity",
+          "value": "ready 100%; weight 115/115; satisfied 8, partial 0, not_verified 0, blocked 0; manual_followup_count 0"
+        },
+        {
+          "key": "plugins.runtime.installed.codex_resolved",
+          "value": "decision installed; source list; version 0.97.2; evidence codex plugin list reports enabled"
+        },
+        {
+          "key": "clis.codex.plugin_list_command_status",
+          "value": "available; exit_code 0; error_code null"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale; direction ahead; baseline 2026-08-28 2.1.250 / 0.150.1; observed 2.1.268 / 0.154.0; provenance.source package (runtime_version 0.97.2); content_sha256 c205c62bafdfed25c8623d1a2473433799ec50bd284d66ce70a5e08cc296bcf8"
+        },
+        {
+          "key": "codex_plugin_hooks",
+          "value": "ready; expected 12, enabled 12, disabled 0, untrusted 0, missing 0"
+        },
+        {
+          "key": "settings_runs.codex_hook_review",
+          "value": "attested; current true; latest settings-20260910T015634Z-9d4337, attested_at 2026-09-10T01:56:34.383Z"
+        },
+        {
+          "key": "recorded_doctor_proof",
+          "value": "not_reusable; run doctor-20260912T223726Z-a4b168; 1 reason(s)"
+        },
+        {
+          "key": "recorded_doctor_proof.reason.0",
+          "value": "runtime codex_installed mismatch: recorded=0.97.1, current=0.97.2"
+        },
+        {
+          "key": "compat_runs.latest",
+          "value": "compat-20260828T090343Z-1ee918; status current; drift_class none; next_steps[0]: runtime:compat check --run-id compat-20260828T090343Z-1ee918 — this run's recorded state (current) is not one this runtime recognises; re-run check with a runtime new enough to read it."
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available; count 84; malformed 0"
+        },
+        {
+          "key": "entry_brief",
+          "value": "ready"
+        },
+        {
+          "key": "session_capture",
+          "value": "ready"
+        }
+      ]
+    }
+  ],
+  "install_method": "Claude: `claude plugin marketplace update agentic-plugins`, then `claude plugin update runtime@agentic-plugins` at 2026-09-12T22:30Z, 0.97.1 -> 0.97.2. Codex: the installing session ran no install or upgrade command; the served checkout carries a 22:37:34Z mtime inside the first 0.97.2 proof, so the refresh mechanism is inferred. No settings plugin-management execution artifact backs this upgrade.",
+  "narrative": "**A guard that passes before and after a fix cannot show the fix took.** The sixteen text-level assertions over the skill manifests match `allow_implicit_invocation: false` at any nesting, and the `$runtime:cutover` check was satisfied through a `prompt` field Codex never reads, so every one was green on the defective file and on the corrected one. The evidence that the correction took is the control #777 records instead: reverting the manifest makes the new structural lint check exit 1 with Codex's five errors, and planting the same defect in another plugin fails as well. The check's rules came from differential comparison with the validator Codex unpacks to disk, 38 of 38 fixtures agreeing against codex-cli 0.154.0, after a first revision derived from the binary's strings carried five defects. That harness imports the validator from a hard-coded path outside the repository, and with the file absent the import raises FileNotFoundError (measured), so it cannot run where Codex is not installed; that, not the vacuous pass its docstring and #777's message describe, is why it stays outside `npm test` and has to be re-run by hand after a Codex release.\n\n**The one skill Codex listed was our manifest, not a loader limit.** 'Codex loads 1 of our 55 skills' was right as a count and wrong as a cause: the skill Codex listed was the one whose opt-out it could not read.\n\n**Parity ready 100%, overall pass and the stale baseline are not this release's effect.** The 0.97.1 proof doctor-20260910T015734Z-ca0ca9, taken right after the owner's 2026-09-10 Codex /hooks re-attestation and recorded with its own loop in the-baseline-that-had-to-ship-to-count, already read all three. Runtime ships no hooks, so 0.97.2 left that attestation current; quoting any of the three as an outcome of this release would misattribute it.\n\n**An installed-state reading can change during the run that takes it.** The first 0.97.2 proof, doctor-20260912T223726Z-a4b168, found its `codex plugin list` probe blocked by ETIMEDOUT (recorded downstream as list_probe_status unsupported), resolved Codex's runtime from the plugin cache, read 0.97.1, and raised installed_plugin_stale; the re-run resolved 0.97.2 from `codex plugin list` itself and marks the first proof not_reusable for that mismatch. The two readings are observed. The explanation, that Codex refreshed its git marketplace while the first run's executors were starting Codex sessions, is inferred from the served checkout's 22:37:34Z mtime inside that run's 22:37:26-22:38:05Z window and from the installing session having run no Codex upgrade command. Both runs are kept for that reason.\n\n**Not artifact readings, and marked so.** Byte identity was measured by hand under the pinned path-first recipe: control first, reproducing 0.97.1's 3f338a25… over 120 files from the retained cache, then ee5ae232176c6fd7614cbcbf64c02c014e4da6bc231cc4b74d713b865c186822 over 120 files on both Claude's cache and Codex's served tree, with diff -r exiting 0. The packaged baseline hash did not move, and validate:release-obligation reads fulfilled.\n\nLeft standing by this documentation-only recovery: the baseline is stale against 2.1.268 / 0.154.0 (issue #388, a protected asset that takes effect only by release); compatNextSteps has no branch for a `current` compat run, so doctor tells the operator that a healthy run's state is unrecognised, the same line under 0.97.1; the list probe's timeout is recorded as list_probe_status unsupported because machine-probe.mjs maps every failure other than ENOENT to that label; and eight of the sixteen text assertions still say more than they measure, three of them by naming a nesting they never check.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-baseline-that-had-to-ship-to-count",
+      "note": "The preceding runtime loop, which ended at an unrecorded 91% with its Codex /hooks re-attestation outstanding. This recovery appended to it the proof that closed that follow-up, doctor-20260910T015734Z-ca0ca9 (0.97.1, 2026-09-10), which is also this loop's before-release control."
+    }
+  ]
+}
