@@ -61,6 +61,59 @@
           "value": "available; malformed=0; count 81."
         }
       ]
+    },
+    {
+      "run_id": "doctor-20260910T015734Z-ca0ca9",
+      "date": "2026-09-10",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:6aa99b466cd33cc42acdf67d04a28c16574dfe993d06d336dccaf0bb05351fbd",
+      "runtime_version": "0.97.1",
+      "installed": {
+        "claude": "0.97.1",
+        "codex": "0.97.1"
+      },
+      "host_cli": {
+        "claude": "2.1.267 (Claude Code)",
+        "codex": "codex-cli 0.154.0"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "pass; hard_failures empty; warnings empty"
+        },
+        {
+          "key": "proofs",
+          "value": "permission_proof, deep_peer_smoke and workflow_continuation_proof each passed, executed in both directions (claude_to_codex, codex_to_claude)"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; issue_count 0; difference_count 2"
+        },
+        {
+          "key": "experience_parity",
+          "value": "ready 100%; weight 115/115; satisfied 8, partial 0, not_verified 0, blocked 0; manual_followup_count 0"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale; direction ahead; baseline 2026-08-28 2.1.250 / 0.150.1; observed 2.1.267 / 0.154.0; provenance.source package (runtime_version 0.97.1); content_sha256 c205c62bafdfed25c8623d1a2473433799ec50bd284d66ce70a5e08cc296bcf8"
+        },
+        {
+          "key": "codex_plugin_hooks",
+          "value": "ready; expected 12, enabled 12, disabled 0, untrusted 0, missing 0"
+        },
+        {
+          "key": "settings_runs.codex_hook_review",
+          "value": "attested; current true; latest settings-20260910T015634Z-9d4337, attested_at 2026-09-10T01:56:34.383Z"
+        },
+        {
+          "key": "compat_runs.latest",
+          "value": "compat-20260828T090343Z-1ee918; status current; drift_class none; next_steps[0]: runtime:compat check --run-id compat-20260828T090343Z-1ee918 — this run's recorded state (current) is not one this runtime recognises; re-run check with a runtime new enough to read it."
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available; count 82; malformed 0"
+        }
+      ]
     }
   ],
   "relations": [
