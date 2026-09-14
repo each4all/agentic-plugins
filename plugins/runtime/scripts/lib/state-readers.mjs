@@ -693,8 +693,22 @@ function compatNextSteps({ runId, status, gap, plan }) {
       : [];
     return steps.length > 0 ? steps : ['Review the runtime:compat update plan before changing compatibility-sensitive surfaces.'];
   }
-  // `unrecognized` and anything else land here. Silence is the wrong answer:
-  // a run with no next step reads as a run with nothing to do.
+  // `current` is the one status whose honest answer is silence: there is nothing
+  // to do. It has to be NAMED, because the line below fails closed. That line
+  // used to be `return []`, which served `current` only by accident, and when
+  // aaf4744 hardened it for `unrecognized`, every healthy run was told to re-run
+  // check with a newer runtime, on doctor's default text output.
+  //
+  // The gap's stored step is not echoed. For a current run it is
+  // `runtime:compat plan`, the ADR-0047 §5 standing watch, which is informational
+  // (see `planInformationalOnly`) and would read as outstanding work, even after
+  // the plan has run. An empty list is also what lets doctor's
+  // `runtime_handoff_artifacts` fall back to its own line when the collection
+  // that is short is not compat.
+  if (status === 'current') return [];
+  // `unrecognized` lands here on purpose, and so would a status added without a
+  // branch. Silence is the wrong answer for both: a run with no next step reads
+  // as a run with nothing to do.
   return [`runtime:compat check --run-id ${runId} — this run's recorded state (${status}) is not one this runtime recognises; re-run check with a runtime new enough to read it.`];
 }
 

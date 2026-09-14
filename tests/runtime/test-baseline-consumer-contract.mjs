@@ -157,6 +157,12 @@ describe('host-parity baseline consumer contract (ADR-0051 P2)', () => {
     const runs = await inspectCompatRuns({ repoRoot });
     strictEqual(runs.latest.status, 'current');
     strictEqual(runs.status, 'available');
+    // A control has to hold the WHOLE healthy answer. This one asserted the status
+    // and stopped, so when aaf4744 turned compatNextSteps' trailing `return []`
+    // into the fail-closed line, it stayed green while the run it builds carried
+    // "re-run check with a runtime new enough to read it". Nothing to do is an
+    // empty list.
+    deepStrictEqual(runs.latest.next_steps, []);
   });
 
   it('state-readers refuses to project an unrecognised per-run status as analysis', async () => {

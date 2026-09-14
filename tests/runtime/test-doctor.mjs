@@ -2286,6 +2286,96 @@ describe('runtime doctor', () => {
     strictEqual(actionableReport.compat_runs.status, 'needs_attention');
   });
 
+  // compat's `current` is the one per-run status with nothing to do, and an empty
+  // list is its true answer. aaf4744 (plugin-runtime v0.90.2) turned the trailing
+  // `return []` of compatNextSteps — which had served `current` only incidentally
+  // — into the fail-closed line meant for `unrecognized`, so every healthy run was
+  // told to re-run check "with a runtime new enough to read it", on doctor's
+  // default text output. The cases below read that answer on each surface doctor
+  // exposes it on, one surface per case, so a regression names the surface.
+  it('gives a current compat run no next step, and does not echo the stored standing-watch step', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-current-steps-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await seedCurrentCompatRun(root);
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    const latest = report.compat_runs.latest;
+    // Preconditions: the healthy branch, in this era.
+    strictEqual(latest.status, 'current');
+    strictEqual(latest.schema_era, 'post-assurance');
+    strictEqual(report.compat_runs.status, 'available');
+    deepStrictEqual(latest.next_steps, []);
+    ok(!JSON.stringify(report).includes('not one this runtime recognises'), 'no field may send a current run to upgrade the runtime');
+  });
+
+  it('prints no next line for a current compat run in the default text output', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-current-text-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const { runId } = await seedCurrentCompatRun(root);
+
+    const text = formatText(await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) }));
+    const start = text.indexOf('Compatibility Artifacts');
+    const section = text.slice(start, text.indexOf('\n\n', start));
+    // The slice must hold the run it judges, or the absence below proves nothing.
+    ok(section.includes(`- latest: ${runId}; status=current`), section);
+    ok(!section.includes('next:'), section);
+  });
+
+  it('lets runtime_handoff_artifacts use its own line when compat is current and another collection is missing', async () => {
+    // The criterion takes compat's first next step before its collection-agnostic
+    // line. Here the collections that are short are settings and consensus, and a
+    // healthy compat run has nothing to add, so the line must be the criterion's.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-current-handoff-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await seedCurrentCompatRun(root);
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    strictEqual(report.compat_runs.latest.status, 'current');
+    strictEqual(report.settings_runs.status, 'missing');
+    const handoff = report.experience_parity.criteria.find((entry) => entry.id === 'runtime_handoff_artifacts');
+    strictEqual(handoff.status, 'partial');
+    strictEqual(handoff.next_step, 'Run settings/consensus/compat flows when needed so future host handoffs have artifact evidence.');
+  });
+
+  it('keeps a current compat run step-free under an informational plan, and surfaces the steps of an actionable one', async () => {
+    // Once the standing-watch plan has run, `plan` must not come back as a step.
+    // The actionable plan is the CONTROL: without it, the empty answer could be a
+    // reader that stopped returning steps altogether.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-current-plan-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const { runId, runDir } = await seedCurrentCompatRun(root);
+    const planFixture = {
+      schema_version: 'runtime-compat-plan-1.2',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      created_at: '2026-08-28T00:02:00.000Z',
+      status: 'planned',
+      actionable: false,
+      affected_surfaces: [],
+      notification_watch: [
+        { id: 'codex-notify-payload-variants', host: 'codex', standing: true, status: 'open', signal_detected: false, signal_notes: [] },
+      ],
+      recommended_sequence: [
+        { step: 'run-validation', reason: 'generic epilogue', required: true },
+      ],
+    };
+    await writeJson(join(runDir, 'plan.json'), planFixture);
+
+    const informational = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    strictEqual(informational.compat_runs.latest.status, 'current');
+    ok(informational.compat_runs.latest.plan_pointer, 'precondition: the plan was read');
+    deepStrictEqual(informational.compat_runs.latest.next_steps, []);
+
+    await writeJson(join(runDir, 'plan.json'), { ...planFixture, actionable: true });
+    const actionable = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    strictEqual(actionable.compat_runs.latest.status, 'plan_ready');
+    deepStrictEqual(actionable.compat_runs.latest.next_steps, ['run-validation']);
+  });
+
   it('reports runtime artifact inventory pressure without reading artifact bodies', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-artifact-inventory-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
@@ -4044,6 +4134,43 @@ async function seedRepo(root) {
     effort: 'high',
     updated_at: '2026-05-12T23:00:00.000Z',
   });
+}
+
+// A post-assurance compat run whose gap is `current` and stores exactly what
+// compat's gapNextSteps stores for one: the ADR-0047 §5 standing-watch plan step.
+// It observes the host pair defaultRuntimeProbeMap reports.
+async function seedCurrentCompatRun(root, runId = 'compat-20260828T000000Z-abcdef') {
+  const runDir = join(root, '.agentic-plugins', 'runs', 'compat', runId);
+  await mkdir(runDir, { recursive: true });
+  await writeJson(join(runDir, 'snapshot.json'), {
+    schema_version: 'runtime-compat-snapshot-1.2',
+    runtime_version: RUNTIME_VERSION,
+    run_id: runId,
+    created_at: '2026-08-28T00:00:00.000Z',
+    updated_at: '2026-08-28T00:00:00.000Z',
+    hosts: {
+      claude: { available: true, version: '2.1.140', version_text: '2.1.140 (Claude Code)' },
+      codex: { available: true, version: '0.130.0', version_text: 'codex-cli 0.130.0' },
+    },
+    remembered_baseline: {
+      claude: { version: '2.1.140' },
+      codex: { version: '0.130.0' },
+    },
+  });
+  await writeJson(join(runDir, 'gap-analysis.json'), {
+    schema_version: 'runtime-compat-gap-1.2',
+    runtime_version: RUNTIME_VERSION,
+    run_id: runId,
+    created_at: '2026-08-28T00:01:00.000Z',
+    updated_at: '2026-08-28T00:01:00.000Z',
+    overall: { status: 'current', drift_class: 'none', release_notes_required: false, snapshot_schema_version: 'runtime-compat-snapshot-1.2', snapshot_schema_era: 'post-assurance' },
+    host_gaps: [
+      { host: 'claude', status: 'matches', observed_version: '2.1.140', baseline_version: '2.1.140' },
+      { host: 'codex', status: 'matches', observed_version: '0.130.0', baseline_version: '0.130.0' },
+    ],
+    next_steps: [`runtime:compat plan --run-id ${runId}`],
+  });
+  return { runId, runDir };
 }
 
 async function writeDisabledCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json') {
