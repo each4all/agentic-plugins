@@ -644,15 +644,17 @@ function catalogSummary(readResult, host) {
   return { status: 'available', entries };
 }
 
-function buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList = { status: 'unavailable', entries: {} } }) {
+function buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList = { status: null, command: null, entries: {} } }) {
   const result = {};
   for (const name of PLUGIN_NAMES) {
     // Resolve the Codex install decision once, here, so every downstream
     // consumer (status, readiness row, version parity) reads the same
-    // list-authoritative-then-cache decision rather than re-deriving it.
+    // list-authoritative-then-cache decision rather than re-deriving it. The
+    // command outcome travels beside the parse outcome so a fallback records both.
     const codexResolved = resolveCodexInstallState({
       name,
       listStatus: codexPluginList.status,
+      listCommand: codexPluginList.command ?? null,
       entry: codexPluginList.entries?.[name] ?? null,
     });
     result[name] = {
@@ -1376,7 +1378,7 @@ function buildHostParityBaseline({ resolved, probe }) {
   };
 }
 
-function buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList = { status: 'unavailable', entries: {} }, codexPluginHooks }) {
+function buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList = { status: null, command: null, entries: {} }, codexPluginHooks }) {
   const issues = [];
   const differences = [];
 

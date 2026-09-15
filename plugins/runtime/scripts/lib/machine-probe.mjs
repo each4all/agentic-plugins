@@ -558,20 +558,24 @@ function installAmbiguity(facts) {
 // Parse `codex plugin list --json` into a sanitized, Claude-comparable installed
 // map. STDOUT only — Codex 0.137 prints valid JSON on stdout while emitting
 // warnings on stderr, so a non-empty stderr must NOT downgrade a successful
-// parse. Never throws: a missing/older subcommand, nonzero exit, or malformed
-// JSON degrades to a status that callers treat as "list unavailable -> cache
-// fallback" (ADR-0034). Raw JSON / source paths are NOT retained — only the
+// parse. Never throws. Raw JSON / source paths are NOT retained — only the
 // fields the readiness decision needs.
+//
+// Two outcomes come back side by side, because they answer different questions
+// (ADR-0034, Amendment 2026-09-15):
+//   - `command` is what the list command did, as observed — the same
+//     {status, exit_code, error_code} triple the redacted report records. A
+//     command that did not succeed is never parsed: a timed-out command's partial
+//     stdout is not evidence of an install.
+//   - `status` is the parse outcome of a command that succeeded (`available` /
+//     `empty` / `parse_error` / `malformed`), and null when nothing was parsed.
+// Anything but `available` is non-authoritative -> cache fallback. This used to be
+// one label that read every failure except ENOENT as `unsupported`, so a timed-out
+// list looked like a Codex without the subcommand.
 function parseCodexPluginList(pluginListResult) {
-  const degraded = (status) => ({ status, entries: {}, warnings: [] });
-  if (!pluginListResult || pluginListResult.error_code === 'skipped') return degraded('unavailable');
-  // commandStatus() returns 'available' only when the probe ran successfully
-  // (ok). A present-but-older Codex returns a nonzero "unknown subcommand"
-  // ('unknown'); a missing CLI returns ENOENT ('unavailable'). Both are
-  // non-authoritative -> fallback; the label is reporting-only.
-  if (pluginListResult.status !== 'available') {
-    return degraded(pluginListResult.error_code === 'ENOENT' ? 'unavailable' : 'unsupported');
-  }
+  const command = listCommandOutcome(pluginListResult);
+  const degraded = (status) => ({ status, command, entries: {}, warnings: [] });
+  if (command.status !== 'available') return degraded(null);
   const stdout = (pluginListResult.stdout ?? '').trim();
   if (!stdout) return degraded('empty');
   let parsed;
@@ -623,7 +627,16 @@ function parseCodexPluginList(pluginListResult) {
     entries[name].observations = rows.length;
     entries[name].ambiguous = installAmbiguity(rows.map((row) => ({ version: row.version, enabled: row.status })));
   }
-  return { status: 'available', entries, warnings };
+  return { status: 'available', command, entries, warnings };
+}
+
+// The list command outcome, reduced to codes. The three fields are picked rather than
+// spread: the probe result still carries raw stdout/stderr here, and this triple is
+// copied into every plugin's install decision (ADR-0034 §Decision 5). A missing result
+// is a probe that never ran, which the inspector records as `skipped`.
+function listCommandOutcome(result) {
+  if (!result) return { status: 'unknown', exit_code: null, error_code: 'skipped' };
+  return { status: result.status ?? commandStatus(result), exit_code: result.exit_code ?? null, error_code: result.error_code ?? null };
 }
 
 const CODEX_INSTALL_STATUS_RANK = { enabled: 4, installed: 3, disabled: 2, not_installed: 1 };
@@ -637,9 +650,9 @@ function pickStrongerCodexEntry(a, b) {
 // (plugin matrix status, readiness row, version parity). List-authoritative:
 // when the list probe succeeded, the list is the source of truth and a stale
 // filesystem cache must NOT claim an install the list omits; only a
-// list-unavailable probe (older Codex, nonzero exit, parse error) falls back to
-// cache evidence (decision='fallback', caller applies existing cache logic).
-// Read-only; never mutates host state (ADR-0024 / ADR-0034).
+// list-unavailable probe (a command that did not succeed, or output that did not
+// parse) falls back to cache evidence (decision='fallback', caller applies
+// existing cache logic). Read-only; never mutates host state (ADR-0024 / ADR-0034).
 //
 // `name` is the plugin the decision is about. It exists only to render an
 // honest evidence string: the not-installed branch used to hardcode "runtime",
@@ -647,7 +660,7 @@ function pickStrongerCodexEntry(a, b) {
 // runtime as installed". The founder RT slice (ADR-0036) recorded this as a
 // deferred generic-name fix; the designer RT slice closes it, because the
 // inventory addition is exactly what surfaces the wrong name to an operator.
-export function resolveCodexInstallState({ name, listStatus, entry }) {
+export function resolveCodexInstallState({ name, listStatus, listCommand = null, entry }) {
   if (listStatus === 'available') {
     if (entry) {
       // Defensive: an `installed:false` entry (only expected under --available,
@@ -666,7 +679,9 @@ export function resolveCodexInstallState({ name, listStatus, entry }) {
     }
     return { decision: 'not_installed', source: 'list', version: null, enabled: false, evidence: `codex plugin list does not report ${name} as installed` };
   }
-  return { decision: 'fallback', source: 'cache', version: null, enabled: null, evidence: null, list_probe_status: listStatus };
+  // A fallback says why with the two facts parseCodexPluginList keeps apart: what the
+  // list command did, and what parsing its output found (null when nothing was parsed).
+  return { decision: 'fallback', source: 'cache', version: null, enabled: null, evidence: null, list_command_status: listCommand, list_parse_status: listStatus ?? null };
 }
 
 // ---------------------------------------------------------------------------
