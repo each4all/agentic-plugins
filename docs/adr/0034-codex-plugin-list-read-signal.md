@@ -4,6 +4,11 @@
 
 Accepted
 
+> Amended 2026-09-15 — see [Amendments](#amendments). A list that cannot
+> decide no longer records one inferred label: the fallback decision records
+> the command outcome and the parse outcome separately. Body text is
+> preserved; each affected sentence carries an inline pointer.
+
 ## Context
 
 [ADR-0032](0032-codex-per-plugin-command-surface-adoption.md) made
@@ -53,7 +58,10 @@ host-native Codex installed-state read signal, with
    not retained**. Never throws: a missing subcommand, nonzero exit, or
    malformed JSON degrades to a status (`unsupported` / `unavailable` /
    `parse_error` / `malformed` / `empty`) that callers treat as
-   "list unavailable".
+   "list unavailable". *(amended 2026-09-15 — the fallback no longer
+   records this single status: the command outcome and the parse outcome
+   are recorded in separate fields, and a command failure is no longer
+   inferred to be `unsupported`. See [Amendments](#amendments).)*
 3. **Resolve once** (`resolveCodexInstallState`): a single shared
    resolver computes the install decision so every doctor consumer reads
    the same answer. When the list probe succeeded, **the list is the
@@ -72,7 +80,10 @@ host-native Codex installed-state read signal, with
    materialized" is a coherent, non-contradictory sub-state.
 5. **Redaction**: only `plugin_list_command_status` (status/exit/error)
    is persisted in the recorded artifact; the raw `plugin list --json`
-   stdout is never written.
+   stdout is never written. *(amended 2026-09-15 — the same three codes
+   are now also copied into each fallback decision as
+   `list_command_status`; the boundary is unchanged: codes only, never raw
+   stdout or stderr. See [Amendments](#amendments).)*
 
 **Stage-aware**: pre-`0.137` Codex (no subcommand) and any
 nonzero/malformed result degrade to cache fallback, so existing behavior
@@ -136,3 +147,42 @@ follow-up will route those consumers through the same resolver.
 - **Use `--available`**: rejected — it mixes installed and uninstalled
   marketplace inventory; catalog availability is already covered by
   marketplace/catalog/cache inspection.
+
+## Amendments
+
+### 2026-09-15 — the fallback records what the list command did instead of inferring `unsupported`
+
+**Trigger**: `doctor-20260912T223726Z-a4b168` recorded
+`plugin_list_command_status` `blocked` / `ETIMEDOUT`, while every plugin's
+`codex_resolved` in the same report carried `list_probe_status`
+`unsupported`. Item 2 gave a list that could not decide one label, and the
+parser that implemented this ADR (`b32afbe`) chose it by reading every
+command failure other than `ENOENT` as a missing subcommand. A list read
+that timed out therefore looked like a Codex without `plugin list`, which
+points an operator at the wrong cause.
+
+**What changed**: the two outcomes item 2 put under one label answer
+different questions, and each now has its own field on the fallback
+decision:
+
+- `list_command_status` — what the list command did, as observed:
+  `{ status, exit_code, error_code }`, the same triple and vocabulary as
+  `plugin_list_command_status` (`available` / `unavailable` / `blocked` /
+  `unknown`, with the observed error code, such as `ENOENT`, `ETIMEDOUT` or
+  `skipped`, and the observed exit code). Nothing is inferred from it.
+- `list_parse_status` — the parse outcome of a command that succeeded:
+  `empty` / `parse_error` / `malformed`. It is `null` when the command did
+  not succeed, because nothing was parsed.
+
+`list_probe_status` is no longer written.
+
+**What did not change**: `decision: 'fallback'` and the cache fallback it
+triggers, and the list-authoritative decisions, which carry neither new
+field. No consumer of the decision read `list_probe_status`, and every
+consumer keeps its behaviour; the host-parity check still compares the list
+status only to `available`. A command that did not succeed is still never
+parsed, so its partial output cannot become list authority. Item 5's
+redaction boundary holds — the new copy is codes only. Artifacts recorded
+before this amendment keep `list_probe_status`; they remain accurate
+records of what that runtime wrote, and the evidence that cites them
+stands.

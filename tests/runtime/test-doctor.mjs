@@ -3709,6 +3709,126 @@ describe('runtime doctor — codex plugin list read signal (ADR-0034)', () => {
     strictEqual(report.clis.codex.plugin_list, undefined); // raw probe object not persisted
     ok(!JSON.stringify(report.clis.codex).includes('/.tmp/marketplaces/'), 'no raw source path leaked into clis');
   });
+
+  // The fallback decision used to explain itself with ONE label, `list_probe_status`,
+  // and that label inferred `unsupported` for every list command failure except ENOENT.
+  // doctor-20260912T223726Z-a4b168 recorded `plugin_list_command_status`
+  // blocked/ETIMEDOUT beside `list_probe_status` `unsupported`, so a timed-out read
+  // looked like a Codex without the subcommand. What the command did and what parsing
+  // its output found are different facts, so each now has its own field and neither is
+  // inferred (ADR-0034, Amendment 2026-09-15).
+  const assertFallback = (report, { command, parse }) => {
+    for (const name of PLUGIN_NAMES) {
+      const resolved = report.plugins[name].installed.codex_resolved;
+      strictEqual(resolved.decision, 'fallback', `${name}: a list that is not authoritative falls back to the cache`);
+      deepStrictEqual(resolved.list_command_status, command, `${name}: the list command outcome is recorded as observed`);
+      strictEqual(resolved.list_parse_status, parse, `${name}: the parse outcome is recorded in its own field`);
+      ok(!('list_probe_status' in resolved), `${name}: the inferred single label is no longer written`);
+    }
+    // One vocabulary, not two: the decision's copy is the triple the redacted command
+    // record already carries.
+    deepStrictEqual(report.clis.codex.plugin_list_command_status, command);
+  };
+
+  const commandFailures = [
+    {
+      title: 'a timed-out list command is recorded as blocked/ETIMEDOUT, not as unsupported',
+      // The partial stdout is a complete list naming runtime as enabled. A command that
+      // did not succeed is never parsed, so its output cannot become list authority.
+      result: { ok: false, exit_code: null, stdout: listJson([codexEntry('runtime')]), stderr: '', error_code: 'ETIMEDOUT', timed_out: true },
+      command: { status: 'blocked', exit_code: null, error_code: 'ETIMEDOUT' },
+    },
+    {
+      title: 'a list command that exits nonzero is recorded with its exit code, not as unsupported',
+      result: { ok: false, exit_code: 2, stdout: '', stderr: 'error: unrecognized subcommand \'list\'', error_code: null, timed_out: false },
+      command: { status: 'unknown', exit_code: 2, error_code: null },
+    },
+    {
+      title: 'a list command whose binary is missing is recorded as unavailable/ENOENT',
+      result: enoent('codex'),
+      command: { status: 'unavailable', exit_code: null, error_code: 'ENOENT' },
+    },
+  ];
+  for (const { title, result, command } of commandFailures) {
+    it(title, async () => {
+      const { root, home } = await mkdirs();
+      await seedRepo(root);
+      await seedHome(home);
+      const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(codex137(result)) });
+      assertFallback(report, { command, parse: null });
+      // Consumer behaviour is unchanged: the readiness row still resolves from the cache.
+      strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'installed');
+      strictEqual(report.readiness_matrix.hosts.codex.installed.evidence, 'codex plugin cache contains runtime');
+    });
+  }
+
+  it('a list command that never ran (Codex CLI unavailable) is recorded as skipped', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    await seedHome(home);
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner({ ...codex137(okResult(listJson([codexEntry('runtime')]))), 'codex --version': enoent('codex') }),
+    });
+    assertFallback(report, { command: { status: 'unknown', exit_code: null, error_code: 'skipped' }, parse: null });
+  });
+
+  // On a command that succeeded, the parse outcome is what explains the fallback, and
+  // the command outcome says the command itself was fine.
+  const parseFailures = [
+    { output: 'empty', stdout: '', parse: 'empty' },
+    { output: 'not JSON', stdout: 'this is not json{', parse: 'parse_error' },
+    { output: 'JSON without an installed array', stdout: JSON.stringify({ plugins: [] }), parse: 'malformed' },
+  ];
+  for (const { output, stdout, parse } of parseFailures) {
+    it(`a successful list command whose output is ${output} records parse outcome ${parse}`, async () => {
+      const { root, home } = await mkdirs();
+      await seedRepo(root);
+      await seedHome(home);
+      const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(codex137(okResult(stdout))) });
+      assertFallback(report, { command: { status: 'available', exit_code: 0, error_code: null }, parse });
+    });
+  }
+
+  it('CONTROL: an authoritative list decides from the list and carries neither fallback field', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult(listJson([codexEntry('runtime')])))),
+    });
+    const resolved = report.plugins.runtime.installed.codex_resolved;
+    strictEqual(resolved.decision, 'installed');
+    strictEqual(resolved.source, 'list');
+    ok(!('list_command_status' in resolved) && !('list_parse_status' in resolved), 'the fallback fields describe only a fallback');
+    deepStrictEqual(report.clis.codex.plugin_list_command_status, { status: 'available', exit_code: 0, error_code: null });
+  });
+
+  // ADR-0034 §Decision 5, over the RECORDED bytes rather than one report section:
+  // every fallback decision now carries a copy of the command outcome, which is a new
+  // place raw list output could ride along.
+  it('the recorded artifact carries list codes only, never raw list stdout or stderr', async () => {
+    const LIST_SENTINEL = 'C11-RAW-LIST-OUTPUT-SENTINEL';
+    const CONTROL_SENTINEL = 'C11-RETAINED-VERSION-TEXT';
+    const cases = [
+      ['failed', 'doctor-20260915T000000Z-c11a01', { ok: false, exit_code: null, stdout: `{"installed":[{"name":"runtime","note":"${LIST_SENTINEL}"`, stderr: `warning: ${LIST_SENTINEL}`, error_code: 'ETIMEDOUT', timed_out: true }],
+      ['succeeded', 'doctor-20260915T000100Z-c11a02', okResult(listJson([{ ...codexEntry('runtime'), source: { source: 'local', path: `/x/${LIST_SENTINEL}/runtime` } }]), `warning: ${LIST_SENTINEL}`)],
+    ];
+    for (const [label, runId, listResult] of cases) {
+      const { root, home } = await mkdirs();
+      await seedRepo(root);
+      const report = await runDoctor({
+        repoRoot: root, homeDir: home, now: new Date('2026-09-15T00:00:00.000Z'), recordArtifact: true, runId,
+        runner: fakeRunner({ ...codex137(listResult), 'codex --version': okResult(`codex-cli 0.137.0 ${CONTROL_SENTINEL}\n`) }),
+      });
+      strictEqual(report.doctor_artifact.written, true, `${label}: the artifact is recorded`);
+      const recorded = await readFile(join(root, '.agentic-plugins', 'runs', 'doctor', runId, 'doctor.json'), 'utf8');
+      // CONTROL: probe text the report does keep reaches these bytes, so the absence
+      // below is a scrub and not a reader that cannot see runner output.
+      ok(recorded.includes(CONTROL_SENTINEL), `${label}: retained probe text must reach the recorded artifact`);
+      ok(!recorded.includes(LIST_SENTINEL), `${label}: raw codex plugin list output must never reach the recorded artifact`);
+    }
+  });
 });
 
 describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () => {
