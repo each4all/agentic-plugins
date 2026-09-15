@@ -3804,8 +3804,8 @@ describe('runtime doctor — codex plugin list read signal (ADR-0034)', () => {
     deepStrictEqual(report.clis.codex.plugin_list_command_status, { status: 'available', exit_code: 0, error_code: null });
   });
 
-  // ADR-0034 §Decision 5, over the RECORDED bytes rather than one report section: the
-  // fallback copies the command outcome into every plugin's decision, which is a new
+  // ADR-0034 §Decision 5, over the RECORDED bytes rather than one report section:
+  // every fallback decision now carries a copy of the command outcome, which is a new
   // place raw list output could ride along.
   it('the recorded artifact carries list codes only, never raw list stdout or stderr', async () => {
     const LIST_SENTINEL = 'C11-RAW-LIST-OUTPUT-SENTINEL';

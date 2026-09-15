@@ -632,8 +632,8 @@ function parseCodexPluginList(pluginListResult) {
 
 // The list command outcome, reduced to codes. The three fields are picked rather than
 // spread: the probe result still carries raw stdout/stderr here, and this triple is
-// copied into every plugin's install decision (ADR-0034 §Decision 5). A missing result
-// is a probe that never ran, which the inspector records as `skipped`.
+// copied into every fallback decision (ADR-0034 §Decision 5). A missing result is a
+// probe that never ran, which the inspector records as `skipped`.
 function listCommandOutcome(result) {
   if (!result) return { status: 'unknown', exit_code: null, error_code: 'skipped' };
   return { status: result.status ?? commandStatus(result), exit_code: result.exit_code ?? null, error_code: result.error_code ?? null };

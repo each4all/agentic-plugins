@@ -58,10 +58,10 @@ host-native Codex installed-state read signal, with
    not retained**. Never throws: a missing subcommand, nonzero exit, or
    malformed JSON degrades to a status (`unsupported` / `unavailable` /
    `parse_error` / `malformed` / `empty`) that callers treat as
-   "list unavailable". *(amended 2026-09-15 — `unsupported` and
-   `unavailable` were inferences over the command outcome and are no
-   longer written; the command outcome and the parse outcome are recorded
-   separately. See [Amendments](#amendments).)*
+   "list unavailable". *(amended 2026-09-15 — the fallback no longer
+   records this single status: the command outcome and the parse outcome
+   are recorded in separate fields, and a command failure is no longer
+   inferred to be `unsupported`. See [Amendments](#amendments).)*
 3. **Resolve once** (`resolveCodexInstallState`): a single shared
    resolver computes the install decision so every doctor consumer reads
    the same answer. When the list probe succeeded, **the list is the
