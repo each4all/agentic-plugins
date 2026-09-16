@@ -12,6 +12,7 @@ import {
   parseArgs,
   runCompat,
 } from '../../plugins/runtime/scripts/compat.mjs';
+import { COMPAT_GAP_STATUSES } from '../../plugins/runtime/scripts/lib/compat-artifacts.mjs';
 
 const RUN_ID = 'compat-20260516T000000Z-abcdef';
 
@@ -799,6 +800,305 @@ describe('runtime compat', () => {
     });
     const claudeRow = plan.notification_watch.find((row) => row.id === 'claude-notification-agent-types');
     deepStrictEqual(claudeRow.signal_notes, [first.notes[0].id]);
+  });
+
+  it('a plan follows the gap decided status, so a truncated host version is terminal for planning', async () => {
+    // ADR-0056's cross-host review added `host_version_unreadable` to the
+    // readiness ladder — `1.2.3.4` normalizes to `1.2.3` and would otherwise
+    // compare EQUAL to a genuine baseline — but `plan` kept deriving its own
+    // status from two flags and never learned the rung. Measured before this
+    // change: with no drift the run was indistinguishable from an informational
+    // standing-watch plan, and with drift it read
+    // `blocked_release_notes_required` — release notes cannot repair a host CLI
+    // that prints a version this runtime cannot carry.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-truncated-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0.1' }),
+    });
+    const check = await runCompat({ command: 'check', repoRoot: root, runId: RUN_ID, baseline: baseline() });
+    strictEqual(check.status, 'host_version_unreadable');
+
+    const plan = await runCompat({ command: 'plan', repoRoot: root, runId: RUN_ID, baseline: baseline() });
+    strictEqual(plan.status, 'blocked_host_version_unreadable');
+    strictEqual(plan.actionable, false);
+    deepStrictEqual(plan.next_steps, check.next_steps, 'the plan echoes the producer stored step rather than re-deriving one');
+    deepStrictEqual(plan.recommended_sequence, [], 'nothing can be sequenced around an observation that could not be read');
+
+    // The same fault WITH drift: the release-note requirement must not outrank
+    // the integrity rung, the way the flag-derived status did.
+    const drifted = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-truncated-drift-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: drifted,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.131.0.1' }),
+    });
+    const driftedCheck = await runCompat({ command: 'check', repoRoot: drifted, runId: RUN_ID, baseline: baseline() });
+    strictEqual(driftedCheck.status, 'host_version_unreadable');
+    strictEqual(driftedCheck.release_notes_required, true);
+    const driftedPlan = await runCompat({ command: 'plan', repoRoot: drifted, runId: RUN_ID, baseline: baseline() });
+    strictEqual(driftedPlan.status, 'blocked_host_version_unreadable');
+    strictEqual(driftedPlan.actionable, false);
+    deepStrictEqual(driftedPlan.next_steps, driftedCheck.next_steps);
+    deepStrictEqual(driftedPlan.recommended_sequence, []);
+  });
+
+  it('an informational plan says no compatibility work is required instead of telling the operator to start it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-informational-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+
+    const plan = await runCompat({ command: 'plan', repoRoot: root, runId: RUN_ID, baseline: baseline() });
+    strictEqual(plan.status, 'planned');
+    strictEqual(plan.actionable, false);
+    ok(
+      !plan.next_steps.some((step) => /Start non-trivial compatibility work|Review the compatibility update plan/.test(step)),
+      `a standing-watch run carries no implementation guidance: ${plan.next_steps.join(' | ')}`,
+    );
+    ok(plan.next_steps.some((step) => /No compatibility work is required/.test(step)), plan.next_steps.join(' | '));
+    deepStrictEqual(plan.recommended_sequence, [], 'run-validation is required after an update, and there is no update');
+    const planText = await readFile(join(root, plan.plan_pointer), 'utf8');
+    ok(planText.includes('Actionable: no (informational'), planText);
+    ok(/## Recommended Sequence\n\n- none/.test(planText), planText);
+
+    // CONTROL: a plan that carries real work keeps the implementation guidance
+    // AND its sequence — otherwise this passes with both deleted outright.
+    const notePath = join(root, 'notes.md');
+    await writeFile(notePath, 'Claude Code 2.1.141\nPlugin hooks now include additional Stop payload fields.\n');
+    await runCompat({ command: 'ingest-release-notes', repoRoot: root, runId: RUN_ID, releaseNotesFiles: [notePath] });
+    const actionable = await runCompat({ command: 'plan', repoRoot: root, runId: RUN_ID, baseline: baseline() });
+    strictEqual(actionable.status, 'planned');
+    strictEqual(actionable.actionable, true);
+    ok(actionable.next_steps.some((step) => /Start non-trivial compatibility work/.test(step)));
+    ok(actionable.recommended_sequence.some((item) => item.step === 'review-hooks'));
+  });
+
+  it('a blocked plan carries the gap stored step and sequences nothing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-blocked-snapshot-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+    const snapshotPath = join(root, `.agentic-plugins/runs/compat/${RUN_ID}/snapshot.json`);
+    const snapshot = await readJson(snapshotPath);
+    snapshot.schema_version = 'runtime-compat-snapshot-9.9';
+    await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+
+    const check = await runCompat({ command: 'check', repoRoot: root, runId: RUN_ID, baseline: baseline() });
+    strictEqual(check.status, 'snapshot_unreadable');
+    const plan = await runCompat({ command: 'plan', repoRoot: root, runId: RUN_ID, baseline: baseline() });
+    strictEqual(plan.status, 'blocked_snapshot_unreadable');
+    deepStrictEqual(plan.next_steps, check.next_steps, 'the stored line names the observed family; a re-derivation would drop it');
+    deepStrictEqual(plan.recommended_sequence, []);
+    const planText = await readFile(join(root, plan.plan_pointer), 'utf8');
+    ok(planText.includes('Actionable: no (blocked'), planText);
+    ok(!planText.includes('informational'), 'a blocked plan is not a standing-watch plan');
+
+    // The baseline half: `refresh-baseline`, `ingest-release-notes` and
+    // `review-*` were recommended for a package that will not read, while the
+    // aaf4744 test in this file pins the plan's answer as the stored repair and
+    // the check-side test (20ebed7) refuses a planning route for the same run.
+    const broken = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-blocked-baseline-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: broken,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+    const unusable = {
+      claude: { version: null },
+      codex: { version: null },
+      provenance: { source: 'package', path: '/nowhere/docs/host-parity-baseline.md', status: 'escaped' },
+    };
+    const brokenCheck = await runCompat({ command: 'check', repoRoot: broken, runId: RUN_ID, baseline: unusable });
+    const brokenPlan = await runCompat({ command: 'plan', repoRoot: broken, runId: RUN_ID, baseline: unusable });
+    strictEqual(brokenPlan.status, 'blocked_baseline_unusable');
+    deepStrictEqual(brokenPlan.next_steps, brokenCheck.next_steps);
+    deepStrictEqual(brokenPlan.recommended_sequence, [], 'a broken package gets a repair step, not a compatibility sequence');
+  });
+
+  it('a release-notes-blocked plan carries the gap stored step and keeps its sequence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-notes-blocked-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.150 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+    const check = await runCompat({ command: 'check', repoRoot: root, runId: RUN_ID, baseline: baseline() });
+    strictEqual(check.status, 'release_notes_required');
+
+    const plan = await runCompat({ command: 'plan', repoRoot: root, runId: RUN_ID, baseline: baseline() });
+    strictEqual(plan.status, 'blocked_release_notes_required');
+    strictEqual(plan.actionable, true, 'the work is known here; the notes are what is missing');
+    deepStrictEqual(plan.next_steps, check.next_steps);
+    ok(
+      plan.next_steps.some((step) => step.includes('--fetch-release-notes-url')),
+      'the plan used to re-derive the step and drop the URL half of the producer line',
+    );
+    ok(plan.recommended_sequence.some((item) => item.step === 'ingest-release-notes' && item.required));
+  });
+
+  it('an informational plan over an earlier-era snapshot is not called compatibility-work-free', async () => {
+    // Era first, then token (ADR-0056 §Decision 6 rule 1): `current` meant
+    // "covered and drift-free" under 1.1 and "drift-free" under 1.2, so a
+    // drift-free reading of an earlier-era observation is history rather than a
+    // statement about this machine. The reader gates the same claim with the
+    // same predicate (`planInformationalOnly`).
+    const legacy = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-legacy-era-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: legacy,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+    const snapshotPath = join(legacy, `.agentic-plugins/runs/compat/${RUN_ID}/snapshot.json`);
+    const snapshot = await readJson(snapshotPath);
+    snapshot.schema_version = 'runtime-compat-snapshot-1.1';
+    await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+
+    const check = await runCompat({ command: 'check', repoRoot: legacy, runId: RUN_ID, baseline: baseline() });
+    strictEqual(check.status, 'current', 'the recorded versions still compare drift-free');
+    const plan = await runCompat({ command: 'plan', repoRoot: legacy, runId: RUN_ID, baseline: baseline() });
+    strictEqual(plan.status, 'planned');
+    strictEqual(plan.actionable, false);
+    ok(
+      !plan.next_steps.some((step) => /No compatibility work is required/.test(step)),
+      `an earlier-era run is not a current verdict: ${plan.next_steps.join(' | ')}`,
+    );
+    ok(plan.next_steps.some((step) => /runtime:compat snapshot/.test(step)), plan.next_steps.join(' | '));
+
+    // The PERSISTED surface has to carry the same distinction. Measured with the
+    // era check on the returned steps alone: `update-plan.md` still read
+    // "Actionable: no (informational — standing watch only)" and "- none — no
+    // compatibility work was found", so the document contradicted the command
+    // that wrote it (cross-host review, reproduced).
+    const legacyText = await readFile(join(legacy, plan.plan_pointer), 'utf8');
+    ok(!legacyText.includes('no compatibility work was found'), legacyText);
+    ok(/Actionable: no \(informational — earlier schema era/.test(legacyText), legacyText);
+    ok(/## Recommended Sequence\n\n- none — .*fresh snapshot/.test(legacyText), legacyText);
+
+    // CONTROL: the same scenario in THIS runtime's family does say so, so the
+    // difference measured above is the era and not the fixture.
+    const current = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-current-era-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: current,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+    const currentPlan = await runCompat({ command: 'plan', repoRoot: current, runId: RUN_ID, baseline: baseline() });
+    ok(currentPlan.next_steps.some((step) => /No compatibility work is required/.test(step)));
+    const currentText = await readFile(join(current, currentPlan.plan_pointer), 'utf8');
+    ok(currentText.includes('Actionable: no (informational — standing watch only)'), currentText);
+    ok(currentText.includes('- none — no compatibility work was found'), currentText);
+  });
+
+  it('every gap status the producer can reach has a plan answer', async () => {
+    // C9 is what happens when a default is hardened before its domain is
+    // enumerated. `plan` had the same shape — two named statuses and a fallback
+    // that answered for everything else — so this pins the enumeration: adding a
+    // status to `COMPAT_GAP_STATUSES` fails here until a fixture reaches it, and
+    // the per-row assertions below then decide whether the answer is usable.
+    // What it does NOT do is force a plan branch: a fixture alone restores the
+    // equality, which is why the row assertions check the answer itself
+    // (cross-host review).
+    const unusable = {
+      claude: { version: null },
+      codex: { version: null },
+      provenance: { source: 'package', path: '/nowhere/docs/host-parity-baseline.md', status: 'escaped' },
+    };
+    const scenarios = [
+      { label: 'current', versions: { claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' } },
+      {
+        label: 'gap_analysis_ready',
+        versions: { claude: '2.1.150 (Claude Code)', codex: 'codex-cli 0.130.0' },
+        note: '# Claude Code 2.1.150\n\nPlugin hooks changed Stop behavior.\n',
+      },
+      { label: 'release_notes_required', versions: { claude: '2.1.150 (Claude Code)', codex: 'codex-cli 0.130.0' } },
+      { label: 'host_version_unreadable', versions: { claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0.1' } },
+      {
+        label: 'snapshot_unreadable',
+        versions: { claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' },
+        schema: 'runtime-compat-snapshot-9.9',
+      },
+      {
+        label: 'baseline_unusable',
+        versions: { claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' },
+        baseline: unusable,
+      },
+    ];
+
+    const answered = new Map();
+    for (const scenario of scenarios) {
+      const root = await mkdtemp(join(tmpdir(), `runtime-compat-plan-domain-${scenario.label}-`));
+      const injected = scenario.baseline ?? baseline();
+      await runCompat({
+        command: 'snapshot',
+        repoRoot: root,
+        runId: RUN_ID,
+        baseline: baseline(),
+        runner: fakeRunner(scenario.versions),
+      });
+      if (scenario.schema) {
+        const snapshotPath = join(root, `.agentic-plugins/runs/compat/${RUN_ID}/snapshot.json`);
+        const snapshot = await readJson(snapshotPath);
+        snapshot.schema_version = scenario.schema;
+        await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+      }
+      if (scenario.note) {
+        const notePath = join(root, 'notes.md');
+        await writeFile(notePath, scenario.note);
+        await runCompat({ command: 'ingest-release-notes', repoRoot: root, runId: RUN_ID, releaseNotesFiles: [notePath] });
+      }
+      const check = await runCompat({ command: 'check', repoRoot: root, runId: RUN_ID, baseline: injected });
+      strictEqual(check.status, scenario.label, `the ${scenario.label} fixture must produce its own gap status`);
+      const plan = await runCompat({ command: 'plan', repoRoot: root, runId: RUN_ID, baseline: injected });
+      answered.set(check.status, { plan, check });
+    }
+
+    deepStrictEqual(
+      [...answered.keys()].sort(),
+      [...COMPAT_GAP_STATUSES].sort(),
+      'the scenarios must cover the producer gap-status vocabulary exactly — no more, no less',
+    );
+    for (const [gapStatus, { plan, check }] of answered) {
+      if (['current', 'gap_analysis_ready'].includes(gapStatus)) {
+        strictEqual(plan.status, 'planned', gapStatus);
+        continue;
+      }
+      strictEqual(plan.status, `blocked_${gapStatus}`, gapStatus);
+      deepStrictEqual(plan.next_steps, check.next_steps, `${gapStatus} must echo the producer stored step`);
+      ok(
+        !plan.next_steps.some((step) => /Start non-trivial compatibility work/.test(step)),
+        `${gapStatus} must not receive implementation guidance`,
+      );
+      // And never a route back into planning. `gapNextSteps` falls back to
+      // `runtime:compat plan --run-id <id>` for a status IT has not been taught,
+      // and a blocked plan echoing that would tell the operator to re-run the
+      // command they are already reading (cross-host review).
+      ok(
+        !plan.next_steps.some((step) => step.startsWith('runtime:compat plan')),
+        `${gapStatus} must not route back into planning: ${plan.next_steps.join(' | ')}`,
+      );
+    }
   });
 });
 
