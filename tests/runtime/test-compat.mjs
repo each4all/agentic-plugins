@@ -984,6 +984,16 @@ describe('runtime compat', () => {
     );
     ok(plan.next_steps.some((step) => /runtime:compat snapshot/.test(step)), plan.next_steps.join(' | '));
 
+    // The PERSISTED surface has to carry the same distinction. Measured with the
+    // era check on the returned steps alone: `update-plan.md` still read
+    // "Actionable: no (informational — standing watch only)" and "- none — no
+    // compatibility work was found", so the document contradicted the command
+    // that wrote it (cross-host review, reproduced).
+    const legacyText = await readFile(join(legacy, plan.plan_pointer), 'utf8');
+    ok(!legacyText.includes('no compatibility work was found'), legacyText);
+    ok(/Actionable: no \(informational — earlier schema era/.test(legacyText), legacyText);
+    ok(/## Recommended Sequence\n\n- none — .*fresh snapshot/.test(legacyText), legacyText);
+
     // CONTROL: the same scenario in THIS runtime's family does say so, so the
     // difference measured above is the era and not the fixture.
     const current = await mkdtemp(join(tmpdir(), 'runtime-compat-plan-current-era-'));
@@ -996,13 +1006,20 @@ describe('runtime compat', () => {
     });
     const currentPlan = await runCompat({ command: 'plan', repoRoot: current, runId: RUN_ID, baseline: baseline() });
     ok(currentPlan.next_steps.some((step) => /No compatibility work is required/.test(step)));
+    const currentText = await readFile(join(current, currentPlan.plan_pointer), 'utf8');
+    ok(currentText.includes('Actionable: no (informational — standing watch only)'), currentText);
+    ok(currentText.includes('- none — no compatibility work was found'), currentText);
   });
 
   it('every gap status the producer can reach has a plan answer', async () => {
     // C9 is what happens when a default is hardened before its domain is
     // enumerated. `plan` had the same shape — two named statuses and a fallback
-    // that answered for everything else — so this pins the enumeration: a rung
-    // added to `readinessStatus` fails here until `plan` names it.
+    // that answered for everything else — so this pins the enumeration: adding a
+    // status to `COMPAT_GAP_STATUSES` fails here until a fixture reaches it, and
+    // the per-row assertions below then decide whether the answer is usable.
+    // What it does NOT do is force a plan branch: a fixture alone restores the
+    // equality, which is why the row assertions check the answer itself
+    // (cross-host review).
     const unusable = {
       claude: { version: null },
       codex: { version: null },
@@ -1072,6 +1089,14 @@ describe('runtime compat', () => {
       ok(
         !plan.next_steps.some((step) => /Start non-trivial compatibility work/.test(step)),
         `${gapStatus} must not receive implementation guidance`,
+      );
+      // And never a route back into planning. `gapNextSteps` falls back to
+      // `runtime:compat plan --run-id <id>` for a status IT has not been taught,
+      // and a blocked plan echoing that would tell the operator to re-run the
+      // command they are already reading (cross-host review).
+      ok(
+        !plan.next_steps.some((step) => step.startsWith('runtime:compat plan')),
+        `${gapStatus} must not route back into planning: ${plan.next_steps.join(' | ')}`,
       );
     }
   });

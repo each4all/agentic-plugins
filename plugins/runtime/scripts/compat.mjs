@@ -426,7 +426,8 @@ export async function planCompatibility(options = {}) {
     gap_pointer: pointer(repoRoot, gapPath),
     affected_surfaces: surfaces,
     notification_watch: notificationWatch,
-    // A sequence exists only for a plan that carries work. A terminal plan used
+    // The sequence is POPULATED only for a plan that carries work (the field is
+    // always present, and empty is its own statement). A terminal plan used
     // to recommend refresh-baseline / ingest-release-notes / review-* for a
     // package that will not read, when the answer such a run needs is the repair
     // the gap already stored — the same reason `check` is tested to refuse a
@@ -447,7 +448,7 @@ export async function planCompatibility(options = {}) {
     ],
   };
   const planPath = resolve(compatRunDir(repoRoot, selected.runId), 'update-plan.md');
-  await writeFile(planPath, renderPlanMarkdown(plan));
+  await writeFile(planPath, renderPlanMarkdown(plan, gap));
   await writeJson(resolve(compatRunDir(repoRoot, selected.runId), 'plan.json'), plan);
 
   return {
@@ -842,13 +843,23 @@ function buildNotificationWatch(releaseNotes) {
   });
 }
 
-function renderPlanMarkdown(plan) {
+// ⚠ THE DOCUMENT MUST CARRY THE SAME DISTINCTION THE COMMAND DOES. The era
+// check first landed on the returned `next_steps` alone, and `update-plan.md`
+// went on reading "informational — standing watch only" and "no compatibility
+// work was found" for a drift-free run over an EARLIER-ERA snapshot — the saved
+// artifact contradicting the command that wrote it (cross-host review,
+// reproduced). `gap` is passed for the same reason `nextStepsForPlan` takes it:
+// the era is the gap's fact, and the plan does not persist it.
+function renderPlanMarkdown(plan, gap) {
+  const informationalCurrent = plan.status === 'planned'
+    && !plan.actionable
+    && isReadyCompatState({ status: gap?.overall?.status, schemaEra: gap?.overall?.snapshot_schema_era });
   const lines = [
     '# Runtime Compatibility Update Plan',
     '',
     `Run: ${plan.run_id}`,
     `Status: ${plan.status}`,
-    `Actionable: ${actionableLabel(plan)}`,
+    `Actionable: ${actionableLabel(plan, { informationalCurrent, schemaEra: gap?.overall?.snapshot_schema_era })}`,
     `Gap analysis: ${plan.gap_pointer}`,
     '',
     '## Affected Surfaces',
@@ -868,9 +879,13 @@ function renderPlanMarkdown(plan) {
   }
   lines.push('', '## Recommended Sequence', '');
   if (plan.recommended_sequence.length === 0) {
-    lines.push(plan.status === 'planned'
-      ? '- none — no compatibility work was found; the notification watch above is standing.'
-      : '- none — blocked; the gap analysis records the step that resolves it.');
+    if (plan.status !== 'planned') {
+      lines.push('- none — blocked; the gap analysis records the step that resolves it.');
+    } else if (informationalCurrent) {
+      lines.push('- none — no compatibility work was found; the notification watch above is standing.');
+    } else {
+      lines.push('- none — this run is drift-free, but its snapshot belongs to an earlier compatibility schema era, so it is history rather than a current verdict: take a fresh snapshot, then re-run check.');
+    }
   } else {
     for (const item of plan.recommended_sequence) {
       lines.push(`- ${item.step}: ${item.reason}`);
@@ -882,25 +897,31 @@ function renderPlanMarkdown(plan) {
 }
 
 /**
- * A blocked plan is not a standing-watch plan. Both carry `actionable: false`,
+ * A terminally blocked plan is not a standing-watch plan. Both carry
+ * `actionable: false` — a release-note-blocked plan does not, it carries work —
  * and one label read "informational — standing watch only" for both, so an
  * update plan for a package that would not read presented itself in
  * `update-plan.md` as routine watch output.
  */
-function actionableLabel(plan) {
+function actionableLabel(plan, { informationalCurrent, schemaEra } = {}) {
   if (plan.actionable) return 'yes';
-  return plan.status === 'planned'
+  if (plan.status !== 'planned') return 'no (blocked — see Status)';
+  return informationalCurrent
     ? 'no (informational — standing watch only)'
-    : 'no (blocked — see Status)';
+    : `no (informational — earlier schema era ${schemaEra ?? 'unknown'}; take a fresh snapshot)`;
 }
 
 /**
  * The next step for a plan, decided by the plan's own status.
  *
  * Every blocked status echoes the PRODUCER's stored step: the gap names the
- * specific failure — a corrupt package, an unread snapshot family, a host token
- * this runtime cannot carry, the missing release notes — and re-deriving a line
- * here would discard the one field whose job is naming it. Two branches named
+ * failure — an unread snapshot family, a host token this runtime cannot carry,
+ * the missing release notes — and re-deriving a line here would discard the one
+ * field whose job is naming it. (`baseline_unusable` is the exception, and not
+ * because of this function: `gapNextSteps` reads `operator_action` off the
+ * provenance status STRING, so the specific repair `baselineFailure` builds for
+ * doctor and dashboard never reaches compat's line. Recorded, not fixed here.)
+ * Two branches named
  * `blocked_baseline_unusable` and `blocked_release_notes_required` and a
  * fallback answered for everything else, so an unreadable snapshot and a
  * standing-watch run over a current host pair were both told to start
