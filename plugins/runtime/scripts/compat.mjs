@@ -12,6 +12,7 @@ import {
   COMPAT_GAP_SCHEMA,
   COMPAT_SNAPSHOT_SCHEMA,
   GAP_SCHEMA_ERAS,
+  isReadyCompatState,
   projectGapFamily,
 } from './lib/compat-artifacts.mjs';
 import {
@@ -40,6 +41,14 @@ const KNOWN_LEGACY_SNAPSHOT_SCHEMAS = Object.freeze([
 const GAP_SCHEMA = COMPAT_GAP_SCHEMA;
 const RELEASE_NOTES_SCHEMA = 'runtime-compat-release-notes-1.0';
 const PLAN_SCHEMA = 'runtime-compat-plan-1.2';
+// The gap statuses a plan can be built ON. An ALLOWLIST rather than a list of
+// the failures, so a rung added to `readinessStatus` later is terminal for
+// planning by default instead of quietly collecting the implementation guidance
+// only a workable run should receive.
+const PLANNABLE_GAP_STATUSES = Object.freeze(['current', 'gap_analysis_ready']);
+// Blocked, and NOT an integrity failure: what is missing is the release notes
+// rather than the comparison, so this one keeps its sequence.
+const RELEASE_NOTES_GAP_STATUS = 'release_notes_required';
 const LATEST_SCHEMA = 'runtime-compat-latest-1.0';
 const POLICY_SCHEMA = 'runtime-compat-policy-1.0';
 const POLICY_ADR = 'ADR-0026';
@@ -373,23 +382,27 @@ export async function planCompatibility(options = {}) {
   // from a plan that carries real update work — without it, running plan on
   // a current host pair would flip doctor/cutover compat state to
   // plan_ready/needs_attention forever (Review ensemble finding).
-  // A baseline that could not be resolved is terminal for planning too. `check`
-  // already refuses to call it drift; `plan` went on to emit `status: planned`,
-  // `actionable: true`, and compatibility work steps for a comparison that
-  // never happened (cross-host review, reproduced). Making the status terminal
-  // in one command and not the next is how the reader one layer up ended up
-  // with `plan_ready` over a broken package.
-  const baselineUnusable = gap.overall.status === 'baseline_unusable';
-  // An unreadable snapshot family is terminal for planning for exactly the reason
-  // `baseline_unusable` is: a compatibility plan is work to do about a
-  // comparison, and when the observation behind it cannot be read, emitting
-  // `planned` with update steps hands the operator work that cannot fix what is
-  // wrong. (Under ADR-0053 this clause also covered `assurance_blocked` and
-  // `legacy_unassured`; ADR-0056 §Decision 1 removed those statuses, and the
-  // remaining integrity case kept its terminality rather than inheriting the
-  // removal.)
-  const snapshotUnreadable = gap.overall.status === 'snapshot_unreadable';
-  const terminal = baselineUnusable || snapshotUnreadable;
+  // ⚠ THE GAP'S DECIDED STATUS IS THE INPUT, not a second derivation from its
+  // flags. `readinessStatus` has already ordered integrity above the
+  // release-note requirement, and re-deriving terminality here from
+  // `baseline_unusable` + `snapshot_unreadable` + the release-note flag dropped
+  // the rung ADR-0056's cross-host review added between them: a host printing
+  // `1.2.3.4` planned as though nothing were wrong, and the same host WITH drift
+  // planned as though release notes could repair a version this runtime cannot
+  // carry. It is the rule the reader states one layer up — the persisted status
+  // is the producer's decided verdict — applied to the producer's own pair of
+  // commands, so `check` and `plan` cannot disagree about the same run.
+  //
+  // A compatibility plan is work to do about a comparison. When the comparison
+  // never happened (`baseline_unusable`) or the observation behind it cannot be
+  // read (`snapshot_unreadable`, `host_version_unreadable`), update steps hand
+  // the operator work that cannot fix what is wrong — which is why the
+  // plannable set is an allowlist: enumerating the failures instead would make
+  // the NEXT rung plannable by default, the C9 shape of hardening a default
+  // before its domain is enumerated.
+  const gapStatus = gap.overall.status;
+  const plannable = PLANNABLE_GAP_STATUSES.includes(gapStatus);
+  const terminal = !plannable && gapStatus !== RELEASE_NOTES_GAP_STATUS;
   // ⚠ `driftReviewed` IS GONE WITH THE LAYER. It existed for `assured` — drift a
   // human examined and accepted under a grant — and with no grant there is no
   // reviewed drift for a machine to know about. Drift is outstanding work again,
@@ -405,18 +418,27 @@ export async function planCompatibility(options = {}) {
     runtime_version: VERSION,
     run_id: selected.runId,
     created_at: toIso(options.now ?? new Date()),
-    status: baselineUnusable
-      ? 'blocked_baseline_unusable'
-      : snapshotUnreadable
-        ? 'blocked_snapshot_unreadable'
-        : gap.overall.release_notes_required
-          ? 'blocked_release_notes_required'
-          : 'planned',
+    // Every blocked status is `blocked_` + the gap's own token — the shape the
+    // three existing ones already had — so the plan's vocabulary cannot drift
+    // from the ladder it projects.
+    status: plannable ? 'planned' : `blocked_${gapStatus}`,
     actionable,
     gap_pointer: pointer(repoRoot, gapPath),
     affected_surfaces: surfaces,
     notification_watch: notificationWatch,
-    recommended_sequence: buildRecommendedSequence({ gap, surfaces, releaseNotes, notificationWatch }),
+    // A sequence exists only for a plan that carries work. A terminal plan used
+    // to recommend refresh-baseline / ingest-release-notes / review-* for a
+    // package that will not read, when the answer such a run needs is the repair
+    // the gap already stored — the same reason `check` is tested to refuse a
+    // planning route for a broken baseline (20ebed7) and `plan` is tested to
+    // name the repair (aaf4744). An informational run had the mirror problem:
+    // `run-validation` marked REQUIRED although its own reason is "after any
+    // compatibility update" and there is no update. Derived from `actionable`,
+    // the field whose whole job is saying whether this plan carries real update
+    // work.
+    recommended_sequence: actionable
+      ? buildRecommendedSequence({ gap, surfaces, releaseNotes, notificationWatch })
+      : [],
     policy: compatibilityPolicy(),
     limits: [
       'Compatibility plans are advisory and do not mutate host CLIs, host config, or plugin artifacts.',
@@ -439,7 +461,7 @@ export async function planCompatibility(options = {}) {
     notification_watch: notificationWatch,
     recommended_sequence: plan.recommended_sequence,
     policy: plan.policy,
-    next_steps: nextStepsForPlan(plan),
+    next_steps: nextStepsForPlan(plan, gap),
     limits: plan.limits,
   };
 }
@@ -826,7 +848,7 @@ function renderPlanMarkdown(plan) {
     '',
     `Run: ${plan.run_id}`,
     `Status: ${plan.status}`,
-    `Actionable: ${plan.actionable ? 'yes' : 'no (informational — standing watch only)'}`,
+    `Actionable: ${actionableLabel(plan)}`,
     `Gap analysis: ${plan.gap_pointer}`,
     '',
     '## Affected Surfaces',
@@ -845,25 +867,72 @@ function renderPlanMarkdown(plan) {
     if (row.signal_detected) lines.push(`  - signal notes: ${row.signal_notes.join(', ')}`);
   }
   lines.push('', '## Recommended Sequence', '');
-  for (const item of plan.recommended_sequence) {
-    lines.push(`- ${item.step}: ${item.reason}`);
+  if (plan.recommended_sequence.length === 0) {
+    lines.push(plan.status === 'planned'
+      ? '- none — no compatibility work was found; the notification watch above is standing.'
+      : '- none — blocked; the gap analysis records the step that resolves it.');
+  } else {
+    for (const item of plan.recommended_sequence) {
+      lines.push(`- ${item.step}: ${item.reason}`);
+    }
   }
   lines.push('', '## Limits', '');
   for (const limit of plan.limits) lines.push(`- ${limit}`);
   return `${lines.join('\n')}\n`;
 }
 
-function nextStepsForPlan(plan) {
-  if (plan.status === 'blocked_baseline_unusable') {
-    return ['Repair the packaged host-parity baseline — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.'];
+/**
+ * A blocked plan is not a standing-watch plan. Both carry `actionable: false`,
+ * and one label read "informational — standing watch only" for both, so an
+ * update plan for a package that would not read presented itself in
+ * `update-plan.md` as routine watch output.
+ */
+function actionableLabel(plan) {
+  if (plan.actionable) return 'yes';
+  return plan.status === 'planned'
+    ? 'no (informational — standing watch only)'
+    : 'no (blocked — see Status)';
+}
+
+/**
+ * The next step for a plan, decided by the plan's own status.
+ *
+ * Every blocked status echoes the PRODUCER's stored step: the gap names the
+ * specific failure — a corrupt package, an unread snapshot family, a host token
+ * this runtime cannot carry, the missing release notes — and re-deriving a line
+ * here would discard the one field whose job is naming it. Two branches named
+ * `blocked_baseline_unusable` and `blocked_release_notes_required` and a
+ * fallback answered for everything else, so an unreadable snapshot and a
+ * standing-watch run over a current host pair were both told to start
+ * compatibility work.
+ *
+ * Generic implementation guidance is now reachable from exactly one place — a
+ * planned run that carries work — which is what makes the default fail closed
+ * for a status this function has not been taught.
+ */
+function nextStepsForPlan(plan, gap) {
+  if (plan.status !== 'planned') {
+    // `gap` is built by `buildGapAnalysis` in this same call, so its step always
+    // exists: there is nothing to fall back to and nothing to re-derive.
+    return gap.next_steps;
   }
-  if (plan.status === 'blocked_release_notes_required') {
-    return [`runtime:compat ingest-release-notes --run-id ${plan.run_id} --release-notes-file <path>`];
+  if (plan.actionable) {
+    return [
+      'Review the compatibility update plan before implementation.',
+      'Start non-trivial compatibility work with /engineer:start, $engineer:start, or /orchestrator:plan depending on scope.',
+    ];
   }
-  return [
-    'Review the compatibility update plan before implementation.',
-    'Start non-trivial compatibility work with /engineer:start, $engineer:start, or /orchestrator:plan depending on scope.',
-  ];
+  // ⚠ ERA FIRST, THEN TOKEN (ADR-0056 §Decision 6 rule 1). `current` meant
+  // "covered and drift-free" under runtime-compat-gap-1.1 and means "drift-free"
+  // under 1.2, so a drift-free reading of an earlier-era snapshot is readable
+  // history rather than a statement about this machine. The reader gates the
+  // same claim with the same predicate (`planInformationalOnly`), and saying
+  // "no work required" without the era is exactly the overclaim §Decision 5
+  // refuses.
+  if (isReadyCompatState({ status: gap.overall.status, schemaEra: gap.overall.snapshot_schema_era })) {
+    return ['No compatibility work is required: this run found no version drift, no affected surface, and no notification-watch signal. The standing watch rows above are informational (ADR-0047 §5).'];
+  }
+  return [`runtime:compat snapshot — this run found no drift, but its snapshot was written by an earlier compatibility schema era (${gap.overall.snapshot_schema_era ?? 'unknown'}), which this runtime reads as history rather than a current verdict (ADR-0056 §Decision 5). Take a fresh snapshot, then runtime:compat check --run-id <new>.`];
 }
 
 async function selectRun(repoRoot, options) {
