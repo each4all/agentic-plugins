@@ -2,18 +2,17 @@
 
 ## Status
 
-Proposed (2026-09-17). Proposed to supersede
+Accepted (2026-09-18). Supersedes
 [ADR-0026](0026-runtime-compatibility-drift-and-release-notes.md) and
 [ADR-0051](0051-host-parity-baseline-source.md) in full — their subject is
-removed, not re-decided — and to amend
+removed, not re-decided — and amends
 [ADR-0047](0047-notify-attention-gating-gc.md) §5 and §7 and
 [ADR-0052](0052-release-obligation-enforcement.md) §Decision 1. Docs-only; an
 implementation subtask executes the manifest below.
 
-Supersession is atomic with acceptance (the ADR-0056 §Decision 9 rule): while
-this ADR is `Proposed`, ADR-0026 and ADR-0051 say *proposed to be superseded*,
-and the merge that flips this ADR to `Accepted` flips their wording in the same
-commit.
+Supersession was atomic with acceptance (the ADR-0056 §Decision 9 rule): the
+change that flipped this ADR to `Accepted` flipped both superseded ADRs' wording
+with it.
 
 ## Context
 
