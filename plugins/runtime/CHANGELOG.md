@@ -20,6 +20,15 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.97.3](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.97.2...plugin-runtime-v0.97.3) (2026-09-17)
+
+
+### Bug Fixes
+
+* **plugin/runtime:** make compat plan answers follow the plan's own status ([#783](https://github.com/each4all/agentic-plugins/issues/783)) ([6764387](https://github.com/each4all/agentic-plugins/commit/676438700af15fb587b9ee6b95f63cf1358108a1))
+* **plugin/runtime:** stop reporting a timed-out Codex plugin list as unsupported ([#782](https://github.com/each4all/agentic-plugins/issues/782)) ([13f6887](https://github.com/each4all/agentic-plugins/commit/13f6887b1b26e4b6067bf4c88eb9ad7d6d965209))
+* **plugin/runtime:** stop telling a current compat run to upgrade the runtime ([#780](https://github.com/each4all/agentic-plugins/issues/780)) ([7a77bef](https://github.com/each4all/agentic-plugins/commit/7a77beffdc247e8f535c892c8de52ab0791aa6f5))
+
 ## [0.97.2](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.97.1...plugin-runtime-v0.97.2) (2026-09-11)
 
 
