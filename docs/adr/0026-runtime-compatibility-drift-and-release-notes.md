@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted
+**Superseded in full by [ADR-0060](0060-remove-host-version-tracking.md)**
+(2026-09-18). ADR-0060 removes this decision's subject rather than re-deciding
+it: the compat command, the host-parity baseline and the drift gate all go. What
+this ADR decided stands as the record of what was true while it was in force.
 
 ## Context
 
