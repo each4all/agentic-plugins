@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (implemented 2026-08-10)
+Accepted (implemented 2026-08-10) — **proposed to be superseded in full by
+[ADR-0060](0060-remove-host-version-tracking.md)** (2026-09-17). The packaged
+baseline this ADR made the sole authority is removed there, so the authority
+rule and its release obligation lose their subject. Supersession is atomic with
+ADR-0060's acceptance; until then this ADR remains in force.
 
 > **Corrected 2026-08-10, before acceptance.** §Decision 3 originally required
 > pinning the Codex catalog entry, on the theory that an unpinned
