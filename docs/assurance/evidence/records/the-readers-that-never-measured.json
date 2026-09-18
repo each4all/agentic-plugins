@@ -1,0 +1,112 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-readers-that-never-measured",
+  "evidence_loop": {
+    "label": "three readers that answered for a state they never measured",
+    "summary": "Three runtime readers reported a state they had not determined. compatNextSteps carried no `current` branch, so a drift-free compat run fell to the fail-closed fallback and every default doctor run told the operator to upgrade the runtime — a regression from aaf4744, first shipped in plugin-runtime-v0.90.2, which replaced a trailing `return []` that had served `current` only by accident. nextStepsForPlan and buildRecommendedSequence enumerated two blocked statuses and handed everything else generic implementation guidance, so an informational standing-watch plan was told to start compatibility work and a blocked_baseline_unusable plan was recommended a refresh the tests say cannot repair it. parseCodexPluginList mapped every non-ENOENT failure to `unsupported`, discarding the blocked/ETIMEDOUT classification commandStatus had already made. A fourth subtask would have refreshed the host-parity baseline; the owner deferred it because ADR-0060 removes the baseline, runtime:compat and the drift gate outright."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.97.3",
+      "tag": "plugin-runtime-v0.97.3",
+      "release_pr": 781,
+      "squash": "0718d837f70f01567ebb81b685c8d95c0401b3b1",
+      "marketplace_sync": "25ba68383435b7898bd22a6d57432a3ec14d0168"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "7a77beffdc247e8f535c892c8de52ab0791aa6f5",
+      "pr": 780,
+      "note": "Adds an explicit `current` branch to compatNextSteps (plugins/runtime/scripts/lib/state-readers.mjs) so a drift-free compat run is no longer told to upgrade the runtime. Mutation-verified by restoring the aaf4744 fallback."
+    },
+    {
+      "sha": "13f6887b1b26e4b6067bf4c88eb9ad7d6d965209",
+      "pr": 782,
+      "note": "Stops parseCodexPluginList collapsing every non-ENOENT failure into `unsupported`, keeping the COMMAND outcome (status, error_code, exit_code) and the PARSE outcome of a successful command distinct, and amends ADR-0034 Decision item 2 in place. Mutation-verified by restoring the collapse."
+    },
+    {
+      "sha": "676438700af15fb587b9ee6b95f63cf1358108a1",
+      "pr": 783,
+      "note": "Gives every plan status nextStepsForPlan writes an explicit answer and makes buildRecommendedSequence look at terminal plans (plugins/runtime/scripts/compat.mjs), then makes the fallback fail closed. Mutation-verified by restoring the two-branch fallback and the terminal-blind sequence."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260918T040805Z-cd9948",
+      "date": "2026-09-18",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:d2545dacb0c927f68f5825e87aeaef99f80cb5af34cee15ab0cd3ad0530b2424",
+      "runtime_version": "0.97.3",
+      "installed": {
+        "claude": "0.97.3",
+        "codex": "0.97.3"
+      },
+      "host_cli": {
+        "claude": "2.1.276 (Claude Code)",
+        "codex": "codex-cli 0.155.0"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning; hard_failures empty; warnings: latest compatibility check requires release notes"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; issue_count 0; difference_count 2"
+        },
+        {
+          "key": "experience_parity",
+          "value": "blocked 87% (100/115); satisfied 7, blocked 1"
+        },
+        {
+          "key": "experience_parity.runtime_handoff_artifacts",
+          "value": "blocked: settings=available, consensus=available, compat=release_notes_required"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed=true"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed=true"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed=true"
+        },
+        {
+          "key": "codex_plugin_hooks",
+          "value": "ready"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale; direction ahead; baseline 2.1.250 / 0.150.1 (2026-08-28) vs observed 2.1.276 / 0.155.0; provenance package; content_sha256 sha256:c205c62bafdfed25c8623d1a2473433799ec50bd284d66ce70a5e08cc296bcf8"
+        },
+        {
+          "key": "compat_runs.latest",
+          "value": "compat-20260918T040728Z-6f1daa: release_notes_required; drift_class host-version-changed; claude 2.1.276 vs baseline 2.1.250; codex 0.155.0 vs baseline 0.150.1"
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available malformed=0 across 85 artifacts"
+        },
+        {
+          "key": "settings_runs",
+          "value": "available across 43 artifacts"
+        }
+      ]
+    }
+  ],
+  "install_method": "Neither host was mutated: the install predated this recovery. Claude installed_plugins.json resolved runtime@agentic-plugins to 0.97.3 at 2026-09-18T01:54:31Z (gitCommitSha ea4b0e2); Codex served tree held 0.97.3 as its only runtime version. No session ran a Codex install or upgrade command and no plugin-management artifact backs it, so the Codex mechanism is inferred, as for 0.97.2.",
+  "narrative": "Delivery was measured twice, because a tree digest cannot show WHICH fix arrived. diff -r between Claude cache and Codex served tree, excluding the .orphaned_at supersede marker, reports no difference at 120 files each, whole-tree digest 892c35621e11559933d72c3ce632d4b805d27aa07a46b030e7796c66e1b4ff51 under the scorecard path-first recipe with its locale — published only after that implementation reproduced BOTH retained caches published digests, 0.97.1 3f338a25 and 0.97.2 ee5ae232, from disk as controls. Per file: all 7 files this release changed blob-compare equal against the release tag on both hosts, covering state-readers.mjs (C9), machine-probe.mjs (C11), compat.mjs (C13) and doctor.mjs (C9 and C11). The packaged baseline hash is unmoved and validate:release-obligation reads fulfilled. TWO OF THE THREE FIXES ARE NOT EXERCISED BY THIS RUN AND ARE NOT CLAIMED FROM IT. C9 `current` branch and C13 informational-plan branch are reachable only from a `current` compat run, which a stale baseline cannot produce; C11 is not exercised unless the list probe fails. The report carries zero occurrences of C9 defect text, and that proves nothing: the C9 commit adds exactly `if (status === current) return [];` and touches no other branch, so the text is absent because this run is release_notes_required. By owner decision on 2026-09-18 all three are evidenced by their tests plus the per-file delivery measurement above. THE PARITY DROP FROM READY 100% TO BLOCKED 87% IS A REVEAL, NOT A REGRESSION, AND THE PRIOR ARTIFACT SAYS SO. doctor-20260912T224114Z-477c02 recorded ready 100% 8/8 with compat drift none and both hosts matches — but the compat run it read was compat-20260828T090343Z-1ee918 from 2026-08-28, whose observed versions were frozen at 2.1.250 / 0.150.1, the pair seen on that date. That 100% was computed over a fifteen-day-old artifact and the drift it hid had already accumulated. This loop fresh snapshot observed the real pair, 2.1.276 / 0.155.0, and reports release_notes_required. Closing the one blocked criterion means ingesting release notes and refreshing the baseline, which is the deferred BL work and whose subject ADR-0060 deletes; issue #388 therefore stays open and is closed by that removal rather than by re-observation. The owner re-reviewed Codex /hooks and the loop recorded settings-20260918T040649Z-9365d7 binding codex 0.155.0; the CLI move from 0.154.0 alone opened that gate, since runtime ships no hooks and the four bound plugin versions (designer 0.3.7, engineer 0.21.8, founder 0.4.7, orchestrator 0.13.5) were unchanged.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-opt-out-codex-never-read",
+      "note": "The preceding runtime loop, and this loop control: its ready 100% was read over a compat artifact fifteen days old, which is how the drop to 87% was established as a reveal, not a regression. Its record noted the compat next-step reader gap and left it unfixed; C9 is that fix."
+    }
+  ]
+}
