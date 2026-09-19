@@ -483,6 +483,16 @@ Primary local commands:
   `npm run validate:artifacts` — catalog, release-please manifest, and
   generated-artifact ignore policy consistency.
 - `npm run sync:companions` and `npm run sync:marketplace` — drift-correction helpers.
+- `npm run mutate -- <spec>` — run a mutation spec from `scripts/mutation-specs/`.
+  A green suite is not evidence that the suite tests anything, and this
+  repository has shipped guards that passed because they matched nothing; the
+  harness produces that evidence by breaking the tree on purpose and scoring
+  each defect against a stated expectation. Every mutation gets its own
+  disposable copy of HEAD **plus the working tree** (the gates derive their repo
+  root from `import.meta.url`, so editing in place or changing cwd proves
+  nothing), written through a separate `GIT_INDEX_FILE` so the real index is
+  never touched. It refuses to score an edit whose anchor drifted, and refuses
+  to score at all when the unmutated control is not green.
 
 GitHub Actions run on Node 24. `full-tests.yml` runs the full
 discovery-based `npm test` unfiltered on every push/PR and is the
