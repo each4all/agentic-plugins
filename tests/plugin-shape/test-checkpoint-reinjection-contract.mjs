@@ -30,21 +30,46 @@ import { readFile, readdir } from 'node:fs/promises';
 import { resolve, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { skillsPath } from '../_helpers.mjs';
+
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PERSONAS = ['engineer', 'founder', 'designer'];
 
+// A surface is named by AREA + path within it, not by one joined string. The
+// two areas move differently: ADR-0006's 2026-09-18 Amendment relocates a
+// plugin's skills root under `core/` (and each plugin declares where its root
+// is, in its Codex manifest), while `commands/` stays put. Spelling `skills/`
+// into a path literal makes every list below wrong for whichever plugins have
+// already moved — silently, because a surface that cannot be found is a
+// surface that cannot violate anything.
+const surface = (area, rel, optional = false) => ({ area, rel, optional });
+
+function surfacePath(persona, { area, rel }) {
+  const pluginDir = join(REPO_ROOT, 'plugins', persona);
+  const segments = rel.split('/');
+  return area === 'skills'
+    ? skillsPath(pluginDir, ...segments)
+    : join(pluginDir, area, ...segments);
+}
+
+// Repo-relative, computed from the resolved path: a label that kept saying
+// `skills/…` after the plugin moved would point a failing assertion at a file
+// that no longer exists.
+const surfaceLabel = (persona, entry) => relative(REPO_ROOT, surfacePath(persona, entry));
+
 // Surfaces that talk about re-injection. Each must be free of the retired
 // promises AND positively carry the post-compact scope.
+const CHECKPOINT_AGENT = surface('skills', 'checkpoint/agents/openai.yaml');
 const SURFACES = [
-  'commands/checkpoint.md',
-  'skills/checkpoint/SKILL.md',
-  'skills/checkpoint/agents/openai.yaml',
-  'skills/resume/SKILL.md',
+  surface('commands', 'checkpoint.md'),
+  surface('skills', 'checkpoint/SKILL.md'),
+  CHECKPOINT_AGENT,
+  surface('skills', 'resume/SKILL.md'),
 ];
 // start/SKILL.md carries a host-availability row on the two personas whose
 // start macro documents one; engineer's does not, so it is checked only where
 // the row exists rather than being required everywhere.
-const OPTIONAL_SURFACES = ['skills/start/SKILL.md'];
+const OPTIONAL_SURFACES = [surface('skills', 'start/SKILL.md', true)];
 
 const squash = (s) => s.replace(/\s+/g, ' ');
 
@@ -88,19 +113,19 @@ describe('checkpoint re-injection contract — cross-persona', () => {
   it('no persona surface promises next-session, Claude-only, or --continue re-injection', async () => {
     let scanned = 0;
     for (const persona of PERSONAS) {
-      for (const rel of [...SURFACES, ...OPTIONAL_SURFACES]) {
+      for (const entry of [...SURFACES, ...OPTIONAL_SURFACES]) {
         let text;
         try {
-          text = squash(await readFile(resolve(REPO_ROOT, 'plugins', persona, rel), 'utf8'));
+          text = squash(await readFile(surfacePath(persona, entry), 'utf8'));
         } catch (err) {
-          if (OPTIONAL_SURFACES.includes(rel) && err.code === 'ENOENT') continue;
+          if (entry.optional && err.code === 'ENOENT') continue;
           throw err;
         }
         scanned += 1;
         for (const [pattern, why] of RETIRED) {
           ok(
             !pattern.test(text),
-            `plugins/${persona}/${rel} ${why}. Both hosts re-inject post-compact only (matcher:"compact"); Codex additionally needs /hooks trust per ADR-0030.`,
+            `${surfaceLabel(persona, entry)} ${why}. Both hosts re-inject post-compact only (matcher:"compact"); Codex additionally needs /hooks trust per ADR-0030.`,
           );
         }
       }
@@ -112,11 +137,11 @@ describe('checkpoint re-injection contract — cross-persona', () => {
     // Counterpart to the negative guard: forbidding phrases alone would pass
     // if a persona deleted its corrected wording rather than reverting it.
     for (const persona of PERSONAS) {
-      for (const rel of SURFACES) {
-        const text = squash(await readFile(resolve(REPO_ROOT, 'plugins', persona, rel), 'utf8'));
+      for (const entry of SURFACES) {
+        const text = squash(await readFile(surfacePath(persona, entry), 'utf8'));
         ok(
           SCOPE.test(text),
-          `plugins/${persona}/${rel} must state the post-compact scope — deleting the corrected wording must fail, not pass`,
+          `${surfaceLabel(persona, entry)} must state the post-compact scope — deleting the corrected wording must fail, not pass`,
         );
       }
     }
@@ -127,13 +152,21 @@ describe('checkpoint re-injection contract — cross-persona', () => {
     // line in the same file still mentions compact — observed: mutation N4
     // survived exactly that way, because the file's frontmatter description
     // satisfied the file-level check. Bind to the table row itself.
-    const ROW_FILES = ['skills/resume/SKILL.md', 'skills/start/SKILL.md', 'skills/checkpoint/SKILL.md'];
+    // A second hardcoded list, missed by the first pass at this work and found
+    // by the cross-host peer: routing only the reads above left this one
+    // spelling `skills/` and the host-availability rows went unchecked (the
+    // peer's engineer-relocation fixture measured 8/9 rows with `found 0`).
+    const ROW_FILES = [
+      surface('skills', 'resume/SKILL.md'),
+      surface('skills', 'start/SKILL.md', true),
+      surface('skills', 'checkpoint/SKILL.md'),
+    ];
     for (const persona of PERSONAS) {
       let rows = 0;
-      for (const rel of ROW_FILES) {
+      for (const entry of ROW_FILES) {
         let raw;
         try {
-          raw = await readFile(resolve(REPO_ROOT, 'plugins', persona, rel), 'utf8');
+          raw = await readFile(surfacePath(persona, entry), 'utf8');
         } catch (err) {
           if (err.code === 'ENOENT') continue;
           throw err;
@@ -144,7 +177,7 @@ describe('checkpoint re-injection contract — cross-persona', () => {
           rows += 1;
           ok(
             SCOPE.test(line),
-            `plugins/${persona}/${rel} — a host-availability row mentioning SessionStart re-injection must carry the post-compact scope in the ROW itself, not merely somewhere in the file: ${line.trim().slice(0, 120)}`,
+            `${surfaceLabel(persona, entry)} — a host-availability row mentioning SessionStart re-injection must carry the post-compact scope in the ROW itself, not merely somewhere in the file: ${line.trim().slice(0, 120)}`,
           );
         }
       }
@@ -157,10 +190,7 @@ describe('checkpoint re-injection contract — cross-persona', () => {
     // A per-file check passes when one of the two reverts — observed as a
     // surviving mutation while this guard was being written.
     for (const persona of PERSONAS) {
-      const raw = await readFile(
-        resolve(REPO_ROOT, 'plugins', persona, 'skills/checkpoint/agents/openai.yaml'),
-        'utf8',
-      );
+      const raw = await readFile(surfacePath(persona, CHECKPOINT_AGENT), 'utf8');
       for (const field of ['short_description', 'default_prompt']) {
         const line = raw.split('\n').find((l) => l.trimStart().startsWith(`${field}:`));
         ok(line, `plugins/${persona} checkpoint agents/openai.yaml must define ${field}`);

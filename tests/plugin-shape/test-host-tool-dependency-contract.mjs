@@ -23,7 +23,12 @@
 //   2. Absence sweep across command and skill surfaces, over markdown AND the
 //      `agents/*.yaml` prompt files, plus any root-level `SKILL.md` the Claude
 //      shortcut allows. It fails closed on unexpected directory errors — only a
-//      genuinely absent directory is tolerated.
+//      genuinely absent directory is tolerated. Each plugin's skills root is
+//      RESOLVED from its own Codex manifest (ADR-0006's 2026-09-18 Amendment
+//      relocates CORE content under `core/` one plugin at a time), and coverage
+//      is counted PER PLUGIN: an aggregate "the sweep found files" passes
+//      happily while one plugin's root resolves to an empty directory and the
+//      other seven make up the number.
 //   3. Doc lockstep, scoped to the row that states the rule and asserting the
 //      PROHIBITION rather than the mere presence of the opt-in token. The
 //      earlier form checked only that `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` appeared
@@ -39,11 +44,20 @@
 import { describe, it } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import { basename, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { resolveSkillsRoot } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const BASELINE = join(REPO_ROOT, 'plugins/runtime/docs/host-parity-baseline.md');
+
+// Plugins that package zero skills by design: the ADR-0008 script-only library
+// (companions) and the hook-only framework primitive (attention). Both keep a
+// skills/ directory holding only README.md. They are exempt from the positive
+// per-plugin coverage check and pinned at zero instead — if either ever ships a
+// skill, move it out of this set so it gets the positive check.
+const SKILL_LESS_PLUGINS = new Set(['attention', 'companions']);
 
 const WITHDRAWN_TOOLS = ['TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList', 'TodoWrite'];
 
@@ -134,10 +148,16 @@ describe('host-tool dependency contract', () => {
       .map((entry) => entry.name);
     ok(plugins.length > 0, 'the sweep found plugin directories');
     const files = [];
+    const skillManifestsByPlugin = new Map();
     for (const plugin of plugins) {
       const root = join(REPO_ROOT, 'plugins', plugin);
       await collectPromptFiles(join(root, 'commands'), files);
-      await collectPromptFiles(join(root, 'skills'), files);
+      const beforeSkills = files.length;
+      await collectPromptFiles(resolveSkillsRoot(root), files);
+      skillManifestsByPlugin.set(
+        plugin,
+        files.slice(beforeSkills).filter((file) => basename(file) === 'SKILL.md').length,
+      );
       // Claude accepts a plugin with a root-level SKILL.md and no skills/
       // directory (recorded in the baseline's Plugin contents row).
       try {
@@ -148,6 +168,31 @@ describe('host-tool dependency contract', () => {
         if (error?.code !== 'ENOENT') throw error;
       }
     }
+
+    // Per-plugin coverage, counted in SKILL.md files rather than in prompt
+    // files: a root that resolved to an empty directory and a root holding only
+    // a README both yield zero here, and both are the same defect — the sweep
+    // walked past a plugin's skills without seeing any.
+    for (const [plugin, count] of skillManifestsByPlugin) {
+      if (SKILL_LESS_PLUGINS.has(plugin)) {
+        strictEqual(
+          count,
+          0,
+          `plugins/${plugin} is listed as packaging no skills but the sweep found ${count} SKILL.md; `
+          + 'move it out of SKILL_LESS_PLUGINS so it gets the positive coverage check',
+        );
+      } else {
+        ok(
+          count > 0,
+          `plugins/${plugin}: the sweep found no SKILL.md under its declared skills root — `
+          + 'the root is wrong, or the plugin lost its skills, and either way this file checked nothing for it',
+        );
+      }
+    }
+    ok(
+      skillManifestsByPlugin.size === plugins.length,
+      'every discovered plugin must have been measured for skill coverage',
+    );
     ok(files.length > 0, 'the sweep found command/skill prompt files to check');
     for (const file of files) {
       const text = await readFile(file, 'utf8');
