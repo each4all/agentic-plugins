@@ -7,7 +7,7 @@ argument-hint: (subject or visual-reference topic)
 
 $ARGUMENTS
 
-Follow the investigate skill at `$CLAUDE_PLUGIN_ROOT/skills/investigate/SKILL.md`.
+Follow the investigate skill at `$CLAUDE_PLUGIN_ROOT/core/skills/investigate/SKILL.md`.
 
 > **Lean L2 — no workflow state.** This command routes to the skill; the
 > gathered references hand off as **text + source notes to `image:frame`** —

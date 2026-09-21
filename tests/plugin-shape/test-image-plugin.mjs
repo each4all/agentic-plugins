@@ -17,11 +17,21 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/image');
+
+// Where this plugin's skills actually live, read from its own Codex manifest
+// rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
+// core/skills/, so a hardcoded `skills` segment would point every assertion
+// below at a path the plugin no longer uses — the required-file checks would
+// fail, and worse, the FORBIDDEN checks would pass by matching nothing.
+// `resolveSkillsRoot` throws rather than falling back, so a broken or missing
+// declaration fails this file loudly at load instead of quietly.
+const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
 const VERB_SKILLS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 
@@ -75,7 +85,7 @@ describe('plugins/image — Codex manifest (lean L2: skills + interface, NO hook
     const claude = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(json.name, 'image');
     strictEqual(json.version, claude.version, 'host manifests must carry the same version');
-    strictEqual(json.skills, './skills/');
+    strictEqual(json.skills, './core/skills/');
     ok(json.interface && typeof json.interface === 'object');
     strictEqual(json.interface.displayName, 'Image');
     strictEqual(json.interface.category, 'Productivity');
@@ -102,15 +112,18 @@ describe('plugins/image — lean shape (FORBIDS the L3 continuity machinery)', (
     'hooks',
     'hooks/hooks.json',
     'adapters',
-    'skills/start',
-    'skills/resume',
-    'skills/checkpoint',
-    'skills/peer-now',
     'commands/start.md',
     'commands/resume.md',
     'commands/checkpoint.md',
     'commands/peer-now.md',
   ];
+
+  // The four meta-skill directories are forbidden where this plugin's skills
+  // ACTUALLY live. Spelling them 'skills/start' after the ADR-0006 Amendment
+  // relocation would assert the absence of a path nothing writes to any more —
+  // a check that passes because it matches nothing. That the CONVENTIONAL root
+  // stays inert is a different rule, enforced by kit/lint's relocation gate.
+  const FORBIDDEN_META_SKILLS = ['start', 'resume', 'checkpoint', 'peer-now'];
 
   for (const rel of FORBIDDEN) {
     it(`has no ${rel} (lean L2 — no continuity machinery)`, async () => {
@@ -118,31 +131,45 @@ describe('plugins/image — lean shape (FORBIDS the L3 continuity machinery)', (
         `plugins/image/${rel} must NOT exist — image is a lean L2 capability (ADR-0037)`);
     });
   }
+
+  for (const name of FORBIDDEN_META_SKILLS) {
+    it(`has no ${SKILLS_REL}/${name} (lean L2 — no continuity machinery)`, async () => {
+      strictEqual(await exists(skillsPath(PLUGIN_ROOT, name)), false,
+        `plugins/image/${SKILLS_REL}/${name} must NOT exist — image is a lean L2 capability (ADR-0037)`);
+    });
+  }
 });
 
 describe('plugins/image — six verb surfaces', () => {
+  // Commands stay plugin-root-relative; skills resolve through the declared
+  // root so the pair keeps meaning the same thing on both sides of the move.
   const REQUIRED = [];
   for (const v of VERB_SKILLS) {
-    REQUIRED.push(`commands/${v}.md`, `skills/${v}/SKILL.md`, `skills/${v}/agents/openai.yaml`);
+    REQUIRED.push({ label: `commands/${v}.md`, abs: resolve(PLUGIN_ROOT, 'commands', `${v}.md`) });
+    REQUIRED.push({ label: `${SKILLS_REL}/${v}/SKILL.md`, abs: skillsPath(PLUGIN_ROOT, v, 'SKILL.md') });
+    REQUIRED.push({
+      label: `${SKILLS_REL}/${v}/agents/openai.yaml`,
+      abs: skillsPath(PLUGIN_ROOT, v, 'agents/openai.yaml'),
+    });
   }
 
-  for (const rel of REQUIRED) {
-    it(`ships ${rel}`, async () => {
-      strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true, `plugins/image/${rel} must exist`);
+  for (const { label, abs } of REQUIRED) {
+    it(`ships ${label}`, async () => {
+      strictEqual(await exists(abs), true, `plugins/image/${label} must exist`);
     });
   }
 
   for (const verb of VERB_SKILLS) {
-    it(`skills/${verb}/SKILL.md frontmatter name = ${verb}`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+    it(`${SKILLS_REL}/${verb}/SKILL.md frontmatter name = ${verb}`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'SKILL.md'), 'utf8');
       const fm = frontmatter(text);
-      ok(fm, `skills/${verb}/SKILL.md has no YAML frontmatter`);
+      ok(fm, `${SKILLS_REL}/${verb}/SKILL.md has no YAML frontmatter`);
       ok(new RegExp(`^name:\\s*${verb}\\s*$`, 'm').test(fm), `frontmatter name != "${verb}"`);
       match(fm, /description:/, 'frontmatter must carry a description');
     });
 
-    it(`skills/${verb}/agents/openai.yaml display_name names the verb + persona`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'agents/openai.yaml'), 'utf8');
+    it(`${SKILLS_REL}/${verb}/agents/openai.yaml display_name names the verb + persona`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'agents/openai.yaml'), 'utf8');
       const m = text.match(/display_name:\s*"([^"]+)"/);
       ok(m, 'openai.yaml must declare interface.display_name');
       ok(m[1].toLowerCase().includes(verb), `display_name "${m[1]}" must name the verb "${verb}"`);

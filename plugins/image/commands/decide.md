@@ -7,7 +7,7 @@ argument-hint: (candidate styles/variants or natural-language choice)
 
 $ARGUMENTS
 
-Follow the decide skill at `$CLAUDE_PLUGIN_ROOT/skills/decide/SKILL.md`.
+Follow the decide skill at `$CLAUDE_PLUGIN_ROOT/core/skills/decide/SKILL.md`.
 
 Chooses among candidate approaches, styles, or generated variants under
 the brief's constraints. Variant selection marks `selected`/`rejected` in

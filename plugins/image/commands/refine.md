@@ -7,7 +7,7 @@ argument-hint: (feedback to apply, or natural-language refinement)
 
 $ARGUMENTS
 
-Follow the refine skill at `$CLAUDE_PLUGIN_ROOT/skills/refine/SKILL.md`.
+Follow the refine skill at `$CLAUDE_PLUGIN_ROOT/core/skills/refine/SKILL.md`.
 
 Applies critique/feedback and regenerates through Codex's integrated
 gpt-image (the same dispatch path as `image:compose`). Each regeneration
