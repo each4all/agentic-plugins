@@ -29,7 +29,7 @@ bookkeeping argument set (`--workflow-path / --phase /
 `ensemble_results`; `peer-now` deliberately omits the workflow
 bookkeeping flags even though it now has an operational `run_id`,
 mirroring the structural exclusion that verb-skill ensembles record in
-`skills/_shared/references/ensemble-protocol.md`
+`core/skills/_shared/references/ensemble-protocol.md`
 § State Bookkeeping.
 
 ---

@@ -185,7 +185,7 @@ marked for a later Stop to re-evaluate. Clearing the marker
 (`--terminal-marker false`, with set-terminal's full flag set) works only before
 that Stop fires and does not restore the previous phase. On Codex the hook runs
 only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
-waits. Full contract: `skills/_shared/references/session-handoff.md`
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
 
 ---

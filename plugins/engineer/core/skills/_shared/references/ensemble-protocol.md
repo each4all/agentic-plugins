@@ -263,7 +263,7 @@ avoid the `ARG_MAX` ceiling.
 - **Research-scan** (investigate phase, cited-brief profile): add
   `<citation_contract>`, `<privacy_contract>` (full prompt
   construction in
-  `skills/investigate/references/cited-brief-ensemble.md` §
+  `core/skills/investigate/references/cited-brief-ensemble.md` §
   Prompt Construction)
 
 ### Do not pass --model or --effort
@@ -644,7 +644,7 @@ written files.
   cited evidence per sub-question
 - **Subcommand**: `task`
 - **Canonical contract**:
-  `skills/investigate/references/cited-brief-ensemble.md` (this entry
+  `core/skills/investigate/references/cited-brief-ensemble.md` (this entry
   exists for parallelism with Explore / Investigate; the full
   bidirectional protocol — privacy gate, citation remapping, Path A /
   Path B Independence Rule, dispatch via
@@ -697,7 +697,7 @@ written files.
   the peer's internal labels MUST NOT be copied verbatim. Source-of-
   discovery labels (`[Local]` / `[Peer]`) live in workflow phase
   notes only — the saved brief artifact strips them per
-  `skills/investigate/references/cited-brief-spec.md` § Ensemble
+  `core/skills/investigate/references/cited-brief-spec.md` § Ensemble
   Label Policy.
 
 ### Refine-verify (refine phase)

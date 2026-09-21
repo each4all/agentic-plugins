@@ -83,7 +83,7 @@ choice and why.
 When invoked by command (`/engineer:decide`), the active axis set is
 the **resolved preset** from `$AGENTIC_DECIDE_CONTEXT_FILE` (built
 in commands/decide.md Phase 0.5 from
-`skills/decide/references/decision-axes.yml` per ADR-0027 §1).
+`core/skills/decide/references/decision-axes.yml` per ADR-0027 §1).
 Render the comparison using those axes in document order. The axis
 table below is the `default` preset's documentation rendering and is
 unchanged by registry updates — it shows the **fallback** axes when
@@ -572,7 +572,7 @@ marked for a later Stop to re-evaluate. Clearing the marker
 (`--terminal-marker false`, with set-terminal's full flag set) works only before
 that Stop fires and does not restore the previous phase. On Codex the hook runs
 only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
-waits. Full contract: `skills/_shared/references/session-handoff.md`
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
 
 ---

@@ -28,7 +28,7 @@ the orchestrator persona's equivalent on Codex (ADR-0020 §Sub-decision
 6 — manual escalation; no automatic cross-plugin routing). `start` is
 single-pass only.
 
-`skills/_shared/references/entry-routing-contract.md` is the shared
+`core/skills/_shared/references/entry-routing-contract.md` is the shared
 operator-facing contract for routing and decision prompts. It keeps
 Claude and Codex behavior equivalent by requiring the same outcome,
 state, recovery path, and evidence even when command syntax differs.
@@ -67,8 +67,8 @@ the manifest intersection.
 
 State writes at each phase boundary (`state.mjs append --verb …`)
 are an orchestrator concern, not a skill concern — see
-`skills/_shared/references/ensemble-protocol.md` § State Bookkeeping
-and `skills/_shared/references/orchestration.md` for the canonical
+`core/skills/_shared/references/ensemble-protocol.md` § State Bookkeeping
+and `core/skills/_shared/references/orchestration.md` for the canonical
 state-write pattern shared with the verb skills.
 
 Before Phase 1, present an **Entry routing recommendation**:
@@ -119,7 +119,7 @@ limits as user constraints and state the quality tradeoff before proceeding.
 
 Before sequencing the Phase 1–7 lifecycle, surface the ADR-0031 session-level
 continue-vs-fresh preflight per
-`skills/_shared/references/session-handoff.md`: compute the engineer workflow
+`core/skills/_shared/references/session-handoff.md`: compute the engineer workflow
 projection for the current branch and pass it — or, when no active workflow
 exists, the standalone routing — to the runtime seam, so the Entry routing
 recommendation above is sized by context-budget risk + archive-gate readiness.
@@ -135,15 +135,15 @@ its SKILL.md "When invoked by command" mode and applying its
 presentation + ensemble protocol within this runbook context.
 
 - **Sub-phase 1a — Investigate** (option generation): execute
-  `skills/investigate/SKILL.md` to surface candidate directions and
+  `core/skills/investigate/SKILL.md` to surface candidate directions and
   gather supporting evidence. Use `--profile=analysis` for codebase-
   grounded option discovery, or `--profile=cited-brief` when the
   decision needs external citations (ADR-0014).
 - **Sub-phase 1b — Frame** (5-perspective model): execute
-  `skills/frame/SKILL.md` to structure the option space across the
+  `core/skills/frame/SKILL.md` to structure the option space across the
   five canonical perspectives.
 - **Sub-phase 1c — Decide** (recommend + user approval): execute
-  `skills/decide/SKILL.md` to converge on a single direction and
+  `core/skills/decide/SKILL.md` to converge on a single direction and
   surface it to the user for approval.
 
 Rotate the workflow's `verb` field at each sub-phase entry so
@@ -158,7 +158,7 @@ launch-and-collect automatically.
 ### Phase 2 — Explore codebase (investigate --profile=analysis)
 
 Map the current codebase state and integration points affected by the
-chosen direction. Execute `skills/investigate/SKILL.md` command-
+chosen direction. Execute `core/skills/investigate/SKILL.md` command-
 invoked semantics with `--profile=analysis`. The opposite-host
 `explore` ensemble runs in parallel per ADR-0020 §Sub-decision 3
 (Independence Rule honored — local + peer build independent maps
@@ -166,8 +166,8 @@ before synthesis).
 
 ### Phase 3 — Plan-verify (compose --profile=plan + critique)
 
-Execute `skills/compose/SKILL.md` with `--profile=plan` to produce
-the plan artifact, then `skills/critique/SKILL.md` to verify
+Execute `core/skills/compose/SKILL.md` with `--profile=plan` to produce
+the plan artifact, then `core/skills/critique/SKILL.md` to verify
 completeness and feasibility.
 
 The opposite-host `plan-verify` ensemble runs at this phase boundary;
@@ -188,7 +188,7 @@ equivalent."* The user may abort or proceed in single-pass.
 
 ### Phase 4 — Implement (compose --profile=code)
 
-Execute `skills/compose/SKILL.md` with `--profile=code`. RED-GREEN-
+Execute `core/skills/compose/SKILL.md` with `--profile=code`. RED-GREEN-
 REFACTOR per planned task — write a failing test first, implement
 minimally to pass, then clean up while keeping tests green. In
 projects without a test framework, skip the cycle, implement
@@ -203,7 +203,7 @@ resuming.
 
 ### Phase 5 — Review (critique --profile=parallel-review)
 
-Execute `skills/critique/SKILL.md` with `--profile=parallel-review`
+Execute `core/skills/critique/SKILL.md` with `--profile=parallel-review`
 for multi-perspective code review across the diff. The opposite-host
 `review --scope working-tree` ensemble runs in parallel per ADR-0020
 §Sub-decision 3 — the two reviews catch complementary findings
@@ -212,7 +212,7 @@ established in PR-E.
 
 ### Phase 6 — Resolve (refine)
 
-Execute `skills/refine/SKILL.md` to address Phase 5 findings.
+Execute `core/skills/refine/SKILL.md` to address Phase 5 findings.
 Iterate refine + peer re-review (fresh `run_id` each pass) until the
 diff converges. If the same finding recurs across two resolve loops,
 surface to the user as a design-level issue and discuss whether to
@@ -281,7 +281,7 @@ synchronously, so by the time it returns the choice is made. Clearing the marker
 afterwards works only before that Stop fires and needs set-terminal's full flag
 set (`--workflow-path`, `--host`, `--terminal-phase`). On Codex the Stop hook runs
 only once the operator has trusted the plugin hooks (`/hooks`), so the evaluation
-waits. Full contract: `skills/_shared/references/session-handoff.md`
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
 
 The base runtime completion footer is **code-emitted** on the Phase 7 terminal
@@ -299,7 +299,7 @@ failed.
 
 Surface the ADR-0031 session-level continue-vs-fresh preflight at this
 completion (and at Phase 0 before sequencing a fresh lifecycle) per
-`skills/_shared/references/session-handoff.md`: compute the engineer workflow
+`core/skills/_shared/references/session-handoff.md`: compute the engineer workflow
 projection and pass it to the runtime footer/check
 (`--workflow-projection-file`) so the footer carries the continue-vs-fresh
 decision. On detached HEAD report "no active branch context". This mirrors the
