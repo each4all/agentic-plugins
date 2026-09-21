@@ -7,7 +7,7 @@ argument-hint: (natural-language image request)
 
 $ARGUMENTS
 
-Follow the frame skill at `$CLAUDE_PLUGIN_ROOT/skills/frame/SKILL.md`.
+Follow the frame skill at `$CLAUDE_PLUGIN_ROOT/core/skills/frame/SKILL.md`.
 
 Produces an explicit `ImageBrief` (`docs/contracts.md` §3) that
 `image:compose` renders into a prompt. Warn/reject brief fields gpt-image-2

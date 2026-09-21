@@ -7,7 +7,7 @@ argument-hint: (image brief or natural-language image description)
 
 $ARGUMENTS
 
-Follow the compose skill at `$CLAUDE_PLUGIN_ROOT/skills/compose/SKILL.md`.
+Follow the compose skill at `$CLAUDE_PLUGIN_ROOT/core/skills/compose/SKILL.md`.
 
 Generation runs **only** through Codex's integrated gpt-image tool: native
 `codex exec` on the Codex host, or the `codex-companion` bridge on the

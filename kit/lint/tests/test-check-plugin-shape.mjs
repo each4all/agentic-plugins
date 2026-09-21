@@ -1144,3 +1144,146 @@ describe('kit/lint/check-plugin-shape — relocated skills root (ADR-0006 Amendm
     }
   });
 });
+
+// --- Command skill pointers + the Claude-manifest clause -------------------
+//
+// Two rules added after a peer review measured both gaps on the FIRST
+// relocated plugin, where either one would have been repeated five more times:
+//
+//   A. A command runbook names its skill by explicit path. Pointing one back
+//      at the pre-relocation location left the linter AND the plugin's own
+//      shape test green while the target did not exist.
+//   B. The Claude manifest must stay silent. Declaring the relocated root
+//      there took plugins/image from `Skills (6)` / ~232 always-on tok back to
+//      `Skills (12)` / ~1,183 — the exact duplication the move removes — with
+//      nothing reporting it.
+//
+// Both fixtures keep one valid skill at the declared root, so a negative case
+// fails on the rule under test rather than on skill content.
+describe('kit/lint/check-plugin-shape — command skill pointers (ADR-0006 Amendment)', () => {
+  const tempDirs = [];
+  after(() => Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  const skill = (name) => `---\nname: ${name}\ndescription: "A conformant ${name} skill for the pointer fixture."\n---\n\n# ${name}\n`;
+  const command = (pointer) => `---\ndescription: "fixture command"\n---\n\nFollow the skill at \`$CLAUDE_PLUGIN_ROOT/${pointer}\`.\n`;
+
+  /**
+   * `declared` is the Codex manifest's skills value; `claudeSkills`, when
+   * given, is written into the CLAUDE manifest (the rule-B antecedent).
+   * `files` maps plugin-relative paths to contents, `dirs` creates empty
+   * directories — which is how a pointer that resolves to a non-file is built.
+   */
+  async function makeFixture({ declared = './skills/', claudeSkills, files = {}, dirs = [] } = {}) {
+    const dir = await mkdtemp(join(tmpdir(), 'kit-lint-pointer-'));
+    tempDirs.push(dir);
+    await mkdir(join(dir, '.claude-plugin'), { recursive: true });
+    await mkdir(join(dir, '.codex-plugin'), { recursive: true });
+    const base = { name: 'fixture-pointer', version: '0.0.1', description: 'command pointer fixture' };
+    const claude = claudeSkills === undefined ? base : { ...base, skills: claudeSkills };
+    await writeFile(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify(claude, null, 2));
+    await writeFile(join(dir, '.codex-plugin', 'plugin.json'), JSON.stringify({ ...base, skills: declared }, null, 2));
+    const root = declared.replace(/^\.\//, '').replace(/\/$/, '');
+    const all = { [`${root}/demo/SKILL.md`]: skill('demo'), ...files };
+    if (root !== 'skills') all['skills/README.md'] = '# tombstone\n\nSee the ADR-0006 Amendment.\n';
+    for (const [rel, content] of Object.entries(all)) {
+      const abs = join(dir, rel);
+      await mkdir(resolve(abs, '..'), { recursive: true });
+      await writeFile(abs, content);
+    }
+    for (const rel of dirs) await mkdir(join(dir, rel), { recursive: true });
+    return dir;
+  }
+
+  const saysPointer = (result) => result.stderr.includes('skill pointer');
+
+  it('accepts a command whose pointer resolves', async () => {
+    const dir = await makeFixture({ files: { 'commands/demo.md': command('skills/demo/SKILL.md') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('accepts the relocated shape — pointer follows the skill under the declared root', async () => {
+    const dir = await makeFixture({
+      declared: './core/skills/',
+      files: { 'commands/demo.md': command('core/skills/demo/SKILL.md') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('rejects a pointer left behind at the pre-relocation path', async () => {
+    // The half-finished move: files under core/skills, command still naming
+    // the conventional root, whose tombstone holds no SKILL.md.
+    const dir = await makeFixture({
+      declared: './core/skills/',
+      files: { 'commands/demo.md': command('skills/demo/SKILL.md') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysPointer(result), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('commands/demo.md'), `the diagnostic must name the command; stderr=${result.stderr}`);
+    ok(result.stderr.includes('does not resolve'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a pointer that dangles on a NOT-yet-relocated plugin', async () => {
+    // The mirror of the case above — pointers rewritten before the files move.
+    // Both directions of a partial relocation have to be caught, or the check
+    // only guards whichever half happens to be done first.
+    const dir = await makeFixture({ files: { 'commands/demo.md': command('core/skills/demo/SKILL.md') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysPointer(result), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a pointer that escapes the plugin directory', async () => {
+    const dir = await makeFixture({ files: { 'commands/demo.md': command('../elsewhere/SKILL.md') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('escapes the plugin directory'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a pointer that resolves to something that is not a file', async () => {
+    const dir = await makeFixture({
+      files: { 'commands/demo.md': command('assets/SKILL.md') },
+      dirs: ['assets/SKILL.md'],
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('not a file'), `stderr=${result.stderr}`);
+  });
+
+  it('accepts a plugin with no commands/ at all', async () => {
+    const dir = await makeFixture();
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('accepts a command that names no skill pointer', async () => {
+    const dir = await makeFixture({
+      files: { 'commands/demo.md': '---\ndescription: "fixture"\n---\n\nRun `node "$CLAUDE_PLUGIN_ROOT/scripts/x.mjs"`.\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `a scripts/ reference is not a skill pointer; stderr=${result.stderr}`);
+  });
+
+  it('rejects a Claude manifest that declares the relocated root (clause 4)', async () => {
+    const dir = await makeFixture({
+      declared: './core/skills/',
+      claudeSkills: './core/skills/',
+      files: { 'commands/demo.md': command('core/skills/demo/SKILL.md') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('relocated skills root'), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('.claude-plugin/plugin.json" declares "skills"'), `stderr=${result.stderr}`);
+  });
+
+  it('leaves a NOT-relocated plugin alone even when its Claude manifest declares skills', async () => {
+    // Clause 4's antecedent is the relocation, not the key. On a plugin whose
+    // declared root IS the conventional one the key changes nothing Claude
+    // does, and firing here would condemn a shape no measurement faults.
+    const dir = await makeFixture({ claudeSkills: './skills/' });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+});

@@ -7,7 +7,7 @@ argument-hint: (path to a generated image, or natural-language critique target)
 
 $ARGUMENTS
 
-Follow the critique skill at `$CLAUDE_PLUGIN_ROOT/skills/critique/SKILL.md`.
+Follow the critique skill at `$CLAUDE_PLUGIN_ROOT/core/skills/critique/SKILL.md`.
 
 Evaluates a generated image against the brief's success criteria using
 **vision**: Codex reads + visually inspects the image. `codex-companion` has no
