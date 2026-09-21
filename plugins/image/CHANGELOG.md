@@ -2,6 +2,13 @@
 
 All notable changes to the `image` plugin are documented here.
 
+## [0.3.1](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.3.0...plugin-image-v0.3.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **plugin/image:** relocate skills under core/ ([d2c929f](https://github.com/each4all/agentic-plugins/commit/d2c929f29a300302f3d8b9b22207d26ca25d094e))
+
 ## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.2.0...plugin-image-v0.3.0) (2026-08-24)
 
 
