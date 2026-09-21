@@ -29,6 +29,7 @@
     "validate:family-registry": "node scripts/check-family-registry.mjs",
     "validate:evidence-bundle": "node scripts/evidence-measurement.mjs seal --verify",
     "check:host-drift": "node scripts/check-host-version-drift.mjs",
+    "mutate": "node scripts/mutation-harness.mjs",
     "sync:companions": "node scripts/sync-companion-bundles.mjs",
     "sync:marketplace": "node scripts/sync-marketplace-versions.mjs",
     "sync:docs": "node scripts/sync-doc-versions.mjs"

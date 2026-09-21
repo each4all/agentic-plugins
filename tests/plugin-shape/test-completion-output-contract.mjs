@@ -13,6 +13,13 @@
 //   4. The contract document itself stays in lockstep with the canonical key
 //      order, the footer's completion-state enum, the provenance vocabulary,
 //      and the generic-fallback marker string.
+//
+// Each persona's skills root is RESOLVED from that persona's own Codex manifest
+// rather than spelled `skills` here. ADR-0006's 2026-09-18 Amendment moves CORE
+// content under `core/` one plugin at a time, so a hardcoded segment is wrong
+// for half the tree for the length of the relocation — and wrong in the
+// direction that finds no files, which the floors below would then be the only
+// thing standing against.
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
@@ -20,7 +27,10 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
+
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
+const pluginDir = (persona) => join(REPO_ROOT, 'plugins', persona);
 const CONTRACT_DOC = join(REPO_ROOT, 'plugins/runtime/docs/completion-output-contract.md');
 const FOOTER_SCRIPT = join(REPO_ROOT, 'plugins/runtime/scripts/footer.mjs');
 
@@ -56,14 +66,17 @@ const PERSONA_REQUIRED_SURFACES = {
 function requiredSurfaceFiles(persona) {
   return PERSONA_REQUIRED_SURFACES[persona].flatMap((verb) => [
     join(REPO_ROOT, 'plugins', persona, 'commands', `${verb}.md`),
-    join(REPO_ROOT, 'plugins', persona, 'skills', verb, 'SKILL.md'),
+    skillsPath(pluginDir(persona), verb, 'SKILL.md'),
   ]);
 }
 
 async function listMarkdownFiles(persona) {
   const files = [];
   const commandsDir = join(REPO_ROOT, 'plugins', persona, 'commands');
-  const skillsDir = join(REPO_ROOT, 'plugins', persona, 'skills');
+  // Throws a named error if the persona's declared root is missing, escapes the
+  // plugin, or is not a directory — rather than handing back a path that yields
+  // nothing.
+  const skillsDir = resolveSkillsRoot(pluginDir(persona));
   try {
     for (const entry of await readdir(commandsDir, { withFileTypes: true })) {
       if (entry.isFile() && entry.name.endsWith('.md')) files.push(join(commandsDir, entry.name));
@@ -71,19 +84,22 @@ async function listMarkdownFiles(persona) {
   } catch {
     /* persona without commands */
   }
-  try {
-    for (const entry of await readdir(skillsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const skillFile = join(skillsDir, entry.name, 'SKILL.md');
-      try {
-        await readFile(skillFile, 'utf8');
-        files.push(skillFile);
-      } catch {
-        /* skill without SKILL.md */
-      }
+  // NO catch around this readdir. The resolver has already proved the root
+  // exists and is a directory, so anything that fails here is a real fault —
+  // and the swallowed version turned "this persona's surfaces all vanished"
+  // into a pass guarded only by floors that were measured on a populated tree.
+  for (const entry of await readdir(skillsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const skillFile = join(skillsDir, entry.name, 'SKILL.md');
+    try {
+      await readFile(skillFile, 'utf8');
+      files.push(skillFile);
+    } catch (err) {
+      // A directory under the root that is not a skill (`_shared/`) is
+      // expected. Anything other than a plain absence is not, and swallowing
+      // it would drop a real surface from the sweep.
+      if (err?.code !== 'ENOENT') throw err;
     }
-  } catch {
-    /* persona without skills */
   }
   return files;
 }

@@ -76,7 +76,7 @@
 // registration coverage) remain in their own scripts/tests and may be
 // folded in here as the kit/lint surface matures.
 
-import { readFile, realpath, stat, readdir } from 'node:fs/promises';
+import { readFile, lstat, realpath, stat, readdir } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -562,6 +562,111 @@ async function collectSkillFiles(dir, budget, depth = 0) {
   return found;
 }
 
+// --- Relocation invariant (ADR-0006 Amendment) ----------------------------
+//
+// When the Codex manifest points the skills root somewhere other than the
+// conventional plugins/<p>/skills, Claude Code's conventional discovery must
+// find nothing there. Three clauses, each measured against Claude Code 2.1.276
+// with `claude --plugin-dir <dir> plugin details <name>` on a relocated copy
+// of plugins/image:
+//
+//   1. skills/ must EXIST. With it deleted, a plugin-root SKILL.md registers
+//      (Skills 6 -> 7). With a README-only skills/ present, the same root
+//      SKILL.md does not. The tombstone is a mechanism, not documentation.
+//   2. No SKILL.md reachable under skills/. A per-skill symlink
+//      skills/frame -> ../core/skills/frame re-registers (6 -> 7, ~232 ->
+//      ~389 always-on tok). A container-level link did not re-register at
+//      that version; it is rejected anyway, because the conventional root
+//      must be inert and this check should not have to track which link
+//      depths a given host release follows.
+//   3. No plugin-root SKILL.md. Clause 1 suppresses it today; stating it
+//      separately keeps a future relaxation of clause 1 from silently
+//      re-opening the path.
+//
+// This walk is deliberately NOT collectSkillFiles. That collector stops past
+// MAX_SKILL_SCAN_DEPTH, skips hidden entries, and resolves symlinks — all
+// correct for "find the skills worth linting", all wrong for "prove there are
+// none". Proving absence has to fail closed on everything it cannot read.
+// The shared skill scan budgets 20000 entries because it walks real skill
+// trees. This walk only has to prove a tombstone directory is inert, and a
+// tombstone holds one README, so the bound is set to what that directory is
+// supposed to contain rather than to what a skill tree may. Exceeding it is
+// reported, never silently treated as absence.
+const MAX_RELOCATION_SCAN_ENTRIES = 1000;
+
+async function walkConventionalRoot(dir, budget, onFinding) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    onFinding(`cannot read "${rel(dir)}" to prove it holds no skills: ${err.message}`);
+    return;
+  }
+  for (const entry of entries) {
+    if (++budget.entries > MAX_RELOCATION_SCAN_ENTRIES) {
+      onFinding(`gave up proving absence after ${MAX_RELOCATION_SCAN_ENTRIES} entries under "${rel(dir)}"`);
+      return;
+    }
+    const abs = resolve(dir, entry.name);
+    // Symlinks are reported, never followed: following one would make the
+    // proof depend on the target, and a dangling link would read as clean.
+    if (entry.isSymbolicLink()) {
+      onFinding(`"${rel(abs)}" is a symlink; the conventional root must be inert`);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      await walkConventionalRoot(abs, budget, onFinding);
+      continue;
+    }
+    if (entry.name === 'SKILL.md') {
+      onFinding(`"${rel(abs)}" would still register as a Claude skill`);
+    }
+  }
+}
+
+function rel(abs) {
+  return relative(PLUGIN_DIR, abs).split(sep).join('/') || '.';
+}
+
+// Assert the three clauses for a plugin whose declared skills root is not the
+// conventional one. Every finding is prefixed so one grep-able phrase covers
+// the whole rule.
+async function checkRelocatedConventionalRoot(conventionalRoot, declaredSpelling) {
+  const findings = [];
+  const add = (msg) => findings.push(msg);
+
+  let info = null;
+  try {
+    info = await lstat(conventionalRoot);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      add(
+        `"${rel(conventionalRoot)}/" is missing. Keep it as a tombstone directory (a README is enough): `
+        + 'with it absent, a plugin-root SKILL.md becomes discoverable again.',
+      );
+    } else {
+      add(`cannot stat "${rel(conventionalRoot)}": ${err.message}`);
+    }
+  }
+
+  if (info?.isSymbolicLink()) {
+    add(`"${rel(conventionalRoot)}" is a symlink; the conventional root must be a real, inert directory`);
+  } else if (info && !info.isDirectory()) {
+    add(`"${rel(conventionalRoot)}" is not a directory`);
+  } else if (info) {
+    await walkConventionalRoot(conventionalRoot, { entries: 0 }, add);
+  }
+
+  const rootSkill = resolve(PLUGIN_DIR, 'SKILL.md');
+  if (await exists(rootSkill)) {
+    add('"SKILL.md" at the plugin root would register as a Claude skill');
+  }
+
+  for (const finding of findings) {
+    errors.push(`relocated skills root (declared "${declaredSpelling}"): ${finding}`);
+  }
+}
+
 // Parse one single-line YAML scalar (plain, 'single-quoted', or
 // "double-quoted"). Returns {value} or {error}. It never guesses at a form
 // it cannot measure: a parser that silently yielded a truncated value would
@@ -1023,6 +1128,18 @@ if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.s
 }
 const conventionalSkillsRoot = resolve(PLUGIN_DIR, 'skills');
 if (!skillsRoots.includes(conventionalSkillsRoot)) skillsRoots.push(conventionalSkillsRoot);
+
+// ADR-0006 Amendment: a plugin whose declared root is NOT the conventional one
+// must leave the conventional one inert. Compared by resolved path, not raw
+// string — "skills", "./skills", "./skills/" and "./skills/." are the same
+// root, and all eight current plugins declare one of those spellings, so the
+// rule's antecedent stays false for them.
+if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.skills.length > 0) {
+  const declaredRoot = resolve(PLUGIN_DIR, codexManifest.skills);
+  if (!escapesPluginDir(declaredRoot) && declaredRoot !== conventionalSkillsRoot) {
+    await checkRelocatedConventionalRoot(conventionalSkillsRoot, codexManifest.skills);
+  }
+}
 
 const seenSkillFiles = new Set();
 // Agent manifests are deduplicated on their OWN real path. Keying them off

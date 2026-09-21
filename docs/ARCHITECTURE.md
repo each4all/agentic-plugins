@@ -36,13 +36,13 @@ model** for plugin organization (ADR-0010).
 │  │ - ${CLAUDE_PLUGIN_ROOT}│ - absolute path / setup      ││
 │  └────────────────────────┴─────────────────────────────┘│
 ├──────────────────────────────────────────────────────────┤
-│ CORE (host-neutral, standards-aligned)                   │
-│  - skills/<n>/SKILL.md  (Agent Skills standard)          │
-│  - mcp-servers/<n>/      (MCP standard)                  │
-│  - personas/<n>.md       (host-neutral subagent intent)  │
-│  - prompt-templates/     (XML templates per companion)   │
-│  - protocols/            (intent docs: ensemble,         │
-│                           continuity, orchestration)     │
+│ CORE (host-neutral, standards-aligned) — under core/     │
+│  - core/skills/<n>/SKILL.md  (Agent Skills standard)     │
+│  - core/mcp-servers/<n>/     (MCP standard)              │
+│  - core/personas/<n>.md      (subagent intent)           │
+│  - core/prompt-templates/    (XML per companion)         │
+│  - core/protocols/           (intent docs: ensemble,     │
+│                               continuity, orchestration) │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -160,19 +160,23 @@ Each plugin demonstrates the layered structure:
 plugins/<plugin-name>/
 ├── .claude-plugin/plugin.json     # Claude Code plugin manifest
 ├── .codex-plugin/plugin.json      # Codex CLI plugin manifest
-├── skills/                         # CORE: Agent Skills standard
-│   └── <skill>/SKILL.md
-├── personas/                       # CORE: persona description
-│   └── <agent>.md
-├── mcp-servers/                    # CORE: MCP server impls
-├── prompt-templates/               # CORE: companion XML templates
+├── core/                           # CORE: host-neutral, standards-aligned
+│   ├── skills/<skill>/SKILL.md     #   Agent Skills standard
+│   ├── personas/<agent>.md         #   persona description
+│   ├── mcp-servers/                #   MCP server impls
+│   └── prompt-templates/           #   companion XML templates
 └── adapters/                       # PER-HOST: thin where possible, medium where required
     ├── claude/
     │   └── hooks/hooks.json
     └── codex/
         ├── hooks/hooks.json
-        └── agents/<agent>.toml      # Generated from personas/
+        └── agents/<agent>.toml      # Generated from core/personas/
 ```
+
+> The `core/` root is the **accepted target** of the ADR-0006
+> 2026-09-18 Amendment. The per-package relocation lands one plugin at a
+> time; a plugin still shows its skills under `skills/` until its own
+> relocation ships.
 
 See [`adr/0006-directory-layout-install-pattern.md`](adr/0006-directory-layout-install-pattern.md).
 

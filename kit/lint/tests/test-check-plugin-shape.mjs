@@ -933,3 +933,214 @@ describe('kit/lint/check-plugin-shape — skill frontmatter', () => {
   });
 
 });
+
+// Relocated skills root (ADR-0006 Amendment). When the Codex manifest points
+// the skills root somewhere other than the conventional plugins/<p>/skills,
+// Claude Code's conventional discovery must find nothing there. Three clauses,
+// each measured against Claude Code 2.1.276 with `claude --plugin-dir <dir>
+// plugin details <name>` on a relocated copy of plugins/image:
+//
+//   1. skills/ must EXIST. With it deleted, a plugin-root SKILL.md registers
+//      (Skills 6 -> 7). With a README-only skills/ present, the same root
+//      SKILL.md does not. The tombstone is a mechanism, not documentation.
+//   2. No SKILL.md reachable under skills/. A per-skill symlink
+//      skills/frame -> ../core/skills/frame re-registers (6 -> 7, ~232 ->
+//      ~389 always-on tok).
+//   3. No plugin-root SKILL.md. Clause 1 suppresses it today; stating it
+//      separately keeps relaxing clause 1 from silently re-opening the path.
+//
+// The scan here is deliberately NOT collectSkillFiles. That collector is
+// permissive by design — it stops past MAX_SKILL_SCAN_DEPTH, skips hidden
+// entries, and resolves symlinks — which is right for "find the skills worth
+// linting" and wrong for "prove there are none".
+describe('kit/lint/check-plugin-shape — relocated skills root (ADR-0006 Amendment)', () => {
+  const tempDirs = [];
+  after(() => Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  const skill = (name) => `---\nname: ${name}\ndescription: "A conformant ${name} skill for the relocation fixture."\n---\n\n# ${name}\n`;
+  const TOMBSTONE = '# skills/ — relocated to core/skills/\n\nSee the ADR-0006 Amendment.\n';
+
+  // `declared` is written verbatim into the Codex manifest. `files` maps
+  // plugin-relative paths to contents; `links` are [linkPath, target] pairs
+  // created after the files exist. Passing conventional: false omits the
+  // skills/ directory entirely.
+  async function makeRelocated({
+    declared = './core/skills/',
+    files = {},
+    links = [],
+    conventional = TOMBSTONE,
+  } = {}) {
+    const dir = await mkdtemp(join(tmpdir(), 'kit-lint-relocated-'));
+    tempDirs.push(dir);
+    await mkdir(join(dir, '.claude-plugin'), { recursive: true });
+    await mkdir(join(dir, '.codex-plugin'), { recursive: true });
+    const manifest = { name: 'fixture-relocated', version: '0.0.1', description: 'relocation fixture' };
+    await writeFile(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify(manifest, null, 2));
+    await writeFile(join(dir, '.codex-plugin', 'plugin.json'), JSON.stringify({ ...manifest, skills: declared }, null, 2));
+    // Valid content at the declared root, so a negative fixture fails on the
+    // new rule alone rather than on frontmatter or a missing declared root.
+    const all = { 'core/skills/demo/SKILL.md': skill('demo'), ...files };
+    if (conventional !== false) all['skills/README.md'] = conventional;
+    for (const [rel, content] of Object.entries(all)) {
+      const abs = join(dir, rel);
+      await mkdir(resolve(abs, '..'), { recursive: true });
+      await writeFile(abs, content);
+    }
+    for (const [linkPath, target] of links) {
+      const abs = join(dir, linkPath);
+      await mkdir(resolve(abs, '..'), { recursive: true });
+      await symlink(target, abs);
+    }
+    return dir;
+  }
+
+  const saysRelocation = (result) => result.stderr.includes('relocated skills root');
+
+  it('accepts the tombstone shape — declared root holds the skills, skills/ holds only a README', async () => {
+    const dir = await makeRelocated();
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `the tombstone shape is the target state; stderr=${result.stderr}`);
+  });
+
+  it('rejects a missing skills/ tombstone (clause 1 — its absence re-enables plugin-root SKILL.md discovery)', async () => {
+    const dir = await makeRelocated({ conventional: false });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('skills/'), `the diagnostic must name the directory; stderr=${result.stderr}`);
+  });
+
+  it('rejects a duplicate SKILL.md restored at the conventional path (clause 2)', async () => {
+    const dir = await makeRelocated({ files: { 'skills/demo/SKILL.md': skill('demo') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('skills/demo/SKILL.md'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a per-skill symlink into the relocated tree without following it (clause 2)', async () => {
+    // Measured: this exact shape makes Claude register the skill twice.
+    const dir = await makeRelocated({ links: [['skills/demo', '../core/skills/demo']] });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('skills/demo'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a container symlink under the conventional root (clause 2, precautionary)', async () => {
+    // Measured at Claude Code 2.1.276: a container-level link does NOT
+    // re-register (Skills stays 6). The ban is precautionary — the
+    // conventional root must be inert, and the lint should not have to
+    // reason about which link depths a given host version follows.
+    const dir = await makeRelocated({ links: [['skills/all', '../core/skills']] });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a dangling symlink under the conventional root without following it', async () => {
+    const dir = await makeRelocated({ links: [['skills/gone', '../core/skills/does-not-exist']] });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `a link the scan cannot resolve must fail closed; stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a SKILL.md inside a hidden directory (collectSkillFiles skips these)', async () => {
+    const dir = await makeRelocated({ files: { 'skills/.hidden/SKILL.md': skill('hidden') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a SKILL.md nested beyond the shared scanner depth cap of 6', async () => {
+    const deep = 'skills/a/b/c/d/e/f/g/SKILL.md';
+    const dir = await makeRelocated({ files: { [deep]: skill('deep') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `depth must not silently end the proof of absence; stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a plugin-root SKILL.md (clause 3)', async () => {
+    const dir = await makeRelocated({ files: { 'SKILL.md': skill('rootlevel') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a conventional root that is itself a symlink, naming the link rather than its contents', async () => {
+    // Asserting only "exit 1" would not discriminate: a check that FOLLOWED
+    // the link would also fail here, by finding the relocated SKILL.md
+    // through it. The diagnostic is what proves the link itself was refused.
+    const dir = await makeRelocated({ conventional: false, links: [['skills', './core/skills']] });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(
+      result.stderr.includes('"skills" is a symlink; the conventional root must be a real, inert directory'),
+      `the root link itself must be named; stderr=${result.stderr}`,
+    );
+  });
+
+  it('rejects a conventional root that is a regular file, naming the shape', async () => {
+    // As with the symlink case, "exit 1" alone does not discriminate: walking
+    // a file yields ENOTDIR and fails anyway. The shape diagnostic is the
+    // evidence that the type was checked before the walk.
+    const dir = await makeRelocated({ conventional: false, files: { skills: 'not a directory\n' } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('"skills" is not a directory'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a symlinked conventional root even when its target is empty', async () => {
+    // The case that separates lstat from stat. Following the link lands in an
+    // empty directory and reads as clean; refusing the link fails closed.
+    const dir = await makeRelocated({
+      conventional: false,
+      files: { 'empty-target/.keep': '' },
+      links: [['skills', './empty-target']],
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `a followed link would have read this as clean; stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+  });
+
+  for (const spelling of ['skills', './skills', './skills/', './skills/.']) {
+    it(`treats declared ${JSON.stringify(spelling)} as the conventional root, so the rule does not apply`, async () => {
+      // All eight current plugins declare "./skills/". Normalizing by resolved
+      // path rather than raw string is what keeps the rule's antecedent false
+      // for them — a raw-string comparison would fire on "skills" today.
+      const dir = await makeRelocated({
+        declared: spelling,
+        conventional: false,
+        files: { 'skills/demo/SKILL.md': skill('demo') },
+      });
+      const result = await runLint(dir);
+      strictEqual(result.code, 0, `a non-relocated plugin must be untouched; stderr=${result.stderr}`);
+    });
+  }
+
+  it('reports, rather than silently accepts, a conventional root too large to prove inert', async function () {
+    // An unproven absence must not read as a clean one. The bound is 1000
+    // entries because a tombstone directory holds a README; a fixture just
+    // past it is cheap, which is what makes this branch testable at all.
+    const files = {};
+    for (let i = 0; i <= 1000; i++) files[`skills/f${i}.md`] = 'x\n';
+    const dir = await makeRelocated({ files });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysRelocation(result), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('gave up proving absence'), `stderr=${result.stderr}`);
+  });
+
+  it('fails closed when the conventional root cannot be read', async function () {
+    if (process.getuid?.() === 0) return; // root ignores the mode bits
+    const dir = await makeRelocated({ files: { 'skills/sub/keep.md': 'x\n' } });
+    await chmod(join(dir, 'skills'), 0o000);
+    try {
+      const result = await runLint(dir);
+      strictEqual(result.code, 1, `an unreadable directory is not an empty one; stderr=${result.stderr}`);
+      ok(saysRelocation(result), `stderr=${result.stderr}`);
+    } finally {
+      await chmod(join(dir, 'skills'), 0o755);
+    }
+  });
+});

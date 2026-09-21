@@ -128,12 +128,11 @@ Per `docs/adr/0006-directory-layout-install-pattern.md`:
 plugins/<plugin-name>/
 ├── .claude-plugin/plugin.json     # Claude Code plugin manifest
 ├── .codex-plugin/plugin.json      # Codex CLI plugin manifest
-├── skills/                         # CORE: Agent Skills standard
-│   └── <skill>/SKILL.md
-├── personas/                       # CORE: persona description
-│   └── <agent>.md
-├── mcp-servers/                    # CORE: MCP server impls (optional)
-├── prompt-templates/               # CORE: companion XML templates (optional)
+├── core/                           # CORE: host-neutral, standards-aligned
+│   ├── skills/<skill>/SKILL.md     #   Agent Skills standard
+│   ├── personas/<agent>.md         #   persona description
+│   ├── mcp-servers/                #   MCP server impls (optional)
+│   └── prompt-templates/           #   companion XML templates (optional)
 └── adapters/                       # PER-HOST: thin where possible
     ├── claude/
     │   └── hooks/hooks.json
@@ -142,9 +141,16 @@ plugins/<plugin-name>/
         └── agents/<agent>.toml
 ```
 
-CORE files (`skills/`, `personas/`, `mcp-servers/`, `prompt-templates/`)
-are host-neutral. ADAPTER files (`adapters/{claude,codex}/`) are
-host-specific and as thin as the host's runtime model permits.
+CORE files (`core/skills/`, `core/personas/`, `core/mcp-servers/`,
+`core/prompt-templates/`) are host-neutral. ADAPTER files
+(`adapters/{claude,codex}/`) are host-specific and as thin as the host's
+runtime model permits. Of the four CORE categories only `core/skills/`
+has ever carried files.
+
+> The `core/` root is the **accepted target** of the ADR-0006
+> 2026-09-18 Amendment. The per-package relocation lands one plugin at a
+> time; a plugin still shows its skills under `skills/` until its own
+> relocation ships.
 
 **Script-only library plugin exception** (per ADR-0008 § (a)): a plugin
 that ships only `scripts/` and the two host manifests — no `commands/`,

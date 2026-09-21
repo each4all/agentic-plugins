@@ -39,9 +39,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolveSkillsRoot } from '../_helpers.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const PLUGINS_DIR = path.join(REPO_ROOT, 'plugins');
+
+// Three of the corpora below reach into a plugin's skills root, and each
+// resolves it from that plugin's own Codex manifest rather than spelling
+// `skills`: ADR-0006's 2026-09-18 Amendment relocates CORE content under
+// `core/` one plugin at a time. A hardcoded segment fails in the direction that
+// finds fewer files, which is exactly how a partial move was caught here —
+// `discovered only 3 shared references, expected >= 4`. `resolveSkillsRoot` is
+// synchronous for this file's sake: it builds corpora from plain sync fs calls.
+const skillsRootOf = (plugin) => resolveSkillsRoot(path.join(PLUGINS_DIR, plugin));
 
 // Each is a distinct claim a reader can act on; dropping any one restores a
 // different half of the original defect. Matched by regex, not substring,
@@ -77,12 +88,18 @@ const AMENDED_MARKER = /amended|Amendment/;
 // Paths that reach terminal state without a literal `set-terminal` invocation:
 // `subtask-update`'s auto-terminal pass marks the macro. Undiscoverable by
 // sweep — pinned by identity.
+// `area` is 'commands' or 'skills'; only the latter moves under core/.
 const IMPLICIT_TERMINAL_PATHS = [
-  'plugins/orchestrator/commands/next.md',
-  'plugins/orchestrator/commands/done.md',
-  'plugins/orchestrator/skills/next/SKILL.md',
-  'plugins/orchestrator/skills/done/SKILL.md',
+  { plugin: 'orchestrator', area: 'commands', rel: 'next.md' },
+  { plugin: 'orchestrator', area: 'commands', rel: 'done.md' },
+  { plugin: 'orchestrator', area: 'skills', rel: 'next/SKILL.md' },
+  { plugin: 'orchestrator', area: 'skills', rel: 'done/SKILL.md' },
 ];
+
+function pinnedPath({ plugin, area, rel }) {
+  const base = area === 'skills' ? skillsRootOf(plugin) : path.join(PLUGINS_DIR, plugin, area);
+  return path.join(base, ...rel.split('/'));
+}
 
 // Measured floor when this guard landed. Sites may only grow.
 const MIN_INVOCATIONS = 26;
@@ -93,8 +110,12 @@ function walkMarkdown(dir, acc = []) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return acc;
+  } catch (err) {
+    // A genuinely absent directory is expected (attention and companions ship
+    // no commands/). Anything else — a permission or I/O error — would silently
+    // empty a corpus, which is the vacuous pass these floors exist to catch.
+    if (err?.code === 'ENOENT') return acc;
+    throw err;
   }
   for (const entry of entries) {
     if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
@@ -112,9 +133,8 @@ function runbookFiles() {
   const out = [];
   for (const plugin of fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
     if (!plugin.isDirectory()) continue;
-    for (const sub of ['commands', 'skills']) {
-      out.push(...walkMarkdown(path.join(PLUGINS_DIR, plugin.name, sub)));
-    }
+    out.push(...walkMarkdown(path.join(PLUGINS_DIR, plugin.name, 'commands')));
+    out.push(...walkMarkdown(skillsRootOf(plugin.name)));
   }
   return out.sort();
 }
@@ -136,7 +156,7 @@ function sharedReferences() {
   const out = [];
   for (const plugin of fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
     if (!plugin.isDirectory()) continue;
-    const p = path.join(PLUGINS_DIR, plugin.name, 'skills/_shared/references/session-handoff.md');
+    const p = path.join(skillsRootOf(plugin.name), '_shared', 'references', 'session-handoff.md');
     if (fs.existsSync(p)) out.push(p);
   }
   return out.sort();
@@ -229,8 +249,9 @@ test('every set-terminal invocation states when the Stop hook evaluates the gate
 
 test('the implicit auto-terminal paths carry the statement too', () => {
   const problems = [];
-  for (const rel of IMPLICIT_TERMINAL_PATHS) {
-    const full = path.join(REPO_ROOT, rel);
+  for (const entry of IMPLICIT_TERMINAL_PATHS) {
+    const full = pinnedPath(entry);
+    const rel = path.relative(REPO_ROOT, full);
     assert.ok(fs.existsSync(full), `${rel} is missing — the pinned path moved`);
     const text = fs.readFileSync(full, 'utf8');
     if (!/ARCHIVE TIMING/.test(text)) {
