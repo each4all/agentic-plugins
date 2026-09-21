@@ -26,11 +26,13 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { skillsPath } from "../_helpers.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..");
+const ENGINEER_ROOT = resolve(REPO_ROOT, "plugins", "engineer");
 const COMMAND_PATH = resolve(REPO_ROOT, "plugins/engineer/commands/decide.md");
-const SKILL_PATH = resolve(REPO_ROOT, "plugins/engineer/skills/decide/SKILL.md");
+const SKILL_PATH = skillsPath(ENGINEER_ROOT, "decide", "SKILL.md");
 
 function extractCommandRegion(label) {
   const text = readFileSync(COMMAND_PATH, "utf8");

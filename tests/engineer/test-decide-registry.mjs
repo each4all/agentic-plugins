@@ -10,13 +10,14 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { skillsPath } from "../_helpers.mjs";
 
 import { loadRegistry, resolvePreset } from "../../plugins/engineer/scripts/decide-registry.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..");
 const SCRIPT = resolve(REPO_ROOT, "plugins", "engineer", "scripts", "decide-registry.mjs");
-const REGISTRY_PATH = resolve(REPO_ROOT, "plugins", "engineer", "skills", "decide", "references", "decision-axes.yml");
+const REGISTRY_PATH = skillsPath(resolve(REPO_ROOT, "plugins", "engineer"), "decide", "references", "decision-axes.yml");
 
 function tmpYaml(content) {
   const dir = mkdtempSync(join(tmpdir(), "decide-reg-"));
@@ -751,6 +752,47 @@ test("CLI: resolve --preset=nine-axis → 9 axes", () => {
   const parsed = JSON.parse(r.stdout);
   assert.equal(parsed.preset_id, "nine-axis");
   assert.equal(parsed.axes.length, 9);
+});
+
+// --- Relocation proof (ADR-0006 Amendment, macro d4e4af S2) --------------
+//
+// The registry is resolved from DEFAULT_PATH, which is built relative to the
+// script rather than to the skills root, so moving the skills tree without
+// moving that constant silently stops finding the file. Silently is the whole
+// problem: the CLI still EXITS 0 and still prints a well-formed
+// ResolvedDecisionContext, because a missing registry falls back to an in-code
+// preset.
+//
+// MEASURED, on a copy of each plugin with its skills tree removed — this is
+// why the assertion below has three clauses rather than one:
+//
+//   plugin    with registry      without registry   discriminates?
+//   engineer  default / 5 axes   default / 5 axes   NO  (plain resolve)
+//   designer  balanced / 7       balanced / 7       NO
+//   founder   default / 6        default / 6        NO
+//
+// The in-code fallback MIRRORS each plugin's own file default, so comparing
+// preset_id or axis count on a plain `resolve` proves nothing anywhere. Two
+// discriminators survive: asking for a preset that exists ONLY in the file
+// (engineer has `nine-axis`; the fallback has no such id), and the absence of
+// the `registry:` diagnostic on stderr. Only the second one transfers to
+// designer and founder, whose file presets do not add an id the fallback
+// lacks — so S3/S4 adapt THIS test by keeping clause 3 and dropping clause 1
+// to whatever preset their own registry adds.
+test("CLI: the relocated registry is actually read — nine-axis, 9 axes, and NO fallback diagnostic", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--preset=nine-axis"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  // Clause 1 — a preset id that exists only in the registry file.
+  const parsed = JSON.parse(r.stdout);
+  assert.equal(parsed.preset_id, "nine-axis");
+  // Clause 2 — its exact shape, so a truncated or partially-parsed file fails.
+  assert.equal(parsed.axes.length, 9);
+  // Clause 3 — the one that transfers. A fallback announces itself here and
+  // nowhere else that a value assertion can see.
+  assert.ok(
+    !r.stderr.includes("registry:"),
+    `decide-registry fell back to the in-code preset instead of reading ${REGISTRY_PATH}; stderr: ${r.stderr}`,
+  );
 });
 
 test("CLI: unknown preset → stdout still valid JSON; stderr carries diagnostic", () => {

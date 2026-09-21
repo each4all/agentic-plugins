@@ -7,13 +7,13 @@
 //   - 2 manifests (Claude + Codex)
 //   - 6 verb skills (investigate / frame / decide / compose / critique / refine)
 //     × {SKILL.md, agents/openai.yaml}
-//   - 1 macro skill `start` (skills/start/ × {SKILL.md, agents/openai.yaml})
+//   - 1 macro skill `start` (<skills-root>/start/ × {SKILL.md, agents/openai.yaml})
 //     per ADR-0021 (ADR-0010 §3 cascade — verb skills + macro skills
 //     two-category split)
 //   - 3 meta skills `resume` / `checkpoint` / `peer-now`
-//     (skills/<meta>/ × {SKILL.md, agents/openai.yaml}) per ADR-0022
+//     (<skills-root>/<meta>/ × {SKILL.md, agents/openai.yaml}) per ADR-0022
 //     (ADR-0010 §3 cascade — closes ADR-0021 §6; formalizes the
-//     `skills/<plugin>/` three-category split: verb / macro / meta)
+//     `${SKILLS_REL}/<plugin>/` three-category split: verb / macro / meta)
 //   - 5 shared references (presentation / ensemble / orchestration /
 //     agent-taxonomy / entry-routing)
 //   - 4 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
@@ -27,9 +27,9 @@
 //     Node resolver wrapper and Codex-specific hook manifest
 //   - 1 bundled Claude hooks manifest (hooks/hooks.json), while the Codex
 //     manifest's `hooks` field points at adapters/codex/hooks/hooks.json
-//   - 9 ensemble point types in skills/_shared/references/ensemble-protocol.md
+//   - 9 ensemble point types in <skills-root>/_shared/references/ensemble-protocol.md
 //     (added Research-scan for cited-brief profile per ADR-0014)
-//   - 3 references/ files under skills/investigate/ (cited-brief-spec,
+//   - 3 references/ files under <skills-root>/investigate/ (cited-brief-spec,
 //     output-file-rules, cited-brief-ensemble) absorbing the Stage 1
 //     plugins/research contract per ADR-0014
 //
@@ -41,7 +41,7 @@
 //     (ADR-0010 §3 sugar-alias contract)
 //   - verb→ensemble mapping cross-check: each ensemble type named in
 //     plugins/engineer/README.md verb table is a section heading in
-//     skills/_shared/references/ensemble-protocol.md (and vice versa)
+//     <skills-root>/_shared/references/ensemble-protocol.md (and vice versa)
 //   - 5 shared references pass stale-token audit (no omcc / [Claude] /
 //     [Codex] / CODEX_HOME / CLAUDE-ONLY / CODEX-ONLY leaks)
 //   - companion contract version freshness across all engineer .md files
@@ -60,11 +60,19 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
+
+// Where this plugin's skills actually live, read from its own Codex manifest
+// rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
+// core/<skills-root>/, and `resolveSkillsRoot` throws rather than falling back, so a
+// broken or missing declaration fails this file loudly at load instead of
+// leaving every path below pointing at a directory nothing writes to.
+const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
 const VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 const ALIAS_VERBS = ['audit'];
@@ -72,7 +80,7 @@ const ALIAS_VERBS = ['audit'];
 // bootstrap a new workflow but operate on the existing one (ADR-0017
 // §sub-decisions 1/2/3). They ship as both Claude-side
 // commands/<name>.md AND Codex-side meta skills at
-// skills/<name>/ × {SKILL.md, agents/openai.yaml} per ADR-0022 (the
+// <skills-root>/<name>/ × {SKILL.md, agents/openai.yaml} per ADR-0022 (the
 // 2026-05-12 ADR-0010 §3 cascade that closes ADR-0021 §6). All meta
 // commands share the same surface conformance (frontmatter with
 // description on the command side, frontmatter+description on the
@@ -89,7 +97,7 @@ const META_SKILLS = META_COMMANDS;
 // ADR-0020 §Sub-decision 1 — lifecycle macro commands are surface-level
 // neighbors of meta commands but DO bootstrap new workflows (unlike meta
 // commands), so they live in their own list. Currently: `start`.
-// ADR-0022 cascade (2026-05-12, ADR-0010 §3) — `skills/<plugin>/` is now
+// ADR-0022 cascade (2026-05-12, ADR-0010 §3) — `${SKILLS_REL}/<plugin>/` is now
 // a three-category split: VERBS (cognitive primitives, fixed at 6 per
 // ADR-0020 §Sub-decision 5), LIFECYCLE_MACROS (multi-phase verb
 // sequencers per ADR-0021), and META_COMMANDS (workflow-continuity ops
@@ -219,7 +227,7 @@ describe('plugins/engineer — Codex manifest (.codex-plugin/plugin.json)', () =
 
   it('has skills field per Codex vendored spec (REQUIRED)', async () => {
     const json = await readJSON(path);
-    strictEqual(json.skills, './skills/');
+    strictEqual(json.skills, './core/skills/');
   });
 
   it('exposes bundled lifecycle hooks to Codex plugin metadata', async () => {
@@ -264,13 +272,13 @@ describe('plugins/engineer — manifest cross-checks', () => {
   });
 });
 
-describe('plugins/engineer — 6 verb skills (skills/<verb>/SKILL.md)', () => {
+describe('plugins/engineer — 6 verb skills (<skills-root>/<verb>/SKILL.md)', () => {
   for (const verb of VERBS) {
     describe(verb, () => {
-      const path = resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md');
+      const path = skillsPath(PLUGIN_ROOT, verb, 'SKILL.md');
 
       it('exists', async () => {
-        ok(await exists(path), `skills/${verb}/SKILL.md missing`);
+        ok(await exists(path), `${SKILLS_REL}/${verb}/SKILL.md missing`);
       });
 
       it(`frontmatter name=${verb} (verb folder ↔ frontmatter consistency)`, async () => {
@@ -278,23 +286,23 @@ describe('plugins/engineer — 6 verb skills (skills/<verb>/SKILL.md)', () => {
         const fm = frontmatter(text);
         ok(fm, 'no YAML frontmatter');
         const re = new RegExp(`^name:\\s*${verb}\\s*$`, 'm');
-        ok(re.test(fm), `skills/${verb}/SKILL.md frontmatter name != "${verb}"`);
+        ok(re.test(fm), `${SKILLS_REL}/${verb}/SKILL.md frontmatter name != "${verb}"`);
         ok(/^description:\s*\S/m.test(fm), 'frontmatter description empty or missing');
       });
 
       it('documents both Claude and Codex explicit entry tokens in the command-mode heading', async () => {
         const text = await readFile(path, 'utf8');
         const heading = text.match(/^## When invoked by command .+$/m)?.[0] ?? '';
-        ok(heading.includes(`/engineer:${verb}`), `skills/${verb}/SKILL.md missing Claude /engineer:${verb} entry token`);
-        ok(heading.includes(`$engineer:${verb}`), `skills/${verb}/SKILL.md missing Codex $engineer:${verb} entry token`);
-        ok(/Claude command/i.test(heading), `skills/${verb}/SKILL.md must label the Claude command entry path`);
-        ok(/Codex skill mention/i.test(heading), `skills/${verb}/SKILL.md must label the Codex skill entry path`);
+        ok(heading.includes(`/engineer:${verb}`), `${SKILLS_REL}/${verb}/SKILL.md missing Claude /engineer:${verb} entry token`);
+        ok(heading.includes(`$engineer:${verb}`), `${SKILLS_REL}/${verb}/SKILL.md missing Codex $engineer:${verb} entry token`);
+        ok(/Claude command/i.test(heading), `${SKILLS_REL}/${verb}/SKILL.md must label the Claude command entry path`);
+        ok(/Codex skill mention/i.test(heading), `${SKILLS_REL}/${verb}/SKILL.md must label the Codex skill entry path`);
       });
 
       it('passes stale-token audit', async () => {
         const text = await readFile(path, 'utf8');
         for (const stale of STALE_TOKENS) {
-          ok(!text.includes(stale), `skills/${verb}/SKILL.md leaks stale token: ${stale}`);
+          ok(!text.includes(stale), `${SKILLS_REL}/${verb}/SKILL.md leaks stale token: ${stale}`);
         }
       });
     });
@@ -324,23 +332,23 @@ describe('plugins/engineer — 6 verb skills (skills/<verb>/SKILL.md)', () => {
       'next_command',
     ];
     for (const verb of VERBS) {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'SKILL.md'), 'utf8');
 
       // The fixed-literal "static lifecycle table" anti-pattern (ADR-0029 W1)
       // must be gone. Two guards:
       //   (a) investigate's presented-output `Recommended next step:` literal
-      //       — a REAL literal PR-D removes from skills/investigate/SKILL.md.
+      //       — a REAL literal PR-D removes from <skills-root>/investigate/SKILL.md.
       //   (b) the command-style `### Recommended next verb` heading — DEFENSIVE
       //       only: it never existed in any skill (it was the commands/<verb>.md
       //       literal PR-B removed), but guarding it here stops a future
       //       copy-paste from a command file from re-introducing it in a skill.
       ok(
         !/###\s+Recommended next verb/.test(text),
-        `skills/${verb}/SKILL.md carries the command-style "### Recommended next verb" literal — it must never be copied into a skill (ADR-0029 W1)`,
+        `${SKILLS_REL}/${verb}/SKILL.md carries the command-style "### Recommended next verb" literal — it must never be copied into a skill (ADR-0029 W1)`,
       );
       ok(
         !/Recommended next step:/.test(text),
-        `skills/${verb}/SKILL.md still carries the fixed "Recommended next step:" literal — replace it with the Active Next-Action Proposal (ADR-0029 W1)`,
+        `${SKILLS_REL}/${verb}/SKILL.md still carries the fixed "Recommended next step:" literal — replace it with the Active Next-Action Proposal (ADR-0029 W1)`,
       );
 
       // The single SKILL.md locus — a `## Completion` proposal section. Bound
@@ -348,7 +356,7 @@ describe('plugins/engineer — 6 verb skills (skills/<verb>/SKILL.md)', () => {
       // `## Anti-patterns`) so the field checks assert presence IN the
       // proposal, not merely anywhere downstream.
       const compIdx = text.indexOf('## Completion');
-      ok(compIdx !== -1, `skills/${verb}/SKILL.md has no "## Completion" section to host the Active Next-Action Proposal (ADR-0029 §1 / PR-D)`);
+      ok(compIdx !== -1, `${SKILLS_REL}/${verb}/SKILL.md has no "## Completion" section to host the Active Next-Action Proposal (ADR-0029 §1 / PR-D)`);
       const afterHeading = text.slice(compIdx + '## Completion'.length);
       const nextHeadingRel = afterHeading.search(/\n##\s/);
       const completionRegion = nextHeadingRel === -1
@@ -357,16 +365,16 @@ describe('plugins/engineer — 6 verb skills (skills/<verb>/SKILL.md)', () => {
 
       ok(
         /Active Next-Action Proposal/i.test(completionRegion),
-        `skills/${verb}/SKILL.md Completion must reference the contract's Active Next-Action Proposal section (ADR-0029 §1)`,
+        `${SKILLS_REL}/${verb}/SKILL.md Completion must reference the contract's Active Next-Action Proposal section (ADR-0029 §1)`,
       );
       ok(
         completionRegion.includes('../_shared/references/entry-routing-contract.md'),
-        `skills/${verb}/SKILL.md Completion must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0029 §1; the command-side "skills/_shared/..." path would NOT resolve from skills/<verb>/SKILL.md — ADR-0010 §5 copy-not-import means the path is re-based, not copied verbatim)`,
+        `${SKILLS_REL}/${verb}/SKILL.md Completion must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0029 §1; the command-side "skills/_shared/..." path would NOT resolve from skills/<verb>/SKILL.md — ADR-0010 §5 copy-not-import means the path is re-based, not copied verbatim)`,
       );
       for (const field of PROPOSAL_FIELDS) {
         ok(
           new RegExp(`-\\s+${field}:`).test(completionRegion),
-          `skills/${verb}/SKILL.md Completion is missing the "- ${field}:" proposal skeleton line (ADR-0029 §1 proposal shape — a bare token mention is not enough; the field must appear as a skeleton line so the mirror cannot degrade to a generic stub)`,
+          `${SKILLS_REL}/${verb}/SKILL.md Completion is missing the "- ${field}:" proposal skeleton line (ADR-0029 §1 proposal shape — a bare token mention is not enough; the field must appear as a skeleton line so the mirror cannot degrade to a generic stub)`,
         );
       }
     }
@@ -437,13 +445,13 @@ describe('plugins/engineer — ADR-0019 PR-D Phase 0 parent-linkage env-var cont
   }
 });
 
-describe('plugins/engineer — 6 Codex agents YAML (skills/<verb>/agents/openai.yaml)', () => {
+describe('plugins/engineer — 6 Codex agents YAML (<skills-root>/<verb>/agents/openai.yaml)', () => {
   for (const verb of VERBS) {
     describe(verb, () => {
-      const path = resolve(PLUGIN_ROOT, 'skills', verb, 'agents/openai.yaml');
+      const path = skillsPath(PLUGIN_ROOT, verb, 'agents/openai.yaml');
 
       it('exists', async () => {
-        ok(await exists(path), `skills/${verb}/agents/openai.yaml missing`);
+        ok(await exists(path), `${SKILLS_REL}/${verb}/agents/openai.yaml missing`);
       });
 
       it('has interface block with display_name mentioning the verb', async () => {
@@ -477,13 +485,13 @@ describe('plugins/engineer — 6 Codex agents YAML (skills/<verb>/agents/openai.
 // wrappers. Macro skills mirror the structure of verb skills (SKILL.md +
 // agents/openai.yaml) but the folder name is the macro name (e.g., `start`),
 // NOT a VALID_VERBS member.
-describe('plugins/engineer — macro skills (skills/<macro>/SKILL.md, per ADR-0021)', () => {
+describe('plugins/engineer — macro skills (<skills-root>/<macro>/SKILL.md, per ADR-0021)', () => {
   for (const macro of MACRO_SKILLS) {
     describe(macro, () => {
-      const path = resolve(PLUGIN_ROOT, 'skills', macro, 'SKILL.md');
+      const path = skillsPath(PLUGIN_ROOT, macro, 'SKILL.md');
 
       it('exists', async () => {
-        ok(await exists(path), `skills/${macro}/SKILL.md missing`);
+        ok(await exists(path), `${SKILLS_REL}/${macro}/SKILL.md missing`);
       });
 
       it(`frontmatter name=${macro} (macro folder ↔ frontmatter consistency)`, async () => {
@@ -491,14 +499,14 @@ describe('plugins/engineer — macro skills (skills/<macro>/SKILL.md, per ADR-00
         const fm = frontmatter(text);
         ok(fm, 'no YAML frontmatter');
         const re = new RegExp(`^name:\\s*${macro}\\s*$`, 'm');
-        ok(re.test(fm), `skills/${macro}/SKILL.md frontmatter name != "${macro}"`);
+        ok(re.test(fm), `${SKILLS_REL}/${macro}/SKILL.md frontmatter name != "${macro}"`);
         ok(/^description:\s*\S/m.test(fm), 'frontmatter description empty or missing');
       });
 
       it('passes stale-token audit', async () => {
         const text = await readFile(path, 'utf8');
         for (const stale of STALE_TOKENS) {
-          ok(!text.includes(stale), `skills/${macro}/SKILL.md leaks stale token: ${stale}`);
+          ok(!text.includes(stale), `${SKILLS_REL}/${macro}/SKILL.md leaks stale token: ${stale}`);
         }
       });
     });
@@ -507,7 +515,7 @@ describe('plugins/engineer — macro skills (skills/<macro>/SKILL.md, per ADR-00
 
 describe('plugins/engineer — start macro host-neutral peer wording', () => {
   it('documents phase-boundary ensembles as opposite-host peer work, not Codex-only work', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/start/SKILL.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'start', 'SKILL.md'), 'utf8');
 
     for (const phrase of [
       'opposite-host `brainstorm` ensemble',
@@ -533,13 +541,13 @@ describe('plugins/engineer — start macro host-neutral peer wording', () => {
   });
 });
 
-describe('plugins/engineer — macro skill Codex agents YAML (skills/<macro>/agents/openai.yaml, per ADR-0021)', () => {
+describe('plugins/engineer — macro skill Codex agents YAML (<skills-root>/<macro>/agents/openai.yaml, per ADR-0021)', () => {
   for (const macro of MACRO_SKILLS) {
     describe(macro, () => {
-      const path = resolve(PLUGIN_ROOT, 'skills', macro, 'agents/openai.yaml');
+      const path = skillsPath(PLUGIN_ROOT, macro, 'agents/openai.yaml');
 
       it('exists', async () => {
-        ok(await exists(path), `skills/${macro}/agents/openai.yaml missing`);
+        ok(await exists(path), `${SKILLS_REL}/${macro}/agents/openai.yaml missing`);
       });
 
       it('has interface block with display_name mentioning the macro', async () => {
@@ -572,13 +580,13 @@ describe('plugins/engineer — macro skill Codex agents YAML (skills/<macro>/age
 // verb skills and macro skills (SKILL.md + agents/openai.yaml) but the
 // folder name is the meta-command name (e.g., `resume`, `checkpoint`,
 // `peer-now`), NOT a VALID_VERBS or LIFECYCLE_MACROS member.
-describe('plugins/engineer — meta skills (skills/<meta>/SKILL.md, per ADR-0022)', () => {
+describe('plugins/engineer — meta skills (<skills-root>/<meta>/SKILL.md, per ADR-0022)', () => {
   for (const meta of META_SKILLS) {
     describe(meta, () => {
-      const path = resolve(PLUGIN_ROOT, 'skills', meta, 'SKILL.md');
+      const path = skillsPath(PLUGIN_ROOT, meta, 'SKILL.md');
 
       it('exists', async () => {
-        ok(await exists(path), `skills/${meta}/SKILL.md missing`);
+        ok(await exists(path), `${SKILLS_REL}/${meta}/SKILL.md missing`);
       });
 
       it(`frontmatter name=${meta} (meta folder ↔ frontmatter consistency)`, async () => {
@@ -586,14 +594,14 @@ describe('plugins/engineer — meta skills (skills/<meta>/SKILL.md, per ADR-0022
         const fm = frontmatter(text);
         ok(fm, 'no YAML frontmatter');
         const re = new RegExp(`^name:\\s*${meta}\\s*$`, 'm');
-        ok(re.test(fm), `skills/${meta}/SKILL.md frontmatter name != "${meta}"`);
+        ok(re.test(fm), `${SKILLS_REL}/${meta}/SKILL.md frontmatter name != "${meta}"`);
         ok(/^description:\s*\S/m.test(fm), 'frontmatter description empty or missing');
       });
 
       it('passes stale-token audit', async () => {
         const text = await readFile(path, 'utf8');
         for (const stale of STALE_TOKENS) {
-          ok(!text.includes(stale), `skills/${meta}/SKILL.md leaks stale token: ${stale}`);
+          ok(!text.includes(stale), `${SKILLS_REL}/${meta}/SKILL.md leaks stale token: ${stale}`);
         }
       });
 
@@ -610,7 +618,7 @@ describe('plugins/engineer — meta skills (skills/<meta>/SKILL.md, per ADR-0022
         const start = text.search(/^##\s+Host availability/im);
         ok(
           start >= 0,
-          `skills/${meta}/SKILL.md missing top-level "## Host availability" heading per ADR-0022 §Decision §3`,
+          `${SKILLS_REL}/${meta}/SKILL.md missing top-level "## Host availability" heading per ADR-0022 §Decision §3`,
         );
         // Slice from the heading to the next top-level `## ` (or end
         // of file). Use a lookahead so the next-section marker isn't
@@ -626,7 +634,7 @@ describe('plugins/engineer — meta skills (skills/<meta>/SKILL.md, per ADR-0022
         const tableHeaderRe = /\|.*Claude.*\|.*Codex.*\||\|.*Codex.*\|.*Claude.*\|/;
         ok(
           tableHeaderRe.test(section),
-          `skills/${meta}/SKILL.md "## Host availability" section missing a markdown table with both Claude and Codex columns inside the section`,
+          `${SKILLS_REL}/${meta}/SKILL.md "## Host availability" section missing a markdown table with both Claude and Codex columns inside the section`,
         );
       });
 
@@ -634,20 +642,20 @@ describe('plugins/engineer — meta skills (skills/<meta>/SKILL.md, per ADR-0022
         const text = await readFile(path, 'utf8');
         ok(
           /--host codex/.test(text),
-          `skills/${meta}/SKILL.md does not document the Codex-side --host codex flag`,
+          `${SKILLS_REL}/${meta}/SKILL.md does not document the Codex-side --host codex flag`,
         );
       });
     });
   }
 });
 
-describe('plugins/engineer — meta skill Codex agents YAML (skills/<meta>/agents/openai.yaml, per ADR-0022)', () => {
+describe('plugins/engineer — meta skill Codex agents YAML (<skills-root>/<meta>/agents/openai.yaml, per ADR-0022)', () => {
   for (const meta of META_SKILLS) {
     describe(meta, () => {
-      const path = resolve(PLUGIN_ROOT, 'skills', meta, 'agents/openai.yaml');
+      const path = skillsPath(PLUGIN_ROOT, meta, 'agents/openai.yaml');
 
       it('exists', async () => {
-        ok(await exists(path), `skills/${meta}/agents/openai.yaml missing`);
+        ok(await exists(path), `${SKILLS_REL}/${meta}/agents/openai.yaml missing`);
       });
 
       it('has interface block with display_name mentioning the meta name', async () => {
@@ -681,17 +689,17 @@ describe('plugins/engineer — meta skill Codex agents YAML (skills/<meta>/agent
 // per-command pointer. The delegation pointer is the structural marker
 // that distinguishes ADR-0022-refactored commands from pre-cascade
 // commands that bundled prose + bash inline.
-describe('plugins/engineer — meta command delegation pointer (commands/<meta>.md → skills/<meta>/SKILL.md, per ADR-0022)', () => {
+describe('plugins/engineer — meta command delegation pointer (commands/<meta>.md → <skills-root>/<meta>/SKILL.md, per ADR-0022)', () => {
   for (const meta of META_SKILLS) {
     describe(meta, () => {
       const path = resolve(PLUGIN_ROOT, 'commands', `${meta}.md`);
 
-      it('command file references skills/<meta>/SKILL.md as the cognitive runbook source', async () => {
+      it('command file references <skills-root>/<meta>/SKILL.md as the cognitive runbook source', async () => {
         const text = await readFile(path, 'utf8');
-        const re = new RegExp(`skills/${meta}/SKILL\\.md`);
+        const re = new RegExp(`${SKILLS_REL}/${meta}/SKILL\\.md`);
         ok(
           re.test(text),
-          `commands/${meta}.md does not reference skills/${meta}/SKILL.md — delegation pointer missing per ADR-0022 §Decision §2`,
+          `commands/${meta}.md does not reference ${SKILLS_REL}/${meta}/SKILL.md — delegation pointer missing per ADR-0022 §Decision §2`,
         );
       });
 
@@ -706,10 +714,10 @@ describe('plugins/engineer — meta command delegation pointer (commands/<meta>.
   }
 });
 
-describe('plugins/engineer — 5 shared references (skills/_shared/references/*.md)', () => {
+describe('plugins/engineer — 5 shared references (<skills-root>/_shared/references/*.md)', () => {
   for (const name of SHARED_REFS) {
     describe(name, () => {
-      const path = resolve(PLUGIN_ROOT, 'skills/_shared/references', name);
+      const path = skillsPath(PLUGIN_ROOT, '_shared/references', name);
 
       it('exists', async () => {
         ok(await exists(path), `${name} missing`);
@@ -847,7 +855,7 @@ describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + aud
     // Active Next-Action Proposal. This per-completion consult IS the
     // enforcement point that keeps the contract's reach from regressing to
     // /engineer:start-only — the drift ADR-0029 Consequences §Negative warns
-    // about. PR-B wires the six verb commands; the skills/<verb>/SKILL.md
+    // about. PR-B wires the six verb commands; the <skills-root>/<verb>/SKILL.md
     // mirror is PR-D. The assertions below are deliberately strict (all six
     // proposal fields + both loci) so the test cannot pass on a 2-field stub.
     // The guard is STRUCTURAL (per-locus), not mere text-presence: the full
@@ -955,7 +963,7 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
 
   it('the contract documents the §2 non-decide-verb lens mechanism in a bounded subsection (single source)', async () => {
     const text = await readFile(
-      resolve(PLUGIN_ROOT, 'skills/_shared/references/entry-routing-contract.md'),
+      skillsPath(PLUGIN_ROOT, '_shared/references/entry-routing-contract.md'),
       'utf8',
     );
     // Bound to the §2 mechanism subsection itself (not a whole-file scan) so
@@ -1012,8 +1020,8 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
         `commands/${verb}.md §2 section must name the --size sizing flag (minor→compact / standard→default / major→nine-axis)`,
       );
       ok(
-        region.includes('skills/_shared/references/entry-routing-contract.md'),
-        `commands/${verb}.md §2 section must cite the contract by its command-relative path "skills/_shared/references/entry-routing-contract.md" (W-A: the mechanism lives in the contract; matches the skill-side ../_shared/... path rigor — Codex review SUGGESTION)`,
+        region.includes('core/skills/_shared/references/entry-routing-contract.md'),
+        `commands/${verb}.md §2 section must cite the contract by its command-relative path "core/skills/_shared/references/entry-routing-contract.md" (W-A: the mechanism lives in the contract; matches the skill-side ../_shared/... path rigor — Codex review SUGGESTION)`,
       );
       ok(
         /genuine/i.test(region),
@@ -1024,25 +1032,25 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
 
   it('five non-decide verb skills mirror the §2 consult-pointer (host parity + ADR-0013 fallback)', async () => {
     for (const verb of NON_DECIDE) {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'SKILL.md'), 'utf8');
       const idx = text.indexOf(SECTION_HEADING);
-      ok(idx !== -1, `skills/${verb}/SKILL.md missing the "${SECTION_HEADING}" §2 section (ADR-0029 §2 / PR-C host parity)`);
+      ok(idx !== -1, `${SKILLS_REL}/${verb}/SKILL.md missing the "${SECTION_HEADING}" §2 section (ADR-0029 §2 / PR-C host parity)`);
       const region = boundSection(text, idx, SECTION_HEADING);
       ok(
         /decide-registry\.mjs/.test(region),
-        `skills/${verb}/SKILL.md §2 section must NAME the shared decide-registry.mjs resolver (ADR-0029 §2)`,
+        `${SKILLS_REL}/${verb}/SKILL.md §2 section must NAME the shared decide-registry.mjs resolver (ADR-0029 §2)`,
       );
       ok(
         /--size=/.test(region),
-        `skills/${verb}/SKILL.md §2 section must name the --size sizing flag`,
+        `${SKILLS_REL}/${verb}/SKILL.md §2 section must name the --size sizing flag`,
       );
       ok(
         region.includes('../_shared/references/entry-routing-contract.md'),
-        `skills/${verb}/SKILL.md §2 section must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0010 §5 copy-not-import path re-base — the command-side "skills/_shared/..." path would not resolve from skills/<verb>/)`,
+        `${SKILLS_REL}/${verb}/SKILL.md §2 section must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0010 §5 copy-not-import path re-base — the command-side "skills/_shared/..." path would not resolve from skills/<verb>/)`,
       );
       ok(
         /ADR-0013/.test(region),
-        `skills/${verb}/SKILL.md §2 section must note the Codex registry-resolution fallback (ADR-0013 — when the resolver CLI is not reachable)`,
+        `${SKILLS_REL}/${verb}/SKILL.md §2 section must note the Codex registry-resolution fallback (ADR-0013 — when the resolver CLI is not reachable)`,
       );
       // Single-source guards (Codex review MAJOR + MINOR-2) — the SKILL is a
       // THIN consult-pointer (W-A), so its CLI-unreachable fallback must POINT
@@ -1053,11 +1061,11 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
       // membership lives only in decision-axes.yml.
       ok(
         /decision-axes\.yml/.test(region),
-        `skills/${verb}/SKILL.md §2 fallback must point to decision-axes.yml as the axis source rather than re-listing axes inline (ADR-0029 §2 single source)`,
+        `${SKILLS_REL}/${verb}/SKILL.md §2 fallback must point to decision-axes.yml as the axis source rather than re-listing axes inline (ADR-0029 §2 single source)`,
       );
       ok(
         !/entry-routing-guarantee/.test(region),
-        `skills/${verb}/SKILL.md §2 must NOT hand-author the compact supporting-axis list inline (entry-routing-guarantee belongs to decision-axes.yml — ADR-0029 §2 single axis source; W-A thin consult-pointer)`,
+        `${SKILLS_REL}/${verb}/SKILL.md §2 must NOT hand-author the compact supporting-axis list inline (entry-routing-guarantee belongs to decision-axes.yml — ADR-0029 §2 single axis source; W-A thin consult-pointer)`,
       );
     }
   });
@@ -1093,35 +1101,35 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
     const END = 'not the reachability of the script.';
     const paragraphs = [];
     for (const verb of NON_DECIDE) {
-      const raw = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      const raw = await readFile(skillsPath(PLUGIN_ROOT, verb, 'SKILL.md'), 'utf8');
       const flat = squash(raw);
       const from = flat.indexOf(START);
       ok(
         from !== -1,
-        `skills/${verb}/SKILL.md must carry the Codex path-resolution fallback paragraph (starts "${START}") — a mirror that lost it would otherwise pass the equality check below by being excluded`,
+        `${SKILLS_REL}/${verb}/SKILL.md must carry the Codex path-resolution fallback paragraph (starts "${START}") — a mirror that lost it would otherwise pass the equality check below by being excluded`,
       );
       const to = flat.indexOf(END, from);
       ok(
         to !== -1,
-        `skills/${verb}/SKILL.md fallback paragraph must run through "${END}" — a truncated copy must fail rather than compare equal on a shared prefix`,
+        `${SKILLS_REL}/${verb}/SKILL.md fallback paragraph must run through "${END}" — a truncated copy must fail rather than compare equal on a shared prefix`,
       );
       const paragraph = flat.slice(from, to + END.length);
       // Non-vacuity: an empty or content-free extraction must not be able to
       // satisfy the size-1 equality below.
-      ok(paragraph.length > 200, `skills/${verb}/SKILL.md fallback paragraph is implausibly short (${paragraph.length} chars) — extraction likely broke`);
-      ok(/ADR-0013/.test(paragraph), `skills/${verb}/SKILL.md fallback paragraph must keep the ADR-0013 attribution (the absent Codex command file, not script reachability)`);
-      ok(/decision-axes\.yml/.test(paragraph), `skills/${verb}/SKILL.md fallback paragraph must keep decision-axes.yml as the axis source`);
+      ok(paragraph.length > 200, `${SKILLS_REL}/${verb}/SKILL.md fallback paragraph is implausibly short (${paragraph.length} chars) — extraction likely broke`);
+      ok(/ADR-0013/.test(paragraph), `${SKILLS_REL}/${verb}/SKILL.md fallback paragraph must keep the ADR-0013 attribution (the absent Codex command file, not script reachability)`);
+      ok(/decision-axes\.yml/.test(paragraph), `${SKILLS_REL}/${verb}/SKILL.md fallback paragraph must keep decision-axes.yml as the axis source`);
       // Semantic predicates applied PER MIRROR, not only to the contract:
       // five copies drifting together must not pass on equality alone.
-      ok(/plugin-root variable/.test(paragraph), `skills/${verb}/SKILL.md fallback must state the measured cause (no plugin-root variable in a Codex skill mention), not a mode that does not exist`);
-      ok(/skill mention's shell/.test(paragraph), `skills/${verb}/SKILL.md fallback must scope the absence to the skill-mention SHELL — hook commands do receive the substituted names, so an unscoped claim would be a new falsehood`);
-      ok(!/hook-command-only/.test(paragraph), `skills/${verb}/SKILL.md fallback must not reassert "hook-command-only" — that is a global negative about Codex substitution that was never measured`);
+      ok(/plugin-root variable/.test(paragraph), `${SKILLS_REL}/${verb}/SKILL.md fallback must state the measured cause (no plugin-root variable in a Codex skill mention), not a mode that does not exist`);
+      ok(/skill mention's shell/.test(paragraph), `${SKILLS_REL}/${verb}/SKILL.md fallback must scope the absence to the skill-mention SHELL — hook commands do receive the substituted names, so an unscoped claim would be a new falsehood`);
+      ok(!/hook-command-only/.test(paragraph), `${SKILLS_REL}/${verb}/SKILL.md fallback must not reassert "hook-command-only" — that is a global negative about Codex substitution that was never measured`);
       strictEqual(
         flat.split(START).length - 1,
         1,
-        `skills/${verb}/SKILL.md must state the fallback exactly once — a second copy would sit outside the compared extraction and drift unnoticed`,
+        `${SKILLS_REL}/${verb}/SKILL.md must state the fallback exactly once — a second copy would sit outside the compared extraction and drift unnoticed`,
       );
-      ok(/checkpoint\/SKILL\.md/.test(paragraph), `skills/${verb}/SKILL.md fallback must point at the documented Codex install root so the fallback narrows to "path cannot be built"`);
+      ok(/checkpoint\/SKILL\.md/.test(paragraph), `${SKILLS_REL}/${verb}/SKILL.md fallback must point at the documented Codex install root so the fallback narrows to "path cannot be built"`);
       paragraphs.push(paragraph);
     }
     strictEqual(
@@ -1158,7 +1166,7 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
 
   it('the contract bullet — not merely the §2 region — carries the measured reason and the recovery path', async () => {
     const text = await readFile(
-      resolve(PLUGIN_ROOT, 'skills/_shared/references/entry-routing-contract.md'),
+      skillsPath(PLUGIN_ROOT, '_shared/references/entry-routing-contract.md'),
       'utf8',
     );
     // Bound to the single-axis-source BULLET. A region-scoped assertion would
@@ -1356,7 +1364,7 @@ describe('plugins/engineer — verb→ensemble mapping cross-check (ensemble-pro
 
   it('ensemble-protocol.md contains all 9 expected ensemble-point sections', async () => {
     const text = await readFile(
-      resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'),
+      skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'),
       'utf8',
     );
     for (const heading of EXPECTED_SECTIONS) {
@@ -1375,9 +1383,9 @@ describe('plugins/engineer — investigate cited-brief profile (ADR-0014 absorpt
   // contract surfaces are wired consistently: profile table mention,
   // references/ directory artifacts, command-mode 3-outcome taxonomy,
   // and label-suppression rule presence in all three contract files.
-  const SKILL_PATH = resolve(PLUGIN_ROOT, 'skills/investigate/SKILL.md');
+  const SKILL_PATH = skillsPath(PLUGIN_ROOT, 'investigate/SKILL.md');
   const COMMAND_PATH = resolve(PLUGIN_ROOT, 'commands/investigate.md');
-  const REFERENCES_DIR = resolve(PLUGIN_ROOT, 'skills/investigate/references');
+  const REFERENCES_DIR = skillsPath(PLUGIN_ROOT, 'investigate/references');
   const SPEC_PATH = resolve(REFERENCES_DIR, 'cited-brief-spec.md');
   const RULES_PATH = resolve(REFERENCES_DIR, 'output-file-rules.md');
   const ENSEMBLE_PATH = resolve(REFERENCES_DIR, 'cited-brief-ensemble.md');
@@ -1457,7 +1465,7 @@ describe('plugins/engineer — investigate cited-brief profile (ADR-0014 absorpt
 });
 
 // =====================
-// ADR-0027 §3.5 — extension-marker validation for skills/decide/SKILL.md
+// ADR-0027 §3.5 — extension-marker validation for <skills-root>/decide/SKILL.md
 // =====================
 //
 // Structural checks (every marker pair present, paired, non-nested,
@@ -1492,7 +1500,7 @@ const MARKER_LINE_RE = /^<!-- @decide:([a-z][a-z0-9-]*):(begin|end) -->$/;
 
 describe('plugins/engineer — decide skill extension markers (ADR-0027 §3.5)', () => {
   it('all marker pairs are present, paired, non-nested, with canonical wording', async () => {
-    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const skillPath = skillsPath(PLUGIN_ROOT, 'decide/SKILL.md');
     const text = await readFile(skillPath, 'utf8');
     const lines = text.split('\n');
 
@@ -1540,7 +1548,7 @@ describe('plugins/engineer — decide skill extension markers (ADR-0027 §3.5)',
     // break the "weighted aggregate appended AFTER all axis rows" guarantee
     // documented in the new region's prose. This test pins the canonical
     // order so any reordering becomes a CI failure.
-    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const skillPath = skillsPath(PLUGIN_ROOT, 'decide/SKILL.md');
     const text = await readFile(skillPath, 'utf8');
     const lines = text.split('\n');
 
@@ -1567,7 +1575,7 @@ describe('plugins/engineer — decide skill extension markers (ADR-0027 §3.5)',
   });
 
   it('content-sanity: first non-empty line inside each marker matches the §3.5 sentinel', async () => {
-    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const skillPath = skillsPath(PLUGIN_ROOT, 'decide/SKILL.md');
     const text = await readFile(skillPath, 'utf8');
     const lines = text.split('\n');
 
@@ -1624,7 +1632,7 @@ describe('plugins/engineer — decide skill extension markers (ADR-0027 §3.5)',
 
 describe('plugins/engineer — decide skill size-contract prose (ADR-0027 PR3 ritual sizing)', () => {
   it('each @decide:* marker region mentions `size` and all three ritual tier names', async () => {
-    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const skillPath = skillsPath(PLUGIN_ROOT, 'decide/SKILL.md');
     const text = await readFile(skillPath, 'utf8');
     const lines = text.split('\n');
 
@@ -1677,7 +1685,7 @@ describe('plugins/engineer — decide skill size-contract prose (ADR-0027 PR3 ri
     // can't observe LLM markdown rendering. To keep the prose from
     // silently drifting, lint the region body for the load-bearing
     // invariant phrases.
-    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const skillPath = skillsPath(PLUGIN_ROOT, 'decide/SKILL.md');
     const text = await readFile(skillPath, 'utf8');
     const lines = text.split('\n');
 
@@ -1726,7 +1734,7 @@ describe('plugins/engineer — decide skill size-contract prose (ADR-0027 PR3 ri
   });
 
   it('compact preset shipped (ADR-0027 PR3 §1.2) and decision-axes.yml has 3 presets', async () => {
-    const yamlPath = resolve(PLUGIN_ROOT, 'skills/decide/references/decision-axes.yml');
+    const yamlPath = skillsPath(PLUGIN_ROOT, 'decide/references/decision-axes.yml');
     const text = await readFile(yamlPath, 'utf8');
     // Coarse YAML-shape check (the registry reader tests cover the parsed
     // semantics; this lint just guards against the YAML being accidentally
@@ -1786,18 +1794,18 @@ describe('plugins/engineer — ADR-0031 session-handoff preflight Claude/Codex p
   it('every verb whose command surfaces the preflight has it mirrored in the skill', async () => {
     for (const verb of VERBS) {
       const command = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
-      const skill = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      const skill = await readFile(skillsPath(PLUGIN_ROOT, verb, 'SKILL.md'), 'utf8');
       if (surfacesPreflight(command)) {
         ok(
           surfacesPreflight(skill),
-          `commands/${verb}.md surfaces the ADR-0031 preflight but skills/${verb}/SKILL.md does not mirror it (Codex asymmetry)`,
+          `commands/${verb}.md surfaces the ADR-0031 preflight but ${SKILLS_REL}/${verb}/SKILL.md does not mirror it (Codex asymmetry)`,
         );
       }
     }
   });
 
   it('the start macro surfaces the preflight at BOTH firing points (Phase 0 + Phase 7) in command and skill', async () => {
-    for (const rel of ['commands/start.md', 'skills/start/SKILL.md']) {
+    for (const rel of ['commands/start.md', `${SKILLS_REL}/start/SKILL.md`]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       ok(surfacesPreflight(text), `${rel} lacks the ADR-0031 session-handoff preflight`);
       const refs = refsToHandoff(text);
