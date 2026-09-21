@@ -27,9 +27,24 @@
 // vacuous pass, and only a paired control shows it.
 //
 // The C baseline is pinned by FULL sha, never by a branch name and never by a
-// short sha (which cannot be widened back). It is the last commit at which all
-// four gates still spelled the segment. A shallow clone cannot run family C;
-// the harness says so rather than scoring it.
+// short sha (which cannot be widened back). Two properties are needed, and the
+// second is easy to miss: the commit must predate the rewrite, AND it must be
+// reachable from `main`.
+//
+// The first pin chosen here satisfied only the former. `062f619` was the tip of
+// the branch that introduced this spec, and the squash merge that landed it
+// left that commit on no branch but the merged one — measured after the fact:
+// in a fresh clone it was reachable from exactly one ref,
+// `origin/refactor/skills-core-prep`. Deleting a merged branch is routine
+// cleanup, and it would have taken family C with it.
+//
+// `a204201` is `main`'s tip immediately before that merge, so it is permanent
+// history, and the four gate files are byte-identical there to what the
+// original pin named (compared by blob sha, not by inspection). Re-pinning
+// changes nothing about what C measures.
+//
+// A shallow clone still cannot run family C; the harness says so rather than
+// scoring it.
 //
 // Recorded result at authoring time (2026-09-19): 17/17 as-expected.
 
@@ -41,8 +56,8 @@ const G3 = 'tests/plugin-shape/test-host-tool-dependency-contract.mjs';
 const G4 = 'tests/plugin-shape/test-checkpoint-reinjection-contract.mjs';
 const G5 = 'tests/scripts/test-set-terminal-archive-timing.mjs';
 
-/** Last commit at which all four gates still hardcoded the `skills` segment. */
-const PRE_REWRITE = '062f6193ad3994e20f4647a2ae421c4efe66dde6';
+/** Newest commit ON MAIN at which all four gates still hardcoded the segment. */
+const PRE_REWRITE = 'a204201956a0b0a963fe3bab59d0bad9b6c440d4';
 
 export const TESTS = [G2, G3, G4, G5];
 
