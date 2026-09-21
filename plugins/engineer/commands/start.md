@@ -14,7 +14,7 @@ plan-verify → Phase 4 implement → Phase 5 review → Phase 6 resolve
 → Phase 7 commit through the six engineer verb skills.
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/skills/start/SKILL.md`** per ADR-0021 (macro-
+`$CLAUDE_PLUGIN_ROOT/core/skills/start/SKILL.md`** per ADR-0021 (macro-
 skill category). This command file owns the Claude-host bootstrap
 (Phase 0 below) and the `state.mjs` writes at each phase boundary;
 for each Phase 1–7 below, follow the matching `§ Phase N` section
@@ -286,7 +286,7 @@ ACTIVE_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
 ## Phase 0d — Entry routing and decision contract
 
 Before Phase 1, present an **Entry routing recommendation** using
-`skills/_shared/references/entry-routing-contract.md`. This is a
+`core/skills/_shared/references/entry-routing-contract.md`. This is a
 user-facing contract, not a hidden classifier. The recommendation must
 name the selected route and the plausible alternatives:
 
@@ -314,7 +314,7 @@ decision prompt shape: **Options**, **Tradeoffs**, **Risks**,
 
 Surface the **ADR-0031 session-level continue-vs-fresh preflight here**, at
 Phase 0 before sequencing the lifecycle, per
-`skills/_shared/references/session-handoff.md`: compute the engineer workflow
+`core/skills/_shared/references/session-handoff.md`: compute the engineer workflow
 projection for the current branch and pass it — or, when no active workflow
 exists, the standalone routing — to the runtime seam, so the routing
 recommendation above is sized by context-budget risk + archive-gate readiness.
@@ -334,7 +334,7 @@ When the recommended route is `engineer:decide`, also surface the
 `--size=standard` → `default` 5-axis (backward-compatible);
 `--size=major` → `nine-axis` 9-axis preset + auto-enabled
 sensitivity. The full sizing taxonomy lives in
-`skills/_shared/references/entry-routing-contract.md` §"Routing into
+`core/skills/_shared/references/entry-routing-contract.md` §"Routing into
 `engineer:decide` — decision sizing".
 
 ---
@@ -502,7 +502,7 @@ rm -f "$PHASE7_PLAN_ERR"
 # do not run execute mode yet; clearing the marker afterwards works only
 # before that Stop fires and needs the full set-terminal flag set
 # (--workflow-path, --host, --terminal-phase). Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 
 # Step 2 — execute mode: receive the approved subject(s), commit + gate.
 # Single-commit form:
@@ -562,7 +562,7 @@ session context. On detached HEAD the sidecar reports "no active branch context"
 and does not auto-recommend a fresh session (already guarded at Phase 0a). The
 continue-vs-fresh preflight at **Phase 0** (before sequencing a fresh lifecycle)
 is a separate, pre-work surface and still applies per
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.
 
 When the deliverable boundary is reached, include PR handling readiness
 fields in the footer. Ask the user what to do with PR handling only when
@@ -578,7 +578,7 @@ failed.
   7th canonical verb; the six-verb enum (`VALID_VERBS` in `state.mjs`)
   is unchanged.
 - ADR-0021 — The canonical lifecycle runbook lives in
-  `skills/start/SKILL.md` (macro-skill category per ADR-0010 §3
+  `core/skills/start/SKILL.md` (macro-skill category per ADR-0010 §3
   cascade). This command file owns the Claude-host bootstrap (Phase 0)
   and the state.mjs writes at each phase boundary. The Codex-side
   parity is `$engineer:start` (same SKILL.md content).

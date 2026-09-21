@@ -10,7 +10,7 @@ $ARGUMENTS
 Maintain one progress entry per phase and advance its status as you go
 — use the host's task-tracking tools when the session exposes them,
 and keep an inline checklist when it does not. The peer ensemble runs automatically per
-`skills/_shared/references/ensemble-protocol.md` (Frame point type) —
+`core/skills/_shared/references/ensemble-protocol.md` (Frame point type) —
 never ask the user whether to invoke the peer, and never direct them
 to run companion CLIs manually. When the companions plugin or peer
 CLI is unavailable, the ensemble degrades silently to local-only.
@@ -94,17 +94,17 @@ ownership token + 60s stale window per ADR-0011 §3.
 ## Phase 1 — Execute frame
 
 Follow the frame skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/frame/SKILL.md`. The skill articulates:
+`$CLAUDE_PLUGIN_ROOT/core/skills/frame/SKILL.md`. The skill articulates:
 problem statement, goals, audience, constraints, success criteria,
 risks, out-of-scope items.
 
 Frame is single-mode (no `--profile` argument). Sub-discipline context
 flows through the orchestrator-level Task Profile per
-`skills/_shared/references/orchestration.md`.
+`core/skills/_shared/references/orchestration.md`.
 
 ### Ensemble dispatch (Frame point type)
 
-Build the prompt per `skills/_shared/references/ensemble-protocol.md`
+Build the prompt per `core/skills/_shared/references/ensemble-protocol.md`
 § Frame, write it to a tempfile, and dispatch in background:
 
 ```bash
@@ -156,7 +156,7 @@ Out of scope: ...
 
 ### Active next-action proposal
 
-(per skills/_shared/references/entry-routing-contract.md
+(per core/skills/_shared/references/entry-routing-contract.md
  § Active Next-Action Proposal — derived from this frame, not a fixed table)
 - selected_next:         <verb | commit | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
@@ -198,7 +198,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -219,7 +219,7 @@ resolved decisive axes (본질/근본 essence/foundation) + supporting axes,
 instead of a flat list. Resolve the sized axis set from the shared
 `$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs resolve --size=<minor|standard|major>`
 resolver — the single axis source of truth, not a hand-authored list —
-per `skills/_shared/references/entry-routing-contract.md`
+per `core/skills/_shared/references/entry-routing-contract.md`
 § "Surfacing the multi-axis lens from a non-decide verb".
 
 Bounded: only at a genuine 2+-branch point (not every invocation),
@@ -241,7 +241,7 @@ Output the synthesized problem model and one of:
   before downstream verbs.
 
 Then emit an **Active Next-Action Proposal** instead of a fixed next
-verb, per `skills/_shared/references/entry-routing-contract.md`
+verb, per `core/skills/_shared/references/entry-routing-contract.md`
 § Active Next-Action Proposal — the canonical six-field template
 (runtime completion-output contract):
 

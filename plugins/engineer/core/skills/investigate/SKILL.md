@@ -13,7 +13,7 @@ sub-modes:
 |---------|--------------|---------------------------------------|
 | `analysis` (default) | Explore an unfamiliar codebase / area to build a structured understanding | omcc-dev `explore` |
 | `root-cause` | Diagnose a bug or unexpected behavior through structured hypothesis investigation | omcc-dev `investigate` |
-| `cited-brief` | Research a topic with external sources and produce a durable cited brief artifact | absorbs `plugins/research` per [ADR-0014](../../../../docs/adr/0014-plugins-research-deprecation.md) (was a Stage 1 single-verb capability plugin) |
+| `cited-brief` | Research a topic with external sources and produce a durable cited brief artifact | absorbs `plugins/research` per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md) (was a Stage 1 single-verb capability plugin) |
 
 The profile is set via `--profile=<name>` on `/engineer:investigate`,
 or inferred from the user's intent when auto-activated. A missing

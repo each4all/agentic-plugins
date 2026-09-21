@@ -6,12 +6,12 @@ skills:
 
 | Verb | Skill | What it does |
 |------|-------|--------------|
-| **Investigate** | [`skills/investigate`](skills/investigate/SKILL.md) | Gather evidence, inspect context, scan codebase, diagnose bugs, produce cited briefs (`analysis` / `root-cause` / `cited-brief` profiles) |
-| **Frame** | [`skills/frame`](skills/frame/SKILL.md) | Turn evidence into a problem model (goals, constraints, audience, success criteria, risks) |
-| **Decide** | [`skills/decide`](skills/decide/SKILL.md) | Compare alternatives across multiple perspectives, recommend a direction |
-| **Compose** | [`skills/compose`](skills/compose/SKILL.md) | Produce code or plan (`plan` / `code` profiles) |
-| **Critique** | [`skills/critique`](skills/critique/SKILL.md) | Multi-perspective review of an artifact (default / `full-codebase` profiles) |
-| **Refine** | [`skills/refine`](skills/refine/SKILL.md) | Apply feedback, fix bugs, iterate after critique |
+| **Investigate** | [`core/skills/investigate`](core/skills/investigate/SKILL.md) | Gather evidence, inspect context, scan codebase, diagnose bugs, produce cited briefs (`analysis` / `root-cause` / `cited-brief` profiles) |
+| **Frame** | [`core/skills/frame`](core/skills/frame/SKILL.md) | Turn evidence into a problem model (goals, constraints, audience, success criteria, risks) |
+| **Decide** | [`core/skills/decide`](core/skills/decide/SKILL.md) | Compare alternatives across multiple perspectives, recommend a direction |
+| **Compose** | [`core/skills/compose`](core/skills/compose/SKILL.md) | Produce code or plan (`plan` / `code` profiles) |
+| **Critique** | [`core/skills/critique`](core/skills/critique/SKILL.md) | Multi-perspective review of an artifact (default / `full-codebase` profiles) |
+| **Refine** | [`core/skills/refine`](core/skills/refine/SKILL.md) | Apply feedback, fix bugs, iterate after critique |
 
 Every command-mode skill dispatches a **bidirectional companion
 ensemble** with an always-max policy: when invoked on Claude Code,
@@ -20,7 +20,7 @@ on Codex CLI, calls `claude-companion` for a Claude peer
 perspective. The peer's findings are reconciled into a unified
 output through a 4-category synthesis taxonomy (`AGREED` /
 `LOCAL-ONLY` / `PEER-ONLY` / `CONFLICT`) per
-[`skills/_shared/references/ensemble-protocol.md`](skills/_shared/references/ensemble-protocol.md).
+[`core/skills/_shared/references/ensemble-protocol.md`](core/skills/_shared/references/ensemble-protocol.md).
 
 The 6-verb set is the canonical L3 persona surface defined in
 [ADR-0010](../../docs/adr/0010-plugin-boundary-policy.md). Six
@@ -186,7 +186,7 @@ Each slash command runs:
    parallel-branch workflows coexist in the workflows directory).
 2. **Phase 1** — SKILL.md command-invoked mode: local subagents
    dispatched in parallel, peer ensemble dispatched in background
-   per `skills/_shared/references/ensemble-protocol.md`,
+   per `core/skills/_shared/references/ensemble-protocol.md`,
    synthesized into AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT.
 3. **Phase 2** — state finalize: phase note appended to the
    workflow body recording ensemble launch, synthesis verdict, and
@@ -242,7 +242,7 @@ $engineer:peer-now --peer <claude|codex> --prompt-text "..."   # or --prompt-fil
 exposes the six verb skills, the `start` macro skill (ADR-0021), and
 three meta skills (`resume` / `checkpoint` / `peer-now` per
 ADR-0022). Each skill's canonical cognitive runbook lives in
-`skills/<name>/SKILL.md` and is loaded directly when the skill is
+`core/skills/<name>/SKILL.md` and is loaded directly when the skill is
 mentioned. Codex CLI's plugin-commands integration is still
 unfinalized (ADR-0013 reserved), so Codex side does not yet have
 Claude-equivalent slash commands; the skill-mention surface is the
@@ -332,7 +332,7 @@ cache-glob bootstrap, not from the env-var-resolved directory.
 
 `RESEARCH_OUTPUT_ROOT` applies only to the `cited-brief` profile of
 `engineer:investigate` — see
-`skills/investigate/references/output-file-rules.md` for sandbox
+`core/skills/investigate/references/output-file-rules.md` for sandbox
 enforcement and topic-slug sanitization rules.
 
 ## What this plugin does NOT do (Stage 2 non-goals)

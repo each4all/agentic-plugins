@@ -16,7 +16,7 @@ omcc-dev's `audit` slash command.
 
 **Behavior**: identical to `/engineer:critique` with profile forced to
 `full-codebase`. The skill, ensemble dispatch (Adversarial-scan point
-type per `skills/_shared/references/ensemble-protocol.md`), state
+type per `core/skills/_shared/references/ensemble-protocol.md`), state
 writes, and completion shape are all delegated to
 `commands/critique.md` semantics.
 

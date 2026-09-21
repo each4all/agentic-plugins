@@ -9,7 +9,7 @@ $ARGUMENTS
 
 Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble
 runs automatically per
-`skills/_shared/references/ensemble-protocol.md` (Brainstorm point
+`core/skills/_shared/references/ensemble-protocol.md` (Brainstorm point
 type) — never ask the user whether to invoke the peer. When the
 companions plugin or peer CLI is unavailable, the ensemble degrades
 silently to local-only.
@@ -89,7 +89,7 @@ rm -f "$FIND_ERR"
 ## Phase 0.5 — Resolve decision axes from the registry (ADR-0027 §5.6)
 
 Parse `$ARGUMENTS` into flags + body and resolve the preset from
-`skills/decide/references/decision-axes.yml`. The resulting
+`core/skills/decide/references/decision-axes.yml`. The resulting
 `ResolvedDecisionContext` JSON is stashed at
 `$AGENTIC_DECIDE_CONTEXT_FILE` for the skill body to consume.
 
@@ -152,7 +152,7 @@ The skill body reads `$AGENTIC_DECIDE_CONTEXT_FILE` to obtain:
   populated from `--size=<tier>` per ADR-0027 §1.5(2). When `--size` was not
   passed, `size` defaults to `"standard"` and `size_explicit` is `false`. The
   ritual mapping (per-option output depth, comparison-table density,
-  recommendation rigor) is documented in `skills/decide/SKILL.md` inside the
+  recommendation rigor) is documented in `core/skills/decide/SKILL.md` inside the
   five `@decide:*` marker regions (PR4 added `@decide:weighting-sensitivity-output`).
 - `weights` — `Record<string, number>` populated from `--weights=<spec>`.
   Empty `{}` is the sentinel for "no `--weights` flag" (treated as
@@ -177,7 +177,7 @@ artifact per ADR-0027 §1.6.
 ## Phase 1 — Execute decide
 
 Follow the decide skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/decide/SKILL.md`. The skill performs
+`$CLAUDE_PLUGIN_ROOT/core/skills/decide/SKILL.md`. The skill performs
 2+ option generation, evidence-based comparison across **the axes
 resolved from `$AGENTIC_DECIDE_CONTEXT_FILE`** (tradeoffs, risks,
 scope, fit-with-frame), and recommends a direction with explicit
@@ -189,7 +189,7 @@ context flows through the orchestrator-level Task Profile.
 ### Ensemble dispatch (Brainstorm point type)
 
 Build the Brainstorm prompt per
-`skills/_shared/references/ensemble-protocol.md` § Brainstorm and
+`core/skills/_shared/references/ensemble-protocol.md` § Brainstorm and
 dispatch in background:
 
 ```bash
@@ -198,7 +198,7 @@ PROMPT_FILE="$(mktemp -t engineer-decide-prompt.XXXXXX).xml"
 RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 
 # LLM-authored Brainstorm prompt — write to $PROMPT_FILE per the
-# template at skills/_shared/references/ensemble-protocol.md § Brainstorm.
+# template at core/skills/_shared/references/ensemble-protocol.md § Brainstorm.
 #
 # ADR-0027 §4 axis-awareness contract — the prompt-builder MUST read
 # $AGENTIC_DECIDE_CONTEXT_FILE (the ResolvedDecisionContext JSON written by
@@ -276,7 +276,7 @@ NOTE="### Ensemble launched: decide at <iso-utc>
 
 ### Active next-action proposal
 
-(per skills/_shared/references/entry-routing-contract.md
+(per core/skills/_shared/references/entry-routing-contract.md
  § Active Next-Action Proposal — derived from this decision, not a fixed table)
 - selected_next:         <verb | commit | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
@@ -318,7 +318,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -347,7 +347,7 @@ Output the comparison and one of:
   the user selects.
 
 Then emit an **Active Next-Action Proposal** instead of a fixed next
-verb, per `skills/_shared/references/entry-routing-contract.md`
+verb, per `core/skills/_shared/references/entry-routing-contract.md`
 § Active Next-Action Proposal — the canonical six-field template
 (runtime completion-output contract):
 

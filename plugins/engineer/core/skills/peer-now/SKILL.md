@@ -13,8 +13,8 @@ to the active workflow's body under a `[Peer]` label phase note when
 a workflow exists; otherwise the response is printed and the skill
 exits.
 
-It is a **meta skill** per [ADR-0010](../../../../docs/adr/0010-plugin-boundary-policy.md)
-§3 cascade ([ADR-0022](../../../../docs/adr/0022-engineer-meta-skill-category.md)):
+It is a **meta skill** per [ADR-0010](../../../../../docs/adr/0010-plugin-boundary-policy.md)
+§3 cascade ([ADR-0022](../../../../../docs/adr/0022-engineer-meta-skill-category.md)):
 not a verb (no cognitive activity of the engineer plugin's own),
 not a macro (no phase sequencing), but a side-channel operation
 that surfaces a raw cross-host probe.

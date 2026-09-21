@@ -13,8 +13,8 @@ knows where the previous session stopped —
 useful for multi-day deliverables where `current_phase` and
 `next_action` alone undersell the context.
 
-It is a **meta skill** per [ADR-0010](../../../../docs/adr/0010-plugin-boundary-policy.md)
-§3 cascade ([ADR-0022](../../../../docs/adr/0022-engineer-meta-skill-category.md)):
+It is a **meta skill** per [ADR-0010](../../../../../docs/adr/0010-plugin-boundary-policy.md)
+§3 cascade ([ADR-0022](../../../../../docs/adr/0022-engineer-meta-skill-category.md)):
 not a verb (no cognitive activity), not a macro (no phase sequencing),
 but a workflow-continuity operation that augments
 `latest_checkpoint` without mutating `current_phase` or

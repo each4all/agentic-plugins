@@ -22,7 +22,7 @@ ensembles, with `dispatch-peer.mjs` retained as the blocking
 compatibility surface. This protocol describes only the wire-level
 contract: what to send, what to expect back, how to synthesize.
 
-Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+Per [ADR-0014](../../../../../../docs/adr/0014-plugins-research-deprecation.md)
 (Amendment 2026-05-06), this protocol absorbs the research-scan ensemble
 contract from the now-removed `plugins/research` plugin (retired at
 Stage 2.5+). The ensemble point type name `research-scan` is preserved
@@ -488,7 +488,7 @@ engineer's persistent workflow `.md` via `state.mjs`. Concretely:
 
 In-flight peer dispatches do NOT survive session compaction. The
 schema-1.1 `pending_ensemble` field (per
-[ADR-0017 §sub-decision 4](../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)
+[ADR-0017 §sub-decision 4](../../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)
 and [`_shared/references/ensemble-protocol.md`](../../_shared/references/ensemble-protocol.md)
 §"State Bookkeeping (Stage 2.5+)") records that a dispatch began
 (`run_id` + `started_at`), but the background task itself is not
@@ -545,11 +545,11 @@ profile owns its prompt template and artifact contract.
   standard ensemble protocol (Explore + Investigate point types).
   research-scan registers as a third point type with this protocol as
   its contract.
-- `../../../scripts/peer-runner.mjs` — engineer's managed peer runner;
+- `../../../../scripts/peer-runner.mjs` — engineer's managed peer runner;
   the mechanics that resolve and invoke the peer companion, write the
   ledger, and record `pending_ensemble` for command-managed ensembles.
   This protocol describes intent only; mechanics live there.
-- `../../../scripts/dispatch-peer.mjs` — engineer's blocking
+- `../../../../scripts/dispatch-peer.mjs` — engineer's blocking
   compatibility dispatcher for legacy/raw callers.
 - `companions/contract.md` v0.1.1 — wire-spec contract for both
   companion bridges (`claude-companion`, `codex-companion`).
