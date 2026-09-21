@@ -12,26 +12,29 @@
 //
 // MEASURED, on a copy of each persona plugin with its skills tree removed:
 //
-//   plugin    with registry      without registry   value assertion discriminates?
-//   engineer  default / 5 axes   default / 5 axes   NO  (on a plain `resolve`)
+//   plugin    with registry      without registry   plain `resolve` discriminates?
+//   engineer  default / 5 axes   default / 5 axes   NO
 //   designer  balanced / 7       balanced / 7       NO
 //   founder   default / 6        default / 6        NO
 //
-// The in-code fallback MIRRORS each plugin's own file default, so comparing
-// preset_id or axis count on a plain `resolve` is vacuous in all three. Two
-// discriminators survive: asking for a preset id that exists ONLY in the file
-// (engineer's `nine-axis`; the fallback has no such id), and the absence of the
-// `registry:` diagnostic on stderr. Only the second transfers to designer and
-// founder.
+// The in-code fallback MIRRORS each plugin's own file default, so a plain
+// `resolve` is vacuous in all three. Asking for a preset the FILE defines and
+// the fallback does not restores the signal, and every persona has one:
+// engineer `--preset=nine-axis` (9 vs default/5), designer `--preset=conversion`
+// (5 vs balanced/7), founder `--preset=compact` (4 vs default/6). The absence
+// of the `registry:` stderr line and `registry_fallback: false` are two further
+// discriminators. An earlier version of this header claimed only the stderr
+// clause transferred; that came from measuring the plain `resolve` alone and a
+// peer review disproved it.
 //
 // EXTENDING THIS FOR S3-S6. Each relocation adds its own two mutations against
 // that plugin's decide-registry.mjs: one leaving DEFAULT_PATH at the
 // pre-relocation root, one pointing it nowhere. Both must be KILLED by that
-// plugin's own registry test, and that test has to carry the stderr clause —
-// for designer and founder it is the ONLY clause that can fail.
+// plugin's own registry test, and that test keeps all three clauses with its
+// own preset id substituted.
 //
 // Recorded result at authoring time (2026-09-21): 2/2 as-expected, with
-// `CLI: the relocated registry is actually read` among the 23 tests R2 kills.
+// `CLI: the relocated registry is actually read` among the 23 tests E2 kills.
 
 const T = 'tests/engineer/test-decide-registry.mjs';
 const REG = 'plugins/engineer/scripts/decide-registry.mjs';

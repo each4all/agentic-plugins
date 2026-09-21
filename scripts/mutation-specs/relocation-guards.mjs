@@ -80,4 +80,40 @@ export const MUTATIONS = [
     to: 'if (false) errors.push(`${label} resolves to something that is not a file`);',
     why: 'a pointer resolving to a directory is accepted as a skill file',
   },
+
+  // ---- C. references inside the skills tree -------------------------------
+  {
+    id: 'C1', file: LINT,
+    from: '  if (await exists(root)) await checkSkillTreeReferences(root);',
+    to: '  if (false) await checkSkillTreeReferences(root);',
+    why: 'the reference check is never called — every reference case must fail',
+  },
+  {
+    id: 'C2', file: LINT,
+    from: "const SKILL_REF_MANAGED_EXT = /\\.(md|mjs|js|json|ya?ml|txt)$/;",
+    to: "const SKILL_REF_MANAGED_EXT = /.?/;",
+    why: 'the extension filter qualifies everything — the illustrative ../../etc/passwd token must stay excluded',
+  },
+  {
+    id: 'C3', file: LINT,
+    from: '      if (escapesPluginDir(target) && !repoLayoutPresent) return;',
+    to: '      if (escapesPluginDir(target)) return;',
+    why: 'KNOWN BLIND SPOT, recorded rather than claimed: dropping the layout probe so outbound '
+      + 'references are ALWAYS skipped is invisible to these fixtures, because every one of them sits '
+      + 'in a tmpdir where the layout is absent and the branch is taken anyway. Only a run against the '
+      + 'real repository tree distinguishes the two, and that is lint:plugin-shape, not this spec.',
+    expect: 'SURVIVED',
+  },
+  {
+    id: 'C4', file: LINT,
+    from: 'const SKILL_REF_ROOT_RELATIVE = /(?<![A-Za-z0-9_/.$-])(?:core\\/)?skills\\/[A-Za-z0-9_@./-]+/g;',
+    to: 'const SKILL_REF_ROOT_RELATIVE = /(?<![A-Za-z0-9_/.$-])(?:core\\/)?skills-nope\\/[A-Za-z0-9_@./-]+/g;',
+    why: 'the plugin-root-relative pattern matches nothing',
+  },
+  {
+    id: 'C5', file: LINT,
+    from: 'const repoLayoutPresent = basename(dirname(PLUGIN_DIR)) === \'plugins\'',
+    to: 'const repoLayoutPresent = true || basename(dirname(PLUGIN_DIR)) === \'plugins\'',
+    why: 'the layout is assumed rather than detected — the fixture pinning limit 2 must fail',
+  },
 ];

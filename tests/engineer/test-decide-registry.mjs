@@ -766,19 +766,26 @@ test("CLI: resolve --preset=nine-axis → 9 axes", () => {
 // MEASURED, on a copy of each plugin with its skills tree removed — this is
 // why the assertion below has three clauses rather than one:
 //
+// What a PLAIN `resolve` shows — and why it is useless:
+//
 //   plugin    with registry      without registry   discriminates?
-//   engineer  default / 5 axes   default / 5 axes   NO  (plain resolve)
+//   engineer  default / 5 axes   default / 5 axes   NO
 //   designer  balanced / 7       balanced / 7       NO
 //   founder   default / 6        default / 6        NO
 //
 // The in-code fallback MIRRORS each plugin's own file default, so comparing
-// preset_id or axis count on a plain `resolve` proves nothing anywhere. Two
-// discriminators survive: asking for a preset that exists ONLY in the file
-// (engineer has `nine-axis`; the fallback has no such id), and the absence of
-// the `registry:` diagnostic on stderr. Only the second one transfers to
-// designer and founder, whose file presets do not add an id the fallback
-// lacks — so S3/S4 adapt THIS test by keeping clause 3 and dropping clause 1
-// to whatever preset their own registry adds.
+// preset_id or axis count on a plain `resolve` proves nothing anywhere. But
+// asking for a preset the FILE defines and the fallback does not restores the
+// signal, and every persona has one — peer-found, then measured here:
+//
+//   plugin    flag                  with registry    without registry
+//   engineer  --preset=nine-axis    nine-axis / 9    default / 5
+//   designer  --preset=conversion   conversion / 5   balanced / 7
+//   founder   --preset=compact      compact / 4      default / 6
+//
+// So ALL THREE clauses below transfer to S3/S4; only the preset id changes.
+// A fourth discriminator exists too — `registry_fallback` flips false -> true
+// — and the PR5 tests above already assert it on the happy path.
 test("CLI: the relocated registry is actually read — nine-axis, 9 axes, and NO fallback diagnostic", () => {
   const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--preset=nine-axis"], { encoding: "utf8" });
   assert.equal(r.status, 0);
