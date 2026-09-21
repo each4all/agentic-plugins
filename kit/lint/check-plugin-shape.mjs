@@ -566,7 +566,7 @@ async function collectSkillFiles(dir, budget, depth = 0) {
 //
 // When the Codex manifest points the skills root somewhere other than the
 // conventional plugins/<p>/skills, Claude Code's conventional discovery must
-// find nothing there. Three clauses, each measured against Claude Code 2.1.276
+// find nothing there. Four clauses, each measured against Claude Code 2.1.276
 // with `claude --plugin-dir <dir> plugin details <name>` on a relocated copy
 // of plugins/image:
 //
@@ -582,6 +582,10 @@ async function collectSkillFiles(dir, budget, depth = 0) {
 //   3. No plugin-root SKILL.md. Clause 1 suppresses it today; stating it
 //      separately keeps a future relaxation of clause 1 from silently
 //      re-opening the path.
+//   4. The CLAUDE manifest must not declare the relocated root. Adding
+//      "skills": "./core/skills/" there restores every duplicate
+//      registration (Skills 6 -> 12, ~232 -> ~1,183 always-on tok) — the
+//      exact state the relocation removes — and nothing else notices.
 //
 // This walk is deliberately NOT collectSkillFiles. That collector stops past
 // MAX_SKILL_SCAN_DEPTH, skips hidden entries, and resolves symlinks — all
@@ -660,6 +664,23 @@ async function checkRelocatedConventionalRoot(conventionalRoot, declaredSpelling
   const rootSkill = resolve(PLUGIN_DIR, 'SKILL.md');
   if (await exists(rootSkill)) {
     add('"SKILL.md" at the plugin root would register as a Claude skill');
+  }
+
+  // Clause 4 — the CLAUDE manifest must stay silent. Codex resolves its root
+  // from its own manifest; Claude has no such key and discovers by convention,
+  // which is the entire reason relocating works. Declaring the relocated root
+  // in `.claude-plugin/plugin.json` reads like finishing the job and silently
+  // undoes it: measured on plugins/image at Claude Code 2.1.276, adding
+  // `"skills": "./core/skills/"` there took `Skills (6)` / ~232 always-on tok
+  // back to `Skills (12)` / ~1,183, every capability registered twice again,
+  // while this linter and the plugin's own shape test both stayed green.
+  if (claudeManifest && claudeManifest.skills !== undefined) {
+    add(
+      '".claude-plugin/plugin.json" declares "skills" — it must stay silent for a relocated '
+      + 'plugin. Claude Code discovers skills by convention, so naming the relocated root there '
+      + 're-registers every skill alongside its command (measured on plugins/image: Skills 6 -> 12, '
+      + '~232 -> ~1,183 always-on tok).',
+    );
   }
 
   for (const finding of findings) {
@@ -1140,6 +1161,75 @@ if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.s
     await checkRelocatedConventionalRoot(conventionalSkillsRoot, codexManifest.skills);
   }
 }
+
+// --- Command skill pointers ----------------------------------------------
+//
+// A command runbook that names its skill does so by explicit path,
+// `$CLAUDE_PLUGIN_ROOT/<root>/<verb>/SKILL.md`. That is a file read rather
+// than directory-convention registration, which is precisely what lets a
+// relocated skills root keep working — and nothing checked that the path
+// resolves. Measured on a relocated copy of plugins/image: pointing one
+// command back at the pre-relocation `skills/compose/SKILL.md` left both this
+// linter and the plugin's shape test green while the target did not exist, so
+// a half-finished move ships a command that reads nothing.
+//
+// SCOPE, stated because it is narrower than it looks. Across this repository
+// the pattern matches 43 pointers, in designer, engineer, founder, image and
+// orchestrator. `plugins/runtime` carries none — its command runbooks are
+// inline — so this rule does NOT cover runtime's own relocation, and
+// `attention` / `companions` ship no commands at all.
+const COMMAND_SKILL_POINTER = /\$CLAUDE_PLUGIN_ROOT\/([A-Za-z0-9_@./-]*SKILL\.md)/g;
+
+async function checkCommandSkillPointers() {
+  const commandsDir = resolve(PLUGIN_DIR, 'commands');
+  let entries;
+  try {
+    entries = await readdir(commandsDir, { withFileTypes: true });
+  } catch (err) {
+    // A plugin with no commands/ has no pointers to check. Every other read
+    // failure is reported rather than read as "there were none".
+    if (err.code !== 'ENOENT') {
+      errors.push(`cannot read "commands/" to check its skill pointers: ${err.message}`);
+    }
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    const abs = resolve(commandsDir, entry.name);
+    let text;
+    try {
+      text = await readFile(abs, 'utf8');
+    } catch (err) {
+      errors.push(`commands/${entry.name}: cannot read it to check its skill pointers: ${err.message}`);
+      continue;
+    }
+    const seen = new Set();
+    for (const match of text.matchAll(COMMAND_SKILL_POINTER)) {
+      const pointer = match[1];
+      if (seen.has(pointer)) continue;
+      seen.add(pointer);
+      const label = `commands/${entry.name}: skill pointer "$CLAUDE_PLUGIN_ROOT/${pointer}"`;
+      const target = resolve(PLUGIN_DIR, pointer);
+      if (escapesPluginDir(target)) {
+        errors.push(`${label} escapes the plugin directory`);
+        continue;
+      }
+      let info;
+      try {
+        info = await stat(target);
+      } catch {
+        errors.push(
+          `${label} does not resolve — the command would read nothing. A skills-root `
+          + 'relocation moves the pointer with the file.',
+        );
+        continue;
+      }
+      if (!info.isFile()) errors.push(`${label} resolves to something that is not a file`);
+    }
+  }
+}
+
+await checkCommandSkillPointers();
 
 const seenSkillFiles = new Set();
 // Agent manifests are deduplicated on their OWN real path. Keying them off
