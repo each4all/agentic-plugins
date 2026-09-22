@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.9](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.8...plugin-engineer-v0.21.9) (2026-09-22)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** relocate skills under core/ ([9702f62](https://github.com/each4all/agentic-plugins/commit/9702f622743fde832b341ccf5e8146d4bfc1b44b))
+
 ## [0.21.8](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.7...plugin-engineer-v0.21.8) (2026-09-09)
 
 
