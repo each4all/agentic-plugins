@@ -10,7 +10,7 @@ $ARGUMENTS
 Maintain one progress entry per phase and advance its status as you go
 — use the host's task-tracking tools when the session exposes them,
 and keep an inline checklist when it does not. The peer ensemble runs automatically per
-`skills/investigate/references/business-brief-ensemble.md` (research-scan
+`core/skills/investigate/references/business-brief-ensemble.md` (research-scan
 point type) — never ask the user whether to invoke the peer, and never
 direct them to run companion CLIs manually. When the companions plugin or
 peer CLI is unavailable, the ensemble degrades silently to local-only.
@@ -107,20 +107,20 @@ Determine workflow state via the host-shared canonical I/O module:
 ## Phase 1 — Execute investigate
 
 Follow the investigate skill's "When invoked by command" mode at
-`$CLAUDE_PLUGIN_ROOT/skills/investigate/SKILL.md`. The skill performs:
+`$CLAUDE_PLUGIN_ROOT/core/skills/investigate/SKILL.md`. The skill performs:
 
 - **Step 1**: Build the Business Task Profile (Persona=founder,
   Skill-profile=business-brief, Profile=general (L4 archetype), Market,
   Segment, Stage, Risk-class, Evidence-confidence per
-  `skills/_shared/references/orchestration.md`),
+  `core/skills/_shared/references/orchestration.md`),
   then confirm topic + jurisdiction + stage, draft 1–7 sub-questions,
   define scope, run the existing-directory check, and pass the privacy
   gate.
 - **Step 2**: No subagent spawning — the orchestrator runs WebSearch +
   WebFetch directly per-sub-question, using the 5 source-type tiers in
-  `skills/investigate/references/business-brief-spec.md`.
+  `core/skills/investigate/references/business-brief-spec.md`.
 - **Step 3**: Dispatch the research-scan peer ensemble per
-  `skills/investigate/references/business-brief-ensemble.md` via
+  `core/skills/investigate/references/business-brief-ensemble.md` via
   `$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs run`. The peer runs in the
   background; the orchestrator continues its own per-sub-question web
   search in parallel.
@@ -130,8 +130,8 @@ Follow the investigate skill's "When invoked by command" mode at
   Path B move to Open Questions); remap citation numbers to local capture
   order.
 - **Step 5**: Run the Audit Checklist
-  (`skills/investigate/references/business-brief-spec.md`) and save the
-  brief per `skills/investigate/references/output-file-rules.md`
+  (`core/skills/investigate/references/business-brief-spec.md`) and save the
+  brief per `core/skills/investigate/references/output-file-rules.md`
   (per-topic directory under the resolved output root, fixed filename
   `business_brief.md`).
 
@@ -144,13 +144,13 @@ from the topic and sub-questions before WebSearch / WebFetch or peer
 dispatch; only the genericized form leaves the local host. If the topic
 cannot be genericized without losing the question, run local-only or
 abort at scoping. The pre-genericization value MUST never leave the local
-host. See `skills/investigate/references/business-brief-spec.md` §
+host. See `core/skills/investigate/references/business-brief-spec.md` §
 Privacy Gate.
 
 ### Ensemble dispatch — concrete invocation
 
 Build the research-scan prompt per
-`skills/investigate/references/business-brief-ensemble.md` § Prompt
+`core/skills/investigate/references/business-brief-ensemble.md` § Prompt
 Construction (it carries the genericized topic, confirmed sub-questions,
 scope, jurisdiction, and the `<citation_contract>` + `<privacy_contract>`
 XML blocks) and spawn the peer in the background:
@@ -192,7 +192,7 @@ consumers can locate the artifact (the brief itself stays orthogonal to
 the workflow body — referenced by path only, never inlined). Workflow
 phase notes MAY carry source-of-discovery labels (`[Both]` / `[Local]` /
 `[Peer]`); the saved brief artifact MUST NOT, per
-`skills/investigate/references/business-brief-spec.md` § Ensemble Label
+`core/skills/investigate/references/business-brief-spec.md` § Ensemble Label
 Policy.
 
 ```bash
@@ -250,7 +250,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -270,7 +270,7 @@ across the decisive business axes (시장성 market-attractiveness / 단위경�
 unit-economics, per ADR-0036 SD3) + size-appropriate supporting axes,
 instead of a flat list. Resolve the decisive axes from founder's decision
 registry (`scripts/decide-registry.mjs` +
-`skills/decide/references/decision-axes.yml`), or read them inline as above
+`core/skills/decide/references/decision-axes.yml`), or read them inline as above
 when the resolver is not reachable. Bounded: only at a genuine 2+-branch
 point, never a full matrix for a trivial reversible step.
 
@@ -292,7 +292,7 @@ Output the synthesized brief summary and one of:
   dispatch ran.
 
 For the saved case, emit an **Active Next-Action Proposal** (the inline
-shape shown in `skills/investigate/SKILL.md` § Completion): typical
+shape shown in `core/skills/investigate/SKILL.md` § Completion): typical
 `selected_next` candidates are `/founder:frame` (scope a problem model
 from the brief), `/founder:decide` (choose between surveyed directions —
 name the size `--size=minor|standard|major`), or `/founder:compose`
@@ -321,4 +321,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

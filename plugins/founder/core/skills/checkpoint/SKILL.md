@@ -14,8 +14,8 @@ a venture plan, a validation backlog) where `current_phase` and
 `next_action` alone undersell the context ("left off after the
 unit-economics check; next: design the pricing experiment").
 
-It is a **meta skill** per [ADR-0010](../../../../docs/adr/0010-plugin-boundary-policy.md)
-§3 cascade ([ADR-0022](../../../../docs/adr/0022-engineer-meta-skill-category.md),
+It is a **meta skill** per [ADR-0010](../../../../../docs/adr/0010-plugin-boundary-policy.md)
+§3 cascade ([ADR-0022](../../../../../docs/adr/0022-engineer-meta-skill-category.md),
 adopted for founder per ADR-0036 SD2): not a verb (no cognitive activity),
 not a macro (no phase sequencing), but a workflow-continuity operation that
 augments `latest_checkpoint` without mutating `current_phase` or

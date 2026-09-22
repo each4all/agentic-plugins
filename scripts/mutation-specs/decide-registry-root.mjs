@@ -40,6 +40,8 @@ const T = 'tests/engineer/test-decide-registry.mjs';
 const REG = 'plugins/engineer/scripts/decide-registry.mjs';
 const T_DESIGNER = 'tests/designer/test-decide-registry.mjs';
 const REG_DESIGNER = 'plugins/designer/scripts/decide-registry.mjs';
+const T_FOUNDER = 'tests/founder/test-decide-registry.mjs';
+const REG_FOUNDER = 'plugins/founder/scripts/decide-registry.mjs';
 
 /** The post-relocation constant every mutation starts from — identical in each
  *  persona, which is why the same two mutations transfer unchanged. */
@@ -78,5 +80,26 @@ export const MUTATIONS = [
     from: CURRENT,
     to: 'resolve(HERE, "..", "core", "skills-nope", "decide", "references", "decision-axes.yml")',
     why: 'designer DEFAULT_PATH points at nothing at all',
+  },
+
+  // ---- founder (S4) -------------------------------------------------------
+  // Founder repeats designer's vacuity exactly: the in-code fallback is
+  // preset_id "default" with 6 axes, which is also what the FILE's default
+  // preset resolves to, so the two readings are identical down to the exit
+  // code. `--preset=compact` (4 axes, file-only) plus the stderr and
+  // `registry_fallback` clauses are what separate them. Founder's incumbent
+  // `--size=minor` test already discriminates on the first two clauses, so
+  // these mutations are expected to die to more than the new proof alone.
+  {
+    id: 'F1', file: REG_FOUNDER, tests: [T_FOUNDER],
+    from: CURRENT,
+    to: 'resolve(HERE, "..", "skills", "decide", "references", "decision-axes.yml")',
+    why: 'founder DEFAULT_PATH left at the pre-relocation root, which is now a tombstone',
+  },
+  {
+    id: 'F2', file: REG_FOUNDER, tests: [T_FOUNDER],
+    from: CURRENT,
+    to: 'resolve(HERE, "..", "core", "skills-nope", "decide", "references", "decision-axes.yml")',
+    why: 'founder DEFAULT_PATH points at nothing at all',
   },
 ];

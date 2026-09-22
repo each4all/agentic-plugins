@@ -22,7 +22,7 @@ NOT bootstrap a new workflow — use one of the six verbs
 `/founder:compose`, `/founder:critique`, `/founder:refine`) for that.
 
 **Cognitive runbook + the Host-availability matrix live in
-`$CLAUDE_PLUGIN_ROOT/skills/checkpoint/SKILL.md`** per ADR-0022. This
+`$CLAUDE_PLUGIN_ROOT/core/skills/checkpoint/SKILL.md`** per ADR-0022. This
 command file owns the Claude-host bash bootstrap and the `state.mjs` writes
 below; the summary-length guidance, privacy note, and host-availability
 matrix delegate to SKILL.md via the matching `§ Phase N` pointer.

@@ -6,7 +6,7 @@ not static counts.
 
 **Plugin boundary note**: this orchestration framework is
 founder-internal (lives at
-`plugins/founder/skills/_shared/references/`). Per ADR-0010 §5,
+`plugins/founder/core/skills/_shared/references/`). Per ADR-0010 §5,
 cross-plugin imports are forbidden — founder ships its **own copy** of
 the orchestration pattern rather than importing engineer's
 (ADR-0029 §Neutral copy/adapt rule). The business Task Profile fields

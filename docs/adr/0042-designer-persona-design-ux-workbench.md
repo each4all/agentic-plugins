@@ -241,7 +241,7 @@ all**: an archetype preset evaluates only the axes its archetype turns on:
   ([ADR-0027](0027-decide-skill-multi-axis-evolution.md)); `gate` is a
   persona-local additive field the copied reader already accepts —
   exactly how founder encodes its regulatory/safety veto
-  (`plugins/founder/skills/decide/references/decision-axes.yml`:
+  (`plugins/founder/core/skills/decide/references/decision-axes.yml`:
   `role: supporting` + `gate: true`). A hard accessibility fail (WCAG
   A/AA) is checked FIRST and vetoes decisive strength; design that
   excludes users is not a tradeoff to fold into the plan. The `gate`

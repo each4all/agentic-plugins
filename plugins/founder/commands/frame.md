@@ -89,14 +89,14 @@ ownership token + stale window per ADR-0011 §3, and writes only persona
 ## Phase 1 — Execute frame
 
 Follow the frame skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/frame/SKILL.md`. The skill articulates the
+`$CLAUDE_PLUGIN_ROOT/core/skills/frame/SKILL.md`. The skill articulates the
 business opportunity model: problem/opportunity, customer + job-to-be-done,
 value hypothesis, business-model sketch, constraints, validation criteria,
 key risks, out-of-scope items.
 
 Frame is single-mode (no `--profile` argument). Business context flows
 through the Business Task Profile per
-`skills/_shared/references/orchestration.md`.
+`core/skills/_shared/references/orchestration.md`.
 
 ### Privacy gate (before any external call)
 
@@ -104,13 +104,13 @@ PRIVACY GATE: proprietary venture concepts, interview/customer data, and
 unpublished business material pass an explicit gate before BOTH web
 search AND peer-host dispatch. Genericize before the peer prompt; the
 pre-genericization value MUST never leave the local host. See
-`skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Frame point type)
 
 Build the Frame prompt and write it to a tempfile, then dispatch in the
 background. The prompt template + synthesis contract live in
-`skills/_shared/references/ensemble-protocol.md` §Frame:
+`core/skills/_shared/references/ensemble-protocol.md` §Frame:
 
 ```xml
 <task>
@@ -166,10 +166,10 @@ Graceful degradation: companion missing or exit code 3
 (`peer_cli_not_found` / `peer_unauthenticated` / `peer_invocation_error`)
 → proceed local-only and record "### Ensemble degraded:" in the body.
 
-(founder's `skills/_shared/references/ensemble-protocol.md` §Frame carries
+(founder's `core/skills/_shared/references/ensemble-protocol.md` §Frame carries
 the formal prompt template + synthesis contract; the Frame dispatch shape
 above mirrors the research-scan dispatch in
-`skills/investigate/references/business-brief-ensemble.md`.)
+`core/skills/investigate/references/business-brief-ensemble.md`.)
 
 ---
 
@@ -234,7 +234,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -253,7 +253,7 @@ surface a **compact multi-axis lens** across the decisive business axes
 (시장성 market-attractiveness / 단위경제 unit-economics, per ADR-0036 SD3)
 + size-appropriate supporting axes, instead of a flat list. Resolve the
 sized axis set from founder's decision registry
-(`skills/decide/references/decision-axes.yml`), or read the decisive axes
+(`core/skills/decide/references/decision-axes.yml`), or read the decisive axes
 inline as above when the resolver is not reachable. Bounded: only at a
 genuine 2+-branch point.
 
@@ -270,7 +270,7 @@ Output the synthesized opportunity model and one of:
   verbs.
 
 Then emit an **Active Next-Action Proposal** (the inline shape shown in
-`skills/frame/SKILL.md` § Completion): typical `selected_next` candidates
+`core/skills/frame/SKILL.md` § Completion): typical `selected_next` candidates
 are `/founder:decide` when 2+ directions need comparison (name the size
 `--size=minor|standard|major`), or `/founder:compose` when the direction
 is already obvious. Do not end with a hardcoded "next: X".
@@ -297,4 +297,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

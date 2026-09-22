@@ -8,7 +8,7 @@ dispatches the peer for independent parallel analysis, and synthesizes
 both perspectives into a unified business result.
 
 **Plugin boundary note**: this is founder's **own copy** of the ensemble
-protocol (lives at `plugins/founder/skills/_shared/references/`). Per
+protocol (lives at `plugins/founder/core/skills/_shared/references/`). Per
 ADR-0010 §5 cross-plugin imports are forbidden — founder ships its own
 copy rather than importing engineer's (ADR-0029 §Neutral copy/adapt
 rule). The **mechanics** (Launch / Collect / Synthesize, the
@@ -67,8 +67,8 @@ prompt itself rather than relying on separate subcommands.
 The orchestrator is the currently-invoking host; the peer is the other
 host. Skills never hard-code one side or the other — they refer to
 *orchestrator* and *peer*. Discovery + dispatch mechanics live in
-`../../../scripts/peer-runner.mjs` (the managed runner for
-command-runbook ensembles), with `../../../scripts/dispatch-peer.mjs`
+`../../../../scripts/peer-runner.mjs` (the managed runner for
+command-runbook ensembles), with `../../../../scripts/dispatch-peer.mjs`
 retained as the blocking compatibility surface. On discovery failure the
 dispatch is skipped silently per *Failure Handling* below.
 
@@ -116,7 +116,7 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
    so the genericized prompt never crosses shell parsing, process argv,
    or `ps aux`.
 5. Invoke the companion in **JSON envelope mode** through
-   `../../../scripts/peer-runner.mjs run`, which records the matching
+   `../../../../scripts/peer-runner.mjs run`, which records the matching
    `pending_ensemble` row and writes raw stdout/stderr plus the parsed
    envelope under the hidden peer-run ledger. The orchestrator SHOULD
    background the call (Bash `run_in_background` on Claude; the `task`
@@ -178,7 +178,7 @@ artifact should not be able to tell whether the ensemble ran at all.
 ### State Bookkeeping (Stage 2.5+)
 
 Ensemble dispatch and synthesis are recorded in **two complementary
-locations**, both through founder's `../../../scripts/state.mjs`:
+locations**, both through founder's `../../../../scripts/state.mjs`:
 
 1. **Frontmatter** — programmatic bookkeeping via the `pending_ensemble`
    and `ensemble_results` schema fields. `ensemble-pending` records that
@@ -410,7 +410,7 @@ Bidirectional invocation pattern above.
 - **Presence rule**: The `<axis_awareness>` block is emitted only when
   **both** hold: (1) the orchestrator resolved a business preset —
   `registry_fallback === false` on the `ResolvedDecisionContext` written
-  by `../../../scripts/decide-registry.mjs resolve` (per ADR-0027 §5.6) —
+  by `../../../../scripts/decide-registry.mjs resolve` (per ADR-0027 §5.6) —
   AND (2) the orchestrator is in **command mode** (`/founder:decide` or
   `$founder:decide`). Auto-activated mode never reaches a peer dispatch
   (per the decide SKILL's auto-activated path), so the block is omitted
@@ -663,7 +663,7 @@ the peer receives the genericized draft artifact and returns gaps.
   `../../investigate/references/business-brief-ensemble.md` (the full
   bidirectional protocol — privacy gate, the 5-tier business source
   taxonomy, citation remapping, Path A / Path B, dispatch via
-  `../../../scripts/peer-runner.mjs`). This entry exists for parallelism
+  `../../../../scripts/peer-runner.mjs`). This entry exists for parallelism
   with Explore / Investigate; the research-scan prompt and synthesis
   machinery live in that file. Do NOT duplicate it here — cross-reference
   it from the investigate command's business-brief profile.
@@ -865,10 +865,10 @@ whether the ensemble ran.
   `[Local]` / `[Peer]` / `[Both]` from saved artifacts.
 - `../../decide/references/decision-axes.yml` — the business decision-axis
   registry the Brainstorm point's `<axis_awareness>` block reads.
-- `../../../scripts/peer-runner.mjs` — founder's managed peer runner
+- `../../../../scripts/peer-runner.mjs` — founder's managed peer runner
   (resolves + invokes the companion, writes the ledger, records
   `pending_ensemble`).
-- `../../../scripts/dispatch-peer.mjs` — founder's blocking compatibility
+- `../../../../scripts/dispatch-peer.mjs` — founder's blocking compatibility
   dispatcher for legacy/raw callers.
 - `companions/contract.md` v0.1.1 — wire-spec contract for both companion
   bridges (`claude-companion`, `codex-companion`).

@@ -301,6 +301,44 @@ test("CLI: resolve --size=minor → compact (4 axes)", () => {
   assert.equal(parsed.axes.length, 4);
 });
 
+// ---------- the relocation proof (2026-09-18 Amendment to ADR-0006) ----------
+//
+// `decide-registry.mjs` builds DEFAULT_PATH relative to scripts/, so moving the
+// skills tree under core/ is exactly the kind of change that breaks it silently:
+// the loader falls back to an in-code preset, exits 0, and prints well-formed
+// JSON on stdout.
+//
+// Founder is a case where the naive assertion is vacuous. Its in-code fallback
+// mirrors its own file default — preset_id "default" with 6 axes — so with the
+// registry ABSENT, `--preset=default` returns a reading identical to success,
+// exit code included. Measured as a control in an isolated copy with the skills
+// tree deleted: the request degrades to default/6, `registry_fallback` flips to
+// true, and one line appears on stderr — "registry: registry file missing at
+// <path>; falling back to in-code default preset".
+//
+// The sibling --size=minor test above already discriminates on clauses 1-2: it
+// would read default/6 with the file absent. This test names the proof and adds
+// the two clauses a value assertion cannot see. Unlike designer's, it needs no
+// environment neutralization — founder's CLI reads no environment variable.
+test("CLI: the relocated registry is actually read — compact, 4 axes, and NO fallback diagnostic", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--preset=compact", "--", "x"], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const parsed = JSON.parse(r.stdout);
+  // Clause 1 — a preset id that exists ONLY in the registry file; the in-code
+  // fallback defines no "compact" and silently yields default/6.
+  assert.equal(parsed.preset_id, "compact");
+  // Clause 2 — its exact shape, so a truncated or partially-parsed file fails.
+  assert.equal(parsed.axes.length, 4);
+  // Clause 3 — the fallback announces itself here and nowhere a value
+  // assertion can see, which is the whole reason this clause exists.
+  assert.ok(
+    !r.stderr.includes("registry:"),
+    `decide-registry fell back to the in-code preset instead of reading the relocated file; stderr: ${r.stderr}`,
+  );
+  // Clause 4 — the flag the resolver sets on the same finding.
+  assert.equal(parsed.registry_fallback, false);
+});
+
 test("CLI: invalid flag → exit 2 (parser halt)", () => {
   const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--bogus=1"], { encoding: "utf8" });
   assert.equal(r.status, 2);

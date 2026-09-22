@@ -81,9 +81,9 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute refine
 
 Follow the refine skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/refine/SKILL.md`. Refine is single-mode (no
+`$CLAUDE_PLUGIN_ROOT/core/skills/refine/SKILL.md`. Refine is single-mode (no
 `--profile` argument). Business context flows through the Business Task
-Profile per `skills/_shared/references/orchestration.md`.
+Profile per `core/skills/_shared/references/orchestration.md`.
 
 Refine applies critique findings or feedback to the business artifact and
 verifies the revision holds together. The upstream contract is:
@@ -103,12 +103,12 @@ PRIVACY GATE: proprietary venture concepts, interview/customer data, and
 unpublished business material pass an explicit gate before BOTH web
 search AND peer-host dispatch. Genericize the revision before the peer
 prompt; the pre-genericization value MUST never leave the local host. See
-`skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Refine-verify point type)
 
 Build the Refine-verify prompt per
-`skills/_shared/references/ensemble-protocol.md` §Refine-verify (the peer
+`core/skills/_shared/references/ensemble-protocol.md` §Refine-verify (the peer
 receives the **genericized** before→after of the changed sections and
 verifies the revision resolves the finding without introducing a new
 inconsistency or a new gate exposure), write it to a tempfile, and
@@ -199,7 +199,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -216,7 +216,7 @@ If refine surfaces a **genuine 2+-branch decision point** — two viable
 remediation directions, or two ways to close the same gap — surface a
 **compact multi-axis lens** across the decisive business axes (시장성 /
 단위경제) + the veto gates, instead of a flat list, reading
-`skills/decide/references/decision-axes.yml` (the
+`core/skills/decide/references/decision-axes.yml` (the
 `scripts/decide-registry.mjs resolve --size=minor` compact 4-axis set).
 Bounded: only at a genuine 2+-branch point, never the full matrix for a
 trivial reversible step. A weightier fork should route to
@@ -234,7 +234,7 @@ Output the refinement summary (applied / verified / deferred) and one of:
   warrants user input before proceeding.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
-`skills/refine/SKILL.md` § Completion): typical `selected_next` is
+`core/skills/refine/SKILL.md` § Completion): typical `selected_next` is
 `/founder:critique` to confirm the revision with another review pass — or
 "the plan is sound, proceed" when the change was small and reconciles. Do
 not end with a hardcoded "next: X".
@@ -261,4 +261,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

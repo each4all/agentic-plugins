@@ -81,7 +81,7 @@ rm -f "$FIND_ERR"
 ## Phase 0.5 — Resolve business decision axes from the registry (ADR-0036 SD3 / ADR-0027 §5.6)
 
 Parse `$ARGUMENTS` into flags + body and resolve the preset from
-`skills/decide/references/decision-axes.yml`. The resulting
+`core/skills/decide/references/decision-axes.yml`. The resulting
 `ResolvedDecisionContext` JSON is stashed at
 `$AGENTIC_DECIDE_CONTEXT_FILE` for the skill body to consume.
 
@@ -133,7 +133,7 @@ The skill body reads `$AGENTIC_DECIDE_CONTEXT_FILE` to obtain:
 - `axes[]` — ordered axis descriptors (id, en/ko labels, question, role,
   `gate`) for the resolved preset. `gate: true` marks a **veto gate**
   (규제노출 / 안전리스크) — a hard fail vetoes the option regardless of the
-  decisive axes (see `skills/decide/SKILL.md` @decide:recommendation-rule).
+  decisive axes (see `core/skills/decide/SKILL.md` @decide:recommendation-rule).
 - `preset_id` — the active preset id (default | compact).
 - `size` / `size_explicit` — the resolved ritual tier (minor | standard |
   major). When `--size` was not passed, `size` defaults to `"standard"`.
@@ -151,7 +151,7 @@ registry is a graceful-degradation artifact per ADR-0027 §1.6.
 ## Phase 1 — Execute decide
 
 Follow the decide skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/decide/SKILL.md`. The skill performs 2+
+`$CLAUDE_PLUGIN_ROOT/core/skills/decide/SKILL.md`. The skill performs 2+
 business-direction generation, evidence-based comparison across **the axes
 resolved from `$AGENTIC_DECIDE_CONTEXT_FILE`** (market / unit-economics /
 willingness-to-pay / competitive-intensity, plus the regulatory + safety
@@ -160,7 +160,7 @@ makes the final call.
 
 Decide is single-mode (no `--profile` argument). Business sub-discipline
 context flows through the Business Task Profile per
-`skills/_shared/references/orchestration.md`.
+`core/skills/_shared/references/orchestration.md`.
 
 ### Privacy gate (before any external call)
 
@@ -168,7 +168,7 @@ PRIVACY GATE: proprietary venture concepts, interview/customer data, and
 unpublished business material pass an explicit gate before BOTH web
 search AND peer-host dispatch. Genericize before the peer prompt; the
 pre-genericization value MUST never leave the local host. See
-`skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Brainstorm point type)
 
@@ -176,9 +176,9 @@ Build the Brainstorm prompt (independent generation of 2-3 business
 directions with tradeoffs across the resolved axes), write it to a
 tempfile, and dispatch in the background. The prompt template (with the
 `<axis_awareness>` business-axis block) + synthesis contract live in
-`skills/_shared/references/ensemble-protocol.md` §Brainstorm; the shape
+`core/skills/_shared/references/ensemble-protocol.md` §Brainstorm; the shape
 mirrors the research-scan dispatch in
-`skills/investigate/references/business-brief-ensemble.md`:
+`core/skills/investigate/references/business-brief-ensemble.md`:
 
 ```bash
 PROMPT_FILE="$(mktemp -t founder-decide-prompt.XXXXXX).xml"
@@ -266,7 +266,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -302,7 +302,7 @@ Output the comparison and one of:
   evidence; pause until the user selects.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
-`skills/decide/SKILL.md` § Completion): typical `selected_next` is
+`core/skills/decide/SKILL.md` § Completion): typical `selected_next` is
 `/founder:compose` to produce the planning artifact for the chosen
 direction — or `/founder:investigate` if a decisive evidence gap (or an
 unresolved gate) surfaced, or `/founder:frame` if deciding reframed the
@@ -330,4 +330,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

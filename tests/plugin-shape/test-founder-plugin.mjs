@@ -33,11 +33,19 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/founder');
+
+// Where this plugin's skills actually live, read from its own Codex manifest
+// rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
+// core/skills/, and `resolveSkillsRoot` throws rather than falling back, so a
+// broken or missing declaration fails this file loudly at load instead of
+// leaving every path below pointing at a directory nothing writes to.
+const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
 // ADR-0036 was Accepted at PR7 (the real-topic dogfood validated founder).
 // The user-facing surfaces must now be FREE of this incubating marker — the
@@ -74,7 +82,7 @@ const REQUIRED_RESOLVER = [
   'scripts/lib/decide-scores.mjs',
   'scripts/lib/decide-weights.mjs',
   'scripts/lib/decide-sensitivity.mjs',
-  'skills/decide/references/decision-axes.yml',
+  `${SKILLS_REL}/decide/references/decision-axes.yml`,
 ];
 
 async function readJSON(path) {
@@ -144,7 +152,7 @@ describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () =>
     const json = await readJSON(path);
     strictEqual(json.hooks, './adapters/codex/hooks/hooks.json',
       'PR2 machinery hooks remain exposed in the Codex manifest');
-    strictEqual(json.skills, './skills/',
+    strictEqual(json.skills, './core/skills/',
       'PR3 lands the first SKILL.md surfaces — the Codex manifest must expose the skills path');
     ok(json.interface && typeof json.interface === 'object',
       'PR3 lands a verb surface — the Codex manifest must carry an interface block');
@@ -207,46 +215,46 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
   const REQUIRED_SURFACES = [
     'commands/investigate.md',
     'commands/frame.md',
-    'skills/investigate/SKILL.md',
-    'skills/investigate/agents/openai.yaml',
-    'skills/investigate/references/business-brief-spec.md',
-    'skills/investigate/references/business-brief-ensemble.md',
-    'skills/investigate/references/output-file-rules.md',
-    'skills/frame/SKILL.md',
-    'skills/frame/agents/openai.yaml',
-    'skills/_shared/references/orchestration.md',
+    `${SKILLS_REL}/investigate/SKILL.md`,
+    `${SKILLS_REL}/investigate/agents/openai.yaml`,
+    `${SKILLS_REL}/investigate/references/business-brief-spec.md`,
+    `${SKILLS_REL}/investigate/references/business-brief-ensemble.md`,
+    `${SKILLS_REL}/investigate/references/output-file-rules.md`,
+    `${SKILLS_REL}/frame/SKILL.md`,
+    `${SKILLS_REL}/frame/agents/openai.yaml`,
+    `${SKILLS_REL}/_shared/references/orchestration.md`,
     // PR4 decide + compose surfaces
     'commands/decide.md',
     'commands/compose.md',
-    'skills/decide/SKILL.md',
-    'skills/decide/agents/openai.yaml',
-    'skills/compose/SKILL.md',
-    'skills/compose/agents/openai.yaml',
+    `${SKILLS_REL}/decide/SKILL.md`,
+    `${SKILLS_REL}/decide/agents/openai.yaml`,
+    `${SKILLS_REL}/compose/SKILL.md`,
+    `${SKILLS_REL}/compose/agents/openai.yaml`,
     // PR5 critique + refine surfaces + the ensemble-protocol templates
     'commands/critique.md',
     'commands/refine.md',
-    'skills/critique/SKILL.md',
-    'skills/critique/agents/openai.yaml',
-    'skills/refine/SKILL.md',
-    'skills/refine/agents/openai.yaml',
-    'skills/_shared/references/ensemble-protocol.md',
+    `${SKILLS_REL}/critique/SKILL.md`,
+    `${SKILLS_REL}/critique/agents/openai.yaml`,
+    `${SKILLS_REL}/refine/SKILL.md`,
+    `${SKILLS_REL}/refine/agents/openai.yaml`,
+    `${SKILLS_REL}/_shared/references/ensemble-protocol.md`,
     // PR6 start lifecycle macro + resume/checkpoint/peer-now meta skills
     'commands/start.md',
-    'skills/start/SKILL.md',
-    'skills/start/agents/openai.yaml',
+    `${SKILLS_REL}/start/SKILL.md`,
+    `${SKILLS_REL}/start/agents/openai.yaml`,
     'commands/resume.md',
-    'skills/resume/SKILL.md',
-    'skills/resume/agents/openai.yaml',
+    `${SKILLS_REL}/resume/SKILL.md`,
+    `${SKILLS_REL}/resume/agents/openai.yaml`,
     'commands/checkpoint.md',
-    'skills/checkpoint/SKILL.md',
-    'skills/checkpoint/agents/openai.yaml',
+    `${SKILLS_REL}/checkpoint/SKILL.md`,
+    `${SKILLS_REL}/checkpoint/agents/openai.yaml`,
     'commands/peer-now.md',
-    'skills/peer-now/SKILL.md',
-    'skills/peer-now/agents/openai.yaml',
+    `${SKILLS_REL}/peer-now/SKILL.md`,
+    `${SKILLS_REL}/peer-now/agents/openai.yaml`,
     // ADR-0043 S3 — the shared session-handoff wiring runbook (ADR-0039 §7
     // recipe item; documents the code-emitted footer, the fail-closed
     // baseline, and the footer-rendered marker contract).
-    'skills/_shared/references/session-handoff.md',
+    `${SKILLS_REL}/_shared/references/session-handoff.md`,
   ];
 
   for (const rel of REQUIRED_SURFACES) {
@@ -331,19 +339,19 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
 
 describe('plugins/founder — verb surface shape (PR3/PR4/PR5)', () => {
   for (const verb of VERB_SKILLS) {
-    it(`skills/${verb}/SKILL.md frontmatter name = ${verb} (folder ↔ frontmatter consistency)`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+    it(`${SKILLS_REL}/${verb}/SKILL.md frontmatter name = ${verb} (folder ↔ frontmatter consistency)`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'SKILL.md'), 'utf8');
       const fm = frontmatter(text);
-      ok(fm, `skills/${verb}/SKILL.md has no YAML frontmatter`);
+      ok(fm, `${SKILLS_REL}/${verb}/SKILL.md has no YAML frontmatter`);
       const re = new RegExp(`^name:\\s*${verb}\\s*$`, 'm');
-      ok(re.test(fm), `skills/${verb}/SKILL.md frontmatter name != "${verb}"`);
-      match(fm, /description:/, `skills/${verb}/SKILL.md frontmatter must carry a description`);
+      ok(re.test(fm), `${SKILLS_REL}/${verb}/SKILL.md frontmatter name != "${verb}"`);
+      match(fm, /description:/, `${SKILLS_REL}/${verb}/SKILL.md frontmatter must carry a description`);
     });
 
-    it(`skills/${verb}/agents/openai.yaml display_name names the verb`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'agents/openai.yaml'), 'utf8');
+    it(`${SKILLS_REL}/${verb}/agents/openai.yaml display_name names the verb`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'agents/openai.yaml'), 'utf8');
       const m = text.match(/display_name:\s*"([^"]+)"/);
-      ok(m, `skills/${verb}/agents/openai.yaml must declare interface.display_name`);
+      ok(m, `${SKILLS_REL}/${verb}/agents/openai.yaml must declare interface.display_name`);
       ok(m[1].toLowerCase().includes(verb),
         `openai.yaml display_name "${m[1]}" must name the verb "${verb}"`);
       ok(m[1].toLowerCase().includes('founder'),
@@ -384,7 +392,7 @@ describe('plugins/founder — verb surface shape (PR3/PR4/PR5)', () => {
 });
 
 describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)', () => {
-  const SPEC = 'skills/investigate/references/business-brief-spec.md';
+  const SPEC = `${SKILLS_REL}/investigate/references/business-brief-spec.md`;
 
   it('declares the 5-tier business source taxonomy', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
@@ -412,9 +420,9 @@ describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)'
     // investigate prompt guard (command + skill). Checked
     // whitespace-normalized so line-wrapping does not break the match.
     const REQUIRED = [
-      'skills/investigate/references/business-brief-spec.md',
+      `${SKILLS_REL}/investigate/references/business-brief-spec.md`,
       'commands/investigate.md',
-      'skills/investigate/SKILL.md',
+      `${SKILLS_REL}/investigate/SKILL.md`,
     ];
     for (const rel of REQUIRED) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
@@ -425,9 +433,9 @@ describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)'
 
   it('the privacy gate sentinel also reaches the ensemble dispatch + frame surfaces', async () => {
     const ALSO = [
-      'skills/investigate/references/business-brief-ensemble.md',
+      `${SKILLS_REL}/investigate/references/business-brief-ensemble.md`,
       'commands/frame.md',
-      'skills/frame/SKILL.md',
+      `${SKILLS_REL}/frame/SKILL.md`,
     ];
     for (const rel of ALSO) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
@@ -441,7 +449,7 @@ describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)'
 // point templates) + the privacy gate restated on the ensemble dispatch
 // path (ADR-0036 SD6 / F7).
 describe('plugins/founder — ensemble protocol + privacy gate reach (PR5 / ADR-0036 SD6/F7)', () => {
-  const ENSEMBLE = 'skills/_shared/references/ensemble-protocol.md';
+  const ENSEMBLE = `${SKILLS_REL}/_shared/references/ensemble-protocol.md`;
 
   // The nine canonical ensemble point types. Each must be present as a
   // section heading so the verb commands can cross-reference it by §name.
@@ -491,11 +499,11 @@ describe('plugins/founder — ensemble protocol + privacy gate reach (PR5 / ADR-
     // dispatches a peer. Checked whitespace-normalized so markdown
     // line-wrapping does not break the match.
     const REQUIRED = [
-      'skills/_shared/references/ensemble-protocol.md',
+      `${SKILLS_REL}/_shared/references/ensemble-protocol.md`,
       'commands/critique.md',
-      'skills/critique/SKILL.md',
+      `${SKILLS_REL}/critique/SKILL.md`,
       'commands/refine.md',
-      'skills/refine/SKILL.md',
+      `${SKILLS_REL}/refine/SKILL.md`,
     ];
     for (const rel of REQUIRED) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
@@ -505,13 +513,13 @@ describe('plugins/founder — ensemble protocol + privacy gate reach (PR5 / ADR-
   });
 
   it('critique declares its two profiles (default review + red-team pre-mortem)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'critique/SKILL.md'), 'utf8');
     ok(/red-team/.test(text), 'critique SKILL must declare the red-team profile');
     match(text, /pre-mortem/i, 'critique SKILL must describe the adversarial pre-mortem');
   });
 
   it('refine is single-mode (no --profile branch) like decide/frame', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'refine/SKILL.md'), 'utf8');
     match(text, /single-mode/i, 'refine SKILL must state it is single-mode');
   });
 
@@ -534,18 +542,18 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
   const MACRO_AND_META = ['start', 'resume', 'checkpoint', 'peer-now'];
 
   for (const name of MACRO_AND_META) {
-    it(`skills/${name}/SKILL.md frontmatter name = ${name}`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', name, 'SKILL.md'), 'utf8');
+    it(`${SKILLS_REL}/${name}/SKILL.md frontmatter name = ${name}`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, name, 'SKILL.md'), 'utf8');
       const fm = frontmatter(text);
-      ok(fm, `skills/${name}/SKILL.md has no YAML frontmatter`);
+      ok(fm, `${SKILLS_REL}/${name}/SKILL.md has no YAML frontmatter`);
       ok(new RegExp(`^name:\\s*${name}\\s*$`, 'm').test(fm),
-        `skills/${name}/SKILL.md frontmatter name != "${name}"`);
+        `${SKILLS_REL}/${name}/SKILL.md frontmatter name != "${name}"`);
     });
 
-    it(`skills/${name}/agents/openai.yaml display_name names the skill + persona`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', name, 'agents/openai.yaml'), 'utf8');
+    it(`${SKILLS_REL}/${name}/agents/openai.yaml display_name names the skill + persona`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, name, 'agents/openai.yaml'), 'utf8');
       const m = text.match(/display_name:\s*"([^"]+)"/);
-      ok(m, `skills/${name}/agents/openai.yaml must declare interface.display_name`);
+      ok(m, `${SKILLS_REL}/${name}/agents/openai.yaml must declare interface.display_name`);
       ok(m[1].toLowerCase().includes(name),
         `openai.yaml display_name "${m[1]}" must name the skill "${name}"`);
       ok(m[1].toLowerCase().includes('founder'),
@@ -562,9 +570,9 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
 
   it('every macro/meta SKILL declares a Host-availability matrix (ADR-0022)', async () => {
     for (const name of MACRO_AND_META) {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', name, 'SKILL.md'), 'utf8');
+      const text = await readFile(skillsPath(PLUGIN_ROOT, name, 'SKILL.md'), 'utf8');
       match(text, /Host availability/i,
-        `skills/${name}/SKILL.md must declare a Host-availability matrix (ADR-0022)`);
+        `${SKILLS_REL}/${name}/SKILL.md must declare a Host-availability matrix (ADR-0022)`);
     }
   });
 
@@ -577,9 +585,9 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
     // require/set form is forbidden.
     const REQUIRE_FORM = /\[features\]\.plugin_hooks|plugin_hooks\s*[:=]\s*true/;
     for (const name of MACRO_AND_META) {
-      const skillText = await readFile(resolve(PLUGIN_ROOT, 'skills', name, 'SKILL.md'), 'utf8');
+      const skillText = await readFile(skillsPath(PLUGIN_ROOT, name, 'SKILL.md'), 'utf8');
       ok(!REQUIRE_FORM.test(skillText),
-        `skills/${name}/SKILL.md must not require the removed plugin_hooks key — use [features].hooks + /hooks trust`);
+        `${SKILLS_REL}/${name}/SKILL.md must not require the removed plugin_hooks key — use [features].hooks + /hooks trust`);
       const cmdText = await readFile(resolve(PLUGIN_ROOT, 'commands', `${name}.md`), 'utf8');
       ok(!REQUIRE_FORM.test(cmdText),
         `commands/${name}.md must not require the removed plugin_hooks key`);
@@ -590,9 +598,9 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
     // The macro plan requires the privacy gate restated on peer-now/start —
     // both dispatch to the peer host (and start also runs web search).
     for (const rel of [
-      'skills/peer-now/SKILL.md',
+      `${SKILLS_REL}/peer-now/SKILL.md`,
       'commands/peer-now.md',
-      'skills/start/SKILL.md',
+      `${SKILLS_REL}/start/SKILL.md`,
       'commands/start.md',
     ]) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
@@ -602,7 +610,7 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
   });
 
   it('start declares itself a lifecycle macro, not a 7th verb (ADR-0020 §Sub-decision 1)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/start/SKILL.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'start/SKILL.md'), 'utf8');
     match(text, /lifecycle macro/i,
       'start SKILL must declare itself a lifecycle macro — the six-verb enum is unchanged');
     // The start command bootstraps with workflow_type=start (the shape
@@ -669,20 +677,34 @@ describe('plugins/founder — de-incubated surface (PR7 / ADR-0036 Accepted)', (
     /later roadmap PRs/i,
   ];
 
+  // Resolved, not spelled. Naming the conventional root by hand is what made
+  // this scan walk a tombstone after the ADR-0006 Amendment move: every
+  // assertion still ran, over the one README left behind. The scan also counts
+  // what it opened, so a root that resolves to an empty or wrong directory
+  // fails loudly instead of reporting no offenders.
+  const SURFACE_ROOTS = [resolve(PLUGIN_ROOT, 'commands'), resolveSkillsRoot(PLUGIN_ROOT)];
+
   it('the founder command + skill surface carries no stale build-phase forward-references', async () => {
     const offenders = [];
-    for (const root of ['commands', 'skills']) {
-      const entries = await readdir(resolve(PLUGIN_ROOT, root), { recursive: true, withFileTypes: true });
+    let scanned = 0;
+    for (const root of SURFACE_ROOTS) {
+      const entries = await readdir(root, { recursive: true, withFileTypes: true });
       for (const ent of entries) {
         if (!ent.isFile() || !ent.name.endsWith('.md')) continue;
         const parent = ent.parentPath ?? ent.path;
         const full = resolve(parent, ent.name);
+        scanned += 1;
         const text = await readFile(full, 'utf8');
         for (const re of STALE_BUILD_PHRASES) {
           if (re.test(text)) offenders.push(`${full.slice(PLUGIN_ROOT.length + 1)} :: ${re.source}`);
         }
       }
     }
+    // Non-vacuity: a scan root that resolves to an empty or wrong directory
+    // reports no offenders, which is indistinguishable from a clean surface.
+    // The ten commands and the relocated tree together hold well over 20
+    // markdown files; the tombstone alone holds one.
+    ok(scanned >= 20, `the surface scan opened only ${scanned} files — a root resolving to nothing reports no offenders`);
     deepStrictEqual(offenders, [],
       `stale build-phase forward-references must be removed now that ADR-0036 is Accepted:\n  ${offenders.join('\n  ')}`);
   });
@@ -756,7 +778,7 @@ describe('plugins/founder — repo wiring (self-guard)', () => {
 // cross-package contracts (marker shape, publish-needed mapping) are pinned so
 // they cannot silently drift out of the runbook.
 describe('plugins/founder — session-handoff runbook (ADR-0043 S3)', () => {
-  const RUNBOOK = 'skills/_shared/references/session-handoff.md';
+  const RUNBOOK = `${SKILLS_REL}/_shared/references/session-handoff.md`;
 
   it('cites the engineer canonical contract BY NAME, never by a cross-plugin path (ADR-0010 §5)', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
@@ -786,16 +808,16 @@ describe('plugins/founder — session-handoff runbook (ADR-0043 S3)', () => {
       // The skill runbooks carried the same pre-S3 deferral prose — pin them
       // too so the de-dup cannot silently regress on the Codex-side surfaces
       // (Codex Plan-verify: the command-only pin was incomplete).
-      'skills/investigate/SKILL.md', 'skills/frame/SKILL.md', 'skills/decide/SKILL.md',
-      'skills/compose/SKILL.md', 'skills/critique/SKILL.md', 'skills/refine/SKILL.md',
-      'skills/start/SKILL.md',
+      `${SKILLS_REL}/investigate/SKILL.md`, `${SKILLS_REL}/frame/SKILL.md`, `${SKILLS_REL}/decide/SKILL.md`,
+      `${SKILLS_REL}/compose/SKILL.md`, `${SKILLS_REL}/critique/SKILL.md`, `${SKILLS_REL}/refine/SKILL.md`,
+      `${SKILLS_REL}/start/SKILL.md`,
     ];
     for (const rel of surfaces) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       // investigate/SKILL.md never carried the deferral prose and stays
       // footer-silent by design (its command file owns the completion
       // surface); every other surface must defer to the code-emitted footer.
-      if (rel !== 'skills/investigate/SKILL.md') {
+      if (rel !== `${SKILLS_REL}/investigate/SKILL.md`) {
         ok(/code-emit/.test(text),
           `${rel} must defer to the code-emitted completion footer`);
         ok(text.includes('references/session-handoff.md'),

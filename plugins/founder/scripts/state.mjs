@@ -2081,8 +2081,8 @@ export async function commitEnsemble({
 // land first so the schema migration is non-breaking; Layer 3 ships the
 // staging logic and the command-side Write/Edit hooks atomically together.
 //
-// Command-mode boundary (per `skills/compose/SKILL.md` line 148 +
-// `skills/refine/SKILL.md` line 156): the workflow file is mutated only
+// Command-mode boundary (per `core/skills/compose/SKILL.md` line 148 +
+// `core/skills/refine/SKILL.md` line 156): the workflow file is mutated only
 // when the verb skill is invoked as a sub-step of a founder workflow
 // command. The helpers respect that boundary by no-op'ing when
 // `workflowPath` is falsy — the CLI shim passes `--workflow-path "$ACTIVE"`

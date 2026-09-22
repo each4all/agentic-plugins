@@ -122,7 +122,7 @@ export function aggregateOption({ grades = {}, weights = {}, axes = [] } = {}) {
 // NO hardcoded persona axis — ties break in pure document order, which puts
 // the decisive 시장성/단위경제 axes first (a defensible business tie-break for
 // the advisory-only aggregate; the real recommendation winner is picked by
-// the gate→decisive→supporting rule in skills/decide/SKILL.md, not here).
+// the gate→decisive→supporting rule in core/skills/decide/SKILL.md, not here).
 function tiebreakOptions(options, axes, weights) {
   if (options.length <= 1) return options[0] ?? null;
 

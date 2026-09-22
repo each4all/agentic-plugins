@@ -15,7 +15,7 @@ producing a reviewed business planning artifact. It is single-pass; for a
 multi-deliverable program use the orchestrator persona.
 
 **Cognitive runbook + the Host-availability matrix live in
-`$CLAUDE_PLUGIN_ROOT/skills/start/SKILL.md`** per ADR-0021. This command
+`$CLAUDE_PLUGIN_ROOT/core/skills/start/SKILL.md`** per ADR-0021. This command
 file owns the Claude-host Phase 0 bootstrap bash; the per-phase cognitive
 description, approval-gate prompts, and the privacy gate delegate to
 SKILL.md.
@@ -132,13 +132,13 @@ AND peer-host dispatch. The lifecycle runs web search (Phase 1 investigate)
 and dispatches the peer ensemble at every phase boundary (always-max) —
 genericize before any external call; the pre-genericization value MUST never
 leave the local host. See
-`skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
 
 ---
 
 ## Entry routing + Phases 1–4 + terminal
 
-Follow `$CLAUDE_PLUGIN_ROOT/skills/start/SKILL.md` for the cognitive runbook:
+Follow `$CLAUDE_PLUGIN_ROOT/core/skills/start/SKILL.md` for the cognitive runbook:
 
 1. **Entry routing recommendation** (Options / Tradeoffs / Risks /
    Recommendation / Confidence / Evidence pointers / Default next command):
@@ -157,7 +157,7 @@ Follow `$CLAUDE_PLUGIN_ROOT/skills/start/SKILL.md` for the cognitive runbook:
 Each phase boundary writes state via `state.mjs append --verb <verb>
 --current-phase <phase> --next-action <...> --event updated` and dispatches
 the per-phase peer ensemble per
-`skills/_shared/references/ensemble-protocol.md` (always-max).
+`core/skills/_shared/references/ensemble-protocol.md` (always-max).
 
 ---
 
@@ -179,7 +179,7 @@ Present the final business artifact and save it (durable
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete --terminal-marker true \
@@ -199,7 +199,7 @@ the macro workflow is terminal, so a fresh deliverable starts a new
 one. The footer never mutates host session context; detached HEAD never
 auto-recommends a fresh session (the branch-based preflight is what
 reports "no active branch context"). Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.
 
 Always include the workflow path:
 
