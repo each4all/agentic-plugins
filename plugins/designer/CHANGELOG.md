@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.8](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.7...plugin-designer-v0.3.8) (2026-09-22)
+
+
+### Bug Fixes
+
+* **plugin/designer:** relocate skills under core/ ([7e14570](https://github.com/each4all/agentic-plugins/commit/7e1457095f31507495bf78ff4093379c485d90a4))
+
 ## [0.3.7](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.6...plugin-designer-v0.3.7) (2026-09-09)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.10](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.9...plugin-engineer-v0.21.10) (2026-09-22)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** point three shipped references at the relocated root ([478d4ca](https://github.com/each4all/agentic-plugins/commit/478d4ca5c39f2d015042dd1027066bf74f8aabbf))
+
 ## [0.21.9](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.8...plugin-engineer-v0.21.9) (2026-09-22)
 
 
