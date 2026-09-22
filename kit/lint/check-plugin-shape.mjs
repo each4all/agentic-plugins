@@ -1268,6 +1268,12 @@ const repoLayoutPresent = basename(dirname(PLUGIN_DIR)) === 'plugins'
   && existsSync(resolve(PLUGIN_DIR, '..', '..', 'docs'));
 const SKILL_REF_RELATIVE = /(\.\.\/)+[A-Za-z0-9_@./-]+/g;
 const SKILL_REF_ROOT_RELATIVE = /(?<![A-Za-z0-9_/.$-])(?:core\/)?skills\/[A-Za-z0-9_@./-]+/g;
+// A third shape: the full repository-relative path. It is how a runbook cites a
+// SIBLING plugin's shared reference, and neither pattern above sees it — the
+// plugin-root-relative one requires the token to start at `skills/`. Measured
+// while relocating designer: two of these had been dead since engineer moved,
+// one of them inside plugins/orchestrator, and nothing reported either.
+const SKILL_REF_REPO_RELATIVE = /(?<![A-Za-z0-9_@.-])plugins\/[a-z0-9-]+\/[A-Za-z0-9_@./-]+/g;
 
 async function checkSkillTreeReferences(skillsRoot) {
   let files;
@@ -1306,6 +1312,12 @@ async function checkSkillTreeReferences(skillsRoot) {
     };
     for (const m of text.matchAll(SKILL_REF_RELATIVE)) await check(m[0], dirname(file), 'relative');
     for (const m of text.matchAll(SKILL_REF_ROOT_RELATIVE)) await check(m[0], PLUGIN_DIR, 'plugin-root-relative');
+    // Repo-relative paths leave the plugin by construction, so they are only
+    // decidable where the surrounding layout is present — same limit as above.
+    if (repoLayoutPresent) {
+      const repoRoot = resolve(PLUGIN_DIR, '..', '..');
+      for (const m of text.matchAll(SKILL_REF_REPO_RELATIVE)) await check(m[0], repoRoot, 'repo-relative');
+    }
   }
 }
 

@@ -1859,21 +1859,33 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // restated the old "gate PASSES" convergence rule: the Codex-facing surface
   // is authored in YAML, not markdown, and an .md-only scan cannot see it.
   const SURFACE_EXTS = ['.md', '.yaml', '.yml'];
+  // Resolved, not spelled. Naming the conventional root by hand is what made
+  // both scans below walk a tombstone after the ADR-0006 Amendment move: every
+  // assertion still ran, over nothing. Each scan also counts what it opened, so
+  // a root that resolves to an empty or wrong directory fails loudly instead of
+  // reporting no offenders.
+  const SURFACE_ROOTS = [resolve(PLUGIN_ROOT, 'commands'), resolveSkillsRoot(PLUGIN_ROOT)];
 
   it('the designer command + skill surface carries no stale build-phase forward-references', async () => {
     const offenders = [];
-    for (const root of ['commands', 'skills']) {
-      const entries = await readdir(resolve(PLUGIN_ROOT, root), { recursive: true, withFileTypes: true });
+    let scanned = 0;
+    for (const root of SURFACE_ROOTS) {
+      const entries = await readdir(root, { recursive: true, withFileTypes: true });
       for (const ent of entries) {
         if (!ent.isFile() || !SURFACE_EXTS.some((e) => ent.name.endsWith(e))) continue;
         const parent = ent.parentPath ?? ent.path;
         const full = resolve(parent, ent.name);
+        scanned += 1;
         const text = await readFile(full, 'utf8');
         for (const re of STALE_BUILD_PHRASES) {
           if (re.test(text)) offenders.push(`${full.slice(PLUGIN_ROOT.length + 1)} :: ${re.source}`);
         }
       }
     }
+    // Non-vacuity: a scan root that resolves to an empty or wrong directory
+    // reports no offenders, which is indistinguishable from a clean surface.
+    // Both roots together hold well over 20 surface files.
+    ok(scanned >= 20, `the surface scan opened only ${scanned} files — a root resolving to nothing reports no offenders`);
     deepStrictEqual(offenders, [],
       `stale build-phase forward-references must be removed now that ADR-0042 is Accepted:\n  ${offenders.join('\n  ')}`);
   });
@@ -1884,18 +1896,24 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // instances of it in the first PR7 pass. Pin every surface that names the rules.
   it('no designer surface — markdown OR Codex agent yaml — still requires a PASS gate to converge (F7 cross-surface)', async () => {
     const offenders = [];
-    for (const root of ['commands', 'skills']) {
-      const entries = await readdir(resolve(PLUGIN_ROOT, root), { recursive: true, withFileTypes: true });
+    let scanned = 0;
+    for (const root of SURFACE_ROOTS) {
+      const entries = await readdir(root, { recursive: true, withFileTypes: true });
       for (const ent of entries) {
         if (!ent.isFile() || !SURFACE_EXTS.some((e) => ent.name.endsWith(e))) continue;
         const parent = ent.parentPath ?? ent.path;
         const full = resolve(parent, ent.name);
         const rel = full.slice(PLUGIN_ROOT.length + 1);
+        scanned += 1;
         const text = await readFile(full, 'utf8');
         if (/converge[^.]{0,80}\bgate (?:PASSES|passes)\b/i.test(text)) offenders.push(`${rel} :: convergence requires gate PASS`);
         if (/gate PASS —/.test(text)) offenders.push(`${rel} :: "gate PASS —" as the clean-result example`);
       }
     }
+    // Non-vacuity: a scan root that resolves to an empty or wrong directory
+    // reports no offenders, which is indistinguishable from a clean surface.
+    // Both roots together hold well over 20 surface files.
+    ok(scanned >= 20, `the surface scan opened only ${scanned} files — a root resolving to nothing reports no offenders`);
     deepStrictEqual(offenders, [], `convergence must be "gate not FAIL" on every surface:\n  ${offenders.join('\n  ')}`);
   });
 

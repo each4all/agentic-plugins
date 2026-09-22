@@ -24,7 +24,7 @@ persona to demonstrate the L2 layer's reusability. Stage 2 then
 shipped `plugins/engineer` as the first L3 persona, with
 `engineer:investigate` (the evidence-gathering verb) explicitly pointing
 users to `/research:research` for "durable cited external evidence" via
-a [cross-plugin handoff suggestion](../../plugins/engineer/skills/investigate/SKILL.md).
+a [cross-plugin handoff suggestion](../../plugins/engineer/core/skills/investigate/SKILL.md).
 
 Stage 2 dogfood and the Phase 1 brainstorm of this ADR's parent
 workflow surfaced two converging signals:

@@ -108,7 +108,7 @@ basis the rest of this ADR builds on.
 
 - **F1 — Source taxonomy misfit.** The cited-brief 4-tier source
   taxonomy (`official-docs` / `standards` / `academic` / `secondary`,
-  per [cited-brief-spec.md](../../plugins/engineer/skills/investigate/references/cited-brief-spec.md)
+  per [cited-brief-spec.md](../../plugins/engineer/core/skills/investigate/references/cited-brief-spec.md)
   §Source Type Taxonomy) is software-shaped. Market-research
   authority sources — survey institutes (Pew-class), government
   statistics and official disclosures, market-intelligence vendors —
@@ -116,7 +116,7 @@ basis the rest of this ADR builds on.
   meaningless for business topics. Business needs its own authority
   tiers.
 - **F2 — Decision-axis misfit.** The decide registry's axes
-  ([decision-axes.yml](../../plugins/engineer/skills/decide/references/decision-axes.yml),
+  ([decision-axes.yml](../../plugins/engineer/core/skills/decide/references/decision-axes.yml),
   per [ADR-0027](0027-decide-skill-multi-axis-evolution.md)) are
   engineering-quality axes (standards / recommendation /
   canonical-precedent / essence / foundation / extensibility /
@@ -133,7 +133,7 @@ basis the rest of this ADR builds on.
   `output/` directory is an awkward home for business artifacts.
 - **F4 — Task Profile misfit.** The Task Profile fields
   (`scope` / `layers` / `risks` per the engineer
-  [orchestration.md](../../plugins/engineer/skills/_shared/references/orchestration.md)
+  [orchestration.md](../../plugins/engineer/core/skills/_shared/references/orchestration.md)
   Step 1) are meaningless for business topics. The cited-brief SKILL
   already marks them "descriptive only"; a business persona
   generalizes that misfit to all six verbs.
@@ -148,7 +148,7 @@ basis the rest of this ADR builds on.
   contributing real coverage. This validates the direction this ADR
   takes: **reuse the machine; replace the persona-shaped data**.
 - **F7 — Ensemble-template misfit.** The ensemble point templates
-  ([ensemble-protocol.md](../../plugins/engineer/skills/_shared/references/ensemble-protocol.md))
+  ([ensemble-protocol.md](../../plugins/engineer/core/skills/_shared/references/ensemble-protocol.md))
   are code-anchored (Explore = "Analyze the codebase
   architecture…"), requiring manual adaptation for business framing.
   Persona-owned per-verb ensemble templates are needed.
@@ -338,7 +338,7 @@ Business evidence additionally requires, as first-class spec rules:
   data, and unpublished business material pass an explicit gate
   before **web search or peer-host dispatch** — mirroring the
   cited-brief ensemble's pre-dispatch privacy gate
-  ([cited-brief-ensemble.md](../../plugins/engineer/skills/investigate/references/cited-brief-ensemble.md)
+  ([cited-brief-ensemble.md](../../plugins/engineer/core/skills/investigate/references/cited-brief-ensemble.md)
   §Step 1: "The privacy gate has passed for the topic AND the
   confirmed sub-questions. The gate covers BOTH web search AND
   external ensemble dispatch").
@@ -603,11 +603,11 @@ the standard CI surface (`npm test`,
 - [ADR-0028](0028-engineer-phase7-commit-automation.md) — commit-terminal model founder copies
 - [ADR-0029](0029-entry-routing-contract-enforcement.md) — copy/adapt (not import) second-persona rule
 - Engineer persona artifacts referenced as patterns:
-  [cited-brief-spec.md](../../plugins/engineer/skills/investigate/references/cited-brief-spec.md),
-  [cited-brief-ensemble.md](../../plugins/engineer/skills/investigate/references/cited-brief-ensemble.md),
-  [decision-axes.yml](../../plugins/engineer/skills/decide/references/decision-axes.yml),
-  [orchestration.md](../../plugins/engineer/skills/_shared/references/orchestration.md),
-  [ensemble-protocol.md](../../plugins/engineer/skills/_shared/references/ensemble-protocol.md)
+  [cited-brief-spec.md](../../plugins/engineer/core/skills/investigate/references/cited-brief-spec.md),
+  [cited-brief-ensemble.md](../../plugins/engineer/core/skills/investigate/references/cited-brief-ensemble.md),
+  [decision-axes.yml](../../plugins/engineer/core/skills/decide/references/decision-axes.yml),
+  [orchestration.md](../../plugins/engineer/core/skills/_shared/references/orchestration.md),
+  [ensemble-protocol.md](../../plugins/engineer/core/skills/_shared/references/ensemble-protocol.md)
 - 2026-06-11 capability test — authoring-session record; artifacts
   deleted at user instruction; this ADR's Context is the durable
   restatement
