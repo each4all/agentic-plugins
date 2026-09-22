@@ -58,7 +58,7 @@ node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT"
 
 If no active workflow exists, there is no macro to reason about — surface a
 compact pointer (not the full Active Next-Action Proposal — the meta/guard
-exception in `skills/_shared/references/session-handoff.md`): the honest next
+exception in `core/skills/_shared/references/session-handoff.md`): the honest next
 step is `orchestrator:plan` for a multi-deliverable macro, or `engineer:start`
 for a single deliverable. If duplicate/corrupt branch state is reported, stop
 and ask the user to resolve it with `orchestrator:resume`.

@@ -142,7 +142,7 @@ macro auto-promoted to terminal.
 When subtasks remain (no auto-terminal), `$orchestrator:done` is a
 **forward-decision** surface — emit an **Active Next-Action Proposal** (not a
 fixed next command) per
-`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+`core/skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
 engineer plugin) — the canonical six-field template (runtime
 completion-output contract):
@@ -180,7 +180,7 @@ and the macro stays marked for a later Stop. To hold it open, run the full
 required) with `--terminal-marker false` before that Stop fires. On Codex the Stop
 hook runs only once the operator has trusted the plugin hooks (`/hooks`), so the
 evaluation waits. Full contract:
-`skills/_shared/references/session-handoff.md` § Archive timing.
+`core/skills/_shared/references/session-handoff.md` § Archive timing.
 
 ---
 

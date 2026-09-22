@@ -30,11 +30,19 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
+
+// Where this plugin's skills actually live, read from its own Codex manifest
+// rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
+// core/skills/, and `resolveSkillsRoot` throws rather than falling back, so a
+// broken or missing declaration fails this file loudly at load instead of
+// leaving every path below pointing at a directory nothing writes to.
+const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 
 const VERBS = ['plan'];
@@ -108,7 +116,8 @@ describe('plugins/orchestrator manifest pair', () => {
     strictEqual(manifest.name, 'orchestrator');
     strictEqual(typeof manifest.version, 'string');
     strictEqual(typeof manifest.description, 'string');
-    strictEqual(typeof manifest.skills, 'string');
+    strictEqual(manifest.skills, './core/skills/',
+      'the Codex manifest must declare the relocated root — typeof alone passes on the pre-relocation value');
     strictEqual(manifest.hooks, './adapters/codex/hooks/hooks.json');
     ok(manifest.skills.endsWith('/'), 'skills path is directory-shaped');
     ok(manifest.interface, 'interface block present');
@@ -312,8 +321,8 @@ describe('plugins/orchestrator adapters/codex/hooks/', () => {
 
 describe('plugins/orchestrator skills/', () => {
   for (const verb of VERBS) {
-    it(`skills/${verb}/SKILL.md exists with frontmatter name === ${verb}`, async () => {
-      const skillPath = resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md');
+    it(`${SKILLS_REL}/${verb}/SKILL.md exists with frontmatter name === ${verb}`, async () => {
+      const skillPath = skillsPath(PLUGIN_ROOT, verb, 'SKILL.md');
       const text = await readFile(skillPath, 'utf-8');
       ok(text.startsWith('---\n'), 'SKILL.md starts with frontmatter');
       const fmEnd = text.indexOf('\n---\n', 4);
@@ -324,18 +333,18 @@ describe('plugins/orchestrator skills/', () => {
       ok(/^description:/m.test(fm), 'SKILL.md frontmatter has description');
     });
 
-    it(`skills/${verb}/SKILL.md documents both Claude and Codex explicit entry tokens`, async () => {
-      const skillPath = resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md');
+    it(`${SKILLS_REL}/${verb}/SKILL.md documents both Claude and Codex explicit entry tokens`, async () => {
+      const skillPath = skillsPath(PLUGIN_ROOT, verb, 'SKILL.md');
       const text = await readFile(skillPath, 'utf-8');
       const heading = text.match(/^## When invoked by command .+$/m)?.[0] ?? '';
-      ok(heading.includes(`/orchestrator:${verb}`), `skills/${verb}/SKILL.md missing Claude /orchestrator:${verb} entry token`);
-      ok(heading.includes(`$orchestrator:${verb}`), `skills/${verb}/SKILL.md missing Codex $orchestrator:${verb} entry token`);
-      ok(/Claude command/i.test(heading), `skills/${verb}/SKILL.md must label the Claude command entry path`);
-      ok(/Codex skill mention/i.test(heading), `skills/${verb}/SKILL.md must label the Codex skill entry path`);
+      ok(heading.includes(`/orchestrator:${verb}`), `${SKILLS_REL}/${verb}/SKILL.md missing Claude /orchestrator:${verb} entry token`);
+      ok(heading.includes(`$orchestrator:${verb}`), `${SKILLS_REL}/${verb}/SKILL.md missing Codex $orchestrator:${verb} entry token`);
+      ok(/Claude command/i.test(heading), `${SKILLS_REL}/${verb}/SKILL.md must label the Claude command entry path`);
+      ok(/Codex skill mention/i.test(heading), `${SKILLS_REL}/${verb}/SKILL.md must label the Codex skill entry path`);
     });
 
-    it(`skills/${verb}/agents/openai.yaml exists with display_name`, async () => {
-      const yamlPath = resolve(PLUGIN_ROOT, 'skills', verb, 'agents', 'openai.yaml');
+    it(`${SKILLS_REL}/${verb}/agents/openai.yaml exists with display_name`, async () => {
+      const yamlPath = skillsPath(PLUGIN_ROOT, verb, 'agents', 'openai.yaml');
       const text = await readFile(yamlPath, 'utf-8');
       ok(/display_name:/.test(text), 'openai.yaml has display_name');
       ok(/short_description:/.test(text), 'openai.yaml has short_description');
@@ -343,8 +352,8 @@ describe('plugins/orchestrator skills/', () => {
   }
 
   for (const ref of SHARED_REFS) {
-    it(`skills/_shared/references/${ref} exists`, async () => {
-      const refPath = resolve(PLUGIN_ROOT, 'skills/_shared/references', ref);
+    it(`${SKILLS_REL}/_shared/references/${ref} exists`, async () => {
+      const refPath = resolve(PLUGIN_ROOT, `${SKILLS_REL}/_shared/references`, ref);
       const text = await readFile(refPath, 'utf-8');
       ok(text.length > 100, `${ref} has substantive content`);
     });
@@ -352,7 +361,7 @@ describe('plugins/orchestrator skills/', () => {
 
   it('does NOT ship engineer-internal references (orchestration.md, agent-taxonomy.md)', async () => {
     for (const banned of ['orchestration.md', 'agent-taxonomy.md']) {
-      const p = resolve(PLUGIN_ROOT, 'skills/_shared/references', banned);
+      const p = resolve(PLUGIN_ROOT, `${SKILLS_REL}/_shared/references`, banned);
       let exists = true;
       try {
         await stat(p);
@@ -364,9 +373,9 @@ describe('plugins/orchestrator skills/', () => {
   });
 
   it('plan skill documents opposite-host peer semantics, not Codex-only command semantics', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/plan/SKILL.md'), 'utf-8');
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/plan/agents/openai.yaml'), 'utf-8');
-    const protocol = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'plan/SKILL.md'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'plan/agents/openai.yaml'), 'utf-8');
+    const protocol = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf-8');
     const planDocs = `${skill}\n${protocol}`;
 
     for (const phrase of [
@@ -394,8 +403,8 @@ describe('plugins/orchestrator skills/', () => {
       /configure the Codex peer/,
       /Codex peer analysis/,
     ]) {
-      ok(!pattern.test(skill), `skills/plan/SKILL.md must not hard-code Codex-only plan peer wording: ${pattern}`);
-      ok(!pattern.test(agent), `skills/plan/agents/openai.yaml must not hard-code Codex-only plan peer wording: ${pattern}`);
+      ok(!pattern.test(skill), `${SKILLS_REL}/plan/SKILL.md must not hard-code Codex-only plan peer wording: ${pattern}`);
+      ok(!pattern.test(agent), `${SKILLS_REL}/plan/agents/openai.yaml must not hard-code Codex-only plan peer wording: ${pattern}`);
       ok(!pattern.test(protocol), `ensemble-protocol.md must not hard-code Codex-only plan peer wording: ${pattern}`);
     }
   });
@@ -426,8 +435,8 @@ describe('plugins/orchestrator skills/', () => {
 
 describe('plugins/orchestrator meta skills/', () => {
   for (const meta of META_COMMANDS) {
-    it(`skills/${meta}/SKILL.md exists with frontmatter name === ${meta}`, async () => {
-      const skillPath = resolve(PLUGIN_ROOT, 'skills', meta, 'SKILL.md');
+    it(`${SKILLS_REL}/${meta}/SKILL.md exists with frontmatter name === ${meta}`, async () => {
+      const skillPath = skillsPath(PLUGIN_ROOT, meta, 'SKILL.md');
       const text = await readFile(skillPath, 'utf-8');
       ok(text.startsWith('---\n'), 'SKILL.md starts with frontmatter');
       const fmEnd = text.indexOf('\n---\n', 4);
@@ -440,8 +449,8 @@ describe('plugins/orchestrator meta skills/', () => {
       ok(text.includes('--host codex'), `${meta} skill documents Codex host flag`);
     });
 
-    it(`skills/${meta}/agents/openai.yaml exists with display_name`, async () => {
-      const yamlPath = resolve(PLUGIN_ROOT, 'skills', meta, 'agents', 'openai.yaml');
+    it(`${SKILLS_REL}/${meta}/agents/openai.yaml exists with display_name`, async () => {
+      const yamlPath = skillsPath(PLUGIN_ROOT, meta, 'agents', 'openai.yaml');
       const text = await readFile(yamlPath, 'utf-8');
       ok(/display_name:/.test(text), 'openai.yaml has display_name');
       ok(/short_description:/.test(text), 'openai.yaml has short_description');
@@ -453,8 +462,8 @@ describe('plugins/orchestrator meta skills/', () => {
 
 describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () => {
   for (const skill of DISPATCH_AND_LIFECYCLE_SKILLS) {
-    it(`skills/${skill}/SKILL.md mirrors /orchestrator:${skill} for Codex`, async () => {
-      const skillPath = resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md');
+    it(`${SKILLS_REL}/${skill}/SKILL.md mirrors /orchestrator:${skill} for Codex`, async () => {
+      const skillPath = skillsPath(PLUGIN_ROOT, skill, 'SKILL.md');
       const text = await readFile(skillPath, 'utf-8');
       ok(text.startsWith('---\n'), 'SKILL.md starts with frontmatter');
       const fmEnd = text.indexOf('\n---\n', 4);
@@ -471,8 +480,8 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
       ok(text.includes('--host codex'), `${skill} skill documents Codex host flag`);
     });
 
-    it(`skills/${skill}/agents/openai.yaml exists with explicit-only $orchestrator:${skill} prompt`, async () => {
-      const yamlPath = resolve(PLUGIN_ROOT, 'skills', skill, 'agents', 'openai.yaml');
+    it(`${SKILLS_REL}/${skill}/agents/openai.yaml exists with explicit-only $orchestrator:${skill} prompt`, async () => {
+      const yamlPath = skillsPath(PLUGIN_ROOT, skill, 'agents', 'openai.yaml');
       const text = await readFile(yamlPath, 'utf-8');
       ok(/display_name:/.test(text), 'openai.yaml has display_name');
       ok(/short_description:/.test(text), 'openai.yaml has short_description');
@@ -482,20 +491,20 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
   }
 
   it('next/done mirrors preserve same-host dispatch and completion invariants', async () => {
-    const next = await readFile(resolve(PLUGIN_ROOT, 'skills/next/SKILL.md'), 'utf-8');
+    const next = await readFile(skillsPath(PLUGIN_ROOT, 'next/SKILL.md'), 'utf-8');
     ok(next.includes('AGENTIC_PARENT_WORKFLOW'), 'next documents parent workflow env');
     ok(next.includes('AGENTIC_ORIGINATING_SUBTASK'), 'next documents originating subtask env');
-    ok(next.includes('Do not invoke `skills/<verb>/SKILL.md` directly'), 'next forbids bypassing engineer command Phase 0');
+    ok(next.includes('Do not invoke `core/skills/<verb>/SKILL.md` directly'), 'next forbids bypassing engineer command Phase 0');
     ok(next.includes('subtask-update'), 'next documents post-create subtask-update');
 
-    const done = await readFile(resolve(PLUGIN_ROOT, 'skills/done/SKILL.md'), 'utf-8');
+    const done = await readFile(skillsPath(PLUGIN_ROOT, 'done/SKILL.md'), 'utf-8');
     ok(done.includes('engineer_workflow_id'), 'done documents engineer workflow ownership');
     ok(done.includes('refs/heads/<subtask.branch>'), 'done documents branch-tip commit resolution');
     ok(done.includes('status completed'), 'done documents completed subtask-update');
   });
 
   it('finalize/abort mirrors preserve lifecycle lock order plus Codex Stop hook fallback boundary', async () => {
-    const finalize = await readFile(resolve(PLUGIN_ROOT, 'skills/finalize/SKILL.md'), 'utf-8');
+    const finalize = await readFile(skillsPath(PLUGIN_ROOT, 'finalize/SKILL.md'), 'utf-8');
     ok(finalize.includes('--to-status deferred'), 'finalize documents deferred bulk transition');
     ok(finalize.includes('detach-archive'), 'finalize documents detach-archive child path');
     ok(finalize.includes('--terminal-phase finalized'), 'finalize documents finalized terminal phase');
@@ -504,7 +513,7 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
     ok(finalize.includes('/hooks` review/trust'), 'finalize documents Codex hook review/trust requirement');
     ok(finalize.includes('adapters/codex/hooks/stop.mjs'), 'finalize documents Codex stop fallback helper');
 
-    const abort = await readFile(resolve(PLUGIN_ROOT, 'skills/abort/SKILL.md'), 'utf-8');
+    const abort = await readFile(skillsPath(PLUGIN_ROOT, 'abort/SKILL.md'), 'utf-8');
     ok(abort.includes('--to-status abandoned'), 'abort documents abandoned bulk transition');
     ok(abort.includes('detach-archive'), 'abort documents detach-archive child path');
     ok(abort.includes('--terminal-phase aborted'), 'abort documents aborted terminal phase');
@@ -563,7 +572,7 @@ describe('plugins/orchestrator commands/', () => {
   it('meta command files delegate to matching skills and preserve orchestrator namespace', async () => {
     for (const meta of META_COMMANDS) {
       const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${meta}.md`), 'utf-8');
-      ok(text.includes(`skills/${meta}/SKILL.md`), `${meta}.md points at skills/${meta}/SKILL.md`);
+      ok(text.includes(`${SKILLS_REL}/${meta}/SKILL.md`), `${meta}.md points at skills/${meta}/SKILL.md`);
       ok(text.includes('agentic-orchestrator'), `${meta}.md uses orchestrator workflow namespace`);
     }
   });
@@ -651,15 +660,15 @@ describe('plugins/orchestrator stale-token audit', () => {
     'commands/checkpoint.md',
     'commands/peer-now.md',
     'commands/audit.md',
-    'skills/plan/SKILL.md',
-    'skills/next/SKILL.md',
-    'skills/done/SKILL.md',
-    'skills/finalize/SKILL.md',
-    'skills/abort/SKILL.md',
-    'skills/resume/SKILL.md',
-    'skills/checkpoint/SKILL.md',
-    'skills/peer-now/SKILL.md',
-    ...SHARED_REFS.map((ref) => `skills/_shared/references/${ref}`),
+    `${SKILLS_REL}/plan/SKILL.md`,
+    `${SKILLS_REL}/next/SKILL.md`,
+    `${SKILLS_REL}/done/SKILL.md`,
+    `${SKILLS_REL}/finalize/SKILL.md`,
+    `${SKILLS_REL}/abort/SKILL.md`,
+    `${SKILLS_REL}/resume/SKILL.md`,
+    `${SKILLS_REL}/checkpoint/SKILL.md`,
+    `${SKILLS_REL}/peer-now/SKILL.md`,
+    ...SHARED_REFS.map((ref) => `${SKILLS_REL}/_shared/references/${ref}`),
     'adapters/codex/hooks/README.md',
   ];
   for (const doc of ALL_AUDIT_DOCS) {
@@ -720,9 +729,9 @@ describe('plugins/orchestrator — ADR-0029 §1 Active Next-Action Proposal (orc
     { path: 'commands/plan.md', phase2: true },
     { path: 'commands/next.md', phase2: false },
     { path: 'commands/done.md', phase2: false },
-    { path: 'skills/plan/SKILL.md', phase2: false },
-    { path: 'skills/next/SKILL.md', phase2: false },
-    { path: 'skills/done/SKILL.md', phase2: false },
+    { path: `${SKILLS_REL}/plan/SKILL.md`, phase2: false },
+    { path: `${SKILLS_REL}/next/SKILL.md`, phase2: false },
+    { path: `${SKILLS_REL}/done/SKILL.md`, phase2: false },
   ];
 
   for (const surface of PROPOSAL_SURFACES) {
@@ -775,9 +784,9 @@ describe('plugins/orchestrator — ADR-0029 §1 Active Next-Action Proposal (orc
     });
   }
 
-  it('skills/_shared/references/session-handoff.md documents the proposal + cites the engineer canonical BY NAME (ADR-0010 §5 single source)', async () => {
+  it(`${SKILLS_REL}/_shared/references/session-handoff.md documents the proposal + cites the engineer canonical BY NAME (ADR-0010 §5 single source)`, async () => {
     const text = await readFile(
-      resolve(PLUGIN_ROOT, 'skills/_shared/references/session-handoff.md'), 'utf-8');
+      skillsPath(PLUGIN_ROOT, '_shared/references/session-handoff.md'), 'utf-8');
     ok(/Active Next-Action Proposal/.test(text),
       'session-handoff.md must document the Active Next-Action Proposal (ADR-0029)');
     ok(/entry-routing-contract\.md/.test(text),
@@ -807,7 +816,7 @@ describe('plugins/orchestrator — ADR-0029 §1 Active Next-Action Proposal (orc
   // honest routes (macro plan OR single-deliverable engineer:start) so it can
   // never regress to a single hardcoded command.
   for (const guard of ['commands/checkpoint.md', 'commands/resume.md',
-                       'skills/checkpoint/SKILL.md', 'skills/resume/SKILL.md']) {
+                       `${SKILLS_REL}/checkpoint/SKILL.md`, `${SKILLS_REL}/resume/SKILL.md`]) {
     it(`${guard} no-active-workflow guard uses the softened meta/guard pointer, not a fixed single command`, async () => {
       const text = await readFile(resolve(PLUGIN_ROOT, guard), 'utf-8');
       ok(!/Recommended next:\s*`\/orchestrator:/.test(text),
@@ -831,7 +840,7 @@ describe('plugins/orchestrator — ADR-0029 §1 Active Next-Action Proposal (orc
   // meta/guard exception (a compact single-honest-recovery pointer), enforced by
   // the session-handoff.md guard-enumeration assertion above, not here.
   for (const surface of ['commands/finalize.md', 'commands/abort.md', 'commands/done.md',
-                         'skills/finalize/SKILL.md', 'skills/abort/SKILL.md', 'skills/done/SKILL.md']) {
+                         `${SKILLS_REL}/finalize/SKILL.md`, `${SKILLS_REL}/abort/SKILL.md`, `${SKILLS_REL}/done/SKILL.md`]) {
     it(`${surface} carries no fixed imperative next-command literal (terminal close defers to the ADR-0039 footer)`, async () => {
       const text = await readFile(resolve(PLUGIN_ROOT, surface), 'utf-8');
       ok(!/Run\s+`?\/orchestrator:\w+`?\s+or\s+wait/i.test(text),

@@ -7,7 +7,7 @@ argument-hint: <feature description>
 
 $ARGUMENTS
 
-Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble runs automatically per `skills/_shared/references/ensemble-protocol.md` (Plan-verify point type). Never ask the user whether to invoke the peer. When the companions plugin or peer CLI is unavailable, the ensemble degrades silently to a LOCAL-ONLY plan (`peer-runner.mjs run` returns `peer_cli_not_found` with no peer-run ledger or orphan-pending entry — orchestrator-specific graceful degradation contract).
+Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble runs automatically per `core/skills/_shared/references/ensemble-protocol.md` (Plan-verify point type). Never ask the user whether to invoke the peer. When the companions plugin or peer CLI is unavailable, the ensemble degrades silently to a LOCAL-ONLY plan (`peer-runner.mjs run` returns `peer_cli_not_found` with no peer-run ledger or orphan-pending entry — orchestrator-specific graceful degradation contract).
 
 Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root. Fallback: discover via `find ~/.claude/plugins/cache/agentic-plugins/orchestrator -maxdepth 3 -name plugin.json` SemVer walk if `$CLAUDE_PLUGIN_ROOT` is unset.
 
@@ -70,7 +70,7 @@ rm -f "$FIND_ERR"
 
 ## Phase 1 — Execute plan skill (decompose + dependency graph)
 
-Follow the plan skill's command-invoked mode at `$CLAUDE_PLUGIN_ROOT/skills/plan/SKILL.md`. Produce a draft `plan.subtasks[]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 schema (1.1):
+Follow the plan skill's command-invoked mode at `$CLAUDE_PLUGIN_ROOT/core/skills/plan/SKILL.md`. Produce a draft `plan.subtasks[]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 schema (1.1):
 
 ```yaml
 - id: <unique short token (e.g. PR1, schema-reader)>
@@ -89,7 +89,7 @@ Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blo
 
 ### Ensemble dispatch (Plan-verify point type)
 
-Build the Plan-verify prompt per `$CLAUDE_PLUGIN_ROOT/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol). The `<grounding_rules>` section MUST include the schema 1.1 constraints so peer-emitted plan revisions don't bypass validation: every subtask requires `verb` (canonical 6-verb whitelist: investigate / frame / decide / compose / critique / refine) AND `branch` (git ref-format), plus `id` (unique) / `blocked_by` (array of existing ids forming a DAG — self-reference, mutual `A<->B`, and longer cycles are rejected) / `status` (`pending|blocked|in_progress|completed|deferred|abandoned`) per ADR-0019 §2.
+Build the Plan-verify prompt per `$CLAUDE_PLUGIN_ROOT/core/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol). The `<grounding_rules>` section MUST include the schema 1.1 constraints so peer-emitted plan revisions don't bypass validation: every subtask requires `verb` (canonical 6-verb whitelist: investigate / frame / decide / compose / critique / refine) AND `branch` (git ref-format), plus `id` (unique) / `blocked_by` (array of existing ids forming a DAG — self-reference, mutual `A<->B`, and longer cycles are rejected) / `status` (`pending|blocked|in_progress|completed|deferred|abandoned`) per ADR-0019 §2.
 
 ```bash
 PROMPT_FILE="$(mktemp -t orchestrator-plan-prompt.XXXXXX).xml"
@@ -152,7 +152,7 @@ NOTE="### Ensemble launched: plan at <iso-utc>
 
 ### Active next-action proposal
 
-(per skills/_shared/references/session-handoff.md § Active Next-Action Proposal,
+(per core/skills/_shared/references/session-handoff.md § Active Next-Action Proposal,
  canonical entry-routing-contract.md § Active Next-Action Proposal in engineer —
  derived from the macro state, not a fixed table)
 - selected_next:         <a macro command (/orchestrator:next when a subtask is ready; /orchestrator:finalize or /orchestrator:abort when closing), commit, or owner decision>
@@ -200,7 +200,7 @@ After user approval of the synthesized plan, output the macro plan and one of:
 Always include the workflow path.
 
 Then emit an **Active Next-Action Proposal** instead of a fixed next command, per
-`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+`core/skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
 engineer plugin) — the canonical six-field template (runtime
 completion-output contract):
@@ -232,7 +232,7 @@ consensus output into the main session.
 
 Before rendering the footer, surface the ADR-0031 session-level
 continue-vs-fresh preflight per
-`skills/_shared/references/session-handoff.md`: compute the orchestrator macro
+`core/skills/_shared/references/session-handoff.md`: compute the orchestrator macro
 projection (resolved across branches via find-active then find-macro) and pass
 it to the runtime footer/check (`--workflow-projection-file`) so the footer
 carries the continue-vs-fresh decision. On detached HEAD, report "no active

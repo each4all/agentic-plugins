@@ -64,7 +64,7 @@ Outcomes:
 
 - Empty stdout -> no active macro to reason about; surface a compact pointer
   (not the full Active Next-Action Proposal — the meta/guard exception in
-  `skills/_shared/references/session-handoff.md`): the honest next step is
+  `core/skills/_shared/references/session-handoff.md`): the honest next step is
   `orchestrator:plan` for a multi-deliverable macro, or `engineer:start` for a
   single deliverable.
 - One path -> continue.

@@ -106,7 +106,7 @@ Follow the Presentation Mode Protocol before presenting. Present the synthesized
 
 After the plan is approved, surface the ADR-0031 session-level
 continue-vs-fresh preflight per
-`skills/_shared/references/session-handoff.md`: compute the macro projection
+`core/skills/_shared/references/session-handoff.md`: compute the macro projection
 (find-active then find-macro) and pass it to the runtime footer/check, so the
 proposal's `next_command` (typically `/orchestrator:next` for a freshly approved
 plan) is sized by context-budget risk + archive-gate readiness. The preflight computes identically on Codex; only auto re-injection

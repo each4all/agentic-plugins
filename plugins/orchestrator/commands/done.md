@@ -241,7 +241,7 @@ Report one of:
 When subtasks remain (no auto-terminal), `/orchestrator:done` is a
 **forward-decision** surface — emit an **Active Next-Action Proposal** instead of
 a fixed next command, per
-`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+`core/skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
 engineer plugin) — the canonical six-field template (runtime
 completion-output contract):

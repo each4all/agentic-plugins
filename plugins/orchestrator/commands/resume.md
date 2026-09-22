@@ -17,7 +17,7 @@ canonical `.agentic-plugins/state/orchestrator/` (legacy
 migration per ADR-0025).
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/skills/resume/SKILL.md`**. This command file owns
+`$CLAUDE_PLUGIN_ROOT/core/skills/resume/SKILL.md`**. This command file owns
 Claude-host shell bootstrap and state writes; the skill documents the
 cross-host runbook and Codex hook-gate caveats.
 
@@ -53,7 +53,7 @@ Branch on the result:
   `✗ No active orchestrator workflow; nothing to resume.`
   No macro to reason about — this guard surfaces a compact pointer, not the
   full Active Next-Action Proposal (per
-  `skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+  `core/skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
   meta/guard exception): the honest next step is `/orchestrator:plan <feature>`
   for a multi-deliverable macro (or `/engineer:start` for a single deliverable),
   sized to the work shape.

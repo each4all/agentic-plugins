@@ -14,7 +14,7 @@
 //      cleanup step.
 //   3. cross-references rewritten away from engineer-internal commands
 //      (no /engineer:resume reference; no engineer-specific protocol
-//      imports — orchestrator ships its own skills/_shared/references/
+//      imports — orchestrator ships its own core/skills/_shared/references/
 //      ensemble-protocol.md per ADR-0010 §5).
 //
 // Responsibilities:
