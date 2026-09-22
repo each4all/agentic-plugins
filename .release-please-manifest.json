@@ -4,7 +4,7 @@
   "plugins/companions": "0.4.1",
   "plugins/designer": "0.3.8",
   "plugins/engineer": "0.21.10",
-  "plugins/founder": "0.4.7",
+  "plugins/founder": "0.4.8",
   "plugins/image": "0.3.1",
   "plugins/orchestrator": "0.13.6",
   "plugins/runtime": "0.97.3"

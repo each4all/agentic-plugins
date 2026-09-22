@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.8](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.7...plugin-founder-v0.4.8) (2026-09-22)
+
+
+### Bug Fixes
+
+* **plugin/founder:** relocate skills under core/ ([89f2e43](https://github.com/each4all/agentic-plugins/commit/89f2e434da84c15aa64d0d80aee2722d40b96871))
+
 ## [0.4.7](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.6...plugin-founder-v0.4.7) (2026-09-09)
 
 
