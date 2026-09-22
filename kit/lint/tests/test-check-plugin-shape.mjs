@@ -1391,3 +1391,89 @@ describe('kit/lint/check-plugin-shape — references inside the skills tree', ()
     strictEqual(result.code, 0, `an undecidable outbound reference must not be reported; stderr=${result.stderr}`);
   });
 });
+
+// --- References, with the repository layout actually present ---------------
+//
+// The fixtures above all sit in a bare tmpdir, which is NOT <root>/plugins/<name>
+// with a sibling docs/. That shape is what makes an outbound or repo-relative
+// reference decidable, so those branches were previously unreachable from any
+// test and the mutation spec had to record one of them as a known blind spot.
+// Building the layout closes that: these fixtures put the plugin where a real
+// one lives.
+describe('kit/lint/check-plugin-shape — references under a real repository layout', () => {
+  const tempDirs = [];
+  after(() => Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  const skill = (name, body = '') => `---\nname: ${name}\ndescription: "A conformant ${name} skill for the layout fixture."\n---\n\n# ${name}\n\n${body}\n`;
+
+  /** A tmp root shaped like the repository: <root>/plugins/<name> + <root>/docs. */
+  async function makeInLayout({ files = {}, siblings = {} } = {}) {
+    const root = await mkdtemp(join(tmpdir(), 'kit-lint-layout-'));
+    tempDirs.push(root);
+    const dir = join(root, 'plugins', 'fixture-layout');
+    await mkdir(join(dir, '.claude-plugin'), { recursive: true });
+    await mkdir(join(dir, '.codex-plugin'), { recursive: true });
+    await mkdir(join(root, 'docs'), { recursive: true });
+    await writeFile(join(root, 'docs', 'note.md'), '# note\n');
+    const base = { name: 'fixture-layout', version: '0.0.1', description: 'layout fixture' };
+    await writeFile(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify(base, null, 2));
+    await writeFile(join(dir, '.codex-plugin', 'plugin.json'), JSON.stringify({ ...base, skills: './core/skills/' }, null, 2));
+    const all = {
+      'core/skills/demo/SKILL.md': skill('demo'),
+      'skills/README.md': '# tombstone\n\nSee the ADR-0006 Amendment.\n',
+      ...files,
+    };
+    for (const [rel, content] of Object.entries(all)) {
+      const abs = join(dir, rel);
+      await mkdir(resolve(abs, '..'), { recursive: true });
+      await writeFile(abs, content);
+    }
+    for (const [rel, content] of Object.entries(siblings)) {
+      const abs = join(root, rel);
+      await mkdir(resolve(abs, '..'), { recursive: true });
+      await writeFile(abs, content);
+    }
+    return dir;
+  }
+
+  it('accepts an outbound reference that resolves', async () => {
+    const dir = await makeInLayout({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `../../../../../docs/note.md`.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('REJECTS a dead outbound reference once the layout makes it decidable', async () => {
+    // The branch the tmpdir fixtures cannot reach: with the layout present the
+    // check applies, so a reference left at its pre-relocation depth fails.
+    const dir = await makeInLayout({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `../../../../docs/note.md`.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('does not resolve'), `stderr=${result.stderr}`);
+  });
+
+  it('accepts a repo-relative reference to a sibling plugin that resolves', async () => {
+    const dir = await makeInLayout({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `plugins/other/core/skills/shared.md`.') },
+      siblings: { 'plugins/other/core/skills/shared.md': '# shared\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('rejects a repo-relative reference left at a sibling plugin’s pre-relocation path', async () => {
+    // Measured on the real tree: two references of this shape had been dead
+    // since engineer moved, one of them inside plugins/orchestrator, and
+    // neither of the other two patterns could see them.
+    const dir = await makeInLayout({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `plugins/other/skills/shared.md`.') },
+      siblings: { 'plugins/other/core/skills/shared.md': '# shared\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('repo-relative'), `the diagnostic must name the shape; stderr=${result.stderr}`);
+  });
+});

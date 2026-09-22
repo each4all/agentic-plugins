@@ -250,7 +250,7 @@ session close — the workflow archives then if they all pass, and otherwise sta
 marked for a later Stop. Clearing the marker (`--terminal-marker false`, with
 set-terminal's full flag set) works only before that Stop fires. On Codex the hook
 runs only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
-waits. Full contract: `skills/_shared/references/session-handoff.md`
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
 
 When invoked standalone (no parent workflow command), no workflow file
@@ -315,7 +315,7 @@ decisive design axes + size-appropriate supporting axes, instead of a flat
 list.
 
 The designer decision registry (`scripts/decide-registry.mjs` +
-`skills/decide/references/decision-axes.yml`, ADR-0042 SD3) is the single
+`core/skills/decide/references/decision-axes.yml`, ADR-0042 SD3) is the single
 axis source of truth; resolve the axis set from it. When the registry is
 unreachable, fall back inline: keep the decisive axes **usability
 사용성** (the common-decisive design axis) and the **context lens** the

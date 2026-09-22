@@ -83,7 +83,7 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute compose
 
 Follow the compose skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/compose/SKILL.md`. Profiles (the design-artifact
+`$CLAUDE_PLUGIN_ROOT/core/skills/compose/SKILL.md`. Profiles (the design-artifact
 shapes):
 
 - `spec` (default) — a **design spec** for the surface: information
@@ -106,8 +106,8 @@ Compose consumes upstream output — a confirmed UX problem model from
 `/designer:decide`. If either is missing, suggest running the upstream verb
 first rather than composing on incomplete inputs. The L4 design archetype
 (general default; ui / flow / cta / content) flows through the Design Task
-Profile per `skills/investigate/SKILL.md` § Design Task Profile (the shared
-`skills/_shared/references/orchestration.md` reference), not a
+Profile per `core/skills/investigate/SKILL.md` § Design Task Profile (the shared
+`core/skills/_shared/references/orchestration.md` reference), not a
 per-call flag.
 
 **Quality is annotated in (ADR-0042 SD4)**: every composed element carries
@@ -115,7 +115,7 @@ its accessibility (candidate WCAG A/AA checks) + consistency (design-system
 component/token/pattern reuse) acceptance criteria — the criteria
 `designer:critique` later holds the rendered UI to. Generated imagery
 is an `image:compose` artifact handoff, never drawn here (see
-`skills/_shared/references/orchestration.md` § image L2 composition boundary).
+`core/skills/_shared/references/orchestration.md` § image L2 composition boundary).
 
 ### Privacy gate (before any external call)
 
@@ -126,7 +126,7 @@ before the peer prompt; the pre-genericization value MUST never leave the
 local host. **Screenshots are sensitive by default** and are never sent to
 the peer as bytes (the peer path is code/text-based; vision critique is a
 same-host `designer:critique` capability). See
-`skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Plan-verify point type)
 
@@ -135,9 +135,9 @@ and returns gaps: missing states, unhandled edge cases, untested
 accessibility criteria, design-system inconsistencies, responsive/RTL gaps,
 ambiguous CTA copy), write it to a tempfile, and dispatch in background. The
 prompt template + synthesis contract land in
-`skills/_shared/references/ensemble-protocol.md` §Plan-verify; the
+`core/skills/_shared/references/ensemble-protocol.md` §Plan-verify; the
 dispatch shape mirrors the reference-scan dispatch in
-`skills/investigate/references/design-brief-ensemble.md`:
+`core/skills/investigate/references/design-brief-ensemble.md`:
 
 ```bash
 PROMPT_FILE="$(mktemp -t designer-compose-prompt.XXXXXX).xml"
@@ -224,7 +224,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -241,7 +241,7 @@ If composing surfaces a **genuine 2+-branch decision point** — two viable
 layout structures, two flow shapes, two component approaches — surface a
 **compact multi-axis lens** across the decisive design axes (사용성 Usability
 + the archetype axis) + the accessibility gate, instead of a flat list,
-reading `skills/decide/references/decision-axes.yml` (the
+reading `core/skills/decide/references/decision-axes.yml` (the
 `scripts/decide-registry.mjs resolve --size=minor` resolver gives the
 compact rendering of `balanced`). Bounded: only at a genuine 2+-branch
 point, never the full matrix for a trivial reversible step. A weightier fork
@@ -259,7 +259,7 @@ Output the artifact (spec / flow / wireframe) and one of:
   input before proceeding.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
-`skills/compose/SKILL.md` § Completion): typical `selected_next` is
+`core/skills/compose/SKILL.md` § Completion): typical `selected_next` is
 `/designer:critique` to evaluate the spec (and, once built, the rendered
 screen) — or `/designer:decide` if composing surfaced an undecided fork. Do
 not end with a hardcoded "next: X".
@@ -267,7 +267,7 @@ not end with a hardcoded "next: X".
 ADR-0042 is `Accepted` — the full designer surface (the six verbs, the
 `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
 `peer-now` meta skills) ships, so every `next_command` is runnable. The composed spec is the durable
-handoff. See `skills/compose/SKILL.md` § Completion.
+handoff. See `core/skills/compose/SKILL.md` § Completion.
 
 Always include the workflow path:
 
@@ -291,4 +291,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

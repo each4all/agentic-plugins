@@ -16,7 +16,7 @@ single-pass; a program spanning design **and** frontend implementation runs
 designer to a saved spec, then hands that spec to the engineer persona.
 
 **Cognitive runbook + the Host-availability matrix live in
-`$CLAUDE_PLUGIN_ROOT/skills/start/SKILL.md`** per ADR-0021. This command
+`$CLAUDE_PLUGIN_ROOT/core/skills/start/SKILL.md`** per ADR-0021. This command
 file owns the Claude-host Phase 0 bootstrap bash; the per-phase cognitive
 description, approval-gate prompts, and the privacy gate delegate to
 SKILL.md.
@@ -126,7 +126,7 @@ execution model).
 ### L4 design profile (Design Task Profile → decide preset)
 
 Record the Design Task Profile per
-`skills/_shared/references/orchestration.md` § Step 1. The `Profile` field
+`core/skills/_shared/references/orchestration.md` § Step 1. The `Profile` field
 is the L4 archetype; it selects the decision preset at Phase 1c:
 `general`/`flow` → `balanced`; `ui` → `experience`; `cta` → `conversion`;
 `content` → `clarity`. The map's single source of truth is
@@ -168,13 +168,13 @@ pre-genericization value MUST never leave the local host. **Screenshots are
 sensitive by default**: the rendered screen is read host-direct and never
 leaves the local host as bytes; the companion peer path has no `--image`
 flag, so peer verification stays code/text. See
-`skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ---
 
 ## Entry routing + Phases 1–4 + terminal
 
-Follow `$CLAUDE_PLUGIN_ROOT/skills/start/SKILL.md` for the cognitive runbook:
+Follow `$CLAUDE_PLUGIN_ROOT/core/skills/start/SKILL.md` for the cognitive runbook:
 
 1. **Entry routing recommendation** (Options / Tradeoffs / Risks /
    Recommendation / Confidence / Evidence pointers / Default next command):
@@ -191,7 +191,7 @@ Follow `$CLAUDE_PLUGIN_ROOT/skills/start/SKILL.md` for the cognitive runbook:
    **APPROVE spec** before Phase 3. Surface the multi-surface prompt if the
    spec splits.
 4. **Phase 3 — critique** (usability / a11y / conversion / consistency, all
-   held to `skills/critique/references/quality-criteria.md`; an unmitigated
+   held to `core/skills/critique/references/quality-criteria.md`; an unmitigated
    accessibility veto gate is CRITICAL; a11y findings are candidate-level per
    ADR-0042 Non-Goal 6). Post-code, the rendered screen is read host-direct.
 5. **Phase 4 — refine** to convergence in a **bounded** loop (default 2
@@ -205,7 +205,7 @@ Follow `$CLAUDE_PLUGIN_ROOT/skills/start/SKILL.md` for the cognitive runbook:
 Each phase boundary writes state via `state.mjs append --verb <verb>
 --current-phase <phase> --next-action <...> --event updated` and dispatches
 the per-phase peer ensemble per
-`skills/_shared/references/ensemble-protocol.md` (always-max). No dispatch in
+`core/skills/_shared/references/ensemble-protocol.md` (always-max). No dispatch in
 any phase passes `--image` — the companion peer path has no image channel.
 
 ---
@@ -215,7 +215,7 @@ any phase passes `--image` — the companion peer path has no image channel.
 Present the final design artifact and save it (the durable design brief /
 flow spec / wireframe spec / CTA copy at its
 `<root>/YYYY-MM-DD_<topic-slug>/` location per
-`skills/investigate/references/output-file-rules.md`). Write terminal state
+`core/skills/investigate/references/output-file-rules.md`). Write terminal state
 **only when Phase 4 converged**:
 
 ```bash
@@ -246,7 +246,7 @@ if [ "${CONVERGED:-no}" = "yes" ]; then
   # --terminal-phase), and does not restore the previous phase or next_action.
   # On Codex the Stop hook runs only once the operator has trusted the plugin
   # hooks (`/hooks`), so evaluation waits for that. Full contract:
-  # skills/_shared/references/session-handoff.md § Archive timing.
+  # core/skills/_shared/references/session-handoff.md § Archive timing.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --terminal-phase summary-complete --terminal-marker true \
@@ -272,7 +272,7 @@ the macro workflow is terminal, so a fresh deliverable starts a new
 one. The footer never mutates host session context; detached HEAD never
 auto-recommends a fresh session (the branch-based preflight is what
 reports "no active branch context"). Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.
 
 Always include the workflow path:
 

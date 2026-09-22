@@ -51,7 +51,7 @@ schema: "1.0"
 # decisive for a further growth-surface archetype). Settled invariants: the
 # ≥2-decisive floor and the accessibility veto gate.
 #
-# Preset ↔ L4 profile map (PROFILE_PRESET_MAP in ../../../scripts/decide-registry.mjs
+# Preset ↔ L4 profile map (PROFILE_PRESET_MAP in ../../../../scripts/decide-registry.mjs
 # is the single source of truth): general → balanced, flow → balanced,
 # ui → experience, cta → conversion, content → clarity. `balanced` stays the
 # default (all --size tiers resolve it); conversion / experience / clarity are

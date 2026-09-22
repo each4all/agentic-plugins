@@ -81,10 +81,10 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute refine
 
 Follow the refine skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/refine/SKILL.md`. Refine is **single-mode** (no
+`$CLAUDE_PLUGIN_ROOT/core/skills/refine/SKILL.md`. Refine is **single-mode** (no
 `--profile` argument). The L4 design archetype flows through the Design Task
-Profile per `skills/investigate/SKILL.md` § Design Task Profile (the shared
-`skills/_shared/references/orchestration.md` reference).
+Profile per `core/skills/investigate/SKILL.md` § Design Task Profile (the shared
+`core/skills/_shared/references/orchestration.md` reference).
 
 Refine applies critique findings or feedback to the design artifact — a pre-code
 design spec (user flow, wireframe spec, CTA copy, IA, component spec) OR a
@@ -113,7 +113,7 @@ accessibility gate is **not FAIL** — `PASS`, or `CONDITIONAL` with every
 remediation named as a blocking precondition. `CONDITIONAL` converges on purpose:
 static critique is candidate-level (ADR-0042 Non-Goal 6), so an honest,
 well-specified design lands there rather than on `PASS`. See
-`$CLAUDE_PLUGIN_ROOT/skills/refine/SKILL.md` @refine:convergence-predicate.
+`$CLAUDE_PLUGIN_ROOT/core/skills/refine/SKILL.md` @refine:convergence-predicate.
 
 ### Privacy gate (before any external call)
 
@@ -126,7 +126,7 @@ image bytes — the peer path is code/text-based, or a **verified-local absolute
 file path** the peer reads on its own host (the `plugins/image` critique-dispatch
 precedent); `codex-companion` has no `--image` flag, so vision-grounded
 re-critique stays same-host. When confidentiality is unclear, ask the user, or run
-local-only. See `skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+local-only. See `core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Refine-verify point type)
 
@@ -136,9 +136,9 @@ screenshot path, **never image bytes** — and verifies the revision resolves th
 finding without introducing a new inconsistency or a new accessibility barrier),
 write it to a tempfile, and dispatch in the background. The privacy gate must have
 passed first. The prompt template + synthesis contract land in
-`skills/_shared/references/ensemble-protocol.md` § Refine-verify; the
+`core/skills/_shared/references/ensemble-protocol.md` § Refine-verify; the
 dispatch shape mirrors the reference-scan dispatch in
-`skills/investigate/references/design-brief-ensemble.md`:
+`core/skills/investigate/references/design-brief-ensemble.md`:
 
 ```bash
 PROMPT_FILE="$(mktemp -t designer-refine-prompt.XXXXXX).xml"
@@ -277,7 +277,7 @@ if [ "${CONVERGED:-no}" = "yes" ]; then
   # --terminal-phase), and does not restore the previous phase or next_action.
   # On Codex the Stop hook runs only once the operator has trusted the plugin
   # hooks (`/hooks`), so evaluation waits for that. Full contract:
-  # skills/_shared/references/session-handoff.md § Archive timing.
+  # core/skills/_shared/references/session-handoff.md § Archive timing.
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --terminal-phase summary-complete \
@@ -296,7 +296,7 @@ fi
 If refine surfaces a **genuine 2+-branch decision point** — two viable
 remediation directions, or two ways to close the same gap — surface a **compact
 multi-axis lens** across the decisive design axes (사용성 Usability + the archetype
-axis) + the accessibility gate, reading `skills/decide/references/decision-axes.yml`
+axis) + the accessibility gate, reading `core/skills/decide/references/decision-axes.yml`
 (the `scripts/decide-registry.mjs resolve --size=minor` resolver gives the compact
 rendering of `balanced`). Bounded: only at a genuine 2+-branch point, never the
 full matrix for a trivial reversible fix. A weightier fork routes to
@@ -319,7 +319,7 @@ one of:
   re-run `/designer:refine` or route to `/designer:decide`.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
-`skills/refine/SKILL.md` § Completion): typical `selected_next` is
+`core/skills/refine/SKILL.md` § Completion): typical `selected_next` is
 `/designer:critique` to re-critique the revised artifact and confirm convergence
 — or "the design is sound, proceed" when the change was small and reconciles. Do
 not end with a hardcoded "next: X".
@@ -327,7 +327,7 @@ not end with a hardcoded "next: X".
 ADR-0042 is `Accepted` — the full designer surface (the six verbs, the
 `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
 `peer-now` meta skills) ships, so every `next_command` is runnable. The refinement summary is the durable
-handoff. See `skills/refine/SKILL.md` § Completion.
+handoff. See `core/skills/refine/SKILL.md` § Completion.
 
 Always include the workflow path:
 
@@ -351,4 +351,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

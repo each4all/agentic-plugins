@@ -82,8 +82,8 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute critique
 
 Follow the critique skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/critique/SKILL.md`. The lenses (each holds the
-artifact to `skills/critique/references/quality-criteria.md`):
+`$CLAUDE_PLUGIN_ROOT/core/skills/critique/SKILL.md`. The lenses (each holds the
+artifact to `core/skills/critique/references/quality-criteria.md`):
 
 - `usability` — Nielsen's 10 usability heuristics.
 - `a11y` — WCAG 2.1/2.2 A/AA **candidate** checks (the `a11y` flag is an alias
@@ -123,7 +123,7 @@ peer path is code/text-based, or a **verified-local absolute file path** the pee
 reads on its own host (the `plugins/image` critique-dispatch precedent);
 `codex-companion` has no `--image` flag, so vision-grounded critique stays
 same-host. When confidentiality is unclear, ask the user, or run local-only. See
-`skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Review point type)
 
@@ -133,9 +133,9 @@ and/or frontend code, or a verified-local screenshot path, **never image bytes**
 signals, candidate a11y from markup, conversion/funnel logic, design-system
 consistency), write it to a tempfile, and dispatch in the background. The prompt
 template + synthesis contract land in
-`skills/_shared/references/ensemble-protocol.md` § Review; the dispatch
+`core/skills/_shared/references/ensemble-protocol.md` § Review; the dispatch
 shape mirrors the reference-scan dispatch in
-`skills/investigate/references/design-brief-ensemble.md`:
+`core/skills/investigate/references/design-brief-ensemble.md`:
 
 ```bash
 PROMPT_FILE="$(mktemp -t designer-critique-prompt.XXXXXX).xml"
@@ -237,7 +237,7 @@ fi
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -254,7 +254,7 @@ If a critique surfaces a **genuine 2+-branch decision point** — two viable
 remediation directions, or two defensible severity reads of the same finding —
 surface a **compact multi-axis lens** across the decisive design axes (사용성
 Usability + the archetype axis) + the accessibility gate, reading
-`skills/decide/references/decision-axes.yml` (the
+`core/skills/decide/references/decision-axes.yml` (the
 `scripts/decide-registry.mjs resolve --size=minor` resolver gives the compact
 rendering of `balanced`). Bounded: only at a genuine 2+-branch point, never the
 full matrix for a trivial reversible fix. A weightier fork routes to
@@ -272,7 +272,7 @@ Output the severity-grouped report (leading with the gate verdict) and one of:
   its remediations named); the design is in good shape.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
-`skills/critique/SKILL.md` § Completion): typical `selected_next` is
+`core/skills/critique/SKILL.md` § Completion): typical `selected_next` is
 `/designer:refine` to address the selected findings (CRITICAL + MAJOR by default;
 the user picks which MINOR / SUGGESTION to include) — or `/designer:decide` when
 a finding opens a genuine 2+-direction fork, or `/designer:investigate` when a
@@ -282,7 +282,7 @@ hardcoded "next: X".
 ADR-0042 is `Accepted` — the full designer surface (the six verbs, the
 `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
 `peer-now` meta skills) ships, so every `next_command` is runnable. The critique report is the durable
-handoff. See `skills/critique/SKILL.md` § Completion.
+handoff. See `core/skills/critique/SKILL.md` § Completion.
 
 Always include the workflow path:
 
@@ -306,4 +306,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

@@ -253,6 +253,40 @@ describe('runSpec — scoring', () => {
     }
   });
 
+  // Peer-found on scripts/mutation-specs/decide-registry-root.mjs: a mutation
+  // may name its own `tests`, and the control used to run only `spec.TESTS`.
+  // A broken file in the per-mutation set therefore produced `CONTROL exit=0`
+  // followed by KILLED verdicts that the mutation had not earned — the
+  // fabricated verdict this harness exists to prevent, arriving through the one
+  // door it did not watch.
+  it('runs the control over per-mutation test sets too, not just the spec default', async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-work3-${process.pid}`);
+    // A second suite, named ONLY by the mutation, and broken.
+    write(
+      root,
+      'tests/test-other.mjs',
+      "import { test } from 'node:test';\n"
+      + "test('other', () => { throw new Error('this suite is broken'); });\n",
+    );
+    write(root, 'spec.mjs', `
+export const TESTS = ['tests/test-value.mjs'];
+export const MUTATIONS = [
+  { id: 'K', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2',
+    tests: ['tests/test-other.mjs'], why: 'scored against a suite the control must also prove green' },
+];
+`);
+    try {
+      await rejects(
+        () => runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir, log: () => {} }),
+        (err) => err instanceof MutationHarnessError && /UNMUTATED copy is not green/.test(err.message),
+      );
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('refuses to score anything when the unmutated control is not green', async () => {
     const root = makeScoringRepo();
     const workDir = join(root, '..', `harness-work2-${process.pid}`);

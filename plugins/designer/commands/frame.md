@@ -89,14 +89,14 @@ ownership token + stale window per ADR-0011 §3, and writes only persona
 ## Phase 1 — Execute frame
 
 Follow the frame skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/frame/SKILL.md`. The skill articulates the UX
+`$CLAUDE_PLUGIN_ROOT/core/skills/frame/SKILL.md`. The skill articulates the UX
 problem model: user problem/opportunity, users + job-to-be-done, design
 goals, MEASURABLE UX success metrics, constraints, key risks,
 out-of-scope items.
 
 Frame is single-mode (no `--profile` argument). Design context flows
 through the Design Task Profile (canonically defined in the shared
-`skills/_shared/references/orchestration.md` reference, restated inline in
+`core/skills/_shared/references/orchestration.md` reference, restated inline in
 the investigate skill).
 
 ### Privacy gate (before any external call)
@@ -108,14 +108,14 @@ before the peer prompt; the pre-genericization value MUST never leave the
 local host. **Screenshots are sensitive by default** and are never sent to
 the peer as bytes (the peer path is code/text-based; vision critique is a
 same-host `designer:critique` capability). See
-`skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Frame point type)
 
 Build the Frame prompt and write it to a tempfile, then dispatch in the
 background. The prompt template + synthesis contract live in
-`skills/frame/SKILL.md` § Step 3 (and
-`skills/_shared/references/ensemble-protocol.md` §Frame):
+`core/skills/frame/SKILL.md` § Step 3 (and
+`core/skills/_shared/references/ensemble-protocol.md` §Frame):
 
 ```bash
 PROMPT_FILE="$(mktemp -t designer-frame-prompt.XXXXXX).xml"
@@ -202,7 +202,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -221,7 +221,7 @@ jobs — surface a **compact multi-axis lens** across the decisive design
 axes (usability 사용성 + the context lens the question turns on, with
 accessibility 접근성 as the veto gate, per ADR-0042 SD3) +
 size-appropriate supporting axes, instead of a flat list. The designer
-decision registry (`skills/decide/references/decision-axes.yml`) is the
+decision registry (`core/skills/decide/references/decision-axes.yml`) is the
 axis source of truth; when it is unreachable, read the decisive axes
 inline as above. Bounded: only at a genuine 2+-branch point.
 
@@ -237,7 +237,7 @@ Output the synthesized UX problem model and one of:
   and pause for reconciliation before downstream verbs.
 
 Then emit an **Active Next-Action Proposal** (the inline shape shown in
-`skills/frame/SKILL.md` § Completion): typical `selected_next` candidates
+`core/skills/frame/SKILL.md` § Completion): typical `selected_next` candidates
 are `/designer:decide` when 2+ directions need comparison (name the size
 `--size=minor|standard|major`), or `/designer:compose` when the direction
 is already obvious. Do not end with a hardcoded "next: X".
@@ -245,7 +245,7 @@ is already obvious. Do not end with a hardcoded "next: X".
 ADR-0042 is `Accepted` — the full designer surface (the six verbs, the
 `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
 `peer-now` meta skills) ships, so every `next_command` is runnable. The UX problem model is the durable
-handoff. See `skills/frame/SKILL.md` § Completion.
+handoff. See `core/skills/frame/SKILL.md` § Completion.
 
 Always include the workflow path:
 
@@ -269,4 +269,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

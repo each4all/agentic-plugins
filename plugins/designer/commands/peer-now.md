@@ -15,7 +15,7 @@ verb-skill ensemble. It does NOT advance any workflow phase and is excluded
 from `ensemble_results` by design.
 
 **Cognitive runbook + the Host-availability matrix live in
-`$CLAUDE_PLUGIN_ROOT/skills/peer-now/SKILL.md`** per ADR-0022. This command
+`$CLAUDE_PLUGIN_ROOT/core/skills/peer-now/SKILL.md`** per ADR-0022. This command
 file owns the Claude-host bash below.
 
 > **designer is not an orchestrator dispatch target** (ADR-0042 Non-Goal 2):
@@ -48,7 +48,7 @@ critique-dispatch precedent. Vision-grounded judgment stays same-host
 The gate is bidirectional (Claude→Codex and Codex→Claude alike). If the
 prompt cannot be genericized without losing the question, confirm with the
 user or decline and answer locally. See
-`skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ---
 

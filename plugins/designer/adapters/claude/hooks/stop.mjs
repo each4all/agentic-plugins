@@ -46,7 +46,7 @@ async function main() {
     // primary firing. Scope honesty: the branch-agnostic orphan sweep below
     // archives deleted-branch terminals WITHOUT a final emit attempt (the
     // inherited engineer/orchestrator limitation, documented in
-    // skills/_shared/references/session-handoff.md).
+    // core/skills/_shared/references/session-handoff.md).
     try {
       const { frontmatter } = await readWorkflow(active);
       if (frontmatter?.terminal_marker === true) {

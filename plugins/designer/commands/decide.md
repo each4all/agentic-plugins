@@ -85,7 +85,7 @@ ownership token + stale window per ADR-0011 §3, and writes only persona
 ## Phase 0.5 — Resolve design decision axes from the registry (ADR-0042 SD3 / ADR-0027 §5.6)
 
 Parse `$ARGUMENTS` into flags + body and resolve the preset from
-`skills/decide/references/decision-axes.yml`. The resulting
+`core/skills/decide/references/decision-axes.yml`. The resulting
 `ResolvedDecisionContext` JSON is stashed at
 `$AGENTIC_DECIDE_CONTEXT_FILE` for the skill body to consume.
 
@@ -137,7 +137,7 @@ The skill body reads `$AGENTIC_DECIDE_CONTEXT_FILE` to obtain:
 - `axes[]` — ordered axis descriptors (id, en/ko labels, question, role,
   `gate`) for the resolved preset. `gate: true` marks the **veto gate**
   (접근성 Accessibility) — a hard candidate WCAG A/AA barrier vetoes the
-  option regardless of the decisive axes (see `skills/decide/SKILL.md`
+  option regardless of the decisive axes (see `core/skills/decide/SKILL.md`
   @decide:recommendation-rule; candidate-level per ADR-0042 Non-Goal 6).
 - `preset_id` — the active preset id (balanced | conversion | experience |
   clarity).
@@ -157,7 +157,7 @@ graceful-degradation artifact per ADR-0027 §1.6.
 ## Phase 1 — Execute decide
 
 Follow the decide skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/decide/SKILL.md`. The skill performs 2+
+`$CLAUDE_PLUGIN_ROOT/core/skills/decide/SKILL.md`. The skill performs 2+
 design-direction generation, evidence-based comparison across **the axes
 resolved from `$AGENTIC_DECIDE_CONTEXT_FILE`** (usability / consistency /
 conversion / desirability / content-clarity / feasibility, plus the
@@ -165,8 +165,8 @@ accessibility veto gate), and recommends a direction with explicit
 rationale. The user makes the final call.
 
 Decide is single-mode (no `--profile` argument). Design sub-discipline
-context flows through the Design Task Profile per `skills/investigate/SKILL.md`
-§ Design Task Profile (the shared `skills/_shared/references/orchestration.md`
+context flows through the Design Task Profile per `core/skills/investigate/SKILL.md`
+§ Design Task Profile (the shared `core/skills/_shared/references/orchestration.md`
 reference).
 
 ### Privacy gate (before any external call)
@@ -178,7 +178,7 @@ before the peer prompt; the pre-genericization value MUST never leave the
 local host. **Screenshots are sensitive by default** and are never sent to
 the peer as bytes (the peer path is code/text-based; vision critique is a
 same-host `designer:critique` capability). See
-`skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Brainstorm point type)
 
@@ -186,9 +186,9 @@ Build the Brainstorm prompt (independent generation of 2-3 design
 directions with tradeoffs across the resolved axes), write it to a
 tempfile, and dispatch in the background. The prompt template (with the
 `<axis_awareness>` design-axis block) + synthesis contract land in
-`skills/_shared/references/ensemble-protocol.md` §Brainstorm; the
+`core/skills/_shared/references/ensemble-protocol.md` §Brainstorm; the
 dispatch shape mirrors the reference-scan dispatch in
-`skills/investigate/references/design-brief-ensemble.md`:
+`core/skills/investigate/references/design-brief-ensemble.md`:
 
 ```bash
 PROMPT_FILE="$(mktemp -t designer-decide-prompt.XXXXXX).xml"
@@ -276,7 +276,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -312,7 +312,7 @@ Output the comparison and one of:
   evidence; pause until the user selects.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
-`skills/decide/SKILL.md` § Completion): typical `selected_next` is
+`core/skills/decide/SKILL.md` § Completion): typical `selected_next` is
 `/designer:compose` to draft the flows/specs for the chosen direction — or
 `/designer:investigate` if a decisive evidence gap (or an unresolved gate)
 surfaced, or `/designer:frame` if deciding reframed the UX problem. Do not
@@ -321,7 +321,7 @@ end with a hardcoded "next: X".
 ADR-0042 is `Accepted` — the full designer surface (the six verbs, the
 `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
 `peer-now` meta skills) ships, so every `next_command` is runnable. The decision record is the durable
-handoff. See `skills/decide/SKILL.md` § Completion.
+handoff. See `core/skills/decide/SKILL.md` § Completion.
 
 Always include the workflow path:
 
@@ -345,4 +345,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

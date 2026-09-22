@@ -219,8 +219,22 @@ export async function runSpec(specPath, options = {}) {
   mkdirSync(workDir, { recursive: true });
   const controlDir = join(workDir, 'control');
   makeDisposableCopy(repoRoot, controlDir);
-  const control = runTests(controlDir, spec.TESTS ?? []);
-  log(`CONTROL   exit=${control.status}  failing=${control.failing.length}`);
+  // The control must cover EVERY file any scored mutation will run, not just
+  // the spec default. A mutation that names its own `tests` used to be scored
+  // against a set the control never ran: peer-measured on this file, a designer
+  // test that failed at startup still produced `CONTROL exit=0` and two KILLED
+  // verdicts — a kill credited to a mutation that changed nothing about it.
+  // Scoring a set the control has not proven green is exactly the fabricated
+  // verdict this harness exists to prevent.
+  const controlTests = [...new Set([
+    ...(spec.TESTS ?? []),
+    ...mutations.flatMap((m) => m.tests ?? []),
+  ])];
+  if (controlTests.length === 0) {
+    throw new MutationHarnessError(`${specPath} names no test files — there is nothing to score against`);
+  }
+  const control = runTests(controlDir, controlTests);
+  log(`CONTROL   exit=${control.status}  failing=${control.failing.length}  files=${controlTests.length}`);
   if (control.status !== 0) {
     log(control.stdout.slice(-4000));
     throw new MutationHarnessError(

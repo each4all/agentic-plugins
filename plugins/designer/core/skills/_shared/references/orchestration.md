@@ -6,7 +6,7 @@ not static counts.
 
 **Plugin boundary note**: this orchestration framework is
 designer-internal (lives at
-`plugins/designer/skills/_shared/references/`). Per ADR-0010 §5,
+`plugins/designer/core/skills/_shared/references/`). Per ADR-0010 §5,
 cross-plugin imports are forbidden — designer ships its **own copy** of
 the orchestration pattern rather than importing engineer's or founder's
 (ADR-0029 §Neutral copy/adapt rule; designer is the fourth copy per
@@ -134,7 +134,7 @@ The candidate-only boundary holds (ADR-0042 Non-Goal 6): designer flags
 and prioritizes; it does not certify conformance.
 
 The map above is **not** re-declared here as data. Its single source of
-truth is `PROFILE_PRESET_MAP` in `../../../scripts/decide-registry.mjs`,
+truth is `PROFILE_PRESET_MAP` in `../../../../scripts/decide-registry.mjs`,
 which satisfies the ADR-0027 §1.5(3) profile-override slot; the table is
 its documentation.
 

@@ -37,7 +37,7 @@
 //   grammar (--preset / --size / --weights) is unchanged, and `/designer:decide`
 //   stays single-mode. The CLI reads the archetype from the
 //   `AGENTIC_DESIGNER_PROFILE` environment variable — the value the Design Task
-//   Profile recorded (`skills/_shared/references/orchestration.md` § Step 1),
+//   Profile recorded (`core/skills/_shared/references/orchestration.md` § Step 1),
 //   exported by `/designer:start`. Unset means `general`, which resolves the
 //   same `balanced` preset the default already picks, so behavior is unchanged
 //   for a standalone verb invocation.
@@ -50,7 +50,7 @@ import { parse as parseYaml, YamlParseError } from "./lib/yaml-mini.mjs";
 import { normalizeWeights } from "./lib/decide-weights.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_PATH = resolve(HERE, "..", "skills", "decide", "references", "decision-axes.yml");
+const DEFAULT_PATH = resolve(HERE, "..", "core", "skills", "decide", "references", "decision-axes.yml");
 
 const ID_RE = /^[a-z][a-z0-9-]*$/;
 const VALID_ROLES = new Set(["decisive", "supporting"]);
@@ -77,8 +77,8 @@ const DEFAULT_FALLBACK = Object.freeze({
 function freeze(obj) { return Object.freeze(obj); }
 
 // ADR-0042 SD6 — the L4 design archetype → decision-preset map, and the single
-// source of truth for it. `skills/_shared/references/orchestration.md`
-// documents the table; `skills/decide/references/decision-axes.yml` defines the
+// source of truth for it. `core/skills/_shared/references/orchestration.md`
+// documents the table; `core/skills/decide/references/decision-axes.yml` defines the
 // presets. A shape test asserts every value here names a preset the registry
 // actually defines (ADR-0042 SD3: "every L4 profile resolves to a defined
 // preset"), which is what keeps the three files from drifting apart.

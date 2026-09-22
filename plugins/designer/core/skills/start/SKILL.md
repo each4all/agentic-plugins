@@ -117,7 +117,7 @@ Record the Design Task Profile per
 `Profile` field is the L4 archetype: `general`/`flow` → `balanced`;
 `ui` → `experience`; `cta` → `conversion`; `content` → `clarity`. The
 map's single source of truth is `PROFILE_PRESET_MAP` in
-`../../scripts/decide-registry.mjs`. An explicit `--preset` / `--size` at
+`../../../scripts/decide-registry.mjs`. An explicit `--preset` / `--size` at
 Phase 1c still wins (ADR-0027 §1.5) — and because designer's size→preset
 map is degenerate, an explicit `--size` **drops** the archetype (the
 resolver says so on stderr).
@@ -287,7 +287,7 @@ state — **only when Phase 4 converged**:
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "<plugin-root>/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --terminal-phase summary-complete --terminal-marker true \
@@ -310,7 +310,7 @@ deliverable starts a new `/designer:start`. Do NOT hand-compose a second
 footer; surface the emitted one. The footer never mutates host session
 context; detached HEAD never auto-recommends a fresh session (the
 branch-based preflight is what reports "no active branch context").
-Wiring: `skills/_shared/references/session-handoff.md`.
+Wiring: `core/skills/_shared/references/session-handoff.md`.
 
 ---
 

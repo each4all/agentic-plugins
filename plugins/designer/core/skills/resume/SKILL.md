@@ -20,8 +20,8 @@ screen**, so a moved HEAD or a dirty tree means the surface under critique
 may no longer be the surface the findings describe. The drift report is the
 signal to re-render before continuing a Phase 3/4 loop.
 
-It is a **meta skill** per [ADR-0010](../../../../docs/adr/0010-plugin-boundary-policy.md)
-§3 cascade ([ADR-0022](../../../../docs/adr/0022-engineer-meta-skill-category.md),
+It is a **meta skill** per [ADR-0010](../../../../../docs/adr/0010-plugin-boundary-policy.md)
+§3 cascade ([ADR-0022](../../../../../docs/adr/0022-engineer-meta-skill-category.md),
 adopted for designer per ADR-0042 SD7): not a verb (no cognitive activity),
 not a macro (no phase sequencing), but a workflow-continuity operation
 against existing state.
