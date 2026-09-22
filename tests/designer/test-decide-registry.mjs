@@ -341,6 +341,42 @@ test("CLI: resolve --size=minor → balanced (7 axes, no compact tier)", () => {
   assert.equal(parsed.size, "minor");
 });
 
+// --- Relocation proof (ADR-0006 Amendment, macro d4e4af S3) --------------
+//
+// DEFAULT_PATH is built relative to the script, not to the skills root, so
+// relocating the skills tree without moving that constant stops finding the
+// file — and stops SILENTLY: the CLI still exits 0 and still prints a
+// well-formed ResolvedDecisionContext, because a missing registry falls back
+// to an in-code preset.
+//
+// Designer is the case where the naive assertion is vacuous. Its in-code
+// fallback mirrors its own file default, so with the registry ABSENT a plain
+// `resolve` still returns preset_id "balanced" with 7 axes — byte-identical to
+// success. Three clauses discriminate, and all three are asserted below:
+// a preset that exists ONLY in the file (`clarity`; the fallback has no such
+// id and silently yields balanced/7), its exact axis count, and the absence of
+// the `registry:` diagnostic on stderr. `registry_fallback` is a fourth.
+//
+// Same shape as engineer's proof, with the preset id substituted — which is
+// what S4 (founder, `--preset=compact`) adapts next.
+test("CLI: the relocated registry is actually read — clarity, 5 axes, and NO fallback diagnostic", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--preset=clarity", "--", "x"], { encoding: "utf8", env: CLI_ENV });
+  assert.equal(r.status, 0, r.stderr);
+  const parsed = JSON.parse(r.stdout);
+  // Clause 1 — a preset id that exists only in the registry file.
+  assert.equal(parsed.preset_id, "clarity");
+  // Clause 2 — its exact shape, so a truncated or partially-parsed file fails.
+  assert.equal(parsed.axes.length, 5);
+  // Clause 3 — the fallback announces itself here and nowhere a value
+  // assertion can see, which is the whole reason this clause exists.
+  assert.ok(
+    !r.stderr.includes("registry:"),
+    `decide-registry fell back to the in-code preset instead of reading the relocated file; stderr: ${r.stderr}`,
+  );
+  // Clause 4 — the flag the resolver sets on the same finding.
+  assert.equal(parsed.registry_fallback, false);
+});
+
 test("CLI: invalid flag → exit 2 (parser halt)", () => {
   const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--bogus=1"], { encoding: "utf8", env: CLI_ENV });
   assert.equal(r.status, 2);

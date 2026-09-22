@@ -60,11 +60,19 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/designer');
+
+// Where this plugin's skills actually live, read from its own Codex manifest
+// rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
+// core/skills/, and `resolveSkillsRoot` throws rather than falling back, so a
+// broken or missing declaration fails this file loudly at load instead of
+// leaving every path below pointing at a directory nothing writes to.
+const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
 // ADR-0042 was Accepted at PR7 (the real-topic dogfood validated designer).
 // The user-facing surfaces must now be FREE of this incubating marker — the
@@ -214,7 +222,7 @@ describe('plugins/designer — Codex manifest (.codex-plugin/plugin.json)', () =
     const json = await readJSON(path);
     strictEqual(json.hooks, './adapters/codex/hooks/hooks.json',
       'PR2 machinery hooks remain exposed in the Codex manifest');
-    strictEqual(json.skills, './skills/',
+    strictEqual(json.skills, './core/skills/',
       'PR3 lands the first SKILL.md surfaces — the Codex manifest must expose the skills path');
     ok(json.interface && typeof json.interface === 'object',
       'PR3 lands a verb surface — the Codex manifest must carry an interface block');
@@ -421,13 +429,13 @@ describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-b
   const REQUIRED_SURFACES = [
     'commands/investigate.md',
     'commands/frame.md',
-    'skills/investigate/SKILL.md',
-    'skills/investigate/agents/openai.yaml',
-    'skills/investigate/references/design-brief-spec.md',
-    'skills/investigate/references/design-brief-ensemble.md',
-    'skills/investigate/references/output-file-rules.md',
-    'skills/frame/SKILL.md',
-    'skills/frame/agents/openai.yaml',
+    `${SKILLS_REL}/investigate/SKILL.md`,
+    `${SKILLS_REL}/investigate/agents/openai.yaml`,
+    `${SKILLS_REL}/investigate/references/design-brief-spec.md`,
+    `${SKILLS_REL}/investigate/references/design-brief-ensemble.md`,
+    `${SKILLS_REL}/investigate/references/output-file-rules.md`,
+    `${SKILLS_REL}/frame/SKILL.md`,
+    `${SKILLS_REL}/frame/agents/openai.yaml`,
   ];
 
   for (const rel of REQUIRED_SURFACES) {
@@ -442,9 +450,9 @@ describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-b
   // Profile). PR6 landed it — its content is asserted in the PR6 suite below,
   // and here we only confirm the PR3 forward-reference now resolves.
   it('the PR3 forward-reference to _shared/references/orchestration.md now resolves (landed at PR6)', async () => {
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md')), true,
+    strictEqual(await exists(skillsPath(PLUGIN_ROOT, '_shared/references/orchestration.md')), true,
       'the shared orchestration.md landed at PR6 — the PR3 verb SKILLs forward-reference it');
-    for (const rel of ['skills/investigate/SKILL.md', 'skills/frame/SKILL.md']) {
+    for (const rel of [`${SKILLS_REL}/investigate/SKILL.md`, `${SKILLS_REL}/frame/SKILL.md`]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /_shared\/references\/orchestration\.md/,
         `${rel} must reference the shared Design Task Profile / orchestration reference`);
@@ -452,19 +460,19 @@ describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-b
   });
 
   for (const verb of VERB_SKILLS) {
-    it(`skills/${verb}/SKILL.md frontmatter name = ${verb} (folder ↔ frontmatter consistency)`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+    it(`${SKILLS_REL}/${verb}/SKILL.md frontmatter name = ${verb} (folder ↔ frontmatter consistency)`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'SKILL.md'), 'utf8');
       const fm = frontmatter(text);
-      ok(fm, `skills/${verb}/SKILL.md has no YAML frontmatter`);
+      ok(fm, `${SKILLS_REL}/${verb}/SKILL.md has no YAML frontmatter`);
       ok(new RegExp(`^name:\\s*${verb}\\s*$`, 'm').test(fm),
-        `skills/${verb}/SKILL.md frontmatter name != "${verb}"`);
-      match(fm, /description:/, `skills/${verb}/SKILL.md frontmatter must carry a description`);
+        `${SKILLS_REL}/${verb}/SKILL.md frontmatter name != "${verb}"`);
+      match(fm, /description:/, `${SKILLS_REL}/${verb}/SKILL.md frontmatter must carry a description`);
     });
 
-    it(`skills/${verb}/agents/openai.yaml display_name names the verb + persona`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'agents/openai.yaml'), 'utf8');
+    it(`${SKILLS_REL}/${verb}/agents/openai.yaml display_name names the verb + persona`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'agents/openai.yaml'), 'utf8');
       const m = text.match(/display_name:\s*"([^"]+)"/);
-      ok(m, `skills/${verb}/agents/openai.yaml must declare interface.display_name`);
+      ok(m, `${SKILLS_REL}/${verb}/agents/openai.yaml must declare interface.display_name`);
       ok(m[1].toLowerCase().includes(verb),
         `openai.yaml display_name "${m[1]}" must name the verb "${verb}"`);
       ok(m[1].toLowerCase().includes('designer'),
@@ -481,7 +489,7 @@ describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-b
 });
 
 describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD4)', () => {
-  const SPEC = 'skills/investigate/references/design-brief-spec.md';
+  const SPEC = `${SKILLS_REL}/investigate/references/design-brief-spec.md`;
 
   it('declares the 5-tier design source taxonomy', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
@@ -506,9 +514,9 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
 
   it('the privacy-gate sentinel appears in the spec AND the investigate prompt-guard surfaces (ADR-0042 SD4)', async () => {
     const REQUIRED = [
-      'skills/investigate/references/design-brief-spec.md',
+      `${SKILLS_REL}/investigate/references/design-brief-spec.md`,
       'commands/investigate.md',
-      'skills/investigate/SKILL.md',
+      `${SKILLS_REL}/investigate/SKILL.md`,
     ];
     for (const rel of REQUIRED) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
@@ -519,9 +527,9 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
 
   it('the privacy-gate sentinel also reaches the ensemble dispatch + frame surfaces', async () => {
     const ALSO = [
-      'skills/investigate/references/design-brief-ensemble.md',
+      `${SKILLS_REL}/investigate/references/design-brief-ensemble.md`,
       'commands/frame.md',
-      'skills/frame/SKILL.md',
+      `${SKILLS_REL}/frame/SKILL.md`,
     ];
     for (const rel of ALSO) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
@@ -532,12 +540,12 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
 
   it('the "screenshots sensitive-by-default" invariant reaches every privacy surface (SD4 item 4)', async () => {
     const SURFACES = [
-      'skills/investigate/references/design-brief-spec.md',
+      `${SKILLS_REL}/investigate/references/design-brief-spec.md`,
       'commands/investigate.md',
-      'skills/investigate/SKILL.md',
-      'skills/investigate/references/design-brief-ensemble.md',
+      `${SKILLS_REL}/investigate/SKILL.md`,
+      `${SKILLS_REL}/investigate/references/design-brief-ensemble.md`,
       'commands/frame.md',
-      'skills/frame/SKILL.md',
+      `${SKILLS_REL}/frame/SKILL.md`,
     ];
     for (const rel of SURFACES) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8')).toLowerCase();
@@ -547,18 +555,18 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
   });
 
   it('the reference-scan ensemble states the code/text-only vision boundary (no --image to the peer, SD4 item 3)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/references/design-brief-ensemble.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'investigate/references/design-brief-ensemble.md'), 'utf8');
     match(text, /--image/, 'ensemble must state that the peer path has no --image flag');
     match(text, /same-host/i, 'ensemble must state that vision critique is a same-host capability');
   });
 
   it('the investigate skill names the two evidence streams — external references AND the frontend code read (SD2)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/SKILL.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'investigate/SKILL.md'), 'utf8');
     match(text, /frontend code/i, 'investigate SKILL must state it reads the existing frontend code (ADR-0042 SD2)');
   });
 
   it('the frame skill fixes MEASURABLE UX success metrics (SD4 item 1 pre-code quality)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/frame/SKILL.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'frame/SKILL.md'), 'utf8');
     match(text, /measurable/i, 'frame SKILL must require measurable UX success metrics');
     match(text, /success metric/i, 'frame SKILL must structure UX success metrics');
   });
@@ -569,7 +577,7 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
     // Codex Plan-verify GAP: user-research must not be lumped into
     // "Use WebSearch + WebFetch" across all five tiers — it is a local-only,
     // supplied, no-URL stream (design-brief-spec § User-research citation shape).
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/SKILL.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'investigate/SKILL.md'), 'utf8');
     match(text, /four URL-bearing tiers/i,
       'investigate SKILL must scope WebSearch to the four URL-bearing tiers, excluding user-research');
     match(text, /never web-searched|not web-searched/i,
@@ -581,7 +589,7 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
     // below competitor-reference while calling it highest-relevance — the spec
     // must state that user-research outranks competitor/press for an
     // observed-behavior claim, with accessibility as the sole veto.
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/references/design-brief-spec.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'investigate/references/design-brief-spec.md'), 'utf8');
     match(text, /authority vs\.? relevance/i,
       'spec must distinguish external-authority from relevance for user-research');
     match(text, /observed-behavior/i,
@@ -592,7 +600,7 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
     // Codex Plan-verify CONFLICT: the ensemble both allowed the peer to reason
     // from supplied aggregates and required every claim to carry a URL. The
     // fix: supplied aggregates are context-only; the peer cannot cite them.
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/references/design-brief-ensemble.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'investigate/references/design-brief-ensemble.md'), 'utf8');
     match(text, /context only/i,
       'ensemble citation_contract must mark supplied aggregates as context-only (the peer cannot cite them)');
   });
@@ -612,8 +620,8 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
     // the PR7 dogfood as the Accepted-flip gate. The dogfood ran; the flip landed.
     // Both the marker and the forward reference are now false claims.
     for (const rel of [
-      'skills/investigate/SKILL.md',
-      'skills/frame/SKILL.md',
+      `${SKILLS_REL}/investigate/SKILL.md`,
+      `${SKILLS_REL}/frame/SKILL.md`,
       'commands/investigate.md',
       'commands/frame.md',
     ]) {
@@ -632,13 +640,13 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
     // operational tokens a copy-trim miss would leave behind.
     const STALE = [/business_brief/i, /FOUNDER_OUTPUT_ROOT/, /\bventure\b/i, /\bjurisdiction\b/i, /unit-economics/i];
     for (const rel of [
-      'skills/investigate/SKILL.md',
-      'skills/frame/SKILL.md',
+      `${SKILLS_REL}/investigate/SKILL.md`,
+      `${SKILLS_REL}/frame/SKILL.md`,
       'commands/investigate.md',
       'commands/frame.md',
-      'skills/investigate/references/design-brief-spec.md',
-      'skills/investigate/references/design-brief-ensemble.md',
-      'skills/investigate/references/output-file-rules.md',
+      `${SKILLS_REL}/investigate/references/design-brief-spec.md`,
+      `${SKILLS_REL}/investigate/references/design-brief-ensemble.md`,
+      `${SKILLS_REL}/investigate/references/output-file-rules.md`,
     ]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       for (const re of STALE) {
@@ -656,12 +664,12 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
     'scripts/lib/decide-scores.mjs',
     'scripts/lib/decide-sensitivity.mjs',
     'scripts/lib/yaml-mini.mjs',
-    'skills/decide/references/decision-axes.yml',
-    'skills/decide/SKILL.md',
-    'skills/decide/agents/openai.yaml',
+    `${SKILLS_REL}/decide/references/decision-axes.yml`,
+    `${SKILLS_REL}/decide/SKILL.md`,
+    `${SKILLS_REL}/decide/agents/openai.yaml`,
     'commands/decide.md',
-    'skills/compose/SKILL.md',
-    'skills/compose/agents/openai.yaml',
+    `${SKILLS_REL}/compose/SKILL.md`,
+    `${SKILLS_REL}/compose/agents/openai.yaml`,
     'commands/compose.md',
   ];
   const PR4_VERBS = ['decide', 'compose'];
@@ -676,23 +684,23 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
   // The decision-axes registry lives under skills/decide/references/ — the
   // DEFAULT_PATH decide-registry.mjs resolves relative to scripts/ (../skills/…).
   it('the decision-axes registry lives under skills/decide/references/', async () => {
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/decide/references/decision-axes.yml')), true);
+    strictEqual(await exists(skillsPath(PLUGIN_ROOT, 'decide/references/decision-axes.yml')), true);
   });
 
   for (const verb of PR4_VERBS) {
-    it(`skills/${verb}/SKILL.md frontmatter name = ${verb}`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+    it(`${SKILLS_REL}/${verb}/SKILL.md frontmatter name = ${verb}`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'SKILL.md'), 'utf8');
       const fm = frontmatter(text);
-      ok(fm, `skills/${verb}/SKILL.md has no YAML frontmatter`);
+      ok(fm, `${SKILLS_REL}/${verb}/SKILL.md has no YAML frontmatter`);
       ok(new RegExp(`^name:\\s*${verb}\\s*$`, 'm').test(fm),
-        `skills/${verb}/SKILL.md frontmatter name != "${verb}"`);
-      match(fm, /description:/, `skills/${verb}/SKILL.md frontmatter must carry a description`);
+        `${SKILLS_REL}/${verb}/SKILL.md frontmatter name != "${verb}"`);
+      match(fm, /description:/, `${SKILLS_REL}/${verb}/SKILL.md frontmatter must carry a description`);
     });
 
-    it(`skills/${verb}/agents/openai.yaml display_name names the verb + persona`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'agents/openai.yaml'), 'utf8');
+    it(`${SKILLS_REL}/${verb}/agents/openai.yaml display_name names the verb + persona`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, verb, 'agents/openai.yaml'), 'utf8');
       const m = text.match(/display_name:\s*"([^"]+)"/);
-      ok(m, `skills/${verb}/agents/openai.yaml must declare interface.display_name`);
+      ok(m, `${SKILLS_REL}/${verb}/agents/openai.yaml must declare interface.display_name`);
       ok(m[1].toLowerCase().includes(verb), `openai.yaml display_name "${m[1]}" must name the verb "${verb}"`);
       ok(m[1].toLowerCase().includes('designer'), `openai.yaml display_name "${m[1]}" must name the persona "designer"`);
     });
@@ -767,7 +775,7 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
   it('the SD4 privacy gate + screenshots-sensitive sentinels reach the decide + compose external-dispatch surfaces (Codex COVERAGE-2)', async () => {
     // decide dispatches a Brainstorm peer; compose dispatches a Plan-verify peer —
     // both are external transmission, so the SD4 privacy gate must reach them.
-    for (const rel of ['skills/decide/SKILL.md', 'commands/decide.md', 'skills/compose/SKILL.md', 'commands/compose.md']) {
+    for (const rel of [`${SKILLS_REL}/decide/SKILL.md`, 'commands/decide.md', `${SKILLS_REL}/compose/SKILL.md`, 'commands/compose.md']) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
       ok(text.includes(PRIVACY_SENTINEL),
         `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
@@ -777,9 +785,9 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
   });
 
   it('the @decide:axis-table SKILL region renders the 7 balanced axes with accessibility as the gate (Codex COVERAGE-4)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'decide/SKILL.md'), 'utf8');
     const m = skill.match(/<!-- @decide:axis-table:begin -->([\s\S]*?)<!-- @decide:axis-table:end -->/);
-    ok(m, 'skills/decide/SKILL.md must contain the @decide:axis-table marker region');
+    ok(m, `${SKILLS_REL}/decide/SKILL.md must contain the @decide:axis-table marker region`);
     const region = m[1];
     for (const label of ['Usability', 'Consistency', 'Conversion', 'Desirability', 'Content-Clarity', 'Feasibility', 'Accessibility']) {
       ok(region.includes(label), `@decide:axis-table must render the "${label}" axis (SKILL <-> registry drift guard)`);
@@ -802,7 +810,7 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
   });
 
   it('the decide/compose surfaces are de-incubated (ADR-0042 Accepted)', async () => {
-    for (const rel of ['skills/decide/SKILL.md', 'skills/compose/SKILL.md', 'commands/decide.md', 'commands/compose.md']) {
+    for (const rel of [`${SKILLS_REL}/decide/SKILL.md`, `${SKILLS_REL}/compose/SKILL.md`, 'commands/decide.md', 'commands/compose.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       ok(!/incubating/i.test(text), `${rel} must drop the incubating disclaimer`);
     }
@@ -816,11 +824,11 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
       /\bessence\b/i, /\bfoundation\b/i, /practical-fit/i, /\bmaturation\b/i, /canonical-precedent/i,
     ];
     for (const rel of [
-      'skills/decide/SKILL.md',
-      'skills/compose/SKILL.md',
+      `${SKILLS_REL}/decide/SKILL.md`,
+      `${SKILLS_REL}/compose/SKILL.md`,
       'commands/decide.md',
       'commands/compose.md',
-      'skills/decide/references/decision-axes.yml',
+      `${SKILLS_REL}/decide/references/decision-axes.yml`,
     ]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       for (const re of STALE) {
@@ -848,9 +856,9 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
 describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-0042 SD4)', () => {
   const REQUIRED_PR5A_SURFACES = [
     'commands/critique.md',
-    'skills/critique/SKILL.md',
-    'skills/critique/agents/openai.yaml',
-    'skills/critique/references/quality-criteria.md',
+    `${SKILLS_REL}/critique/SKILL.md`,
+    `${SKILLS_REL}/critique/agents/openai.yaml`,
+    `${SKILLS_REL}/critique/references/quality-criteria.md`,
   ];
 
   for (const rel of REQUIRED_PR5A_SURFACES) {
@@ -860,18 +868,18 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
     });
   }
 
-  it('skills/critique/SKILL.md frontmatter name = critique', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+  it(`${SKILLS_REL}/critique/SKILL.md frontmatter name = critique`, async () => {
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'critique/SKILL.md'), 'utf8');
     const fm = frontmatter(text);
-    ok(fm, 'skills/critique/SKILL.md has no YAML frontmatter');
-    ok(/^name:\s*critique\s*$/m.test(fm), 'skills/critique/SKILL.md frontmatter name != "critique"');
-    match(fm, /description:/, 'skills/critique/SKILL.md frontmatter must carry a description');
+    ok(fm, `${SKILLS_REL}/critique/SKILL.md has no YAML frontmatter`);
+    ok(/^name:\s*critique\s*$/m.test(fm), `${SKILLS_REL}/critique/SKILL.md frontmatter name != "critique"`);
+    match(fm, /description:/, `${SKILLS_REL}/critique/SKILL.md frontmatter must carry a description`);
   });
 
-  it('skills/critique/agents/openai.yaml display_name names the verb + persona', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/agents/openai.yaml'), 'utf8');
+  it(`${SKILLS_REL}/critique/agents/openai.yaml display_name names the verb + persona`, async () => {
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'critique/agents/openai.yaml'), 'utf8');
     const m = text.match(/display_name:\s*"([^"]+)"/);
-    ok(m, 'skills/critique/agents/openai.yaml must declare interface.display_name');
+    ok(m, `${SKILLS_REL}/critique/agents/openai.yaml must declare interface.display_name`);
     ok(m[1].toLowerCase().includes('critique'), `openai.yaml display_name "${m[1]}" must name the verb "critique"`);
     ok(m[1].toLowerCase().includes('designer'), `openai.yaml display_name "${m[1]}" must name the persona "designer"`);
   });
@@ -900,9 +908,9 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
   });
 
   it('the @critique:lens-table maps the 4 active lenses 1:1 onto the SD3 axes (exactly, no extras), accessibility the gate, each row routed to a criteria section (SD4)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'critique/SKILL.md'), 'utf8');
     const m = skill.match(/<!-- @critique:lens-table:begin -->([\s\S]*?)<!-- @critique:lens-table:end -->/);
-    ok(m, 'skills/critique/SKILL.md must contain the @critique:lens-table marker region');
+    ok(m, `${SKILLS_REL}/critique/SKILL.md must contain the @critique:lens-table marker region`);
     const region = m[1];
     // Parse the data rows (markdown rows starting "| <n> |") and tie each lens
     // flag to the axis it evaluates + its criteria section. A substring check
@@ -951,7 +959,7 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
     const inactiveExpected = [...axisIds].filter((a) => !ACTIVE_AXES.includes(a)).sort();
     deepStrictEqual(inactiveExpected, ['content-clarity', 'desirability', 'feasibility'],
       'the defined-but-inactive lenses must equal the 7 SD3 axes minus the 4 active-lens axes');
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'critique/SKILL.md'), 'utf8');
     match(skill, /a11y[\s\S]{0,120}?(alias|accessibility)/i,
       'critique SKILL must document the a11y lens flag as an alias for the accessibility axis');
     for (const inactive of inactiveExpected) {
@@ -965,18 +973,18 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
     // Codex Plan-verify MINOR (PR5A) guarded the shared protocol's ABSENCE until
     // PR6. PR6 authored it, so the guard flips: the forward-reference must
     // resolve, and the § Review point it names must exist in the shipped file.
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md')), true,
+    strictEqual(await exists(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md')), true,
       'the shared ensemble-protocol.md (design-anchored ensemble point types) landed at PR6');
-    const protocol = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    const protocol = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8');
     match(protocol, /^### Review /m, 'ensemble-protocol.md must define the § Review point critique names');
-    for (const rel of ['skills/critique/SKILL.md', 'commands/critique.md']) {
+    for (const rel of [`${SKILLS_REL}/critique/SKILL.md`, 'commands/critique.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /ensemble-protocol\.md/, `${rel} must reference the shared ensemble protocol`);
     }
   });
 
   it('the single internalized criteria file names all four active-lens standards (Nielsen / WCAG / conversion / consistency) — SD4', async () => {
-    const criteria = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/references/quality-criteria.md'), 'utf8');
+    const criteria = await readFile(skillsPath(PLUGIN_ROOT, 'critique/references/quality-criteria.md'), 'utf8');
     match(criteria, /Nielsen/i, "criteria file must ground the usability lens in Nielsen's heuristics");
     match(criteria, /WCAG/i, 'criteria file must ground the accessibility lens in WCAG A/AA');
     match(criteria, /conversion/i, 'criteria file must carry the conversion criteria');
@@ -987,16 +995,16 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
   });
 
   it('the critique SKILL references the single internalized criteria file (SD4 — every lens applies the same standard)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'critique/SKILL.md'), 'utf8');
     match(skill, /references\/quality-criteria\.md/,
       'critique SKILL must reference the single internalized criteria file');
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/critique/references/quality-criteria.md')), true);
+    strictEqual(await exists(skillsPath(PLUGIN_ROOT, 'critique/references/quality-criteria.md')), true);
   });
 
   it('host-direct vision + code/text-only peer path is stated across SKILL + command + openai, and the peer dispatch never passes --image (SD4 item 3)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'critique/SKILL.md'), 'utf8');
     const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/critique.md'), 'utf8');
-    const openai = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/agents/openai.yaml'), 'utf8');
+    const openai = await readFile(skillsPath(PLUGIN_ROOT, 'critique/agents/openai.yaml'), 'utf8');
     // Codex Plan-verify MAJOR: the guard read only SKILL.md and broad words — a
     // regression could add --image to the peer command and still pass. Cover the
     // command dispatch + openai surfaces and assert the peer path has no --image.
@@ -1019,17 +1027,17 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
   });
 
   it('critique flags CANDIDATE accessibility issues only, not conformance certification (ADR-0042 Non-Goal 6)', async () => {
-    for (const rel of ['skills/critique/SKILL.md', 'skills/critique/references/quality-criteria.md']) {
+    for (const rel of [`${SKILLS_REL}/critique/SKILL.md`, `${SKILLS_REL}/critique/references/quality-criteria.md`]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /candidate/i, `${rel} must state critique flags candidate a11y issues`);
       match(text, /conformance/i, `${rel} must state the WCAG-conformance honesty boundary (cannot certify)`);
     }
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'critique/SKILL.md'), 'utf8');
     match(skill, /Non-Goal 6/, 'critique SKILL must cite ADR-0042 Non-Goal 6 for the candidate-only a11y boundary');
   });
 
   it('an unmitigated accessibility veto gate is a CRITICAL finding (SD4 gate severity rule)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'critique/SKILL.md'), 'utf8');
     ok(/CRITICAL/.test(skill) && /SUGGESTION/.test(skill),
       'critique SKILL must use the CRITICAL / MAJOR / MINOR / SUGGESTION severity scheme');
     match(skill, /unmitigated[\s\S]{0,160}?CRITICAL/i,
@@ -1037,7 +1045,7 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
   });
 
   it('the SD4 privacy gate + screenshots-sensitive sentinels reach the critique external-dispatch surfaces', async () => {
-    for (const rel of ['skills/critique/SKILL.md', 'commands/critique.md']) {
+    for (const rel of [`${SKILLS_REL}/critique/SKILL.md`, 'commands/critique.md']) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
       ok(text.includes(PRIVACY_SENTINEL),
         `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
@@ -1047,7 +1055,7 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
   });
 
   it('the critique surface is de-incubated (ADR-0042 Accepted)', async () => {
-    for (const rel of ['skills/critique/SKILL.md', 'commands/critique.md']) {
+    for (const rel of [`${SKILLS_REL}/critique/SKILL.md`, 'commands/critique.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       ok(!/incubating/i.test(text), `${rel} must drop the incubating disclaimer`);
     }
@@ -1059,10 +1067,10 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
       /\bessence\b/i, /\bfoundation\b/i, /practical-fit/i, /\bmaturation\b/i, /canonical-precedent/i,
     ];
     for (const rel of [
-      'skills/critique/SKILL.md',
+      `${SKILLS_REL}/critique/SKILL.md`,
       'commands/critique.md',
-      'skills/critique/references/quality-criteria.md',
-      'skills/critique/agents/openai.yaml',
+      `${SKILLS_REL}/critique/references/quality-criteria.md`,
+      `${SKILLS_REL}/critique/agents/openai.yaml`,
     ]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       for (const re of STALE) {
@@ -1075,8 +1083,8 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
 describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-0042 SD4)', () => {
   const REQUIRED_PR5B_SURFACES = [
     'commands/refine.md',
-    'skills/refine/SKILL.md',
-    'skills/refine/agents/openai.yaml',
+    `${SKILLS_REL}/refine/SKILL.md`,
+    `${SKILLS_REL}/refine/agents/openai.yaml`,
   ];
 
   for (const rel of REQUIRED_PR5B_SURFACES) {
@@ -1086,18 +1094,18 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
     });
   }
 
-  it('skills/refine/SKILL.md frontmatter name = refine', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+  it(`${SKILLS_REL}/refine/SKILL.md frontmatter name = refine`, async () => {
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'refine/SKILL.md'), 'utf8');
     const fm = frontmatter(text);
-    ok(fm, 'skills/refine/SKILL.md has no YAML frontmatter');
-    ok(/^name:\s*refine\s*$/m.test(fm), 'skills/refine/SKILL.md frontmatter name != "refine"');
-    match(fm, /description:/, 'skills/refine/SKILL.md frontmatter must carry a description');
+    ok(fm, `${SKILLS_REL}/refine/SKILL.md has no YAML frontmatter`);
+    ok(/^name:\s*refine\s*$/m.test(fm), `${SKILLS_REL}/refine/SKILL.md frontmatter name != "refine"`);
+    match(fm, /description:/, `${SKILLS_REL}/refine/SKILL.md frontmatter must carry a description`);
   });
 
-  it('skills/refine/agents/openai.yaml display_name names the verb + persona', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/agents/openai.yaml'), 'utf8');
+  it(`${SKILLS_REL}/refine/agents/openai.yaml display_name names the verb + persona`, async () => {
+    const text = await readFile(skillsPath(PLUGIN_ROOT, 'refine/agents/openai.yaml'), 'utf8');
     const m = text.match(/display_name:\s*"([^"]+)"/);
-    ok(m, 'skills/refine/agents/openai.yaml must declare interface.display_name');
+    ok(m, `${SKILLS_REL}/refine/agents/openai.yaml must declare interface.display_name`);
     ok(m[1].toLowerCase().includes('refine'), `openai.yaml display_name "${m[1]}" must name the verb "refine"`);
     ok(m[1].toLowerCase().includes('designer'), `openai.yaml display_name "${m[1]}" must name the persona "designer"`);
   });
@@ -1130,7 +1138,7 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
   });
 
   it('the refine SKILL + command state the critique → refine → re-critique convergence loop (ADR-0042 SD4)', async () => {
-    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+    for (const rel of [`${SKILLS_REL}/refine/SKILL.md`, 'commands/refine.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /re-critique/i, `${rel} must name the re-critique convergence step`);
       match(text, /converge/i, `${rel} must state the loop runs until findings converge`);
@@ -1151,7 +1159,7 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
   });
 
   it('the convergence loop is bounded — persistent non-convergence pauses/routes, not an infinite loop (Codex M1)', async () => {
-    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+    for (const rel of [`${SKILLS_REL}/refine/SKILL.md`, 'commands/refine.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /bound(ed)? (the |it|convergence)|hard cap/i, `${rel} must bound the convergence loop (no unbounded loop)`);
       ok(/owner decision|\/designer:decide|\/designer:investigate/i.test(text),
@@ -1160,7 +1168,7 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
   });
 
   it('post-code re-critique is honest about an unavailable/broken re-render — designer does not run the build (Codex M2)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'refine/SKILL.md'), 'utf8');
     const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
     for (const [rel, text] of [['SKILL.md', skill], ['commands/refine.md', cmd]]) {
       // normalize whitespace so a markdown line-wrap inside "run the ... build" does not break the match.
@@ -1176,14 +1184,14 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
   // problem by opening a new accessibility barrier (the design analog of the
   // founder veto-gate-exposure rule). Author-guard against silent removal.
   it('refine guards the accessibility veto gate — a revision must not open a new a11y barrier (SD4)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'refine/SKILL.md'), 'utf8');
     match(skill, /accessibility barrier/i, 'refine SKILL must name the new-accessibility-barrier gate exposure');
     match(skill, /moved the (veto )?gate/i,
       'refine SKILL must state that opening a barrier moves the veto gate rather than clearing it');
   });
 
   it('refine keeps the candidate-only accessibility boundary on re-critique (ADR-0042 Non-Goal 6)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'refine/SKILL.md'), 'utf8');
     match(skill, /candidate/i, 'refine SKILL must keep the candidate-only a11y boundary on re-critique');
     match(skill, /Non-Goal 6/, 'refine SKILL must cite ADR-0042 Non-Goal 6');
   });
@@ -1199,20 +1207,20 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
   });
 
   it('the refine forward-reference to the shared ensemble-protocol.md § Refine-verify now resolves (landed at PR6)', async () => {
-    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+    for (const rel of [`${SKILLS_REL}/refine/SKILL.md`, 'commands/refine.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /ensemble-protocol\.md/, `${rel} must reference the shared ensemble-protocol.md`);
       match(text, /Refine-verify/, `${rel} must name the Refine-verify ensemble point`);
     }
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md')), true,
+    strictEqual(await exists(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md')), true,
       'the shared ensemble-protocol.md landed at PR6; PR5B refine forward-referenced it');
-    const protocol = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    const protocol = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8');
     match(protocol, /^### Refine-verify /m,
       'ensemble-protocol.md must define the § Refine-verify point refine names');
   });
 
   it('the SD4 privacy gate + screenshots-sensitive sentinels reach the refine external-dispatch surfaces', async () => {
-    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+    for (const rel of [`${SKILLS_REL}/refine/SKILL.md`, 'commands/refine.md']) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
       ok(text.includes(PRIVACY_SENTINEL),
         `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
@@ -1222,7 +1230,7 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
   });
 
   it('the refine surface is de-incubated (ADR-0042 Accepted)', async () => {
-    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+    for (const rel of [`${SKILLS_REL}/refine/SKILL.md`, 'commands/refine.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       ok(!/incubating/i.test(text), `${rel} must drop the incubating disclaimer`);
     }
@@ -1247,9 +1255,9 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
       /\bessence\b/i, /\bfoundation\b/i, /practical-fit/i, /\bmaturation\b/i, /canonical-precedent/i,
     ];
     for (const rel of [
-      'skills/refine/SKILL.md',
+      `${SKILLS_REL}/refine/SKILL.md`,
       'commands/refine.md',
-      'skills/refine/agents/openai.yaml',
+      `${SKILLS_REL}/refine/agents/openai.yaml`,
     ]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       for (const re of STALE) {
@@ -1261,20 +1269,20 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
 
 describe('plugins/designer — PR6 start macro + meta skills + shared references + L4 profiles (ADR-0042 SD5/SD6/SD7)', () => {
   const REQUIRED_PR6_SURFACES = [
-    'skills/_shared/references/orchestration.md',
-    'skills/_shared/references/ensemble-protocol.md',
+    `${SKILLS_REL}/_shared/references/orchestration.md`,
+    `${SKILLS_REL}/_shared/references/ensemble-protocol.md`,
     'commands/start.md',
     'commands/checkpoint.md',
     'commands/resume.md',
     'commands/peer-now.md',
-    'skills/start/SKILL.md',
-    'skills/start/agents/openai.yaml',
-    'skills/checkpoint/SKILL.md',
-    'skills/checkpoint/agents/openai.yaml',
-    'skills/resume/SKILL.md',
-    'skills/resume/agents/openai.yaml',
-    'skills/peer-now/SKILL.md',
-    'skills/peer-now/agents/openai.yaml',
+    `${SKILLS_REL}/start/SKILL.md`,
+    `${SKILLS_REL}/start/agents/openai.yaml`,
+    `${SKILLS_REL}/checkpoint/SKILL.md`,
+    `${SKILLS_REL}/checkpoint/agents/openai.yaml`,
+    `${SKILLS_REL}/resume/SKILL.md`,
+    `${SKILLS_REL}/resume/agents/openai.yaml`,
+    `${SKILLS_REL}/peer-now/SKILL.md`,
+    `${SKILLS_REL}/peer-now/agents/openai.yaml`,
   ];
 
   for (const rel of REQUIRED_PR6_SURFACES) {
@@ -1285,35 +1293,35 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   }
 
   for (const skill of PR6_SKILLS) {
-    it(`skills/${skill}/SKILL.md frontmatter name = ${skill} (folder ↔ frontmatter consistency)`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md'), 'utf8');
+    it(`${SKILLS_REL}/${skill}/SKILL.md frontmatter name = ${skill} (folder ↔ frontmatter consistency)`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, skill, 'SKILL.md'), 'utf8');
       const fm = frontmatter(text);
-      ok(fm, `skills/${skill}/SKILL.md has no YAML frontmatter`);
+      ok(fm, `${SKILLS_REL}/${skill}/SKILL.md has no YAML frontmatter`);
       ok(new RegExp(`^name:\\s*${skill}\\s*$`, 'm').test(fm),
-        `skills/${skill}/SKILL.md frontmatter name != "${skill}"`);
-      match(fm, /description:/, `skills/${skill}/SKILL.md frontmatter must carry a description`);
+        `${SKILLS_REL}/${skill}/SKILL.md frontmatter name != "${skill}"`);
+      match(fm, /description:/, `${SKILLS_REL}/${skill}/SKILL.md frontmatter must carry a description`);
     });
 
-    it(`skills/${skill}/agents/openai.yaml display_name names the surface + persona`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'agents/openai.yaml'), 'utf8');
+    it(`${SKILLS_REL}/${skill}/agents/openai.yaml display_name names the surface + persona`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, skill, 'agents/openai.yaml'), 'utf8');
       const m = text.match(/display_name:\s*"([^"]+)"/);
-      ok(m, `skills/${skill}/agents/openai.yaml must declare interface.display_name`);
+      ok(m, `${SKILLS_REL}/${skill}/agents/openai.yaml must declare interface.display_name`);
       ok(m[1].toLowerCase().includes(skill), `openai.yaml display_name "${m[1]}" must name "${skill}"`);
       ok(m[1].toLowerCase().includes('designer'), `openai.yaml display_name "${m[1]}" must name the persona "designer"`);
     });
 
     // ADR-0022 mandates the Host-availability matrix on every macro + meta skill
     // (founder PR6 precedent): the cross-host contract must be stated, not implied.
-    it(`skills/${skill}/SKILL.md carries the mandatory Host-availability matrix (ADR-0022)`, async () => {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md'), 'utf8');
+    it(`${SKILLS_REL}/${skill}/SKILL.md carries the mandatory Host-availability matrix (ADR-0022)`, async () => {
+      const text = await readFile(skillsPath(PLUGIN_ROOT, skill, 'SKILL.md'), 'utf8');
       match(text, /^## Host availability \(ADR-0022\)$/m,
-        `skills/${skill}/SKILL.md must carry a "## Host availability (ADR-0022)" section`);
+        `${SKILLS_REL}/${skill}/SKILL.md must carry a "## Host availability (ADR-0022)" section`);
       match(text, /^\|\s*Operation\s*\|/m,
-        `skills/${skill}/SKILL.md host-availability section must be a table with an Operation column`);
+        `${SKILLS_REL}/${skill}/SKILL.md host-availability section must be a table with an Operation column`);
       ok(/--host codex/.test(text) && /--host claude/.test(text),
-        `skills/${skill}/SKILL.md must state both host flags in the matrix`);
+        `${SKILLS_REL}/${skill}/SKILL.md must state both host flags in the matrix`);
       match(text, /^## Claude\/Codex command resolution$/m,
-        `skills/${skill}/SKILL.md must carry the Claude/Codex command-resolution table`);
+        `${SKILLS_REL}/${skill}/SKILL.md must carry the Claude/Codex command-resolution table`);
     });
   }
 
@@ -1325,17 +1333,17 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   // actually use ('체크포인트', '진행 메모', …).
   it('every skill description carries at least two quoted Korean trigger phrases (SD6)', async () => {
     for (const skill of [...ALL_VERB_SKILLS, ...PR6_SKILLS]) {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md'), 'utf8');
+      const text = await readFile(skillsPath(PLUGIN_ROOT, skill, 'SKILL.md'), 'utf8');
       const fm = frontmatter(text);
-      ok(fm, `skills/${skill}/SKILL.md has no YAML frontmatter`);
+      ok(fm, `${SKILLS_REL}/${skill}/SKILL.md has no YAML frontmatter`);
       const phrases = quotedTriggerPhrases(fm);
       const koreanTriggers = phrases.filter((p) => /[가-힣]/.test(p));
       ok(koreanTriggers.length >= 2,
-        `skills/${skill}/SKILL.md must quote >= 2 Korean trigger phrases (ADR-0042 SD6); found ${koreanTriggers.length}: ${JSON.stringify(koreanTriggers)}`);
+        `${SKILLS_REL}/${skill}/SKILL.md must quote >= 2 Korean trigger phrases (ADR-0042 SD6); found ${koreanTriggers.length}: ${JSON.stringify(koreanTriggers)}`);
       // English triggers must survive alongside them.
       const englishTriggers = phrases.filter((p) => !/[가-힣]/.test(p) && /[a-z]{3}/i.test(p));
       ok(englishTriggers.length >= 2,
-        `skills/${skill}/SKILL.md must quote >= 2 English trigger phrases; found ${englishTriggers.length}: ${JSON.stringify(englishTriggers)}`);
+        `${SKILLS_REL}/${skill}/SKILL.md must quote >= 2 English trigger phrases; found ${englishTriggers.length}: ${JSON.stringify(englishTriggers)}`);
     }
   });
 
@@ -1377,19 +1385,19 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
     ok(implemented.size >= 10, `expected to parse the state.mjs subcommand switch (got ${implemented.size})`);
     let named = 0;
     for (const skill of PR6_SKILLS) {
-      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md'), 'utf8');
+      const text = await readFile(skillsPath(PLUGIN_ROOT, skill, 'SKILL.md'), 'utf8');
       for (const m of text.matchAll(/state\.mjs\s+([a-z][a-z-]+)/g)) {
         const sub = m[1];
         named += 1;
         ok(implemented.has(sub),
-          `skills/${skill}/SKILL.md names \`state.mjs ${sub}\`, which scripts/state.mjs does not implement`);
+          `${SKILLS_REL}/${skill}/SKILL.md names \`state.mjs ${sub}\`, which scripts/state.mjs does not implement`);
       }
     }
     ok(named >= 6, `the PR6 SKILL matrices must actually name state.mjs operations (found ${named})`);
   });
 
   it('the shared orchestration.md carries the canonical Design Task Profile with every field', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/orchestration.md'), 'utf8');
     match(text, /Design Task Profile:/, 'orchestration.md must render the Design Task Profile block');
     for (const field of ['Surface:', 'Users:', 'Stage:', 'Persona:', 'Skill-profile:', 'Profile:', 'Platform:', 'Evidence-confidence:', 'Ensemble Affinity:']) {
       ok(text.includes(field), `Design Task Profile must declare the "${field}" field`);
@@ -1402,13 +1410,13 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   });
 
   it('the shared orchestration.md documents the bilingual EN/KO trigger convention (SD6)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/orchestration.md'), 'utf8');
     match(text, /Bilingual triggers/i, 'orchestration.md must carry the bilingual trigger convention section');
     ok(/[가-힣]/.test(text), 'the bilingual trigger table must contain Korean trigger phrases');
   });
 
   it('the shared orchestration.md documents the L4 profile → preset map, row-for-row, matching the code', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/orchestration.md'), 'utf8');
     // Parse the markdown table rows rather than substring-matching the names: a
     // doc that said `cta` → `clarity` while mentioning `conversion` elsewhere
     // would pass a substring check (Codex Plan-verify MINOR).
@@ -1459,7 +1467,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   // The lifecycle must not pretend an `export` survives to a later Bash block, and
   // it must warn that a stale ambient export leaks into a standalone decide.
   it('the start surfaces treat the L4 env seam as ambient, not durable (inline carry + stale-export hazard)', async () => {
-    for (const rel of ['skills/start/SKILL.md', 'commands/start.md']) {
+    for (const rel of [`${SKILLS_REL}/start/SKILL.md`, 'commands/start.md']) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
       match(text, /does not survive across Bash tool invocations/i,
         `${rel} must state that shell state (the export) is lost across Bash tool invocations`);
@@ -1490,7 +1498,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   });
 
   it('the shared ensemble-protocol.md defines all six design-anchored point types', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8');
     for (const point of ['Frame', 'Brainstorm', 'Plan-verify', 'Review', 'Refine-verify', 'Reference-scan']) {
       match(text, new RegExp(`^### ${point} `, 'm'), `ensemble-protocol.md must define the § ${point} point type`);
     }
@@ -1509,7 +1517,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   });
 
   it('the shared ensemble-protocol.md states the peer has no image channel and vision is same-host (SD4 item 3)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8');
     match(text, /no .{0,3}--image/i, 'ensemble-protocol.md must state the companion peer path has no --image flag');
     match(text, /same-host/i, 'ensemble-protocol.md must state vision-grounded judgment is same-host');
     match(text, /inline image bytes/i, 'ensemble-protocol.md must forbid inline image bytes in a peer prompt');
@@ -1518,11 +1526,11 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   });
 
   it('the shared ensemble-protocol.md structurally excludes peer-now from ensemble_results (State Bookkeeping)', async () => {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    const text = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8');
     match(text, /^### State Bookkeeping$/m, 'ensemble-protocol.md must carry the § State Bookkeeping section peer-now cites');
     match(text, /peer-now[\s\S]{0,300}?excluded[\s\S]{0,120}?ensemble_results/i,
       'State Bookkeeping must state the peer-now structural exclusion from ensemble_results');
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/peer-now/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'peer-now/SKILL.md'), 'utf8');
     match(skill, /_shared\/references\/ensemble-protocol\.md.{0,80}State Bookkeeping/s,
       'peer-now SKILL must cite ensemble-protocol.md § State Bookkeeping for the exclusion');
     match(skill, /--kind peer-now/, 'peer-now SKILL must dispatch with --kind peer-now (side-channel, not an ensemble)');
@@ -1531,10 +1539,10 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   // ADR-0042 SD7 / Non-Goal 2 — designer is not an orchestrator dispatch target.
   it('the PR6 commands + skills carry no parent-linkage env reads (ADR-0042 Non-Goal 2)', async () => {
     const files = [
-      ...PR6_SKILLS.map((s) => `skills/${s}/SKILL.md`),
+      ...PR6_SKILLS.map((s) => `${SKILLS_REL}/${s}/SKILL.md`),
       'commands/start.md', 'commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md',
-      'skills/_shared/references/orchestration.md',
-      'skills/_shared/references/ensemble-protocol.md',
+      `${SKILLS_REL}/_shared/references/orchestration.md`,
+      `${SKILLS_REL}/_shared/references/ensemble-protocol.md`,
     ];
     for (const rel of files) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
@@ -1574,7 +1582,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   });
 
   it('the start SKILL sequences the six verbs with approval gates at the direction and the spec', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/start/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'start/SKILL.md'), 'utf8');
     for (const verb of ALL_VERB_SKILLS) {
       ok(skill.includes(verb), `start SKILL must sequence the ${verb} verb`);
     }
@@ -1590,7 +1598,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
 
   // ADR-0042 SD5 — image L2 is COMPOSED via artifact handoff, never re-implemented.
   it('the image L2 composition boundary is stated as an artifact handoff, never a dispatch or a generator (SD5)', async () => {
-    const orch = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md'), 'utf8');
+    const orch = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/orchestration.md'), 'utf8');
     match(orch, /image L2 composition boundary/i, 'orchestration.md must carry the image L2 composition boundary section');
     match(orch, /image:compose/, 'orchestration.md must name the image:compose surface designer composes');
     match(orch, /artifact handoff/i, 'the image composition must be an artifact handoff (designer is non-dispatch)');
@@ -1602,7 +1610,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
     // `compose` is the verb that actually produces the image brief, so it is the
     // load-bearing one — a regression there would pass a start-only check
     // (Codex Plan-verify MINOR).
-    for (const rel of ['skills/start/SKILL.md', 'commands/start.md', 'skills/compose/SKILL.md', 'commands/compose.md']) {
+    for (const rel of [`${SKILLS_REL}/start/SKILL.md`, 'commands/start.md', `${SKILLS_REL}/compose/SKILL.md`, 'commands/compose.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /image:compose/, `${rel} must name the image:compose handoff for generated imagery`);
       match(text, /never (drawn|draws|implements|implement|re-implements)/i,
@@ -1631,7 +1639,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   it('the SD4 privacy gate + screenshots-sensitive sentinels reach the start + peer-now external-dispatch surfaces', async () => {
     // start dispatches the peer at every phase boundary and runs web search;
     // peer-now sends a verbatim prompt. checkpoint/resume make no external call.
-    for (const rel of ['skills/start/SKILL.md', 'commands/start.md', 'skills/peer-now/SKILL.md', 'commands/peer-now.md']) {
+    for (const rel of [`${SKILLS_REL}/start/SKILL.md`, 'commands/start.md', `${SKILLS_REL}/peer-now/SKILL.md`, 'commands/peer-now.md']) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
       ok(text.includes(PRIVACY_SENTINEL),
         `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
@@ -1639,7 +1647,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
         `${rel} must carry the "screenshots are sensitive by default" invariant (ADR-0042 SD4)`);
     }
     // ...and the shared protocol, which every ensemble dispatch reads.
-    const protocol = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8'));
+    const protocol = normalizeWhitespace(await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8'));
     ok(protocol.includes(PRIVACY_SENTINEL), 'ensemble-protocol.md must carry the privacy-gate sentinel');
     ok(protocol.toLowerCase().includes(SCREENSHOT_SENTINEL),
       'ensemble-protocol.md must carry the "screenshots are sensitive by default" invariant');
@@ -1653,8 +1661,8 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
     const DISPATCH_RE = /node "[^"]*peer-runner\.mjs" run[\s\S]*?(?:\n\n|&\n)/g;
     const surfaces = [
       ...ALL_VERB_SKILLS.map((v) => `commands/${v}.md`),
-      ...ALL_VERB_SKILLS.map((v) => `skills/${v}/SKILL.md`),
-      ...PR6_SKILLS.map((s) => `skills/${s}/SKILL.md`),
+      ...ALL_VERB_SKILLS.map((v) => `${SKILLS_REL}/${v}/SKILL.md`),
+      ...PR6_SKILLS.map((s) => `${SKILLS_REL}/${s}/SKILL.md`),
       'commands/start.md', 'commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md',
     ];
     let blocks = 0;
@@ -1674,7 +1682,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
 
     // Cross-check: every --ensemble-type the surface actually dispatches must be a
     // point type ensemble-protocol.md defines. Derived from both files, not a list.
-    const protocol = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    const protocol = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8');
     const documented = new Set(
       [...protocol.matchAll(/^### ([A-Za-z][A-Za-z-]*) \(/gm)].map((m) => m[1].toLowerCase()),
     );
@@ -1703,11 +1711,11 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
 
   it('no stale founder/business or engineer-axis vocabulary leaks into the PR6 surfaces (copy-trim rebrand)', async () => {
     const files = [
-      ...PR6_SKILLS.map((s) => `skills/${s}/SKILL.md`),
-      ...PR6_SKILLS.map((s) => `skills/${s}/agents/openai.yaml`),
+      ...PR6_SKILLS.map((s) => `${SKILLS_REL}/${s}/SKILL.md`),
+      ...PR6_SKILLS.map((s) => `${SKILLS_REL}/${s}/agents/openai.yaml`),
       'commands/start.md', 'commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md',
-      'skills/_shared/references/orchestration.md',
-      'skills/_shared/references/ensemble-protocol.md',
+      `${SKILLS_REL}/_shared/references/orchestration.md`,
+      `${SKILLS_REL}/_shared/references/ensemble-protocol.md`,
     ];
     for (const rel of files) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
@@ -1718,7 +1726,7 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   });
 
   it('the start macro surface is de-incubated (ADR-0042 Accepted)', async () => {
-    for (const rel of ['skills/start/SKILL.md', 'commands/start.md']) {
+    for (const rel of [`${SKILLS_REL}/start/SKILL.md`, 'commands/start.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       ok(!/incubating/i.test(text), `${rel} must drop the incubating disclaimer`);
       match(text, /ADR-0042 is `Accepted`/, `${rel} must state that ADR-0042 is Accepted`);
@@ -1847,7 +1855,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   ];
 
   // Scan `.md` AND `agents/*.yaml`. The Codex Refine-verify peer caught the
-  // PR7 sweep missing `skills/refine/agents/openai.yaml`, whose default_prompt
+  // PR7 sweep missing `${SKILLS_REL}/refine/agents/openai.yaml`, whose default_prompt
   // restated the old "gate PASSES" convergence rule: the Codex-facing surface
   // is authored in YAML, not markdown, and an .md-only scan cannot see it.
   const SURFACE_EXTS = ['.md', '.yaml', '.yml'];
@@ -1892,7 +1900,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   });
 
   it('the start macro approval gate uses the four-value gate vocabulary (F5 cross-surface)', async () => {
-    const start = await readFile(resolve(PLUGIN_ROOT, 'skills/start/SKILL.md'), 'utf8');
+    const start = await readFile(skillsPath(PLUGIN_ROOT, 'start/SKILL.md'), 'utf8');
     match(start, /PASS \/ CONDITIONAL \/ CANDIDATE-FAIL \/\s*\n?UNKNOWN/,
       'the direction-approval prompt must carry the same four verdicts the peer contract offers');
     match(start, /A \*\*CONDITIONAL\*\*\s*\n?direction may be recommended, but only with its remediation named as a\s*\n?blocking precondition/,
@@ -1905,7 +1913,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // all 4 presets, but the shipped archetype presets carry 5. The trimming is
   // intentional; the registry must SAY so, or the next reader "fixes" it back.
   it('the registry documents that archetype presets carry a trimmed axis list on purpose (F1)', async () => {
-    const yml = await readFile(resolve(PLUGIN_ROOT, 'skills/decide/references/decision-axes.yml'), 'utf8');
+    const yml = await readFile(skillsPath(PLUGIN_ROOT, 'decide/references/decision-axes.yml'), 'utf8');
     match(yml, /Preset axis counts differ ON PURPOSE/,
       'decision-axes.yml must state that the archetype presets trim their axis list deliberately');
     match(yml, /is not evaluated for that decision; it is not a silent zero/,
@@ -1929,7 +1937,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // a weight" while the resolver emits accessibility:1.0 and accepts an explicit
   // override. The veto is categorical; the weight is advisory. Say both.
   it('decide/SKILL.md describes the gate weight honestly — the VETO is not a weight (F3)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'decide/SKILL.md'), 'utf8');
     ok(!/gate is never expressed as a weight/i.test(skill),
       'the old claim contradicts the resolver, which emits a weight for the accessibility axis');
     match(skill, /veto is never encoded as a weight/i,
@@ -1943,7 +1951,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // CONDITIONAL. Observed live: the peer returned PASS for three directions and
   // demoted their real barriers into prose. The vocabularies must match.
   it('the Brainstorm ensemble gate vocabulary includes CONDITIONAL, matching decide/critique (F5)', async () => {
-    const proto = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    const proto = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8');
     match(proto, /gate verdict for the direction: PASS \/ CONDITIONAL \/\s*\n?\s*CANDIDATE-FAIL \/ UNKNOWN/,
       'Brainstorm structured_output_contract must offer the peer a CONDITIONAL verdict');
     match(proto, /Do NOT report PASS and then name a barrier in the risk areas/,
@@ -1955,7 +1963,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
 
     // The four values the peer may return must be exactly the values the local
     // surfaces render (plus UNKNOWN for an under-described input).
-    for (const rel of ['skills/decide/SKILL.md', 'skills/critique/SKILL.md']) {
+    for (const rel of [`${SKILLS_REL}/decide/SKILL.md`, `${SKILLS_REL}/critique/SKILL.md`]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /PASS \/ CONDITIONAL \/\s*\n?FAIL/,
         `${rel} must render the three-value gate verdict the ensemble contract mirrors`);
@@ -1966,7 +1974,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // names, so under preset=conversion the peer was solicited for `feasibility`
   // (not an axis of that preset) and never for `content-clarity` (which is).
   it('the Brainstorm risk areas derive from the snapshotted axes, not a hardcoded list (F6)', async () => {
-    const proto = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    const proto = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8');
     match(proto, /Risk areas — one per axis listed in <axis_awareness>, using that\s*\n?\s*axis's label/,
       'Brainstorm must derive the risk-area list from the axis snapshot');
     ok(!/Risk areas \(usability \/ accessibility \/ conversion \/ consistency \/\s*\n?\s*feasibility\)/.test(proto),
@@ -1977,7 +1985,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // but Non-Goal 6 makes CONDITIONAL the honest verdict for any spec naming
   // runtime-verifiable remediations. A correct design could never converge.
   it('refine converges on a CONDITIONAL gate, not only on PASS (F7)', async () => {
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'refine/SKILL.md'), 'utf8');
     match(skill, /<!-- @refine:convergence-predicate:begin -->/,
       'refine SKILL must carry a named convergence-predicate region');
     match(skill, /`CONDITIONAL` converges \*\*on purpose\*\*/,
@@ -1988,8 +1996,8 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
       'the predicate must keep FAIL non-converging — the veto survives the widening');
 
     // No surface may still define convergence as requiring the gate to pass.
-    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md', 'commands/critique.md',
-      'skills/critique/SKILL.md']) {
+    for (const rel of [`${SKILLS_REL}/refine/SKILL.md`, 'commands/refine.md', 'commands/critique.md',
+      `${SKILLS_REL}/critique/SKILL.md`]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       ok(!/converge[^.]{0,60}\bgate passes\b/i.test(text),
         `${rel} must not define convergence as requiring the accessibility gate to PASS`);
@@ -2001,7 +2009,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // cross-surface contract change); the spec must name the gap so an
   // investigator neither launders the source up nor discards it.
   it('the design-brief spec names the third-party-research taxonomy gap instead of hiding it (F4)', async () => {
-    const spec = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/references/design-brief-spec.md'), 'utf8');
+    const spec = await readFile(skillsPath(PLUGIN_ROOT, 'investigate/references/design-brief-spec.md'), 'utf8');
     match(spec, /Known gap — third-party published usability research/,
       'the spec must name the taxonomy gap explicitly');
     match(spec, /Filing such a source at tier 4 is both a\s*\n?shape violation and tier laundering/,
@@ -2020,7 +2028,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
 // cross-package contracts (marker shape, publish-needed mapping) are pinned so
 // they cannot silently drift out of the runbook (founder S3 precedent).
 describe('plugins/designer — session-handoff runbook (ADR-0043 S4)', () => {
-  const RUNBOOK = 'skills/_shared/references/session-handoff.md';
+  const RUNBOOK = `${SKILLS_REL}/_shared/references/session-handoff.md`;
 
   it('ships the shared session-handoff runbook (ADR-0039 §7 recipe item)', async () => {
     strictEqual(await exists(resolve(PLUGIN_ROOT, RUNBOOK)), true,
@@ -2070,16 +2078,16 @@ describe('plugins/designer — session-handoff runbook (ADR-0043 S4)', () => {
       // too so the de-dup cannot silently regress on the Codex-side surfaces
       // (the founder S3 Codex Plan-verify finding: a command-only pin was
       // incomplete).
-      'skills/investigate/SKILL.md', 'skills/frame/SKILL.md', 'skills/decide/SKILL.md',
-      'skills/compose/SKILL.md', 'skills/critique/SKILL.md', 'skills/refine/SKILL.md',
-      'skills/start/SKILL.md',
+      `${SKILLS_REL}/investigate/SKILL.md`, `${SKILLS_REL}/frame/SKILL.md`, `${SKILLS_REL}/decide/SKILL.md`,
+      `${SKILLS_REL}/compose/SKILL.md`, `${SKILLS_REL}/critique/SKILL.md`, `${SKILLS_REL}/refine/SKILL.md`,
+      `${SKILLS_REL}/start/SKILL.md`,
     ];
     for (const rel of surfaces) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       // investigate/SKILL.md never carried the deferral prose and stays
       // footer-silent by design (its command file owns the completion
       // surface); every other surface must defer to the code-emitted footer.
-      if (rel !== 'skills/investigate/SKILL.md') {
+      if (rel !== `${SKILLS_REL}/investigate/SKILL.md`) {
         ok(/code-emit/.test(text),
           `${rel} must defer to the code-emitted completion footer`);
         ok(text.includes('references/session-handoff.md'),

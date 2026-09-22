@@ -38,8 +38,11 @@
 
 const T = 'tests/engineer/test-decide-registry.mjs';
 const REG = 'plugins/engineer/scripts/decide-registry.mjs';
+const T_DESIGNER = 'tests/designer/test-decide-registry.mjs';
+const REG_DESIGNER = 'plugins/designer/scripts/decide-registry.mjs';
 
-/** The post-relocation constant both mutations start from. */
+/** The post-relocation constant every mutation starts from — identical in each
+ *  persona, which is why the same two mutations transfer unchanged. */
 const CURRENT = 'resolve(HERE, "..", "core", "skills", "decide", "references", "decision-axes.yml")';
 
 export const TESTS = [T];
@@ -56,5 +59,24 @@ export const MUTATIONS = [
     from: CURRENT,
     to: 'resolve(HERE, "..", "core", "skills-nope", "decide", "references", "decision-axes.yml")',
     why: 'DEFAULT_PATH points at nothing at all — the fallback must not be mistaken for a successful load',
+  },
+
+  // ---- designer (S3) ------------------------------------------------------
+  // Designer is the case that proves the clause set is not over-engineered:
+  // its in-code fallback mirrors its own file default, so a plain `resolve`
+  // returns balanced/7 whether or not the registry was found. Only the
+  // file-only preset id, its axis count, and the stderr diagnostic separate
+  // them — which is exactly what its proof asserts.
+  {
+    id: 'D1', file: REG_DESIGNER, tests: [T_DESIGNER],
+    from: CURRENT,
+    to: 'resolve(HERE, "..", "skills", "decide", "references", "decision-axes.yml")',
+    why: 'designer DEFAULT_PATH left at the pre-relocation root, which is now a tombstone',
+  },
+  {
+    id: 'D2', file: REG_DESIGNER, tests: [T_DESIGNER],
+    from: CURRENT,
+    to: 'resolve(HERE, "..", "core", "skills-nope", "decide", "references", "decision-axes.yml")',
+    why: 'designer DEFAULT_PATH points at nothing at all',
   },
 ];
