@@ -121,7 +121,7 @@ export function aggregateOption({ grades = {}, weights = {}, axes = [] } = {}) {
 // break in pure document order, which puts the decisive usability /
 // consistency axes first (a defensible design tie-break for the advisory-only
 // aggregate; the real recommendation winner is picked by the
-// gate→decisive→supporting rule in skills/decide/SKILL.md, not here).
+// gate→decisive→supporting rule in core/skills/decide/SKILL.md, not here).
 function tiebreakOptions(options, axes, weights) {
   if (options.length <= 1) return options[0] ?? null;
 

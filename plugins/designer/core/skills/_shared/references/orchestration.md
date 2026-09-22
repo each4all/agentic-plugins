@@ -134,7 +134,7 @@ The candidate-only boundary holds (ADR-0042 Non-Goal 6): designer flags
 and prioritizes; it does not certify conformance.
 
 The map above is **not** re-declared here as data. Its single source of
-truth is `PROFILE_PRESET_MAP` in `../../../scripts/decide-registry.mjs`,
+truth is `PROFILE_PRESET_MAP` in `../../../../scripts/decide-registry.mjs`,
 which satisfies the ADR-0027 §1.5(3) profile-override slot; the table is
 its documentation.
 

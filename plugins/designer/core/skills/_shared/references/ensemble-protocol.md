@@ -95,8 +95,8 @@ than relying on separate subcommands.
 The orchestrator is the currently-invoking host; the peer is the other
 host. Skills never hard-code one side or the other — they refer to
 *orchestrator* and *peer*. Discovery + dispatch mechanics live in
-`../../../scripts/peer-runner.mjs` (the managed runner for
-command-runbook ensembles), with `../../../scripts/dispatch-peer.mjs`
+`../../../../scripts/peer-runner.mjs` (the managed runner for
+command-runbook ensembles), with `../../../../scripts/dispatch-peer.mjs`
 retained as the blocking compatibility surface. On discovery failure the
 dispatch is skipped silently per *Failure Handling* below.
 
@@ -148,7 +148,7 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
    so the genericized prompt never crosses shell parsing, process argv,
    or `ps aux`.
 5. Invoke the companion in **JSON envelope mode** through
-   `../../../scripts/peer-runner.mjs run`, which records the matching
+   `../../../../scripts/peer-runner.mjs run`, which records the matching
    `pending_ensemble` row and writes raw stdout/stderr plus the parsed
    envelope under the hidden peer-run ledger. The orchestrator SHOULD
    background the call (Bash `run_in_background` on Claude; the `task`
@@ -215,7 +215,7 @@ artifact should not be able to tell whether the ensemble ran at all.
 ### State Bookkeeping
 
 Ensemble dispatch and synthesis are recorded in **two complementary
-locations**, both through designer's `../../../scripts/state.mjs`:
+locations**, both through designer's `../../../../scripts/state.mjs`:
 
 1. **Frontmatter** — programmatic bookkeeping via the `pending_ensemble`
    and `ensemble_results` schema fields. `ensemble-pending` records that
@@ -237,7 +237,7 @@ and MAY be written in separate calls.
 **`peer-now` is structurally excluded** from `ensemble_results`, by two
 independent mechanisms:
 
-1. `../../../scripts/peer-runner.mjs` registers a `pending_ensemble` row
+1. `../../../../scripts/peer-runner.mjs` registers a `pending_ensemble` row
    only when `kind === 'ensemble'` — the `handle.kind !== 'ensemble'`
    early return. A `--kind peer-now` run cannot reach that write path.
 2. The `peer-now` meta skill omits the three ensemble-accounting flags:
@@ -512,7 +512,7 @@ invocation pattern above.
 - **Presence rule**: The `<axis_awareness>` block is emitted only when
   **both** hold: (1) the orchestrator resolved a design preset —
   `registry_fallback === false` on the `ResolvedDecisionContext` written
-  by `../../../scripts/decide-registry.mjs resolve` (per ADR-0027 §5.6) —
+  by `../../../../scripts/decide-registry.mjs resolve` (per ADR-0027 §5.6) —
   AND (2) the orchestrator is in **command mode** (`/designer:decide` or
   `$designer:decide`). Auto-activated mode never reaches a peer dispatch
   (per the decide SKILL's auto-activated path), so the block is omitted
@@ -793,7 +793,7 @@ orchestrator holds the vision perspective (host-direct). Both are held to
   `../../investigate/references/design-brief-ensemble.md` (the full
   bidirectional protocol — privacy gate, the 5-tier design source
   taxonomy, citation remapping, Path A / Path B, dispatch via
-  `../../../scripts/peer-runner.mjs`). This entry exists for parallelism
+  `../../../../scripts/peer-runner.mjs`). This entry exists for parallelism
   with the other point types; the reference-scan prompt and synthesis
   machinery live in that file. Do NOT duplicate it here — cross-reference
   it from the investigate command's design-brief profile.
@@ -894,10 +894,10 @@ UNVERIFIED whether or not the peer ran.
   the Review and Refine-verify points.
 - `../../decide/references/decision-axes.yml` — the design decision-axis
   registry the Brainstorm point's `<axis_awareness>` block reads.
-- `../../../scripts/peer-runner.mjs` — designer's managed peer runner
+- `../../../../scripts/peer-runner.mjs` — designer's managed peer runner
   (resolves + invokes the companion, writes the ledger, records
   `pending_ensemble`).
-- `../../../scripts/dispatch-peer.mjs` — designer's blocking
+- `../../../../scripts/dispatch-peer.mjs` — designer's blocking
   compatibility dispatcher for legacy/raw callers.
 - `companions/contract.md` v0.1.1 — wire-spec contract for both companion
   bridges (`claude-companion`, `codex-companion`).

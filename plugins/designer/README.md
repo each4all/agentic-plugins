@@ -54,7 +54,7 @@ inventory and Codex hook-readiness checks. Per
 runtime `workflow_kind` projection seam models all four personas (S2), and
 designer terminal paths **code-emit** the runtime completion footer through
 the ADR-0031 session-handoff sidecar (S4) — see
-`skills/_shared/references/session-handoff.md` for the wiring, the dual
+`core/skills/_shared/references/session-handoff.md` for the wiring, the dual
 discovery floors, and the footer-rendered marker contract. Designer stays
 out of the `runtime:dashboard` Tier-1 active-workflow view: Tier-1 scoping
 is a deliberate ADR-0040 §6 decision independent of the projection seam

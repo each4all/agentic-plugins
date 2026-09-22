@@ -10,7 +10,7 @@ $ARGUMENTS
 Maintain one progress entry per phase and advance its status as you go
 — use the host's task-tracking tools when the session exposes them,
 and keep an inline checklist when it does not. The peer ensemble runs automatically per
-`skills/investigate/references/design-brief-ensemble.md` (reference-scan
+`core/skills/investigate/references/design-brief-ensemble.md` (reference-scan
 point type) — never ask the user whether to invoke the peer, and never
 direct them to run companion CLIs manually. When the companions plugin or
 peer CLI is unavailable, the ensemble degrades silently to local-only.
@@ -108,7 +108,7 @@ Determine workflow state via the host-shared canonical I/O module:
 ## Phase 1 — Execute investigate
 
 Follow the investigate skill's "When invoked by command" mode at
-`$CLAUDE_PLUGIN_ROOT/skills/investigate/SKILL.md`. The skill performs:
+`$CLAUDE_PLUGIN_ROOT/core/skills/investigate/SKILL.md`. The skill performs:
 
 - **Step 1**: Build the Design Task Profile (Persona=designer,
   Skill-profile=design-brief, Profile=general (L4 archetype), Surface,
@@ -119,10 +119,10 @@ Follow the investigate skill's "When invoked by command" mode at
   check, and pass the privacy gate.
 - **Step 2**: No subagent spawning — the orchestrator runs WebSearch +
   WebFetch directly per-sub-question (using the 5 source-type tiers in
-  `skills/investigate/references/design-brief-spec.md`) AND reads the local
+  `core/skills/investigate/references/design-brief-spec.md`) AND reads the local
   frontend code for the surface in scope.
 - **Step 3**: Dispatch the reference-scan peer ensemble per
-  `skills/investigate/references/design-brief-ensemble.md` via
+  `core/skills/investigate/references/design-brief-ensemble.md` via
   `$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs run`. The peer runs in the
   background; the orchestrator continues its own per-sub-question web
   search + frontend read in parallel.
@@ -131,8 +131,8 @@ Follow the investigate skill's "When invoked by command" mode at
   Rule (Path A locally verify + cite with tier/as-of/platform tags, Path B
   move to Open Questions); remap citation numbers to local capture order.
 - **Step 5**: Run the Audit Checklist
-  (`skills/investigate/references/design-brief-spec.md`) and save the brief
-  per `skills/investigate/references/output-file-rules.md` (per-topic
+  (`core/skills/investigate/references/design-brief-spec.md`) and save the brief
+  per `core/skills/investigate/references/output-file-rules.md` (per-topic
   directory under the resolved output root, fixed filename
   `design_brief.md`).
 
@@ -150,13 +150,13 @@ same-host `designer:critique` capability, not this reference-scan flow).
 Frontend code is redacted of secrets before any external send. If the
 topic cannot be genericized without losing the question, run local-only or
 abort at scoping. The pre-genericization value MUST never leave the local
-host. See `skills/investigate/references/design-brief-spec.md` § Privacy
+host. See `core/skills/investigate/references/design-brief-spec.md` § Privacy
 Gate.
 
 ### Ensemble dispatch — concrete invocation
 
 Build the reference-scan prompt per
-`skills/investigate/references/design-brief-ensemble.md` § Prompt
+`core/skills/investigate/references/design-brief-ensemble.md` § Prompt
 Construction (it carries the genericized topic, confirmed sub-questions,
 scope, platform, and the `<citation_contract>` + `<privacy_contract>` XML
 blocks) and spawn the peer in the background:
@@ -197,7 +197,7 @@ consumers can locate the artifact (the brief itself stays orthogonal to
 the workflow body — referenced by path only, never inlined). Workflow
 phase notes MAY carry source-of-discovery labels (`[Both]` / `[Local]` /
 `[Peer]`); the saved brief artifact MUST NOT, per
-`skills/investigate/references/design-brief-spec.md` § Ensemble Label
+`core/skills/investigate/references/design-brief-spec.md` § Ensemble Label
 Policy.
 
 ```bash
@@ -255,7 +255,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -276,7 +276,7 @@ the context lens the question turns on, with accessibility 접근성 as the
 veto gate, per ADR-0042 SD3) + size-appropriate supporting axes, instead
 of a flat list. The designer decision registry
 (`scripts/decide-registry.mjs` +
-`skills/decide/references/decision-axes.yml`) is the axis source of truth;
+`core/skills/decide/references/decision-axes.yml`) is the axis source of truth;
 when it is unreachable, read the decisive axes inline as above.
 Bounded: only at a genuine 2+-branch point, never a full matrix for a
 trivial reversible step.
@@ -299,7 +299,7 @@ Output the synthesized brief summary and one of:
   dispatch ran.
 
 For the saved case, emit an **Active Next-Action Proposal** (the inline
-shape shown in `skills/investigate/SKILL.md` § Completion): typical
+shape shown in `core/skills/investigate/SKILL.md` § Completion): typical
 `selected_next` candidates are `/designer:frame` (structure a UX problem
 model from the brief), `/designer:decide` (choose between surveyed
 patterns — name the size `--size=minor|standard|major`), or
@@ -311,7 +311,7 @@ ADR-0042 is `Accepted` — the full designer surface (the six verbs, the
 `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
 `peer-now` meta skills) ships, so every `next_command` is runnable. The saved brief is the durable
 handoff. See
-`skills/investigate/SKILL.md` § Completion.
+`core/skills/investigate/SKILL.md` § Completion.
 
 Always include the workflow path so the user can inspect or resume:
 
@@ -335,4 +335,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

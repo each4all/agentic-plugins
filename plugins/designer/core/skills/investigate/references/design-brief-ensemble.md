@@ -554,10 +554,10 @@ model).
 - `../../_shared/references/ensemble-protocol.md` — designer's standard
   ensemble protocol (the design-anchored point types).
   Cross-references this file for the reference-scan point.
-- `../../../scripts/peer-runner.mjs` — designer's managed peer runner; the
+- `../../../../scripts/peer-runner.mjs` — designer's managed peer runner; the
   mechanics that resolve and invoke the peer companion, write the ledger,
   and record `pending_ensemble` for command-managed ensembles.
-- `../../../scripts/dispatch-peer.mjs` — designer's blocking compatibility
+- `../../../../scripts/dispatch-peer.mjs` — designer's blocking compatibility
   dispatcher for legacy/raw callers.
 - `companions/contract.md` v0.1.1 — wire-spec contract for both companion
   bridges (`claude-companion`, `codex-companion`).

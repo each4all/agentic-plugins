@@ -14,7 +14,7 @@ baseline, or archives a stale workflow. It does NOT advance the workflow
 (that is the six verbs' job) and does NOT bootstrap a new one.
 
 **Cognitive runbook + the Host-availability matrix live in
-`$CLAUDE_PLUGIN_ROOT/skills/resume/SKILL.md`** per ADR-0022. This command
+`$CLAUDE_PLUGIN_ROOT/core/skills/resume/SKILL.md`** per ADR-0022. This command
 file owns the Claude-host bash below; the drift semantics, dirty-case
 enrichment rules, and host-availability matrix delegate to SKILL.md.
 
