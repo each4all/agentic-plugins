@@ -8,7 +8,7 @@ dispatches the peer for independent parallel analysis, and synthesizes
 both perspectives into a unified design result.
 
 **Plugin boundary note**: this is designer's **own copy** of the ensemble
-protocol (lives at `plugins/designer/skills/_shared/references/`). Per
+protocol (lives at `plugins/designer/core/skills/_shared/references/`). Per
 ADR-0010 §5 cross-plugin imports are forbidden — designer ships its own
 copy rather than importing engineer's or founder's (ADR-0029 §Neutral
 copy/adapt rule; the fourth copy per ADR-0042 SD7). The **mechanics**

@@ -6,7 +6,7 @@ not static counts.
 
 **Plugin boundary note**: this orchestration framework is
 designer-internal (lives at
-`plugins/designer/skills/_shared/references/`). Per ADR-0010 §5,
+`plugins/designer/core/skills/_shared/references/`). Per ADR-0010 §5,
 cross-plugin imports are forbidden — designer ships its **own copy** of
 the orchestration pattern rather than importing engineer's or founder's
 (ADR-0029 §Neutral copy/adapt rule; designer is the fourth copy per
