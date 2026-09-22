@@ -438,9 +438,9 @@ function projectionCandidates(repoRoot, persona) {
 //   orchestrator: `${projectionFile}.${safeWorkflowId}.footer-rendered`
 //                 (plugins/orchestrator/scripts/session-handoff.mjs)
 //   founder:      `${projectionFile}.footer-rendered`
-//                 (plugins/founder/skills/_shared/references/session-handoff.md)
+//                 (plugins/founder/core/skills/_shared/references/session-handoff.md)
 //   designer:     `${projectionFile}.footer-rendered`
-//                 (plugins/designer/skills/_shared/references/session-handoff.md)
+//                 (plugins/designer/core/skills/_shared/references/session-handoff.md)
 const MARKER_SHAPE_BY_PERSONA = Object.freeze({
   engineer: 'slot',
   orchestrator: 'id-scoped',
