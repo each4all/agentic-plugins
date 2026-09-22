@@ -9,7 +9,7 @@ $ARGUMENTS
 
 Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble
 runs automatically per
-`skills/_shared/references/ensemble-protocol.md` (Plan-verify point
+`core/skills/_shared/references/ensemble-protocol.md` (Plan-verify point
 type — applies to both `plan` and `code` profiles per the section's
 generalized intro). Never ask the user whether to invoke the peer.
 When the companions plugin or peer CLI is unavailable, the ensemble
@@ -92,7 +92,7 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute compose
 
 Follow the compose skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/compose/SKILL.md`. Profiles:
+`$CLAUDE_PLUGIN_ROOT/core/skills/compose/SKILL.md`. Profiles:
 
 - `plan` (default) — produce a TDD task list with dependencies and
   success criteria.
@@ -110,13 +110,13 @@ For `code` profile in command-mode (`$ACTIVE` bound), the skill's
 **Layer 2 commit-manifest recording** step requires
 `state.mjs record-composed-file --workflow-path "$ACTIVE" --path <p>
 --op create|edit` after each Write/Edit on a tracked path. See
-`skills/compose/SKILL.md` § Layer 2 commit-manifest recording for the
+`core/skills/compose/SKILL.md` § Layer 2 commit-manifest recording for the
 full pattern (ADR-0028 §Layer-2).
 
 ### Ensemble dispatch (Plan-verify point type)
 
 Build the Plan-verify prompt per
-`skills/_shared/references/ensemble-protocol.md` § Plan-verify
+`core/skills/_shared/references/ensemble-protocol.md` § Plan-verify
 (reuse the same template for `code` profile, substituting the draft
 plan with the diff or list of written files):
 
@@ -173,7 +173,7 @@ NOTE="### Ensemble launched: compose at <iso-utc>
 
 ### Active next-action proposal
 
-(per skills/_shared/references/entry-routing-contract.md
+(per core/skills/_shared/references/entry-routing-contract.md
  § Active Next-Action Proposal — derived from this artifact, not a fixed table)
 - selected_next:         <verb | commit | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
@@ -218,7 +218,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -239,7 +239,7 @@ resolved decisive axes (본질/근본 essence/foundation) + supporting axes,
 instead of a flat list. Resolve the sized axis set from the shared
 `$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs resolve --size=<minor|standard|major>`
 resolver — the single axis source of truth, not a hand-authored list —
-per `skills/_shared/references/entry-routing-contract.md`
+per `core/skills/_shared/references/entry-routing-contract.md`
 § "Surfacing the multi-axis lens from a non-decide verb".
 
 Bounded: only at a genuine 2+-branch point (not every invocation),
@@ -261,7 +261,7 @@ Output the artifact (plan or change set) and one of:
   before proceeding.
 
 Then emit an **Active Next-Action Proposal** instead of a fixed next
-verb, per `skills/_shared/references/entry-routing-contract.md`
+verb, per `core/skills/_shared/references/entry-routing-contract.md`
 § Active Next-Action Proposal — the canonical six-field template
 (runtime completion-output contract):
 

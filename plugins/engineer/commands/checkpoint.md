@@ -22,7 +22,7 @@ also does NOT bootstrap a new workflow — use one of the 6 verbs
 that.
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/skills/checkpoint/SKILL.md`** per ADR-0022
+`$CLAUDE_PLUGIN_ROOT/core/skills/checkpoint/SKILL.md`** per ADR-0022
 (meta-skill category, ADR-0010 §3 cascade). This command file owns
 the Claude-host bash bootstrap and the `state.mjs` writes below;
 for each Phase 0–2 the cognitive description, summary-length

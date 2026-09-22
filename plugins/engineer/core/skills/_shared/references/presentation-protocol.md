@@ -202,7 +202,7 @@ choice between 2+ approaches:
    remediation paths, implementation strategies, or design alternatives —
    not when it merely lists variations of the same approach.
 2. **Invoke inline**: Pause the current item's presentation and run the
-   full decide skill (`skills/decide/SKILL.md`) within that item —
+   full decide skill (`core/skills/decide/SKILL.md`) within that item —
    Research, Compare across multiple perspectives, and Recommend.
 3. **Resume**: After the user decides, continue the interview from where
    it paused.

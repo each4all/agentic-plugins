@@ -1287,3 +1287,107 @@ describe('kit/lint/check-plugin-shape — command skill pointers (ADR-0006 Amend
     strictEqual(result.code, 0, `stderr=${result.stderr}`);
   });
 });
+
+// --- References inside the skills tree ------------------------------------
+//
+// Added after a peer review of the engineer relocation found 27 plugin-root
+// -relative `skills/...` references inside the moved tree that no longer
+// resolved, plus the 17 `../`-relative ones the move had already required
+// deepening. Nothing saw either class: every other check reads commands/, or
+// asserts a file exists rather than that a reference to it resolves.
+//
+// These fixtures live in a tmpdir, which is deliberately NOT the
+// <root>/plugins/<name> shape, so they also pin limit 2 — an outbound
+// reference is skipped where the repository layout is absent.
+describe('kit/lint/check-plugin-shape — references inside the skills tree', () => {
+  const tempDirs = [];
+  after(() => Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  const skill = (name, body = '') => `---\nname: ${name}\ndescription: "A conformant ${name} skill for the reference fixture."\n---\n\n# ${name}\n\n${body}\n`;
+
+  async function makeTree({ declared = './core/skills/', files = {} } = {}) {
+    const dir = await mkdtemp(join(tmpdir(), 'kit-lint-refs-'));
+    tempDirs.push(dir);
+    await mkdir(join(dir, '.claude-plugin'), { recursive: true });
+    await mkdir(join(dir, '.codex-plugin'), { recursive: true });
+    const base = { name: 'fixture-refs', version: '0.0.1', description: 'reference fixture' };
+    await writeFile(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify(base, null, 2));
+    await writeFile(join(dir, '.codex-plugin', 'plugin.json'), JSON.stringify({ ...base, skills: declared }, null, 2));
+    const root = declared.replace(/^\.\//, '').replace(/\/$/, '');
+    const all = {
+      [`${root}/demo/SKILL.md`]: skill('demo'),
+      [`${root}/_shared/references/notes.md`]: '# notes\n',
+      ...files,
+    };
+    if (root !== 'skills') all['skills/README.md'] = '# tombstone\n\nSee the ADR-0006 Amendment.\n';
+    for (const [rel, content] of Object.entries(all)) {
+      const abs = join(dir, rel);
+      await mkdir(resolve(abs, '..'), { recursive: true });
+      await writeFile(abs, content);
+    }
+    return dir;
+  }
+
+  const saysRef = (r) => r.stderr.includes('does not resolve');
+
+  it('accepts a tree whose sibling references resolve', async () => {
+    const dir = await makeTree({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `../_shared/references/notes.md`.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('rejects a ../-relative reference that is one level too shallow', async () => {
+    // The shape a relocation produces when the referrer descends and the
+    // target does not: the sibling is now two levels up, not one.
+    const dir = await makeTree({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `../../_shared/references/notes.md`.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysRef(result), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a plugin-root-relative reference left at the pre-relocation root', async () => {
+    // The 27-instance class: `skills/...` naming what is now a tombstone.
+    const dir = await makeTree({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `skills/_shared/references/notes.md`.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(saysRef(result), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('plugin-root-relative'), `the diagnostic must name the shape; stderr=${result.stderr}`);
+  });
+
+  it('accepts the same reference once it names the relocated root', async () => {
+    const dir = await makeTree({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `core/skills/_shared/references/notes.md`.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('ignores a token with no managed extension', async () => {
+    // `../../etc/passwd` appears in three real plugins as a path-traversal
+    // example. Treating prose like that as a file reference would make the
+    // rule unshippable, so the extension is what qualifies a token.
+    const dir = await makeTree({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'Never write to `../../etc/passwd`, and never `../some-dir`.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('skips an outbound reference when the repository layout is absent (limit 2)', async () => {
+    // This fixture is a tmpdir, not <root>/plugins/<name>, so a reference
+    // leaving the plugin is not decidable and must not be reported. Pinning
+    // it stops a future tightening from failing every plugin linted from an
+    // install cache.
+    const dir = await makeTree({
+      files: { 'core/skills/demo/SKILL.md': skill('demo', 'See `../../../../docs/adr/0006-nope.md`.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `an undecidable outbound reference must not be reported; stderr=${result.stderr}`);
+  });
+});

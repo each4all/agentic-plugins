@@ -24,12 +24,14 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { skillsPath } from "../_helpers.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..");
-const ENSEMBLE_PATH = resolve(REPO_ROOT, "plugins/engineer/skills/_shared/references/ensemble-protocol.md");
+const ENGINEER_ROOT = resolve(REPO_ROOT, "plugins", "engineer");
+const ENSEMBLE_PATH = skillsPath(ENGINEER_ROOT, "_shared/references/ensemble-protocol.md");
 const COMMAND_PATH = resolve(REPO_ROOT, "plugins/engineer/commands/decide.md");
-const SKILL_PATH = resolve(REPO_ROOT, "plugins/engineer/skills/decide/SKILL.md");
+const SKILL_PATH = skillsPath(ENGINEER_ROOT, "decide", "SKILL.md");
 const ADR_PATH = resolve(REPO_ROOT, "docs/adr/0027-decide-skill-multi-axis-evolution.md");
 
 // Extract a labeled section from a markdown document. `startHeading` and

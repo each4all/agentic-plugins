@@ -15,19 +15,21 @@ import { strictEqual, ok, match, deepStrictEqual } from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { skillsPath } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
+const ENGINEER_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
 const COMMAND_PATH = resolve(
   REPO_ROOT,
   'plugins/engineer/commands/start.md',
 );
 const SKILL_PATH = resolve(
   REPO_ROOT,
-  'plugins/engineer/skills/start/SKILL.md',
+  skillsPath(ENGINEER_ROOT, 'start/SKILL.md'),
 );
 const ROUTING_CONTRACT_PATH = resolve(
   REPO_ROOT,
-  'plugins/engineer/skills/_shared/references/entry-routing-contract.md',
+  skillsPath(ENGINEER_ROOT, '_shared/references/entry-routing-contract.md'),
 );
 const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
 const { evaluateCleanBaseline } = await import(STATE_PATH);

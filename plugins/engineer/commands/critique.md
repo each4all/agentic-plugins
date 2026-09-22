@@ -9,7 +9,7 @@ $ARGUMENTS
 
 Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble
 runs automatically per
-`skills/_shared/references/ensemble-protocol.md` — Review point type
+`core/skills/_shared/references/ensemble-protocol.md` — Review point type
 for the default profile, Adversarial-scan for the `full-codebase`
 profile. Never ask the user whether to invoke the peer.
 
@@ -94,7 +94,7 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute critique
 
 Follow the critique skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/critique/SKILL.md`. Profiles:
+`$CLAUDE_PLUGIN_ROOT/core/skills/critique/SKILL.md`. Profiles:
 
 - (default) — standard parallel review of a recent change set
   (working tree or specific commit).
@@ -109,7 +109,7 @@ profile → fallback to default with one-line warning.
 ### Ensemble dispatch — Review (default) or Adversarial-scan (full-codebase)
 
 Build the prompt per the matching ensemble-protocol section:
-- default profile → `skills/_shared/references/ensemble-protocol.md`
+- default profile → `core/skills/_shared/references/ensemble-protocol.md`
   § Review
 - `full-codebase` → § Adversarial-scan (with the sub-focus narrowing)
 
@@ -131,7 +131,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
 
 Local agents (orchestrator side): default profile spawns review-style
 agents (correctness, conventions, simplicity, security, etc.) per
-`skills/_shared/references/agent-taxonomy.md`. `full-codebase` spawns
+`core/skills/_shared/references/agent-taxonomy.md`. `full-codebase` spawns
 adversarial-mindset agents.
 
 `peer-runner.mjs run` records the matching `pending_ensemble` row
@@ -159,7 +159,7 @@ NOTE="### Ensemble launched: critique (profile=<...>) at <iso-utc>
 
 ### Active next-action proposal
 
-(per skills/_shared/references/entry-routing-contract.md
+(per core/skills/_shared/references/entry-routing-contract.md
  § Active Next-Action Proposal — derived from these findings, not a fixed table)
 - selected_next:         <verb | commit | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
@@ -201,7 +201,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -223,7 +223,7 @@ branches across the resolved decisive axes (본질/근본 essence/foundation)
 from the shared
 `$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs resolve --size=<minor|standard|major>`
 resolver — the single axis source of truth, not a hand-authored list —
-per `skills/_shared/references/entry-routing-contract.md`
+per `core/skills/_shared/references/entry-routing-contract.md`
 § "Surfacing the multi-axis lens from a non-decide verb".
 
 Bounded: only at a genuine 2+-branch point (not every invocation),
@@ -243,7 +243,7 @@ Output the severity-grouped findings and one of:
   CRITICAL or MAJOR surfaced. The artifact is in good shape.
 
 Then emit an **Active Next-Action Proposal** instead of a fixed next
-verb, per `skills/_shared/references/entry-routing-contract.md`
+verb, per `core/skills/_shared/references/entry-routing-contract.md`
 § Active Next-Action Proposal — the canonical six-field template
 (runtime completion-output contract):
 

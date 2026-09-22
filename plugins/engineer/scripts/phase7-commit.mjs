@@ -3,7 +3,7 @@
 //
 // ADR-0028 §Layer-3 — engineer /engineer:start Phase 7 commit automation
 // driver. Host-shared: commands/start.md Phase 7 (Claude) and
-// skills/start/SKILL.md Phase 7 narration (Codex) both invoke this CLI.
+// core/skills/start/SKILL.md Phase 7 narration (Codex) both invoke this CLI.
 //
 // Two modes (per the in-loop agent flow — neither host has stdin
 // pipelines to prompt the user from inside Node):

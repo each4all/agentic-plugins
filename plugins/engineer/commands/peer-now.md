@@ -25,11 +25,11 @@ dispatch INTO `ensemble_results` requires the managed ensemble
 bookkeeping flags (`--workflow-path / --phase / --ensemble-type /
 --run-id`), and peer-now deliberately omits the workflow bookkeeping
 flags even though it now has an operational `run_id`. See
-`skills/peer-now/SKILL.md` § Phase 1 for the cognitive framing
+`core/skills/peer-now/SKILL.md` § Phase 1 for the cognitive framing
 (why peer-now is a raw cross-host probe, not a synthesis).
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/skills/peer-now/SKILL.md`** per ADR-0022
+`$CLAUDE_PLUGIN_ROOT/core/skills/peer-now/SKILL.md`** per ADR-0022
 (meta-skill category, ADR-0010 §3 cascade). This command file owns
 the Claude-host bash bootstrap and the `peer-runner.mjs` /
 `state.mjs` invocations below; for each Phase 0–2 the cognitive

@@ -1,0 +1,60 @@
+// Mutation spec — does anything catch a `decide-registry.mjs` DEFAULT_PATH that
+// no longer points at the plugin's registry file?
+//
+// Run: node scripts/mutation-harness.mjs scripts/mutation-specs/decide-registry-root.mjs
+//
+// WHY THIS NEEDS A SPEC AT ALL. DEFAULT_PATH is built relative to the script,
+// not to the skills root, so relocating the skills tree without moving that
+// constant stops finding the file — and stops silently. The CLI exits 0 and
+// still prints a well-formed ResolvedDecisionContext, because a missing
+// registry falls back to an in-code preset. A green suite therefore proves
+// nothing on its own; only breaking the constant on purpose does.
+//
+// MEASURED, on a copy of each persona plugin with its skills tree removed:
+//
+//   plugin    with registry      without registry   plain `resolve` discriminates?
+//   engineer  default / 5 axes   default / 5 axes   NO
+//   designer  balanced / 7       balanced / 7       NO
+//   founder   default / 6        default / 6        NO
+//
+// The in-code fallback MIRRORS each plugin's own file default, so a plain
+// `resolve` is vacuous in all three. Asking for a preset the FILE defines and
+// the fallback does not restores the signal, and every persona has one:
+// engineer `--preset=nine-axis` (9 vs default/5), designer `--preset=conversion`
+// (5 vs balanced/7), founder `--preset=compact` (4 vs default/6). The absence
+// of the `registry:` stderr line and `registry_fallback: false` are two further
+// discriminators. An earlier version of this header claimed only the stderr
+// clause transferred; that came from measuring the plain `resolve` alone and a
+// peer review disproved it.
+//
+// EXTENDING THIS FOR S3-S6. Each relocation adds its own two mutations against
+// that plugin's decide-registry.mjs: one leaving DEFAULT_PATH at the
+// pre-relocation root, one pointing it nowhere. Both must be KILLED by that
+// plugin's own registry test, and that test keeps all three clauses with its
+// own preset id substituted.
+//
+// Recorded result at authoring time (2026-09-21): 2/2 as-expected, with
+// `CLI: the relocated registry is actually read` among the 23 tests E2 kills.
+
+const T = 'tests/engineer/test-decide-registry.mjs';
+const REG = 'plugins/engineer/scripts/decide-registry.mjs';
+
+/** The post-relocation constant both mutations start from. */
+const CURRENT = 'resolve(HERE, "..", "core", "skills", "decide", "references", "decision-axes.yml")';
+
+export const TESTS = [T];
+
+export const MUTATIONS = [
+  {
+    id: 'E1', file: REG,
+    from: CURRENT,
+    to: 'resolve(HERE, "..", "skills", "decide", "references", "decision-axes.yml")',
+    why: 'the exact relocation regression — DEFAULT_PATH left at the pre-relocation root, which is now a tombstone holding only a README',
+  },
+  {
+    id: 'E2', file: REG,
+    from: CURRENT,
+    to: 'resolve(HERE, "..", "core", "skills-nope", "decide", "references", "decision-axes.yml")',
+    why: 'DEFAULT_PATH points at nothing at all — the fallback must not be mistaken for a successful load',
+  },
+];

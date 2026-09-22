@@ -77,7 +77,8 @@
 // folded in here as the kit/lint surface matures.
 
 import { readFile, lstat, realpath, stat, readdir } from 'node:fs/promises';
-import { dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
+import { existsSync } from 'node:fs';
+import { basename, dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 
 const args = process.argv.slice(2);
 if (args.length !== 1) {
@@ -1230,6 +1231,100 @@ async function checkCommandSkillPointers() {
 }
 
 await checkCommandSkillPointers();
+
+// --- References inside the skills tree ------------------------------------
+//
+// The command-pointer rule above only reads `commands/*.md`. A runbook INSIDE
+// the skills tree names its siblings too, and a relocation breaks those in two
+// ways at once: a `../`-relative reference whose target stayed put now sits one
+// level too shallow, and a plugin-root-relative `skills/...` reference names a
+// directory that is now a tombstone. Measured on plugins/engineer during its
+// move: 17 of the first kind and 27 of the second, none of them visible to any
+// test or to this linter, because every other check either reads commands/ or
+// asserts a file exists rather than that a reference to it resolves.
+//
+// TWO LIMITS, both measured rather than assumed:
+//
+//   1. Only a reference naming a file with a managed extension is checked.
+//      Across all eight plugins that leaves 313 references checked and
+//      excludes exactly 4, every one of them illustrative rather than a real
+//      pointer: `../../etc/passwd` in three copies of a path-traversal rule,
+//      and an example worktree directory name in runtime. An extension-less
+//      token in prose is not a file reference, and treating it as one would
+//      make this rule unshippable.
+//   2. A reference leaving the plugin is checked ONLY when the surrounding
+//      repository layout is actually present. Several references legitimately
+//      point at repository docs, and requiring those to resolve would make the
+//      rule fail on any copy of a plugin taken out of its repository — which
+//      it immediately did, on the very first attempt to probe it. So the
+//      layout is detected rather than assumed: the check applies to an
+//      outbound reference only when the plugin sits at <root>/plugins/<name>
+//      and <root>/docs exists. Where it does not, outbound references are
+//      skipped and this rule makes no claim about them.
+const SKILL_REF_MANAGED_EXT = /\.(md|mjs|js|json|ya?ml|txt)$/;
+// <root>/plugins/<name> with a sibling docs/ — the shape this repository has,
+// and the only one in which an outbound reference is decidable.
+const repoLayoutPresent = basename(dirname(PLUGIN_DIR)) === 'plugins'
+  && existsSync(resolve(PLUGIN_DIR, '..', '..', 'docs'));
+const SKILL_REF_RELATIVE = /(\.\.\/)+[A-Za-z0-9_@./-]+/g;
+const SKILL_REF_ROOT_RELATIVE = /(?<![A-Za-z0-9_/.$-])(?:core\/)?skills\/[A-Za-z0-9_@./-]+/g;
+
+async function checkSkillTreeReferences(skillsRoot) {
+  let files;
+  try {
+    files = await collectTextFiles(skillsRoot);
+  } catch (err) {
+    errors.push(`cannot walk "${rel(skillsRoot)}" to check its references: ${err.message}`);
+    return;
+  }
+  for (const file of files) {
+    let text;
+    try {
+      text = await readFile(file, 'utf8');
+    } catch (err) {
+      errors.push(`${rel(file)}: cannot read it to check its references: ${err.message}`);
+      continue;
+    }
+    const seen = new Set();
+    const check = async (raw, base, shape) => {
+      const ref = raw.replace(/[.,)`'"]+$/, '');
+      if (!SKILL_REF_MANAGED_EXT.test(ref)) return;
+      const key = `${shape}:${ref}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const target = resolve(base, ref);
+      // Outbound references are only decidable where the repository layout is
+      // present; see limit 2 in the header.
+      if (escapesPluginDir(target) && !repoLayoutPresent) return;
+      if (!(await exists(target))) {
+        errors.push(
+          `${rel(file)}: ${shape} reference "${ref}" does not resolve. After a skills-root `
+          + 'relocation a reference to a target that did NOT move needs one more "../", and a '
+          + 'plugin-root-relative "skills/..." reference needs the new root.',
+        );
+      }
+    };
+    for (const m of text.matchAll(SKILL_REF_RELATIVE)) await check(m[0], dirname(file), 'relative');
+    for (const m of text.matchAll(SKILL_REF_ROOT_RELATIVE)) await check(m[0], PLUGIN_DIR, 'plugin-root-relative');
+  }
+}
+
+/** Every .md / .yaml / .yml under `dir`, recursively. Read failures throw. */
+async function collectTextFiles(dir, out = []) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const abs = resolve(dir, entry.name);
+    if (entry.isDirectory()) await collectTextFiles(abs, out);
+    else if (/\.(md|ya?ml)$/.test(entry.name)) out.push(abs);
+  }
+  return out;
+}
+
+// Run against the root the manifest declares, falling back to the conventional
+// one so a plugin that has not moved is covered too.
+for (const root of skillsRoots) {
+  if (await exists(root)) await checkSkillTreeReferences(root);
+}
+
 
 const seenSkillFiles = new Set();
 // Agent manifests are deduplicated on their OWN real path. Keying them off

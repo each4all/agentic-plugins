@@ -31,7 +31,7 @@ import { parse as parseYaml, YamlParseError } from "./lib/yaml-mini.mjs";
 import { normalizeWeights } from "./lib/decide-weights.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_PATH = resolve(HERE, "..", "skills", "decide", "references", "decision-axes.yml");
+const DEFAULT_PATH = resolve(HERE, "..", "core", "skills", "decide", "references", "decision-axes.yml");
 
 const ID_RE = /^[a-z][a-z0-9-]*$/;
 const VALID_ROLES = new Set(["decisive", "supporting"]);

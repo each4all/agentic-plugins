@@ -19,25 +19,27 @@ import { ok, strictEqual } from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
-const SKILL_PATH = resolve(REPO_ROOT, 'plugins/engineer/skills/investigate/SKILL.md');
+const ENGINEER_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
+const SKILL_PATH = skillsPath(ENGINEER_ROOT, 'investigate', 'SKILL.md');
 const COMMAND_PATH = resolve(REPO_ROOT, 'plugins/engineer/commands/investigate.md');
 const SPEC_PATH = resolve(
   REPO_ROOT,
-  'plugins/engineer/skills/investigate/references/cited-brief-spec.md',
+  skillsPath(ENGINEER_ROOT, 'investigate/references/cited-brief-spec.md'),
 );
 const RULES_PATH = resolve(
   REPO_ROOT,
-  'plugins/engineer/skills/investigate/references/output-file-rules.md',
+  skillsPath(ENGINEER_ROOT, 'investigate/references/output-file-rules.md'),
 );
 const ENSEMBLE_PATH = resolve(
   REPO_ROOT,
-  'plugins/engineer/skills/investigate/references/cited-brief-ensemble.md',
+  skillsPath(ENGINEER_ROOT, 'investigate/references/cited-brief-ensemble.md'),
 );
 const SHARED_ENSEMBLE_PATH = resolve(
   REPO_ROOT,
-  'plugins/engineer/skills/_shared/references/ensemble-protocol.md',
+  skillsPath(ENGINEER_ROOT, '_shared/references/ensemble-protocol.md'),
 );
 
 describe('cited-brief — output path resolution (output-file-rules.md)', () => {
@@ -328,7 +330,7 @@ describe('cited-brief — repository guards (no stale plugins/research reference
   it('plugins/engineer skills + commands point users at the cited-brief profile, not /research:research', async () => {
     // Recursively walk plugins/engineer/skills/ and plugins/engineer/commands/
     // for .md files; assert no FORBIDDEN_TOKENS occur in any of them.
-    const skillsDir = resolve(REPO_ROOT, 'plugins/engineer/skills');
+    const skillsDir = resolveSkillsRoot(ENGINEER_ROOT);
     const commandsDir = resolve(REPO_ROOT, 'plugins/engineer/commands');
     const collect = async (dir) => {
       const entries = await readdir(dir, { recursive: true, withFileTypes: true });

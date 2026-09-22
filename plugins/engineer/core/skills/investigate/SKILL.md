@@ -13,7 +13,7 @@ sub-modes:
 |---------|--------------|---------------------------------------|
 | `analysis` (default) | Explore an unfamiliar codebase / area to build a structured understanding | omcc-dev `explore` |
 | `root-cause` | Diagnose a bug or unexpected behavior through structured hypothesis investigation | omcc-dev `investigate` |
-| `cited-brief` | Research a topic with external sources and produce a durable cited brief artifact | absorbs `plugins/research` per [ADR-0014](../../../../docs/adr/0014-plugins-research-deprecation.md) (was a Stage 1 single-verb capability plugin) |
+| `cited-brief` | Research a topic with external sources and produce a durable cited brief artifact | absorbs `plugins/research` per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md) (was a Stage 1 single-verb capability plugin) |
 
 The profile is set via `--profile=<name>` on `/engineer:investigate`,
 or inferred from the user's intent when auto-activated. A missing
@@ -363,7 +363,7 @@ marked for a later Stop to re-evaluate. Clearing the marker
 (`--terminal-marker false`, with set-terminal's full flag set) works only before
 that Stop fires and does not restore the previous phase. On Codex the hook runs
 only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
-waits. Full contract: `skills/_shared/references/session-handoff.md`
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
 
 ---

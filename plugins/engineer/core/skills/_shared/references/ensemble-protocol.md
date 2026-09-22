@@ -9,7 +9,7 @@ synthesizes both perspectives into a unified result.
 
 The Stage 1 `plugins/research` plugin established this bidirectional
 pattern empirically before its retirement at Stage 2.5+ (per
-[ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+[ADR-0014](../../../../../../docs/adr/0014-plugins-research-deprecation.md)
 Amendment 2026-05-06): when invoked on Claude Code, it called
 `codex-companion`; when invoked on Codex CLI, it called
 `claude-companion`. The engineer plugin adopts the same symmetry
@@ -166,7 +166,7 @@ locations**:
 1. **Frontmatter** — programmatic bookkeeping via the schema-1.1
    `pending_ensemble` and `ensemble_results` fields (additive optional
    keys per
-   [ADR-0017 §sub-decision 4](../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)).
+   [ADR-0017 §sub-decision 4](../../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)).
    The reader in `plugins/engineer/scripts/state.mjs` accepts legacy
    `schema: 1` (no 1.1 fields), `schema: '1.1'`, `schema: '1.2'`, and
    `schema: '1.3'` (with any subset of the additive optional keys
@@ -263,7 +263,7 @@ avoid the `ARG_MAX` ceiling.
 - **Research-scan** (investigate phase, cited-brief profile): add
   `<citation_contract>`, `<privacy_contract>` (full prompt
   construction in
-  `skills/investigate/references/cited-brief-ensemble.md` §
+  `core/skills/investigate/references/cited-brief-ensemble.md` §
   Prompt Construction)
 
 ### Do not pass --model or --effort
@@ -644,12 +644,12 @@ written files.
   cited evidence per sub-question
 - **Subcommand**: `task`
 - **Canonical contract**:
-  `skills/investigate/references/cited-brief-ensemble.md` (this entry
+  `core/skills/investigate/references/cited-brief-ensemble.md` (this entry
   exists for parallelism with Explore / Investigate; the full
   bidirectional protocol — privacy gate, citation remapping, Path A /
   Path B Independence Rule, dispatch via
   `plugins/engineer/scripts/peer-runner.mjs` — lives in the absorbed
-  contract per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md))
+  contract per [ADR-0014](../../../../../../docs/adr/0014-plugins-research-deprecation.md))
 - **Prompt template**:
 
   ```xml
@@ -697,7 +697,7 @@ written files.
   the peer's internal labels MUST NOT be copied verbatim. Source-of-
   discovery labels (`[Local]` / `[Peer]`) live in workflow phase
   notes only — the saved brief artifact strips them per
-  `skills/investigate/references/cited-brief-spec.md` § Ensemble
+  `core/skills/investigate/references/cited-brief-spec.md` § Ensemble
   Label Policy.
 
 ### Refine-verify (refine phase)

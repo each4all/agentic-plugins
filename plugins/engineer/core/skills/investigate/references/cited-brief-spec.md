@@ -12,7 +12,7 @@ in `output-file-rules.md`).
 
 The artifact filename is preserved as `research_brief.md` so previously
 saved briefs from `plugins/research` (Stage 1) remain readable
-unchanged. Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+unchanged. Per [ADR-0014](../../../../../../docs/adr/0014-plugins-research-deprecation.md)
 (Amendment 2026-05-06), this profile absorbs the cited-brief contract
 from the now-removed `plugins/research` plugin (retired at Stage 2.5+).
 
@@ -180,7 +180,7 @@ presents synthesis findings with explicit `[Both]` / `[Local]` /
 profile preserves those labels in workflow phase notes for internal
 orchestration transparency, but the saved brief artifact strips them
 before the audit gate per the rule above. This is the dual-track
-rendering described in [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+rendering described in [ADR-0014](../../../../../../docs/adr/0014-plugins-research-deprecation.md)
 § Decision item 3.
 
 ---

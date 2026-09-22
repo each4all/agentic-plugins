@@ -9,7 +9,7 @@ $ARGUMENTS
 
 Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble
 runs automatically per
-`skills/_shared/references/ensemble-protocol.md` (Refine-verify point
+`core/skills/_shared/references/ensemble-protocol.md` (Refine-verify point
 type) — never ask the user whether to invoke the peer. When the
 companions plugin or peer CLI is unavailable, the ensemble degrades
 silently to local-only.
@@ -94,7 +94,7 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute refine
 
 Follow the refine skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/refine/SKILL.md`. The skill applies the
+`$CLAUDE_PLUGIN_ROOT/core/skills/refine/SKILL.md`. The skill applies the
 fix, runs verification (tests / lint / type-check / smoke), and
 confirms the change addresses the root cause without regressions.
 
@@ -105,13 +105,13 @@ In command-mode (`$ACTIVE` bound), the skill's **Layer 2
 commit-manifest recording** step requires
 `state.mjs record-refine-file --workflow-path "$ACTIVE" --path <p>
 --op edit|create` after each Write/Edit on a tracked path. See
-`skills/refine/SKILL.md` § Layer 2 commit-manifest recording for the
+`core/skills/refine/SKILL.md` § Layer 2 commit-manifest recording for the
 full pattern (ADR-0028 §Layer-2).
 
 ### Ensemble dispatch (Refine-verify point type)
 
 Build the Refine-verify prompt per
-`skills/_shared/references/ensemble-protocol.md` § Refine-verify.
+`core/skills/_shared/references/ensemble-protocol.md` § Refine-verify.
 The peer independently verifies that the fix addresses the symptom,
 checks for over-fitting, and probes for regressions.
 
@@ -158,7 +158,7 @@ NOTE="### Ensemble launched: refine at <iso-utc>
 
 ### Active next-action proposal
 
-(per skills/_shared/references/entry-routing-contract.md
+(per core/skills/_shared/references/entry-routing-contract.md
  § Active Next-Action Proposal — derived from this refinement, not a fixed table)
 - selected_next:         <verb | commit | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
@@ -200,7 +200,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -221,7 +221,7 @@ decisive axes (본질/근본 essence/foundation) + supporting axes, instead
 of a flat list. Resolve the sized axis set from the shared
 `$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs resolve --size=<minor|standard|major>`
 resolver — the single axis source of truth, not a hand-authored list —
-per `skills/_shared/references/entry-routing-contract.md`
+per `core/skills/_shared/references/entry-routing-contract.md`
 § "Surfacing the multi-axis lens from a non-decide verb".
 
 Bounded: only at a genuine 2+-branch point (not every invocation),
@@ -244,7 +244,7 @@ Output the change summary and one of:
   not hold or the symptom recurred.
 
 Then emit an **Active Next-Action Proposal** instead of a fixed next
-verb, per `skills/_shared/references/entry-routing-contract.md`
+verb, per `core/skills/_shared/references/entry-routing-contract.md`
 § Active Next-Action Proposal — the canonical six-field template
 (runtime completion-output contract):
 
