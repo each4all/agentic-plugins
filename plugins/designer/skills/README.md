@@ -38,9 +38,18 @@ A fourth clause lives with them: `.claude-plugin/plugin.json` must **not**
 declare a `skills` key. Adding one reads like finishing the job and silently
 restores every duplicate registration.
 
-All four are enforced by `kit/lint/check-plugin-shape.mjs`, which also checks
-that every command's skill pointer and every reference inside the relocated
-tree still resolves. This is a different rule from the empty-`skills/`
+All four are enforced by `kit/lint/check-plugin-shape.mjs`. It resolves
+references too, but not every shape of one, and the limit is worth knowing
+before leaning on it: it checks command pointers written as an explicit
+`$CLAUDE_PLUGIN_ROOT/<root>/<skill>/SKILL.md`, and, inside the relocated tree,
+the plugin-root-relative (`core/skills/…`) and repo-relative
+(`plugins/<name>/…`) forms. Three shapes were measured passing it unnoticed on
+this plugin: a command's SUPPORTING-document pointer reverted to the pre-move
+root (`commands/critique.md:86`), a sibling-relative `./…` reference
+(`core/skills/_shared/references/ensemble-protocol.md:66`), and a bare
+`references/…` reference (`core/skills/critique/SKILL.md:18`). Nothing in the
+current tree is broken in those shapes — what is missing is regression
+detection, not a fix. This is a different rule from the empty-`skills/`
 placeholders in `plugins/companions` and `plugins/attention`: those plugins
 have no skills at all and still declare the conventional root
 ([ADR-0008 §(a)](../../../docs/adr/0008-companion-distribution-model.md) Codex
