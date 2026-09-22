@@ -2,7 +2,7 @@
 
 Defines how orchestrator (Claude or Codex side) and its peer (the opposite host) operate as a dual-model ensemble for macro orchestration. The orchestrator side launches the peer for independent parallel analysis and synthesizes both perspectives into a unified result.
 
-This protocol is plugin-local — it ships in `plugins/orchestrator/skills/_shared/references/` per ADR-0010 §5 cross-plugin import ban. The base synthesis taxonomy (AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT) is the same vocabulary engineer uses; cross-plugin references to that vocabulary are by **prose only** — no markdown backtick path may cross plugin boundaries (this file does NOT import from `plugins/engineer/skills/_shared/references/ensemble-protocol.md`; it ships its own copy with orchestrator-specific scope).
+This protocol is plugin-local — it ships in `plugins/orchestrator/skills/_shared/references/` per ADR-0010 §5 cross-plugin import ban. The base synthesis taxonomy (AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT) is the same vocabulary engineer uses; cross-plugin references to that vocabulary are by **prose only** — no markdown backtick path may cross plugin boundaries (this file does NOT import from `plugins/engineer/core/skills/_shared/references/ensemble-protocol.md`; it ships its own copy with orchestrator-specific scope).
 
 ---
 
