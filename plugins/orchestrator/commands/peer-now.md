@@ -17,7 +17,7 @@ for new repos; legacy `.claude/agentic-orchestrator/` state remains active
 until explicit migration.
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/skills/peer-now/SKILL.md`**. The skill contains
+`$CLAUDE_PLUGIN_ROOT/core/skills/peer-now/SKILL.md`**. The skill contains
 the host-availability matrix, prompt guidance, and status/cancel
 controls.
 

@@ -21,7 +21,7 @@
     "codex",
     "agentic-plugins"
   ],
-  "skills": "./skills/",
+  "skills": "./core/skills/",
   "hooks": "./adapters/codex/hooks/hooks.json",
   "interface": {
     "displayName": "Orchestrator",

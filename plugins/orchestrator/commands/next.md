@@ -18,7 +18,7 @@ Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root fo
 - `EXPLICIT_WORKFLOW_ID` ← value of `--workflow=<id>` flag, or empty if absent.
 
 **Critical rules** (ADR-0019 §1):
-- Do NOT invoke the engineer skill directly (`skills/<verb>/SKILL.md`) — bypasses Phase 0 bootstrap and breaks §4 auto-writeback.
+- Do NOT invoke the engineer skill directly (`core/skills/<verb>/SKILL.md`) — bypasses Phase 0 bootstrap and breaks §4 auto-writeback.
 - Do NOT call `engineer state.mjs create` directly — bypasses the engineer command's runbook semantics.
 - All AGENTIC_* env exports + the engineer command's Phase 0+ snippets MUST run in the **same shell session** (a single Bash tool call). The Bash tool spawns a fresh process per call, so split execution drops the env exports — emit the prelude exports inline at the top of each engineer Phase 0 bash block, OR run the entire engineer Phase 0+verb as one consolidated Bash tool invocation. The CLAUDE_PLUGIN_ROOT rebind also lives in the same block; argv positions use `$ENGINEER_PLUGIN_ROOT` directly (not the rebound `$CLAUDE_PLUGIN_ROOT`).
 - Branch precondition order is fixed: clean-check → resolve `subtasks[i].branch` → ownership-check → switch → invoke. Any reordering breaks the §1 invariants.
@@ -385,10 +385,10 @@ close, and the file moves then if they all pass. To hold it open, run the full
 are all required) with `--terminal-marker false` before that Stop fires. On Codex
 the Stop hook runs only once the operator has trusted the plugin hooks
 (`/hooks`), so the evaluation waits for that. Full contract:
-`skills/_shared/references/session-handoff.md` § Archive timing.
+`core/skills/_shared/references/session-handoff.md` § Archive timing.
 
 Then emit an **Active Next-Action Proposal** instead of a fixed next command, per
-`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+`core/skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
 engineer plugin) — the canonical six-field template (runtime
 completion-output contract):
@@ -419,7 +419,7 @@ consensus output into the main session.
 
 Before rendering the footer, surface the ADR-0031 session-level
 continue-vs-fresh preflight per
-`skills/_shared/references/session-handoff.md`: compute the orchestrator macro
+`core/skills/_shared/references/session-handoff.md`: compute the orchestrator macro
 projection (resolved across branches via find-active then find-macro) and pass
 it to the runtime footer/check (`--workflow-projection-file`) so the footer
 carries the continue-vs-fresh decision. On detached HEAD, report "no active

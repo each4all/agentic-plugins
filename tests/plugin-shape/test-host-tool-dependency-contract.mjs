@@ -9,7 +9,7 @@
 // `TaskUpdate` to track progress" — observed directly while running
 // `/orchestrator:next`, whose own runbook issued the instruction into a session
 // with no such tool. The dependency was not Claude-only in reach:
-// `plugins/orchestrator/skills/next/SKILL.md` names the Claude command markdown
+// `plugins/orchestrator/core/skills/next/SKILL.md` names the Claude command markdown
 // as Codex's behavioral source, so it could reach a Codex session too.
 //
 // Pins, and what each is actually worth:

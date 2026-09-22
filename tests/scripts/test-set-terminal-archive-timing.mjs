@@ -96,6 +96,18 @@ const IMPLICIT_TERMINAL_PATHS = [
   { plugin: 'orchestrator', area: 'skills', rel: 'done/SKILL.md' },
 ];
 
+// Pinned by identity, not by length. A duplicated entry keeps the count and the
+// loop honest-looking while a path silently loses all coverage — measured:
+// replacing the skill `next` entry with a second `done` let next/SKILL.md drop
+// its ARCHIVE TIMING label with every test still green.
+const EXPECTED_IMPLICIT_IDENTITIES = [
+  'orchestrator/commands/next.md',
+  'orchestrator/commands/done.md',
+  'orchestrator/skills/next/SKILL.md',
+  'orchestrator/skills/done/SKILL.md',
+];
+const implicitIdentity = (e) => `${e.plugin}/${e.area}/${e.rel}`;
+
 function pinnedPath({ plugin, area, rel }) {
   const base = area === 'skills' ? skillsRootOf(plugin) : path.join(PLUGINS_DIR, plugin, area);
   return path.join(base, ...rel.split('/'));
@@ -203,6 +215,20 @@ function missingFacts(block, facts) {
   return facts.filter((f) => !f.re.test(block));
 }
 
+// The ARCHIVE TIMING note, bounded to its own paragraph. Searching a whole file
+// for the vocabulary lets any other part of the document satisfy a fact the
+// note itself omits — and, worse, lets the note assert the inverse while some
+// distant paragraph supplies the matching words. Measured on all four pinned
+// paths: every REQUIRED_FACTS phrase sits inside the paragraph.
+function annotationBlock(text) {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((l) => INVOCATION_LABEL.re.test(l));
+  if (start === -1) return null;
+  let end = start + 1;
+  while (end < lines.length && lines[end].trim() !== '') end += 1;
+  return lines.slice(start, end).join('\n');
+}
+
 test('every set-terminal invocation states when the Stop hook evaluates the gates', () => {
   const files = runbookFiles();
   assert.ok(files.length > 0, 'runbook sweep found no markdown — the corpus paths moved');
@@ -248,18 +274,31 @@ test('every set-terminal invocation states when the Stop hook evaluates the gate
 });
 
 test('the implicit auto-terminal paths carry the statement too', () => {
+  assert.deepEqual(
+    IMPLICIT_TERMINAL_PATHS.map(implicitIdentity).sort(),
+    [...EXPECTED_IMPLICIT_IDENTITIES].sort(),
+    'the pinned list must name exactly these four paths — a duplicated or swapped entry removes a path\'s coverage while every assertion below still passes',
+  );
+
   const problems = [];
   for (const entry of IMPLICIT_TERMINAL_PATHS) {
     const full = pinnedPath(entry);
     const rel = path.relative(REPO_ROOT, full);
     assert.ok(fs.existsSync(full), `${rel} is missing — the pinned path moved`);
-    const text = fs.readFileSync(full, 'utf8');
-    if (!/ARCHIVE TIMING/.test(text)) {
+    const block = annotationBlock(fs.readFileSync(full, 'utf8'));
+    if (block === null) {
       problems.push(`${rel} — terminalizes via subtask-update's auto-terminal pass but says nothing about when`);
       continue;
     }
-    for (const f of missingFacts(text, REQUIRED_FACTS)) {
+    for (const f of missingFacts(block, REQUIRED_FACTS)) {
       problems.push(`${rel} — ARCHIVE TIMING note omits ${f.re} (${f.why})`);
+    }
+    // The vocabulary is satisfiable by an annotation that says the opposite.
+    // The sweep above already applies this list; these four paths carry no
+    // `set-terminal` call, so the sweep never reaches them and this was the
+    // only check they had.
+    for (const bad of FORBIDDEN_IN_ANNOTATION) {
+      if (bad.test(block)) problems.push(`${rel} — ARCHIVE TIMING note asserts the inverse: ${bad}`);
     }
   }
   assert.deepEqual(problems, [], `implicit terminal paths:\n  ${problems.join('\n  ')}`);

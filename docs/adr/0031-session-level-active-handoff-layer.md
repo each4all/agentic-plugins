@@ -353,7 +353,7 @@ completion *scripts*, not from runbook prose.** Concretely:
    (`plugins/engineer/hooks/hooks.json`,
    `plugins/engineer/adapters/codex/hooks/hooks.json`) on which a
    late-reinjection backstop can ride — subject to the documented Codex
-   `/hooks` trust boundary (`plugins/orchestrator/skills/finalize/SKILL.md`).
+   `/hooks` trust boundary (`plugins/orchestrator/core/skills/finalize/SKILL.md`).
 
 8. **A mandated regression test guards the wiring.** Because the failure
    mode is silent (a refactor that drops the sidecar call reverts to the

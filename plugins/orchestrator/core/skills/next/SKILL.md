@@ -104,7 +104,7 @@ Then switch to the subtask branch, creating it only when absent.
 
 ## Phase 3 - Invoke engineer with parent-linkage
 
-Do not invoke `skills/<verb>/SKILL.md` directly. Do not call engineer
+Do not invoke `core/skills/<verb>/SKILL.md` directly. Do not call engineer
 `state.mjs create` directly. Both bypass the engineer command Phase 0
 bootstrap and break ADR-0019 writeback.
 
@@ -155,7 +155,7 @@ file moves then if they all pass. To hold it open, run the full `state.mjs
 set-terminal` form (`--workflow-path`, `--host`, `--terminal-phase` all required)
 with `--terminal-marker false` before that Stop fires. On Codex the Stop hook runs
 only once the operator has trusted the plugin hooks (`/hooks`), so the evaluation
-waits. Full contract: `skills/_shared/references/session-handoff.md`
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
 
 ---
@@ -164,7 +164,7 @@ waits. Full contract: `skills/_shared/references/session-handoff.md`
 
 Report the macro id, subtask id, engineer workflow id, and branch, then emit an
 **Active Next-Action Proposal** (not a fixed next command) per
-`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+`core/skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
 engineer plugin) — the canonical six-field template (runtime
 completion-output contract):
@@ -186,7 +186,7 @@ pointer-only; do not mutate host session context or paste raw peer output into
 the main session.
 
 Surface the ADR-0031 session-level continue-vs-fresh preflight per
-`skills/_shared/references/session-handoff.md`: compute the macro projection
+`core/skills/_shared/references/session-handoff.md`: compute the macro projection
 (find-active then find-macro) and pass it to the runtime footer/check. The
 preflight computes identically on Codex; only auto re-injection of the
 next-session prompt depends on the stage-appropriate Codex hook gate
