@@ -6,10 +6,13 @@ moved there by the
 and `.codex-plugin/plugin.json` points its `skills` key at the new root, which
 is the path Codex already resolves. The Claude manifest stays silent, so
 Claude Code's convention-based discovery finds nothing here and registers the
-ten commands only — measured with Claude Code's own accounting
+ten commands only — measured with Claude Code 2.1.278's own accounting
 (`claude --plugin-dir plugins/founder plugin details founder`) as
 `Skills (20)` / `~3,318 tok` before the move and `Skills (10)` / `~549 tok`
-after it.
+after it. The version matters: the token figure is that release's own estimate,
+and a peer reproduction of the post-move tree in a sandboxed copy read `~396`
+for the same `Skills (10)`. The counts and the controls below reproduce; the
+absolute token estimate does not travel.
 
 Founder's ten commands and ten skills share their names, so the count alone
 cannot say which set survived. The two fixtures established on designer settle
@@ -40,9 +43,16 @@ those measurements):
    reads like finishing the job and silently restores every duplicate
    registration.
 
-All four are enforced by `kit/lint/check-plugin-shape.mjs`, which also checks
-that every command's skill pointer and every reference inside the relocated
-tree still resolves. This is a different rule from the empty-`skills/`
+All four are enforced by `kit/lint/check-plugin-shape.mjs`. It resolves
+references too, but not every shape of one, and the limit is worth knowing
+before leaning on it: it checks command pointers written as an explicit
+`$CLAUDE_PLUGIN_ROOT/<root>/<skill>/SKILL.md`, and, inside the relocated tree,
+the plugin-root-relative (`core/skills/…`) and repo-relative
+(`plugins/<name>/…`) forms. Three shapes were measured passing it unnoticed on
+this plugin: a command's SUPPORTING-document pointer reverted to the pre-move
+root, a sibling-relative `./…` reference, and a bare `references/…` reference.
+Nothing in the current tree is broken in those shapes — what is missing is
+regression detection, not a fix. This is a different rule from the empty-`skills/`
 placeholders in `plugins/companions` and `plugins/attention`: those plugins
 have no skills at all and still declare the conventional root
 ([ADR-0008 §(a)](../../../docs/adr/0008-companion-distribution-model.md) Codex

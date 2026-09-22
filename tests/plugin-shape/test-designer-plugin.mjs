@@ -1866,26 +1866,40 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // reporting no offenders.
   const SURFACE_ROOTS = [resolve(PLUGIN_ROOT, 'commands'), resolveSkillsRoot(PLUGIN_ROOT)];
 
+  // Non-vacuity, per root rather than in aggregate. An AGGREGATE floor is
+  // satisfied by scanning one root twice — 10 commands + 10 commands clears 20
+  // while opening no skill file at all, measured on founder's twin of this
+  // guard with a stale phrase left unread in the relocated tree. Distinctness
+  // plus a floor on EACH root is what pins both surfaces. Today: 10 commands
+  // and 28 files under the relocated root; the tombstone holds one.
+  const assertSurfaceCoverage = (perRoot) => {
+    strictEqual(new Set(SURFACE_ROOTS.map(String)).size, SURFACE_ROOTS.length,
+      'the surface roots must be distinct — a duplicated root satisfies any aggregate floor while leaving a surface unscanned');
+    for (const [root, opened] of perRoot) {
+      ok(opened >= 10,
+        `surface root ${root.slice(PLUGIN_ROOT.length + 1)} opened only ${opened} surface files — a root resolving to a tombstone or the wrong directory reports no offenders`);
+    }
+  };
+
   it('the designer command + skill surface carries no stale build-phase forward-references', async () => {
     const offenders = [];
-    let scanned = 0;
+    const perRoot = new Map();
     for (const root of SURFACE_ROOTS) {
+      let opened = 0;
       const entries = await readdir(root, { recursive: true, withFileTypes: true });
       for (const ent of entries) {
         if (!ent.isFile() || !SURFACE_EXTS.some((e) => ent.name.endsWith(e))) continue;
         const parent = ent.parentPath ?? ent.path;
         const full = resolve(parent, ent.name);
-        scanned += 1;
+        opened += 1;
         const text = await readFile(full, 'utf8');
         for (const re of STALE_BUILD_PHRASES) {
           if (re.test(text)) offenders.push(`${full.slice(PLUGIN_ROOT.length + 1)} :: ${re.source}`);
         }
       }
+      perRoot.set(root, opened);
     }
-    // Non-vacuity: a scan root that resolves to an empty or wrong directory
-    // reports no offenders, which is indistinguishable from a clean surface.
-    // Both roots together hold well over 20 surface files.
-    ok(scanned >= 20, `the surface scan opened only ${scanned} files — a root resolving to nothing reports no offenders`);
+    assertSurfaceCoverage(perRoot);
     deepStrictEqual(offenders, [],
       `stale build-phase forward-references must be removed now that ADR-0042 is Accepted:\n  ${offenders.join('\n  ')}`);
   });
@@ -1896,24 +1910,23 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   // instances of it in the first PR7 pass. Pin every surface that names the rules.
   it('no designer surface — markdown OR Codex agent yaml — still requires a PASS gate to converge (F7 cross-surface)', async () => {
     const offenders = [];
-    let scanned = 0;
+    const perRoot = new Map();
     for (const root of SURFACE_ROOTS) {
+      let opened = 0;
       const entries = await readdir(root, { recursive: true, withFileTypes: true });
       for (const ent of entries) {
         if (!ent.isFile() || !SURFACE_EXTS.some((e) => ent.name.endsWith(e))) continue;
         const parent = ent.parentPath ?? ent.path;
         const full = resolve(parent, ent.name);
         const rel = full.slice(PLUGIN_ROOT.length + 1);
-        scanned += 1;
+        opened += 1;
         const text = await readFile(full, 'utf8');
         if (/converge[^.]{0,80}\bgate (?:PASSES|passes)\b/i.test(text)) offenders.push(`${rel} :: convergence requires gate PASS`);
         if (/gate PASS —/.test(text)) offenders.push(`${rel} :: "gate PASS —" as the clean-result example`);
       }
+      perRoot.set(root, opened);
     }
-    // Non-vacuity: a scan root that resolves to an empty or wrong directory
-    // reports no offenders, which is indistinguishable from a clean surface.
-    // Both roots together hold well over 20 surface files.
-    ok(scanned >= 20, `the surface scan opened only ${scanned} files — a root resolving to nothing reports no offenders`);
+    assertSurfaceCoverage(perRoot);
     deepStrictEqual(offenders, [], `convergence must be "gate not FAIL" on every surface:\n  ${offenders.join('\n  ')}`);
   });
 

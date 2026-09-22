@@ -686,25 +686,36 @@ describe('plugins/founder — de-incubated surface (PR7 / ADR-0036 Accepted)', (
 
   it('the founder command + skill surface carries no stale build-phase forward-references', async () => {
     const offenders = [];
-    let scanned = 0;
+    const perRoot = new Map();
     for (const root of SURFACE_ROOTS) {
+      let opened = 0;
       const entries = await readdir(root, { recursive: true, withFileTypes: true });
       for (const ent of entries) {
         if (!ent.isFile() || !ent.name.endsWith('.md')) continue;
         const parent = ent.parentPath ?? ent.path;
         const full = resolve(parent, ent.name);
-        scanned += 1;
+        opened += 1;
         const text = await readFile(full, 'utf8');
         for (const re of STALE_BUILD_PHRASES) {
           if (re.test(text)) offenders.push(`${full.slice(PLUGIN_ROOT.length + 1)} :: ${re.source}`);
         }
       }
+      perRoot.set(root, opened);
     }
-    // Non-vacuity: a scan root that resolves to an empty or wrong directory
-    // reports no offenders, which is indistinguishable from a clean surface.
-    // The ten commands and the relocated tree together hold well over 20
-    // markdown files; the tombstone alone holds one.
-    ok(scanned >= 20, `the surface scan opened only ${scanned} files — a root resolving to nothing reports no offenders`);
+    // Non-vacuity, per root rather than in aggregate. A root that resolves to
+    // an empty or wrong directory reports no offenders, which is
+    // indistinguishable from a clean surface — and an AGGREGATE floor does not
+    // catch it, because scanning one root twice clears the floor while leaving
+    // the other surface unopened (10 commands + 10 commands >= 20, measured,
+    // with a stale phrase sitting unread in the relocated tree). Distinctness
+    // plus a floor on EACH root is what pins both surfaces. Today: 10 commands
+    // and 16 files under the relocated root; the tombstone holds one.
+    strictEqual(new Set(SURFACE_ROOTS.map(String)).size, SURFACE_ROOTS.length,
+      'the surface roots must be distinct — a duplicated root satisfies any aggregate floor while leaving a surface unscanned');
+    for (const [root, opened] of perRoot) {
+      ok(opened >= 10,
+        `surface root ${root.slice(PLUGIN_ROOT.length + 1)} opened only ${opened} markdown files — a root resolving to a tombstone or the wrong directory reports no offenders`);
+    }
     deepStrictEqual(offenders, [],
       `stale build-phase forward-references must be removed now that ADR-0036 is Accepted:\n  ${offenders.join('\n  ')}`);
   });
