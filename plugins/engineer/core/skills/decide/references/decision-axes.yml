@@ -46,7 +46,7 @@ presets:
         role: "supporting"
 
   compact:
-    description: "4-axis compact preset for minor-size decisions — preserves entry-routing-contract guarantees (source-of-truth, root cause, verification evidence, rollback path) as a single combined axis. See `plugins/engineer/skills/_shared/references/entry-routing-contract.md` lines 46-49 for the canonical 4-guarantee list."
+    description: "4-axis compact preset for minor-size decisions — preserves entry-routing-contract guarantees (source-of-truth, root cause, verification evidence, rollback path) as a single combined axis. See `plugins/engineer/core/skills/_shared/references/entry-routing-contract.md` lines 46-49 for the canonical 4-guarantee list."
     axes:
       - id: "essence"
         labels:

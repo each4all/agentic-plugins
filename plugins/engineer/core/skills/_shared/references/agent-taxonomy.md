@@ -4,7 +4,7 @@ Catalog of available agent capabilities for orchestration. The orchestrator
 selects from this catalog via the process in `orchestration.md`.
 
 **Plugin boundary note**: this file is engineer-internal (lives at
-`plugins/engineer/skills/_shared/references/`). Per ADR-0010 §5,
+`plugins/engineer/core/skills/_shared/references/`). Per ADR-0010 §5,
 cross-plugin imports are forbidden — when Stage 3+ designer plugin
 needs an equivalent agent taxonomy, it MUST ship its own copy. If
 the taxonomy proves universal across L3 personas during Stage 3

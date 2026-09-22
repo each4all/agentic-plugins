@@ -6,7 +6,7 @@ not static counts.
 
 **Plugin boundary note**: this orchestration framework is
 engineer-internal (lives at
-`plugins/engineer/skills/_shared/references/`). Per ADR-0010 §5,
+`plugins/engineer/core/skills/_shared/references/`). Per ADR-0010 §5,
 cross-plugin imports are forbidden — when Stage 3+ designer plugin
 needs equivalent orchestration, it MUST ship its own copy. If the
 framework proves universal across L3 personas during Stage 3
