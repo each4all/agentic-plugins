@@ -206,7 +206,7 @@ Present the final business artifact and save it (the durable
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "<plugin-root>/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --terminal-phase summary-complete --terminal-marker true \
@@ -226,7 +226,7 @@ the macro workflow is terminal, so a fresh deliverable starts a new
 one. The footer never mutates host session context; detached HEAD never
 auto-recommends a fresh session (the branch-based preflight is what
 reports "no active branch context"). Wiring:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.
 
 ---
 

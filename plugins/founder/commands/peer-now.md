@@ -15,7 +15,7 @@ verb-skill ensemble. It does NOT advance any workflow phase and is excluded
 from `ensemble_results` by design.
 
 **Cognitive runbook + the Host-availability matrix live in
-`$CLAUDE_PLUGIN_ROOT/skills/peer-now/SKILL.md`** per ADR-0022. This command
+`$CLAUDE_PLUGIN_ROOT/core/skills/peer-now/SKILL.md`** per ADR-0022. This command
 file owns the Claude-host bash below.
 
 Plugin root is `$CLAUDE_PLUGIN_ROOT` (set by Claude Code). If unset, fall
@@ -35,7 +35,7 @@ financials, or pasted internal documents); the pre-genericization value MUST
 never leave the local host. The gate is bidirectional (Claude→Codex and
 Codex→Claude alike). If the prompt cannot be genericized without losing the
 question, confirm with the user or decline and answer locally. See
-`skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
 
 ---
 

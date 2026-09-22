@@ -153,7 +153,7 @@ set-terminal` — the runtime completion footer is **code-emitted** on that
 command's stderr per ADR-0039/ADR-0043 S3; do not hand-compose a second
 footer — surface the emitted one. Standalone skill invocations write no
 workflow state and emit no footer. Wiring:
-`skills/_shared/references/session-handoff.md`.)
+`core/skills/_shared/references/session-handoff.md`.)
 
 On Claude the Stop hook fires at **every turn end**, so that terminal write puts
 the workflow in front of the archive gates at the end of **that same turn**, not
@@ -162,7 +162,7 @@ marked for a later Stop to re-evaluate. Clearing the marker
 (`--terminal-marker false`, with set-terminal's full flag set) works only before
 that Stop fires and does not restore the previous phase. On Codex the hook runs
 only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
-waits. Full contract: `skills/_shared/references/session-handoff.md`
+waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
 
 ---

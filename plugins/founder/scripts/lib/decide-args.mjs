@@ -38,7 +38,7 @@
 //   --size     active — tier whitelist {minor, standard, major}; implies a
 //              preset per §1.5(2) and selects the ritual depth (per-option
 //              output depth, comparison-table density, recommendation rigor)
-//              consumed by `plugins/founder/skills/decide/SKILL.md` inside
+//              consumed by `plugins/founder/core/skills/decide/SKILL.md` inside
 //              the four @decide:* marker regions.
 //   --weights  active (PR4) — strict comma-separated `axis-id:weight` pairs.
 //              Shape: axis-id matches registry pattern `[a-z][a-z0-9-]*`;
@@ -138,7 +138,7 @@ export function parseArgs(argv) {
         //   --size=major    → preset=default (6-axis, rendered at major depth)
         // and the skill body reads `context.size` to render the matching
         // per-option / comparison-table / recommendation depth per the
-        // `@decide:*` marker regions in `skills/decide/SKILL.md`.
+        // `@decide:*` marker regions in `core/skills/decide/SKILL.md`.
         if (!SIZE_TIERS.has(value)) {
           errors.push(
             `--size=${value} not in {minor, standard, major}`,

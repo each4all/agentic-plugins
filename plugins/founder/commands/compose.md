@@ -83,7 +83,7 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute compose
 
 Follow the compose skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/compose/SKILL.md`. Profiles (the 기획 산출물
+`$CLAUDE_PLUGIN_ROOT/core/skills/compose/SKILL.md`. Profiles (the 기획 산출물
 shapes):
 
 - `plan` (default) — a structured **venture plan**: problem/opportunity,
@@ -104,7 +104,7 @@ directions existed) a chosen direction from `/founder:decide`. If either is
 missing, suggest running the upstream verb first rather than composing on
 incomplete inputs. The L4 business-model archetype (general default;
 b2b-saas / consumer-app / commerce / content with demand) flows through the
-Business Task Profile per `skills/_shared/references/orchestration.md`, not
+Business Task Profile per `core/skills/_shared/references/orchestration.md`, not
 a per-call flag.
 
 ### Privacy gate (before any external call)
@@ -113,7 +113,7 @@ PRIVACY GATE: proprietary venture concepts, interview/customer data, and
 unpublished business material pass an explicit gate before BOTH web
 search AND peer-host dispatch. Genericize before the peer prompt; the
 pre-genericization value MUST never leave the local host. See
-`skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Plan-verify point type)
 
@@ -121,7 +121,7 @@ Build the Plan-verify prompt (the peer receives the genericized draft plan
 and returns gaps, sequencing issues, missing risks/assumptions, and
 unit-economics holes), write it to a tempfile, and dispatch in background.
 The prompt template + synthesis contract live in
-`skills/_shared/references/ensemble-protocol.md` §Plan-verify:
+`core/skills/_shared/references/ensemble-protocol.md` §Plan-verify:
 
 ```bash
 PROMPT_FILE="$(mktemp -t founder-compose-prompt.XXXXXX).xml"
@@ -206,7 +206,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -223,7 +223,7 @@ If composing surfaces a **genuine 2+-branch decision point** — two viable
 plan structures, two go-to-market wedges, two pricing models — surface a
 **compact multi-axis lens** across the decisive business axes (시장성 /
 단위경제) + the gates, instead of a flat list, reading
-`skills/decide/references/decision-axes.yml` (the founder registry; the
+`core/skills/decide/references/decision-axes.yml` (the founder registry; the
 `scripts/decide-registry.mjs resolve --size=minor` resolver gives the
 compact 4-axis set). Bounded: only at a genuine 2+-branch point, never the
 full matrix for a trivial reversible step. A weightier fork should route to
@@ -241,7 +241,7 @@ Output the artifact (plan / canvas / validation-plan) and one of:
   before proceeding.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
-`skills/compose/SKILL.md` § Completion): typical `selected_next` is
+`core/skills/compose/SKILL.md` § Completion): typical `selected_next` is
 `/founder:critique` to review the artifact — or `/founder:decide` if
 composing surfaced an undecided fork. Do not end with a hardcoded
 "next: X".
@@ -268,4 +268,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.

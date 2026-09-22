@@ -35,9 +35,9 @@ templates in founder's own ensemble protocol.
 The discovery + ideation surfaces (`investigate` / `frame`) carry their
 own in-persona contracts: the 5-tier business source taxonomy +
 freshness/jurisdiction + paywalled-source rules + privacy gate live in
-[`business-brief-spec.md`](skills/investigate/references/business-brief-spec.md),
+[`business-brief-spec.md`](core/skills/investigate/references/business-brief-spec.md),
 and the business Task Profile lives in
-[`orchestration.md`](skills/_shared/references/orchestration.md). Per
+[`orchestration.md`](core/skills/_shared/references/orchestration.md). Per
 ADR-0010 §5 these are founder-owned copies, not imports of the engineer
 originals.
 

@@ -528,10 +528,10 @@ design (per ADR-0010 §2 6-verb model).
 - `../../_shared/references/ensemble-protocol.md` — founder's standard
   ensemble protocol (all nine business-anchored point types).
   Cross-references this file for the research-scan point.
-- `../../../scripts/peer-runner.mjs` — founder's managed peer runner; the
+- `../../../../scripts/peer-runner.mjs` — founder's managed peer runner; the
   mechanics that resolve and invoke the peer companion, write the ledger,
   and record `pending_ensemble` for command-managed ensembles.
-- `../../../scripts/dispatch-peer.mjs` — founder's blocking compatibility
+- `../../../../scripts/dispatch-peer.mjs` — founder's blocking compatibility
   dispatcher for legacy/raw callers.
 - `companions/contract.md` v0.1.1 — wire-spec contract for both companion
   bridges (`claude-companion`, `codex-companion`).

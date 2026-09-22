@@ -83,7 +83,7 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute critique
 
 Follow the critique skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/skills/critique/SKILL.md`. Profiles:
+`$CLAUDE_PLUGIN_ROOT/core/skills/critique/SKILL.md`. Profiles:
 
 - (default) — multi-perspective review of a specific business artifact
   (the venture plan / brief / canvas / strategy on hand) across
@@ -109,11 +109,11 @@ PRIVACY GATE: proprietary venture concepts, interview/customer data, and
 unpublished business material pass an explicit gate before BOTH web
 search AND peer-host dispatch. Genericize the artifact before the peer
 prompt; the pre-genericization value MUST never leave the local host. See
-`skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Review point for default; Adversarial-scan point for red-team)
 
-Build the peer prompt per `skills/_shared/references/ensemble-protocol.md`
+Build the peer prompt per `core/skills/_shared/references/ensemble-protocol.md`
 (§Review for the default profile, §Adversarial-scan + the Risk-class
 sub-focus text for `red-team`), write it to a tempfile, and dispatch in
 the background. The peer receives the **genericized** artifact (default)
@@ -208,7 +208,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # --terminal-phase), and does not restore the previous phase or next_action.
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
-# skills/_shared/references/session-handoff.md § Archive timing.
+# core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
@@ -225,7 +225,7 @@ If critique surfaces a **genuine 2+-branch decision point** — two viable
 remediation directions, or two severity reads of the same finding —
 surface a **compact multi-axis lens** across the decisive business axes
 (시장성 / 단위경제) + the veto gates, instead of a flat list, reading
-`skills/decide/references/decision-axes.yml` (the
+`core/skills/decide/references/decision-axes.yml` (the
 `scripts/decide-registry.mjs resolve --size=minor` compact 4-axis set).
 Bounded: only at a genuine 2+-branch point, never the full matrix for a
 trivial reversible step. A weightier fork should route to
@@ -244,7 +244,7 @@ and one of:
   proceeding.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
-`skills/critique/SKILL.md` § Completion): typical `selected_next` is
+`core/skills/critique/SKILL.md` § Completion): typical `selected_next` is
 `/founder:refine` to address selected findings — or `/founder:decide`
 when a finding opens a genuine fork, or `/founder:investigate` when a
 finding rests on a load-bearing claim that needs evidence. Do not end
@@ -272,4 +272,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 §sub-2; the branch-based preflight is what reports "no active branch
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
-`skills/_shared/references/session-handoff.md`.
+`core/skills/_shared/references/session-handoff.md`.
