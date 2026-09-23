@@ -38,8 +38,8 @@ Reconstructing today's cold start requires reading `README.md`,
 marketplace-add step appears in four mutually inconsistent forms (CLI form in
 `README.md`; slash form in two plugin READMEs and `docs/ARCHITECTURE.md`;
 omitted entirely from `plugins/runtime/README.md`'s Install block). The plugin
-set appears as four names in `plugins/runtime/skills/settings/SKILL.md`, six in
-`README.md`, and eight in both marketplace catalogs and `doctor.mjs`
+set appears as four names in `plugins/runtime/core/skills/settings/SKILL.md`,
+six in `README.md`, and eight in both marketplace catalogs and `doctor.mjs`
 `PLUGIN_NAMES`. The drift is not incidental; nothing mechanically holds those
 lists in agreement.
 

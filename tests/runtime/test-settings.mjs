@@ -2,7 +2,8 @@ import { describe, it } from 'node:test';
 import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
 import { lstat, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   formatText,
@@ -12,6 +13,7 @@ import {
   removeRuntimeConfigKeys,
 } from '../../plugins/runtime/scripts/settings.mjs';
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
+import { skillsPath } from '../_helpers.mjs';
 
 const SETTINGS_RUN_ID = 'settings-20260513T000000Z-abcdef';
 const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
@@ -1780,13 +1782,19 @@ describe('runtime settings', () => {
     // a host-parity gap, not a typo.
     const { CONFIG_KEYS } = await import('../../plugins/runtime/scripts/lib/runtime-config.mjs');
     const flags = [...CONFIG_KEYS.map((key) => `--${key.replace(/_/g, '-')}`), '--unset'];
+    // The Codex skill is found through the runtime's own Codex manifest rather than
+    // a spelled-out path, so this sweep reads the file Codex actually loads: the
+    // 2026-09-18 Amendment to ADR-0006 moved the skills root to core/skills/, and
+    // `skillsPath` throws on a broken declaration instead of guessing.
+    const runtimeRoot = fileURLToPath(new URL('../../plugins/runtime/', import.meta.url));
+    const skillMd = skillsPath(runtimeRoot, 'settings', 'SKILL.md');
     const surfaces = {
-      'commands/settings.md': 'plugins/runtime/commands/settings.md',
-      'skills/settings/SKILL.md': 'plugins/runtime/skills/settings/SKILL.md',
-      'scripts/settings.mjs usage()': 'plugins/runtime/scripts/settings.mjs',
+      'commands/settings.md': join(runtimeRoot, 'commands/settings.md'),
+      [relative(runtimeRoot, skillMd)]: skillMd,
+      'scripts/settings.mjs usage()': join(runtimeRoot, 'scripts/settings.mjs'),
     };
     for (const [label, path] of Object.entries(surfaces)) {
-      const text = await readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
+      const text = await readFile(path, 'utf8');
       const missing = flags.filter((flag) => !text.includes(flag));
       deepStrictEqual(missing, [], `${label} does not advertise: ${missing.join(', ')}`);
     }

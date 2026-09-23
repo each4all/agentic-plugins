@@ -80,7 +80,7 @@ command's **stderr** (the command's stdout stays a machine channel). This stays 
 (`discoverRuntimePluginRoot`, copy-not-import), gate on `emitted===true`, guard
 against double-emission, and fail closed silently on a missing/too-old runtime.
 See ADR-0039, ADR-0043, and the onboarded persona's own
-`skills/_shared/references/session-handoff.md` runbook (engineer's copy is
+`core/skills/_shared/references/session-handoff.md` runbook (engineer's copy is
 the reference implementation the other personas derive from, ADR-0043 §2).
 
 Callers that want the newest existing handoff without creating or updating

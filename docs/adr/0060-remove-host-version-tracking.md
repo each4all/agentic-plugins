@@ -68,7 +68,7 @@ touched — the word is not the scope. The real dependency set is named here.
 |---|---|
 | `plugins/runtime/scripts/compat.mjs` | the command implementation |
 | `plugins/runtime/scripts/lib/compat-artifacts.mjs` | gap/plan schema families, status vocabularies, `isReadyCompatState` |
-| `plugins/runtime/commands/compat.md`, `plugins/runtime/skills/compat/` | the Claude command and Codex skill surfaces |
+| `plugins/runtime/commands/compat.md`, `plugins/runtime/core/skills/compat/` | the Claude command and Codex skill surfaces |
 | `plugins/runtime/docs/host-parity-baseline.md` | 654 lines: parity matrix, probed matrices, failure catalogue, drift policy, version history |
 | `plugins/runtime/docs/codex-capability-baseline.md` | 267 lines, the sibling observation document |
 | `scripts/check-host-version-drift.mjs`, `.github/workflows/host-version-drift.yml` | the twice-daily drift check and its tracking-issue upsert |
