@@ -111,7 +111,7 @@ split (§5) is an implementation-strategy consequence of §1+§3 coupling.
 
 **1.1 — Registry artifact**
 
-A single YAML file, `plugins/engineer/skills/decide/references/decision-axes.yml`,
+A single YAML file, `plugins/engineer/core/skills/decide/references/decision-axes.yml`,
 is the source of truth for axis identity, ordering, localized labels,
 and per-axis core question. The schema is:
 
@@ -305,7 +305,7 @@ positive-and-negative reader tests covering every row of this table
 
 **1.7 — Engineer-local vs future L2 portability**
 
-The registry lives in `plugins/engineer/skills/decide/references/`
+The registry lives in `plugins/engineer/core/skills/decide/references/`
 following the [ADR-0010](0010-plugin-boundary-policy.md) §5 +
 [ADR-0014](0014-plugins-research-deprecation.md) precedent (the
 cited-brief spec migrated from `plugins/research` to
@@ -322,6 +322,13 @@ cited-brief spec migrated from `plugins/research` to
   NOT extract a cross-plugin discovery library; cross-plugin
   imports are forbidden per [ADR-0010](0010-plugin-boundary-policy.md)
   §5.
+  **[2026-09-23]** The decide skill now lives at
+  `plugins/engineer/core/skills/decide/`, moved there by the 2026-09-18
+  Amendment to [ADR-0006](0006-directory-layout-install-pattern.md). The
+  reader, `plugins/engineer/scripts/decide-registry.mjs`, did not move;
+  `plugins/engineer/commands/decide.md` runs it as a CLI
+  (`decide-registry.mjs resolve`). The path and description above are as
+  they were recorded.
 
 **When (and if) an L2 `decision` plugin lands** (per ADR-0010 §1
 Layer 2 planned occupants list, gated by §6 trigger 1 — second
@@ -640,6 +647,15 @@ This combination — structural presence + content sentinel — makes
 "drop a marker on rebase" AND "marker wraps wrong region" both
 CI-detectable failures rather than silent content corruption.
 
+**[2026-09-23]** The decide `SKILL.md` these checks read now lives at
+`plugins/engineer/core/skills/decide/SKILL.md`, moved there by the
+2026-09-18 Amendment to
+[ADR-0006](0006-directory-layout-install-pattern.md). It now carries
+five marker pairs: PR4 added `@decide:weighting-sensitivity-output` (see
+§5.6), and the lint's canonical set, `DECIDE_MARKER_IDS` in
+`tests/plugin-shape/test-engineer-plugin.mjs`, lists all five. The path,
+count and marker ids above are as they were recorded.
+
 ### §4 — Brainstorm peer-prompt axis-awareness
 
 **4.1 — Current state**
@@ -799,6 +815,15 @@ PRs are rejected (`validation-contract`'s test suite asserts
 cross-surface symmetry per ensemble-protocol.md §Bidirectional
 invocation pattern). Note: `plugins/engineer/skills/decide/agents/openai.yaml`
 is NOT in this list — it is metadata, not a prompt surface.
+
+**[2026-09-23]** The engineer skill files named in this passage now live
+under `plugins/engineer/core/skills/`, moved there by the 2026-09-18
+Amendment to [ADR-0006](0006-directory-layout-install-pattern.md): items
+1 and 3 are
+`plugins/engineer/core/skills/_shared/references/ensemble-protocol.md`
+and `plugins/engineer/core/skills/decide/SKILL.md`.
+`tests/engineer/test-decide-brainstorm-axis-awareness.mjs` still checks
+all three surfaces. The paths above are as they were recorded.
 
 ### §5 — `axis-registry` (PR2) implementation split decision
 

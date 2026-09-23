@@ -325,6 +325,10 @@ checkpoint), judge each command on its own merits.
   — macro skill category. ADR-0022 closes ADR-0021 §6.
 - `plugins/engineer/skills/{resume,checkpoint,peer-now}/SKILL.md` —
   the canonical meta-skill runbooks (this PR ships them).
+  **[2026-09-23]** The three runbooks now live under
+  `plugins/engineer/core/skills/`, moved there by the 2026-09-18
+  Amendment to [ADR-0006](0006-directory-layout-install-pattern.md); the
+  path above is as it was recorded.
 - `tests/plugin-shape/test-engineer-plugin.mjs` §`META_SKILLS`
   constant — test-side promotion of the meta-skill category.
 

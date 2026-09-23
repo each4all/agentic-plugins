@@ -126,7 +126,7 @@ decision from bounded inputs and never reads higher-layer state.
 4. **Surface extension, not new surface.** The projection contract and
    firing rules are documented by **extending** the existing
    `plugins/runtime/docs/footer-contract.md` and
-   `plugins/engineer/skills/_shared/references/entry-routing-contract.md`
+   `plugins/engineer/core/skills/_shared/references/entry-routing-contract.md`
    (a new session-level section). No new plugin, verb, skill category,
    or reference file is introduced (ADR-0029).
 

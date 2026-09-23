@@ -156,13 +156,18 @@ inherits the full research contract:
   `research/skills/research/references/ensemble-protocol.md` and
   surfaced as a new `research-scan` ensemble point type alongside
   engineer's existing `Explore` and `Investigate` types in
-  `plugins/engineer/skills/_shared/references/ensemble-protocol.md`.
+  `plugins/engineer/core/skills/_shared/references/ensemble-protocol.md`.
 - The new contract files live under
   `plugins/engineer/skills/investigate/references/` (a new
   directory created by this absorption; engineer's existing
-  per-skill references pattern follows the `_shared/references/`
-  + skill-local references precedent set by other engineer
+  per-skill references pattern follows the `_shared/references/` +
+  skill-local references precedent set by other engineer
   skills).
+  **[2026-09-23]** These contract files now live under
+  `plugins/engineer/core/skills/investigate/references/`, moved there by
+  the 2026-09-18 Amendment to
+  [ADR-0006](0006-directory-layout-install-pattern.md); the path above
+  is as it was recorded.
 
 ### 3. Resolve the source-of-discovery label policy conflict
 

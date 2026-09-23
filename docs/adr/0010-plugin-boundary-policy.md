@@ -223,7 +223,7 @@ in-process imports or runtime coupling. An artifact handoff carries:
 The Stage 1 `research_brief.md` was the prototype — a durable cited
 artifact that downstream plugins (or future invocations of the same
 plugin) can consume. The contractual shape now lives in-persona at
-`plugins/engineer/skills/investigate/references/cited-brief-spec.md`
+`plugins/engineer/core/skills/investigate/references/cited-brief-spec.md`
 per ADR-0014 §2; the original Stage 1 spec is at commit `28b5eb8`.
 
 Runtime auto-handoff is permitted when both plugins are installed and
