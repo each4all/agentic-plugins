@@ -219,19 +219,27 @@ in `docs/assurance/omcc-cutover-scorecard.md` and in the evidence record
 `the-capabilities-claude-registered-twice`.
 
 **Rollback.** Pause when any of these is observed on an installed host: a
-relocated plugin registers a skill on Claude again (a verb listed twice, or
-more components than command files); Codex `skills/list` resolves fewer than
-55 packaged skills, reports a load error, or resolves one outside
-`core/skills/`; a command runbook's `$CLAUDE_PLUGIN_ROOT/…` reference does not
-resolve in the installed cache; or a persona's decide registry falls back (a
-`registry:` diagnostic, or a preset defined only in the file degrading to the
-in-code default). The last-known-good release of each package — its last
-release whose skills still lived at the conventional root — is image 0.3.0,
-engineer 0.21.8, designer 0.3.7, founder 0.4.7, orchestrator 0.13.6 and
-runtime 0.97.3. They name what an affected host would temporarily fall back
-to, not how: pinning one plugin to an older release has not been exercised on
-either host. The recovery itself is a forward patch that
-keeps `core/skills/` as the destination and ships under a new version. Moving
-files back under a reused or lowered version is ruled out, because one
-version would then name two different trees — the failure ADR-0051 rules out
-for protected assets.
+relocated plugin's Claude component list stops matching its command files by
+name and count — a missing command as much as a re-registered skill; Codex
+`skills/list` stops resolving each plugin's expected skills by name, enabled,
+from `core/skills/`, or reports a load error; a command runbook's
+`$CLAUDE_PLUGIN_ROOT/…` reference does not resolve in the installed cache; or a
+persona's decide registry falls back (a `registry:` diagnostic, or a preset
+defined only in the file degrading to the in-code default). The last-known-good
+release of each package — its last release whose skills still lived at the
+conventional root — is image 0.3.0, engineer 0.21.8, designer 0.3.7, founder
+0.4.7, orchestrator 0.13.6 and runtime 0.97.3. They name what an affected host
+would temporarily fall back to. Pinning one plugin to an older release has not
+been exercised on either host, and such a fallback is not complete when the
+host merely reports the older version. Cross-plugin discovery takes the
+highest retained cache whenever no override is set, whatever the host's
+install registry says — `discover-engineer.mjs`, the `discover-runtime.mjs`
+copies and companions' `discover-peer.mjs` all sort by version — so each
+resolved root has to be checked, or pinned through that discovery's override
+(`AGENTIC_ENGINEER_ROOT`, `AGENTIC_RUNTIME_ROOT`, `AGENTIC_COMPANIONS_ROOT`),
+in a fresh session. Rolling back a hook-bearing package also stales the Codex
+`/hooks` attestation, which then needs a new review and proof. The recovery
+itself is a forward patch that keeps `core/skills/` as the destination and
+ships under a new version. Moving files back under a reused or lowered version
+is ruled out, because one version would then name two different trees — the
+failure ADR-0051 rules out for protected assets.
