@@ -388,6 +388,11 @@ with that distinction.
 - `plugins/engineer/skills/_shared/references/entry-routing-contract.md`
   — the contract this ADR extends; consulted at `start.md:282`,
   `skills/start/SKILL.md:31`, `skills/decide/SKILL.md`.
+  **[2026-09-23]** The contract now lives at
+  `plugins/engineer/core/skills/_shared/references/entry-routing-contract.md`,
+  moved there by the 2026-09-18 Amendment to
+  [ADR-0006](0006-directory-layout-install-pattern.md); the paths and
+  line numbers above are as they were recorded.
 - Memory: `project_weak_active_guidance_layer`,
   `project_entry_routing_contract_enforcement_gap` (records the
   verified finding — the contract reaches `/engineer:start` but not

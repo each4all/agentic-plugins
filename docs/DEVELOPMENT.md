@@ -261,6 +261,11 @@ empirically by the canonical brief artifacts under `output/`:
     Stage 1 `plugins/research` ensemble-protocol Failure Handling
     spec, since absorbed into
     `plugins/engineer/skills/investigate/references/cited-brief-ensemble.md`)
+    **[2026-09-23]** That file now lives at
+    `plugins/engineer/core/skills/investigate/references/cited-brief-ensemble.md`,
+    moved there by the 2026-09-18 Amendment to
+    [ADR-0006](adr/0006-directory-layout-install-pattern.md); the path
+    above is as it was recorded.
   - Synthesis: 12 cited sources HIGH confidence (5 standards: RFC 8446 /
     8470 / 9001 / 9110 / 9325 + NIST SP 800-52r2; 7 official-docs:
     Cloudflare / Fastly / GCP / Akamai / nginx / OpenSSL)

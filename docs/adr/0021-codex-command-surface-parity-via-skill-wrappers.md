@@ -259,7 +259,7 @@ folder, eliminating the need for a new category.
 - [ADR-0020](0020-engineer-integrated-workflow-umbrella.md) —
   `/engineer:start` lifecycle macro command. ADR-0021 is the Codex
   parity cascade.
-- `plugins/engineer/skills/start/SKILL.md` — the canonical
+- `plugins/engineer/core/skills/start/SKILL.md` — the canonical
   lifecycle macro runbook.
 - `tests/plugin-shape/test-engineer-plugin.mjs` § `LIFECYCLE_MACROS`
   constant — pre-existing test-side distinction that ADR-0021

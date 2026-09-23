@@ -328,7 +328,7 @@ describe('cited-brief — repository guards (no stale plugins/research reference
   });
 
   it('plugins/engineer skills + commands point users at the cited-brief profile, not /research:research', async () => {
-    // Recursively walk plugins/engineer/skills/ and plugins/engineer/commands/
+    // Recursively walk plugins/engineer/core/skills/ and plugins/engineer/commands/
     // for .md files; assert no FORBIDDEN_TOKENS occur in any of them.
     const skillsDir = resolveSkillsRoot(ENGINEER_ROOT);
     const commandsDir = resolve(REPO_ROOT, 'plugins/engineer/commands');
@@ -339,7 +339,7 @@ describe('cited-brief — repository guards (no stale plugins/research reference
         .map((e) => resolve(e.parentPath, e.name));
     };
     const files = [...(await collect(skillsDir)), ...(await collect(commandsDir))];
-    ok(files.length > 0, 'no .md files found in engineer skills/ or commands/ — globbing failed');
+    ok(files.length > 0, 'no .md files found in engineer core/skills/ or commands/ — globbing failed');
 
     for (const path of files) {
       const text = await readFile(path, 'utf8');

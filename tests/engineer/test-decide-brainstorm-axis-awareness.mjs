@@ -1,12 +1,12 @@
 // PR5 (validation-contract) — ADR-0027 §4 Brainstorm <axis_awareness>
 // contract validation across three surfaces that must agree in lockstep
 // per ADR-0027 §4.5:
-//   1. plugins/engineer/skills/_shared/references/ensemble-protocol.md
+//   1. plugins/engineer/core/skills/_shared/references/ensemble-protocol.md
 //      § Brainstorm — canonical template specification (both hosts read this)
 //   2. plugins/engineer/commands/decide.md Phase 1 — Claude-host prompt
 //      builder boilerplate (instructs the LLM to read $AGENTIC_DECIDE_CONTEXT_FILE
 //      and emit the <axis_awareness> block per §4.3 presence rule)
-//   3. plugins/engineer/skills/decide/SKILL.md "Step 5: Peer ensemble" —
+//   3. plugins/engineer/core/skills/decide/SKILL.md "Step 5: Peer ensemble" —
 //      ADR-0027 §4 pointer so SKILL.md readers discover the contract
 //
 // Codex Plan-verify (run_id plan-verify-20260526T012732Z-1a205273) flagged:
