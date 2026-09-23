@@ -231,13 +231,16 @@ conventional root — is image 0.3.0, engineer 0.21.8, designer 0.3.7, founder
 0.4.7, orchestrator 0.13.6 and runtime 0.97.3. They name what an affected host
 would temporarily fall back to. Pinning one plugin to an older release has not
 been exercised on either host, and such a fallback is not complete when the
-host merely reports the older version. Cross-plugin discovery takes the
-highest retained cache whenever no override is set, whatever the host's
-install registry says — `discover-engineer.mjs`, the `discover-runtime.mjs`
-copies and companions' `discover-peer.mjs` all sort by version — so each
-resolved root has to be checked, or pinned through that discovery's override
-(`AGENTIC_ENGINEER_ROOT`, `AGENTIC_RUNTIME_ROOT`, `AGENTIC_COMPANIONS_ROOT`),
-in a fresh session. Rolling back a hook-bearing package also stales the Codex
+host merely reports the older version. The cross-plugin discovery helpers
+(`discover-engineer.mjs`, the `discover-runtime.mjs` copies, companions'
+`discover-peer.mjs`) start from their own host's location and do not consult
+its install registry. In Claude's plugin cache they take the highest retained
+version; on Codex they read one fixed path, the marketplace checkout under
+`~/.codex/.tmp/marketplaces/`, which follows `main`. Each resolved path
+therefore has to be checked in a fresh session, or pinned through the helper's
+override and checked again: `AGENTIC_ENGINEER_ROOT` and `AGENTIC_RUNTIME_ROOT`
+take a plugin root, while `AGENTIC_COMPANIONS_ROOT` takes the companions
+`scripts/` directory. Rolling back a hook-bearing package also stales the Codex
 `/hooks` attestation, which then needs a new review and proof. The recovery
 itself is a forward patch that keeps `core/skills/` as the destination and
 ships under a new version. Moving files back under a reused or lowered version

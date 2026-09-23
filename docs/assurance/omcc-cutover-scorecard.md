@@ -25,7 +25,16 @@ completion by themselves.
 
 ## Current Verdict
 
-Overall status: **not cutover-ready**.
+Overall status: the owner **declared the cutover** on 2026-06-03 per ADR-0007,
+when `runtime:cutover` reported `cutover-ready-candidate` (see
+[`DEVELOPMENT.md` §Cutover status](../DEVELOPMENT.md)). Run read-only on
+2026-09-23, the same audit computes `not-ready`: `observed_experience_parity`
+and `latest_compat_snapshot` are `blocked` on the compat run and host-parity
+baseline that ADR-0060 decided to remove, and
+`latest_consensus_context_artifacts` is `stale`, its newest consensus run
+dating from 2026-06-11. Reconciling that computation with the declaration is a
+separate decision; this section records both rather than choosing between
+them.
 
 The repo already has the right architectural direction:
 
@@ -34,10 +43,6 @@ The repo already has the right architectural direction:
 - `plugins/runtime` is the L1 runtime/operator control plane.
 - `plugins/companions` is the L1 script-only companion bridge library.
 
-The remaining gap is assurance depth: the current-host UX parity gate is now
-measured and satisfied, while self-hosted dogfood evidence, ADR-0012 condition
-promotion, and final completion state still need to complete before omcc can be
-removed without a fallback.
 The legacy omcc-dev behavior map is now repo-verifiable through
 [`omcc-legacy-pattern-map.md`](omcc-legacy-pattern-map.md) and
 `runtime:cutover`.
@@ -331,7 +336,8 @@ and each measurement carries a control.** Claude Code `2.1.280`'s `claude
 plugin details` reads designer 10, engineer 11, founder 10, image 6,
 orchestrator 9 and runtime 11 — 57 components, each list equal by name to that
 plugin's command files — for ~3,311 always-on tokens by Claude's own
-projection (583 + 504 + 551 + 234 + 450 + 989; two runs in this loop agreed,
+projection (583 + 504 + 551 + 234 + 450 + 989, from one six-plugin
+measurement; later spot checks of designer, runtime and image agreed,
 while the cross-host reviewer's re-run reproduced the counts but not every
 token estimate), against 112 / ~15,431 on `2.1.276`; attention and companions
 read
@@ -438,6 +444,18 @@ against designer 0.3.8 / engineer 0.21.10 / founder 0.4.8 / orchestrator
 0.13.7. `codex_resolved` also reads `installed` from a successful `codex
 plugin list` for all eight plugins this time, where the preceding proof's
 probe timed out and fell back to the cache.
+
+⚠ **This recovery also repairs a defect earlier recoveries kept re-creating.**
+`docs/DEVELOPMENT.md` keeps the ADR-0012 condition-2 row on one physical line,
+and each post-release recovery rewrites that line's tail. The 0.93.0 recovery,
+`2c38052` (PR [#736](https://github.com/each4all/agentic-plugins/pull/736)),
+dropped the row's closing `|`, which the audit's table parser requires, so
+from 2026-08-25 `runtime:cutover` read condition 2 as `missing` while every
+fixture-based test stayed green. The pipe is restored and the audit reads all
+four conditions `satisfied` again. `tests/runtime/test-cutover-audit.mjs`
+gains a case that reads the real file through the real audit, and it is
+mutation-verified: dropping the closing pipe from row 2 or row 3 fails it with
+that condition missing.
 
 **Rollback was defined and not needed.** No pause criterion fired. The
 criteria, and each package's last-known-good release for temporary host
