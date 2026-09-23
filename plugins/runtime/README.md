@@ -203,10 +203,9 @@ status.
 > `plugin-runtime-v0.91.0` this section said the assurance result was "reported
 > and not yet gated" and that its three consumers "still key on exactness". That
 > was written for the slice before the gate moved and shipped unrevised alongside
-> the commit that moved it, while `core/skills/doctor/SKILL.md` and
-> `core/skills/cutover/SKILL.md` in the same package said the opposite. An
-> operator whose cutover was blocked could read this and conclude the block was
-> a bug.
+> the commit that moved it, while `skills/doctor/SKILL.md` and
+> `skills/cutover/SKILL.md` in the same package said the opposite. An operator
+> whose cutover was blocked could read this and conclude the block was a bug.
 > That trail is worth keeping now that the layer itself is gone: a shipped
 > document contradicting its own package is the kind of thing a reader deserves
 > to see named, and it is part of the evidence ADR-0056 weighed.

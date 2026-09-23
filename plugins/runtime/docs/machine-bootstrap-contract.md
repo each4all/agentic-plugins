@@ -303,8 +303,8 @@ independently of bootstrap.
 
 A CI test (source-tree only) compares `plugin-set.json` against both marketplace
 catalogs, closing the drift that currently shows the plugin set as four names in
-`core/skills/settings/SKILL.md`, six in `README.md`, and eight in the catalogs
-and `doctor.mjs`.
+`skills/settings/SKILL.md`, six in `README.md`, and eight in the catalogs and
+`doctor.mjs`.
 
 ### 1.5 Write-ahead is the durability fix — separating plan from execute is not
 
