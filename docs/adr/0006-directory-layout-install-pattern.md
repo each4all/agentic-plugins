@@ -202,3 +202,47 @@ the skill (6 → 7, ~232 → ~389 tok). Both shapes, and a duplicate `SKILL.md`,
 passed `kit/lint` silently before this amendment;
 `check-plugin-shape.mjs` now enforces the invariant for any plugin whose
 declared root is not the conventional one.
+
+**Observed after release (2026-09-23).** The fixture numbers above were
+predictions; the releases are what a host actually loads. Installed from them
+(image 0.3.1, engineer 0.21.10, designer 0.3.8, founder 0.4.8, orchestrator
+0.13.7, runtime 0.97.4), Claude Code 2.1.280 reports **57** components across
+the six plugins — exactly their 57 command files, each capability once — for
+~3,311 always-on tokens, against the 112 / ~15,431 measured before release on
+2.1.276, so the token difference also carries a host-version change. Codex
+0.156.1's own `skills/list` resolves all **55** skills, every one from
+`core/skills/`, with no load errors, and a live `$engineer:frame` mention
+injected the relocated file. None of the 55 appears in the model-visible
+implicit list, and that is by design: each opts out through `policy` in its
+`agents/openai.yaml`. The measurements, their controls, and the proof run are
+in `docs/assurance/omcc-cutover-scorecard.md` and in the evidence record
+`the-capabilities-claude-registered-twice`.
+
+**Rollback.** Pause when any of these is observed on an installed host: a
+relocated plugin's Claude component list stops matching its command files by
+name and count — a missing command as much as a re-registered skill; Codex
+`skills/list` stops resolving each plugin's expected skills by name, enabled,
+from `core/skills/`, or reports a load error; a command runbook's
+`$CLAUDE_PLUGIN_ROOT/…` reference does not resolve in the installed cache; or a
+persona's decide registry falls back (a `registry:` diagnostic, or a preset
+defined only in the file degrading to the in-code default). The last-known-good
+release of each package — its last release whose skills still lived at the
+conventional root — is image 0.3.0, engineer 0.21.8, designer 0.3.7, founder
+0.4.7, orchestrator 0.13.6 and runtime 0.97.3. They name what an affected host
+would temporarily fall back to. Pinning one plugin to an older release has not
+been exercised on either host, and such a fallback is not complete when the
+host merely reports the older version. The cross-plugin discovery helpers
+(`discover-engineer.mjs`, the `discover-runtime.mjs` copies, companions'
+`discover-peer.mjs`) start from their own host's location and do not consult
+its install registry. In Claude's plugin cache they take the highest retained
+version; on Codex they read one fixed path, the marketplace checkout under
+`~/.codex/.tmp/marketplaces/`, which follows `main`. Each resolved path
+therefore has to be checked in a fresh session, or pinned through the helper's
+override and checked again: `AGENTIC_ENGINEER_ROOT` and `AGENTIC_RUNTIME_ROOT`
+take a plugin root, while `AGENTIC_COMPANIONS_ROOT` takes the companions
+`scripts/` directory. Rolling back a hook-bearing package also stales the Codex
+`/hooks` attestation, which then needs a new review and proof. The recovery
+itself is a forward patch that keeps `core/skills/` as the destination and
+ships under a new version. Moving files back under a reused or lowered version
+is ruled out, because one version would then name two different trees — the
+failure ADR-0051 rules out for protected assets.

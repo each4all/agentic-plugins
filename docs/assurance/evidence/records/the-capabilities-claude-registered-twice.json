@@ -1,0 +1,217 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-capabilities-claude-registered-twice",
+  "evidence_loop": {
+    "label": "fifty-five capabilities Claude registered twice, moved where only Codex resolves them",
+    "summary": "Claude Code registered every packaged capability twice, once as its slash command and once as the SKILL.md it finds at the conventional plugins/<p>/skills/ path, so six plugins cost 112 registrations and about 15,431 always-on tokens per session on 2.1.276. The relocation moved the 55 SKILL.md files to plugins/<p>/core/skills/ and pointed only each Codex manifest at that root, one package per relocation squash, released in six release commits that cut eight tags, after a preparation PR made the shared gates manifest-resolved and added a guard against rediscovery through a restored copy or a symlink. Installed from the releases, Claude registers 57 components, exactly the 57 command files, for about 3,311 always-on tokens on 2.1.280; Codex 0.156.1 resolves all 55 skills from core/skills with no load errors, and a live mention injects the relocated file. The doctor proof reads the same blocked 87% as the preceding loop, on the same compatibility criterion."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/image",
+      "version": "0.3.1",
+      "tag": "plugin-image-v0.3.1",
+      "release_pr_attested": 789,
+      "squash": "40b367bd9b4cd88d259b4331360c361a4bf9ed4c",
+      "marketplace_sync": "9d2e7326f1b7e3a3e3c5229f96fd615f3db36e2b"
+    },
+    {
+      "package": "plugins/engineer",
+      "version": "0.21.9",
+      "tag": "plugin-engineer-v0.21.9",
+      "release_pr_attested": 791,
+      "squash": "c1ffcc7c8abf62247a7b1e6e64b5232bcf63194c",
+      "marketplace_sync": "fd91cad434e59f8736904d65a41d8a46f4c4f331"
+    },
+    {
+      "package": "plugins/designer",
+      "version": "0.3.8",
+      "tag": "plugin-designer-v0.3.8",
+      "release_pr_attested": 794,
+      "squash": "8fc6bbeab12a8d8696cf45aeac76fc9de9a2d5f7",
+      "marketplace_sync": "fffd79cd4785e3d52a9deb8dd694f9abb552e7df"
+    },
+    {
+      "package": "plugins/engineer",
+      "version": "0.21.10",
+      "tag": "plugin-engineer-v0.21.10",
+      "release_pr_attested": 794,
+      "squash": "8fc6bbeab12a8d8696cf45aeac76fc9de9a2d5f7",
+      "marketplace_sync": "fffd79cd4785e3d52a9deb8dd694f9abb552e7df"
+    },
+    {
+      "package": "plugins/orchestrator",
+      "version": "0.13.6",
+      "tag": "plugin-orchestrator-v0.13.6",
+      "release_pr_attested": 794,
+      "squash": "8fc6bbeab12a8d8696cf45aeac76fc9de9a2d5f7",
+      "marketplace_sync": "fffd79cd4785e3d52a9deb8dd694f9abb552e7df"
+    },
+    {
+      "package": "plugins/founder",
+      "version": "0.4.8",
+      "tag": "plugin-founder-v0.4.8",
+      "release_pr_attested": 797,
+      "squash": "bbb72b28da606fd11cfdf5a31ac110a2c3e6d126",
+      "marketplace_sync": "b3686f910de38f010ff6510b42dd20cd5e2f6244"
+    },
+    {
+      "package": "plugins/orchestrator",
+      "version": "0.13.7",
+      "tag": "plugin-orchestrator-v0.13.7",
+      "release_pr_attested": 800,
+      "squash": "a1ba6f40819796f41b9d6776e797d950ddce42c1",
+      "marketplace_sync": "2b2b153976fa3cc7508d936fa108e50cf1202737"
+    },
+    {
+      "package": "plugins/runtime",
+      "version": "0.97.4",
+      "tag": "plugin-runtime-v0.97.4",
+      "release_pr_attested": 802,
+      "squash": "b1b10a1924278219935debb3e97cbb3744158c3b",
+      "marketplace_sync": "f84c553bd07181a5593af22a1113ebaafd242ec0"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "66ea7c4096898bf8f8c7a5c40f24c5aa34072f84",
+      "pr": 786,
+      "note": "S0: every cross-package gate resolves each plugin's skills root from its Codex manifest, a no-rediscovery guard rejects a SKILL.md or symlink left at the conventional path of a relocated plugin (fixture-tested while still vacuous), and ADR-0006 is amended in place. Moves nothing."
+    },
+    {
+      "sha": "d2c929f29a300302f3d8b9b22207d26ca25d094e",
+      "pr_attested": 788,
+      "note": "S1 canary: plugins/image skills to core/skills and its Codex manifest root to ./core/skills/, leaving a README tombstone. A relocated copy measured Skills 12 to 6, the survivors its commands."
+    },
+    {
+      "sha": "9702f622743fde832b341ccf5e8146d4bfc1b44b",
+      "pr_attested": 790,
+      "note": "S2: plugins/engineer, 17 outbound relative references re-pointed; the decide registry must resolve nine-axis with 9 axes and no registry: diagnostic, mutation-verified."
+    },
+    {
+      "sha": "7e1457095f31507495bf78ff4093379c485d90a4",
+      "pr_attested": 795,
+      "note": "S3: plugins/designer, 20 outbound references; registry asserted by the absence of the registry: diagnostic plus the file-only clarity preset, because its in-code fallback mirrors the default."
+    },
+    {
+      "sha": "89f2e434da84c15aa64d0d80aee2722d40b96871",
+      "pr_attested": 796,
+      "note": "S4: plugins/founder, 16 outbound references; registry asserted by the absence of the registry: diagnostic plus the file-only compact preset, for the same vacuity reason as S3."
+    },
+    {
+      "sha": "b9c63a5a7639a56e2cb35b30bffc435bed0fcdc2",
+      "pr_attested": 799,
+      "note": "S5: plugins/orchestrator, no outbound references to re-point. audit is a command with no skill of its own and is in the post-move list, so the survivors are the commands."
+    },
+    {
+      "sha": "1b6f2e59ac3696a7ac62a09d19170b72e063a161",
+      "pr_attested": 801,
+      "note": "S6: plugins/runtime. Commands and skills share all eleven names, so two fixtures settled which survived (commands/ removed reads 0, core/skills/ removed reads 11). Also re-points citations in the protected host-parity-baseline.md, so the release discharged an obligation."
+    }
+  ],
+  "hardening_commits": [
+    {
+      "sha": "69070b926c884304613685185497f03395a59a40",
+      "pr": 787,
+      "note": "Pins the S0 mutation spec's baseline to a commit main keeps: the squash merge had left the pinned commit reachable only from the merged branch, so deleting that branch would have removed six of the seventeen controls."
+    },
+    {
+      "sha": "478d4ca5c39f2d015042dd1027066bf74f8aabbf",
+      "pr_attested": 792,
+      "note": "Re-points three shipped engineer references at the relocated root; released as engineer 0.21.10."
+    },
+    {
+      "sha": "d7ce2b8449964c0e2e5a6debd40068016d1128f8",
+      "pr_attested": 793,
+      "note": "Re-points one orchestrator prose reference at engineer's relocated root; released as orchestrator 0.13.6, before orchestrator's own move."
+    },
+    {
+      "sha": "3707f5c65e4c5fb19214ee3a7f5d5ac2515b51c4",
+      "pr_attested": 798,
+      "note": "docs-typed: re-points two paths in an attention sensor comment and corrects a kit/lint claim in the designer tombstone. Routes no release, so Codex, which serves main, and Claude hold different bytes under designer 0.3.8 and attention 0.9.0."
+    }
+  ],
+  "proofs": [
+    {
+      "run_id": "doctor-20260923T055158Z-4fd9af",
+      "date": "2026-09-23",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:188cf38c97fbaef9e2ec28040269cc8021e5a78ab55bb556272b96241a5c15a7",
+      "runtime_version": "0.97.4",
+      "installed": {
+        "claude": "0.97.4",
+        "codex": "0.97.4"
+      },
+      "host_cli": {
+        "claude": "2.1.280 (Claude Code)",
+        "codex": "codex-cli 0.156.1"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning; hard_failures empty; warnings: latest compatibility check requires release notes"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; issue_count 0; difference_count 2"
+        },
+        {
+          "key": "experience_parity",
+          "value": "blocked 87% (100/115); satisfied 7, blocked 1; manual_followup_count 0"
+        },
+        {
+          "key": "experience_parity.runtime_handoff_artifacts",
+          "value": "blocked: settings=available, consensus=available, compat=release_notes_required"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "codex_plugin_hooks",
+          "value": "ready; hook_state expected 12, enabled 12, disabled 0, untrusted 0, missing 0"
+        },
+        {
+          "key": "settings_runs.codex_hook_review",
+          "value": "attested; current true; latest settings-20260923T055128Z-284df5; bound codex 0.156.1; designer 0.3.8, engineer 0.21.10, founder 0.4.8, orchestrator 0.13.7"
+        },
+        {
+          "key": "plugins.runtime.installed.codex_resolved",
+          "value": "decision installed; source list; version 0.97.4; decision and source identical for all 8 plugins"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale; direction ahead; baseline 2.1.250 / 0.150.1 (2026-08-28) vs observed 2.1.280 / 0.156.1; provenance package; content_sha256 sha256:67f4d31a344e9e99fdabd40812ec28ccdd0337a4d113b8f23720fc1961d41148"
+        },
+        {
+          "key": "compat_runs.latest",
+          "value": "compat-20260918T040728Z-6f1daa: release_notes_required; drift_class host-version-changed; claude 2.1.276 vs baseline 2.1.250; codex 0.155.0 vs baseline 0.150.1"
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available malformed=0 across 86 artifacts"
+        },
+        {
+          "key": "settings_runs",
+          "value": "available across 44 artifacts"
+        }
+      ]
+    }
+  ],
+  "install_method": "No install command ran in this loop. Claude: plugin auto-update, triggered by this loop's first `claude plugin list --json` probe (which still printed 0.97.3), moved runtime to 0.97.4 at 2026-09-23T05:40:38Z, gitCommitSha df3763f; the other five were already current. Codex: served tree refreshed at 05:34:58Z by no command of this loop. No settings plugin-management artifact backs either.",
+  "narrative": "**Only a release could show the effect, so it was measured on the installed hosts, with controls.** `claude plugin details` reports designer 10, engineer 11, founder 10, image 6, orchestrator 9 and runtime 11: 57, each list equal by name to the plugin's command files. Where command and skill counts are equal a count cannot tell them apart, so: engineer and orchestrator register 11 and 9, their command counts, not their 10 and 8 skills, and on-invoke cost tracks command-file bytes (coefficient of variation 0.096), not SKILL.md bytes (0.602). Tokens are Claude's own projection and also carry the 2.1.276 to 2.1.280 host change.\n\n**Codex was re-specified from listing to resolving.** Every packaged skill opts out of the model-visible list through `policy.allow_implicit_invocation`, and real sessions on 2026-09-10 and 2026-09-14 showed one packaged skill there and then none, before any move. Codex's app-server `skills/list` with forceReload resolves all 55 under `<plugin>/<released version>/core/skills/` with zero errors; a live `$engineer:frame` rollout records the relocated path and body and a `$engineer:nonexistent` control injects nothing. That is delivery, not a run of the workflow. It re-observes R13 against the relocated root; a 2026-09-10 probe had shown the same from the conventional root.\n\n**Resolution was checked where commands name a path and where registries load one.** The 118 concrete `$CLAUDE_PLUGIN_ROOT` command/path pairs (60 distinct paths) in the 57 installed commands resolve, while the pre-move engineer 0.21.8 and image 0.3.0 commands miss 10 and 6 against the new roots; relative and dynamic references are outside the scan. All three personas resolve a file-only preset on both hosts, and degrade without the file. This loop's own /orchestrator:next ran one relocated command end to end.\n\n**Delivery is byte-identical where the version says it should be, except where a docs commit intervened.** Under the scorecard digest recipe, re-verified on the 0.97.3 and 0.97.2 caches, image, engineer, founder, orchestrator and runtime match across Claude's cache, Codex's cache and the release tag. designer and attention differ on Codex by 3707f5c alone: a docs-typed commit routes no release while Codex serves main.\n\n**The parity reading is not this loop's effect.** Its one blocked criterion sits on the same compat artifact that blocked the preceding proof. The baseline hash moved because S6 re-pointed paths in three rows of that protected document. The owner re-reviewed Codex /hooks; settings-20260923T055128Z-284df5 binds codex 0.156.1 and the four bumped hook-bearing packages, either move alone stales an attestation, and no Codex hook file changed. `codex_resolved` reads source list this time, where the preceding probe timed out.\n\n**S7 departed from its plan twice, both disclosed.** Releases were cut per relocation instead of held for one batch, and no reinstall ran: both hosts were already, or automatically, at the released versions, verified through fresh processes. No pause criterion fired; the criteria and last-known-good releases are in the ADR-0006 2026-09-18 Amendment. The recovery also restores the closing pipe the 0.93.0 recovery dropped from DEVELOPMENT.md's ADR-0012 condition-2 row, which had made runtime:cutover read that condition as missing since 2026-08-25, and adds a test that reads the real file through the real audit.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-readers-that-never-measured",
+      "note": "The preceding runtime loop, and this loop's control: its proof, taken before any of these six releases, read the same blocked 87% on the same compatibility criterion, which is how that reading is attributed away from this loop."
+    }
+  ]
+}

@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
-import { ok, strictEqual, throws } from 'node:assert/strict';
+import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   formatText,
@@ -12,6 +13,7 @@ import {
 } from '../../plugins/runtime/scripts/cutover-audit.mjs';
 
 const NOW = new Date('2026-05-16T08:00:00.000Z');
+const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 
 describe('runtime cutover audit', () => {
   it('reports cutover-ready-candidate only when every evidence check is satisfied', async () => {
@@ -867,6 +869,23 @@ describe('runtime cutover audit', () => {
     strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'partial');
     strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-active');
     ok(formatText(report).includes('footer reason: follow-up remains open'));
+  });
+});
+
+describe('runtime cutover audit against this repository', () => {
+  // Every case above builds its own DEVELOPMENT.md, so none of them can see a
+  // defect in the real one. docs/DEVELOPMENT.md keeps the ADR-0012 condition-2
+  // row on one physical line, and each post-release recovery rewrites that
+  // line's tail ("Latest installed proof: …"). The recovery in 2c38052 (#736)
+  // dropped the row's closing `|`, which parseMarkdownRows requires, so from
+  // 2026-08-25 the live audit reported condition 2 `missing` while every case
+  // in this file stayed green. Reading the real file through the real audit is
+  // the guard.
+  it('parses all four ADR-0012 conditions from docs/DEVELOPMENT.md', async () => {
+    const report = await runCutoverAudit({ repoRoot: REPO_ROOT, now: NOW, doctorReport: doctorReport() });
+    const check = report.checks.find((entry) => entry.id === 'adr0012_conditions');
+    deepStrictEqual(check.evidence.missing_conditions, []);
+    deepStrictEqual(check.evidence.statuses.map((row) => row.condition).sort(), ['1', '2', '3', '4']);
   });
 });
 
