@@ -31,10 +31,11 @@ when `runtime:cutover` reported `cutover-ready-candidate` (see
 2026-09-23, the same audit computes `not-ready`: `observed_experience_parity`
 and `latest_compat_snapshot` are `blocked` on the compat run and host-parity
 baseline that ADR-0060 decided to remove, and
-`latest_consensus_context_artifacts` is `stale`, its newest consensus run
-dating from 2026-06-11. Reconciling that computation with the declaration is a
-separate decision; this section records both rather than choosing between
-them.
+`latest_consensus_context_artifacts` is `stale` because its newest context
+artifact dates from 2026-08-23 (the check ages the context artifact; the
+consensus run only has to have passed). Reconciling that computation with the
+declaration is a separate decision; this section records both rather than
+choosing between them.
 
 The repo already has the right architectural direction:
 
