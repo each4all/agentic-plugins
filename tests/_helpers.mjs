@@ -2,13 +2,14 @@
 //
 // `resolveSkillsRoot` exists because four gates spelled a plugin's skills root
 // as a hardcoded `skills` path segment, while ADR-0006's 2026-09-18 Amendment
-// moves each plugin's CORE content under `core/`. During the relocation the two
-// spellings coexist — image moves first, the personas later — so a gate that
-// assumes either one is wrong for half the tree. Each plugin already states
-// where its skills live, in `.codex-plugin/plugin.json`'s `skills` key (all
-// eight currently declare a spelling of `./skills/`), and that declaration is
-// what Codex itself resolves. Reading it is the only spelling that stays true
-// on both sides of a partial move.
+// moves each plugin's CORE content under `core/`. The two spellings coexist —
+// during the relocation, while some plugins had moved and others had not, and
+// after it, because the six skill-bearing plugins declare `./core/skills/` while
+// `attention` and `companions`, which carry no skills, keep `./skills/` — so a
+// gate that assumes either one is wrong for part of the tree. Each plugin
+// already states where its skills live, in `.codex-plugin/plugin.json`'s
+// `skills` key, and that declaration is what Codex itself resolves. Reading it
+// is the only spelling that stays true for every plugin.
 //
 // Not discovered by `node --test`: the stem `_helpers` matches none of Node's
 // test-file patterns (`*.test`, `*-test`, `*_test`, `test-*`, `test`). It

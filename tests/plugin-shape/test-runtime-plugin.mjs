@@ -3,11 +3,19 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, rejects } from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
+
+// Where this plugin's skills actually live, read from its own Codex manifest
+// rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
+// core/skills/, and `resolveSkillsRoot` throws rather than falling back, so a
+// broken or missing declaration fails this file loudly at load instead of
+// leaving every path below pointing at a directory nothing writes to.
+const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 const RUNTIME_COMMAND_SURFACES = [
   { name: 'bootstrap', script: 'bootstrap.mjs' },
@@ -59,7 +67,8 @@ describe('plugins/runtime manifest pair', () => {
   it('Codex manifest is valid JSON with skills/interface', async () => {
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
     strictEqual(manifest.name, 'runtime');
-    strictEqual(manifest.skills, './skills/');
+    strictEqual(manifest.skills, './core/skills/',
+      'the Codex manifest must declare the relocated root (2026-09-18 Amendment to ADR-0006)');
     strictEqual(manifest.interface.displayName, 'Runtime');
     strictEqual(manifest.interface.developerName, 'each4all');
     strictEqual(manifest.interface.category, 'Productivity');
@@ -89,7 +98,7 @@ describe('plugins/runtime command-skill parity', () => {
       .sort();
     deepStrictEqual(commandFiles, expectedNames.map((name) => `${name}.md`));
 
-    const skillDirs = (await readdir(resolve(PLUGIN_ROOT, 'skills'), { withFileTypes: true }))
+    const skillDirs = (await readdir(resolveSkillsRoot(PLUGIN_ROOT), { withFileTypes: true }))
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
@@ -105,13 +114,13 @@ describe('plugins/runtime command-skill parity', () => {
       ok(/^argument-hint:\s*/m.test(command), `${surface.name} command has argument hint`);
       ok(command.includes(scriptRef), `${surface.name} command references ${scriptRef}`);
 
-      const skill = await readFile(resolve(PLUGIN_ROOT, `skills/${surface.name}/SKILL.md`), 'utf-8');
+      const skill = await readFile(skillsPath(PLUGIN_ROOT, surface.name, 'SKILL.md'), 'utf-8');
       ok(new RegExp(`^name:\\s*${surface.name}\\s*$`, 'm').test(skill), `${surface.name} skill has matching name`);
       ok(skill.includes(slashToken), `${surface.name} skill documents Claude command token`);
       ok(skill.includes(codexToken), `${surface.name} skill documents Codex command token`);
       ok(skill.includes(scriptRef), `${surface.name} skill references ${scriptRef}`);
 
-      const agent = await readFile(resolve(PLUGIN_ROOT, `skills/${surface.name}/agents/openai.yaml`), 'utf-8');
+      const agent = await readFile(skillsPath(PLUGIN_ROOT, surface.name, 'agents', 'openai.yaml'), 'utf-8');
       ok(agent.includes(codexToken), `${surface.name} agent default prompt references Codex command token`);
       ok(/allow_implicit_invocation:\s*false/.test(agent), `${surface.name} agent is explicit-only`);
 
@@ -173,14 +182,14 @@ describe('plugins/runtime doctor surface', () => {
     ok(command.includes('Experience Parity'));
     ok(command.includes('Manual Follow-ups'));
     ok(command.includes('/hooks'));
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/doctor/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'doctor/SKILL.md'), 'utf-8');
     ok(/^name:\s*doctor\s*$/m.test(skill));
     ok(skill.includes('Authentication output must stay sanitized'));
     ok(skill.includes('--execute-deep-peer-smoke'));
     ok(skill.includes('experience_parity'));
     ok(skill.includes('Manual Follow-ups'));
     ok(skill.includes('/hooks'));
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/doctor/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'doctor/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:doctor'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'));
@@ -208,13 +217,13 @@ describe('plugins/runtime bootstrap surface', () => {
     ok(/diagnose/i.test(command) && /profile-seeded-default/i.test(command) && /re-probe/i.test(command), 'commands/bootstrap.md carries the interview pacing order');
     ok(/--expected-plan-hash/.test(command), 'commands/bootstrap.md presents the §1.6 plan-hash executor handoff');
 
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/bootstrap/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'bootstrap/SKILL.md'), 'utf-8');
     ok(/^name:\s*bootstrap\s*$/m.test(skill));
     ok(skill.includes('machine-bootstrap-contract.md'), 'skill points at the packaged normative contract');
     ok(/never an? (second )?executor|no second executor/i.test(skill), 'skill states the no-second-executor boundary');
     ok(/read-only/i.test(skill) && skill.includes('status'), 'skill states the R0 status/verify boundary');
 
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/bootstrap/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'bootstrap/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:bootstrap'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/bootstrap.mjs'));
@@ -304,7 +313,7 @@ describe('plugins/runtime settings surface', () => {
     // Probe-free mode (settings-report-contract.md) is documented on every surface.
     ok(command.includes('--skip-host-cli-probes'));
     ok(command.includes('settings-report-contract.md'));
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'settings/SKILL.md'), 'utf-8');
     ok(/^name:\s*settings\s*$/m.test(skill));
     ok(skill.includes('Host-native Claude Code'));
     ok(skill.includes('Non-executable host-CLI install plans'));
@@ -313,7 +322,7 @@ describe('plugins/runtime settings surface', () => {
     ok(skill.includes('/hooks'));
     ok(skill.includes('--skip-host-cli-probes'));
     ok(skill.includes('settings-report-contract.md'));
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'settings/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:settings'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     ok(agent.includes('--skip-host-cli-probes'));
@@ -331,14 +340,14 @@ describe('plugins/runtime settings surface', () => {
     //       are never proposed as a target default. That rule is a property of
     //       PROFILE SEEDING (machine-profile.mjs UNSAFE_CLAUDE_MODES), not of the
     //       advisory, so it is pinned on bootstrap's surface, which still owns it.
-    for (const [label, surface] of [['commands/settings.md', command], ['skills/settings/SKILL.md', skill]]) {
+    for (const [label, surface] of [['commands/settings.md', command], [`${SKILLS_REL}/settings/SKILL.md`, skill]]) {
       ok(/never writes host config/i.test(surface), `${label} states the no-host-config-write boundary`);
     }
-    const bootstrapSkill = await readFile(resolve(PLUGIN_ROOT, 'skills/bootstrap/SKILL.md'), 'utf-8');
+    const bootstrapSkill = await readFile(skillsPath(PLUGIN_ROOT, 'bootstrap/SKILL.md'), 'utf-8');
     ok(bootstrapSkill.includes('bypassPermissions') && bootstrapSkill.includes('danger-full-access'),
-      'skills/bootstrap/SKILL.md names the seeding safety ceiling the advisory used to carry');
+      `${SKILLS_REL}/bootstrap/SKILL.md names the seeding safety ceiling the advisory used to carry`);
     // And the removed surface stays removed on every public surface.
-    for (const [label, surface] of [['commands/settings.md', command], ['skills/settings/SKILL.md', skill], ['settings agent yaml', agent]]) {
+    for (const [label, surface] of [['commands/settings.md', command], [`${SKILLS_REL}/settings/SKILL.md`, skill], ['settings agent yaml', agent]]) {
       ok(!surface.includes('--permission-plan'), `${label} no longer advertises the removed --permission-plan`);
     }
   });
@@ -366,7 +375,7 @@ describe('plugins/runtime settings surface', () => {
 
     // Every runtime-owned prose surface that enumerates the set must name all of
     // them. A four-name list here is how the drift started.
-    const proseSurfaces = ['skills/settings/SKILL.md', 'skills/doctor/SKILL.md', 'README.md'];
+    const proseSurfaces = [`${SKILLS_REL}/settings/SKILL.md`, `${SKILLS_REL}/doctor/SKILL.md`, 'README.md'];
     for (const rel of proseSurfaces) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf-8');
       for (const name of pluginNames) {
@@ -568,11 +577,11 @@ describe('plugins/runtime migrate surface', () => {
     ok(command.includes('scripts/migrate.mjs'));
     ok(/dry-run/i.test(command));
     ok(command.includes('--apply'));
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'migrate/SKILL.md'), 'utf-8');
     ok(/^name:\s*migrate\s*$/m.test(skill));
     ok(skill.includes('ADR-0025'));
     ok(skill.includes('No workflow schema conversion'));
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'migrate/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:migrate workflow-storage'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     for (const script of ['migrate.mjs', 'migrate-workflow-storage.mjs']) {
@@ -597,7 +606,7 @@ describe('plugins/runtime migrate surface', () => {
     ok(/read-only/i.test(command));
     ok(command.includes('there is no `--apply`'), 'the command states the absence of an apply mode');
 
-    const skill = flat(await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/SKILL.md'), 'utf-8'));
+    const skill = flat(await readFile(skillsPath(PLUGIN_ROOT, 'migrate/SKILL.md'), 'utf-8'));
     ok(skill.includes('legacy-egress-intents'));
     ok(skill.includes('ADR-0048'));
     ok(/no `--apply`/.test(skill));
@@ -614,7 +623,7 @@ describe('plugins/runtime migrate surface', () => {
     ok(!/for every location/.test(skill), 'the unconditional relay instruction must be gone');
     ok(skill.includes('coverage decision, not a performance tweak'), '--skip must state what it costs');
 
-    const agent = flat(await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/agents/openai.yaml'), 'utf-8'));
+    const agent = flat(await readFile(skillsPath(PLUGIN_ROOT, 'migrate/agents/openai.yaml'), 'utf-8'));
     ok(agent.includes('$runtime:migrate legacy-egress-intents'));
     ok(/read-only/i.test(agent));
 
@@ -673,11 +682,11 @@ describe('plugins/runtime consensus surface', () => {
     ok(command.includes('scripts/consensus.mjs'));
     ok(command.includes('artifact'));
     ok(command.includes('execute --execute'));
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/consensus/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'consensus/SKILL.md'), 'utf-8');
     ok(/^name:\s*consensus\s*$/m.test(skill));
     ok(skill.includes('raw peer output out of the main session'));
     ok(skill.includes('No peer execution except `execute --execute`'));
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/consensus/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'consensus/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:consensus'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/consensus.mjs'));
@@ -692,11 +701,11 @@ describe('plugins/runtime compat surface', () => {
     ok(command.includes('scripts/compat.mjs'));
     ok(command.includes('release-note'));
     ok(command.includes('does not fetch release-note URLs by default'));
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/compat/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'compat/SKILL.md'), 'utf-8');
     ok(/^name:\s*compat\s*$/m.test(skill));
     ok(skill.includes('No automatic URL fetch'));
     ok(skill.includes('No host-native config writes'));
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/compat/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'compat/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:compat'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/compat.mjs'));
@@ -711,11 +720,11 @@ describe('plugins/runtime worktree surface', () => {
     ok(command.includes('scripts/worktree.mjs'));
     ok(/read-only/i.test(command));
     ok(command.includes('git worktree add'));
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/worktree/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'worktree/SKILL.md'), 'utf-8');
     ok(/^name:\s*worktree\s*$/m.test(skill));
     ok(skill.includes('never creates branches or worktrees'));
     ok(skill.includes('No `git worktree add`'));
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/worktree/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'worktree/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:worktree'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/worktree.mjs'));
@@ -730,11 +739,11 @@ describe('plugins/runtime context surface', () => {
     ok(command.includes('scripts/context.mjs'));
     ok(command.includes('does not trim, rewrite, or mutate host session context'));
     ok(command.includes('Main-session output is limited'));
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/context/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'context/SKILL.md'), 'utf-8');
     ok(/^name:\s*context\s*$/m.test(skill));
     ok(skill.includes('No host session context mutation'));
     ok(skill.includes('No consensus raw output or peer raw output in the main session'));
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/context/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'context/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:context'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/context.mjs'));
@@ -749,11 +758,11 @@ describe('plugins/runtime cutover surface', () => {
     ok(command.includes('scripts/cutover-audit.mjs'));
     ok(/read-only/i.test(command));
     ok(command.includes('cutover-ready-candidate'));
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/cutover/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'cutover/SKILL.md'), 'utf-8');
     ok(/^name:\s*cutover\s*$/m.test(skill));
     ok(skill.includes('No automatic final cutover declaration'));
     ok(skill.includes('No inference that omcc-dev is inactive'));
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/cutover/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'cutover/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:cutover'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/cutover-audit.mjs'));
@@ -769,12 +778,12 @@ describe('plugins/runtime dashboard surface', () => {
     ok(/read-only/i.test(command));
     ok(command.includes('never probes host CLIs'));
     ok(command.includes('--watch'));
-    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/dashboard/SKILL.md'), 'utf-8');
+    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'dashboard/SKILL.md'), 'utf-8');
     ok(/^name:\s*dashboard\s*$/m.test(skill));
     ok(skill.includes('No host CLI probing'));
     ok(skill.includes('No state mutation'));
     ok(skill.includes('No unbounded loops'));
-    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/dashboard/agents/openai.yaml'), 'utf-8');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'dashboard/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:dashboard'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/dashboard.mjs'));

@@ -31,7 +31,7 @@
     "agentic-plugins",
     "L1"
   ],
-  "skills": "./skills/",
+  "skills": "./core/skills/",
   "interface": {
     "displayName": "Runtime",
     "shortDescription": "Runtime diagnostics, settings planning, machine bootstrap, migration, consensus, compat, worktree, context, and cutover evidence",
