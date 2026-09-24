@@ -366,19 +366,19 @@ invocation:
   shell reports `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, `PLUGIN_ROOT`
   and `PLUGIN_DATA` all empty. That is an observation about the shell, not
   a claim about every place Codex may substitute them. So resolve the path
-  from the installed plugin root
-  rather than from `$CLAUDE_PLUGIN_ROOT` — `../../checkpoint/SKILL.md`
-  § Claude/Codex command resolution records the default Codex layout, but
-  a non-default install root or marketplace name means the path must be
-  resolved from the running install rather than assumed. Three rungs, in
-  order: the root resolves and the CLI runs (full fidelity); the root
-  resolves but the CLI does not run (read `decision-axes.yml` under that
-  same root); the root cannot be built at all (keep the decisive axes
-  본질/근본 — essence/foundation, universal to every preset — and take the
-  `compact` preset's supporting axes from the decision-sizing subsection
-  above, which is already loaded). The YAML stays the single source. What
-  ADR-0013 still owns is the missing Codex command file that would run
-  this resolution automatically — not the reachability of the script.
+  from the installed plugin root rather than from `$CLAUDE_PLUGIN_ROOT`:
+  Codex injects the mentioned skill with its absolute path, and
+  `../../checkpoint/SKILL.md` § Claude/Codex command resolution shows how
+  to take the root from it without assuming a Codex home, marketplace name
+  or version. Three rungs, in order: the root resolves and the CLI runs
+  (full fidelity); the root resolves but the CLI does not run (read
+  `decision-axes.yml` under that same root); the root cannot be built at
+  all (keep the decisive axes 본질/근본 — essence/foundation, universal to
+  every preset — and take the `compact` preset's supporting axes from the
+  decision-sizing subsection above, which is already loaded). The YAML
+  stays the single source. What ADR-0013 still owns is the missing Codex
+  command file that would run this resolution automatically — not the
+  reachability of the script.
 - **Pointer-only in state.** Record the lens outcome as a compact
   decisive-axis verdict + pointers, never the full comparison dump
   (ADR-0024 boundary).
