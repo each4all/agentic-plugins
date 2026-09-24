@@ -4,6 +4,11 @@
 
 Accepted
 
+> Amended 2026-09-24 — see [Amendments](#amendments). Codex CLI installs
+> plugins into a versioned cache and loads their skills from there (in use
+> since at least 0.137.0); the marketplace clone that this ADR's Codex path
+> names is the install source. The § (b) discovery contract is unchanged.
+
 ## Context
 
 [ADR-0001](0001-hexagonal-architecture.md) places the companion bridges
@@ -163,6 +168,9 @@ plugin name are both pinned, and the repository's per-plugin layout
 clone. Plugin enable is a `~/.codex/config.toml` flag
 (`[plugins."<plugin>@<marketplace>"] enabled = true`) with no path
 effect — the marketplace clone is the storage; enable is independent.
+*(amended 2026-09-24 — on codex-cli 0.156.1 the clone is the install
+source and Codex loads skills from a versioned copy under
+`~/.codex/plugins/cache/`; see [Amendments](#amendments))*
 
 **Discovery algorithm** (mandatory, applies to both hosts):
 
@@ -545,3 +553,74 @@ treated as durable storage in 0.128.0.
 upgrade` (in-place git pull vs replace), behavior of `marketplace add`
 for non-git local directories (no `.git/`), behavior across Codex CLI
 upgrades that introduce a true `~/.codex/plugins/cache/` activation.
+
+### 2026-09-24 — Codex installs plugins into a versioned cache (codex-cli 0.156.1)
+
+**Trigger**: § (b) "B.13 contingency" requires a follow-up amendment once
+a Codex CLI version introduces a true `~/.codex/plugins/cache/` layout.
+That layout has been in use since at least codex-cli 0.137.0, where
+[ADR-0035](0035-runtime-active-execution-boundary-policy.md) §Context
+recorded `codex plugin add` materializing a plugin under
+`~/.codex/plugins/cache/agentic-plugins/<name>/<version>`. This is that
+follow-up, overdue. It records the layout; it does not change the § (b)
+discovery contract.
+
+**What was measured (2026-09-24, codex-cli 0.156.1)**:
+
+- Codex loads plugin skills from a versioned install copy. The
+  app-server `skills/list` request (`forceReload: true`, sent once with a
+  scratch directory and once with this repository as its `cwds`) returned
+  all 55 agentic-plugins skills, enabled, each under
+  `~/.codex/plugins/cache/agentic-plugins/<plugin>/<version>/core/skills/`.
+  The layout is `<marketplace>/<plugin>/<version>/`, not the
+  `<segment>/<short-sha>/` shape that §Context and the original § (b)
+  assumed.
+- The marketplace clone is that copy's source. The app-server
+  `plugin/list` request and `codex plugin list --json` both report it in
+  each plugin's `source` field, as
+  `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/<plugin>`. The clone
+  and the install copy are separate directories; on the measurement date
+  they held identical engineer files. Only a marketplace added from Git
+  was measured.
+- A mentioned skill reaches the model together with its absolute path in
+  that cache. A tool-free `codex exec` turn mentioning
+  `$engineer:checkpoint`, `$designer:checkpoint` and `$founder:checkpoint`
+  recorded each in its rollout (under `~/.codex/sessions/2026/09/24/`) as
+  `<path>…/plugins/cache/agentic-plugins/<plugin>/<version>/core/skills/checkpoint/SKILL.md</path>`,
+  and a mention of a skill that does not exist injected nothing.
+
+**What changed**: the engineer, designer and founder § Claude/Codex
+command resolution tables named the marketplace clone as the plugin root
+a Codex skill runs its own scripts from. They now take the root from the
+mentioned skill's path and give the versioned cache as its default
+location. The seven engineer passages that send a Codex reader to that
+table now say where the root comes from: the entry-routing contract and
+the five verb skills, whose pointer
+[ADR-0029](0029-entry-routing-contract-enforcement.md)'s Amendment
+2026-08-08 records, and the decide scope note, which gained its pointer
+in the same change. orchestrator's command-resolution tables, which call
+the root the "Codex marketplace install path", keep their wording.
+
+**What did not change**: the § (b) discovery contract; § (b) itself gains
+only the dated memo on its storage sentence. The default Codex candidate of
+`discover-peer.mjs`, the `discover-runtime.mjs` copies and
+`discover-engineer.mjs` is still the fixed clone path, as the 2026-09-18
+amendment to [ADR-0006](0006-directory-layout-install-pattern.md) notes
+and as [ADR-0019](0019-cross-plugin-invocation-contract.md)'s Plugin root
+resolution section describes it ("a single fixed path under Codex's
+plugin install directory"); the § (c) override and each helper's
+fallback order are unchanged. Whether cross-plugin discovery should
+select the installed copy instead is a separate decision with its own
+tests, and this amendment does not make it. The 0.128.0 storage findings
+in § (b) and in the 2026-05-04 amendment stay as the record of that
+measurement; § (b)'s discovery algorithm remains the operative contract.
+
+**Records this measurement disagrees with**: the cutover scorecard
+(`docs/assurance/omcc-cutover-scorecard.md`) and several evidence records
+under `docs/assurance/evidence/records/` call the clone the tree Codex
+serves, going by the path `codex plugin list` reports. That path is the
+`source` field above. Skills load from the install copy, while the
+discovery helpers resolve scripts in the clone by default, so both trees
+are in use. Those records are dated and stay as written.
+
+**Guard**: `tests/plugin-shape/test-codex-plugin-root-contract.mjs`.
