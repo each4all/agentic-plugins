@@ -357,8 +357,8 @@ test("CLI: resolve --size=minor → balanced (7 axes, no compact tier)", () => {
 // id and silently yields balanced/7), its exact axis count, and the absence of
 // the `registry:` diagnostic on stderr. `registry_fallback` is a fourth.
 //
-// Same shape as engineer's proof, with the preset id substituted — which is
-// what S4 (founder, `--preset=compact`) adapts next.
+// Same shape as engineer's proof, with the preset id substituted — founder's S4
+// proof does the same with `--preset=compact`.
 test("CLI: the relocated registry is actually read — clarity, 5 axes, and NO fallback diagnostic", () => {
   const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--preset=clarity", "--", "x"], { encoding: "utf8", env: CLI_ENV });
   assert.equal(r.status, 0, r.stderr);

@@ -42,9 +42,10 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/founder');
 
 // Where this plugin's skills actually live, read from its own Codex manifest
 // rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
-// core/skills/, and `resolveSkillsRoot` throws rather than falling back, so a
-// broken or missing declaration fails this file loudly at load instead of
-// leaving every path below pointing at a directory nothing writes to.
+// core/skills/. `resolveSkillsRoot` throws on a broken declaration rather than
+// falling back, so this file fails loudly at load instead of pointing every
+// path below at a directory nothing writes to. A manifest with no `skills` key
+// does fall back, to the README-only `skills/`; the skill checks below fail.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
 // ADR-0036 was Accepted at PR7 (the real-topic dogfood validated founder).
@@ -176,11 +177,16 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     'prompt-templates',
   ];
 
+  // ADR-0006's 2026-09-18 Amendment restates these categories under `core/`, so
+  // each is forbidden there too — checking the plugin root alone passes on a
+  // `core/personas/` by matching nothing.
   for (const dir of ABSENT_DIRS) {
-    it(`has no ${dir}/ directory (not part of the founder surface)`, async () => {
-      strictEqual(await exists(resolve(PLUGIN_ROOT, dir)), false,
-        `plugins/founder/${dir}/ must not exist — founder uses commands/ + skills/ only`);
-    });
+    for (const rel of [dir, `core/${dir}`]) {
+      it(`has no ${rel}/ directory (not part of the founder surface)`, async () => {
+        strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), false,
+          `plugins/founder/${rel}/ must not exist — it is not part of the founder surface`);
+      });
+    }
   }
 
   const REQUIRED_MACHINERY = [

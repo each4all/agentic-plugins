@@ -9,8 +9,12 @@
 //       that reads it FAIL.
 //   B — REAL RELOCATION. A plugin actually moved to `core/skills` must make the
 //       gates PASS, and a defect planted INSIDE the moved root must be
-//       reported. `relocate()` moves two of eight plugins, so every B run is a
-//       genuinely MIXED layout rather than an all-or-nothing one.
+//       reported. Since S1-S6 landed, `relocate()` finds both of its plugins
+//       already moved and changes nothing, so a B run sees the released
+//       layout: every skill-bearing plugin under `core/skills`, and only the
+//       skill-less `attention` and `companions` at the conventional root. The
+//       family therefore no longer puts a skill-bearing plugin at the
+//       conventional root.
 //   C — VALUE. The same relocation against each gate's PRE-REWRITE version.
 //       Without C, B only shows the new code is self-consistent with itself.
 //
@@ -74,9 +78,9 @@ function repoint(tools, copy, plugin, value) {
  * absence re-enables plugin-root SKILL.md discovery — measured, and enforced by
  * kit/lint).
  *
- * Idempotent on purpose: once S1-S6 land, the plugin is ALREADY relocated in
- * the tree, and this spec has to keep meaning the same thing rather than
- * failing on a move it cannot repeat.
+ * Idempotent on purpose: since S1-S6 landed, the plugin is ALREADY relocated
+ * in the tree, and this spec has to keep running rather than failing on a
+ * move it cannot repeat.
  */
 function relocate(tools, copy, plugin) {
   const dir = join(copy, 'plugins', plugin);
@@ -133,7 +137,7 @@ export const MUTATIONS = [
   {
     id: 'B1', tests: TESTS, expect: 'SURVIVED',
     prepare: (c, t) => { relocate(t, c, 'orchestrator'); relocate(t, c, 'engineer'); },
-    why: 'orchestrator + engineer relocated (mixed layout) — all four gates must still pass',
+    why: 'orchestrator + engineer relocated (the released layout) — all four gates must still pass',
   },
   {
     id: 'B2', tests: [G5],
@@ -205,7 +209,7 @@ export const MUTATIONS = [
   {
     id: 'C1', tests: [G5],
     prepare: (c, t) => { relocate(t, c, 'orchestrator'); t.fileAt(c, PRE_REWRITE, G5); },
-    why: 'pre-rewrite T5 + relocated orchestrator — the "discovered only 3" failure',
+    why: 'pre-rewrite T5 + relocated orchestrator — shared-reference coverage falls below its floor',
   },
   {
     id: 'C2', tests: [G2],

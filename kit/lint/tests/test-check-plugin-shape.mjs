@@ -1105,9 +1105,10 @@ describe('kit/lint/check-plugin-shape — relocated skills root (ADR-0006 Amendm
 
   for (const spelling of ['skills', './skills', './skills/', './skills/.']) {
     it(`treats declared ${JSON.stringify(spelling)} as the conventional root, so the rule does not apply`, async () => {
-      // All eight current plugins declare "./skills/". Normalizing by resolved
+      // All four spellings name the conventional root. Normalizing by resolved
       // path rather than raw string is what keeps the rule's antecedent false
-      // for them — a raw-string comparison would fire on "skills" today.
+      // for them — a raw-string comparison against any one spelling would fire
+      // on the other three.
       const dir = await makeRelocated({
         declared: spelling,
         conventional: false,

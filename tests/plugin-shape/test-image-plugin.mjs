@@ -29,8 +29,9 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/image');
 // core/skills/, so a hardcoded `skills` segment would point every assertion
 // below at a path the plugin no longer uses — the required-file checks would
 // fail, and worse, the FORBIDDEN checks would pass by matching nothing.
-// `resolveSkillsRoot` throws rather than falling back, so a broken or missing
-// declaration fails this file loudly at load instead of quietly.
+// `resolveSkillsRoot` throws on a broken declaration rather than falling back,
+// so this file fails loudly at load instead of quietly; only a manifest with no
+// `skills` key falls back — into exactly the hardcoded-`skills` state above.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
 const VERB_SKILLS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];

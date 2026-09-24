@@ -69,9 +69,10 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/designer');
 
 // Where this plugin's skills actually live, read from its own Codex manifest
 // rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
-// core/skills/, and `resolveSkillsRoot` throws rather than falling back, so a
-// broken or missing declaration fails this file loudly at load instead of
-// leaving every path below pointing at a directory nothing writes to.
+// core/skills/. `resolveSkillsRoot` throws on a broken declaration rather than
+// falling back, so this file fails loudly at load instead of pointing every
+// path below at a directory nothing writes to. A manifest with no `skills` key
+// does fall back, to the README-only `skills/`; the skill checks below fail.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
 // ADR-0042 was Accepted at PR7 (the real-topic dogfood validated designer).
@@ -681,9 +682,9 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
     });
   }
 
-  // The decision-axes registry lives under skills/decide/references/ — the
-  // DEFAULT_PATH decide-registry.mjs resolves relative to scripts/ (../skills/…).
-  it('the decision-axes registry lives under skills/decide/references/', async () => {
+  // The decision-axes registry lives under core/skills/decide/references/ — the
+  // DEFAULT_PATH decide-registry.mjs resolves relative to scripts/ (../core/skills/…).
+  it(`the decision-axes registry lives under ${SKILLS_REL}/decide/references/`, async () => {
     strictEqual(await exists(skillsPath(PLUGIN_ROOT, 'decide/references/decision-axes.yml')), true);
   });
 
@@ -1744,11 +1745,16 @@ describe('plugins/designer — inert boundary (persona directories never ship)',
     'prompt-templates',
   ];
 
+  // ADR-0006's 2026-09-18 Amendment restates these categories under `core/`, so
+  // each is forbidden there too — checking the plugin root alone passes on a
+  // `core/personas/` by matching nothing.
   for (const dir of FORBIDDEN_DIRS) {
-    it(`has no ${dir}/ directory (not part of the designer surface)`, async () => {
-      strictEqual(await exists(resolve(PLUGIN_ROOT, dir)), false,
-        `plugins/designer/${dir}/ must not exist — designer uses commands/ + skills/ only`);
-    });
+    for (const rel of [dir, `core/${dir}`]) {
+      it(`has no ${rel}/ directory (not part of the designer surface)`, async () => {
+        strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), false,
+          `plugins/designer/${rel}/ must not exist — it is not part of the designer surface`);
+      });
+    }
   }
 
   it('ships README.md without the incubating marker but with the ADR-0042 pointer (Accepted)', async () => {
@@ -1855,7 +1861,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
   ];
 
   // Scan `.md` AND `agents/*.yaml`. The Codex Refine-verify peer caught the
-  // PR7 sweep missing `${SKILLS_REL}/refine/agents/openai.yaml`, whose default_prompt
+  // PR7 sweep missing `skills/refine/agents/openai.yaml`, whose default_prompt
   // restated the old "gate PASSES" convergence rule: the Codex-facing surface
   // is authored in YAML, not markdown, and an .md-only scan cannot see it.
   const SURFACE_EXTS = ['.md', '.yaml', '.yml'];

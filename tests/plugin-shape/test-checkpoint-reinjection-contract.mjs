@@ -39,9 +39,9 @@ const PERSONAS = ['engineer', 'founder', 'designer'];
 // two areas move differently: ADR-0006's 2026-09-18 Amendment relocates a
 // plugin's skills root under `core/` (and each plugin declares where its root
 // is, in its Codex manifest), while `commands/` stays put. Spelling `skills/`
-// into a path literal makes every list below wrong for whichever plugins have
-// already moved — silently, because a surface that cannot be found is a
-// surface that cannot violate anything.
+// into a path literal points every `skills` entry below at a relocated
+// plugin's README-only tombstone: required reads then throw ENOENT and the
+// per-persona row floor fails, but an optional surface is skipped silently.
 const surface = (area, rel, optional = false) => ({ area, rel, optional });
 
 function surfacePath(persona, { area, rel }) {

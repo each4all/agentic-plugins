@@ -27,11 +27,12 @@
 // clause transferred; that came from measuring the plain `resolve` alone and a
 // peer review disproved it.
 //
-// EXTENDING THIS FOR S3-S6. Each relocation adds its own two mutations against
-// that plugin's decide-registry.mjs: one leaving DEFAULT_PATH at the
-// pre-relocation root, one pointing it nowhere. Both must be KILLED by that
-// plugin's own registry test, and that test keeps all three clauses with its
-// own preset id substituted.
+// EXTENDED FOR S3-S6. Of the plugins those steps relocated, designer and
+// founder carry a decide registry, and each has its own two mutations against
+// its decide-registry.mjs (D1/D2, F1/F2); orchestrator and runtime have none.
+// One leaves DEFAULT_PATH at the pre-relocation root, the other points it
+// nowhere. Both must be KILLED by that plugin's own registry test, which keeps
+// all three clauses with its own preset id substituted.
 //
 // Recorded result at authoring time (2026-09-21): 2/2 as-expected, with
 // `CLI: the relocated registry is actually read` among the 23 tests E2 kills.

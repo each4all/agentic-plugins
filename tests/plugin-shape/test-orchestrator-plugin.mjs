@@ -39,9 +39,10 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 
 // Where this plugin's skills actually live, read from its own Codex manifest
 // rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
-// core/skills/, and `resolveSkillsRoot` throws rather than falling back, so a
-// broken or missing declaration fails this file loudly at load instead of
-// leaving every path below pointing at a directory nothing writes to.
+// core/skills/. `resolveSkillsRoot` throws on a broken declaration rather than
+// falling back, so this file fails loudly at load instead of pointing every
+// path below at a directory nothing writes to. A manifest with no `skills` key
+// does fall back, to the README-only `skills/`; the skill checks below fail.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 
@@ -319,7 +320,7 @@ describe('plugins/orchestrator adapters/codex/hooks/', () => {
   });
 });
 
-describe('plugins/orchestrator skills/', () => {
+describe(`plugins/orchestrator ${SKILLS_REL}/`, () => {
   for (const verb of VERBS) {
     it(`${SKILLS_REL}/${verb}/SKILL.md exists with frontmatter name === ${verb}`, async () => {
       const skillPath = skillsPath(PLUGIN_ROOT, verb, 'SKILL.md');
@@ -433,7 +434,7 @@ describe('plugins/orchestrator skills/', () => {
   });
 });
 
-describe('plugins/orchestrator meta skills/', () => {
+describe(`plugins/orchestrator ${SKILLS_REL}/ meta skills`, () => {
   for (const meta of META_COMMANDS) {
     it(`${SKILLS_REL}/${meta}/SKILL.md exists with frontmatter name === ${meta}`, async () => {
       const skillPath = skillsPath(PLUGIN_ROOT, meta, 'SKILL.md');
@@ -572,7 +573,7 @@ describe('plugins/orchestrator commands/', () => {
   it('meta command files delegate to matching skills and preserve orchestrator namespace', async () => {
     for (const meta of META_COMMANDS) {
       const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${meta}.md`), 'utf-8');
-      ok(text.includes(`${SKILLS_REL}/${meta}/SKILL.md`), `${meta}.md points at skills/${meta}/SKILL.md`);
+      ok(text.includes(`${SKILLS_REL}/${meta}/SKILL.md`), `${meta}.md points at ${SKILLS_REL}/${meta}/SKILL.md`);
       ok(text.includes('agentic-orchestrator'), `${meta}.md uses orchestrator workflow namespace`);
     }
   });
@@ -757,7 +758,8 @@ describe('plugins/orchestrator — ADR-0029 §1 Active Next-Action Proposal (orc
       // (3) Cites the orchestrator-local contract wiring (which cites the
       // engineer canonical BY NAME — ADR-0010 §5). Assert the basename
       // session-handoff.md to stay robust to the mixed path conventions across
-      // orchestrator command (skills/_shared/…) vs skill (../_shared/…) surfaces.
+      // orchestrator surfaces (plugin-root `core/skills/_shared/…` and
+      // skill-relative `../_shared/…`).
       ok(/session-handoff\.md/.test(completionRegion),
         `${surface.path} Completion must cite the orchestrator-local session-handoff.md contract wiring (ADR-0029 §1)`);
       for (const field of PROPOSAL_FIELDS) {

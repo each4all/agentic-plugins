@@ -47,8 +47,9 @@ const PLUGINS_DIR = path.join(REPO_ROOT, 'plugins');
 
 // Three of the corpora below reach into a plugin's skills root, and each
 // resolves it from that plugin's own Codex manifest rather than spelling
-// `skills`: ADR-0006's 2026-09-18 Amendment relocates CORE content under
-// `core/` one plugin at a time. A hardcoded segment fails in the direction that
+// `skills`: ADR-0006's 2026-09-18 Amendment moved CORE content under
+// `core/`, and a relocated plugin's conventional root holds only a README.
+// A hardcoded segment fails in the direction that
 // finds fewer files, which is exactly how a partial move was caught here —
 // `discovered only 3 shared references, expected >= 4`. `resolveSkillsRoot` is
 // synchronous for this file's sake: it builds corpora from plain sync fs calls.
@@ -138,9 +139,9 @@ function walkMarkdown(dir, acc = []) {
   return acc;
 }
 
-// Runbook corpus: every markdown file under a plugin's commands/ or skills/.
-// Scripts, adapters and CHANGELOGs are out of scope — implementation and
-// history, not instructions an agent follows.
+// Runbook corpus: every markdown file under a plugin's commands/ or its declared
+// skills root. Scripts, adapters and CHANGELOGs are out of scope —
+// implementation and history, not instructions an agent follows.
 function runbookFiles() {
   const out = [];
   for (const plugin of fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
