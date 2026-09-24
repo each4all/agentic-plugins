@@ -248,6 +248,10 @@ describe('plugins/image — no stale tokens (no omcc ancestor)', () => {
       const rel = full.slice(PLUGIN_ROOT.length + 1);
       const text = await readFile(full, 'utf8');
       for (const token of STALE_TOKENS) {
+        // CODEX_HOME is an omcc-era discovery label in prose, but code must
+        // honor the variable: ADR-0061 §Decision 3 requires every resolver
+        // to find Codex's install cache under $CODEX_HOME.
+        if (token.source === 'CODEX_HOME' && /\.(?:mjs|js)$/.test(ent.name)) continue;
         ok(!token.test(text), `${rel} contains stale token ${token}`);
       }
       scanned += 1;
