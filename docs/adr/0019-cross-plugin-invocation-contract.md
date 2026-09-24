@@ -2,7 +2,17 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md) — the Codex layout of the sibling-plugin-root resolver only (2026-09-24)
+
+> **Codex layout re-decided by
+> [ADR-0061](0061-codex-installs-pinned-to-release-commits.md)
+> §Decision 3.** A sibling plugin on Codex resolves from the installed version cache
+> `<CODEX_HOME or ~/.codex>/plugins/cache/agentic-plugins/<plugin>/<version>/`
+> with manifest-name verification and SemVer selection, like Claude's
+> layout; the fixed marketplace-clone path is no longer a candidate.
+> The cross-plugin invocation contract, the env override and the
+> Claude layout are unchanged. The resolver still reads the clone until
+> ADR-0061's S2 ships.
 
 ## Context
 
@@ -239,6 +249,10 @@ The resolver MUST support BOTH host layouts:
 - **Codex**: a single fixed path under Codex's plugin install
   directory (no version directory in the path); resolver returns
   it directly when it exists.
+  *(superseded 2026-09-24 by
+  [ADR-0061](0061-codex-installs-pinned-to-release-commits.md)
+  §Decision 3, with the single-fixed-path prose above: the Codex layout is the installed
+  version cache)*
 
 The resolver returns the absolute path to the sibling engineer
 plugin's root directory; orchestrator's runbook substitutes it into

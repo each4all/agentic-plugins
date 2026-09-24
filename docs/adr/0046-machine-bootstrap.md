@@ -5,6 +5,16 @@
 Accepted (2026-07-18 — the S8a1–S8b implementation series and the
 S8c released-`0.81.0` acceptance slice shipped against this decision)
 
+> **Amended 2026-09-24 by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md).**
+> Once ADR-0061 §Decision 5 activates, the Codex catalog is no longer
+> versionless: each entry carries its release version in `ref` and its
+> commit in `sha`. The decisions that cite versionlessness stand — the
+> host-registered catalog is the authority, currentness is advisory and
+> never a completion gate, and `complete` means installed, enabled and
+> above the floor. Their host-side reasons (`plugin list` reports no
+> available-update field, `claude plugin update` has no check-only mode)
+> carry them on their own.
+
 <!--
 Merged as `Proposed` (macro subtask S7) per AGENTS.md §ADR process; flipped
 to `Accepted` on 2026-07-18 after the S8 implementation series and the S8c
@@ -207,7 +217,8 @@ enabled, and above the floor — not "newest". Its authority is the **host-regis
 marketplace catalog**, read at the `installLocation` the host itself records (a
 `$HOME` read, not a `process.cwd()` read). Asking the host CLI directly would not
 work: `plugin list` reports no available-update field, `claude plugin update` has no
-check-only mode, and the Codex catalog is versionless — a contract that gated
+check-only mode, and the Codex catalog is versionless *(until ADR-0061's
+activation — see Status)* — a contract that gated
 completion on host-reported currentness would make `complete` unreachable.
 A CI test compares the packaged definition against both repository catalogs,
 closing the four-vs-six-vs-eight drift in §Context 1.
@@ -527,7 +538,9 @@ wrong home for a list that moves.
   `agents/openai.yaml` + script (executable bit) + the `RUNTIME_COMMAND_SURFACES`
   exact-set gate + a new test suite + both plugin manifests + the **Claude**
   marketplace catalog (release-please owns both plugin manifests; the Claude catalog
-  is synced post-release, and the Codex catalog is **deliberately versionless**) +
+  is synced post-release, and the Codex catalog is **deliberately versionless**
+  *(until ADR-0061's activation — see Status; afterwards the Codex catalog is
+  also synced post-release)*) +
   the repo-root docs carrying `plugin-runtime` version tokens. S8 must not guess or
   hand-edit the next runtime version.
 - The refactor is **larger than two lifts**: five planners must be split into pure
