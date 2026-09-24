@@ -251,6 +251,11 @@ describe('peer-runner.mjs — run ledger and handle schema', () => {
       strictEqual(handle.status, 'completed');
       strictEqual(handle.prompt_retained, false);
       strictEqual(await exists(paths.prompt), false, 'prompt.xml should be opt-in debug data');
+      // ADR-0061 §Decision 4 — the ledger records where the companion came from.
+      strictEqual(handle.companion.source, 'env');
+      strictEqual(handle.companion.caller_host, 'checkout');
+      strictEqual(handle.companion.cross_host_fallback, false);
+      strictEqual(/[\\/]fake-companions[\\/](claude|codex)-companion\.mjs$/.test(handle.companion.path), true, handle.companion.path);
 
       const envelope = await readJson(paths.envelope);
       strictEqual(envelope.status, 'success');
@@ -1151,6 +1156,11 @@ export async function discoverPeerCompanion() {
       strictEqual(result.ok, false);
       strictEqual(result.status, 'failed');
       strictEqual(result.error_kind, 'peer_cli_not_found');
+      // ADR-0061 §Decision 4 — a failed resolution still records what was tried.
+      const failedHandle = await readHandle(peerRunPaths(repoRoot, 'sensor-no-companion').handle);
+      strictEqual(failedHandle.companion.path, null);
+      strictEqual(failedHandle.companion.source, 'env');
+      strictEqual(failedHandle.companion.reason, 'not installed');
 
       const captured = await readCaptured(capturePath);
       strictEqual(captured.length, 1);
