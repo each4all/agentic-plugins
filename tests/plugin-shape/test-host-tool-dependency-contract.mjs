@@ -25,10 +25,11 @@
 //      shortcut allows. It fails closed on unexpected directory errors — only a
 //      genuinely absent directory is tolerated. Each plugin's skills root is
 //      RESOLVED from its own Codex manifest (ADR-0006's 2026-09-18 Amendment
-//      relocates CORE content under `core/` one plugin at a time), and coverage
-//      is counted PER PLUGIN: an aggregate "the sweep found files" passes
-//      happily while one plugin's root resolves to an empty directory and the
-//      other seven make up the number.
+//      moved CORE content under `core/`, leaving a relocated plugin's
+//      conventional `skills/` a README-only tombstone), and coverage is counted
+//      PER PLUGIN: an aggregate "the sweep found files" passes happily while one
+//      plugin's root resolves to an empty directory and the other seven make up
+//      the number.
 //   3. Doc lockstep, scoped to the row that states the rule and asserting the
 //      PROHIBITION rather than the mere presence of the opt-in token. The
 //      earlier form checked only that `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` appeared

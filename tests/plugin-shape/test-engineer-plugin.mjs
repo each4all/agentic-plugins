@@ -13,7 +13,7 @@
 //   - 3 meta skills `resume` / `checkpoint` / `peer-now`
 //     (<skills-root>/<meta>/ × {SKILL.md, agents/openai.yaml}) per ADR-0022
 //     (ADR-0010 §3 cascade — closes ADR-0021 §6; formalizes the
-//     `${SKILLS_REL}/<plugin>/` three-category split: verb / macro / meta)
+//     `skills/<plugin>/` three-category split: verb / macro / meta)
 //   - 5 shared references (presentation / ensemble / orchestration /
 //     agent-taxonomy / entry-routing)
 //   - 4 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
@@ -69,9 +69,10 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
 
 // Where this plugin's skills actually live, read from its own Codex manifest
 // rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
-// core/<skills-root>/, and `resolveSkillsRoot` throws rather than falling back, so a
-// broken or missing declaration fails this file loudly at load instead of
-// leaving every path below pointing at a directory nothing writes to.
+// core/skills/. `resolveSkillsRoot` throws on a broken declaration rather than
+// falling back, so this file fails loudly at load instead of pointing every
+// path below at a directory nothing writes to. A manifest with no `skills` key
+// does fall back, to the README-only `skills/`; the skill checks below fail.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 
 const VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
@@ -97,7 +98,7 @@ const META_SKILLS = META_COMMANDS;
 // ADR-0020 §Sub-decision 1 — lifecycle macro commands are surface-level
 // neighbors of meta commands but DO bootstrap new workflows (unlike meta
 // commands), so they live in their own list. Currently: `start`.
-// ADR-0022 cascade (2026-05-12, ADR-0010 §3) — `${SKILLS_REL}/<plugin>/` is now
+// ADR-0022 cascade (2026-05-12, ADR-0010 §3) — `skills/<plugin>/` is now
 // a three-category split: VERBS (cognitive primitives, fixed at 6 per
 // ADR-0020 §Sub-decision 5), LIFECYCLE_MACROS (multi-phase verb
 // sequencers per ADR-0021), and META_COMMANDS (workflow-continuity ops
@@ -369,7 +370,7 @@ describe('plugins/engineer — 6 verb skills (<skills-root>/<verb>/SKILL.md)', (
       );
       ok(
         completionRegion.includes('../_shared/references/entry-routing-contract.md'),
-        `${SKILLS_REL}/${verb}/SKILL.md Completion must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0029 §1; the command-side "skills/_shared/..." path would NOT resolve from skills/<verb>/SKILL.md — ADR-0010 §5 copy-not-import means the path is re-based, not copied verbatim)`,
+        `${SKILLS_REL}/${verb}/SKILL.md Completion must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0029 §1; the command-side "${SKILLS_REL}/_shared/..." path would NOT resolve from ${SKILLS_REL}/<verb>/SKILL.md — ADR-0010 §5 copy-not-import means the path is re-based, not copied verbatim)`,
       );
       for (const field of PROPOSAL_FIELDS) {
         ok(
@@ -1046,7 +1047,7 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
       );
       ok(
         region.includes('../_shared/references/entry-routing-contract.md'),
-        `${SKILLS_REL}/${verb}/SKILL.md §2 section must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0010 §5 copy-not-import path re-base — the command-side "skills/_shared/..." path would not resolve from skills/<verb>/)`,
+        `${SKILLS_REL}/${verb}/SKILL.md §2 section must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0010 §5 copy-not-import path re-base — the command-side "${SKILLS_REL}/_shared/..." path would not resolve from ${SKILLS_REL}/<verb>/)`,
       );
       ok(
         /ADR-0013/.test(region),

@@ -1,12 +1,13 @@
 // Gate for `tests/_helpers.mjs`'s `resolveSkillsRoot` / `skillsPath`.
 //
-// The helper is what four cross-package gates will call instead of spelling a
+// The helper is what four cross-package gates call instead of spelling a
 // `skills` path segment themselves, so its failure semantics ARE those gates'
 // failure semantics. The property that matters is not "it returns a path" but
-// "it returns the declared path, and every other outcome is a named throw" —
-// a helper that fell back to the convention on a malformed manifest would make
-// all four gates pass vacuously through the exact partial-move window
-// ADR-0006's Amendment opens.
+// "it returns the declared root — or, for a manifest with no `skills` key, the
+// conventional one — and every other outcome is a named throw": a helper that
+// fell back to the convention on a malformed manifest would silently point a
+// gate at a relocated plugin's README-only tombstone instead of naming the
+// malformed manifest.
 //
 // Assertions bind to `err.code`, not to message text: the codes are the stable
 // contract the consumers and the mutation harness read, messages are prose.

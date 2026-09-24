@@ -15,11 +15,10 @@
 //      and the generic-fallback marker string.
 //
 // Each persona's skills root is RESOLVED from that persona's own Codex manifest
-// rather than spelled `skills` here. ADR-0006's 2026-09-18 Amendment moves CORE
-// content under `core/` one plugin at a time, so a hardcoded segment is wrong
-// for half the tree for the length of the relocation — and wrong in the
-// direction that finds no files, which the floors below would then be the only
-// thing standing against.
+// rather than spelled `skills` here. ADR-0006's 2026-09-18 Amendment moved CORE
+// content under `core/`, and a relocated plugin's conventional `skills/` holds
+// only a README, so a hardcoded segment is wrong in the direction that finds
+// no files — which the required-surface list and the floors below then catch.
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';

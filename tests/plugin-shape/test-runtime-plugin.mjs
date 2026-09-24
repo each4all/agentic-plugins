@@ -12,9 +12,10 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
 
 // Where this plugin's skills actually live, read from its own Codex manifest
 // rather than assumed. The 2026-09-18 Amendment to ADR-0006 moved the root to
-// core/skills/, and `resolveSkillsRoot` throws rather than falling back, so a
-// broken or missing declaration fails this file loudly at load instead of
-// leaving every path below pointing at a directory nothing writes to.
+// core/skills/. `resolveSkillsRoot` throws on a broken declaration rather than
+// falling back, so this file fails loudly at load instead of pointing every
+// path below at a directory nothing writes to. A manifest with no `skills` key
+// does fall back, to the README-only `skills/`; the skill checks below fail.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
 const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 const RUNTIME_COMMAND_SURFACES = [

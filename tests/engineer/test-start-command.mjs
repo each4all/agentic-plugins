@@ -299,13 +299,13 @@ describe('/engineer:start — entry routing and decision contract', () => {
   // ===========================================================================
   // PR5 (ADR-0027 §1.5 sizing + §4 axis-awareness) — axis-aware decide
   // routing prose mirrors across (entry-routing-contract.md → commands/start.md →
-  // skills/start/SKILL.md). Codex Plan-verify G5 + G6 — extend the existing
+  // core/skills/start/SKILL.md). Codex Plan-verify G5 + G6 — extend the existing
   // surface-mirror tests with scope-bounded region extraction (NOT whole-file
   // text.includes) per parallel-review MINOR-3. Tokens are asserted inside
   // the routing-recommendation prose block specifically — the section that
   // begins at the `Standards and Root-Cause Gate` heading (for the contract)
   // and at the `## Phase 0d — Entry routing and decision contract` heading
-  // (for commands/start.md) / equivalent area (for skills/start/SKILL.md).
+  // (for commands/start.md) / equivalent area (for core/skills/start/SKILL.md).
   //
   // Reusable extractor: pull lines between `start` and `end` (line-anchored
   // boundary substrings). Asserts the section bounds exist and excludes
@@ -356,15 +356,15 @@ describe('/engineer:start — entry routing and decision contract', () => {
     }
   });
 
-  it('PR5: skills/start/SKILL.md routing-recommendation area mirrors axis-aware decide routing tokens', async () => {
+  it('PR5: SKILL.md routing-recommendation area mirrors axis-aware decide routing tokens', async () => {
     const skill = await readFile(SKILL_PATH, 'utf8');
     // SKILL.md's routing-recommendation block lives between
     // "Before Phase 1, present an **Entry routing recommendation**" and
     // the next "### Phase" sub-heading.
     const routing = extractBetween(skill, 'Entry routing recommendation', '### Phase 1');
-    ok(routing, 'skills/start/SKILL.md missing routing-recommendation section bounds');
+    ok(routing, 'SKILL.md missing routing-recommendation section bounds');
     for (const token of ['--size=', 'compact', 'nine-axis', 'ADR-0027']) {
-      ok(routing.includes(token), `skills/start/SKILL.md routing area missing axis-aware decide routing token ${token}`);
+      ok(routing.includes(token), `SKILL.md routing area missing axis-aware decide routing token ${token}`);
     }
   });
 });

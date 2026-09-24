@@ -633,7 +633,7 @@ function rel(abs) {
   return relative(PLUGIN_DIR, abs).split(sep).join('/') || '.';
 }
 
-// Assert the three clauses for a plugin whose declared skills root is not the
+// Assert the four clauses for a plugin whose declared skills root is not the
 // conventional one. Every finding is prefixed so one grep-able phrase covers
 // the whole rule.
 async function checkRelocatedConventionalRoot(conventionalRoot, declaredSpelling) {
@@ -1154,8 +1154,8 @@ if (!skillsRoots.includes(conventionalSkillsRoot)) skillsRoots.push(conventional
 // ADR-0006 Amendment: a plugin whose declared root is NOT the conventional one
 // must leave the conventional one inert. Compared by resolved path, not raw
 // string — "skills", "./skills", "./skills/" and "./skills/." are the same
-// root, and all eight current plugins declare one of those spellings, so the
-// rule's antecedent stays false for them.
+// root. The rule applies only when the manifest resolves to a different
+// directory.
 if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.skills.length > 0) {
   const declaredRoot = resolve(PLUGIN_DIR, codexManifest.skills);
   if (!escapesPluginDir(declaredRoot) && declaredRoot !== conventionalSkillsRoot) {

@@ -1,11 +1,11 @@
 // PR5 (validation-contract) — command-vs-skill surface parity for
 // /engineer:decide (ADR-0027 §4.5 cross-surface symmetry rule).
 //
-// commands/decide.md is the Claude-host bash bootstrap; skills/decide/SKILL.md
-// is the host-agnostic cognitive runbook. After the ADR-0027 multi-axis
-// evolution (PR1-PR4), both surfaces must mirror the same axis-set + sizing
-// + flag + context-plumbing vocabulary so a /engineer:decide invocation
-// behaves consistently regardless of whether the LLM is reading the
+// commands/decide.md is the Claude-host bash bootstrap;
+// core/skills/decide/SKILL.md is the host-agnostic cognitive runbook. After the
+// ADR-0027 multi-axis evolution (PR1-PR4), both surfaces must mirror the same
+// axis-set + sizing + flag + context-plumbing vocabulary so a /engineer:decide
+// invocation behaves consistently regardless of whether the LLM is reading the
 // command file (Claude command path) or the SKILL.md alone (Codex skill
 // path that delegates to ensemble-protocol.md).
 //
@@ -51,7 +51,7 @@ function extractSkillRegion(label, endLabel) {
   const text = readFileSync(SKILL_PATH, "utf8");
   const lines = text.split("\n");
   const startIdx = lines.findIndex((l) => l.startsWith(label));
-  assert.notEqual(startIdx, -1, `skills/decide/SKILL.md missing region heading: ${label}`);
+  assert.notEqual(startIdx, -1, `SKILL.md missing region heading: ${label}`);
   let endIdx;
   if (endLabel) {
     endIdx = lines.findIndex((l, i) => i > startIdx && l.startsWith(endLabel));

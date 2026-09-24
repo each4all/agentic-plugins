@@ -26,7 +26,7 @@
 //      the sole winner-picker.
 //
 // These invariants are enforced by the SKILL.md prose contract
-// (`skills/decide/SKILL.md` `@decide:weighting-sensitivity-output` +
+// (`core/skills/decide/SKILL.md` `@decide:weighting-sensitivity-output` +
 // `@decide:recommendation-rule`) and lint-checked by
 // `tests/plugin-shape/test-engineer-plugin.mjs` (invariant-phrase lint
 // added in PR4 refine M5). The smoke trace in the compose Phase 2
