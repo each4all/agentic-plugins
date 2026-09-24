@@ -60,7 +60,7 @@ is no `plugin_hooks` settings key.)
 
 | Concern | Claude | Codex |
 |---------|--------|-------|
-| Plugin root | `$CLAUDE_PLUGIN_ROOT` (set by Claude Code); Claude fallback `$(find ~/.claude/plugins/cache/agentic-plugins/founder -maxdepth 1 -mindepth 1 -type d \| sort -V \| tail -1)` | Direct path: `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/founder` (Codex marketplace install layout per ADR-0008) |
+| Plugin root | `$CLAUDE_PLUGIN_ROOT` (set by Claude Code); Claude fallback `$(find ~/.claude/plugins/cache/agentic-plugins/founder -maxdepth 1 -mindepth 1 -type d \| sort -V \| tail -1)` | For a mentioned `founder` skill, the plugin directory that contains it (inside `$founder:start`, the mentioned skill is `start`, which runs the six verb skills in place): Codex injects a mentioned skill with its absolute path (`<path>…/core/skills/<skill>/SKILL.md</path>`), and dropping `/core/skills/<skill>/SKILL.md` from it leaves the root, which holds `.codex-plugin/plugin.json`. If that path is no longer in context, for example after compaction, a new mention of the skill supplies it again. With the default Codex home and the `agentic-plugins` marketplace added from Git, the root is `~/.codex/plugins/cache/agentic-plugins/founder/<version>`, the versioned copy Codex loads skills from, and `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/founder` is the marketplace checkout Codex installs from, not that copy. |
 | Entry path | `/founder:resume [archive [<id>]]` (slash command in `commands/resume.md`) | `$founder:resume` skill mention — this SKILL.md is the runbook |
 | `state.mjs` host flag | `--host claude` | `--host codex` |
 | Argument intake | `$ARGUMENTS` (Claude convention) | The full skill-mention argument string passed by the Codex runtime |
