@@ -71,6 +71,8 @@ const STALE_TOKENS = [
   /CODEX-ONLY/,
 ];
 
+const CODE_EXT = new Set(['.mjs', '.js', '.sh']);
+
 const VERB_SKILLS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 
 // PR4 decision-registry copy (ADR-0036 SD3 / ADR-0027 portable schema,
@@ -389,6 +391,10 @@ describe('plugins/founder — verb surface shape (PR3/PR4/PR5)', () => {
       const rel = full.slice(PLUGIN_ROOT.length + 1);
       const text = await readFile(full, 'utf8');
       for (const token of STALE_TOKENS) {
+        // CODEX_HOME is an omcc-era discovery label in prose, but code must
+        // honor the variable: ADR-0061 §Decision 3 requires every resolver
+        // to find Codex's install cache under $CODEX_HOME.
+        if (token.source === 'CODEX_HOME' && CODE_EXT.has(ent.name.slice(dot))) continue;
         ok(!token.test(text), `${rel} contains stale token ${token}`);
       }
       scanned += 1;

@@ -5,8 +5,9 @@
 //
 // Responsibilities:
 //   1. Resolve the companion script path for a requested peer ('claude' | 'codex')
-//      via env override → Claude cache (multi-version) → Codex cache (single
-//      fixed) → development repo fallback.
+//      via env override → the caller's own host install cache → the other
+//      host's install cache, only when the caller's host has no companions
+//      installed, and reported (ADR-0061 §Decision 3).
 //   2. Build an XML-structured prompt fragment per companions/contract.md §3
 //      (helper buildEnsemblePrompt — used by callers that want safe escaping
 //      and the standard task/grounding_rules/inputs/expected_output shape).
@@ -30,8 +31,9 @@
 
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, stat, readdir, mkdtemp, rm } from 'node:fs/promises';
-import { join, isAbsolute, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
 import { recordPendingEnsemble } from './state.mjs';
 
@@ -39,21 +41,34 @@ const ENV_OVERRIDE = 'AGENTIC_COMPANIONS_ROOT';
 const VALID_PEERS = new Set(['claude', 'codex']);
 const VALID_OUTPUT_FORMATS = new Set(['text', 'json']);
 
-const CACHE_BASES = {
-  claude: join(homedir(), '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions'),
-  codex: join(homedir(), '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'companions'),
-};
-
 // -----------------------------------------------------------------------------
 // Companion path resolution
 //
-// Bootstraps the companions plugin root (for both env-override and
-// cache-glob layouts) and delegates the actual companion resolution to
-// the canonical `discoverPeerCompanion()` library that ships inside
-// the companions plugin (per ADR-0008 §e). This avoids duplicating the
-// resolution + preflight logic and keeps the wrapper aligned with the
-// research plugin's discover-companion.mjs precedent (Codex Round 1
-// MAJOR #5).
+// Bootstraps a companions plugin root and delegates the actual companion
+// resolution (manifest verification, newest-compatible selection, preflight)
+// to the canonical `discoverPeerCompanion()` library that root ships (per
+// ADR-0008 §e), so the resolution logic is not duplicated here.
+//
+// Candidates follow ADR-0061 §Decision 3:
+//   - each host's candidate is its versioned install cache —
+//     ~/.claude/plugins/cache/agentic-plugins/companions/<version>/ and
+//     <CODEX_HOME or ~/.codex>/plugins/cache/agentic-plugins/companions/<version>/.
+//     The Codex marketplace clone (~/.codex/.tmp/marketplaces/…) tracks the
+//     repository's main branch and is never a candidate, not even a fallback.
+//   - the caller's own host goes first. The other host's cache is used only
+//     when the caller's host has no companions installed, and the result says
+//     so (`crossHostFallback`). An installed companions plugin that cannot
+//     serve — no discovery library, or no companion passing preflight — is a
+//     failure, not a reason to cross hosts.
+//   - the caller's host is decided against the resolved cache roots, so a
+//     custom $CODEX_HOME counts and a '/.codex/' path segment alone does not.
+//   - there is no implicit repository rung. Running against a checkout's
+//     companions takes an explicit AGENTIC_COMPANIONS_ROOT, the override
+//     ADR-0061 §Decision 3 keeps for development; an implicit rung would run
+//     whatever library the checkout holds with that library's own defaults.
+//   - the chosen host's cache base is passed to the library explicitly, so an
+//     older library whose own default still names the clone cannot fall back
+//     to it.
 
 async function fileExists(path) {
   try {
@@ -84,81 +99,119 @@ function semverCompare(a, b) {
   return 0;
 }
 
-/**
- * Find the companions plugin root directory that bundles
- * scripts/discover-peer.mjs. Tries Claude cache (multi-version SemVer
- * walk; only versions ≥ 0.3.0 ship the discovery library), Codex cache
- * (single fixed marketplace path), then the development repo sibling.
- * Returns the directory containing scripts/discover-peer.mjs, or null.
- */
-async function findCompanionsRootWithDiscovery() {
-  const claudeBase = CACHE_BASES.claude;
-  if (await dirExists(claudeBase)) {
-    const candidates = [];
-    let entries = [];
+function codexHomeDir(env, home) {
+  const value = env.CODEX_HOME;
+  return typeof value === 'string' && value.length > 0 ? resolve(value) : join(home, '.codex');
+}
+
+function hostCaches(env, home) {
+  return {
+    claude: {
+      root: join(home, '.claude', 'plugins', 'cache'),
+      companions: join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions'),
+      manifest: join('.claude-plugin', 'plugin.json'),
+    },
+    codex: {
+      root: join(codexHomeDir(env, home), 'plugins', 'cache'),
+      companions: join(codexHomeDir(env, home), 'plugins', 'cache', 'agentic-plugins', 'companions'),
+      manifest: join('.codex-plugin', 'plugin.json'),
+    },
+  };
+}
+
+// Canonical form for a containment check: the nearest existing ancestor is
+// realpath'd and the rest re-appended, so a symlinked prefix (macOS /var ->
+// /private/var, a symlinked ~/.codex) compares equal on both sides even when
+// the tail does not exist.
+function realOrResolved(path) {
+  let head = resolve(path);
+  const tail = [];
+  for (;;) {
     try {
-      entries = await readdir(claudeBase, { withFileTypes: true });
+      return join(realpathSync(head), ...tail.reverse());
     } catch {
-      // best effort
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const versionRoot = join(claudeBase, entry.name);
-      const manifestFile = join(versionRoot, '.claude-plugin', 'plugin.json');
-      let manifest;
-      try {
-        manifest = JSON.parse(await readFile(manifestFile, 'utf8'));
-      } catch {
-        continue;
-      }
-      if (manifest.name !== 'companions') continue;
-      const discoverPath = join(versionRoot, 'scripts', 'discover-peer.mjs');
-      if (!(await fileExists(discoverPath))) continue;          // 0.3.0+ required
-      candidates.push({
-        version: typeof manifest.version === 'string' ? manifest.version : '0.0.0',
-        root: versionRoot,
-      });
-    }
-    if (candidates.length > 0) {
-      candidates.sort((a, b) => semverCompare(b.version, a.version));
-      return candidates[0].root;
+      const parent = dirname(head);
+      if (parent === head) return resolve(path);
+      tail.push(basename(head));
+      head = parent;
     }
   }
+}
 
-  const codexBase = CACHE_BASES.codex;
-  if ((await dirExists(codexBase)) &&
-      (await fileExists(join(codexBase, 'scripts', 'discover-peer.mjs')))) {
-    return codexBase;
-  }
+function isWithin(child, parent) {
+  const rel = relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
 
-  const here = fileURLToPath(import.meta.url);
-  const devRoot = resolve(dirname(here), '..', '..', 'companions');
-  if (await fileExists(join(devRoot, 'scripts', 'discover-peer.mjs'))) {
-    return devRoot;
-  }
-
+/** 'codex' | 'claude' when `selfPath` sits in that host's install cache, else null (a checkout). */
+function callerHostOf(selfPath, caches) {
+  const self = realOrResolved(selfPath);
+  if (isWithin(self, realOrResolved(caches.codex.root))) return 'codex';
+  if (isWithin(self, realOrResolved(caches.claude.root))) return 'claude';
   return null;
 }
 
 /**
- * Resolve the companion script path for the given peer by delegating to
- * the canonical `discoverPeerCompanion()` library bundled in the
- * companions plugin. Returns the absolute path on success, or null on
- * failure (graceful degradation per companions/contract.md §6.x).
- *
- * Resolution order (delegated to discover-peer.mjs internals):
- *   1. AGENTIC_COMPANIONS_ROOT env override
- *   2. Claude cache layout (multi-version SemVer scan + manifest verify
- *      + preflight)
- *   3. Codex cache layout (single fixed path + manifest verify +
- *      preflight)
+ * The companions install in one host cache: `{ state: 'absent' }` when no
+ * manifest-verified companions version is there, `{ state: 'no-library',
+ * version }` when one is but none bundles scripts/discover-peer.mjs
+ * (companions 0.3.0+), else `{ state: 'ok', root }` for the newest that does.
  */
-export async function resolveCompanionPath(peer, { env = process.env } = {}) {
+async function newestCompanionsInstall({ companions, manifest }) {
+  if (!(await dirExists(companions))) return { state: 'absent' };
+  let entries = [];
+  try {
+    entries = await readdir(companions, { withFileTypes: true });
+  } catch {
+    return { state: 'absent' };
+  }
+  const installed = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const versionRoot = join(companions, entry.name);
+    let parsed;
+    try {
+      parsed = JSON.parse(await readFile(join(versionRoot, manifest), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (parsed.name !== 'companions') continue;
+    installed.push({
+      version: typeof parsed.version === 'string' ? parsed.version : '0.0.0',
+      root: versionRoot,
+      hasLibrary: await fileExists(join(versionRoot, 'scripts', 'discover-peer.mjs')),
+    });
+  }
+  if (installed.length === 0) return { state: 'absent' };
+  installed.sort((a, b) => semverCompare(b.version, a.version));
+  const withLibrary = installed.find((c) => c.hasLibrary);
+  if (!withLibrary) return { state: 'no-library', version: installed[0].version };
+  return { state: 'ok', root: withLibrary.root };
+}
+
+/**
+ * Resolve the companion script for `peer` and report where it came from.
+ *
+ * @returns {Promise<{path: ?string, source: ?string, host: ?string,
+ *   callerHost: string, crossHostFallback: boolean, version?: string,
+ *   reason?: string}>} `path` is null on failure (graceful degradation per
+ *   companions/contract.md §6.x); `source` is 'env', 'codex-cache',
+ *   'claude-cache', or null when no host has companions installed;
+ *   `callerHost` is 'codex', 'claude' or 'checkout'.
+ */
+export async function resolveCompanion(peer, {
+  env = process.env,
+  home = homedir(),
+  selfPath = fileURLToPath(import.meta.url),
+} = {}) {
   if (!VALID_PEERS.has(peer)) {
     throw new Error(`Invalid peer: ${peer}. Must be one of ${[...VALID_PEERS].join(', ')}.`);
   }
+  const caches = hostCaches(env, home);
+  const caller = callerHostOf(selfPath, caches);
+  const callerHost = caller ?? 'checkout';
 
-  // Env override: companions root is the override directory itself.
+  // Env override: the companions root is the override directory itself.
   // Pre-locate discover-peer.mjs there; if missing, raise per ADR-0008
   // §e (script-pair layout requires the discovery library beside the
   // companion scripts).
@@ -174,19 +227,71 @@ export async function resolveCompanionPath(peer, { env = process.env } = {}) {
         `(companions v0.3.0+ requires the discovery library next to the companion scripts).`,
       );
     }
-    const { discoverPeerCompanion } = await import(overrideDiscover);
-    const result = await discoverPeerCompanion({ peer, env });
-    return result.ok ? result.path : null;
+    const { discoverPeerCompanion } = await import(pathToFileURL(overrideDiscover).href);
+    const result = await discoverPeerCompanion({ peer, env, home });
+    return {
+      path: result.ok ? result.path : null,
+      source: 'env',
+      host: null,
+      callerHost,
+      crossHostFallback: false,
+      ...(result.ok ? { version: result.version } : { reason: result.reason }),
+    };
   }
 
-  // Cache or development fallback: bootstrap the companions plugin
-  // root, then import discoverPeerCompanion() from its scripts/.
-  const companionsRoot = await findCompanionsRootWithDiscovery();
-  if (!companionsRoot) return null;
-  const discoverPath = join(companionsRoot, 'scripts', 'discover-peer.mjs');
-  const { discoverPeerCompanion } = await import(discoverPath);
-  const result = await discoverPeerCompanion({ peer, env });
-  return result.ok ? result.path : null;
+  const order = caller === 'codex' ? ['codex', 'claude'] : ['claude', 'codex'];
+  for (const host of order) {
+    const install = await newestCompanionsInstall(caches[host]);
+    if (install.state === 'absent') continue;
+    if (install.state === 'no-library') {
+      return {
+        path: null,
+        source: `${host}-cache`,
+        host,
+        callerHost,
+        crossHostFallback: caller !== null && host !== caller,
+        reason: `companions ${install.version} in ${caches[host].companions} ships no ` +
+          'scripts/discover-peer.mjs (companions 0.3.0+ required)',
+      };
+    }
+    // A file URL, not the bare path: a '#' or '?' in a custom CODEX_HOME would
+    // otherwise be read as a URL fragment or query.
+    const { discoverPeerCompanion } = await import(pathToFileURL(join(install.root, 'scripts', 'discover-peer.mjs')).href);
+    const result = await discoverPeerCompanion({
+      peer,
+      env,
+      home,
+      cacheBase: caches[host].companions,
+      layout: 'multi-version',
+      manifestPath: caches[host].manifest,
+    });
+    return {
+      path: result.ok ? result.path : null,
+      source: `${host}-cache`,
+      host,
+      callerHost,
+      crossHostFallback: caller !== null && host !== caller,
+      ...(result.ok ? { version: result.version } : { reason: result.reason }),
+    };
+  }
+
+  return {
+    path: null,
+    source: null,
+    host: null,
+    callerHost,
+    crossHostFallback: false,
+    reason: 'companions plugin is not installed in the Claude or Codex plugin cache',
+  };
+}
+
+/**
+ * Resolve the companion script path for the given peer. Returns the absolute
+ * path on success, or null on failure. See `resolveCompanion` for the
+ * candidate order and the provenance this drops.
+ */
+export async function resolveCompanionPath(peer, options = {}) {
+  return (await resolveCompanion(peer, options)).path;
 }
 
 // -----------------------------------------------------------------------------
@@ -415,6 +520,9 @@ export async function dispatchPeer({
   outputFormat = 'json',
   env = process.env,
   ensembleBookkeeping = null,
+  // Test seams for companion resolution (see resolveCompanion).
+  home,
+  selfPath,
 }) {
   if (!VALID_OUTPUT_FORMATS.has(outputFormat)) {
     throw new Error(`Invalid outputFormat: ${outputFormat}. Must be 'text' or 'json'.`);
@@ -459,14 +567,23 @@ export async function dispatchPeer({
     }
   }
 
-  const companionPath = await resolveCompanionPath(peer, { env });
+  const companion = await resolveCompanion(peer, { env, home, selfPath });
+  const companionPath = companion.path;
+  if (companion.crossHostFallback) {
+    // ADR-0061 §Decision 4: a Claude-cache companion is not pinned the way a
+    // Codex install is, so a fallback is reported rather than taken silently.
+    process.stderr.write(
+      `dispatch-peer: companion resolved from the ${companion.host} plugin cache ` +
+      `because the ${companion.callerHost} cache has no companions installed\n`,
+    );
+  }
   if (!companionPath) {
     return {
       ok: false,
       status: 'companion_error',
       exitCode: 3,
       stdout: '',
-      stderr: `dispatch-peer: companion for peer "${peer}" not found in env override, cache, or development paths`,
+      stderr: `dispatch-peer: companion for peer "${peer}" not resolved: ${companion.reason ?? 'no companion passed preflight'}`,
       envelope: null,
       kind: 'peer_cli_not_found',
     };
