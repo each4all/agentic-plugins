@@ -452,7 +452,7 @@ state-write integration.
 flag-parser bootstrap that writes `$AGENTIC_DECIDE_CONTEXT_FILE` lives
 in `commands/decide.md` on the Claude side. Codex `$engineer:decide`
 skill mentions reach this SKILL.md directly without the Claude command
-file (Codex's plugin manifest currently exposes only `skills/`; a
+file (Codex's plugin manifest currently has no `commands` field; a
 Codex equivalent of `commands/*.md` awaits the ADR-0013 trigger).
 The full-fidelity axis-awareness contract (ADR-0027 §1.5 sizing,
 §2.2 flag grammar, §4 Brainstorm `<axis_awareness>` block) is
