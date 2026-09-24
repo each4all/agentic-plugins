@@ -262,6 +262,11 @@ describe('peer-runner.mjs — run ledger and handle schema', () => {
       strictEqual(handle.status, 'completed');
       strictEqual(handle.prompt_retained, false);
       strictEqual(await exists(paths.prompt), false, 'prompt.xml should be opt-in debug data');
+      // ADR-0061 §Decision 4 — the ledger records where the companion came from.
+      strictEqual(handle.companion.source, 'env');
+      strictEqual(handle.companion.caller_host, 'checkout');
+      strictEqual(handle.companion.cross_host_fallback, false);
+      strictEqual(/[\\/]fake-companions[\\/](claude|codex)-companion\.mjs$/.test(handle.companion.path), true, handle.companion.path);
 
       const envelope = await readJson(paths.envelope);
       strictEqual(envelope.status, 'success');
