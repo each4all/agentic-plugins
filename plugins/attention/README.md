@@ -58,9 +58,10 @@ persona — all four onboarded personas since the ADR-0043 §3 follow-up
 3. **per-persona marker shape** — engineer, founder, and designer key
    `<projection>.footer-rendered`; orchestrator keys
    `<projection>.<workflow-id>.footer-rendered` (the shapes differ by
-   design; the sensor consumes each persona's documented contract —
-   founder/designer's lives in their `session-handoff.md` runbooks per
-   ADR-0043 §2).
+   design; founder and designer document theirs as a cross-package
+   contract in their `session-handoff.md` runbooks per ADR-0043 §2, and
+   the sensor copies engineer's and orchestrator's from their
+   session-handoff scripts).
 
 A stale or missing projection degrades to a **bare** `turn-complete`
 notification — never a wrong workflow claim. For the manually-published

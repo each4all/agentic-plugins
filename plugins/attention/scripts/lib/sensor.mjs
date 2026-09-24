@@ -359,13 +359,16 @@ export function resolveRepoRoot(cwd = process.cwd()) {
 // The personas whose ADR-0031/0039 sidecars the Stop sensor may enrich from.
 // The ADR-0043 §3 follow-up landed once its trigger fired: founder (S3,
 // plugin-founder-v0.4.0) and designer (S4, plugin-designer-v0.3.0) sidecars
-// emit projections + footer-rendered markers in the wild, and each persona's
-// marker shape is a documented cross-package contract in that persona's
-// `skills/_shared/references/session-handoff.md` (ADR-0043 §2) — this sensor
-// consumes those documented contracts, never a reverse-engineered
-// implementation detail. Rollback note: attention rolls back independently;
-// it owns no durable state beyond the runtime notify-state TTL entries its
-// emitted events produce.
+// emit projections + footer-rendered markers in the wild, and those two
+// document their marker shape as a cross-package contract in their own
+// `core/skills/_shared/references/session-handoff.md` (ADR-0043 §2); this
+// sensor encodes that contract for them. For engineer and orchestrator the
+// sensor copies the shapes from their session-handoff scripts (see
+// MARKER_SHAPE_BY_PERSONA). Rollback note: attention owns no durable state
+// of its own; its sensors can cause runtime-owned writes. Rolling back
+// attention does not remove durable session-capture files (ADR-0044 §10
+// covers their cleanup), and ADRs such as ADR-0044 §10, ADR-0045 §12 and
+// ADR-0047 §8 order it against config and runtime.
 export const SENSOR_PERSONAS = Object.freeze(['engineer', 'orchestrator', 'founder', 'designer']);
 
 // Freshness bound for "this projection describes the terminal transition the
