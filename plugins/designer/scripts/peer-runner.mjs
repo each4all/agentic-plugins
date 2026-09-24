@@ -30,8 +30,23 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { discoverRuntimePluginRoot, NOTIFY_CAPABILITY, NOTIFY_MIN_RUNTIME_VERSION } from './discover-runtime.mjs';
-import { resolveCompanionPath, validateEnvelopeShape } from './dispatch-peer.mjs';
+import { resolveCompanion, validateEnvelopeShape } from './dispatch-peer.mjs';
 import { recordPendingEnsemble } from './state.mjs';
+
+
+// ADR-0061 §Decision 4: record where the companion came from — which host
+// cache, and whether a Codex-installed caller fell back to the Claude cache —
+// in the ledger, so a diagnostic can report it rather than infer it.
+function companionRecord(resolved) {
+  return {
+    path: resolved.path,
+    source: resolved.source,
+    host: resolved.host,
+    caller_host: resolved.callerHost,
+    cross_host_fallback: resolved.crossHostFallback,
+    ...(resolved.reason ? { reason: resolved.reason } : {}),
+  };
+}
 
 export const HANDLE_SCHEMA_VERSION = '1.0';
 export const VALID_PEERS = new Set(['claude', 'codex']);
@@ -645,7 +660,8 @@ export async function runPeer(args) {
 
     await recordPendingIfEnsemble(await readHandle(paths.handle));
 
-    const companionPath = await resolveCompanionPath(options.peer, { env: options.env });
+    const companion = await resolveCompanion(options.peer, { env: options.env });
+    const companionPath = companion.path;
     if (!companionPath) {
       // Terminal transition BEFORE the final block (ADR-0040 §5: a
       // final-block-only sensor would miss every peer_cli_not_found run).
@@ -654,6 +670,7 @@ export async function runPeer(args) {
         h.completed_at = nowIso();
         h.exit_code = 3;
         h.error_kind = 'peer_cli_not_found';
+        h.companion = companionRecord(companion);
       });
       await emitPeerRunTerminal({
         repoRoot: options.repoRoot,
@@ -669,6 +686,7 @@ export async function runPeer(args) {
 
     await updateHandle(paths.handle, (h) => {
       h.status = 'spawning';
+      h.companion = companionRecord(companion);
     });
 
     const childArgs = ['task', '--prompt-file', prompt.promptFile, '--output-format', options.outputFormat];
