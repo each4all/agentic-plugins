@@ -272,10 +272,10 @@ plugin-root variable in its environment — the names Codex substitutes into
 hook commands are not exported to a skill mention's shell, where
 `CLAUDE_PLUGIN_ROOT` and `PLUGIN_ROOT` both read empty — so resolve the
 path from the installed plugin root rather than from
-`$CLAUDE_PLUGIN_ROOT`. `../checkpoint/SKILL.md` § Claude/Codex command
-resolution records the default Codex layout; a non-default install root
-means resolving from the running install rather than assuming it. When the resolver CLI still does
-not run, keep the decisive axes 본질/근본 (essence/foundation, universal to
+`$CLAUDE_PLUGIN_ROOT`. Codex injects the mentioned skill with its absolute
+path, and `../checkpoint/SKILL.md` § Claude/Codex command resolution shows
+how to take the root from it. When the resolver CLI still does not run,
+keep the decisive axes 본질/근본 (essence/foundation, universal to
 every preset) and read the size-appropriate supporting axes for the
 `compact` preset directly from `../decide/references/decision-axes.yml`
 (the registry file is readable even when the resolver CLI is not). Do not
