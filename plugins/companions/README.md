@@ -49,15 +49,17 @@ Then enable `companions` by adding the following to `~/.codex/config.toml`
 enabled = true
 ```
 
-Marketplace clone location (per ADR-0008 § (b), Amendment 2026-05-04
-verified against codex-cli 0.128.0):
+Codex installs the plugin into its versioned plugin cache (ADR-0061
+§Decision 3; `$CODEX_HOME` replaces `~/.codex` when it is set):
 
 ```
-~/.codex/.tmp/marketplaces/agentic-plugins/plugins/companions/scripts/
+~/.codex/plugins/cache/agentic-plugins/companions/<version>/scripts/
 ```
 
-The clone is a full git mirror of the marketplace repo and exists
-independently of the plugin's enable state.
+Codex also keeps a clone of the whole marketplace repository at
+`~/.codex/.tmp/marketplaces/agentic-plugins/`. That clone is what Codex
+installs *from*, it tracks the repository's `main` branch, and it exists
+whether or not the plugin is installed. It is never a discovery candidate.
 
 ## Discovery for consumer plugins
 
@@ -118,11 +120,16 @@ host's plugin cache for the bundled script:
 ~/.claude/plugins/cache/agentic-plugins/companions/*/scripts/<companion>.mjs
 ```
 
-**Codex CLI** (per ADR-0008 § (b), Amendment 2026-05-04):
+**Codex CLI** (per ADR-0061 §Decision 3, which replaced ADR-0008 § (b)'s
+Codex candidate; `$CODEX_HOME` replaces `~/.codex` when it is set):
 
 ```
-~/.codex/.tmp/marketplaces/agentic-plugins/plugins/companions/scripts/<companion>.mjs
+~/.codex/plugins/cache/agentic-plugins/companions/*/scripts/<companion>.mjs
 ```
+
+A consumer bootstrap probes its own host's cache first. It uses the other
+host's cache only when its own host has no companions installed, and it
+reports that fallback.
 
 The discovery algorithm (mandatory, applies to both hosts; see ADR-0008
 § (b)):
