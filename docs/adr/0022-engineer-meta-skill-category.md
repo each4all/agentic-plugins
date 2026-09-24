@@ -131,6 +131,15 @@ The content-authority convention from ADR-0021 §2 carries forward:
   invoking AI how to translate Claude-side bash equivalents into
   Codex-operable Bash tool calls.
 
+**[2026-09-23]** The 2026-09-18 Amendment to
+[ADR-0006](0006-directory-layout-install-pattern.md) moved the skill
+folders in §1 and §2 under their plugin's `core/skills/`: engineer's
+meta runbooks are now
+`plugins/engineer/core/skills/{resume,checkpoint,peer-now}/SKILL.md`,
+and each `commands/<meta>.md` names its runbook as
+`$CLAUDE_PLUGIN_ROOT/core/skills/<meta>/SKILL.md`. The paths in §1 and
+§2 are as they were recorded.
+
 ### 3. Host-availability matrix (mandatory)
 
 Each meta `SKILL.md` MUST include an explicit
@@ -175,6 +184,14 @@ three `describe` blocks asserting:
 
 The comment block at lines 64-82 referencing "ADR-0021 follow-up PR"
 is replaced with the ADR-0022 resolution.
+
+**[2026-09-23]** `tests/plugin-shape/test-engineer-plugin.mjs` still
+runs the three checks listed above, reading the skill files from the
+skills root the plugin's Codex manifest declares —
+`plugins/engineer/core/skills/` since engineer's relocation under the
+2026-09-18 Amendment to
+[ADR-0006](0006-directory-layout-install-pattern.md); the paths and line
+numbers above are as they were recorded.
 
 ## Consequences
 

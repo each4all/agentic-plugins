@@ -392,7 +392,7 @@ inside the plugin so every critique applies the same standard.
 ### Sub-decision 6 — Persona surfaces
 
 - **Design Task Profile** (analogous to founder's Business Task Profile)
-  in `skills/_shared/references/orchestration.md`, carrying persona =
+  in `core/skills/_shared/references/orchestration.md`, carrying persona =
   designer, the skill-profile (verb execution mode), and the L4 Profile
   axis.
 - **L4 profiles**: all five ship — `general` (the default) plus the

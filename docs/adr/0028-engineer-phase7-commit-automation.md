@@ -67,7 +67,7 @@ explicit policies and a three-layer defense architecture. The
 implementation is a host-shared driver
 (`plugins/engineer/scripts/phase7-commit.mjs`) invoked by both the
 Claude command bootstrap (`commands/start.md` Phase 7) and the Codex
-skill narration (`skills/start/SKILL.md` Phase 7) — consistent with
+skill narration (`core/skills/start/SKILL.md` Phase 7) — consistent with
 ADR-0022's commands-hold-bootstrap / skills-hold-cognition split. All
 conventional-commit regex usage centralizes in
 `plugins/engineer/scripts/validate-commit.mjs`; the two existing inline

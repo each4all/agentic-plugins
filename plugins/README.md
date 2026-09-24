@@ -147,10 +147,11 @@ CORE files (`core/skills/`, `core/personas/`, `core/mcp-servers/`,
 runtime model permits. Of the four CORE categories only `core/skills/`
 has ever carried files.
 
-> The `core/` root is the **accepted target** of the ADR-0006
-> 2026-09-18 Amendment. The per-package relocation lands one plugin at a
-> time; a plugin still shows its skills under `skills/` until its own
-> relocation ships.
+> The `core/` root comes from the ADR-0006 2026-09-18 Amendment, and all
+> six skill-bearing plugins have moved their skills there. Each keeps a
+> README-only `skills/` directory at the conventional path, as the
+> Amendment requires; `attention` and `companions`, which hold no
+> functional skills, keep their `skills/README.md` placeholders.
 
 **Script-only library plugin exception** (per ADR-0008 § (a)): a plugin
 that ships only `scripts/` and the two host manifests — no `commands/`,
