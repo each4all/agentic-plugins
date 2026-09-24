@@ -38,8 +38,8 @@
 //     marker with a fresh `at` render timestamp (the transition anchor).
 //     All four onboarded personas enrich (ADR-0043 §3 — engineer /
 //     orchestrator / founder / designer); orchestrator alone id-scopes the
-//     marker filename, the other three use the slot-sibling shape documented
-//     in each persona's session-handoff runbook.
+//     marker filename, the other three use the slot-sibling shape
+//     (per-persona sources at MARKER_SHAPE_BY_PERSONA in lib/sensor.mjs).
 //   Stop otherwise (the bare case) → EXACTLY ONE of turn-complete (interim /
 //     unpromotable) or response-needed (final) per the ADR-0047 §2 bounded
 //     structural classifier, behind the §9 dedicated released-runtime floor
