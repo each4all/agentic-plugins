@@ -10,7 +10,8 @@
 // Resolution order (per ADR-0008 §b.1):
 //   1. AGENTIC_COMPANIONS_ROOT env override — absolute path treated as
 //      <root>/<peer>-companion.mjs.
-//   2. Cache-glob (host-specific layout) with manifest verification.
+//   2. The host's versioned install cache, manifest-verified, newest
+//      compatible version first.
 //   3. Preflight: companion source must reference --prompt-file and
 //      declare a CONTRACT_VERSION whose major matches this script's
 //      compatibility expectation (currently 0).
@@ -33,12 +34,17 @@
 //
 // The peer argument selects the host pair:
 //   peer === 'codex' → caller is on Claude, looks for codex-companion.mjs
-//                       (Claude cache layout: multi-version SemVer scan)
+//                       in ~/.claude/plugins/cache/agentic-plugins/companions/<version>/
 //   peer === 'claude' → caller is on Codex, looks for claude-companion.mjs
-//                        (Codex cache layout: single fixed marketplace path)
+//                        in <CODEX_HOME or ~/.codex>/plugins/cache/agentic-plugins/companions/<version>/
+//
+// The Codex candidate is the versioned install cache, never the marketplace
+// clone at ~/.codex/.tmp/marketplaces/ (ADR-0061 §Decision 3). The clone
+// tracks the repository's main branch; the cache holds what Codex installed,
+// which after ADR-0061's activation is the package's release commit.
 
 import { readFile, stat, readdir } from 'node:fs/promises';
-import { join, isAbsolute } from 'node:path';
+import { join, isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
 const ENV_VAR = 'AGENTIC_COMPANIONS_ROOT';
@@ -49,35 +55,43 @@ const PEER_FILENAME = {
   claude: 'claude-companion.mjs',
 };
 
-// Per-peer default cache layout — Claude cache supports multi-version
-// SemVer scan; Codex cache is zero-wildcard fully-pinned marketplace.
-const DEFAULTS = {
-  codex: {
-    cacheBase: join(homedir(), '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions'),
-    layout: 'multi-version',
-    manifestPath: '.claude-plugin/plugin.json',
-  },
-  claude: {
-    cacheBase: join(
-      homedir(),
-      '.codex',
-      '.tmp',
-      'marketplaces',
-      'agentic-plugins',
-      'plugins',
-      'companions',
-    ),
-    layout: 'single',
-    manifestPath: '.codex-plugin/plugin.json',
-  },
-};
+// Codex honors $CODEX_HOME for everything it writes, including the plugin
+// cache; an unset or empty value means ~/.codex.
+export function codexHomeDir({ env = process.env, home = homedir() } = {}) {
+  const value = env.CODEX_HOME;
+  return typeof value === 'string' && value.length > 0 ? resolve(value) : join(home, '.codex');
+}
 
-export async function discoverPeerCompanion({ peer, env = process.env, cacheBase, layout, manifestPath } = {}) {
+// Per-peer default candidate: the caller's own host install cache. Both hosts
+// keep one directory per installed version, so both use the multi-version scan.
+function defaultsFor(peer, { env, home }) {
+  if (peer === 'codex') {
+    return {
+      cacheBase: join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions'),
+      layout: 'multi-version',
+      manifestPath: join('.claude-plugin', 'plugin.json'),
+    };
+  }
+  return {
+    cacheBase: join(codexHomeDir({ env, home }), 'plugins', 'cache', 'agentic-plugins', 'companions'),
+    layout: 'multi-version',
+    manifestPath: join('.codex-plugin', 'plugin.json'),
+  };
+}
+
+export async function discoverPeerCompanion({
+  peer,
+  env = process.env,
+  home = homedir(),
+  cacheBase,
+  layout,
+  manifestPath,
+} = {}) {
   if (peer !== 'codex' && peer !== 'claude') {
     return { ok: false, reason: `peer must be 'codex' or 'claude', got: ${peer}` };
   }
   const peerFilename = PEER_FILENAME[peer];
-  const defaults = DEFAULTS[peer];
+  const defaults = defaultsFor(peer, { env, home });
   cacheBase ??= defaults.cacheBase;
   layout ??= defaults.layout;
   manifestPath ??= defaults.manifestPath;
@@ -108,9 +122,6 @@ export async function discoverPeerCompanion({ peer, env = process.env, cacheBase
 
   if (layout === 'multi-version') {
     return discoverMultiVersion({ cacheBase, peerFilename, manifestPath });
-  }
-  if (layout === 'single') {
-    return discoverSingle({ cacheBase, peerFilename, manifestPath });
   }
   return { ok: false, reason: `unknown layout: ${layout}` };
 }
@@ -156,36 +167,6 @@ async function discoverMultiVersion({ cacheBase, peerFilename, manifestPath }) {
   }
 
   return { ok: false, reason: `no companions plugin in ${cacheBase} passed preflight (${peerFilename})` };
-}
-
-async function discoverSingle({ cacheBase, peerFilename, manifestPath }) {
-  const manifestFile = join(cacheBase, manifestPath);
-  let manifest;
-  try {
-    manifest = JSON.parse(await readFile(manifestFile, 'utf8'));
-  } catch (err) {
-    return { ok: false, reason: `companions manifest unreadable at ${manifestFile}: ${err.message}` };
-  }
-  if (manifest.name !== 'companions') {
-    return { ok: false, reason: `manifest name "${manifest.name}" != "companions" at ${manifestFile}` };
-  }
-
-  const candidate = join(cacheBase, 'scripts', peerFilename);
-  if (!(await fileExists(candidate))) {
-    return { ok: false, reason: `${candidate} not found` };
-  }
-  if (!(await preflight(candidate))) {
-    return {
-      ok: false,
-      reason: `${candidate} failed preflight (missing --prompt-file or incompatible CONTRACT_VERSION)`,
-    };
-  }
-  return {
-    ok: true,
-    path: candidate,
-    source: 'cache',
-    version: typeof manifest.version === 'string' ? manifest.version : '?',
-  };
 }
 
 export async function fileExists(path) {
