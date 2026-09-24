@@ -24,8 +24,9 @@
 //   exit 0 on success; exit 1 with a typed error.kind on failure; exit 2 on misuse.
 
 import { spawn } from 'node:child_process';
-import { writeFileSync, mkdirSync, existsSync, statSync, lstatSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
-import { resolve, join, sep } from 'node:path';
+import { writeFileSync, mkdirSync, existsSync, statSync, lstatSync, readdirSync, readFileSync, realpathSync, openSync, readSync, closeSync } from 'node:fs';
+import { resolve, join, sep, dirname, basename, relative, isAbsolute } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 
@@ -70,41 +71,141 @@ export function semverCompare(a, b) {
 }
 
 // Locate the companions plugin scripts dir (which ships discover-peer.mjs +
-// codex-companion.mjs) — AGENTIC_COMPANIONS_ROOT override, Claude multi-version
-// cache (SemVer-highest), or the Codex single marketplace layout.
-export function findCompanionsScriptsDir(env = process.env) {
-  const root = env.AGENTIC_COMPANIONS_ROOT;
-  if (root && existsSync(join(root, 'discover-peer.mjs'))) return root;
-  const claudeBase = join(homedir(), '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions');
-  if (existsSync(claudeBase)) {
-    let versions = [];
+// codex-companion.mjs): the AGENTIC_COMPANIONS_ROOT override, else the newest
+// manifest-verified companions install in a host plugin cache. Per ADR-0061
+// §Decision 3 the Codex candidate is the versioned install cache under
+// $CODEX_HOME, never the marketplace clone (~/.codex/.tmp/marketplaces/…,
+// which tracks main); a caller installed on Codex looks there first, anyone
+// else looks in the Claude cache first. There is deliberately no repository
+// rung here.
+function codexHomeDir(env, home) {
+  const value = env.CODEX_HOME;
+  return typeof value === 'string' && value.length > 0 ? resolve(value) : join(home, '.codex');
+}
+
+// Nearest existing ancestor realpath'd, rest re-appended: a symlinked prefix
+// (macOS /var -> /private/var) compares equal even when the tail is absent.
+function realOrResolved(path) {
+  let head = resolve(path);
+  const tail = [];
+  for (;;) {
     try {
-      versions = readdirSync(claudeBase, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && existsSync(join(claudeBase, d.name, 'scripts', 'discover-peer.mjs')))
-        .map((d) => d.name)
-        .sort(semverCompare);
-    } catch { /* ignore */ }
-    if (versions.length) return join(claudeBase, versions[versions.length - 1], 'scripts');
+      return join(realpathSync(head), ...tail.reverse());
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return resolve(path);
+      tail.push(basename(head));
+      head = parent;
+    }
   }
-  const codexDir = join(homedir(), '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'companions', 'scripts');
-  if (existsSync(join(codexDir, 'discover-peer.mjs'))) return codexDir;
+}
+
+function isWithin(child, parent) {
+  const rel = relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+// The companions install in one host cache: 'absent' when no manifest-verified
+// companions version is there, 'no-library' when one is but none bundles
+// scripts/discover-peer.mjs, else the newest one's scripts dir.
+function newestCompanionsInstall(base, manifestRel) {
+  let installed = [];
+  try {
+    installed = readdirSync(base, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .filter((name) => {
+        try {
+          return JSON.parse(readFileSync(join(base, name, manifestRel), 'utf8')).name === 'companions';
+        } catch {
+          return false;
+        }
+      })
+      .sort(semverCompare);
+  } catch { /* no cache for this host */ }
+  if (installed.length === 0) return { state: 'absent' };
+  const withLibrary = installed.filter((name) => existsSync(join(base, name, 'scripts', 'discover-peer.mjs')));
+  if (withLibrary.length === 0) return { state: 'no-library' };
+  return { state: 'ok', scriptsDir: join(base, withLibrary[withLibrary.length - 1], 'scripts') };
+}
+
+// Which companions library to use and which cache it should resolve from.
+// null when no host has companions installed; `{ scriptsDir: null }` when the
+// first host that does cannot serve (no discovery library) — that is a
+// failure, not a reason to try the other host.
+function locateCompanions(env, { home = homedir(), selfPath = fileURLToPath(import.meta.url) } = {}) {
+  const root = env.AGENTIC_COMPANIONS_ROOT;
+  if (root && existsSync(join(root, 'discover-peer.mjs'))) return { scriptsDir: root, override: true, home };
+  const codexHome = codexHomeDir(env, home);
+  const hosts = {
+    claude: {
+      base: join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions'),
+      manifest: join('.claude-plugin', 'plugin.json'),
+    },
+    codex: {
+      base: join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'companions'),
+      manifest: join('.codex-plugin', 'plugin.json'),
+    },
+  };
+  const self = realOrResolved(selfPath);
+  let callerHost = null;
+  if (isWithin(self, realOrResolved(join(codexHome, 'plugins', 'cache')))) callerHost = 'codex';
+  else if (isWithin(self, realOrResolved(join(home, '.claude', 'plugins', 'cache')))) callerHost = 'claude';
+  for (const host of callerHost === 'codex' ? ['codex', 'claude'] : ['claude', 'codex']) {
+    const install = newestCompanionsInstall(hosts[host].base, hosts[host].manifest);
+    if (install.state === 'absent') continue;
+    return {
+      scriptsDir: install.state === 'ok' ? install.scriptsDir : null,
+      cacheBase: hosts[host].base,
+      manifestPath: hosts[host].manifest,
+      override: false,
+      home,
+      host,
+      callerHost,
+    };
+  }
   return null;
 }
 
-// Resolve codex-companion through the canonical discover-peer.mjs CLI so we
-// inherit its manifest verification + --prompt-file/CONTRACT_VERSION preflight
-// (rather than blindly picking any cache entry that merely has the file).
-export async function findCodexCompanion(env = process.env) {
-  const dir = findCompanionsScriptsDir(env);
-  if (!dir) return null;
-  const discoverPeer = join(dir, 'discover-peer.mjs');
-  return new Promise((res) => {
-    const child = spawn('node', [discoverPeer, '--peer', 'codex'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    child.stdout.on('data', (d) => { if (out.length < 1 << 16) out += d; });
-    child.on('close', (code) => res(code === 0 && out.trim() ? out.trim() : null));
-    child.on('error', () => res(null));
-  });
+export function findCompanionsScriptsDir(env = process.env, options = {}) {
+  return locateCompanions(env, options)?.scriptsDir ?? null;
+}
+
+// Resolve codex-companion through the canonical discover-peer.mjs library so
+// we inherit its manifest verification + --prompt-file/CONTRACT_VERSION
+// preflight (rather than blindly picking any cache entry that merely has the
+// file), and resolve it from the same host cache the library came from: the
+// cache base is passed explicitly, so the library's own per-peer default (the
+// Claude cache for peer=codex) cannot send an install chosen on Codex back to
+// Claude, and an older library cannot fall back to the marketplace clone.
+export async function findCodexCompanion(env = process.env, options = {}) {
+  const located = locateCompanions(env, options);
+  if (!located?.scriptsDir) return null;
+  if (located.callerHost && located.host !== located.callerHost) {
+    // ADR-0061 §Decision 4: a companion from the other host's cache is not
+    // pinned the way this host's install is, so the fallback is reported.
+    process.stderr.write(
+      `image: companion resolved from the ${located.host} plugin cache ` +
+      `because the ${located.callerHost} cache has no companions installed\n`,
+    );
+  }
+  let discoverPeerCompanion;
+  try {
+    ({ discoverPeerCompanion } = await import(pathToFileURL(join(located.scriptsDir, 'discover-peer.mjs')).href));
+  } catch {
+    return null;
+  }
+  const result = await discoverPeerCompanion(located.override
+    ? { peer: 'codex', env, home: located.home }
+    : {
+        peer: 'codex',
+        env,
+        home: located.home,
+        cacheBase: located.cacheBase,
+        layout: 'multi-version',
+        manifestPath: located.manifestPath,
+      });
+  return result.ok ? result.path : null;
 }
 
 // Zero-dependency image header sniff (PNG / JPEG / WebP VP8X/VP8/VP8L) — never
