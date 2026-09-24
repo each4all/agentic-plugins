@@ -50,7 +50,7 @@ model is generic `[features].hooks` + `/hooks` review/trust — there is no
 
 | Concern | Claude | Codex |
 |---------|--------|-------|
-| Plugin root | `$CLAUDE_PLUGIN_ROOT` (set by the Claude Code runtime); Claude fallback `$(find ~/.claude/plugins/cache/agentic-plugins/designer -maxdepth 1 -mindepth 1 -type d \| sort -V \| tail -1)` | Direct path: `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/designer` (Codex marketplace install layout per ADR-0008) |
+| Plugin root | `$CLAUDE_PLUGIN_ROOT` (set by the Claude Code runtime); Claude fallback `$(find ~/.claude/plugins/cache/agentic-plugins/designer -maxdepth 1 -mindepth 1 -type d \| sort -V \| tail -1)` | For a mentioned `designer` skill, the plugin directory that contains it (inside `$designer:start`, the mentioned skill is `start`, which runs the six verb skills in place): Codex injects a mentioned skill with its absolute path (`<path>…/core/skills/<skill>/SKILL.md</path>`), and dropping `/core/skills/<skill>/SKILL.md` from it leaves the root, which holds `.codex-plugin/plugin.json`. If that path is no longer in context, for example after compaction, a new mention of the skill supplies it again. With the default Codex home and the `agentic-plugins` marketplace added from Git, the root is `~/.codex/plugins/cache/agentic-plugins/designer/<version>`, the versioned copy Codex loads skills from, and `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/designer` is the marketplace checkout Codex installs from, not that copy. |
 | Entry path | `/designer:checkpoint <one-line summary>` | `$designer:checkpoint <one-line summary>` — this SKILL.md is the runbook; the skill-mention argument string is the `$ARGUMENTS` equivalent |
 | `state.mjs` host flag | `--host claude` | `--host codex` |
 
