@@ -173,10 +173,11 @@ plugins/<plugin-name>/
         └── agents/<agent>.toml      # Generated from core/personas/
 ```
 
-> The `core/` root is the **accepted target** of the ADR-0006
-> 2026-09-18 Amendment. The per-package relocation lands one plugin at a
-> time; a plugin still shows its skills under `skills/` until its own
-> relocation ships.
+> The `core/` root comes from the ADR-0006 2026-09-18 Amendment, and all
+> six skill-bearing plugins have moved their skills there. Each keeps a
+> README-only `skills/` directory at the conventional path, as the
+> Amendment requires; `attention` and `companions`, which hold no
+> functional skills, keep their `skills/README.md` placeholders.
 
 See [`adr/0006-directory-layout-install-pattern.md`](adr/0006-directory-layout-install-pattern.md).
 

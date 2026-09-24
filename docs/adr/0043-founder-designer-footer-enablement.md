@@ -279,6 +279,13 @@ hardened delivery and stale-file handling**, concretely:
   references to it — the runbook is what documents the code-emitted
   footer, the fail-closed baseline above, and the reconciliation rules
   for that persona.
+  **[2026-09-23]** Those copies now live at
+  `plugins/{founder,designer}/core/skills/_shared/references/session-handoff.md`,
+  and engineer's source at
+  `plugins/engineer/core/skills/_shared/references/session-handoff.md`,
+  moved there by the 2026-09-18 Amendment to
+  [ADR-0006](0006-directory-layout-install-pattern.md); the path above
+  is as it was recorded.
 - **Completion-flag mapping comes from the S9 contract, not from
   copying engineer's.** Engineer's `mapCompletionFlags` collapses to a
   `blocked` / `next-work-available` dichotomy

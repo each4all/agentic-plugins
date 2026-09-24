@@ -208,6 +208,13 @@ last_snapshot:                             # most recent automatic mechanical sn
 > per-invocation statement of this contract lives in each persona's
 > `skills/_shared/references/session-handoff.md` § Archive timing. Body text
 > below remains as written for historical record and carries inline pointers.
+>
+> **[2026-09-23]** Those runbooks — designer's, engineer's and founder's
+> — and orchestrator's copy now live at
+> `plugins/{designer,engineer,founder,orchestrator}/core/skills/_shared/references/session-handoff.md`,
+> moved there by the 2026-09-18 Amendment to
+> [ADR-0006](0006-directory-layout-install-pattern.md); the path above
+> is as it was recorded.
 
 > **Amendment 2026-08-22 (drift-digest)** — the digest command carries
 > `--untracked-files=normal` explicitly. Without it the command honours the

@@ -670,6 +670,13 @@ into `macro` erodes that definition. ADR-0022 ratifies a third
   | **Macro skill** | `skills/<macro>/` | `<plugin>:<macro>` | one folder per `LIFECYCLE_MACROS` entry (per ADR-0020 cascade) |
   | **Meta skill** | `skills/<meta>/` | `<plugin>:<meta>` | one folder per `META_COMMANDS` entry (per ADR-0017 cascade) |
 
+  **[2026-09-23]** The 2026-09-18 Amendment to
+  [ADR-0006](0006-directory-layout-install-pattern.md) moved the folders
+  in this table under their plugin's `core/skills/`; engineer's
+  `investigate`, `start` and `resume` folders, for example, are now
+  `plugins/engineer/core/skills/{investigate,start,resume}/`. The paths
+  in the table above are as they were recorded.
+
   All three categories share the same internal shape: `SKILL.md`
   (frontmatter `name: <folder>`) + `agents/openai.yaml`
   (`interface` block + `policy: allow_implicit_invocation: false`).

@@ -106,6 +106,15 @@ The verb-skill convention is preserved verbatim for macro skills:
   closes the **cognitive runbook parity** gap so Codex users can
   follow the same lifecycle steps that Claude users follow.
 
+**[2026-09-23]** The 2026-09-18 Amendment to
+[ADR-0006](0006-directory-layout-install-pattern.md) moved the skill
+folders in §1 and §2 under their plugin's `core/skills/`: engineer's
+verb skills are now `plugins/engineer/core/skills/<verb>/`, and its
+macro runbook is `plugins/engineer/core/skills/start/SKILL.md`, which
+`commands/start.md` names as
+`$CLAUDE_PLUGIN_ROOT/core/skills/start/SKILL.md`. The paths in §1 and §2
+are as they were recorded.
+
 ### 3. VALID_VERBS unchanged
 
 The six-verb enum in `plugins/engineer/scripts/state.mjs` (and the

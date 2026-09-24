@@ -286,6 +286,15 @@ Two additional concerns the resolver MUST handle:
   `$ENGINEER_PLUGIN_ROOT` substituted into argv directly (not via
   the rebound `$CLAUDE_PLUGIN_ROOT`). The Codex-equivalent variable
   name is also rebound when running on Codex.
+  **[2026-09-23]** The 2026-09-18 Amendment to
+  [ADR-0006](0006-directory-layout-install-pattern.md) moved engineer's
+  skill files and shared references under
+  `plugins/engineer/core/skills/`, and engineer's commands now cite them
+  as `$CLAUDE_PLUGIN_ROOT/core/skills/<verb>/SKILL.md` and
+  `core/skills/_shared/references/*.md`. Those commands dispatch peers
+  through `scripts/peer-runner.mjs`, which had replaced
+  `dispatch-peer.mjs` in them before that move. The paths and script
+  names above are as they were recorded.
 - **Minimum-version preflight**: an older engineer install may be
   discovered successfully but lack PR-A `--parent-workflow` /
   `--originating-subtask` CLI flag support or PR-D Phase 0 env-var
