@@ -30,8 +30,23 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { discoverRuntimePluginRoot, NOTIFY_MIN_RUNTIME_VERSION } from './discover-runtime.mjs';
-import { resolveCompanionPath, validateEnvelopeShape } from './dispatch-peer.mjs';
+import { resolveCompanion, validateEnvelopeShape } from './dispatch-peer.mjs';
 import { recordPendingEnsemble, resolveWorkflowStorage } from './state.mjs';
+
+
+// ADR-0061 §Decision 4: record where the companion came from — which host
+// cache, and whether a Codex-installed caller fell back to the Claude cache —
+// in the ledger, so a diagnostic can report it rather than infer it.
+function companionRecord(resolved) {
+  return {
+    path: resolved.path,
+    source: resolved.source,
+    host: resolved.host,
+    caller_host: resolved.callerHost,
+    cross_host_fallback: resolved.crossHostFallback,
+    ...(resolved.reason ? { reason: resolved.reason } : {}),
+  };
+}
 
 export const HANDLE_SCHEMA_VERSION = '1.0';
 export const VALID_PEERS = new Set(['claude', 'codex']);
@@ -628,7 +643,8 @@ export async function runPeer(args) {
   // Orchestrator-specific graceful degradation: resolve the companion before
   // creating ledger files or recording pending_ensemble. Missing companions
   // become LOCAL-ONLY plan synthesis inputs with no orphan pending row.
-  const companionPath = await resolveCompanionPath(options.peer, { env: options.env });
+  const companion = await resolveCompanion(options.peer, { env: options.env });
+  const companionPath = companion.path;
   if (!companionPath) {
     // ADR-0040 §5: pre-ledger terminal failure — `failed` is returned with NO
     // handle ever written, so the self-sensor emits directly from this early
@@ -697,6 +713,7 @@ export async function runPeer(args) {
 
     await updateHandle(paths.handle, (h) => {
       h.status = 'spawning';
+      h.companion = companionRecord(companion);
     });
 
     const childArgs = ['task', '--prompt-file', prompt.promptFile, '--output-format', options.outputFormat];
