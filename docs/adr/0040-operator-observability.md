@@ -2,7 +2,16 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md) — the Codex rung of the §3 discovery ladder and, for a Codex-hosted caller, its host order only, including its use by the §4 receiver shuttle and the §5 peer-run self-sensor (2026-09-24)
+
+> **The "Codex fixed cache" rung re-decided by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md)
+> §Decision 3** — the installed version cache, never the marketplace
+> clone, and a Codex-hosted caller checks it before the Claude cache. The
+> §4 shuttle carries its own copy of the ladder in the file the
+> operator installed, so it changes only when the operator re-renders it
+> from ADR-0061's new template (§Decision 3, §Decision 5 (b)). Until
+> ADR-0061's S2 (sensors) and S3 (shuttle) ship, the resolvers still read
+> the clone. Everything else in §3, §4 and §5 is unchanged.
 
 **§3's attention charter widened by
 [ADR-0044](0044-session-generic-handoff-capture.md) §2 (2026-07-18)** — from
@@ -379,7 +388,10 @@ A single notification event shape shared by all producers:
   - `SubagentStop` (normal; `agent_type` matcher available for tuning).
 - Each sensor resolves the runtime root via a **copied
   `discover-runtime.mjs`** (ADR-0039 §5 ladder: env override → Claude
-  cache SemVer-max → Codex fixed cache → sibling monorepo;
+  cache SemVer-max → Codex fixed cache *(superseded 2026-09-24 by
+  [ADR-0061](0061-codex-installs-pinned-to-release-commits.md):
+  installed version cache, checked first by a Codex-hosted caller)* →
+  sibling monorepo;
   `MIN_RUNTIME_VERSION` set to the first runtime version shipping
   `notify.mjs`; missing/too-old ⇒ silent no-op, no stale fallback) and
   shells out to `notify.mjs emit`.

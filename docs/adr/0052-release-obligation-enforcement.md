@@ -5,6 +5,17 @@
 Accepted (2026-08-13). Implemented by `scripts/check-release-obligation.mjs`
 and gated by `tests/scripts/test-release-obligation.mjs`.
 
+> **Amended 2026-09-24 by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md).**
+> The premise this ADR enforces — a protected change is not in force until a
+> release carries it — holds on Claude Code for a version already
+> materialized and not replaced, but not on Codex CLI 0.156.1 while the Codex catalog's entries are `local`: a
+> `codex exec` or app-server start can re-copy `main` into the installed
+> cache under the unchanged version. It holds on Codex once ADR-0061
+> §Decision 5 (a) activates, on each machine past §Decision 5 (b)
+> (ADR-0061 §Decision 6).
+> The Decision is unchanged: reconciling the protected tree against the
+> newest reachable tag is still the right check.
+
 ## Context
 
 [ADR-0051](0051-host-parity-baseline-source.md) §Decision 2 made a change to

@@ -236,8 +236,11 @@ host merely reports the older version. The cross-plugin discovery helpers
 `discover-peer.mjs`) start from their own host's location and do not consult
 its install registry. In Claude's plugin cache they take the highest retained
 version; on Codex they read one fixed path, the marketplace checkout under
-`~/.codex/.tmp/marketplaces/`, which follows `main`. Each resolved path
-therefore has to be checked in a fresh session, or pinned through the helper's
+`~/.codex/.tmp/marketplaces/`, which follows `main` *(until
+[ADR-0061](0061-codex-installs-pinned-to-release-commits.md)
+S1–S2 ship; its §Decision 3 moves the Codex candidate to the installed
+version cache, which stops following `main` only after its §Decision 5
+activation)*. Each resolved path therefore has to be checked in a fresh session, or pinned through the helper's
 override and checked again: `AGENTIC_ENGINEER_ROOT` and `AGENTIC_RUNTIME_ROOT`
 take a plugin root, while `AGENTIC_COMPANIONS_ROOT` takes the companions
 `scripts/` directory. Rolling back a hook-bearing package also stales the Codex

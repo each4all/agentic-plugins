@@ -265,6 +265,20 @@ Two consequences for authors:
   is the failure ADR-0051 exists to eliminate. The check fails closed on a
   version regression rather than trying to interpret it.
 
+**On Codex this premise does not hold yet** (measured 2026-09-24, codex-cli
+0.156.1). With the Codex catalog's `local` entries and the marketplace added
+from Git without a ref, a `codex exec` or app-server start can upgrade the
+marketplace clone when `main` has moved, and then force-reinstalls every
+configured plugin from it without a version change. An installed Codex
+plugin then runs `main`'s bytes under its released version.
+[ADR-0061](docs/adr/0061-codex-installs-pinned-to-release-commits.md) pins
+each Codex catalog entry to its release commit and moves cross-plugin
+discovery to the installed cache. Until its publisher activation
+(§Decision 5 (a)) lands, and on each machine until that machine passes
+§Decision 5 (b), "editing them on `main` changes nothing anyone runs" holds
+on Claude Code only, and there only for a version already materialized and
+not replaced.
+
 The doc-freshness gate is split along the same line so a token lag and
 a missing proof report different remedies. `npm run validate:doc-evidence`
 (gated by `tests/scripts/test-doc-evidence-consistency.mjs`) additionally

@@ -2,7 +2,15 @@
 
 ## Status
 
-Accepted (2026-07-02)
+Superseded by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md) — §5's Codex rung and, for a Codex-hosted caller, its host order only (2026-09-24). Accepted (2026-07-02)
+
+> **§5's "Codex-fixed-cache" rung re-decided by
+> [ADR-0061](0061-codex-installs-pinned-to-release-commits.md)
+> §Decision 3** — the installed version cache, never the marketplace
+> clone, and a Codex-hosted caller checks it before the Claude cache.
+> `MIN_RUNTIME_VERSION` gating and the no-stale-fallback rule are
+> unchanged. The persona resolvers still read the clone until ADR-0061's S2
+> ships.
 
 > Amended 2026-08-27 — see [Amendments](#amendments). The
 > subprocess contract below no longer passes `--context-state`;
@@ -199,7 +207,10 @@ are never inferred and must be mapped explicitly by the caller.
 Locating `footer.mjs` at the installed runtime plugin root requires a new
 resolver, **copied into each persona** (ADR-0010 §5 — not shared),
 mirroring `discover-engineer.mjs`'s env → Claude-cache SemVer →
-Codex-fixed-cache → sibling-monorepo ladder, filesystem-only,
+Codex-fixed-cache *(superseded 2026-09-24 by
+[ADR-0061](0061-codex-installs-pinned-to-release-commits.md):
+installed version cache, checked first by a Codex-hosted caller)* →
+sibling-monorepo ladder, filesystem-only,
 `child_process` exec. A missing or too-old runtime root is a **silent
 fail-closed** (no footer, workflow proceeds) — **no** fall-back to a stale
 cache.

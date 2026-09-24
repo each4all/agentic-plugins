@@ -2,12 +2,24 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md) — § (b)'s Codex discovery candidate only (2026-09-24)
+
+> **Codex candidate re-decided by
+> [ADR-0061](0061-codex-installs-pinned-to-release-commits.md)
+> §Decision 3.** On Codex a consumer resolves `companions` from the installed version cache
+> `<CODEX_HOME or ~/.codex>/plugins/cache/agentic-plugins/companions/<version>/`,
+> and the marketplace clone is no longer a candidate. The `companions`
+> plugin, cache-glob discovery with manifest-name verification, the
+> § (c) override and § (e) graceful degradation are unchanged. The
+> helpers still read the clone until ADR-0061's S1 ships.
 
 > Amended 2026-09-24 — see [Amendments](#amendments). Codex CLI installs
 > plugins into a versioned cache and loads their skills from there (in use
 > since at least 0.137.0); the marketplace clone that this ADR's Codex path
 > names is the install source. The § (b) discovery contract is unchanged.
+> *(That is, unchanged by the 2026-09-24 amendment;
+> [ADR-0061](0061-codex-installs-pinned-to-release-commits.md),
+> accepted the same day, re-decides § (b)'s Codex candidate — see above.)*
 
 ## Context
 
@@ -154,6 +166,11 @@ policy).
 ```
 ~/.codex/.tmp/marketplaces/agentic-plugins/plugins/companions/scripts/<companion>.mjs
 ```
+
+*(superseded 2026-09-24 by
+[ADR-0061](0061-codex-installs-pinned-to-release-commits.md)
+§Decision 3 — the Codex candidate is the installed version cache, never
+this clone)*
 
 Codex CLI 0.128.0 stores marketplace artifacts as a **full repository
 git clone** at `~/.codex/.tmp/marketplaces/<marketplace>/`, regardless
@@ -611,8 +628,9 @@ resolution section describes it ("a single fixed path under Codex's
 plugin install directory"); the § (c) override and each helper's
 fallback order are unchanged. Whether cross-plugin discovery should
 select the installed copy instead is a separate decision with its own
-tests, and this amendment does not make it. The 0.128.0 storage findings
-in § (b) and in the 2026-05-04 amendment stay as the record of that
+tests, and this amendment does not make it. *([ADR-0061](0061-codex-installs-pinned-to-release-commits.md)
+makes it, 2026-09-24; the default candidate described here is superseded
+there.)* The 0.128.0 storage findings in § (b) and in the 2026-05-04 amendment stay as the record of that
 measurement; § (b)'s discovery algorithm remains the operative contract.
 
 **Records this measurement disagrees with**: the cutover scorecard
