@@ -522,13 +522,28 @@ const push = (dir) => {
   }
 };
 
+/**
+ * Commit at a fixed time. Two jobs that make byte-identical commits in the
+ * same second produce the SAME sha — measured on Linux CI, where both commits
+ * below landed within one second and the "rejected" push became a no-op
+ * success. So each case pins its dates rather than depending on the clock.
+ */
+function commitAt(dir, message, date) {
+  git(dir, ['add', '-A']);
+  execFileSync('git', ['-C', dir, 'commit', '-q', '-m', message], {
+    env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+  });
+}
+
+const ACTIVATION = 'chore(marketplace): sync catalog versions to release-please-manifest and activate the Codex catalog pins';
+
 test('recovery through a remote — a rejected (non-fast-forward) activation push is re-dispatched from a fresh checkout', (t) => {
   const { origin, checkout } = remote(t);
   const a = checkout();
   const b = checkout();
-  for (const job of [a, b]) {
+  for (const [job, date] of [[a, '2026-09-25T00:00:00Z'], [b, '2026-09-25T00:01:00Z']]) {
     assert.equal(runCli(job, WRITER, ['--activate']).status, 0);
-    commit(job, 'chore(marketplace): sync catalog versions to release-please-manifest and activate the Codex catalog pins');
+    commitAt(job, ACTIVATION, date);
   }
   assert.equal(push(a), true, 'the first job publishes');
   assert.equal(push(b), false, 'the second is rejected as non-fast-forward — and must not be forced');
@@ -540,6 +555,20 @@ test('recovery through a remote — a rejected (non-fast-forward) activation pus
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stdout, /already in sync/);
   assert.equal(git(fresh, ['status', '--porcelain']).trim(), '', 'nothing left to push');
+});
+
+test('recovery through a remote — two jobs that write the same activation in the same second converge on one commit', (t) => {
+  // Not a rejection at all: the second push finds its commit already there.
+  const { checkout } = remote(t);
+  const a = checkout();
+  const b = checkout();
+  for (const job of [a, b]) {
+    assert.equal(runCli(job, WRITER, ['--activate']).status, 0);
+    commitAt(job, ACTIVATION, '2026-09-25T00:00:00Z');
+  }
+  assert.equal(git(a, ['rev-parse', 'HEAD']), git(b, ['rev-parse', 'HEAD']), 'byte-identical commits');
+  assert.equal(push(a), true);
+  assert.equal(push(b), true, 'the second push is a no-op, not a conflict');
 });
 
 test('recovery through a remote — after a later step failed, a fresh dispatch converges, and advances once main moves', (t) => {
