@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.9](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.8...plugin-designer-v0.3.9) (2026-09-25)
+
+
+### Bug Fixes
+
+* **plugin/designer:** resolve companions from the caller's own install cache ([#810](https://github.com/each4all/agentic-plugins/issues/810)) ([b0f9272](https://github.com/each4all/agentic-plugins/commit/b0f9272d84f91d1b7e27bfb75f436d6f03088efd))
+* **plugin/designer:** resolve runtime from the caller's own install cache ([#812](https://github.com/each4all/agentic-plugins/issues/812)) ([47ce9a1](https://github.com/each4all/agentic-plugins/commit/47ce9a18814ac484b64770cc074e9edf01fa4eb7))
+
 ## [0.3.8](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.7...plugin-designer-v0.3.8) (2026-09-22)
 
 

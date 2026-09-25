@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/each4all/agentic-plugins/compare/companions-v0.3.1...companions-v0.3.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **companions:** resolve the Codex companion from the installed cache ([#810](https://github.com/each4all/agentic-plugins/issues/810)) ([3b3c90a](https://github.com/each4all/agentic-plugins/commit/3b3c90a9b213bd063d7534987b2fcd0f6707fc41))
+
 ## [0.3.1](https://github.com/each4all/agentic-plugins/compare/companions-v0.3.0...companions-v0.3.1) (2026-08-24)
 
 

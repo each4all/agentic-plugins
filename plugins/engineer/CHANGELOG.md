@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.11](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.10...plugin-engineer-v0.21.11) (2026-09-25)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** resolve companions from the caller's own install cache ([#810](https://github.com/each4all/agentic-plugins/issues/810)) ([861aa21](https://github.com/each4all/agentic-plugins/commit/861aa2180b9232d11de3270e5cfacde0b5c18bc4))
+* **plugin/engineer:** resolve siblings from the caller's own install cache ([#812](https://github.com/each4all/agentic-plugins/issues/812)) ([4b5ad75](https://github.com/each4all/agentic-plugins/commit/4b5ad750951ef3702de6ec8ecc7bcf336fd260c9))
+
 ## [0.21.10](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.9...plugin-engineer-v0.21.10) (2026-09-22)
 
 
