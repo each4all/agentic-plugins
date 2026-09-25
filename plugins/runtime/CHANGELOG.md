@@ -20,6 +20,19 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.98.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.97.4...plugin-runtime-v0.98.0) (2026-09-25)
+
+
+### Features
+
+* **plugin/runtime:** report Codex installs against their release pin, never the marketplace clone ([#813](https://github.com/each4all/agentic-plugins/issues/813)) ([7fb284d](https://github.com/each4all/agentic-plugins/commit/7fb284d83ad0c2b60eef17895f91d30a89be9650))
+
+
+### Bug Fixes
+
+* **plugin/runtime:** keep peer companions and the proof's engineer to installs ([#812](https://github.com/each4all/agentic-plugins/issues/812)) ([f8712e2](https://github.com/each4all/agentic-plugins/commit/f8712e2ed65468647db6c87cc24d8f9a6a7082fa))
+* **plugin/runtime:** state what a Codex hook attestation is bound to in the parity baseline ([#814](https://github.com/each4all/agentic-plugins/issues/814)) ([dce6592](https://github.com/each4all/agentic-plugins/commit/dce659259e957dd4cd534bf66a31307ae2ce888a))
+
 ## [0.97.4](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.97.3...plugin-runtime-v0.97.4) (2026-09-23)
 
 

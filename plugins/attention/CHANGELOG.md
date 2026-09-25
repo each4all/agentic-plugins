@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.9.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.9.0...plugin-attention-v0.9.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **plugin/attention:** resolve runtime from the caller's own install cache ([#812](https://github.com/each4all/agentic-plugins/issues/812)) ([4ed53a8](https://github.com/each4all/agentic-plugins/commit/4ed53a80b099897ff808ddfbcffdd1e39302f887))
+
 ## [0.9.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.8.0...plugin-attention-v0.9.0) (2026-07-22)
 
 

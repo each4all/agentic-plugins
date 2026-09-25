@@ -2,6 +2,14 @@
 
 All notable changes to the `image` plugin are documented here.
 
+## [0.3.2](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.3.1...plugin-image-v0.3.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **plugin/image:** locate companions in the host install caches, never the clone ([#810](https://github.com/each4all/agentic-plugins/issues/810)) ([61ae242](https://github.com/each4all/agentic-plugins/commit/61ae2424973c5bfe8a5c0f514ccd9800da0c56b1))
+* **plugin/image:** return the companion path canonical ([#812](https://github.com/each4all/agentic-plugins/issues/812)) ([89e6bba](https://github.com/each4all/agentic-plugins/commit/89e6bba972619c488c4c8426785656ae8291624e))
+
 ## [0.3.1](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.3.0...plugin-image-v0.3.1) (2026-09-21)
 
 

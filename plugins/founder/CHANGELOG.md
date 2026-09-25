@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.9](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.8...plugin-founder-v0.4.9) (2026-09-25)
+
+
+### Bug Fixes
+
+* **plugin/founder:** resolve companions from the caller's own install cache ([#810](https://github.com/each4all/agentic-plugins/issues/810)) ([5bb7d9d](https://github.com/each4all/agentic-plugins/commit/5bb7d9dcb8411b8e978e7bcf4b033c689f257cbc))
+* **plugin/founder:** resolve runtime from the caller's own install cache ([#812](https://github.com/each4all/agentic-plugins/issues/812)) ([09a6435](https://github.com/each4all/agentic-plugins/commit/09a6435631e0cfb8121394b4373282923b9761cd))
+
 ## [0.4.8](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.7...plugin-founder-v0.4.8) (2026-09-22)
 
 
