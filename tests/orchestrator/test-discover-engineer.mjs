@@ -15,7 +15,7 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, match } from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, chmod, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,7 +34,8 @@ const { discoverEngineerPluginRoot, preflightEngineerCapability } =
 // Test fixture helpers
 
 async function withTmpHomeAndRepo(fn) {
-  const dir = await mkdtemp(join(tmpdir(), 'discover-engineer-'));
+  // Canonical: the resolver returns canonical roots (ADR-0061 S2).
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'discover-engineer-')));
   try {
     await fn(dir);
   } finally {
@@ -42,10 +43,10 @@ async function withTmpHomeAndRepo(fn) {
   }
 }
 
-async function writeEngineerLayout(root, { name, version, statePayload } = {}) {
-  await mkdir(join(root, '.claude-plugin'), { recursive: true });
+async function writeEngineerLayout(root, { name, version, statePayload, manifestDir = '.claude-plugin' } = {}) {
+  await mkdir(join(root, manifestDir), { recursive: true });
   await writeFile(
-    join(root, '.claude-plugin', 'plugin.json'),
+    join(root, manifestDir, 'plugin.json'),
     JSON.stringify({ name: name ?? 'engineer', version: version ?? '1.0.0' }),
   );
   await mkdir(join(root, 'scripts'), { recursive: true });
@@ -140,19 +141,18 @@ describe('discoverEngineerPluginRoot — Claude cache layout (multi-version SemV
   });
 });
 
-describe('discoverEngineerPluginRoot — Codex cache layout (single fixed path)', () => {
-  it('returns the Codex cache path when scripts/state.mjs exists', async () => {
+describe('discoverEngineerPluginRoot — Codex cache layout (versioned install cache, ADR-0061)', () => {
+  it('returns the newest Codex install when scripts/state.mjs exists', async () => {
     await withTmpHomeAndRepo(async (dir) => {
-      const codexBase = join(
-        dir, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'engineer',
-      );
-      await writeEngineerLayout(codexBase, { version: '1.0.0' });
+      const codexBase = join(dir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'engineer');
+      await writeEngineerLayout(join(codexBase, '1.0.0'), { version: '1.0.0', manifestDir: '.codex-plugin' });
+      await writeEngineerLayout(join(codexBase, '1.2.0'), { version: '1.2.0', manifestDir: '.codex-plugin' });
       const result = await discoverEngineerPluginRoot({
         env: {},
         home: dir,
         selfUrl: fakeOrchestratorSelfUrl(dir),
       });
-      strictEqual(result, codexBase);
+      strictEqual(result, join(codexBase, '1.2.0'));
     });
   });
 });

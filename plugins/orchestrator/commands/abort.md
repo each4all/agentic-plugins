@@ -115,7 +115,7 @@ Parent per-file lock released after this returns.
 Identical to `/orchestrator:finalize` step 2. Engineer children get routed to `stop-archive` (terminal) or `detach-archive` (mid-flight, deleted branch, or gate-not-met).
 
 ```bash
-ENGINEER_PLUGIN_ROOT="$(node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" discover 2>/dev/null)"
+ENGINEER_PLUGIN_ROOT="$(node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" discover)"  # stderr kept: a cross-host fallback is reported there (ADR-0061)
 if [ -z "$ENGINEER_PLUGIN_ROOT" ]; then
   echo "✗ engineer plugin not found — cannot detach children." >&2
   exit 1
