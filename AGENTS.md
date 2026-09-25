@@ -495,7 +495,14 @@ Primary local commands:
 - `npm run lint:plugin-shape` — validate all plugin directories with `kit/lint`.
 - `npm run validate:marketplace`, `npm run validate:versions`, and
   `npm run validate:artifacts` — catalog, release-please manifest, and
-  generated-artifact ignore policy consistency.
+  generated-artifact ignore policy consistency. `validate:marketplace` also
+  checks the Codex catalog's
+  [ADR-0061](docs/adr/0061-codex-installs-pinned-to-release-commits.md)
+  Decision 2 phase against the migration floors in
+  `scripts/data/codex-pin-floors.json`. It needs full history and tags and
+  fails closed without them. `-- --base <rev>` adds the monotonic-pin
+  comparison against the target branch; CI passes it on pull requests and
+  pushes.
 - `npm run sync:companions` and `npm run sync:marketplace` — drift-correction helpers.
 - `npm run mutate -- <spec>` — run a mutation spec from `scripts/mutation-specs/`.
   A green suite is not evidence that the suite tests anything, and this

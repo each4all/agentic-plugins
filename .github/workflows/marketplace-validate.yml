@@ -11,6 +11,8 @@ on:
       - 'scripts/validate-artifacts.mjs'
       - 'scripts/validate-marketplace.mjs'
       - 'scripts/validate-versions.mjs'
+      - 'scripts/lib/codex-catalog-pins.mjs'
+      - 'scripts/data/codex-pin-floors.json'
       - 'tests/scripts/test-validate-artifacts.mjs'
       - '.github/workflows/marketplace-validate.yml'
       - 'package.json'
@@ -24,6 +26,8 @@ on:
       - 'scripts/validate-artifacts.mjs'
       - 'scripts/validate-marketplace.mjs'
       - 'scripts/validate-versions.mjs'
+      - 'scripts/lib/codex-catalog-pins.mjs'
+      - 'scripts/data/codex-pin-floors.json'
       - 'tests/scripts/test-validate-artifacts.mjs'
       - '.github/workflows/marketplace-validate.yml'
       - 'package.json'
@@ -41,6 +45,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # ADR-0061 Decision 2: the Codex catalog's floors and pins are claims
+          # about tags and the trees they point at, and the monotonic-pin check
+          # reads the catalog at the target branch's commit. validate-marketplace
+          # fails closed on a shallow clone rather than passing on structure.
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -50,14 +60,22 @@ jobs:
       - name: Validate both catalogs
         env:
           AGENTIC_RELEASE_PLEASE_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'release-please--branches--main' && '1' || '0' }}
+          # The baseline for the monotonic-pin check (ADR-0061 Decision 2) is
+          # the catalog on the target branch before the change: the pull
+          # request's base, or main before this push. workflow_dispatch has no
+          # "before", and the validator then says the baseline was not compared.
+          CATALOG_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || '' }}
         run: |
+          ARGS=()
           if [ "$AGENTIC_RELEASE_PLEASE_PR" = "1" ]; then
-            npm run validate:marketplace -- --allow-version-lag
-          else
-            npm run validate:marketplace
+            ARGS+=(--allow-version-lag)
           fi
+          if [ -n "$CATALOG_BASE" ] && [ "$CATALOG_BASE" != "0000000000000000000000000000000000000000" ]; then
+            ARGS+=(--base "$CATALOG_BASE")
+          fi
+          npm run validate:marketplace -- "${ARGS[@]}"
 
-      - name: Cross-check versions (release-please-manifest <-> plugin manifests <-> Claude marketplace)
+      - name: Cross-check versions (release-please-manifest <-> plugin manifests <-> both marketplace catalogs)
         env:
           AGENTIC_RELEASE_PLEASE_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'release-please--branches--main' && '1' || '0' }}
         run: |

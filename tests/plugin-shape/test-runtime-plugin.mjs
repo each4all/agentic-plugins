@@ -6,6 +6,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
+import { assertCodexCatalogSource } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
@@ -150,8 +151,8 @@ describe('plugins/runtime marketplace and release registration', () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'runtime');
     ok(entry, 'runtime entry present in Codex catalog');
-    strictEqual(entry.source.source, 'local');
-    strictEqual(entry.source.path, './plugins/runtime');
+    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
+    assertCodexCatalogSource(entry, 'runtime', { repoRoot: REPO_ROOT, version: manifest.version, allowLag: RELEASE_PLEASE_PR });
     strictEqual(entry.policy.installation, 'AVAILABLE');
     strictEqual(entry.policy.authentication, 'ON_USE');
     strictEqual(entry.category, 'Productivity');
