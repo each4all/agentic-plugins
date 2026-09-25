@@ -1,4 +1,4 @@
-// Codex plugin-root contract — engineer, designer and founder.
+// Codex plugin-root contract — engineer, designer, founder and orchestrator.
 //
 // Those three personas' command-resolution tables told a Codex agent that its
 // plugin root was the marketplace checkout under `~/.codex/.tmp/marketplaces/`,
@@ -12,9 +12,13 @@
 // test-checkpoint-reinjection-contract.mjs gives: one guard per persona would
 // repeat the one-of-N-copies defect in the tests.
 //
-// Scope: orchestrator's seven command-resolution tables describe the root as
-// the "Codex marketplace install path" and are outside this contract; the
-// ADR-0008 amendment records that they keep their wording.
+// Scope: orchestrator's seven command-resolution tables joined in ADR-0061
+// S2, which replaced their "Codex marketplace install path" wording (the
+// ADR-0008 amendment, dated before it, records that they kept it). They carry
+// the same cell without the start-macro clause, since orchestrator has no
+// start macro. The same change reworded the cell's last sentence: the
+// checkout "tracks the repository's main branch" rather than being what Codex
+// "installs from", which ADR-0061's pinned catalog makes untrue.
 //
 // Traps this closes:
 //   - A table that loses its row, or a new command-resolution section, would
@@ -64,13 +68,18 @@ import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 
 // The command-resolution tables that document a Codex plugin root in these
-// three personas. engineer's start macro has none; designer's and founder's do.
+// plugins. engineer's start macro has none; designer's and founder's do.
 const TABLES = {
   engineer: ['checkpoint', 'peer-now', 'resume'],
   designer: ['checkpoint', 'peer-now', 'resume', 'start'],
   founder: ['checkpoint', 'peer-now', 'resume', 'start'],
+  orchestrator: ['abort', 'checkpoint', 'done', 'finalize', 'next', 'peer-now', 'resume'],
 };
 const PERSONAS = Object.keys(TABLES);
+// The plugins whose start macro runs the six verb skills in place, so their
+// cell names it.
+const START_MACRO = new Set(['engineer', 'designer', 'founder']);
+const startClause = (persona) => ` (inside \`$${persona}:start\`, the mentioned skill is \`start\`, which runs the six verb skills in place)`;
 
 // Engineer passages that send a Codex reader to the checkpoint table for the
 // root, each with the delimiters of its passage. The five non-decide verbs
@@ -118,6 +127,8 @@ const RETIRED = [
   [/no versioned subdirectory, no glob needed/i, 'says the Codex install has no versioned subdirectory'],
   [/command resolution,? (?:which )?records the default (?:Codex )?layout/i, 'says the checkpoint table records a default layout to assume'],
   [/a non-default install root (?:means resolving|or marketplace name means the path must be|must be resolved)/i, 'treats the root as assumable unless the install is non-default'],
+  [/is the marketplace checkout Codex installs from/i, 'says the checkout is what Codex installs from (ADR-0061 pins installs to release commits)'],
+  [/\bCodex marketplace install path\b/i, 'calls the root the "Codex marketplace install path"'],
 ];
 const POINTER = /(`[^`]*checkpoint\/SKILL\.md`) § Claude\/Codex command resolution/g;
 
@@ -157,7 +168,7 @@ async function* docFiles(persona) {
   }
 }
 
-describe('Codex plugin-root contract — engineer, designer, founder', () => {
+describe('Codex plugin-root contract — engineer, designer, founder, orchestrator', () => {
   it('the SKILL.md files with a command-resolution section or a Plugin root row are exactly the enumerated tables', async () => {
     for (const persona of PERSONAS) {
       const root = resolveSkillsRoot(pluginDir(persona));
@@ -202,12 +213,14 @@ describe('Codex plugin-root contract — engineer, designer, founder', () => {
         strictEqual(cells.length, header.length, `${label(path)} Plugin root row must have as many cells as its header`);
         const required = [
           [`For a mentioned \`${persona}\` skill, the plugin directory that contains it`, 'scope the rule to a mentioned skill of this plugin'],
-          [`inside \`$${persona}:start\`, the mentioned skill is \`start\`, which runs the six verb skills in place`, 'name start as the mentioned skill when it runs the verbs in place'],
+          ...(START_MACRO.has(persona)
+            ? [[startClause(persona).trim().slice(1, -1), 'name start as the mentioned skill when it runs the verbs in place']]
+            : []),
           ['Codex injects a mentioned skill with its absolute path', 'say where the root comes from'],
           [`dropping \`/${rel}/<skill>/SKILL.md\` from it leaves the root, which holds \`.codex-plugin/plugin.json\``, `derive the root by dropping this plugin's declared skills root (/${rel}/<skill>/SKILL.md)`],
           ['a new mention of the skill supplies it again', 'say how to recover the path once it has left the context'],
           [`With the default Codex home and the \`agentic-plugins\` marketplace added from Git, the root is \`~/.codex/plugins/cache/agentic-plugins/${persona}/<version>\`, the versioned copy Codex loads skills from`, "name its own plugin's versioned cache as the location under the default Codex home and Git marketplace"],
-          [`\`~/.codex/.tmp/marketplaces/agentic-plugins/plugins/${persona}\` is the marketplace checkout Codex installs from, not that copy`, 'name the checkout as the source Codex installs from, not the loaded copy'],
+          [`\`~/.codex/.tmp/marketplaces/agentic-plugins/plugins/${persona}\` is the marketplace checkout, which tracks the repository's \`main\` branch, not that copy`, 'name the checkout as tracking main, not the loaded copy'],
         ];
         for (const [sentence, why] of required) {
           ok(codex.includes(sentence), `${label(path)} Codex cell must ${why}: expected "${sentence}"`);
@@ -216,7 +229,9 @@ describe('Codex plugin-root contract — engineer, designer, founder', () => {
         for (const [pattern, why] of RETIRED) {
           ok(!pattern.test(codex), `${label(path)} Codex cell ${why}`);
         }
-        normalized.push(codex.replace(new RegExp(`\\b${persona}\\b`, 'g'), '<persona>'));
+        // orchestrator has no start macro; its cell is the same sentence without that clause.
+        ok(START_MACRO.has(persona) || !codex.includes(':start`'), `${label(path)} Codex cell must not name a start macro the plugin does not have`);
+        normalized.push(codex.replace(startClause(persona), '').replace(new RegExp(`\\b${persona}\\b`, 'g'), '<persona>'));
       }
     }
     // Self-check on this file: every table above must have reached the push.
@@ -250,7 +265,7 @@ describe('Codex plugin-root contract — engineer, designer, founder', () => {
     }
   });
 
-  it('across the three plugins, only the table cells name the checkout, only the listed passages point at the table, and no retired claim survives', async () => {
+  it('across the four plugins, only the table cells name the checkout, only the listed passages point at the table, and no retired claim survives', async () => {
     // With the per-file counts below, a table file's one occurrence is the one
     // the cell test found, and a pointer file's one pointer is inside the
     // passage the pointer test extracted.
@@ -278,7 +293,7 @@ describe('Codex plugin-root contract — engineer, designer, founder', () => {
         }
       }
     }
-    ok(scanned > 100, `the sweep must reach the three plugins' documents (scanned ${scanned})`);
+    ok(scanned > 100, `the sweep must reach the four plugins' documents (scanned ${scanned})`);
     deepStrictEqual(naming.sort(), tableFiles.sort(), 'only the enumerated Plugin root cells may name the marketplace checkout in these plugins');
     deepStrictEqual(pointing.sort(), pointerFiles.sort(), 'the passages pointing at the checkpoint command-resolution table must be exactly the enumerated ones');
   });
