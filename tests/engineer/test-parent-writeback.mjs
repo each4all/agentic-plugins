@@ -14,11 +14,11 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, match, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat, cp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const ORCHESTRATOR_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
@@ -38,7 +38,8 @@ const MIN_DIGEST =
 // discoverOrchestratorPluginRoot — env override + cache walk + repo fallback
 
 async function withTmpHomeAndRepo(fn) {
-  const dir = await mkdtemp(join(tmpdir(), 'parent-writeback-discover-'));
+  // Canonical: the resolver returns canonical roots (ADR-0061 S2).
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'parent-writeback-discover-')));
   try {
     await fn(dir);
   } finally {
@@ -46,10 +47,10 @@ async function withTmpHomeAndRepo(fn) {
   }
 }
 
-async function writeManifest(root, { name, version }) {
-  await mkdir(join(root, '.claude-plugin'), { recursive: true });
+async function writeManifest(root, { name, version, manifestDir = '.claude-plugin' }) {
+  await mkdir(join(root, manifestDir), { recursive: true });
   await writeFile(
-    join(root, '.claude-plugin', 'plugin.json'),
+    join(root, manifestDir, 'plugin.json'),
     JSON.stringify({ name, version }),
   );
   await mkdir(join(root, 'scripts'), { recursive: true });
@@ -132,19 +133,18 @@ describe('discoverOrchestratorPluginRoot — Claude cache layout (multi-version 
   });
 });
 
-describe('discoverOrchestratorPluginRoot — Codex cache layout (single fixed path)', () => {
-  it('returns the Codex cache path when scripts/state.mjs exists', async () => {
+describe('discoverOrchestratorPluginRoot — Codex cache layout (versioned install cache, ADR-0061)', () => {
+  it('returns the newest Codex install when scripts/state.mjs exists', async () => {
     await withTmpHomeAndRepo(async (dir) => {
-      const codexBase = join(
-        dir, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'orchestrator',
-      );
-      await writeManifest(codexBase, { name: 'orchestrator', version: '1.0.0' });
+      const codexBase = join(dir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'orchestrator');
+      await writeManifest(join(codexBase, '1.0.0'), { name: 'orchestrator', version: '1.0.0', manifestDir: '.codex-plugin' });
+      await writeManifest(join(codexBase, '1.2.0'), { name: 'orchestrator', version: '1.2.0', manifestDir: '.codex-plugin' });
       const result = await discoverOrchestratorPluginRoot({
         env: {},
         home: dir,
         selfUrl: fakeEngineerSelfUrl(dir),
       });
-      strictEqual(result, codexBase);
+      strictEqual(result, join(codexBase, '1.2.0'));
     });
   });
 });
@@ -321,6 +321,51 @@ describe('writebackParent — happy path (parent file in workflows/)', () => {
       match(text, /status: "completed"/);
       match(text, new RegExp(`commit: "${commitSha}"`));
       match(text, /terminal_marker: true/);
+    });
+  });
+});
+
+// ADR-0061 §Decision 4: an engineer installed in Codex that finds no
+// orchestrator in the Codex cache uses the Claude copy, which is not pinned the
+// way a Codex install is, so the writeback says so.
+describe('writebackParent — cross-host orchestrator fallback is reported', () => {
+  it('writes back through the Claude-cache orchestrator and reports the fallback on stderr', async () => {
+    await withTmpRepoAndOrchestratorPlan(async ({
+      repoRoot, parentWorkflowId, childWorkflowId, childSubtaskId,
+    }) => {
+      // Real paths: the orchestrator CLI's entry guard compares import.meta.url
+      // with argv[1], which differ under macOS's /var -> /private/var link.
+      const home = await realpath(await mkdtemp(join(tmpdir(), 'parent-writeback-home-')));
+      const codexHome = await realpath(await mkdtemp(join(tmpdir(), 'parent-writeback-codex-home-')));
+      try {
+        // A copy of the real orchestrator plugin, installed in the Claude cache
+        // only. A copy, not a symlink: install caches hold directories, and the
+        // resolver's readdir scan skips symlinked entries.
+        const claudeInstall = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'orchestrator', '9.9.9');
+        await cp(ORCHESTRATOR_ROOT, claudeInstall, { recursive: true });
+        const stderrBuf = [];
+        const result = await writebackParent({
+          repoRoot,
+          parentWorkflowId,
+          originatingSubtaskId: childSubtaskId,
+          engineerWorkflowId: childWorkflowId,
+          commit: 'b'.repeat(40),
+          closedAt: '2026-05-11T03:00:00Z',
+          host: 'codex',
+          discoverOpts: {
+            env: { CODEX_HOME: codexHome },
+            home,
+            selfUrl: pathToFileURL(join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'engineer', '9.9.9', 'scripts', 'parent-writeback.mjs')).href,
+          },
+          stderr: { write: (s) => stderrBuf.push(s) },
+        });
+        strictEqual(result.ok, true, stderrBuf.join(''));
+        strictEqual(result.envelope.updatedSubtask.status, 'completed');
+        match(stderrBuf.join(''), /orchestrator resolved from the claude plugin cache because the codex cache has no orchestrator installed/);
+      } finally {
+        await rm(home, { recursive: true, force: true });
+        await rm(codexHome, { recursive: true, force: true });
+      }
     });
   });
 });

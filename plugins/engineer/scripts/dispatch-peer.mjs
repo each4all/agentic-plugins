@@ -123,6 +123,9 @@ function hostCaches(env, home) {
 // realpath'd and the rest re-appended, so a symlinked prefix (macOS /var ->
 // /private/var, a symlinked ~/.codex) compares equal on both sides even when
 // the tail does not exist.
+// The resolved companion path is returned canonical too: the companion's CLI
+// entry guard compares argv[1] with Node's canonical module path and silently
+// does nothing when a symlink (a symlinked CODEX_HOME) makes the two differ.
 function realOrResolved(path) {
   let head = resolve(path);
   const tail = [];
@@ -230,7 +233,7 @@ export async function resolveCompanion(peer, {
     const { discoverPeerCompanion } = await import(pathToFileURL(overrideDiscover).href);
     const result = await discoverPeerCompanion({ peer, env, home });
     return {
-      path: result.ok ? result.path : null,
+      path: result.ok ? realOrResolved(result.path) : null,
       source: 'env',
       host: null,
       callerHost,
@@ -266,7 +269,7 @@ export async function resolveCompanion(peer, {
       manifestPath: caches[host].manifest,
     });
     return {
-      path: result.ok ? result.path : null,
+      path: result.ok ? realOrResolved(result.path) : null,
       source: `${host}-cache`,
       host,
       callerHost,
@@ -790,7 +793,20 @@ function printHelp() {
   );
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run as a CLI only when this file is the entry point. Both sides are compared
+// canonical and as paths, so an install reached through a symlink (with or
+// without --preserve-symlinks-main), or under a directory whose name needs URL
+// escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2).
+function invokedAsCli() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsCli()) {
   let opts;
   try {
     opts = parseCliArgs(process.argv.slice(2));

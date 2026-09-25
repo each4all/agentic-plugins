@@ -49,6 +49,8 @@ import { execFileSync } from 'node:child_process';
 // pre-stage re-validation). Single source of truth in validate-commit.mjs
 // per PR1 deferral.
 import { assertSafePath } from './validate-commit.mjs';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // -----------------------------------------------------------------------------
 // Constants — ADR-0011 §1, §2, §3 + ADR-0017 schema 1.1
@@ -3695,7 +3697,20 @@ async function cliMain(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run as a CLI only when this file is the entry point. Both sides are compared
+// canonical and as paths, so an install reached through a symlink (with or
+// without --preserve-symlinks-main), or under a directory whose name needs URL
+// escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2).
+function invokedAsCli() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsCli()) {
   // Wrap cliMain in an async IIFE rather than awaiting it at top level.
   // Top-level await blocks circular dynamic imports performed inside
   // cliMain (the `stop-archive` subcommand dynamically imports
