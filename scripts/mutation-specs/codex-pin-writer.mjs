@@ -40,14 +40,14 @@ export const MUTATIONS = [
   },
   {
     id: 'A3', file: WRITER,
-    from: 'if (t.floor === undefined) {',
-    to: 'if (false) {',
+    from: 'if (t.floor === undefined) {\n        errors.push(`${entry.name} has no migration floor',
+    to: 'if (false) {\n        errors.push(`${entry.name} has no migration floor',
     why: 'activation pins a package that has no floor',
   },
   {
     id: 'A4', file: WRITER,
-    from: 'if (floor !== undefined && compareSemver(version, floor) < 0) {',
-    to: 'if (false) {',
+    from: 'if (compareSemver(version, floor) < 0) return { error:',
+    to: 'if (false) return { error:',
     why: 'a package below its floor is pinned',
   },
   {
@@ -55,6 +55,12 @@ export const MUTATIONS = [
     from: 'if (released.length > 0) return { error:',
     to: 'if (false) return { error:',
     why: 'a tag whose tree carries another version is pinned',
+  },
+  {
+    id: 'A8', file: WRITER,
+    from: 'const floorTag = releaseTag(name, floor);',
+    to: 'const floorTag = releaseTag(name, version);',
+    why: 'the plan checks the current release instead of the floor, so --check promises a write the gates reject',
   },
   {
     id: 'A6', file: WRITER,
@@ -95,6 +101,13 @@ export const MUTATIONS = [
     why: 'with the owner\'s intent a hand-made revert still cannot be repaired forward',
   },
 
+  {
+    id: 'P5', file: WRITER,
+    from: 'if (t.floor === undefined) {\n            errors.push(`${name} has no migration floor',
+    to: 'if (false) {\n            errors.push(`${name} has no migration floor',
+    why: 'a hand-set marker becomes a way around the per-package floor',
+  },
+
   // ---- N: first publication of a new package ---------------------------------
   {
     id: 'N1', file: WRITER,
@@ -129,6 +142,12 @@ export const MUTATIONS = [
     why: 'the written catalogs are never validated before the push',
   },
   {
+    id: 'C3', file: WRITER,
+    from: 'console.log(`OK — both catalogs already in sync with release-please-manifest (Codex catalog ${codex.phase})`);',
+    to: 'console.log(`OK — both catalogs already in sync with release-please-manifest (Codex catalog ${codex.phase})`); process.exit(0);',
+    why: 'a run with nothing to write reports green on a catalog that fails the gates',
+  },
+  {
     id: 'C2', file: WRITER,
     from: "const market = validateMarketplace(REPO_ROOT, { base: 'HEAD' });",
     to: 'const market = validateMarketplace(REPO_ROOT, {});',
@@ -147,6 +166,12 @@ export const MUTATIONS = [
     from: 'CATALOGS=".claude-plugin/marketplace.json .agents/plugins/marketplace.json scripts/data/codex-pin-floors.json"',
     to: 'CATALOGS=".claude-plugin/marketplace.json .agents/plugins/marketplace.json"',
     why: 'the activation commit carries the pins without the marker',
+  },
+  {
+    id: 'W4', file: WORKFLOW,
+    from: 'if [ -n "$(git status --porcelain -- $CATALOGS)" ]; then',
+    to: 'if [ -n "$(git status --porcelain .claude-plugin/marketplace.json)" ]; then',
+    why: 'the commit gate sees only Claude drift and drops an activation that has none',
   },
   {
     id: 'W3', file: WORKFLOW,

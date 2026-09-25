@@ -154,7 +154,7 @@ export function planCodexPins(repoRoot, { activate = false } = {}) {
     notes.push('pre-activation: the Codex catalog is left as it is (activation needs --activate)');
     return empty(phase);
   }
-  if (floors.activated && activate) notes.push('already activated: --activate changes nothing');
+  if (floors.activated && activate) notes.push('already activated: --activate only pins local entries forward');
 
   const history = historyAvailability(repoRoot);
   if (!history.ok) {
@@ -180,8 +180,16 @@ export function planCodexPins(repoRoot, { activate = false } = {}) {
     const released = checkRelease(repoRoot, { name, version, sha });
     if (released.length > 0) return { error: `${name}@${version}: ${released.join('; ')}` };
     const floor = floors.floors[name];
-    if (floor !== undefined && compareSemver(version, floor) < 0) {
-      return { error: `${name}@${version} is below its migration floor ${floor}` };
+    if (floor !== undefined) {
+      if (compareSemver(version, floor) < 0) return { error: `${name}@${version} is below its migration floor ${floor}` };
+      // A floor is itself a release: the gates reject one that is not, so
+      // the plan must too, or --check would promise a write that fails.
+      const floorTag = releaseTag(name, floor);
+      if (resolveCommit(repoRoot, `refs/tags/${floorTag}`) === null) {
+        return { error: `${name}'s migration floor ${floor} is not a release (${floorTag} does not resolve) — correct the floor` };
+      }
+      const floorRelease = checkRelease(repoRoot, { name, version: floor });
+      if (floorRelease.length > 0) return { error: `${name}'s migration floor ${floor}: ${floorRelease.join('; ')}` };
     }
     return { version, sha, floor };
   }
@@ -244,13 +252,22 @@ export function planCodexPins(repoRoot, { activate = false } = {}) {
             errors.push(t.error);
             continue;
           }
+          // Same gate as the activation itself: a hand-set marker must not
+          // become a way around Decision 5 (a)'s per-package floor.
+          if (t.floor === undefined) {
+            errors.push(`${name} has no migration floor in ${FLOORS_PATH} — pinning a local entry needs one, as activation does`);
+            continue;
+          }
           entry.source = pinSource(name, t.version, t.sha);
           diffs.push({ name, from: 'local', to: entry.source.ref });
           continue;
         }
+        const kind = entry.source?.source;
         errors.push(
-          `${name}: the Codex entry is ${JSON.stringify(entry.source?.source)} after activation — a pin never goes back `
-            + 'to local; re-run with --activate to pin it forward',
+          `${name}: the Codex entry is ${JSON.stringify(kind)} after activation — `
+            + (kind === 'local'
+              ? 'a pin never goes back to local; re-run with --activate to pin it forward'
+              : 'a Codex entry is a release pin; fix the source by hand'),
         );
         continue;
       }
@@ -268,7 +285,7 @@ export function planCodexPins(repoRoot, { activate = false } = {}) {
       if (delta < 0) {
         errors.push(`${name}: the manifest (${t.version}) is below the pin (${current.version}) — a pin never moves down; roll back with a forward release`);
       } else if (delta === 0 && t.sha !== entry.source.sha) {
-        errors.push(`${name}: ${entry.source.ref} now peels to ${t.sha.slice(0, 7)}, not the pinned ${String(entry.source.sha).slice(0, 7)} — a released tag moved; release forward instead`);
+        errors.push(`${name}: ${entry.source.ref} now peels to ${t.sha.slice(0, 7)}, not the pinned ${String(entry.source.sha).slice(0, 7)} — the tag moved or the pin was written wrong; either way, release forward`);
       } else if (delta > 0) {
         const from = entry.source.ref;
         entry.source = pinSource(name, t.version, t.sha);
@@ -350,26 +367,29 @@ if (invokedAsCLI()) {
   ];
   if (codex.activating && codex.diffs.length > 0) lines.push(`  - ${FLOORS_PATH}: activated false → true`);
 
-  if (lines.length === 0) {
-    console.log(`OK — both catalogs already in sync with release-please-manifest (Codex catalog ${codex.phase})`);
-    process.exit(0);
-  }
-  if (checkOnly) {
+  if (lines.length > 0 && checkOnly) {
     console.error('sync-marketplace-versions: catalog drift detected');
     for (const line of lines) console.error(line);
     process.exit(1);
   }
+  if (lines.length === 0) {
+    console.log(`OK — both catalogs already in sync with release-please-manifest (Codex catalog ${codex.phase})`);
+  } else {
+    console.log(`Synced ${lines.length} catalog change(s):`);
+    for (const line of lines) console.log(line);
+  }
 
-  console.log(`Synced ${lines.length} catalog change(s):`);
-  for (const line of lines) console.log(line);
-
-  // Validate what was written against the catalog as it stood before the
-  // write (HEAD), with the same gates CI runs on a pull request.
+  // Validate before EVERY successful exit, including a run that had nothing
+  // to write: a repair dispatch on a catalog that is already invalid must not
+  // report green. The baseline is HEAD, the catalog before this write, and the
+  // gates are the ones CI runs on a pull request.
   const market = validateMarketplace(REPO_ROOT, { base: 'HEAD' });
   const versions = validateVersions(REPO_ROOT);
   const failures = [...market.errors, ...versions.errors];
   if (failures.length > 0) {
-    console.error('sync-marketplace-versions: the written catalogs FAILED validation — do not push them:');
+    console.error(lines.length > 0
+      ? 'sync-marketplace-versions: the written catalogs FAILED validation — do not push them:'
+      : 'sync-marketplace-versions: nothing to write, but the catalogs as they stand FAILED validation:');
     for (const e of failures) console.error(`  - ${e}`);
     process.exit(1);
   }

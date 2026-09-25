@@ -27,11 +27,13 @@ All writing is done by `scripts/sync-marketplace-versions.mjs`, which
   1, including the Claude catalog.
 - **After activation:** pins follow the manifest forward on every release,
   with no input needed. A package's first tag gives it its first pin.
-- **It validates before the push.** Whatever it writes is checked against
-  `HEAD`, the catalog as it was before the write, with the gates CI runs
-  (`validate-marketplace`, `validate-versions`). A failure exits 1, so the
-  job does not push. A `GITHUB_TOKEN` push triggers no workflow, so this is
-  the only gate the bot's commit gets.
+- **It validates before every successful exit.** Whatever it writes is
+  checked against `HEAD`, the catalog as it was before the write, with the
+  gates CI runs (`validate-marketplace`, `validate-versions`). A failure
+  exits 1, so the job does not push. A run with nothing to write is
+  validated too, so a repair run on a broken catalog does not go green. A
+  `GITHUB_TOKEN` push triggers no workflow, so this is the only gate the
+  bot's commit gets.
 
 ## Before dispatching
 
@@ -53,6 +55,8 @@ the output:
   activation. Common causes:
   - A package is below its floor. Release it first.
   - A package has no floor. Add one in a pull request.
+  - A floor is not itself a release. Correct the floor in a pull request;
+    a version that was skipped will never be tagged.
   - A package's manifest version is not tagged. The release job has not
     finished yet.
 
@@ -97,8 +101,12 @@ the missing floor, or repair whatever validation named. Then dispatch again
 with the input.
 
 **2. The catalog push was rejected as non-fast-forward.** `main` moved while
-the job ran, so nothing was published. Dispatch again. The new run checks out
-the new `main` and plans against it. Never force-push.
+the job ran. This job published nothing. Another run may have, though: a
+second dispatch, or a release job running at the same time. So before you
+classify the outcome, inspect `main`: its `scripts/data/codex-pin-floors.json`
+and `.agents/plugins/marketplace.json`. If `main` already carries a complete
+activation, you are in case 3. If not, dispatch again. The new run checks
+out the new `main` and plans against it. Never force-push.
 
 **3. A later step failed after the catalog push.** The stage-doc sync, the
 evidence check, or the release-obligation assertion failed. **The activation
@@ -116,9 +124,25 @@ hand-staged commit or a hand-made revert, and the gates flag each form.
 
 | State | What the gates say | Recovery |
 | --- | --- | --- |
-| Pins without the marker | `entries are pinned before activation` | Dispatch with the input. The writer completes the marker and keeps the pins. |
-| A `local` entry after activation | `reverted from a pin to local` (against the baseline) | Dispatch with the input. The writer pins that entry forward to its current release. Without the input, the writer refuses it. |
-| The marker without pins | `says activated, but no entry is pinned` | Dispatch with the input. The writer pins every `local` entry forward and leaves the marker set. |
+| Pins without the marker | `entries are pinned before activation` | Dispatch with the input. The writer sets the marker and re-derives every pin from its tag. A hand-staged pin that was wrong (for example, an annotated tag's object id) cannot be corrected at the same version, because the gates refuse a same-version re-pin. Release that package forward first, then dispatch. |
+| A `local` entry after activation | `reverted from a pin to local` (against the baseline) | Dispatch with the input. The writer pins that entry forward to its current release, provided the package has a floor. Without the input, the writer refuses it. |
+| The marker without pins | `says activated, but no entry is pinned` | Dispatch with the input. The writer pins every `local` entry forward and leaves the marker set. Every package needs a floor, just as for a real activation. |
+
+## After activation: a release sync that refuses
+
+The writer plans every package before it writes anything. So one package it
+cannot pin blocks the whole sync, the Claude catalog included:
+
+- **A release tagged only some packages.** A manifest is ahead of its tag.
+  Complete the missing release (its tag) first.
+- **A tag was force-moved.** The pin no longer matches what its tag peels
+  to. Release that package forward.
+
+Then **dispatch** `release-please.yml`. Do not re-run the failed job:
+release-please reports `releases_created` only once, so a re-run of the push
+run skips the sync.
+
+## Floors and new packages
 
 After activation, every package's floor stays in the file. The gates reject
 removing a floor or lowering it, compared against the baseline. A package
@@ -126,6 +150,8 @@ added after activation needs no floor: it has no pre-migration release to
 guard against. It gets no Codex entry until its first release tag, and its
 first pin after that. The first pin takes its `category` from that release's
 `.codex-plugin/plugin.json` (`interface.category`).
+`validate-marketplace` requires every published package to declare that
+field, so a missing one fails CI before the first release, not after it.
 
 ## What activation does not do
 

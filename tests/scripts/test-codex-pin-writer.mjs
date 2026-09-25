@@ -21,7 +21,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -139,6 +141,10 @@ for (const [label, arrange, pattern] of [
   }, /alpha@1\.0\.0 is below its migration floor 1\.1\.0/],
   ['a package with no floor', (dir) => setFloor(dir, 'beta', null), /beta has no migration floor/],
   ['a package not released at its manifest version', (dir) => setVersion(dir, 'alpha', '1.1.0'), /alpha is at 1\.1\.0 but plugin-alpha-v1\.1\.0 does not resolve/],
+  ['a floor that is not itself a release', (dir) => {
+    release(dir, 'alpha', '1.2.0');
+    setFloor(dir, 'alpha', '1.1.0');
+  }, /alpha's migration floor 1\.1\.0 is not a release \(plugin-alpha-v1\.1\.0 does not resolve\)/],
   ['a tag whose tree carries another version', (dir) => {
     commit(dir, 'chore: nothing bumped');
     tag(dir, 'plugin-alpha-v1.1.0');
@@ -207,6 +213,23 @@ test('after activation a released tag that moved is refused, not re-pinned', (t)
   const moved = commit(dir, 'docs: an unreleased edit');
   tag(dir, 'plugin-alpha-v1.0.0', { at: moved, force: true });
   assertRefused(syncCatalogs(dir), /alpha: plugin-alpha-v1\.0\.0 now peels to [0-9a-f]{7}, not the pinned [0-9a-f]{7}/);
+});
+
+test('after activation a release that tagged only some packages blocks the whole sync until it is completed', (t) => {
+  const dir = makeRepo(t);
+  activateAndPublish(dir);
+  setVersion(dir, 'alpha', '1.1.0');
+  setVersion(dir, 'beta', '1.1.0');
+  commit(dir, 'chore: release main');
+  tag(dir, 'plugin-alpha-v1.1.0');
+  const before = snapshot(dir);
+  assertRefused(syncCatalogs(dir), /beta is at 1\.1\.0 but plugin-beta-v1\.1\.0 does not resolve/);
+  assert.deepEqual(snapshot(dir), before, 'alpha is not advanced alone');
+  tag(dir, 'plugin-beta-v1.1.0');
+  const r = syncCatalogs(dir);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.codex.diffs.map((d) => d.name), ['alpha', 'beta']);
+  assertValid(dir);
 });
 
 test('after activation a local entry is refused — the writer never takes part in a revert', (t) => {
@@ -333,6 +356,34 @@ test('recovery — the marker without pins is refused without the input, and pin
   assertValid(dir);
 });
 
+test('recovery — repairing the marker without pins still needs every floor', (t) => {
+  const dir = makeRepo(t);
+  setFloor(dir, 'beta', null);
+  setFloors(dir, { activated: true });
+  commit(dir, 'chore: a hand-set marker, beta without a floor');
+  assertRefused(syncCatalogs(dir, { activate: true }), /beta has no migration floor .* — pinning a local entry needs one, as activation does/);
+});
+
+test('recovery — a hand-staged pin written wrong can only be corrected by a forward release', (t) => {
+  // Pins without the marker, and beta pinned to its annotated tag's OBJECT id.
+  const dir = makeRepo(t);
+  activate(dir);
+  setCodexSource(dir, 'beta', { ...readJSON(dir, CODEX).plugins.find((p) => p.name === 'beta').source, sha: git(dir, ['rev-parse', 'refs/tags/plugin-beta-v1.0.0']).trim() });
+  setFloors(dir, { activated: false });
+  commit(dir, 'chore: a hand-staged, mis-peeled activation');
+  // Completing it re-derives beta's pin from its tag — a same-version sha
+  // change, which the gates refuse (Decision 2) whoever makes it.
+  const refused = runCli(dir, WRITER, ['--activate']);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /\(beta\): version 1\.0\.0 re-pinned from [0-9a-f]{7} to [0-9a-f]{7}/);
+  git(dir, ['checkout', '-q', '--', '.']);
+  // The forward path the runbook names: release beta, then complete.
+  release(dir, 'beta', '1.1.0');
+  const r = runCli(dir, WRITER, ['--activate']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readJSON(dir, CODEX).plugins.find((p) => p.name === 'beta').source.ref, 'plugin-beta-v1.1.0');
+});
+
 test('recovery — a fresh dispatch after a published activation converges on the current baseline', (t) => {
   // A later step failed after the catalog push: the activation is published.
   // Main then moved (a release). A fresh dispatch — the owner may well pass
@@ -377,6 +428,20 @@ test('CLI exits 1 without pushing-grade output when the written catalogs fail va
   assert.match(out.stderr, /source "\.\/plugins\/beta" is not the package directory plugins\/alpha/);
 });
 
+test('CLI validates even when there is nothing to write, so a repair run on a broken catalog is not green', (t) => {
+  const dir = makeRepo(t);
+  activate(dir);
+  setFloors(dir, { activated: false });
+  commit(dir, 'chore: pins committed without the marker');
+  const out = runCli(dir, WRITER);
+  assert.equal(out.status, 1);
+  assert.match(out.stdout, /already in sync/);
+  assert.match(out.stderr, /nothing to write, but the catalogs as they stand FAILED validation/);
+  assert.match(out.stderr, /pinned before activation/);
+  const check = runCli(dir, WRITER, ['--check']);
+  assert.equal(check.status, 1, '--check with no drift validates too');
+});
+
 test('CLI exits 1 on a refused plan and says nothing was written', (t) => {
   const dir = makeRepo(t);
   setFloor(dir, 'beta', null);
@@ -419,6 +484,80 @@ test('release-please.yml passes --activate only on a workflow_dispatch that aske
   assert.equal(code.filter((l) => /ACTIVATE_CODEX_PINS:\s/.test(l)).length, 1, 'the variable is assigned in exactly one place');
   // Pins and marker are staged in the same commit, whose subject evidence-store recognizes.
   assert.match(wf, /CATALOGS="\.claude-plugin\/marketplace\.json \.agents\/plugins\/marketplace\.json scripts\/data\/codex-pin-floors\.json"/);
+  assert.match(wf, /if \[ -n "\$\(git status --porcelain -- \$CATALOGS\)" \]; then/,
+    'the commit gate looks at all three files — a Claude-only gate drops an activation that has no Claude drift');
   assert.match(wf, /git add -- \$CATALOGS/);
   assert.match(wf, /SUBJECT="chore\(marketplace\): sync catalog versions to release-please-manifest"/);
+});
+
+// ---------------------------------------------------------------------------
+// Recovery through a real remote — the push, not just the plan
+// ---------------------------------------------------------------------------
+
+/** A bare "origin" seeded from a fresh fixture, and a way to take fresh checkouts of it. */
+function remote(t) {
+  const seed = makeRepo(t);
+  const root = mkdtempSync(path.join(tmpdir(), 'codex-pins-remote-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const origin = path.join(root, 'origin.git');
+  execFileSync('git', ['clone', '-q', '--bare', seed, origin]);
+  let n = 0;
+  const checkout = () => {
+    const dir = path.join(root, `job-${n += 1}`);
+    execFileSync('git', ['clone', '-q', origin, dir]);
+    for (const [k, v] of [['user.email', 'bot@example.com'], ['user.name', 'bot'], ['commit.gpgsign', 'false'], ['tag.gpgsign', 'false']]) {
+      git(dir, ['config', k, v]);
+    }
+    return dir;
+  };
+  return { origin, checkout };
+}
+
+const push = (dir) => {
+  try {
+    execFileSync('git', ['-C', dir, 'push', '-q', '--tags', 'origin', 'HEAD:main'], { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test('recovery through a remote — a rejected (non-fast-forward) activation push is re-dispatched from a fresh checkout', (t) => {
+  const { origin, checkout } = remote(t);
+  const a = checkout();
+  const b = checkout();
+  for (const job of [a, b]) {
+    assert.equal(runCli(job, WRITER, ['--activate']).status, 0);
+    commit(job, 'chore(marketplace): sync catalog versions to release-please-manifest and activate the Codex catalog pins');
+  }
+  assert.equal(push(a), true, 'the first job publishes');
+  assert.equal(push(b), false, 'the second is rejected as non-fast-forward — and must not be forced');
+  // The remote already carries a complete activation from the other job;
+  // inspecting it first is what tells case 2 from case 3.
+  assert.equal(JSON.parse(git(origin, ['show', 'main:scripts/data/codex-pin-floors.json'])).activated, true);
+  const fresh = checkout();
+  const out = runCli(fresh, WRITER, ['--activate']);
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /already in sync/);
+  assert.equal(git(fresh, ['status', '--porcelain']).trim(), '', 'nothing left to push');
+});
+
+test('recovery through a remote — after a later step failed, a fresh dispatch converges, and advances once main moves', (t) => {
+  const { checkout } = remote(t);
+  const job = checkout();
+  assert.equal(runCli(job, WRITER, ['--activate']).status, 0);
+  commit(job, 'chore(marketplace): sync catalog versions to release-please-manifest and activate the Codex catalog pins');
+  assert.equal(push(job), true);
+  // ...the stage-doc step fails here. The activation is published.
+  const again = checkout();
+  assert.equal(runCli(again, WRITER, ['--activate']).status, 0);
+  assert.equal(git(again, ['status', '--porcelain']).trim(), '');
+  // A release lands on main before the next dispatch.
+  release(again, 'beta', '1.1.0');
+  assert.equal(push(again), true);
+  const next = checkout();
+  const out = runCli(next, WRITER);
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /\.agents\/plugins\/marketplace\.json beta: plugin-beta-v1\.0\.0 → plugin-beta-v1\.1\.0/);
+  assert.equal(readJSON(next, FLOORS).activated, true, 'never reverted');
 });

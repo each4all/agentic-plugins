@@ -151,6 +151,12 @@ test('a Claude entry must point at its own package directory', (t) => {
   assertError(validateMarketplace(dir), /\.claude-plugin\/marketplace\.json\.plugins\[0\] \(alpha\): source "\.\/plugins\/beta" is not the package directory plugins\/alpha/);
 });
 
+test('a published package must declare interface.category, which its first Codex pin copies', (t) => {
+  const dir = makeRepo(t);
+  writeJSON(dir, 'plugins/beta/.codex-plugin/plugin.json', { name: 'beta', version: '1.0.0' });
+  assertError(validateMarketplace(dir), /plugins\/beta\/\.codex-plugin\/plugin\.json: interface\.category must be a string/);
+});
+
 test('a local Codex entry must point at its own package directory', (t) => {
   const dir = makeRepo(t);
   setCodexSource(dir, 'alpha', { source: 'local', path: './plugins/beta' });
@@ -313,7 +319,7 @@ test('CONTROL — before activation a floor may be declared ahead of its release
   setFloor(dir, 'alpha', '1.5.0');
   const r = validateMarketplace(dir);
   assertOk(r);
-  assert.ok(r.warnings.some((w) => /floor alpha@1\.5\.0 is not released yet \(no plugin-alpha-v1\.5\.0\); activation waits for it/.test(w)));
+  assert.ok(r.warnings.some((w) => /floor alpha@1\.5\.0 is not a release yet \(no plugin-alpha-v1\.5\.0\); the writer refuses to activate until it is/.test(w)));
 });
 
 test('a released floor must carry its version in the released tree, in either phase', (t) => {
