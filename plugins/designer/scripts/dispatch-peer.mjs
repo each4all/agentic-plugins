@@ -123,6 +123,9 @@ function hostCaches(env, home) {
 // realpath'd and the rest re-appended, so a symlinked prefix (macOS /var ->
 // /private/var, a symlinked ~/.codex) compares equal on both sides even when
 // the tail does not exist.
+// The resolved companion path is returned canonical too: the companion's CLI
+// entry guard compares argv[1] with Node's canonical module path and silently
+// does nothing when a symlink (a symlinked CODEX_HOME) makes the two differ.
 function realOrResolved(path) {
   let head = resolve(path);
   const tail = [];
@@ -230,7 +233,7 @@ export async function resolveCompanion(peer, {
     const { discoverPeerCompanion } = await import(pathToFileURL(overrideDiscover).href);
     const result = await discoverPeerCompanion({ peer, env, home });
     return {
-      path: result.ok ? result.path : null,
+      path: result.ok ? realOrResolved(result.path) : null,
       source: 'env',
       host: null,
       callerHost,
@@ -266,7 +269,7 @@ export async function resolveCompanion(peer, {
       manifestPath: caches[host].manifest,
     });
     return {
-      path: result.ok ? result.path : null,
+      path: result.ok ? realOrResolved(result.path) : null,
       source: `${host}-cache`,
       host,
       callerHost,
