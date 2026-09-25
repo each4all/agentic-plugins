@@ -9,10 +9,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assertCodexCatalogSource, codexCatalogActivated } from './codex-catalog-source.mjs';
+import { assertCodexCatalogSource, codexCatalogActivated, expectedCodexCatalogNames } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const SHA = '0123456789abcdef0123456789abcdef01234567';
@@ -36,8 +39,13 @@ test('pre-activation: a pin is rejected', () => {
   assert.throws(check(pin(), { activated: false }), /before activation the runtime Codex entry is local/);
 });
 
-test('pre-activation: a local path that does not resolve is rejected', () => {
-  assert.throws(check(local('./plugins/nowhere'), { activated: false }));
+test('pre-activation: a correctly spelled local path whose directory is missing is rejected', () => {
+  // The spelling matches, so only the existence check can reject it.
+  const entry = { name: 'nowhere', source: { source: 'local', path: './plugins/nowhere' } };
+  assert.throws(
+    () => assertCodexCatalogSource(entry, 'nowhere', { repoRoot: REPO_ROOT, version: '1.0.0', activated: false }),
+    /Codex source\.path must resolve to plugins\/nowhere/,
+  );
 });
 
 test('activated: CONTROL a well-formed pin at the package version passes', () => {
@@ -73,4 +81,26 @@ test('activated, release-please PR: CONTROL a trailing pin passes', () => {
 
 test('activated, release-please PR: a leading pin is still rejected', () => {
   assert.throws(check(pin({ ref: 'plugin-runtime-v1.2.4' }), { activated: true, allowLag: true }), /never lead it/);
+});
+
+function tagRepo(t, tags) {
+  const dir = mkdtempSync(join(tmpdir(), 'codex-catalog-names-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  git('-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'root');
+  for (const tag of tags) git('tag', tag);
+  return dir;
+}
+
+test('expected Codex names: before activation, every published name', (t) => {
+  const dir = tagRepo(t, []);
+  assert.deepEqual(expectedCodexCatalogNames(dir, ['gamma', 'alpha'], { activated: false }), ['alpha', 'gamma']);
+});
+
+test('expected Codex names: after activation, only released packages — the exemption and where it ends', (t) => {
+  const dir = tagRepo(t, ['plugin-alpha-v1.0.0', 'plugin-beta-v0.1.0-rc.1', 'plugin-gamma-extra-v1.0.0']);
+  // gamma is unreleased — a release of another package named gamma-extra
+  // must not stand in for one — and beta's pre-release counts.
+  assert.deepEqual(expectedCodexCatalogNames(dir, ['alpha', 'beta', 'gamma'], { activated: true }), ['alpha', 'beta']);
 });

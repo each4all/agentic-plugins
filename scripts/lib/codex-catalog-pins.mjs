@@ -18,11 +18,16 @@ export const FLOORS_PATH = 'scripts/data/codex-pin-floors.json';
 export const FLOORS_SCHEMA = 'codex-pin-floors-1.0';
 
 // Plain X.Y.Z — the grammar every release tag in this repository uses, and the
-// one check-release-obligation.mjs anchors on. Accepting a pre-release suffix
-// would be a new decision about what a release is, not a validator detail.
+// one check-release-obligation.mjs anchors on. A pin or floor with a
+// pre-release or build suffix is rejected, which fails closed: adopting such
+// releases is a decision about what a release is, and it would have to teach
+// both checkers precedence rules first. The one question that must NOT fail
+// open on that narrowing — "has this package ever been released?", which ends
+// the untagged exemption — accepts any suffix (RELEASE_TAG below).
 const SEMVER_SRC = '(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)';
 const SEMVER = new RegExp(`^${SEMVER_SRC}$`);
 const REF = new RegExp(`^plugin-(.+)-v(${SEMVER_SRC})$`);
+const RELEASE_TAG = new RegExp(`^plugin-(.+)-v${SEMVER_SRC}(?:[-+][0-9A-Za-z.+-]*)?$`);
 const SHA = /^[0-9a-f]{40}$/;
 const PIN_KEYS = ['path', 'ref', 'sha', 'source', 'url'];
 const FLOOR_KEYS = new Set(['schema', 'description', 'activated', 'floors']);
@@ -118,11 +123,14 @@ export function historyAvailability(repoRoot) {
   return { ok: true, reason: null };
 }
 
-/** Whether `name` has had any release — the point Decision 2's untagged exemption ends. */
+/**
+ * Whether `name` has had any release — the point Decision 2's untagged
+ * exemption ends. Any SemVer suffix counts, so a pre-release ends it too.
+ */
 export function hasReleaseTag(repoRoot, name) {
   const tags = (gitTry(repoRoot, ['tag', '--list', `plugin-${name}-v*`]) ?? '').split('\n');
   return tags.some((t) => {
-    const m = t.match(REF);
+    const m = t.match(RELEASE_TAG);
     return m !== null && m[1] === name;
   });
 }

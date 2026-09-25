@@ -44,6 +44,7 @@ const CODEX = '.agents/plugins/marketplace.json';
 const CLAUDE = '.claude-plugin/marketplace.json';
 const FLOORS = 'scripts/data/codex-pin-floors.json';
 const MANIFEST = '.release-please-manifest.json';
+const CONFIG = 'release-please-config.json';
 
 const git = (dir, args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
 
@@ -81,6 +82,14 @@ function setVersion(dir, name, version) {
   const entry = claude.plugins.find((p) => p.name === name);
   if (entry) entry.version = version;
   writeJSON(dir, CLAUDE, claude);
+}
+
+/** Register (or, with null, unregister) a package the way release-please-config.json does. */
+function setConfigPackage(dir, name, component = `plugin-${name}`) {
+  const config = readJSON(dir, CONFIG);
+  if (component === null) delete config.packages[`plugins/${name}`];
+  else config.packages[`plugins/${name}`] = { 'package-name': component, component };
+  writeJSON(dir, CONFIG, config);
 }
 
 const localSource = (name) => ({ source: 'local', path: `./plugins/${name}` });
@@ -135,6 +144,9 @@ function makeRepo(t) {
   git(dir, ['config', 'tag.gpgsign', 'false']);
   const top = { name: 'fx', description: 'fixture marketplace' };
   writeJSON(dir, MANIFEST, {});
+  writeJSON(dir, CONFIG, { packages: {} });
+  setConfigPackage(dir, 'alpha');
+  setConfigPackage(dir, 'beta');
   writeJSON(dir, CLAUDE, {
     ...top,
     plugins: ['alpha', 'beta'].map((name) => ({ name, source: `./plugins/${name}`, version: '1.0.0' })),
@@ -176,6 +188,7 @@ function addPackage(dir, name) {
   const claude = readJSON(dir, CLAUDE);
   claude.plugins.push({ name, source: `./plugins/${name}`, version: '0.1.0' });
   writeJSON(dir, CLAUDE, claude);
+  setConfigPackage(dir, name);
   setVersion(dir, name, '0.1.0');
 }
 
@@ -283,14 +296,35 @@ test('a pinned entry must name a package whose Codex manifest carries that name'
   assertError(validateMarketplace(dir), /\(alpha\): catalog name "alpha" != manifest name "alpha-renamed"/);
 });
 
-test('a pinned entry must name a release-please package', (t) => {
+test('a pinned entry must name a package registered in release-please-config.json', (t) => {
+  // The version ledger still lists alpha — only the registry dropped it.
   const dir = makeRepo(t);
   activate(dir);
-  const manifest = readJSON(dir, MANIFEST);
-  delete manifest['plugins/alpha'];
-  writeJSON(dir, MANIFEST, manifest);
+  setConfigPackage(dir, 'alpha', null);
   setFloor(dir, 'alpha', null);
+  assert.equal(readJSON(dir, MANIFEST)['plugins/alpha'], '1.0.0');
   assertError(validateMarketplace(dir), /\(alpha\): pinned, but plugins\/alpha is not a release-please package/);
+});
+
+test('a package must tag as plugin-<name>, the prefix a pin ref names', (t) => {
+  const dir = makeRepo(t);
+  setConfigPackage(dir, 'alpha', 'alpha-plugin');
+  assertError(validateMarketplace(dir), /plugins\/alpha must tag as plugin-alpha \(its component\), got "alpha-plugin"/);
+});
+
+test('a Claude entry must point at its own package directory', (t) => {
+  const dir = makeRepo(t);
+  activate(dir);
+  const claude = readJSON(dir, CLAUDE);
+  claude.plugins.find((p) => p.name === 'alpha').source = './plugins/beta';
+  writeJSON(dir, CLAUDE, claude);
+  assertError(validateMarketplace(dir), /\.claude-plugin\/marketplace\.json\.plugins\[0\] \(alpha\): source "\.\/plugins\/beta" is not the package directory plugins\/alpha/);
+});
+
+test('a local Codex entry must point at its own package directory', (t) => {
+  const dir = makeRepo(t);
+  setCodexSource(dir, 'alpha', { source: 'local', path: './plugins/beta' });
+  assertError(validateMarketplace(dir), /\(alpha\): source\.path "\.\/plugins\/beta" is not the package directory plugins\/alpha/);
 });
 
 // ---------------------------------------------------------------------------
@@ -340,6 +374,26 @@ test('a tag on a tree without the package is invalid', (t) => {
   assertError(validateMarketplace(dir), /the tree at [0-9a-f]{7} has no plugins\/alpha\/\.codex-plugin\/plugin\.json/);
 });
 
+test('a tag on a tree whose Codex manifest names another plugin is invalid', (t) => {
+  // Only the RELEASED tree is wrong; the working tree is correct, so only the
+  // history check can see it.
+  const dir = makeRepo(t);
+  writeJSON(dir, 'plugins/alpha/.codex-plugin/plugin.json', { name: 'alpha-renamed', version: '1.1.0' });
+  commit(dir, 'chore: a mis-named release');
+  tag(dir, 'plugin-alpha-v1.1.0');
+  setVersion(dir, 'alpha', '1.1.0');
+  activate(dir, { alpha: '1.1.0', beta: '1.0.0' });
+  assert.equal(readJSON(dir, 'plugins/alpha/.codex-plugin/plugin.json').name, 'alpha');
+  assertError(validateMarketplace(dir), /the tree at [0-9a-f]{7} has plugins\/alpha\/\.codex-plugin\/plugin\.json named "alpha-renamed", not "alpha"/);
+});
+
+test('a pre-release ref is rejected — the pin grammar is plain X.Y.Z, failing closed', (t) => {
+  const dir = makeRepo(t);
+  activate(dir);
+  setCodexSource(dir, 'alpha', pinSource(dir, 'alpha', '1.0.0', { ref: 'plugin-alpha-v1.1.0-rc.1' }));
+  assertError(validateMarketplace(dir), /source\.ref must be plugin-alpha-v<X\.Y\.Z>/);
+});
+
 test('a sha absent from the repository is invalid', (t) => {
   const dir = makeRepo(t);
   activate(dir);
@@ -378,9 +432,15 @@ test('the release-PR allowance never excuses a malformed pin', (t) => {
 });
 
 test('the release-PR allowance never excuses a mismatched pin', (t) => {
+  // alpha is the entry the allowance applies to (it trails 1.1.0), so the
+  // mismatch goes on alpha: a check skipped for trailing pins would miss it.
   const dir = releasePrState(t);
-  setCodexSource(dir, 'beta', pinSource(dir, 'beta', '1.0.0', { sha: tagObject(dir, 'plugin-beta-v1.0.0') }));
-  assertError(validateMarketplace(dir, { allowVersionLag: true }), /annotated tag object/);
+  const later = commit(dir, 'docs: an unreleased change');
+  setCodexSource(dir, 'alpha', pinSource(dir, 'alpha', '1.0.0', { sha: later }));
+  const r = validateMarketplace(dir, { allowVersionLag: true });
+  assertError(r, /\(alpha\): sha [0-9a-f]{40} is not the commit plugin-alpha-v1\.0\.0 peels to/);
+  assert.ok(r.warnings.some((w) => /\(alpha\): pinned version 1\.0\.0 != package version 1\.1\.0/.test(w)),
+    'the allowance did apply to this entry');
 });
 
 test('a pin ahead of the package version is invalid even inside the release-PR window', (t) => {
@@ -411,16 +471,35 @@ test('a floor must name a plugins/* release-please package', (t) => {
   assertError(validateMarketplace(dir), /floor for "zeta" names no plugins\/\* release-please package/);
 });
 
-test('a floor must be a released version of its package', (t) => {
+test('after activation a floor must be a released version of its package', (t) => {
   const dir = makeRepo(t);
+  activate(dir);
   setFloor(dir, 'alpha', '1.5.0');
-  assertError(validateMarketplace(dir), /floor alpha@1\.5\.0: tag plugin-alpha-v1\.5\.0 does not resolve/);
+  assertError(validateMarketplace(dir), /floor alpha@1\.5\.0: tag plugin-alpha-v1\.5\.0 does not resolve — after activation every floor is a release/);
 });
 
-test('before activation every released package needs a floor', (t) => {
+test('CONTROL — before activation a floor may be declared ahead of its release, as a warning', (t) => {
+  const dir = makeRepo(t);
+  setFloor(dir, 'alpha', '1.5.0');
+  const r = validateMarketplace(dir);
+  assertOk(r);
+  assert.ok(r.warnings.some((w) => /floor alpha@1\.5\.0 is not released yet \(no plugin-alpha-v1\.5\.0\); activation waits for it/.test(w)));
+});
+
+test('a released floor must carry its version in the released tree, in either phase', (t) => {
+  const dir = makeRepo(t);
+  commit(dir, 'chore: nothing bumped');
+  tag(dir, 'plugin-alpha-v1.1.0');
+  setFloor(dir, 'alpha', '1.1.0');
+  assertError(validateMarketplace(dir), /floor alpha@1\.1\.0: the tree at [0-9a-f]{7} has plugins\/alpha\/\.codex-plugin\/plugin\.json at version "1\.0\.0", not 1\.1\.0/);
+});
+
+test('CONTROL — before activation a released package without a floor is a warning, not an error', (t) => {
   const dir = makeRepo(t);
   setFloor(dir, 'alpha', null);
-  assertError(validateMarketplace(dir), /alpha is released but has no migration floor/);
+  const r = validateMarketplace(dir);
+  assertOk(r);
+  assert.ok(r.warnings.some((w) => /alpha is released but has no migration floor; activation will need one/.test(w)));
 });
 
 test('CONTROL — an unreleased package needs no floor before activation', (t) => {
@@ -468,6 +547,15 @@ test('the exemption ends at the package\'s first release', (t) => {
   addPackage(dir, 'gamma');
   commit(dir, 'feat: add gamma');
   tag(dir, 'plugin-gamma-v0.1.0');
+  assertError(validateMarketplace(dir), /plugins only in \.claude-plugin\/marketplace\.json: gamma/);
+});
+
+test('a pre-release tag ends the exemption too', (t) => {
+  const dir = makeRepo(t);
+  activate(dir);
+  addPackage(dir, 'gamma');
+  commit(dir, 'feat: add gamma');
+  tag(dir, 'plugin-gamma-v0.1.0-rc.1');
   assertError(validateMarketplace(dir), /plugins only in \.claude-plugin\/marketplace\.json: gamma/);
 });
 
@@ -533,6 +621,92 @@ test('activation is one-way: clearing the marker against an activated baseline i
   assertError(r, /\(alpha\): reverted from a pin to local/);
 });
 
+test('the activating change cannot shed the floors it was gated on', (t) => {
+  const dir = makeRepo(t);
+  const base = git(dir, ['rev-parse', 'HEAD']).trim();
+  activate(dir);
+  setFloors(dir, { floors: {} });
+  const r = validateMarketplace(dir, { base });
+  assertError(r, /floor for alpha removed against the baseline [0-9a-f]{7} — a floor stays while its package exists/);
+  assertError(r, /\(alpha\): the activating change pins alpha without a migration floor/);
+});
+
+test('a floor is never lowered against the baseline', (t) => {
+  const dir = makeRepo(t);
+  release(dir, 'alpha', '1.1.0');
+  setFloor(dir, 'alpha', '1.1.0');
+  const base = commit(dir, 'chore: raise the floor');
+  setFloor(dir, 'alpha', '1.0.0');
+  assertError(validateMarketplace(dir, { base }), /floor for alpha lowered from 1\.1\.0 to 1\.0\.0/);
+});
+
+test('the activating change pins no package that has no floor', (t) => {
+  const dir = makeRepo(t);
+  setFloor(dir, 'beta', null);
+  const base = commit(dir, 'chore: beta has no floor yet');
+  activate(dir);
+  assertError(validateMarketplace(dir, { base }), /\(beta\): the activating change pins beta without a migration floor/);
+});
+
+test('CONTROL — after activation a new package is pinned without a floor', (t) => {
+  const dir = makeRepo(t);
+  activate(dir);
+  const base = commit(dir, 'chore: activate');
+  addPackage(dir, 'gamma');
+  commit(dir, 'feat: add gamma');
+  tag(dir, 'plugin-gamma-v0.1.0');
+  setCodexSource(dir, 'gamma', pinSource(dir, 'gamma', '0.1.0'));
+  assertOk(validateMarketplace(dir, { base }));
+});
+
+test('a published package\'s pin cannot be dropped, even where its tags are missing', (t) => {
+  const dir = makeRepo(t);
+  activate(dir);
+  addPackage(dir, 'gamma');
+  commit(dir, 'feat: add gamma');
+  tag(dir, 'plugin-gamma-v0.1.0');
+  setCodexSource(dir, 'gamma', pinSource(dir, 'gamma', '0.1.0'));
+  const base = commit(dir, 'chore: pin gamma');
+  // A checkout without gamma's tag would call gamma unreleased again.
+  git(dir, ['tag', '-d', 'plugin-gamma-v0.1.0']);
+  setCodexSource(dir, 'gamma', null);
+  const r = validateMarketplace(dir, { base });
+  assertError(r, /\(gamma\): pin dropped against the baseline [0-9a-f]{7} while the package is still published/);
+});
+
+test('CONTROL — before activation a PR that restores an all-local catalog passes against a mis-pinned baseline', (t) => {
+  // main carries a pin without the marker — invalid, but reachable because a
+  // GITHUB_TOKEN push triggers no validation. The repair must not be blocked.
+  const dir = makeRepo(t);
+  setCodexSource(dir, 'alpha', pinSource(dir, 'alpha', '1.0.0'));
+  const base = commit(dir, 'chore: a bad bot push');
+  setCodexSource(dir, 'alpha', localSource('alpha'));
+  const r = validateMarketplace(dir, { base });
+  assertOk(r);
+  assert.equal(r.coverage.baseline, base);
+});
+
+test('an unreadable baseline is reported and not compared, so it cannot block its own repair', (t) => {
+  const dir = makeRepo(t);
+  write(dir, CODEX, '{ not json');
+  const base = commit(dir, 'chore: a corrupt catalog');
+  git(dir, ['checkout', '-q', 'HEAD~1', '--', CODEX]);
+  const r = validateMarketplace(dir, { base });
+  assertOk(r);
+  assert.equal(r.coverage.baseline, null);
+  assert.ok(r.warnings.some((w) => /baseline [0-9a-f]{7}: \.agents\/plugins\/marketplace\.json .* — the baseline was not compared/.test(w)));
+});
+
+test('a baseline whose floor file is JSON null does not crash the comparison', (t) => {
+  const dir = makeRepo(t);
+  write(dir, FLOORS, 'null\n');
+  const base = commit(dir, 'chore: a null floor file');
+  git(dir, ['checkout', '-q', 'HEAD~1', '--', FLOORS]);
+  const r = validateMarketplace(dir, { base });
+  assertOk(r);
+  assert.ok(r.warnings.some((w) => /codex-pin-floors\.json is not a JSON object — the baseline was not compared/.test(w)));
+});
+
 test('a baseline that does not resolve fails closed', (t) => {
   const dir = makeRepo(t);
   const r = validateMarketplace(dir, { base: 'no-such-rev' });
@@ -543,6 +717,12 @@ test('a baseline that does not resolve fails closed', (t) => {
 // ---------------------------------------------------------------------------
 // No history — fails closed, never a structural-only pass
 // ---------------------------------------------------------------------------
+
+test('a catalog that is JSON null is an error, not a pass', (t) => {
+  const dir = makeRepo(t);
+  write(dir, CODEX, 'null\n');
+  assertError(validateMarketplace(dir), /\.agents\/plugins\/marketplace\.json: must be a JSON object/);
+});
 
 test('a shallow clone fails closed', (t) => {
   const dir = makeRepo(t);
@@ -605,6 +785,16 @@ test('validate-versions rejects a pin ahead of the manifest even in the release-
   activate(dir, { alpha: '1.1.0', beta: '1.0.0' });
   setVersion(dir, 'alpha', '1.0.0');
   assertError(validateVersions(dir, { allowMarketplaceLag: true }), /entry "alpha": pinned version "1\.1\.0" is ahead of release-please-manifest "1\.0\.0"/);
+});
+
+test('validate-versions reports malformed catalogs instead of crashing', (t) => {
+  const dir = makeRepo(t);
+  const codex = readJSON(dir, CODEX);
+  codex.plugins.push(null);
+  writeJSON(dir, CODEX, codex);
+  assertOk(validateVersions(dir));
+  write(dir, MANIFEST, 'null\n');
+  assertError(validateVersions(dir), /\.release-please-manifest\.json: must be a JSON object/);
 });
 
 test('validate-versions never lets the release-PR window excuse a malformed pin', (t) => {

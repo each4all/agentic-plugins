@@ -18,6 +18,7 @@
 // which drives the activated branch before the real catalog reaches it.
 
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -67,4 +68,20 @@ export function assertCodexCatalogSource(entry, name, { repoRoot, version, allow
   const delta = compare(m[2], version);
   if (allowLag) ok(delta <= 0, `pin ${m[2]} may trail package ${version} in a release-please PR, never lead it`);
   else strictEqual(m[2], version, 'the pinned version is the package version');
+}
+
+/**
+ * The plugin names the Codex catalog lists, given the names every other
+ * surface lists (the Claude catalog, runtime's plugin set, PLUGIN_NAMES).
+ * Before activation they are the same set. After it, Decision 2 exempts a
+ * package with no release tag yet — it has no Codex entry until the writer
+ * adds its first pin — and the exemption ends at its first release. Git is
+ * read only once activated, so today's tests need no history.
+ */
+export function expectedCodexCatalogNames(repoRoot, names, { activated } = {}) {
+  const phaseActivated = activated ?? codexCatalogActivated(repoRoot);
+  if (!phaseActivated) return [...names].sort();
+  const tags = execFileSync('git', ['-C', repoRoot, 'tag', '--list', 'plugin-*-v*'], { encoding: 'utf8' }).split('\n');
+  const released = (name) => tags.some((t) => t.startsWith(`plugin-${name}-v`) && /^\d+\.\d+\.\d+/.test(t.slice(`plugin-${name}-v`.length)));
+  return names.filter(released).sort();
 }

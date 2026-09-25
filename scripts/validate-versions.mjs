@@ -50,19 +50,26 @@ export function validateVersions(repoRoot, { allowMarketplaceLag = false } = {})
   let codexPinsChecked = 0;
 
   function loadJSON(relPath, label) {
+    let value;
     try {
-      return JSON.parse(readFileSync(resolve(repoRoot, relPath), 'utf8'));
+      value = JSON.parse(readFileSync(resolve(repoRoot, relPath), 'utf8'));
     } catch (err) {
       errors.push(`${label}: ${err.message}`);
       return null;
     }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      errors.push(`${label}: must be a JSON object`);
+      return null;
+    }
+    return value;
   }
+  const pluginsOf = (catalog) => (Array.isArray(catalog?.plugins) ? catalog.plugins : []);
 
   const manifest = loadJSON(MANIFEST_PATH, MANIFEST_PATH);
   if (!manifest) return { errors, warnings, manifest, codexPinsChecked };
 
-  const claudeEntries = loadJSON(CLAUDE_MARKETPLACE_PATH, CLAUDE_MARKETPLACE_PATH)?.plugins ?? [];
-  const codexEntries = loadJSON(CODEX_CATALOG_PATH, CODEX_CATALOG_PATH)?.plugins ?? [];
+  const claudeEntries = pluginsOf(loadJSON(CLAUDE_MARKETPLACE_PATH, CLAUDE_MARKETPLACE_PATH));
+  const codexEntries = pluginsOf(loadJSON(CODEX_CATALOG_PATH, CODEX_CATALOG_PATH));
 
   function catalogDrift(message) {
     if (allowMarketplaceLag) warnings.push(`${message} (allowed release-please PR lag)`);
@@ -94,12 +101,12 @@ export function validateVersions(repoRoot, { allowMarketplaceLag = false } = {})
       );
     }
 
-    const entry = claudeEntries.find((p) => p.name === pluginName);
+    const entry = claudeEntries.find((p) => p?.name === pluginName);
     if (entry && entry.version !== expectedVersion) {
       catalogDrift(`${CLAUDE_MARKETPLACE_PATH} entry "${pluginName}": version "${entry.version}" != release-please-manifest "${expectedVersion}"`);
     }
 
-    const codexEntry = codexEntries.find((p) => p.name === pluginName);
+    const codexEntry = codexEntries.find((p) => p?.name === pluginName);
     if (codexEntry && sourceKind(codexEntry) === 'pinned') {
       codexPinsChecked += 1;
       const at = `${CODEX_CATALOG_PATH} entry "${pluginName}"`;

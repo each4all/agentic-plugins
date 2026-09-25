@@ -741,8 +741,7 @@ describe('plugins/founder — Claude marketplace catalog entry', () => {
     const catalog = await readJSON(path);
     const entry = catalog.plugins.find((p) => p.name === 'founder');
     ok(entry, 'Claude catalog must list founder');
-    strictEqual(entry.source, './plugins/founder',
-      'validate-marketplace does not check the Claude source path — this test covers that gap');
+    strictEqual(entry.source, './plugins/founder', 'the Claude entry points at the founder package directory');
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(entry.version, manifest.version);
     strictEqual(entry.category, 'Productivity');

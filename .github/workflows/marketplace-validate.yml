@@ -61,16 +61,31 @@ jobs:
         env:
           AGENTIC_RELEASE_PLEASE_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'release-please--branches--main' && '1' || '0' }}
           # The baseline for the monotonic-pin check (ADR-0061 Decision 2) is
-          # the catalog on the target branch before the change: the pull
-          # request's base, or main before this push. workflow_dispatch has no
-          # "before", and the validator then says the baseline was not compared.
-          CATALOG_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || '' }}
+          # the catalog on the target branch before the change. On a pull
+          # request the checkout is the merge commit, whose first parent is
+          # exactly the base it was merged onto — the payload's base.sha can
+          # be older. On a push it is main before the push. workflow_dispatch
+          # has neither, and the validator then says it compared no baseline.
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           ARGS=()
           if [ "$AGENTIC_RELEASE_PLEASE_PR" = "1" ]; then
             ARGS+=(--allow-version-lag)
           fi
-          if [ -n "$CATALOG_BASE" ] && [ "$CATALOG_BASE" != "0000000000000000000000000000000000000000" ]; then
+          CATALOG_BASE=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ "$(git rev-parse --verify --quiet 'HEAD^2' || true)" = "$PR_HEAD_SHA" ]; then
+              CATALOG_BASE="$(git rev-parse HEAD^1)"
+            else
+              CATALOG_BASE="$PR_BASE_SHA"
+            fi
+          elif [ "$EVENT_NAME" = "push" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            CATALOG_BASE="$PUSH_BEFORE"
+          fi
+          if [ -n "$CATALOG_BASE" ]; then
             ARGS+=(--base "$CATALOG_BASE")
           fi
           npm run validate:marketplace -- "${ARGS[@]}"

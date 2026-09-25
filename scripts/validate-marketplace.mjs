@@ -12,25 +12,35 @@
 //   - per-entry: the same plugin-name set appears in both catalogs, except
 //     that after activation a package with no release tag yet has no Codex
 //     entry (ADR-0061 Decision 2); the exemption ends at its first release
-//   - per-entry (Claude): `plugins/<entry.name>/.claude-plugin/plugin.json`
-//     exists and parses, with `name` matching the marketplace entry's `name`
-//     AND with `version` matching the entry's `version` when both are present
+//   - per-entry (Claude): `source` is the package directory
+//     `plugins/<entry.name>`, whose `.claude-plugin/plugin.json` exists and
+//     parses, with `name` matching the marketplace entry's `name` AND with
+//     `version` matching the entry's `version` when both are present
 //   - per-entry (Codex): the package's `.codex-plugin/plugin.json` parses and
-//     its `name` matches the entry. A `local` entry's `source.path` must
-//     resolve to that directory; a pinned entry must satisfy ADR-0061
+//     its `name` matches the entry. A `local` entry's `source.path` must be
+//     that same directory; a pinned entry must satisfy ADR-0061
 //     Decision 1's shape and Decision 2's history checks (its tag resolves and
 //     peels to `sha`, and the tree at `sha` carries the package at the `ref`
-//     version), and its version must equal the package manifest's
+//     version), and its version must equal the package manifest's. A pinned
+//     package must be a release-please package (release-please-config.json)
+//     that tags as `plugin-<name>`
 //   - the Codex catalog's phase (ADR-0061 Decision 2), read from the
 //     `activated` marker in scripts/data/codex-pin-floors.json: all-local
 //     before activation, all-pinned after; a mix is invalid in either phase,
 //     and so is a marker without pins
-//   - the migration floors (Decision 5 (a)): each names a plugins/* package
-//     and a real release of it; before activation every released package has
-//     one; after activation no pin is below its package's floor
+//   - the migration floors (Decision 5 (a)): each names a plugins/* package;
+//     a released floor is a real release of it, and after activation every
+//     floor must be released; no pin is ever below its package's floor. Before
+//     activation an unreleased floor, or a released package without one, is a
+//     warning: the catalog simply stays local until the writer's gate is met
 //   - with --base <rev> — the catalog on the target branch before the change —
-//     no pin moves to a lower version, an unchanged version keeps its sha, and
-//     the activated marker never goes back to false
+//     no pin moves to a lower version, an unchanged version keeps its sha, a
+//     published package's pin is never dropped or reverted to local, the
+//     activated marker never goes back to false, a floor is never removed or
+//     lowered while its package exists, and the activating change pins no
+//     package without a floor. S4's writer validates its own write this way,
+//     with --base HEAD before it commits. A baseline that cannot be read is
+//     reported and not compared, so it cannot block the change that repairs it
 //
 // Release-please PRs may pass --allow-version-lag because package manifests
 // are bumped before either catalog is synced after the release merge. The lag
@@ -61,15 +71,24 @@ import {
   compareSemver,
   hasReleaseTag,
   historyAvailability,
+  isSemver,
   parseFloors,
   readAt,
+  releaseTag,
   resolveCommit,
   sourceKind,
 } from './lib/codex-catalog-pins.mjs';
 
 const CLAUDE_PATH = '.claude-plugin/marketplace.json';
 const CODEX_PATH = CODEX_CATALOG_PATH;
-const MANIFEST_PATH = '.release-please-manifest.json';
+// The package registry: AGENTS.md defines a package as a key of this file's
+// `packages`, not as a line in .release-please-manifest.json, which is only
+// the version ledger and can outlive a package's removal.
+const CONFIG_PATH = 'release-please-config.json';
+
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 function dirExists(path) {
   try {
@@ -94,17 +113,24 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
   const coverage = { structural: true, history: false, baseline: null };
   const result = () => ({ errors, warnings, phase, coverage, claude });
   let phase = null;
+  let claude = null;
 
   function loadJSON(relPath, label = relPath) {
+    let value;
     try {
-      return JSON.parse(readFileSync(resolve(repoRoot, relPath), 'utf8'));
+      value = JSON.parse(readFileSync(resolve(repoRoot, relPath), 'utf8'));
     } catch (err) {
       errors.push(`${label}: ${err.message}`);
       return null;
     }
+    if (!isObject(value)) {
+      errors.push(`${label}: must be a JSON object`);
+      return null;
+    }
+    return value;
   }
 
-  const claude = loadJSON(CLAUDE_PATH);
+  claude = loadJSON(CLAUDE_PATH);
   const codex = loadJSON(CODEX_PATH);
   if (!claude || !codex) return result();
 
@@ -124,10 +150,20 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
   if (!Array.isArray(codex.plugins)) errors.push(`${CODEX_PATH}: plugins must be array`);
   if (!Array.isArray(claude.plugins) || !Array.isArray(codex.plugins)) return result();
 
-  const releaseManifest = loadJSON(MANIFEST_PATH) ?? {};
-  const releasePackages = new Set(
-    Object.keys(releaseManifest).filter((k) => k.startsWith('plugins/')).map((k) => k.slice('plugins/'.length)),
-  );
+  const config = loadJSON(CONFIG_PATH);
+  const releasePackages = new Set();
+  if (config && !isObject(config.packages)) errors.push(`${CONFIG_PATH}: packages must be an object`);
+  for (const [key, pkg] of Object.entries(isObject(config?.packages) ? config.packages : {})) {
+    if (!key.startsWith('plugins/')) continue;
+    const name = key.slice('plugins/'.length);
+    releasePackages.add(name);
+    if (pkg?.component !== `plugin-${name}`) {
+      errors.push(
+        `${CONFIG_PATH}: ${key} must tag as plugin-${name} (its component), got ${JSON.stringify(pkg?.component)} — `
+          + 'a pin\'s ref is plugin-<name>-v<version>',
+      );
+    }
+  }
 
   let floorsText = null;
   try {
@@ -165,6 +201,12 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
     claudeNames.add(entry.name);
 
     const pluginDir = resolve(repoRoot, 'plugins', entry.name);
+    if (typeof entry.source !== 'string' || resolve(repoRoot, entry.source) !== pluginDir) {
+      errors.push(
+        `${CLAUDE_PATH}.plugins[${i}] (${entry.name}): source ${JSON.stringify(entry.source)} is not the package `
+          + `directory plugins/${entry.name}`,
+      );
+    }
     if (!dirExists(pluginDir)) {
       errors.push(`${CLAUDE_PATH}.plugins[${i}] (${entry.name}): plugins/${entry.name}/ directory missing`);
       continue;
@@ -213,6 +255,10 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
         continue;
       }
       pluginDir = resolve(repoRoot, sourcePath);
+      if (pluginDir !== resolve(repoRoot, 'plugins', entry.name)) {
+        errors.push(`${at}: source.path "${sourcePath}" is not the package directory plugins/${entry.name}`);
+        continue;
+      }
       if (!dirExists(pluginDir)) {
         errors.push(`${at}: source.path "${sourcePath}" not a directory`);
         continue;
@@ -281,14 +327,21 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
         errors.push(`${FLOORS_PATH}: floor for "${name}" names no plugins/* release-please package`);
         continue;
       }
-      if (history.ok) {
-        for (const e of checkRelease(repoRoot, { name, version: floor })) errors.push(`${FLOORS_PATH}: floor ${name}@${floor}: ${e}`);
+      if (!history.ok) continue;
+      const tag = releaseTag(name, floor);
+      if (resolveCommit(repoRoot, `refs/tags/${tag}`) === null) {
+        // Before activation a floor may be declared ahead of its release:
+        // Decision 5 (a) keeps the catalog local until every floor is met.
+        if (floorData.activated) errors.push(`${FLOORS_PATH}: floor ${name}@${floor}: tag ${tag} does not resolve — after activation every floor is a release`);
+        else warnings.push(`${FLOORS_PATH}: floor ${name}@${floor} is not released yet (no ${tag}); activation waits for it`);
+        continue;
       }
+      for (const e of checkRelease(repoRoot, { name, version: floor })) errors.push(`${FLOORS_PATH}: floor ${name}@${floor}: ${e}`);
     }
     if (!floorData.activated && history.ok) {
       for (const name of releasePackages) {
         if (!(name in floorData.floors) && hasReleaseTag(repoRoot, name)) {
-          errors.push(`${FLOORS_PATH}: ${name} is released but has no migration floor — activation needs one per released package`);
+          warnings.push(`${FLOORS_PATH}: ${name} is released but has no migration floor; activation will need one`);
         }
       }
     }
@@ -322,50 +375,97 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
     if (baseCommit === null) {
       errors.push(`baseline ${base} does not resolve to a commit (fetch-depth: 0 required for --base)`);
     } else {
-      const baseErrors = compareWithBaseline(repoRoot, baseCommit, { codex, activated, pins });
-      errors.push(...baseErrors.errors);
-      if (baseErrors.ran) coverage.baseline = baseCommit;
+      const compared = compareWithBaseline(repoRoot, baseCommit, {
+        codex, activated, pins, floorData, releasePackages, claudeNames,
+      });
+      errors.push(...compared.errors);
+      warnings.push(...compared.warnings);
+      if (compared.ran) coverage.baseline = baseCommit;
     }
   }
 
   return result();
 }
 
-/**
- * ADR-0061 Decision 2's monotonic pin. The baseline is the catalog on the
- * target branch before the change. A `local` or absent baseline entry imposes
- * no bound (first activation, or a first pin); a pinned one bounds the head
- * entry from below and fixes its sha while the version is unchanged. The
- * activated marker is one-way (Decision 5 (a)).
- */
-function compareWithBaseline(repoRoot, baseCommit, { codex, activated, pins }) {
-  const errors = [];
-  const label = `baseline ${baseCommit.slice(0, 7)}`;
-  let baseCatalog = null;
-  let baseFloors = null;
+/** A baseline file as an object, `null` when absent, or `{ error }` when unreadable. */
+function readBaselineObject(repoRoot, commit, path) {
+  const text = readAt(repoRoot, commit, path);
+  if (text === null) return { value: null };
   try {
-    const text = readAt(repoRoot, baseCommit, CODEX_PATH);
-    baseCatalog = text === null ? { plugins: [] } : JSON.parse(text);
-    const floorsText = readAt(repoRoot, baseCommit, FLOORS_PATH);
-    baseFloors = floorsText === null ? { activated: false } : JSON.parse(floorsText);
+    const value = JSON.parse(text);
+    return isObject(value) ? { value } : { error: 'is not a JSON object' };
   } catch (err) {
-    errors.push(`${label}: cannot read the baseline catalog: ${err.message}`);
-    return { errors, ran: false };
+    return { error: err.message };
   }
+}
 
-  if (baseFloors.activated === true && activated !== true) {
+/**
+ * ADR-0061 Decision 2's monotonic pin, and Decision 5 (a)'s one-way
+ * activation. The baseline is the catalog on the target branch before the
+ * change. A `local` or absent baseline entry imposes no bound (first
+ * activation, or a first pin); a pinned one bounds the head entry from below
+ * and fixes its sha while the version is unchanged.
+ */
+function compareWithBaseline(repoRoot, baseCommit, { codex, activated, pins, floorData, releasePackages, claudeNames }) {
+  const errors = [];
+  const warnings = [];
+  const label = `baseline ${baseCommit.slice(0, 7)}`;
+  const baseCatalog = readBaselineObject(repoRoot, baseCommit, CODEX_PATH);
+  const baseFloorFile = readBaselineObject(repoRoot, baseCommit, FLOORS_PATH);
+  // An unreadable baseline is a defect already on the target branch, not in
+  // this change, and refusing here would block the change that repairs it. It
+  // is reported, and the result states that no baseline was compared.
+  const unreadable = [[CODEX_PATH, baseCatalog], [FLOORS_PATH, baseFloorFile]].filter(([, r]) => r.error);
+  if (unreadable.length > 0) {
+    for (const [path, r] of unreadable) warnings.push(`${label}: ${path} ${r.error} — the baseline was not compared`);
+    return { errors, warnings, ran: false };
+  }
+  const baseActivated = baseFloorFile.value?.activated === true;
+  const baseFloors = isObject(baseFloorFile.value?.floors) ? baseFloorFile.value.floors : {};
+  const basePlugins = Array.isArray(baseCatalog.value?.plugins) ? baseCatalog.value.plugins : [];
+
+  if (baseActivated && activated !== true) {
     errors.push(`${FLOORS_PATH}: activated at the ${label} but not here — activation is one-way`);
   }
+
+  // A floor stays while its package exists and never drops, so the activating
+  // change cannot shed the floors it was gated on; and that change pins no
+  // package without one. After activation a new package needs no floor: it
+  // has no pre-migration release to guard against.
+  if (floorData) {
+    for (const [name, was] of Object.entries(baseFloors)) {
+      if (!releasePackages.has(name) || !isSemver(was)) continue;
+      const now = floorData.floors[name];
+      if (now === undefined) {
+        errors.push(`${FLOORS_PATH}: floor for ${name} removed against the ${label} — a floor stays while its package exists`);
+      } else if (compareSemver(now, was) < 0) {
+        errors.push(`${FLOORS_PATH}: floor for ${name} lowered from ${was} to ${now} against the ${label}`);
+      }
+    }
+    if (!baseActivated && activated === true) {
+      for (const entry of codex.plugins) {
+        if (sourceKind(entry) !== 'pinned' || typeof entry.name !== 'string' || entry.name in floorData.floors) continue;
+        errors.push(`${CODEX_PATH} (${entry.name}): the activating change pins ${entry.name} without a migration floor`);
+      }
+    }
+  }
+
   const head = new Map(codex.plugins.filter((e) => typeof e?.name === 'string').map((e) => [e.name, e]));
-  for (const baseEntry of Array.isArray(baseCatalog.plugins) ? baseCatalog.plugins : []) {
-    if (sourceKind(baseEntry) !== 'pinned') continue;
+  for (const baseEntry of basePlugins) {
+    if (sourceKind(baseEntry) !== 'pinned' || typeof baseEntry.name !== 'string') continue;
     const name = baseEntry.name;
-    const was = checkPinShape(baseEntry).version;
     const headEntry = head.get(name);
-    if (headEntry && sourceKind(headEntry) === 'local') {
+    if (baseActivated && headEntry === undefined && claudeNames.has(name)) {
+      // Without this, a checkout missing the package's tags would re-open the
+      // untagged exemption for a package that was already released.
+      errors.push(`${CODEX_PATH} (${name}): pin dropped against the ${label} while the package is still published`);
+      continue;
+    }
+    if (baseActivated && headEntry && sourceKind(headEntry) === 'local') {
       errors.push(`${CODEX_PATH} (${name}): reverted from a pin to local against the ${label}`);
       continue;
     }
+    const was = checkPinShape(baseEntry).version;
     const now = pins.get(name);
     if (!now || was === null) continue;
     const delta = compareSemver(now.version, was);
@@ -378,7 +478,7 @@ function compareWithBaseline(repoRoot, baseCommit, { codex, activated, pins }) {
       );
     }
   }
-  return { errors, ran: true };
+  return { errors, warnings, ran: true };
 }
 
 // CLI entry. Both sides are realpath'd: Node resolves the main module through
