@@ -74,6 +74,15 @@ async function makeHome({ satisfied = false } = {}) {
     ? `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\nnotifications = ["approval-requested", "agent-turn-complete"]\n`
     : '# empty\n');
   await writeFile(join(home, '.agentic-plugins', 'config.local.toml'), '# local sentinel\n');
+  // The Codex install caches the runners' `codex plugin list --json` describes: Codex
+  // serves an installed plugin from `<cache>/<plugin>/<version>/`, so a listed install
+  // with no such directory is one the probe cannot read (ADR-0061 S3 reads it
+  // `unknown`). The list stays authoritative for WHICH plugins are installed.
+  for (const name of ALL_PLUGINS) {
+    const installed = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', name, '9.9.9', '.codex-plugin');
+    await mkdir(installed, { recursive: true });
+    await writeFile(join(installed, 'plugin.json'), JSON.stringify({ name, version: '9.9.9' }));
+  }
   if (satisfied) {
     await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'model = "gpt-5.2-codex"\neffort = "high"\nnotify_channel = "file-log"\n');
   }
@@ -861,6 +870,25 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     ok(/ADR-0041 §2c/.test(egress.recovery), 'the actionable activation recovery survives fragment persistence');
     ok(/TELEGRAM_BOT_TOKEN/.test(egress.recovery), 'the credential env-key procedure survives fragment persistence');
     ok(/Backup /.test(egress.recovery), 'the §10.3 fragment guidance is appended');
+  });
+
+  // ADR-0061 S3 (Codex review round 4): Codex lists engineer installed at 9.9.9 but no
+  // install-cache directory holds it. The plan names the manual reinstall beside the
+  // presented executor — never folded into it, since the executor cannot repair it —
+  // and the persisted manifest still validates (the state is the schema's `unknown`).
+  it('presents a manual reinstall for a listed Codex install with no cache directory for its version', async () => {
+    const { home, cwd } = await makeHome();
+    await rm(join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', 'engineer'), { recursive: true, force: true });
+    const plan = await boot({ argv: ['plan', '--bundle', 'engineering', '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    strictEqual(plan.report.probe.hosts.codex.plugins.engineer.state, 'unknown');
+    const manual = plan.report.plugin_management.manual_actions ?? [];
+    deepStrictEqual(manual.map((action) => `${action.host}:${action.plugin}:${action.action}`), ['codex:engineer:reinstall']);
+    ok(!plan.report.plugin_management.actions.some((action) => action.plugin === 'engineer'), 'not an executor candidate');
+    const text = renderText({ ...plan.report, format: 'text' });
+    ok(/manual \(codex\): Codex lists engineer@9\.9\.9 installed, but no install-cache directory holds that version/.test(text), text);
+    const manifest = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json'), 'utf8'));
+    const validate = await makeValidator('runtime-bootstrap-run', { pluginRoot: PLUGIN_ROOT });
+    deepStrictEqual(validate(manifest).errors, []);
   });
 
   it('the persisted run manifest validates against the packaged §5 schema', async () => {

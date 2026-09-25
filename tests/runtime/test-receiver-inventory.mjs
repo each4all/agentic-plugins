@@ -32,15 +32,20 @@ const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 const STATUSLINE = 'agentic-statusline.mjs';
 
-// The real v0.91.2 template — checked in under tests/fixtures/receivers rather
+// Real released templates — checked in under tests/fixtures/receivers rather
 // than read from git at test time. Using ACTUAL released bytes is the point (a
 // hand-written fixture would only prove the classifier agrees with itself), but
 // shelling out to `git show <tag>` would fail on a shallow or tagless checkout
 // for an environmental reason rather than a defect. `releasedShapesRegistry`
 // below binds each fixture to the release it claims to be.
+//   v0.91.2 — the last full copy, before the receivers became delegating shims;
+//   v0.97.4 — the last `delegating-shim v1`, whose ladder read the Codex
+//             marketplace clone (ADR-0061 §Decision 3 replaced it).
+const FIXTURE_TAGS = ['plugin-runtime-v0.91.2', 'plugin-runtime-v0.97.4'];
 function releasedTemplate(tag, basename) {
-  strictEqual(tag, 'plugin-runtime-v0.91.2', 'only the v0.91.2 fixtures are checked in');
-  return readFileSync(join(REPO_ROOT, 'tests/fixtures/receivers', `${basename.replace(/\.mjs$/, '')}.v0.91.2.template.mjs`), 'utf8');
+  ok(FIXTURE_TAGS.includes(tag), `no fixture is checked in for ${tag}`);
+  const version = tag.replace('plugin-runtime-', '');
+  return readFileSync(join(REPO_ROOT, 'tests/fixtures/receivers', `${basename.replace(/\.mjs$/, '')}.${version}.template.mjs`), 'utf8');
 }
 
 function releasedShapesRegistry() {
@@ -70,11 +75,39 @@ describe('installed receiver inventory — classification without execution', ()
     // pins fixture bytes to the packaged registry entry, so the two cannot
     // disagree without failing here first.
     const registry = releasedShapesRegistry();
+    for (const tag of FIXTURE_TAGS) {
+      const version = tag.replace('plugin-runtime-', '');
+      for (const basename of [STATUSLINE, 'codex-notify-shuttle.mjs']) {
+        const fixture = releasedTemplate(tag, basename);
+        const entry = registry[basename]?.[sha256(fixture)];
+        ok(entry, `${basename} ${version} fixture is not a registered released shape`);
+        ok(entry.endsWith(version), `${basename} fixture claims ${version} as the last release it shipped in, but the registry says ${entry}`);
+      }
+    }
+  });
+
+  it('the outgoing v1 shims are registered as released, so an installed one reads as LEGACY', async () => {
+    // ADR-0061 §Decision 3: a runtime release does not rewrite home copies, so
+    // every machine that rendered a v1 shim keeps running the ladder that reads
+    // the Codex marketplace clone until the operator re-renders. The registry
+    // is what lets doctor say "legacy — re-install" about that file instead of
+    // "foreign — someone else's". Each v1 shim is classified through the SAME
+    // packaged view doctor uses, beside the current template.
     for (const basename of [STATUSLINE, 'codex-notify-shuttle.mjs']) {
-      const fixture = releasedTemplate('plugin-runtime-v0.91.2', basename);
-      const entry = registry[basename]?.[sha256(fixture)];
-      ok(entry, `${basename} fixture is not a registered released shape`);
-      ok(entry.includes('v0.91.2'), `${basename} fixture claims v0.91.2 but the registry says ${entry}`);
+      const v1 = releasedTemplate('plugin-runtime-v0.97.4', basename);
+      const current = await readFile(join(REPO_ROOT, 'plugins/runtime/receivers', basename), 'utf8');
+      ok(v1.includes("'.tmp', 'marketplaces'"), `${basename} v1 is the shape whose ladder read the marketplace clone`);
+      ok(v1 !== current, `${basename} current template must differ from the v1 it replaces`);
+      const bin = await installDirWith({ [basename]: renderLike(v1) });
+      const r = classifyInstalledReceiver({
+        kind: basename,
+        path: join(bin, basename),
+        currentTemplateSha: sha256(current),
+        knownReleasedShapes: releasedShapesRegistry()[basename],
+      });
+      strictEqual(r.state, 'legacy', `${basename} v1 install must read as legacy`);
+      strictEqual(r.shipped_in, 'plugin-runtime-v0.92.0 … v0.97.4');
+      ok(r.marker?.endsWith('delegating-shim v1'), `${basename} v1 carries its generation marker, got ${r.marker}`);
     }
   });
 

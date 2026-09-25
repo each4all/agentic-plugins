@@ -144,6 +144,79 @@ describe('plugin-management-plan: recommendation computer composes purely (full 
     strictEqual(run(), run());
   });
 
+  // ADR-0061 §Decision 4/7. The Codex currentness verdict comes from the probe's three
+  // facts (`codex_install`), not from a version comparison the planner makes: a same-version
+  // install whose bytes differ from the pin has no version gap at all.
+  it('turns a Codex content mismatch or a behind install into a manual repair, never an executable upgrade', () => {
+    for (const currentness of ['content-mismatch', 'behind']) {
+      const facts = doctorPluginsFixture();
+      facts.runtime = {
+        status: 'ok',
+        source: { present: true, claude_manifest: { version: '9.9.9' } },
+        marketplace: { claude: true, codex: true },
+        installed: { codex_resolved: { decision: 'installed', version: '0.1.0', enabled: true } },
+        // A newer retained cache directory beside the listed one: the explanation must
+        // name the version the verdict was reached on (the list's), not the newest cache.
+        cache: { codex: { latest: { manifest_version: '0.3.0', path: '/c/runtime/0.3.0' } } },
+        codex_install: { currentness, installed: { version: '0.1.0', source: 'plugin-list' } },
+      };
+      const registration = { codex: { catalog: { versions: { runtime: '0.1.0' }, targets: { runtime: { status: 'pinned', ref: 'plugin-runtime-v0.1.0', version: '0.1.0' } } } } };
+      const plans = buildPluginPlans(deepFreeze(facts), { codexPerPluginVerbList: ['add'], marketplaceRegistration: registration });
+      const codex = plans.runtime.recommendations.filter((rec) => rec.host === 'codex');
+      const repair = codex.find((rec) => rec.action === 'repair-codex-install');
+      ok(repair, `${currentness}: a repair follow-up`);
+      strictEqual(repair.executable, false);
+      ok(repair.detail.includes('plugin-runtime-v0.1.0'), repair.detail);
+      ok(!repair.detail.includes('0.3.0'), `${currentness}: never the newest retained cache's version: ${repair.detail}`);
+      if (currentness === 'behind') ok(repair.detail.includes('runtime 0.1.0 below'), repair.detail);
+      const management = buildPluginManagementPlan({ plugins: plans, clis: CLIS_UP, execute: false, hostFilter: 'all', timeoutMs: 120000 });
+      const followup = management.manual_followups.find((entry) => entry.id === 'codex-install-repair');
+      ok(followup, `${currentness}: the repair reaches the manual follow-ups aggregate`);
+      strictEqual(followup.status, 'advisory');
+      ok(codex.every((rec) => rec.action !== 'upgrade-marketplace'), `${currentness}: no executable upgrade`);
+    }
+    // CONTROL: the same facts with a current install produce no repair — and the 9.9.9
+    // source manifest is not a Codex target either.
+    const facts = doctorPluginsFixture();
+    facts.runtime = {
+      status: 'ok',
+      source: { present: true, claude_manifest: { version: '9.9.9' } },
+      marketplace: { claude: true, codex: true },
+      installed: { codex_resolved: { decision: 'installed', version: '0.1.0', enabled: true } },
+      cache: { codex: { latest: { manifest_version: '0.1.0', path: '/c/runtime/0.1.0' } } },
+      codex_install: { currentness: 'current' },
+    };
+    const plans = buildPluginPlans(deepFreeze(facts), { codexPerPluginVerbList: ['add'], marketplaceRegistration: null });
+    deepStrictEqual(plans.runtime.recommendations.filter((rec) => rec.host === 'codex'), []);
+  });
+
+  it('keeps the repair beside the enable follow-up for a disabled install that is behind its pin', () => {
+    const facts = doctorPluginsFixture();
+    facts.runtime = {
+      status: 'ok',
+      source: { present: false },
+      marketplace: { claude: true, codex: true },
+      installed: { codex_resolved: { decision: 'disabled', version: '0.1.0', enabled: false } },
+      cache: { codex: { latest: { manifest_version: '0.1.0', path: '/c/runtime/0.1.0' } } },
+      codex_install: { currentness: 'behind', installed: { version: '0.1.0', source: 'plugin-list' } },
+    };
+    const registration = { codex: { catalog: { versions: { runtime: '0.2.0' }, targets: { runtime: { status: 'pinned', ref: 'plugin-runtime-v0.2.0', version: '0.2.0' } } } } };
+    const plans = buildPluginPlans(deepFreeze(facts), { codexPerPluginVerbList: ['add'], marketplaceRegistration: registration });
+    const actions = plans.runtime.recommendations.filter((rec) => rec.host === 'codex').map((rec) => rec.action);
+    deepStrictEqual(actions, ['enable-plugin', 'repair-codex-install']);
+    const enable = plans.runtime.recommendations.find((rec) => rec.action === 'enable-plugin');
+    ok(!enable.detail.includes('Cache materialization is not the issue'), enable.detail);
+    const management = buildPluginManagementPlan({ plugins: plans, clis: CLIS_UP, execute: false, hostFilter: 'all', timeoutMs: 120000 });
+    ok(management.manual_followups.some((entry) => entry.id === 'codex-install-repair'));
+  });
+
+  it('names no entry shape in a register-marketplace-entry detail', () => {
+    const plans = buildPluginPlans(deepFreeze(doctorPluginsFixture()), { codexPerPluginVerbList: ['add'], marketplaceRegistration: null });
+    const register = plans.engineer.recommendations.find((rec) => rec.action === 'register-marketplace-entry' && rec.host === 'codex');
+    ok(register, 'the fixture yields one');
+    ok(!register.detail.includes('./plugins/'), register.detail);
+  });
+
   it('exports the executable-action allowlists as the single authority', () => {
     ok(EXECUTABLE_PLUGIN_ACTIONS.has('install-plugin'));
     ok(EXECUTABLE_PLUGIN_ACTIONS.has('add-marketplace'));

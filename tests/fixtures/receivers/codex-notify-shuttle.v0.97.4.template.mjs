@@ -2,7 +2,7 @@
 // codex-notify-shuttle.mjs — Codex notify= receiver for agentic-plugins
 // (rendered by `runtime:settings --notification-plan`, ADR-0040 §4).
 //
-// @agentic-receiver: codex-notify delegating-shim v2
+// @agentic-receiver: codex-notify delegating-shim v1
 //
 // Source template: plugins/runtime/receivers/codex-notify-shuttle.mjs. It
 // ships with the runtime plugin as render-input DATA, deliberately outside
@@ -32,14 +32,11 @@
 // is precisely what now lives in the plugin.
 //
 // What remains here is only what must bootstrap the delegation: re-resolve the
-// CURRENT runtime plugin root on every invocation (env override -> Codex
-// install cache -> Claude install cache), version-gate it, and spawn. That
+// CURRENT runtime plugin root on every invocation (env override -> Claude
+// cache SemVer-max -> Codex fixed cache), version-gate it, and spawn. That
 // ladder cannot itself be delegated — the shim has to find the runtime before
 // it can call it — so it is the irreducible copy, and it is also the stable
 // one: it changes only when install layouts change, not when a mapping does.
-// ADR-0061 was such a change: v1 of this shim read the Codex marketplace clone,
-// which tracks the repository's main branch, and v2 reads the versioned install
-// cache that holds a release.
 //
 // Delegation is by DETACHED SPAWN, unlike the statusline shim's in-process
 // import. A notification is fire-and-forget and must not hold the Codex turn,
@@ -60,12 +57,7 @@ import path from 'node:path';
 // version).
 const MIN_RUNTIME_VERSION = '__AGENTIC_MIN_RUNTIME_VERSION__';
 
-// At most ONE stderr line per invocation, whichever path reaches here first: a
-// cross-host note followed by a failed spawn must not become two lines.
-let diagnosed = false;
 function diagnostic(reason) {
-  if (diagnosed) return;
-  diagnosed = true;
   try { process.stderr.write('codex-notify-shuttle: ' + reason + '\n'); } catch {}
 }
 
@@ -111,122 +103,54 @@ function semverCompare(a, b) {
   }
   // Equal core: a clean release ranks ABOVE any prerelease of it, so the
   // candidate sort cannot pick a beta by directory order when the released
-  // version is also installed; two prereleases order by SemVer §11 identifier
-  // precedence (numeric identifiers numerically and below alphanumeric ones, a
-  // shorter set below a longer one it prefixes).
-  const ia = na.indexOf('-') === -1 ? null : na.slice(na.indexOf('-') + 1).split('.');
-  const ib = nb.indexOf('-') === -1 ? null : nb.slice(nb.indexOf('-') + 1).split('.');
-  if (ia === null || ib === null) return (ia === null ? 1 : 0) - (ib === null ? 1 : 0);
-  for (let i = 0; i < Math.max(ia.length, ib.length); i += 1) {
-    if (ia[i] === undefined) return -1;
-    if (ib[i] === undefined) return 1;
-    const numA = /^\d+$/.test(ia[i]);
-    const numB = /^\d+$/.test(ib[i]);
-    if (numA && numB) {
-      const diff = Number.parseInt(ia[i], 10) - Number.parseInt(ib[i], 10);
-      if (diff !== 0) return diff;
-    } else if (numA !== numB) {
-      return numA ? -1 : 1;
-    } else if (ia[i] !== ib[i]) {
-      return ia[i] < ib[i] ? -1 : 1;
-    }
-  }
-  return 0;
+  // version is also installed.
+  const preA = na.indexOf('-') === -1 ? 0 : 1;
+  const preB = nb.indexOf('-') === -1 ? 0 : 1;
+  return preB - preA;
 }
 
-// The runtime install in one host's cache: { state: 'absent' } when no
-// manifest-verified runtime is there, { state: 'unusable' } when one is but
-// none carries scripts/notify.mjs, else { state: 'ok', root, version } for the
-// newest that does. `manifestRel` is that host's own manifest layout, and the
-// manifest must name the runtime plugin: a directory under .../runtime/ that
-// holds some other plugin is not a runtime install. The version returned is the
-// one that manifest declares, so the floor gate judges the same manifest the
-// selection did.
-function newestRuntimeInstall(base, manifestRel) {
-  let entries;
-  try {
-    entries = fs.readdirSync(base, { withFileTypes: true });
-  } catch {
-    return { state: 'absent' };
-  }
-  const installed = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const root = path.join(base, entry.name);
-    let manifest;
-    try {
-      manifest = JSON.parse(fs.readFileSync(path.join(root, manifestRel), 'utf8'));
-    } catch {
-      continue;
-    }
-    if (!manifest || manifest.name !== 'runtime') continue;
-    installed.push({
-      version: typeof manifest.version === 'string' ? manifest.version : '0.0.0',
-      root: root,
-      capable: fs.existsSync(path.join(root, 'scripts', 'notify.mjs')),
-    });
-  }
-  if (installed.length === 0) return { state: 'absent' };
-  installed.sort(function (a, b) { return semverCompare(b.version, a.version); });
-  for (const candidate of installed) {
-    if (candidate.capable) return { state: 'ok', root: candidate.root, version: candidate.version };
-  }
-  return { state: 'unusable' };
-}
-
-// The canonical path, so the CLI this root leads to compares its own argv[1]
-// against the same spelling Node gives its module URL.
-function canonical(root) {
-  try {
-    return fs.realpathSync(root);
-  } catch {
-    return root;
-  }
-}
-
-// ADR-0039 §5 discovery ladder, gated on scripts/notify.mjs presence, with the
-// ADR-0061 §Decision 3 candidates. The sibling-monorepo rung does not apply to
-// a home-installed shuttle; point AGENTIC_RUNTIME_ROOT at a source checkout
-// instead.
+// ADR-0039 §5 discovery ladder, gated on scripts/notify.mjs presence. The
+// sibling-monorepo rung does not apply to a home-installed shuttle; point
+// AGENTIC_RUNTIME_ROOT at a source checkout instead.
 //
-// Each host's candidate is its versioned install cache, newest manifest-verified
-// SemVer carrying notify.mjs first. The Codex marketplace clone
-// ($CODEX_HOME/.tmp/marketplaces/...) is never a candidate, not even a fallback:
-// it tracks the repository's main branch, so reading it runs unreleased code.
-//
-// Same-host preference: this is a CODEX notify receiver, so the Codex cache is
-// probed FIRST, and the Claude cache is used only when Codex has no runtime
-// installed at all. A Codex runtime that lacks notify.mjs fails closed rather
-// than crossing hosts. The Codex home honors $CODEX_HOME exactly like the
-// planner's config read.
-//
-// Returns { root, version, crossHost } or { root: null, reason }.
+// Same-host preference (the discover-engineer Codex P2 precedent): this is a
+// CODEX notify receiver, so the Codex cache is probed FIRST — a stale
+// opposite-host Claude cache must never shadow a current Codex install. The
+// Codex home honors $CODEX_HOME exactly like the planner's config read.
 function resolveRuntimeRoot() {
   const override = process.env.AGENTIC_RUNTIME_ROOT;
   if (typeof override === 'string' && override.length > 0) {
-    if (path.isAbsolute(override) && fs.existsSync(path.join(override, 'scripts', 'notify.mjs'))) {
-      return { root: canonical(override), version: readManifestVersion(override), crossHost: false };
-    }
-    return { root: null, reason: 'AGENTIC_RUNTIME_ROOT is not an absolute runtime root with scripts/notify.mjs' };
+    if (!path.isAbsolute(override)) return null;
+    if (fs.existsSync(path.join(override, 'scripts', 'notify.mjs'))) return override;
+    return null;
   }
   const home = os.homedir();
   const codexHome = typeof process.env.CODEX_HOME === 'string' && process.env.CODEX_HOME.length > 0
     ? path.resolve(process.env.CODEX_HOME)
     : path.join(home, '.codex');
-  const codex = newestRuntimeInstall(
-    path.join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime'),
-    path.join('.codex-plugin', 'plugin.json'),
-  );
-  if (codex.state === 'ok') return { root: canonical(codex.root), version: codex.version, crossHost: false };
-  if (codex.state === 'unusable') {
-    return { root: null, reason: 'the Codex runtime install has no scripts/notify.mjs' };
+  const codexBase = path.join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime');
+  try {
+    if (fs.existsSync(path.join(codexBase, 'scripts', 'notify.mjs'))) return codexBase;
+  } catch {}
+  const claudeBase = path.join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime');
+  let candidates = [];
+  try {
+    for (const entry of fs.readdirSync(claudeBase, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const root = path.join(claudeBase, entry.name);
+      const version = readManifestVersion(root);
+      if (!version) continue;
+      if (!fs.existsSync(path.join(root, 'scripts', 'notify.mjs'))) continue;
+      candidates.push({ version: version, root: root });
+    }
+  } catch {
+    candidates = [];
   }
-  const claude = newestRuntimeInstall(
-    path.join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime'),
-    path.join('.claude-plugin', 'plugin.json'),
-  );
-  if (claude.state === 'ok') return { root: canonical(claude.root), version: claude.version, crossHost: true };
-  return { root: null, reason: 'no runtime plugin root resolved (install agentic-plugins runtime or set AGENTIC_RUNTIME_ROOT)' };
+  if (candidates.length > 0) {
+    candidates.sort(function (a, b) { return semverCompare(b.version, a.version); });
+    return candidates[0].root;
+  }
+  return null;
 }
 
 // Walk up from cwd to the nearest .git marker (dir or worktree file). Kept
@@ -261,23 +185,15 @@ function main() {
   if (payload.type !== 'agent-turn-complete') return;
   const repoRoot = resolveRepoRoot(process.cwd());
   if (!repoRoot) return; // outside a repository — no notify state home
-  const resolved = resolveRuntimeRoot();
-  if (!resolved.root) {
-    diagnostic(resolved.reason);
+  const runtimeRoot = resolveRuntimeRoot();
+  if (!runtimeRoot) {
+    diagnostic('no runtime plugin root resolved (install agentic-plugins runtime or set AGENTIC_RUNTIME_ROOT)');
     return;
   }
-  const runtimeRoot = resolved.root;
-  const runtimeVersion = resolved.version;
+  const runtimeVersion = readManifestVersion(runtimeRoot);
   if (!runtimeVersion || !versionGte(runtimeVersion, MIN_RUNTIME_VERSION)) {
     diagnostic('resolved runtime is older than ' + MIN_RUNTIME_VERSION);
     return;
-  }
-  // ADR-0061 §Decision 4: a Codex install holds a release commit once the
-  // catalog pins are active and a Claude copy does not, so taking the runtime
-  // from the Claude cache is reported rather than taken silently. This is the
-  // one diagnostic line on this path; the notification still goes out.
-  if (resolved.crossHost) {
-    diagnostic('runtime resolved from the Claude plugin cache because the Codex cache has no runtime installed');
   }
   // Everything past the gate is the runtime's to decide: the repo ident, the
   // event kind, the id shape, the title. Those are what the plugin upgrade

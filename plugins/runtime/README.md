@@ -276,6 +276,17 @@ mutation (`enabled ≠ trusted`). Older Codex (`0.130`–`0.136`) is reported as
 `marketplace-only` and the recommendation stays manual; doctor surfaces the same
 state in the readiness matrix and host-parity diagnostics.
 
+Once the Codex catalog pins each plugin to its release commit (ADR-0061), doctor
+reports three separate facts per Codex plugin in `plugins.<name>.codex_install`:
+the catalog target (the `ref` version and `sha`), the installed version, and whether
+the installed files were verified against the tree at the pinned commit (a read-only
+`git ls-tree` of the registered marketplace clone's object store). Host parity names
+installs that are behind, ahead of, or divergent from their pin, and settings turns
+the first and last into a manual repair follow-up. Codex hook review reads hooks from
+the installed package only, never the source tree or the marketplace clone. Before
+activation the catalog is unpinned and Codex currentness is reported unknown, not
+compared with the source checkout.
+
 It invokes commands as argv arrays, never through a shell, and records only status, exit code, byte counts, timing, retry classification, and sanitized error metadata. Raw stdout and stderr are omitted from settings output and artifacts. `--plugin-management-host all|claude|codex` scopes install/update execution. Settings writes `.agentic-plugins/runs/settings/<run-id>/settings.json` plus `.agentic-plugins/runs/settings/latest.json` for explicit plugin-management, plugin-cleanup, or Codex hook-review attestations; `runtime:doctor` reads those artifacts and reports failed action types, retryability, and the newest current hook-review attestation. Settings still does not write host-native Claude or Codex config (the former `--apply-codex-plugin-hooks` write was removed per ADR-0035 §6), mutate Codex hook trust state, change auth, secrets, sandbox/permission settings, or execute general plugin uninstall commands.
 
 Codex hook trust remains an active-session UI operation. Settings prints a
@@ -292,11 +303,12 @@ $runtime:settings --attest-codex-hook-review
 ```
 
 The attestation is not host-native proof and does not mutate Codex trust state.
-It records the current hook-bearing plugin set, source versions, and review
-target checklist, and is blocked while expected bundled hook entries are
-explicitly disabled in Codex hook state.
-`runtime:doctor` treats it as current only while those still match the observed
-checkout.
+It records the Codex CLI version, the hook-bearing plugin set, the Codex-installed
+version of each covered plugin, and the review target checklist, and is blocked
+while expected bundled hook entries are explicitly disabled in Codex hook state.
+`runtime:doctor` treats it as current only while those still match what it
+observes on the machine; a hook-bearing plugin counts only once Codex has
+installed it, because Codex loads hooks from the installed package.
 
 ## Migration Behavior
 

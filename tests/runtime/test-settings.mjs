@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,7 @@ describe('runtime settings', () => {
     await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'codex_model = "old-codex"\n');
 
     const calls = [];
+    await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -535,6 +536,7 @@ describe('runtime settings', () => {
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-home-'));
     await seedRepo(root);
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -564,6 +566,7 @@ describe('runtime settings', () => {
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-removed-home-'));
     await seedRepo(root);
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -590,6 +593,7 @@ describe('runtime settings', () => {
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-home-'));
     await seedRepo(root);
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -614,7 +618,8 @@ describe('runtime settings', () => {
     const engineerTarget = followup.review_targets.find((target) => target.plugin === 'engineer');
     strictEqual(engineerTarget.version, '1.0.0');
     strictEqual(engineerTarget.manifest_exposed, true);
-    ok(engineerTarget.hooks_path.endsWith(join('plugins', 'engineer', 'hooks', 'hooks.json')));
+    // The INSTALLED package's hooks file (ADR-0061 §Decision 4), not the source tree's.
+    ok(engineerTarget.hooks_path.endsWith(join('agentic-plugins', 'engineer', '1.0.0', 'hooks', 'hooks.json')), engineerTarget.hooks_path);
     deepStrictEqual(engineerTarget.events, ['PreCompact', 'SessionStart', 'Stop']);
     strictEqual(engineerTarget.handler_count, 3);
     strictEqual(engineerTarget.command_count, 1);
@@ -635,6 +640,7 @@ describe('runtime settings', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -685,6 +691,7 @@ describe('runtime settings', () => {
     await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
     await writeTrustedCodexHookStateConfig(home);
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -729,7 +736,8 @@ describe('runtime settings', () => {
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-versions-home-'));
     await seedRepo(root); // source: engineer + orchestrator 1.0.0, both codex-hook-bearing
     await writeTrustedCodexHookStateConfig(home);
-
+    // Installed at the listed 0.7.0, carrying the hooks.
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator'], { engineer: '0.7.0', orchestrator: '0.7.0' });
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -775,11 +783,16 @@ describe('runtime settings', () => {
   // installed_version swap this used to bite still bites: the generic fallback would
   // resolve orchestrator from source (1.0.0), flip it attestable, and fail the
   // blocked assertion below.
-  it('blocks attestation when a bundled hook plugin is not Codex-installed (attestable:false, S8a5)', async () => {
+  // ADR-0061 §Decision 4: a hook plugin Codex has not installed contributes no hooks, so it is
+  // neither a review target nor a reason to block. (Before S3 its SOURCE hooks made it a
+  // "bundled" plugin that then blocked attestation as not installed; the source tree is no
+  // longer a hook origin at all.)
+  it('leaves a hook plugin Codex has not installed out of the review and the attestation (ADR-0061)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-not-installed-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-not-installed-home-'));
-    await seedRepo(root);
+    await seedRepo(root); // orchestrator's SOURCE carries Codex hooks
     await writeTrustedCodexHookStateConfig(home);
+    await installSourcePluginsOnCodex(root, home, ['engineer'], { engineer: '0.7.0' });
 
     const report = await runSettings({
       repoRoot: root,
@@ -795,14 +808,10 @@ describe('runtime settings', () => {
     });
 
     const review = report.codex_hook_review;
-    strictEqual(review.status, 'blocked');
-    ok(review.reason.includes('orchestrator (plugin is not installed on Codex (list-authoritative))'), review.reason);
-    deepStrictEqual(review.attested_plugins, [], 'a blocked attestation covers nothing');
-    // Diagnostics still emitted on the blocked record: canonical map omits the
-    // not-installed plugin while the legacy map carries its source fallback —
-    // canonical ≠ legacy is exactly the list-authority distinction.
+    deepStrictEqual(review.review_targets.map((target) => target.plugin), ['engineer'], 'orchestrator is not installed, so it has no Codex hooks to review');
+    ok(!String(review.reason ?? '').includes('orchestrator'), `orchestrator must not block: ${review.reason}`);
     deepStrictEqual(review.bound_versions.plugins.codex, { engineer: '0.7.0' });
-    strictEqual(review.plugin_versions.orchestrator, '1.0.0');
+    ok(!('orchestrator' in review.plugin_versions), 'nor is it carried in the legacy map');
   });
 
   it('blocks attestation for a Codex-DISABLED bundled hook plugin (a disabled plugin loads no hooks, S8a5)', async () => {
@@ -814,6 +823,7 @@ describe('runtime settings', () => {
     // producer and mirror consumed only `.version` from the authority and let a
     // disabled plugin with a matching version attest and read current).
     await writeTrustedCodexHookStateConfig(home);
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator'], { engineer: '0.7.0', orchestrator: '0.7.0' });
 
     const report = await runSettings({
       repoRoot: root,
@@ -846,6 +856,7 @@ describe('runtime settings', () => {
     await seedCodexInstallCache(home, 'engineer', '1.0.0');
     await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -915,6 +926,9 @@ describe('runtime settings', () => {
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attested-empty-home-'));
     await seedRepo(root);
     await writeDisabledCodexHookStateConfig(home); // forces status=blocked
+    // The hooks must be INSTALLED for the disabled handlers to be what blocks: with no
+    // installed hooks the attestation would block on an empty bundled set instead.
+    await installSourcePluginsOnCodex(root, home);
 
     const report = await runSettings({
       repoRoot: root,
@@ -928,6 +942,8 @@ describe('runtime settings', () => {
     });
 
     strictEqual(report.codex_hook_review.status, 'blocked');
+    deepStrictEqual(report.codex_hook_review.bundled_plugins, ['engineer', 'orchestrator'], 'the premise: a nonempty bundled set');
+    ok(report.codex_hook_review.reason.includes('explicitly disabled'), report.codex_hook_review.reason);
     deepStrictEqual(report.codex_hook_review.attested_plugins, [], 'a blocked attestation covers nothing');
     // bound_versions is still emitted for diagnostics — only attested_plugins gates on success.
     strictEqual(report.codex_hook_review.bound_versions.codex, '0.130.0');
@@ -967,6 +983,7 @@ describe('runtime settings', () => {
     await seedRepo(root);
     await writeDisabledCodexHookStateConfig(home);
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -1015,6 +1032,7 @@ describe('runtime settings', () => {
     });
     await writeSiblingMaskedCodexHookStateConfig(home);
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -1163,7 +1181,11 @@ describe('runtime settings', () => {
     strictEqual(report.plugin_command_surface.codex.supports.remove_plugin, false);
   });
 
-  it('recommends Codex marketplace upgrade when the temporary marketplace cache is stale', async () => {
+  // ADR-0061 §Decision 4: the marketplace clone tracks main, and Codex installs the catalog
+  // PIN, not the clone's working tree — so the clone's manifest version is never a
+  // currentness input. A clone behind the source manifest used to produce an executable
+  // `upgrade-marketplace`; it now produces only the clone-presence recommendation.
+  it('does not treat a stale marketplace clone as a Codex currentness signal (ADR-0061)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-stale-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-stale-home-'));
     await seedRepo(root);
@@ -1175,11 +1197,60 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    const codexRecommendation = report.plugins.runtime.recommendations.find((rec) => rec.host === 'codex');
-    strictEqual(codexRecommendation.action, 'upgrade-marketplace');
-    strictEqual(codexRecommendation.command, 'codex plugin marketplace upgrade agentic-plugins');
-    ok(codexRecommendation.detail.includes('Codex marketplace cache has 0.0.9'));
-    ok(report.plugin_management.plans.some((plan) => plan.status === 'planned' && plan.command === 'codex plugin marketplace upgrade agentic-plugins'));
+    const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+    ok(codexRecommendations.every((rec) => rec.action !== 'upgrade-marketplace'), 'the clone version (0.0.9 < source 0.1.0) drives no upgrade');
+    strictEqual(codexRecommendations[0].action, 'materialize-plugin-cache');
+    ok(!report.plugin_management.plans.some((plan) => plan.command === 'codex plugin marketplace upgrade agentic-plugins'));
+  });
+
+  // ADR-0061 §Decision 7: an install behind its pin is a failed materialization. The
+  // clone already names the pin, so a marketplace upgrade that finds no new revision
+  // reinstalls nothing — the recommendation is a manual repair doctor then re-verifies,
+  // never an executable upgrade that would record "executed" without fixing anything.
+  it('recommends a manual Codex repair when the install cache is behind the registered catalog pin', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-pin-behind-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-pin-behind-home-'));
+    await seedRepo(root);
+    await seedCodexInstallCache(home, 'runtime', '0.0.9');
+    const registration = await codexRegisteredCatalog([pinnedCodexEntry('runtime', '0.1.0')]);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({ ...defaultCliMap(), ...registration }),
+    });
+
+    const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+    const repair = codexRecommendations.find((rec) => rec.action === 'repair-codex-install');
+    ok(repair, 'installed 0.0.9 below the pinned 0.1.0 is behind');
+    strictEqual(repair.executable, false);
+    ok(repair.detail.includes('0.0.9 below the release its catalog pins (plugin-runtime-v0.1.0)'), repair.detail);
+    ok(repair.next_step.includes('runtime:doctor'), repair.next_step);
+    ok(codexRecommendations.every((rec) => rec.action !== 'upgrade-marketplace'));
+    ok(!report.plugin_management.plans.some((plan) => plan.command === 'codex plugin marketplace upgrade agentic-plugins'));
+  });
+
+  it('offers a Codex install from the registered catalog pin even with no marketplace clone directory for the plugin', async () => {
+    // After activation the catalog pin, not the clone's working tree, is what Codex
+    // installs — so a clone that lacks plugins/<name> (sparse, or ahead of a removal)
+    // does not make an installable plugin read as "no marketplace configured".
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-pin-noclone-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-pin-noclone-home-'));
+    await seedRepo(root);
+    const registration = await codexRegisteredCatalog([pinnedCodexEntry('runtime', '0.1.0')]);
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(codex0137Map({
+        ...registration,
+        'codex plugin list --json': codexListJson([]),
+      })),
+    });
+    const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+    const install = codexRecommendations.find((rec) => rec.action === 'install-plugin');
+    ok(install, `expected an install, got ${codexRecommendations.map((rec) => rec.action).join(',')}`);
+    ok(install.detail.includes('the registered marketplace catalog lists runtime'), install.detail);
+    ok(codexRecommendations.every((rec) => rec.action !== 'add-marketplace'));
   });
 
   it('does not recommend installing Codex when the list authoritatively reports installed; only reworded materialization (ADR-0034)', async () => {
@@ -1259,28 +1330,58 @@ describe('runtime settings', () => {
     ok(codexRecommendations.every((r) => r.action !== 'install-plugin-manual'));
   });
 
-  it('recommends a Codex marketplace upgrade when the list reports installed but older than source (ADR-0034)', async () => {
+  it('recommends a manual Codex repair when the list reports installed but older than the catalog pin (ADR-0034, ADR-0061)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-older-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-older-home-'));
     await seedRepo(root);
     await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+    const registration = await codexRegisteredCatalog([pinnedCodexEntry('runtime', '0.1.0')]);
 
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
       runner: fakeRunner(codex0137Map({
-        // Installed per list, but at 0.0.5 — older than the 0.1.0 source/catalog.
+        ...registration,
+        // Installed per list, but at 0.0.5 — older than the pinned 0.1.0.
         'codex plugin list --json': codexListJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.0.5', installed: true, enabled: true }]),
       })),
     });
 
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
-    const upgrade = codexRecommendations.find((rec) => rec.action === 'upgrade-marketplace');
-    ok(upgrade, 'expected an upgrade-marketplace recommendation from the list version');
-    ok(upgrade.detail.includes('reports runtime 0.0.5 installed'));
-    strictEqual(upgrade.evidence.list_decision, 'installed');
-    strictEqual(upgrade.evidence.list_version, '0.0.5');
-    ok(codexRecommendations.every((rec) => rec.action !== 'add-marketplace'));
+    const repair = codexRecommendations.find((rec) => rec.action === 'repair-codex-install');
+    ok(repair, 'expected a repair recommendation from the list version');
+    ok(repair.detail.includes('below the release its catalog pins (plugin-runtime-v0.1.0)'), repair.detail);
+    strictEqual(repair.evidence.currentness, 'behind');
+    strictEqual(repair.evidence.list_decision, 'installed');
+    strictEqual(repair.evidence.list_version, '0.0.5');
+    ok(codexRecommendations.every((rec) => rec.action !== 'add-marketplace' && rec.action !== 'upgrade-marketplace'));
+  });
+
+  it('draws no Codex currentness from the source manifest when the catalog is unpinned or its pin is invalid (ADR-0061)', async () => {
+    // CONTROL for the case above: the same list version and the same 0.1.0 source
+    // manifest, but a registered catalog with no valid pin. Before ADR-0061's
+    // activation that is every catalog, and currentness is unknown — not stale.
+    for (const [label, entry] of [
+      ['local entry', { name: 'runtime', source: { source: 'local', path: './plugins/runtime' } }],
+      ['pin without a sha', { ...pinnedCodexEntry('runtime', '0.1.0'), source: { ...pinnedCodexEntry('runtime', '0.1.0').source, sha: 'not-a-sha' } }],
+    ]) {
+      const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-unpinned-repo-'));
+      const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-unpinned-home-'));
+      await seedRepo(root);
+      await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+      const registration = await codexRegisteredCatalog([entry]);
+      const report = await runSettings({
+        repoRoot: root,
+        homeDir: home,
+        runner: fakeRunner(codex0137Map({
+          ...registration,
+          'codex plugin list --json': codexListJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.0.5', installed: true, enabled: true }]),
+        })),
+      });
+      const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+      ok(codexRecommendations.every((rec) => rec.action !== 'upgrade-marketplace' && rec.action !== 'repair-codex-install'), `${label}: no currentness target, no currentness action`);
+      strictEqual(report.plugins.runtime.codex_installed.version, '0.0.5', `${label}: the premise — Codex reports 0.0.5, below the 0.1.0 source`);
+    }
   });
 
   it('ignores a stale codex install cache when the list reports not installed (ADR-0034)', async () => {
@@ -1366,8 +1467,10 @@ describe('runtime settings', () => {
   it('binds Codex hook attestation/review-targets to the INSTALLED version, never source or registered catalog (peer #8)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-home-'));
-    await seedRepo(root); // source: engineer 1.0.0 + codex hooks (bundled)
-    await seedCodexInstallCache(home, 'engineer', '0.0.5'); // INSTALLED (codex cache) 0.0.5
+    await seedRepo(root); // source: engineer 1.0.0 + codex hooks
+    // INSTALLED (codex cache) 0.0.5, carrying the hooks — the only place Codex's effective
+    // hooks come from (ADR-0061 §Decision 4).
+    await installSourcePluginsOnCodex(root, home, ['engineer'], { engineer: '0.0.5' });
     // Registered catalog carries engineer 0.9.9 — distinct from BOTH source and installed.
     const installLoc = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-mp-'));
     await mkdir(join(installLoc, '.claude-plugin'), { recursive: true });
@@ -1397,6 +1500,61 @@ describe('runtime settings', () => {
     ok(engineerTarget.version !== '1.0.0', 'must NOT bind the source version');
     const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
     strictEqual(artifact.codex_hook_review.plugin_versions.engineer, '0.0.5', 'attestation binds the installed version, not the registered catalog');
+  });
+
+  // ADR-0061 §Decision 4: a Codex review target describes hooks Codex loaded from ITS install,
+  // so its version is the Codex-installed one. The generic installed_version falls through to
+  // a Claude install when Codex reports none, which must not leak into a Codex target.
+  // Round 2 (Codex review): an installed plugin whose hooks cannot be read must not let
+  // an attestation of the REST read complete.
+  it('blocks attestation while an installed plugin\'s hooks cannot be read', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unreadable-hooks-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unreadable-hooks-home-'));
+    await seedRepo(root);
+    await writeTrustedCodexHookStateConfig(home);
+    // engineer listed at 0.3.0 but only a 0.2.0 cache exists; orchestrator is readable.
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator'], { engineer: '0.2.0' });
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner(codex0137Map({
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        'codex plugin list --json': codexListJson([
+          { name: 'engineer', marketplaceName: 'agentic-plugins', version: '0.3.0', installed: true, enabled: true },
+          { name: 'orchestrator', marketplaceName: 'agentic-plugins', version: '1.0.0', installed: true, enabled: true },
+        ]),
+      })),
+    });
+    const review = report.codex_hook_review;
+    strictEqual(review.status, 'blocked');
+    ok(review.reason.includes('install_unreadable'), review.reason);
+    deepStrictEqual(review.attested_plugins, []);
+  });
+
+  it('never borrows a Claude or source version for a Codex hook review target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-target-version-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-target-version-home-'));
+    await seedRepo(root);
+    await installSourcePluginsOnCodex(root, home);
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(codex0137Map({
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        'claude plugin list': okResult('Installed plugins:\n\n  > engineer@agentic-plugins\n    Version: 2.0.0\n    Scope: user\n    Status: enabled\n'),
+        // Codex lists engineer installed but carries no version for it.
+        'codex plugin list --json': codexListJson([
+          { name: 'engineer', marketplaceName: 'agentic-plugins', installed: true, enabled: true },
+          { name: 'orchestrator', marketplaceName: 'agentic-plugins', version: '1.0.0', installed: true, enabled: true },
+        ]),
+      })),
+    });
+    strictEqual(report.plugins.engineer.installed_version, '2.0.0', 'the premise: the generic field carries the Claude version');
+    const engineerTarget = report.codex_hook_review.review_targets.find((target) => target.plugin === 'engineer');
+    ok(engineerTarget, 'engineer is installed on Codex with hooks');
+    ok(engineerTarget.version !== '2.0.0', `the Claude version must not name a Codex target, got ${engineerTarget.version}`);
   });
 
   it('executes only allowlisted plugin management commands behind an explicit flag', async () => {
@@ -2766,6 +2924,47 @@ async function seedCodexTmpMarketplace(home, name, version) {
     version,
     description: `${name} plugin`,
   });
+}
+
+// ADR-0061 §Decision 4: Codex's effective hooks come from the INSTALLED package, never
+// the repository source. Tests about hook packaging install the fixture's hook-bearing
+// plugins into the Codex install cache — a verbatim copy of each plugin directory, the
+// way Codex materializes an install. `versions` installs a plugin under a version other
+// than its source manifest's (the copied manifest is rewritten to match). Call it after
+// the last edit to the fixture's plugin directories.
+async function installSourcePluginsOnCodex(root, home, names = ['engineer', 'orchestrator'], versions = {}) {
+  for (const name of names) {
+    const source = join(root, 'plugins', name);
+    const manifest = JSON.parse(await readFile(join(source, '.codex-plugin', 'plugin.json'), 'utf8'));
+    const version = versions[name] ?? manifest.version;
+    const installed = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', name, version);
+    await rm(installed, { recursive: true, force: true });
+    await cp(source, installed, { recursive: true });
+    await writeJson(join(installed, '.codex-plugin', 'plugin.json'), { ...manifest, version });
+  }
+}
+
+// A registered Codex marketplace (the `codex plugin marketplace list --json` answer) whose
+// catalog at installLocation holds `entries`. Returns the runner map entry.
+async function codexRegisteredCatalog(entries) {
+  const installLocation = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-mp-'));
+  await mkdir(join(installLocation, '.agents', 'plugins'), { recursive: true });
+  await writeJson(join(installLocation, '.agents', 'plugins', 'marketplace.json'), { name: 'agentic-plugins', plugins: entries });
+  return {
+    'codex plugin marketplace list --json': okResult(JSON.stringify([
+      { name: 'agentic-plugins', marketplaceSource: { sourceType: 'git', source: 'https://github.com/each4all/agentic-plugins.git' }, installLocation },
+    ])),
+  };
+}
+
+// The ADR-0061 §Decision 1 pinned entry shape.
+function pinnedCodexEntry(name, version, sha = 'a'.repeat(40)) {
+  return {
+    name,
+    source: { source: 'git-subdir', url: './', path: `plugins/${name}`, ref: `plugin-${name}-v${version}`, sha },
+    policy: { installation: 'AVAILABLE', authentication: 'ON_USE' },
+    category: 'Productivity',
+  };
 }
 
 // The per-plugin install cache doctor reads at

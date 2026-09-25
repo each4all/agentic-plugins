@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
-import { strictEqual, notStrictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, writeFile, symlink, readdir, readFile, realpath, rm, utimes } from 'node:fs/promises';
+import { strictEqual, notStrictEqual, ok, rejects, deepStrictEqual, match } from 'node:assert/strict';
+import { chmod, cp, mkdtemp, mkdir, writeFile, symlink, readdir, readFile, realpath, rm, utimes } from 'node:fs/promises';
 import * as realFs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStateForProbe, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot, classifyWireDisposition, EGRESS_ACK_OUTCOME_REASONS, publishJsonExclusive, scanEgressIntents, composeEgressFenceBlocker, aggregateWalDurability } from '../../plugins/runtime/scripts/doctor.mjs';
 import { recomputeHookAttestation } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
 import { makeDefValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
+import { buildClone, installFromClone, pinned, writeCatalog } from './_codex-pinned-fixture.mjs';
 
 // Module-load scrub (the tests/runtime/test-notify.mjs pattern). Most tests run
 // doctor with the default env = process.env; an ambient AGENTIC_COMPANIONS_ROOT or
@@ -83,6 +84,7 @@ describe('runtime doctor', () => {
     await seedRepo(root);
     await seedCompanionCaches(home);
     await seedHome(home);
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -296,6 +298,7 @@ describe('runtime doctor', () => {
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
     await seedHome(home);
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -338,6 +341,7 @@ describe('runtime doctor', () => {
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
     await seedHome(home);
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -404,6 +408,7 @@ describe('runtime doctor', () => {
       description: 'engineer plugin',
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -484,6 +489,7 @@ describe('runtime doctor', () => {
     // codex-cli 0.144.1, generic hooks stable, plugin_hooks removed — so
     // this absence-era regression states its premise instead of riding the
     // generic 0.130 fixture.
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator', 'attention']);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -585,6 +591,10 @@ describe('runtime doctor', () => {
 
     // Same premise pin as the legacy-layout regression above: the relocated
     // absence claim is only meaningful on the observed host generation.
+    // Attention is INSTALLED on Codex with the relocated layout: Codex reads hooks
+    // from the installed package (ADR-0061 §Decision 4), so an uninstalled attention
+    // would be absent from every set whatever its layout, and prove nothing.
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator', 'attention']);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -599,9 +609,11 @@ describe('runtime doctor', () => {
     // is vacuous if the attention seeding rots — doctor's Codex hook scan
     // never reads the Claude manifest, so "relocated attention" and "no
     // attention directory at all" are indistinguishable to the hook report.
-    // Pin that doctor actually SAW the synthetic attention source.
-    strictEqual(report.plugins.attention.status, 'source_available', 'premise pin: the relocated attention source must be visible to doctor');
-    strictEqual(report.plugins.attention.source.present, true, 'premise pin: attention source directory present');
+    // Pin that doctor actually SAW the relocated attention as a Codex install, and
+    // read its hooks from that install.
+    strictEqual(report.plugins.attention.cache.codex.status, 'available', 'premise pin: attention is installed on Codex');
+    strictEqual(report.plugins.attention.cache.codex.latest.version_dir, '0.4.1', 'premise pin: the relocated build is the one installed');
+    strictEqual(report.codex_plugin_hooks.plugin_entries.attention.effective.origin, 'codex_cache', 'premise pin: its hooks were read from the install');
     strictEqual(report.codex_plugin_hooks.hook_state.schema_version, 'runtime-codex-hook-state-1.2');
 
     // Absent from EVERY Codex hook surface set.
@@ -786,6 +798,7 @@ describe('runtime doctor', () => {
       '',
     ].join('\n'));
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
     const engineerExpected = report.codex_plugin_hooks.hook_state.expected.filter((entry) => entry.plugin === 'engineer');
     deepStrictEqual(engineerExpected.map((entry) => `${entry.event}:${entry.state}`), ['session_end:enabled_trusted']);
@@ -853,6 +866,7 @@ describe('runtime doctor', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator', 'designer']);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -897,6 +911,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-review-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -920,7 +935,8 @@ describe('runtime doctor', () => {
     const engineerTarget = report.codex_plugin_hooks.review_targets.find((target) => target.plugin === 'engineer');
     strictEqual(engineerTarget.version, '1.0.0');
     strictEqual(engineerTarget.manifest_exposed, true);
-    ok(engineerTarget.hooks_path.endsWith(join('plugins', 'engineer', 'hooks', 'hooks.json')));
+    // The INSTALLED package's hooks file (ADR-0061 §Decision 4), not the source tree's.
+    ok(engineerTarget.hooks_path.endsWith(join('agentic-plugins', 'engineer', '1.0.0', 'hooks', 'hooks.json')), engineerTarget.hooks_path);
     deepStrictEqual(engineerTarget.events, ['PreCompact', 'SessionStart', 'Stop']);
     strictEqual(engineerTarget.handler_count, 3);
     strictEqual(engineerTarget.command_count, 1);
@@ -942,6 +958,7 @@ describe('runtime doctor', () => {
     await seedRepo(root);
     await writeDisabledCodexHookStateConfig(home);
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -985,6 +1002,7 @@ describe('runtime doctor', () => {
       await seedRepo(root);
       await writeTrustedCodexHookStateConfig(home, 'hooks/hooks.json', { explicitEnabled });
 
+      await installSourcePluginsOnCodex(root, home);
       const report = await runDoctor({
         repoRoot: root,
         homeDir: home,
@@ -1018,6 +1036,7 @@ describe('runtime doctor', () => {
     await seedRepo(root);
     await writeDisabledCodexHookStateConfig(home);
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1090,6 +1109,7 @@ describe('runtime doctor', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1231,6 +1251,7 @@ describe('runtime doctor', () => {
       ],
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
     const hookState = report.codex_plugin_hooks.hook_state;
     strictEqual(hookState.summary.disabled_handlers, 1, 'the orphan row still surfaces as disabled evidence');
@@ -1271,6 +1292,7 @@ describe('runtime doctor', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator'], { engineer: '0.7.0', orchestrator: '0.7.0' });
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1341,6 +1363,7 @@ describe('runtime doctor', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1367,6 +1390,7 @@ describe('runtime doctor', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1395,6 +1419,7 @@ describe('runtime doctor', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1408,6 +1433,139 @@ describe('runtime doctor', () => {
     ok(!report.codex_plugin_hooks.summary.command_warning_plugins.includes('engineer'));
     ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'verify-codex-hook-command-portability'));
     ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_command_portability_unverified'));
+  });
+
+  // ADR-0061 §Decision 4: "an installed package with no hooks is authoritative, and lookup
+  // does not fall through to snapshot or source hooks." The source tree AND the marketplace
+  // clone both carry engineer hooks here; the installed package carries none.
+  it('reads Codex hooks from the installed package alone: a hookless install is authoritative over source and clone hooks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hookless-install-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root); // engineer + orchestrator SOURCE carry Codex hooks
+    await installSourcePluginsOnCodex(root, home, ['orchestrator']);
+    // engineer installed WITHOUT hooks.
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    // The marketplace clone carries engineer hooks too.
+    const clone = join(home, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'engineer');
+    await cp(join(root, 'plugins', 'engineer'), clone, { recursive: true });
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+    const engineer = report.codex_plugin_hooks.plugin_entries.engineer;
+    strictEqual(engineer.effective.origin, 'codex_cache');
+    strictEqual(engineer.effective.status, 'not_packaged', 'the installed package has no hooks, and that is final');
+    ok(!('source' in engineer) && !('codex_tmp_marketplace' in engineer), 'no source or clone hook location is consulted');
+    deepStrictEqual(report.codex_plugin_hooks.summary.bundled_plugins, ['orchestrator'], 'CONTROL: the installed orchestrator still bundles its hooks');
+    deepStrictEqual(report.codex_plugin_hooks.review_targets.map((target) => target.plugin), ['orchestrator']);
+  });
+
+  it('names the INSTALLED package version on a hook review target, never the source version', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-version-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root); // source engineer 1.0.0
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator'], { engineer: '0.9.0' });
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+    const engineerTarget = report.codex_plugin_hooks.review_targets.find((target) => target.plugin === 'engineer');
+    strictEqual(engineerTarget.version, '0.9.0');
+    ok(engineerTarget.hooks_path.endsWith(join('engineer', '0.9.0', 'hooks', 'hooks.json')), engineerTarget.hooks_path);
+  });
+
+  it('never borrows another version\'s hooks when no cache directory holds the listed version', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-no-borrowed-hooks-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    // Codex lists engineer 0.3.0; the only engineer cache is a hook-bearing 0.2.0.
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator'], { engineer: '0.2.0' });
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex --version': okResult('codex-cli 0.137.0\n'),
+        'codex plugin --help': okResult('Commands:\n  add\n  list\n  marketplace\n  remove\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        'codex plugin list --json': okResult(JSON.stringify({ installed: [
+          { name: 'engineer', marketplaceName: 'agentic-plugins', version: '0.3.0', installed: true, enabled: true },
+          { name: 'orchestrator', marketplaceName: 'agentic-plugins', version: '1.0.0', installed: true, enabled: true },
+        ] })),
+      }),
+    });
+    strictEqual(report.codex_plugin_hooks.schema_version, 'runtime-codex-plugin-hooks-1.1');
+    strictEqual(report.codex_plugin_hooks.plugin_entries.engineer.effective.origin, 'install_cache_unavailable');
+    ok(!report.codex_plugin_hooks.review_targets.some((target) => target.plugin === 'engineer'), 'no review target labelled 0.3.0 pointing at 0.2.0 hooks');
+    deepStrictEqual(report.codex_plugin_hooks.review_targets.map((target) => target.plugin), ['orchestrator'], 'CONTROL: the matching install still bundles');
+    // Unreadable is UNKNOWN, not "no hooks": the surface is not ready, a remedy is named,
+    // and lifecycle continuity cannot score satisfied on the readable remainder.
+    strictEqual(report.codex_plugin_hooks.plugin_entries.engineer.effective.status, 'install_unreadable');
+    deepStrictEqual(report.codex_plugin_hooks.summary.install_unreadable_plugins, ['engineer']);
+    strictEqual(report.codex_plugin_hooks.status, 'install_unreadable');
+    ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'restore-codex-install-cache'));
+    const lifecycle = report.experience_parity.criteria.find((entry) => entry.id === 'lifecycle_hook_continuity');
+    notStrictEqual(lifecycle.status, 'satisfied');
+  });
+
+  it('gives a plugin Codex has not installed no hooks, whatever its source carries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-uninstalled-hooks-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    // A stale engineer cache lingers, but the list authoritatively says not installed.
+    await installSourcePluginsOnCodex(root, home);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex --version': okResult('codex-cli 0.137.0\n'),
+        'codex plugin --help': okResult('Commands:\n  add\n  list\n  marketplace\n  remove\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        'codex plugin list --json': okResult(JSON.stringify({ installed: [
+          { name: 'orchestrator', marketplaceName: 'agentic-plugins', version: '1.0.0', installed: true, enabled: true },
+        ] })),
+      }),
+    });
+    strictEqual(report.codex_plugin_hooks.plugin_entries.engineer.effective.origin, 'not_installed');
+    deepStrictEqual(report.codex_plugin_hooks.summary.bundled_plugins, ['orchestrator']);
+  });
+
+  // ADR-0061 §Decision 4: "Where a Codex-hosted caller resolved a sibling from the Claude
+  // cache, diagnostics say so." Doctor predicts it from the two install caches.
+  it('predicts a Codex-installed caller resolving a sibling from the Claude cache, and says it is a prediction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-sibling-fallback-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    // engineer installed on Codex; runtime only in the CLAUDE cache.
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    const claudeRuntime = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime', '0.1.0', '.claude-plugin');
+    await mkdir(claudeRuntime, { recursive: true });
+    await writeJson(join(claudeRuntime, 'plugin.json'), { name: 'runtime', version: '0.1.0' });
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    const siblings = report.codex_install_identity.sibling_resolution;
+    match(siblings.basis, /^predicted from the Claude and Codex install caches/);
+    const edge = siblings.edges.find((entry) => entry.caller === 'engineer' && entry.sibling === 'runtime');
+    strictEqual(edge.predicted_source, 'claude-cache');
+    ok(siblings.cross_host.some((entry) => entry.caller === 'engineer' && entry.sibling === 'runtime'));
+    const issue = report.host_parity.issues.find((entry) => entry.id === 'codex_sibling_cross_host_fallback');
+    ok(issue, 'the cross-host fallback is a parity warning');
+    match(issue.evidence, /engineer->runtime/);
+    match(formatText(report), /sibling: engineer -> runtime predicted from the Claude cache/);
+
+    // CONTROL: install runtime on Codex too, and the same edge resolves same-host.
+    await seedCodexInstallCache(home, 'runtime', '0.1.0');
+    const again = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    strictEqual(again.codex_install_identity.sibling_resolution.edges.find((entry) => entry.caller === 'engineer' && entry.sibling === 'runtime').predicted_source, 'codex-cache');
+    ok(!again.host_parity.issues.some((entry) => entry.id === 'codex_sibling_cross_host_fallback' && entry.evidence.includes('engineer->runtime')));
   });
 
   it('checks the manifest-declared Codex hook file instead of the Claude default hooks file', async () => {
@@ -1432,6 +1590,7 @@ describe('runtime doctor', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1441,8 +1600,9 @@ describe('runtime doctor', () => {
       }),
     });
 
-    strictEqual(report.codex_plugin_hooks.plugin_entries.engineer.source.status, 'exposed');
-    ok(report.codex_plugin_hooks.plugin_entries.engineer.source.hooks_file.path.endsWith('adapters/codex/hooks/hooks.json'));
+    strictEqual(report.codex_plugin_hooks.plugin_entries.engineer.effective.origin, 'codex_cache');
+    strictEqual(report.codex_plugin_hooks.plugin_entries.engineer.effective.status, 'exposed');
+    ok(report.codex_plugin_hooks.plugin_entries.engineer.effective.hooks_file.path.endsWith(join('engineer', '1.0.0', 'adapters', 'codex', 'hooks', 'hooks.json')));
     ok(!report.codex_plugin_hooks.summary.command_warning_plugins.includes('engineer'));
     ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_command_portability_unverified'));
   });
@@ -1515,6 +1675,7 @@ describe('runtime doctor', () => {
       failures: [],
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1538,6 +1699,64 @@ describe('runtime doctor', () => {
     strictEqual(report.settings_runs.codex_hook_review.latest.artifact_hash, createHash('sha256').update(rawArtifactBytes).digest('hex'));
     ok(report.experience_parity.criteria.some((entry) => entry.id === 'lifecycle_hook_continuity' && entry.status === 'satisfied'));
     ok(formatText(report).includes('latest-codex-hook-review: status=attested'));
+  });
+
+  // Round 2 (Codex review): an attestation that matches every READABLE hook plugin is not
+  // current while another installed plugin's hooks cannot be read — the covered set is
+  // unknown. (Without the check, orchestrator-only would read current here.)
+  it('stales a /hooks attestation while an installed plugin\'s hooks cannot be read', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-review-unreadable-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await writeTrustedCodexHookStateConfig(home);
+    const runId = 'settings-20260925T000000Z-abcdef';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      status: 'completed',
+      created_at: '2026-09-25T00:00:00.000Z',
+      updated_at: '2026-09-25T00:00:05.000Z',
+      plugin_management: { mode: 'dry-run-plan', requested: false, executed: false, host_filter: 'all', summary: { executed: 0, failed: 0, failed_retryable: 0, failed_non_retryable: 0 } },
+      plugin_cleanup: { mode: 'dry-run-plan', requested: false, executed: false, summary: { executed: 0, failed: 0, blocked: 0, failed_retryable: 0, failed_non_retryable: 0 } },
+      codex_hook_review: {
+        mode: 'operator-attestation',
+        requested: true,
+        attested: true,
+        status: 'attested',
+        host: 'codex',
+        command: '/hooks',
+        attested_at: '2026-09-25T00:00:05.000Z',
+        bundled_plugins: ['orchestrator'],
+        manifest_exposed_plugins: ['orchestrator'],
+        attested_plugins: ['orchestrator'],
+        plugin_versions: { orchestrator: '1.0.0' },
+        bound_versions: { codex: '0.137.0', plugins: { codex: { orchestrator: '1.0.0' } } },
+        plugin_hooks_enabled: true,
+        plugin_hooks_stage: 'under development',
+      },
+      failures: [],
+    });
+    // engineer listed at 0.3.0; only a 0.2.0 cache exists. orchestrator matches.
+    await installSourcePluginsOnCodex(root, home, ['engineer', 'orchestrator'], { engineer: '0.2.0' });
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex --version': okResult('codex-cli 0.137.0\n'),
+        'codex plugin --help': okResult('Commands:\n  add\n  list\n  marketplace\n  remove\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        'codex plugin list --json': okResult(JSON.stringify({ installed: [
+          { name: 'engineer', marketplaceName: 'agentic-plugins', version: '0.3.0', installed: true, enabled: true },
+          { name: 'orchestrator', marketplaceName: 'agentic-plugins', version: '1.0.0', installed: true, enabled: true },
+        ] })),
+      }),
+    });
+    deepStrictEqual(report.codex_plugin_hooks.summary.bundled_plugins, ['orchestrator'], 'the premise: the attested set equals the readable bundled set');
+    strictEqual(report.settings_runs.codex_hook_review.current, false);
+    strictEqual(report.settings_runs.codex_hook_review.currency_reason, 'installed_hooks_unreadable');
   });
 
   it('stales a /hooks attestation when only the Codex CLI version moves (version-bound trust, S8a4-3)', async () => {
@@ -1573,6 +1792,7 @@ describe('runtime doctor', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1622,6 +1842,7 @@ describe('runtime doctor', () => {
       },
     });
 
+    await installSourcePluginsOnCodex(root, home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -3152,6 +3373,115 @@ describe('runtime doctor', () => {
     ok(second.recorded_doctor_proof.reasons.some((reason) => reason.includes('runtime codex_installed mismatch')));
   });
 
+  // ADR-0061 §Decision 4: a version is not content identity. A proof recorded against the
+  // pinned bytes is not reused once the installed bytes diverge under the same version.
+  it('invalidates a recorded doctor proof when the installed bytes stop matching the pin, and keeps it when they do not', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-identity-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-identity-home-'));
+    await seedRepo(root);
+    await seedCompanionCaches(home);
+    const { clone, c1 } = await buildClone();
+    await writeCatalog(clone, [pinned('runtime', '0.1.0', c1)]);
+    const installed = await installFromClone(clone, c1, join(home, '.codex'), '0.1.0');
+    const list = okResult(JSON.stringify({ installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: true }] }));
+    const base = proofRunnerWithCodexList(list);
+    const registration = okResult(JSON.stringify([
+      { name: 'agentic-plugins', marketplaceSource: { sourceType: 'git', source: 'https://github.com/each4all/agentic-plugins.git' }, installLocation: clone },
+    ]));
+    const runner = async (command, args, options = {}) => {
+      if (command === 'git' && args.includes('ls-tree')) {
+        try {
+          return okResult(execFileSync('git', args, { cwd: options.cwd, env: options.env, encoding: 'utf8' }));
+        } catch (err) {
+          return { ok: false, exit_code: err.status ?? 1, stdout: '', stderr: '', error_code: null };
+        }
+      }
+      if (`${command} ${args.join(' ')}` === 'codex plugin marketplace list --json') return registration;
+      return base(command, args, options);
+    };
+    const runId = 'doctor-20260925T000000Z-1d0001';
+    const first = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-09-25T00:00:00.000Z'),
+      permissionProof: true,
+      executePermissionProof: true,
+      deepPeerSmoke: true,
+      executeDeepPeerSmoke: true,
+      workflowContinuationProof: true,
+      executeWorkflowContinuationProof: true,
+      recordArtifact: true,
+      runId,
+      runner,
+    });
+    strictEqual(first.permission_proof.status, 'passed');
+    strictEqual(first.plugins.runtime.codex_install.currentness, 'current', 'the premise: the recorded run saw the pinned bytes');
+
+    // CONTROL: nothing changed, so the recorded proof is reusable.
+    const same = await runDoctor({ repoRoot: root, homeDir: home, now: new Date('2026-09-25T00:05:00.000Z'), runner });
+    strictEqual(same.recorded_doctor_proof.status, 'reusable', same.recorded_doctor_proof.reasons.join('; '));
+
+    // Same version, one file changed.
+    await writeFile(join(installed, 'scripts', 'a.mjs'), 'export const v = "main";\n');
+    const diverged = await runDoctor({ repoRoot: root, homeDir: home, now: new Date('2026-09-25T00:10:00.000Z'), runner });
+    strictEqual(diverged.plugins.runtime.installed.codex_resolved.version, '0.1.0', 'the version did not move');
+    strictEqual(diverged.recorded_doctor_proof.status, 'not_reusable');
+    ok(diverged.recorded_doctor_proof.reasons.some((reason) => reason.includes('runtime codex install does not match the tree its catalog pins')), diverged.recorded_doctor_proof.reasons.join('; '));
+    ok(diverged.recorded_doctor_proof.reasons.some((reason) => reason.includes('runtime codex_content mismatch')));
+  });
+
+  // Round 2 (Codex review): two unverified reads agree on nothing. A pinned install whose
+  // bytes cannot be checked must not keep a proof reusable just because both runs were null.
+  for (const [label, sha, listRow] of [
+    ['the pinned commit is missing from the clone', 'b'.repeat(40), { version: '0.1.0' }],
+    // Round 3 (Codex review): a list row that carries no version is no exemption.
+    ['the Codex list gives no installed version', null, {}],
+  ]) {
+  it(`does not reuse a recorded proof for a pinned install whose bytes cannot be verified: ${label}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-unverified-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-unverified-home-'));
+    await seedRepo(root);
+    await seedCompanionCaches(home);
+    const { clone, c1 } = await buildClone();
+    await writeCatalog(clone, [pinned('runtime', '0.1.0', sha ?? c1)]);
+    await installFromClone(clone, c1, join(home, '.codex'), '0.1.0');
+    const list = okResult(JSON.stringify({ installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', ...listRow, installed: true, enabled: true }] }));
+    const base = proofRunnerWithCodexList(list);
+    const registration = okResult(JSON.stringify([
+      { name: 'agentic-plugins', marketplaceSource: { sourceType: 'git', source: 'https://github.com/each4all/agentic-plugins.git' }, installLocation: clone },
+    ]));
+    const runner = async (command, args, options = {}) => {
+      if (command === 'git' && args.includes('ls-tree')) {
+        try {
+          return okResult(execFileSync('git', args, { cwd: options.cwd, env: options.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+        } catch (err) {
+          return { ok: false, exit_code: err.status ?? 1, stdout: '', stderr: '', error_code: null };
+        }
+      }
+      if (`${command} ${args.join(' ')}` === 'codex plugin marketplace list --json') return registration;
+      return base(command, args, options);
+    };
+    const first = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-09-25T00:00:00.000Z'),
+      permissionProof: true,
+      executePermissionProof: true,
+      deepPeerSmoke: true,
+      executeDeepPeerSmoke: true,
+      workflowContinuationProof: true,
+      executeWorkflowContinuationProof: true,
+      recordArtifact: true,
+      runId: `doctor-20260925T000000Z-1d000${sha ? 2 : 3}`,
+      runner,
+    });
+    strictEqual(first.plugins.runtime.codex_install.content_identity.verified, false, 'the premise');
+    const second = await runDoctor({ repoRoot: root, homeDir: home, now: new Date('2026-09-25T00:05:00.000Z'), runner });
+    strictEqual(second.recorded_doctor_proof.status, 'not_reusable');
+    ok(second.recorded_doctor_proof.reasons.some((reason) => reason.includes('runtime codex install is not verified against its catalog pin')), second.recorded_doctor_proof.reasons.join('; '));
+  });
+  }
+
   it('keeps a cache-recorded proof reusable when a list-capable codex later reports the same version (ADR-0034)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-legacy-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-legacy-home-'));
@@ -4442,6 +4772,25 @@ async function seedCodexInstallCache(home, name, version) {
   const dir = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', name, version, '.codex-plugin');
   await mkdir(dir, { recursive: true });
   await writeJson(join(dir, 'plugin.json'), { name, version, description: `${name} plugin` });
+}
+
+// ADR-0061 §Decision 4: Codex's effective hooks come from the INSTALLED package, never
+// the repository source. Tests about hook packaging therefore install the fixture's
+// hook-bearing plugins into the Codex install cache — a verbatim copy of each plugin
+// directory under <version>/, the way Codex materializes an install — so the hooks
+// they assert on are hooks Codex would actually load. `versions` installs a plugin
+// under a version other than its source manifest's (the copied manifest is rewritten
+// to match). Call it after the last edit to the fixture's plugin directories.
+async function installSourcePluginsOnCodex(root, home, names = ['engineer', 'orchestrator'], versions = {}) {
+  for (const name of names) {
+    const source = join(root, 'plugins', name);
+    const manifest = JSON.parse(await readFile(join(source, '.codex-plugin', 'plugin.json'), 'utf8'));
+    const version = versions[name] ?? manifest.version;
+    const installed = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', name, version);
+    await rm(installed, { recursive: true, force: true });
+    await cp(source, installed, { recursive: true });
+    await writeJson(join(installed, '.codex-plugin', 'plugin.json'), { ...manifest, version });
+  }
 }
 
 async function seedCodexTmpMarketplace(home) {

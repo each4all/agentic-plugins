@@ -9,19 +9,15 @@
 // says a future reader "reintroduces the defect"; this gate is what makes that
 // a failing test instead of a review comment.
 //
-// The implementation manifest moves the locators in three steps (S1 companion
-// discovery, S2 sibling resolvers, S3 runtime diagnostics and receivers), so
-// PENDING lists the files a later step still owns. The comparison is EXACT, in
-// both directions:
-//   - a new reference anywhere fails, whoever writes it;
-//   - a PENDING file that no longer references the clone fails too, so the
-//     list can only shrink with the code and never outlives it. When S3 lands,
-//     PENDING is empty.
+// The implementation manifest moved the locators in three steps (S1 companion
+// discovery, S2 sibling resolvers, S3 runtime diagnostics and receivers). S3
+// was the last, so no production file is waiting to move: the comparison below
+// is EXACT, and a new reference anywhere fails, whoever writes it.
 // OBSERVATION is the one file ADR-0061 keeps: machine-probe.mjs reports the
 // clone's presence as a fact and never resolves code from it (Decision 4:
-// "Snapshot presence remains 'not installation evidence'"). doctor.mjs reads
-// that observation for its effective-hook fallthrough without spelling the
-// path itself, so this gate cannot see it; S3 owns removing that fallthrough.
+// "Snapshot presence remains 'not installation evidence'"). doctor.mjs no
+// longer reads that observation for its effective hooks (S3): they come from
+// the installed package alone, which tests/runtime/test-doctor.mjs pins.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok } from 'node:assert/strict';
@@ -31,11 +27,11 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 
-// Owned by ADR-0061 S3 (runtime diagnostics and receivers). Remove each entry
-// in the change that removes its reference.
-const PENDING = [
-  'plugins/runtime/receivers/agentic-statusline.mjs', // S3
-  'plugins/runtime/receivers/codex-notify-shuttle.mjs', // S3
+// The home-rendered receivers S3 moved off the clone. They name it only in
+// comments; `using` below pins that neither needed the host-tree exemption.
+const MOVED_BY_S3 = [
+  'plugins/runtime/receivers/agentic-statusline.mjs',
+  'plugins/runtime/receivers/codex-notify-shuttle.mjs',
 ];
 
 // The sibling resolvers S2 moved off the clone. Each still names it in a
@@ -110,7 +106,7 @@ describe('ADR-0061 §Decision 3 — the Codex marketplace clone is never a disco
       'plugins/engineer/scripts/dispatch-peer.mjs',
       'plugins/image/scripts/compose-dispatch.mjs',
       ...MOVED_BY_S2,
-      ...PENDING,
+      ...MOVED_BY_S3,
       ...OBSERVATION,
     ]) {
       ok(files.includes(path), `${path} is not in the scanned corpus`);
@@ -126,10 +122,10 @@ describe('ADR-0061 §Decision 3 — the Codex marketplace clone is never a disco
     deepStrictEqual(using, MOVED_BY_S2.filter((path) => !path.endsWith('peer-execution-context.mjs')).sort());
   });
 
-  it('exactly the pending (S3) files and the machine-probe observation reference the clone', () => {
+  it('only the machine-probe observation references the clone', () => {
     const referencing = productionCode()
       .filter((path) => CLONE_REFERENCE.test(codeLines(readFileSync(join(REPO_ROOT, path), 'utf8'))))
       .sort();
-    deepStrictEqual(referencing, [...PENDING, ...OBSERVATION].sort());
+    deepStrictEqual(referencing, [...OBSERVATION].sort());
   });
 });

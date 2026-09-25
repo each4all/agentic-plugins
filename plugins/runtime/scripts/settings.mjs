@@ -1307,7 +1307,7 @@ function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugi
     limits: [
       'This is an operator attestation artifact, not host-native proof of Codex trust state.',
       '/hooks Installed counts are packaging evidence only; Active=0 output or no trusted-active indication is not enough to attest.',
-      'The attestation is considered current only while the hook-bearing plugin set and source versions match the observed checkout.',
+      'The attestation is considered current only while the Codex CLI version, the hook-bearing plugin set, and the Codex-installed plugin versions match those it bound.',
       'Re-run /hooks and refresh this attestation after hook-bearing plugin upgrades or hook packaging changes.',
     ],
   };
@@ -2106,9 +2106,11 @@ function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
     const commandAnalysis = hooksFile.command_analysis ?? {};
     targets.push({
       plugin: pluginName,
-      // Installed/cache version (peer #8 (c)) — the version an operator reviews in /hooks is
-      // what is installed, not a catalog-latest; source-version fallback for source-tree runs.
-      version: plugins?.[pluginName]?.installed_version ?? plugins?.[pluginName]?.source_version ?? null,
+      // The Codex-installed version (peer #8 (c)) — the version an operator reviews in /hooks
+      // is what Codex installed, not a catalog-latest, a Claude install, or the source tree.
+      // Since ADR-0061 §Decision 4 a review target exists only for an installed package, so
+      // this is the version of the package its hooks were read from.
+      version: resolveCodexInstalledPluginVersion(plugins?.[pluginName]).version ?? null,
       origin: effective.origin ?? null,
       manifest_exposed: effective.manifest_declared === true,
       hooks_path: sanitizeValue(hooksFile.path),

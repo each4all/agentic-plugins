@@ -15,10 +15,10 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, rejects, strictEqual, throws } from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import {
@@ -260,13 +260,18 @@ describe('notification plan: fragment + receiver script renderers', () => {
     ok(script.includes("const MIN_RUNTIME_VERSION = \"0.71.0\";"), 'version floor is rendered');
     ok(script.includes('AGENTIC_RUNTIME_ROOT'), 'env override rung');
     ok(script.includes("'.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime'"), 'Claude cache rung');
-    ok(script.includes("'.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime'"), 'Codex cache rung');
+    ok(script.includes("path.join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime')"), 'Codex install cache rung');
     ok(script.includes('CODEX_HOME'), 'Codex cache rung honors $CODEX_HOME like the planner');
+    // ADR-0061 §Decision 3: the Codex marketplace clone tracks main and is
+    // never a candidate. Its path may be NAMED in a comment explaining that,
+    // but no code line spells it.
+    const codeLines = script.split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n');
+    ok(!/\.tmp['"]?\s*,\s*['"]marketplaces|\.tmp\/marketplaces/.test(codeLines), 'no code line reads the marketplace clone');
     // Same-host preference: a CODEX receiver probes the Codex cache BEFORE
     // the Claude cache, so a stale Claude copy cannot shadow a current Codex
     // install (Plan-verify peer MAJOR).
     ok(
-      script.indexOf("'.tmp', 'marketplaces'") < script.indexOf("'.claude', 'plugins', 'cache'"),
+      script.indexOf("path.join(codexHome, 'plugins', 'cache'") < script.indexOf("'.claude', 'plugins', 'cache'"),
       'Codex cache rung precedes the Claude cache rung',
     );
     ok(script.includes("'scripts', 'notify.mjs'"), 'delegates to notify.mjs');
@@ -357,43 +362,164 @@ describe('notification plan: fragment + receiver script renderers', () => {
     await execFileAsync(process.execPath, ['--check', chainPath]);
   });
 
-  it('shuttle ladder prefers the Codex cache (same-host) over a stale Claude cache and honors CODEX_HOME', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'runtime-notification-ladder-'));
+  // ADR-0061 §Decision 3, exercised through the RENDERED shuttle exactly as
+  // Codex runs it. Each case builds a temp home, installs stub runtimes that
+  // log which copy was invoked (and the argv[1] it was invoked with), and
+  // reads the log back. The notify child is detached, so the log is polled.
+  async function runShuttleLadder(build) {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), 'runtime-notification-ladder-')));
     const repo = join(dir, 'repo');
     await mkdir(join(repo, '.git'), { recursive: true });
     const home = join(dir, 'home');
     const invokedLog = join(dir, 'invoked.log');
-    const stubNotify = (label) => `import fs from 'node:fs';\nfs.appendFileSync(${JSON.stringify(invokedLog)}, ${JSON.stringify(label)} + '\\n');\n`;
-    // Stale Claude cache: notify.mjs present but the version is below the floor.
-    const claudeRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime', '0.0.1');
-    await mkdir(join(claudeRoot, '.claude-plugin'), { recursive: true });
-    await mkdir(join(claudeRoot, 'scripts'), { recursive: true });
-    await writeFile(join(claudeRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '0.0.1' }));
-    await writeFile(join(claudeRoot, 'scripts', 'notify.mjs'), stubNotify('claude-cache'));
-    // Current Codex cache under a NON-DEFAULT $CODEX_HOME.
+    const install = async (root, manifestRel, { name = 'runtime', version = RUNTIME_VERSION, label, notify = true } = {}) => {
+      await mkdir(join(root, dirname(manifestRel)), { recursive: true });
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, manifestRel), JSON.stringify({ name, version }));
+      if (notify) {
+        await writeFile(
+          join(root, 'scripts', 'notify.mjs'),
+          `import fs from 'node:fs';\nfs.appendFileSync(${JSON.stringify(invokedLog)}, ${JSON.stringify(label)} + ' ' + process.argv[1] + '\\n');\n`,
+        );
+      }
+    };
     const codexHome = join(dir, 'codex-home');
-    const codexRoot = join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime');
-    await mkdir(join(codexRoot, '.codex-plugin'), { recursive: true });
-    await mkdir(join(codexRoot, 'scripts'), { recursive: true });
-    await writeFile(join(codexRoot, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: RUNTIME_VERSION }));
-    await writeFile(join(codexRoot, 'scripts', 'notify.mjs'), stubNotify('codex-cache'));
+    const env = { ...process.env, HOME: home, CODEX_HOME: codexHome };
+    delete env.AGENTIC_RUNTIME_ROOT;
+    await build({ dir, home, codexHome, env, install,
+      claudeCache: (version) => join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime', version),
+      codexCache: (version) => join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime', version),
+      clone: join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime'),
+    });
     const bin = join(dir, 'bin');
     await mkdir(bin, { recursive: true });
     const shuttlePath = join(bin, SHUTTLE_BASENAME);
     await writeFile(shuttlePath, renderCodexNotifyShuttleScript());
     const payload = JSON.stringify({ type: 'agent-turn-complete', 'turn-id': 'ladder-1', 'last-assistant-message': null });
-    const env = { ...process.env, HOME: home, CODEX_HOME: codexHome };
-    delete env.AGENTIC_RUNTIME_ROOT;
-    await execFileAsync(process.execPath, [shuttlePath, payload], { cwd: repo, env });
+    const { stderr } = await execFileAsync(process.execPath, [shuttlePath, payload], { cwd: repo, env });
     let text = '';
-    for (let i = 0; i < 100; i += 1) {
+    for (let i = 0; i < 40; i += 1) {
       try {
         text = await readFile(invokedLog, 'utf8');
         if (text.trim()) break;
       } catch {}
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
     }
-    strictEqual(text.trim(), 'codex-cache', 'the $CODEX_HOME cache rung wins over the stale Claude cache');
+    return { invoked: text.trim(), stderr };
+  }
+  const CLAUDE_MANIFEST = join('.claude-plugin', 'plugin.json');
+  const CODEX_MANIFEST = join('.codex-plugin', 'plugin.json');
+
+  it('shuttle ladder: the Codex install cache under $CODEX_HOME wins over a stale Claude cache and a newer marketplace clone', async () => {
+    let expected;
+    const { invoked, stderr } = await runShuttleLadder(async ({ install, claudeCache, codexCache, clone }) => {
+      // Stale Claude cache: notify.mjs present, version below the floor.
+      await install(claudeCache('0.0.1'), CLAUDE_MANIFEST, { version: '0.0.1', label: 'claude-cache' });
+      await install(codexCache(RUNTIME_VERSION), CODEX_MANIFEST, { label: 'codex-cache' });
+      // The clone tracks main and is NEWER than the install. It must not be chosen.
+      await install(clone, CODEX_MANIFEST, { version: '999.0.0', label: 'marketplace-clone' });
+      expected = join(codexCache(RUNTIME_VERSION), 'scripts', 'notify.mjs');
+    });
+    strictEqual(invoked, `codex-cache ${expected}`, 'the $CODEX_HOME install cache wins; the clone is never a candidate');
+    strictEqual(stderr, '', 'a same-host resolution reports nothing');
+  });
+
+  it('shuttle ladder: among retained Codex versions the newest carrying notify.mjs wins, and the manifest must name runtime', async () => {
+    const { invoked } = await runShuttleLadder(async ({ install, codexCache }) => {
+      await install(codexCache('0.72.0'), CODEX_MANIFEST, { version: '0.72.0', label: 'codex-0.72.0' });
+      await install(codexCache(RUNTIME_VERSION), CODEX_MANIFEST, { label: 'codex-current' });
+      // Newer directory that is not a runtime install at all.
+      await install(codexCache('999.0.0'), CODEX_MANIFEST, { name: 'engineer', version: '999.0.0', label: 'impostor' });
+    });
+    match(invoked, /^codex-current /, 'SemVer-max among manifest-verified runtime installs');
+  });
+
+  it('shuttle ladder: with no Codex runtime installed it takes the Claude cache and says so on stderr', async () => {
+    const { invoked, stderr } = await runShuttleLadder(async ({ install, claudeCache, clone }) => {
+      await install(claudeCache(RUNTIME_VERSION), CLAUDE_MANIFEST, { label: 'claude-cache' });
+      // A clone alone is not an install: Codex still has no runtime installed.
+      await install(clone, CODEX_MANIFEST, { label: 'marketplace-clone' });
+    });
+    match(invoked, /^claude-cache /, 'the Claude cache is the fallback when Codex has no runtime installed');
+    strictEqual(
+      stderr,
+      'codex-notify-shuttle: runtime resolved from the Claude plugin cache because the Codex cache has no runtime installed\n',
+      'the cross-host fallback is reported in the single diagnostic line',
+    );
+  });
+
+  it('shuttle ladder: a Codex runtime without notify.mjs fails closed instead of crossing to the Claude cache', async () => {
+    const { invoked, stderr } = await runShuttleLadder(async ({ install, claudeCache, codexCache }) => {
+      await install(claudeCache(RUNTIME_VERSION), CLAUDE_MANIFEST, { label: 'claude-cache' });
+      await install(codexCache(RUNTIME_VERSION), CODEX_MANIFEST, { label: 'codex-cache', notify: false });
+    });
+    strictEqual(invoked, '', 'nothing is invoked');
+    strictEqual(stderr, 'codex-notify-shuttle: the Codex runtime install has no scripts/notify.mjs\n');
+  });
+
+  it('shuttle ladder: the floor is judged on the manifest the selection read, not the other host\'s', async () => {
+    // A Codex cache directory that ALSO carries a .claude-plugin manifest declaring a
+    // version below the floor. The Codex manifest selected it; the floor check must
+    // read that same manifest rather than reopening the Claude one first.
+    const { invoked } = await runShuttleLadder(async ({ install, codexCache }) => {
+      const root = codexCache(RUNTIME_VERSION);
+      await install(root, CODEX_MANIFEST, { label: 'codex-cache' });
+      await mkdir(join(root, '.claude-plugin'), { recursive: true });
+      await writeFile(join(root, CLAUDE_MANIFEST), JSON.stringify({ name: 'runtime', version: '0.0.1' }));
+    });
+    match(invoked, /^codex-cache /, 'the Codex manifest version clears the floor');
+  });
+
+  it('shuttle ladder: retained prereleases order by full SemVer precedence (round 5)', async () => {
+    const { invoked } = await runShuttleLadder(async ({ install, codexCache }) => {
+      await install(codexCache('1.0.0-beta.2'), CODEX_MANIFEST, { version: '1.0.0-beta.2', label: 'beta.2' });
+      await install(codexCache('1.0.0-alpha.1'), CODEX_MANIFEST, { version: '1.0.0-alpha.1', label: 'alpha.1' });
+      await install(codexCache('1.0.0-beta.11'), CODEX_MANIFEST, { version: '1.0.0-beta.11', label: 'beta.11' });
+    });
+    match(invoked, /^beta\.11 /, 'beta.11 > beta.2 > alpha.1 (numeric identifiers compare numerically)');
+  });
+
+  it('shuttle ladder: a cross-host note and a failed spawn still make ONE stderr line', async () => {
+    // The fallback note is written before the spawn; a spawn that then throws must
+    // not add a second diagnostic line. A preload makes child_process.spawn throw.
+    const dir = await realpath(await mkdtemp(join(tmpdir(), 'runtime-notification-spawnfail-')));
+    const preload = join(dir, 'spawn-fails.mjs');
+    await writeFile(preload, [
+      "import cp from 'node:child_process';",
+      "import { syncBuiltinESMExports } from 'node:module';",
+      "cp.spawn = () => { throw Object.assign(new Error('spawn ENOMEM'), { code: 'ENOMEM' }); };",
+      'syncBuiltinESMExports();',
+      '',
+    ].join('\n'));
+    const repo = join(dir, 'repo');
+    await mkdir(join(repo, '.git'), { recursive: true });
+    const home = join(dir, 'home');
+    const claudeRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime', RUNTIME_VERSION);
+    await mkdir(join(claudeRoot, '.claude-plugin'), { recursive: true });
+    await mkdir(join(claudeRoot, 'scripts'), { recursive: true });
+    await writeFile(join(claudeRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: RUNTIME_VERSION }));
+    await writeFile(join(claudeRoot, 'scripts', 'notify.mjs'), '');
+    const shuttlePath = join(dir, SHUTTLE_BASENAME);
+    await writeFile(shuttlePath, renderCodexNotifyShuttleScript());
+    const env = { ...process.env, HOME: home, CODEX_HOME: join(dir, 'codex-home') };
+    delete env.AGENTIC_RUNTIME_ROOT;
+    const payload = JSON.stringify({ type: 'agent-turn-complete', 'turn-id': 'spawnfail-1', 'last-assistant-message': null });
+    const { stderr } = await execFileAsync(process.execPath, ['--import', pathToFileURL(preload).href, shuttlePath, payload], { cwd: repo, env });
+    strictEqual(stderr.split('\n').filter(Boolean).length, 1, `exactly one diagnostic line, got: ${JSON.stringify(stderr)}`);
+    match(stderr, /resolved from the Claude plugin cache/);
+  });
+
+  it('shuttle ladder: a symlinked $CODEX_HOME still resolves, and notify.mjs runs from its canonical path', async () => {
+    let realCache;
+    const { invoked } = await runShuttleLadder(async ({ dir, env, install }) => {
+      const realHome = join(dir, 'real codex #home');
+      realCache = join(realHome, 'plugins', 'cache', 'agentic-plugins', 'runtime', RUNTIME_VERSION);
+      await install(realCache, CODEX_MANIFEST, { label: 'codex-cache' });
+      const linked = join(dir, 'linked-codex-home');
+      await symlink(realHome, linked);
+      env.CODEX_HOME = linked;
+    });
+    strictEqual(invoked, `codex-cache ${join(realCache, 'scripts', 'notify.mjs')}`);
   });
 
   it('delivers a real Codex payload end-to-end: rendered shuttle → notify.mjs emit → file-log channel', async () => {
