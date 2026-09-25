@@ -8,7 +8,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, realpathSync } from 'node:fs';
 import { access, link, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -239,6 +239,9 @@ export async function runDoctor({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
     codexHome: resolvedCodexHome,
+    // The seam reads no env, so the development override is threaded in, as
+    // CODEX_HOME is (ADR-0061 §Decision 3).
+    companionsOverride: env.AGENTIC_COMPANIONS_ROOT ?? null,
     explicitModel,
     explicitEffort,
   });
@@ -4681,10 +4684,31 @@ function summarizeWorkflowContinuationProofExecutionStatus({ requested, directio
 
 const ENGINEER_ROOT_ENV_OVERRIDE = 'AGENTIC_ENGINEER_ROOT';
 
-function engineerCacheBases(home) {
+// Each host keeps its installed plugins in a versioned cache (ADR-0061
+// §Decision 3). The Codex marketplace clone tracks the repository's main
+// branch and is never a candidate.
+function engineerHostLayout(env, home) {
+  const codexHome = resolveCodexHome(env, home);
   return {
-    claude: join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer'),
-    codex: join(home, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'engineer'),
+    claude: {
+      // The trees a host installs into and clones marketplaces into. Code
+      // under them is that host's, never a checkout. Only these trees: a
+      // checkout elsewhere under the host's home is still a checkout.
+      roots: [
+        join(home, '.claude', 'plugins', 'cache'),
+        join(home, '.claude', 'plugins', 'marketplaces'),
+      ],
+      base: join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer'),
+      manifest: join('.claude-plugin', 'plugin.json'),
+    },
+    codex: {
+      roots: [
+        join(codexHome, 'plugins', 'cache'),
+        join(codexHome, '.tmp', 'marketplaces'),
+      ],
+      base: join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'engineer'),
+      manifest: join('.codex-plugin', 'plugin.json'),
+    },
   };
 }
 
@@ -4698,32 +4722,90 @@ async function isReadableFile(path) {
   }
 }
 
-// Claude cache is multi-version; pick the SemVer-max install whose manifest name is
-// engineer and whose scripts/state.mjs exists.
-async function resolveClaudeEngineerCacheRoot(claudeBase) {
+// Canonical form: the nearest existing ancestor is realpath'd and the rest
+// re-appended, so a symlinked prefix (macOS /var -> /private/var, a symlinked
+// ~/.codex) compares equal on both sides even when the tail does not exist.
+// The resolved engineer root is returned canonical too: engineer's CLIs compare
+// argv[1] with Node's canonical module path and silently do nothing when a
+// symlink makes the two differ.
+function realOrResolvedPath(path) {
+  let head = resolve(path);
+  const tail = [];
+  for (;;) {
+    try {
+      return join(realpathSync(head), ...tail.reverse());
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return resolve(path);
+      tail.push(basename(head));
+      head = parent;
+    }
+  }
+}
+
+function isStrictlyWithin(child, parent) {
+  const rel = relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+// The length of the most specific root in `roots` that holds `path`, compared
+// both as spelled and canonically (a path reached through a symlink, or a tree
+// symlinked elsewhere, still counts); 0 when none holds it.
+function rootOwnership(path, roots) {
+  const spelled = resolve(path);
+  const canonical = realOrResolvedPath(path);
+  let best = 0;
+  for (const root of roots) {
+    const spelledRoot = resolve(root);
+    const canonicalRoot = realOrResolvedPath(root);
+    if (isStrictlyWithin(spelled, spelledRoot)) best = Math.max(best, spelledRoot.length);
+    if (isStrictlyWithin(canonical, canonicalRoot)) best = Math.max(best, canonicalRoot.length);
+  }
+  return best;
+}
+
+// 'codex' | 'claude' when doctor itself runs from that host's install cache or a
+// marketplace clone, else null (a checkout). When both hosts' trees hold it, the
+// more specific root wins.
+function doctorHostOf(selfPath, hosts) {
+  if (!selfPath) return null;
+  const codex = rootOwnership(selfPath, hosts.codex.roots);
+  const claude = rootOwnership(selfPath, hosts.claude.roots);
+  if (codex === 0 && claude === 0) return null;
+  return codex >= claude ? 'codex' : 'claude';
+}
+
+// The engineer install in one host cache: absent, installed without a readable
+// scripts/state.mjs ('unusable'), or the SemVer-max install that has one.
+async function newestEngineerInstall({ base, manifest }) {
   let entries;
   try {
-    entries = await readdir(claudeBase, { withFileTypes: true });
+    entries = await readdir(base, { withFileTypes: true });
   } catch {
-    return null;
+    return { state: 'absent' };
   }
-  const candidates = [];
+  const installed = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const versionRoot = join(claudeBase, entry.name);
-    let manifest;
+    const versionRoot = join(base, entry.name);
+    let parsed;
     try {
-      manifest = JSON.parse(await readFile(join(versionRoot, '.claude-plugin', 'plugin.json'), 'utf8'));
+      parsed = JSON.parse(await readFile(join(versionRoot, manifest), 'utf8'));
     } catch {
       continue;
     }
-    if (manifest?.name !== 'engineer') continue;
-    if (!(await isReadableFile(join(versionRoot, 'scripts', 'state.mjs')))) continue;
-    candidates.push({ version: typeof manifest.version === 'string' ? manifest.version : '0.0.0', root: versionRoot });
+    if (parsed?.name !== 'engineer') continue;
+    installed.push({
+      version: typeof parsed.version === 'string' ? parsed.version : '0.0.0',
+      root: versionRoot,
+      capable: await isReadableFile(join(versionRoot, 'scripts', 'state.mjs')),
+    });
   }
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => semverCompare(String(b.version), String(a.version)));
-  return candidates[0].root;
+  if (installed.length === 0) return { state: 'absent' };
+  installed.sort((a, b) => semverCompare(String(b.version), String(a.version)));
+  const capable = installed.find((c) => c.capable);
+  if (!capable) return { state: 'unusable', version: installed[0].version };
+  return { state: 'ok', root: capable.root, version: capable.version };
 }
 
 // Runtime-OWNED resolver for the INSTALLED engineer plugin root
@@ -4731,42 +4813,94 @@ async function resolveClaudeEngineerCacheRoot(claudeBase) {
 // engineer tool where it actually lives — the host plugin cache — NOT
 // `repoRoot/plugins/engineer`, which is absent on a consumer machine or in the
 // ephemeral scratch repo a machine bootstrap points doctor at. Mirrors the
-// orchestrator discover-engineer.mjs ladder (env override → Claude cache SemVer-max
-// → Codex fixed cache → sibling monorepo) but is a PRIVATE runtime copy: ADR-0010 §5
-// forbids importing across plugins. Deliberately does NOT consult repoRoot — that is
-// the proof workspace's concern, and conflating the two is the §8.2 defect. Returns
-// `{ root, source }` or `null`.
-export async function resolveInstalledEngineerRoot({ env = process.env, home = homedir(), selfUrl = import.meta.url } = {}) {
+// orchestrator discover-engineer.mjs ladder but is a PRIVATE runtime copy:
+// ADR-0010 §5 forbids importing across plugins. Deliberately does NOT consult
+// repoRoot — that is the proof workspace's concern, and conflating the two is the
+// §8.2 defect.
+//
+// Ladder (ADR-0061 §Decision 3): env override `AGENTIC_ENGINEER_ROOT` (never
+// falls through) → the versioned install cache of the host doctor runs from →
+// the other host's cache, only when the first has no engineer installed (that
+// fallback is reported in `crossHostFallback`) → the sibling checkout, only
+// when doctor itself runs from a checkout. Claude goes first for a checkout
+// caller. An engineer installed on the caller's host without a readable
+// scripts/state.mjs is a failure, not a reason to cross hosts.
+//
+// Returns `{ root, source, host, callerHost, crossHostFallback, version?,
+// reason? }` — `root` is null when nothing resolved; `source` is
+// 'env-override', 'claude-cache', 'codex-cache', 'sibling-monorepo' or null.
+export async function locateInstalledEngineerRoot({ env = process.env, home = homedir(), selfUrl = import.meta.url } = {}) {
+  const hosts = engineerHostLayout(env, home);
+  let selfPath = null;
+  if (typeof selfUrl === 'string' && selfUrl.length > 0) {
+    try {
+      selfPath = fileURLToPath(selfUrl);
+    } catch {
+      selfPath = null;
+    }
+  }
+  const caller = doctorHostOf(selfPath, hosts);
+  const callerHost = caller ?? 'checkout';
+
   const override = env[ENGINEER_ROOT_ENV_OVERRIDE];
   if (typeof override === 'string' && override.length > 0) {
     if (isAbsolute(override) && await isReadableFile(join(override, 'scripts', 'state.mjs'))) {
-      return { root: override, source: 'env-override' };
+      return { root: realOrResolvedPath(override), source: 'env-override', host: null, callerHost, crossHostFallback: false };
     }
-    return null;
+    return {
+      root: null,
+      source: 'env-override',
+      host: null,
+      callerHost,
+      crossHostFallback: false,
+      reason: `${ENGINEER_ROOT_ENV_OVERRIDE} is set but is not an absolute engineer root with a readable scripts/state.mjs`,
+    };
   }
-  const { claude: claudeBase, codex: codexBase } = engineerCacheBases(home);
-  const claudeRoot = await resolveClaudeEngineerCacheRoot(claudeBase);
-  if (claudeRoot) return { root: claudeRoot, source: 'claude-cache' };
-  if (await isReadableFile(join(codexBase, 'scripts', 'state.mjs'))) {
-    return { root: codexBase, source: 'codex-cache' };
-  }
-  // Sibling monorepo — derive runtime's own root from selfUrl (doctor.mjs lives at
-  // <runtime-root>/scripts/doctor.mjs), then look for the sibling engineer checkout.
-  if (typeof selfUrl === 'string' && selfUrl.length > 0) {
-    let here = null;
-    try {
-      here = fileURLToPath(selfUrl);
-    } catch {
-      here = null;
+
+  const order = caller === 'codex' ? ['codex', 'claude'] : ['claude', 'codex'];
+  for (const host of order) {
+    const install = await newestEngineerInstall(hosts[host]);
+    if (install.state === 'absent') continue;
+    const provenance = {
+      source: `${host}-cache`,
+      host,
+      callerHost,
+      crossHostFallback: caller !== null && host !== caller,
+    };
+    if (install.state === 'unusable') {
+      return {
+        root: null,
+        ...provenance,
+        reason: `engineer ${install.version} in the ${host} plugin cache has no readable scripts/state.mjs`,
+      };
     }
-    if (here) {
-      const sibling = resolve(dirname(here), '..', '..', 'engineer');
-      if (await isReadableFile(join(sibling, 'scripts', 'state.mjs'))) {
-        return { root: sibling, source: 'sibling-monorepo' };
-      }
+    return { root: realOrResolvedPath(install.root), ...provenance, version: install.version };
+  }
+
+  // Sibling monorepo — doctor.mjs lives at <runtime-root>/scripts/doctor.mjs.
+  // A sibling that resolves into an install cache or a marketplace clone is not
+  // a checkout.
+  if (caller === null && selfPath) {
+    const sibling = resolve(dirname(selfPath), '..', '..', 'engineer');
+    if (rootOwnership(sibling, [...hosts.codex.roots, ...hosts.claude.roots]) === 0
+        && await isReadableFile(join(sibling, 'scripts', 'state.mjs'))) {
+      return { root: realOrResolvedPath(sibling), source: 'sibling-monorepo', host: null, callerHost, crossHostFallback: false };
     }
   }
-  return null;
+  return {
+    root: null,
+    source: null,
+    host: null,
+    callerHost,
+    crossHostFallback: false,
+    reason: 'engineer plugin not found in the Claude or Codex plugin cache',
+  };
+}
+
+// `locateInstalledEngineerRoot`, or `null` when nothing resolved.
+export async function resolveInstalledEngineerRoot(options = {}) {
+  const located = await locateInstalledEngineerRoot(options);
+  return located.root ? located : null;
 }
 
 async function executeWorkflowContinuationProofDirection({
@@ -4783,13 +4917,20 @@ async function executeWorkflowContinuationProofDirection({
   // §8.2 — the installed-tool root (host plugin cache), resolved SEPARATELY from the
   // ephemeral proof workspace (tempRepo below). repoRoot is the caller's repo, which
   // on a consumer machine or a bootstrap scratch dir has no plugins/engineer.
-  const engineer = await resolveInstalledEngineerRoot({ env, home: homeDir, selfUrl });
-  if (!engineer) {
+  const engineer = await locateInstalledEngineerRoot({ env, home: homeDir, selfUrl });
+  // Where the tool root came from, kept beside it: a Codex-run doctor that fell
+  // back to the Claude cache resolved an unpinned copy (ADR-0061 §Decision 4).
+  const toolRootProvenance = {
+    tool_root_caller_host: engineer.callerHost,
+    tool_root_cross_host_fallback: engineer.crossHostFallback,
+  };
+  if (!engineer.root) {
     return {
       status: 'blocked',
-      reason: 'engineer plugin not found — install engineer, or set AGENTIC_ENGINEER_ROOT to a plugin checkout (resolver ladder: env override → Claude cache → Codex cache → sibling monorepo)',
+      reason: `${engineer.reason} — install engineer, or set AGENTIC_ENGINEER_ROOT to a plugin checkout (resolver ladder: env override → this host's install cache → the other host's cache → sibling checkout)`,
       installed_tool_root: null,
-      tool_root_source: 'none',
+      tool_root_source: engineer.source ?? 'none',
+      ...toolRootProvenance,
     };
   }
   const statePath = join(engineer.root, 'scripts', 'state.mjs');
@@ -4805,6 +4946,7 @@ async function executeWorkflowContinuationProofDirection({
       missing_path: missingScript.path,
       installed_tool_root: engineer.root,
       tool_root_source: engineer.source,
+      ...toolRootProvenance,
     };
   }
 
@@ -5003,6 +5145,7 @@ async function executeWorkflowContinuationProofDirection({
       // and the ephemeral proof workspace the run happened IN.
       installed_tool_root: engineer.root,
       tool_root_source: engineer.source,
+      ...toolRootProvenance,
       workflow: workflowProofWorkflowSummary({ spec, runId, workflowId }),
       state_checks: stateChecks,
       state_failure: passed ? null : 'engineer state did not record pending and committed ensemble continuation as expected',
@@ -5809,7 +5952,7 @@ export function formatText(report) {
       if (direction.result && direction.execution === 'executed') {
         lines.push(`  result: peer=${direction.result.peer_host ?? '<unknown>'}; envelope=${direction.result.envelope_status ?? '<none>'}; exit=${direction.result.peer_exit_code ?? direction.result.companion_exit_code ?? '<none>'}; expected-token=${direction.result.expected_token_present}; stdout-bytes=${direction.result.stdout_bytes ?? '<none>'}; stdout-sha256=${direction.result.stdout_sha256 ?? '<empty>'}; operator-action-required=${Boolean(direction.result.operator_action_required)}`);
         if (direction.result.installed_tool_root) {
-          lines.push(`  installed-tool-root: ${direction.result.installed_tool_root} (source=${direction.result.tool_root_source}); proof-workspace=ephemeral (§8.2 — the two roots are distinct)`);
+          lines.push(`  installed-tool-root: ${direction.result.installed_tool_root} (source=${direction.result.tool_root_source}${direction.result.tool_root_cross_host_fallback ? `; cross-host fallback from the ${direction.result.tool_root_caller_host} host` : ''}); proof-workspace=ephemeral (§8.2 — the two roots are distinct)`);
         }
         if (direction.result.workflow) {
           lines.push(`  state-workflow: id=${direction.result.workflow.workflow_id ?? '<unknown>'}; run-id=${direction.result.workflow.run_id}; temp-repo=${direction.result.workflow.temp_repo}`);

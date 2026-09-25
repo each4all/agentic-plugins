@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strictEqual, notStrictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, writeFile, symlink, readdir, readFile, rm, utimes } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, writeFile, symlink, readdir, readFile, realpath, rm, utimes } from 'node:fs/promises';
 import * as realFs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -12,6 +12,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStateForProbe, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot, classifyWireDisposition, EGRESS_ACK_OUTCOME_REASONS, publishJsonExclusive, scanEgressIntents, composeEgressFenceBlocker, aggregateWalDurability } from '../../plugins/runtime/scripts/doctor.mjs';
 import { recomputeHookAttestation } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
 import { makeDefValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
+
+// Module-load scrub (the tests/runtime/test-notify.mjs pattern). Most tests run
+// doctor with the default env = process.env; an ambient AGENTIC_COMPANIONS_ROOT or
+// AGENTIC_ENGINEER_ROOT (development overrides, ADR-0061 §Decision 3) would replace
+// the fixture caches, and an ambient CODEX_HOME would move the Codex cache off the
+// fixture home.
+for (const k of ['AGENTIC_COMPANIONS_ROOT', 'AGENTIC_ENGINEER_ROOT', 'CODEX_HOME']) {
+  delete process.env[k];
+}
+
 
 const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
 
@@ -71,6 +81,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     await seedHome(home);
     const report = await runDoctor({
       repoRoot: root,
@@ -2573,6 +2584,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-sandbox-probe-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -2609,6 +2621,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-proof-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -2636,6 +2649,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-proof-execute-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const calls = [];
     const permissionFailureEnvelope = {
       status: 'peer_error',
@@ -2714,6 +2728,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-deep-smoke-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -2750,6 +2765,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-deep-smoke-execute-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const peerOutputs = {
       codex: 'RUNTIME_DOCTOR_SMOKE_OK codex\nRAW DETAILS MUST NOT LEAK',
       claude: 'RUNTIME_DOCTOR_SMOKE_OK claude\nRAW DETAILS MUST NOT LEAK',
@@ -2804,6 +2820,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-workflow-proof-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -2830,6 +2847,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-workflow-proof-execute-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const calls = [];
     const readCounts = new Map();
     const report = await runDoctor({
@@ -2915,8 +2933,10 @@ describe('runtime doctor', () => {
     // the repo has NO plugins/engineer. Pre-C5 the proof looked under
     // repoRoot/plugins/engineer and would block here.
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-consumer-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-consumer-home-'));
+    // Canonical: the resolver returns canonical roots (ADR-0061 S2).
+    const home = await realpath(await mkdtemp(join(tmpdir(), 'runtime-doctor-consumer-home-')));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     await rm(join(root, 'plugins', 'engineer'), { recursive: true, force: true });
     const cacheRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer', '0.9.0');
     await mkdir(join(cacheRoot, '.claude-plugin'), { recursive: true });
@@ -3033,6 +3053,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-recorded-proof-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     await seedHome(home);
     const runId = 'doctor-20260513T000000Z-abc123';
     const first = await runDoctor({
@@ -3092,6 +3113,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-codexlist-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-codexlist-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     await seedHome(home);
     const runId = 'doctor-20260608T000000Z-c0de01';
     const installedList = okResult(JSON.stringify({ installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: true }] }));
@@ -3134,6 +3156,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-legacy-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-legacy-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     await seedHome(home); // ~/.codex install cache seeds runtime @ 0.1.0
     const runId = 'doctor-20260608T010000Z-ca11ed';
 
@@ -3161,7 +3184,12 @@ describe('runtime doctor', () => {
     // Rerun once the list is authoritative and reports the SAME version 0.1.0:
     // current codex_installed (list) == recorded codex_installed (cache) -> the
     // recorded proof must stay reusable (no spurious codex_installed mismatch).
-    const sameVersionList = okResult(JSON.stringify({ installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: true }] }));
+    // companions is listed too: seedCompanionCaches put 1.0.0 in the Codex cache,
+    // so the first run recorded it from there.
+    const sameVersionList = okResult(JSON.stringify({ installed: [
+      { name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: true },
+      { name: 'companions', marketplaceName: 'agentic-plugins', version: '1.0.0', installed: true, enabled: true },
+    ] }));
     const second = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -3178,6 +3206,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-auth-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -3222,6 +3251,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-auth-stdout-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const rawAuthOutput = 'Not logged in. Please run /login. AUTH RAW DETAILS MUST NOT LEAK';
     const report = await runDoctor({
       repoRoot: root,
@@ -3265,6 +3295,7 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-sandbox-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    await seedCompanionCaches(home);
     const rawDetail = [
       'WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1)',
       'Reading prompt from stdin...',
@@ -3831,13 +3862,52 @@ describe('runtime doctor — codex plugin list read signal (ADR-0034)', () => {
   });
 });
 
+// ADR-0061 §Decision 3: doctor threads AGENTIC_COMPANIONS_ROOT into the env-free
+// peer-execution seam, the development path that replaced its repository rung.
+describe('runtime doctor — companion candidates (ADR-0061)', () => {
+  it('reports the AGENTIC_COMPANIONS_ROOT development override and selects from it', async () => {
+    // Canonical: the peer context returns canonical companion paths (ADR-0061 S2).
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'runtime-doctor-companions-override-')));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-companions-override-home-'));
+    await seedRepo(root);
+    await seedCompanionCaches(home);
+    const override = join(root, 'companions');
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      env: { AGENTIC_COMPANIONS_ROOT: override },
+      runner: async (command, args) => fakeRuntimeProbeRunner(command, args),
+    });
+    deepStrictEqual(report.companions.override, { variable: 'AGENTIC_COMPANIONS_ROOT', path: override });
+    strictEqual(report.companions.directions.claude_to_codex.selected.path, join(override, 'codex-companion.mjs'));
+    strictEqual(report.companions.directions.codex_to_claude.selected.path, join(override, 'claude-companion.mjs'));
+    strictEqual(report.companions.directions.codex_to_claude.selected.source, 'env-override');
+  });
+
+  it('does not select the repository source tree when no override is set and the caches are empty', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-companions-source-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-companions-source-home-'));
+    await seedRepo(root); // plants companions/*.mjs and plugins/companions/scripts/*.mjs
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      env: {},
+      runner: async (command, args) => fakeRuntimeProbeRunner(command, args),
+    });
+    strictEqual(report.companions.override, null);
+    strictEqual(report.companions.directions.claude_to_codex.status, 'not_installed');
+    strictEqual(report.companions.directions.codex_to_claude.status, 'not_installed');
+  });
+});
+
 describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () => {
   it('env override wins when absolute and scripts/state.mjs exists', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'engineer-root-env-'));
+    // Canonical: the resolver returns canonical roots (ADR-0061 S2).
+    const dir = await realpath(await mkdtemp(join(tmpdir(), 'engineer-root-env-')));
     await mkdir(join(dir, 'scripts'), { recursive: true });
     await writeFile(join(dir, 'scripts', 'state.mjs'), '// x\n');
     const res = await resolveInstalledEngineerRoot({ env: { AGENTIC_ENGINEER_ROOT: dir }, home: '/nonexistent-home-xyz', selfUrl: 'file:///nope/x.mjs' });
-    deepStrictEqual(res, { root: dir, source: 'env-override' });
+    deepStrictEqual(res, { root: dir, source: 'env-override', host: null, callerHost: 'checkout', crossHostFallback: false });
   });
 
   it('a relative or unreadable env override resolves to null (no silent fallback)', async () => {
@@ -3846,7 +3916,7 @@ describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () =>
   });
 
   it('picks the SemVer-max Claude cache install whose manifest name is engineer', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'engineer-root-cache-'));
+    const home = await realpath(await mkdtemp(join(tmpdir(), 'engineer-root-cache-')));
     const base = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer');
     for (const [version, name] of [['0.9.0', 'engineer'], ['0.21.0', 'engineer'], ['9.9.9', 'notengineer']]) {
       const r = join(base, version);
@@ -3861,7 +3931,7 @@ describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () =>
   });
 
   it('falls back to the sibling monorepo checkout when no cache exists', async () => {
-    const base = await mkdtemp(join(tmpdir(), 'engineer-root-sibling-'));
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'engineer-root-sibling-')));
     await mkdir(join(base, 'plugins', 'runtime', 'scripts'), { recursive: true });
     await mkdir(join(base, 'plugins', 'engineer', 'scripts'), { recursive: true });
     await writeFile(join(base, 'plugins', 'engineer', 'scripts', 'state.mjs'), '// x\n');
@@ -4170,6 +4240,23 @@ function smokeEnvelope(peer, stdout, durationMs) {
       completed_at: '2026-05-13T00:00:01.000Z',
     },
   };
+}
+
+// Installed companions in both host caches under `home` — where the peer
+// execution context looks (ADR-0061 §Decision 3). seedRepo's source-tree
+// companions are not candidates: an installed runtime reaches them only through
+// AGENTIC_COMPANIONS_ROOT.
+async function seedCompanionCaches(home) {
+  for (const [host, manifestDir, script] of [
+    ['.claude', '.claude-plugin', 'codex-companion.mjs'],
+    ['.codex', '.codex-plugin', 'claude-companion.mjs'],
+  ]) {
+    const versionRoot = join(home, host, 'plugins', 'cache', 'agentic-plugins', 'companions', '1.0.0');
+    await mkdir(join(versionRoot, manifestDir), { recursive: true });
+    await mkdir(join(versionRoot, 'scripts'), { recursive: true });
+    await writeJson(join(versionRoot, manifestDir, 'plugin.json'), { name: 'companions', version: '1.0.0' });
+    await writeFile(join(versionRoot, 'scripts', script), "const CONTRACT_VERSION = '0.1.1'; // --prompt-file\n");
+  }
 }
 
 async function seedRepo(root) {

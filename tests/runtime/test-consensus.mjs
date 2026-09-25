@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { realpath, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +11,15 @@ import {
 } from '../../plugins/runtime/scripts/consensus.mjs';
 
 const RUN_ID = 'consensus-20260513T000000Z-abcdef';
+
+// Module-load scrub (the tests/runtime/test-notify.mjs pattern). Several tests hand
+// consensus `process.env` or a spread of it; an ambient AGENTIC_COMPANIONS_ROOT (the
+// documented development override, ADR-0061 §Decision 3) would replace the fixture
+// caches, and an ambient CODEX_HOME would move the Codex cache off the fixture home.
+for (const k of ['AGENTIC_COMPANIONS_ROOT', 'CODEX_HOME']) {
+  delete process.env[k];
+}
+
 
 describe('runtime consensus', () => {
   it('plans independent peer fanout without executing peers', async () => {
@@ -325,7 +334,8 @@ describe('runtime consensus', () => {
   // (ADR-0041 sec.2b/2c); it used to be each caller's job and only settings.mjs did it.
   it('resolves peer context WITHOUT spawning any host CLI, and still hands the companion the raw env', async () => {
     const root = await seedPlan();
-    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-noprobe-home-'));
+    // Canonical: the peer context returns canonical companion paths (ADR-0061 S2).
+    const homeDir = await realpath(await mkdtemp(join(tmpdir(), 'runtime-consensus-noprobe-home-')));
     await seedCompanionCache(homeDir);
 
     const ambientEnv = { ...process.env, TELEGRAM_BOT_TOKEN: 'sentinel-token' };
@@ -376,6 +386,68 @@ describe('runtime consensus', () => {
     for (const call of calls) {
       deepStrictEqual(call.env, ambientEnv, 'the companion launch must receive the ambient env unchanged');
     }
+  });
+
+  // ADR-0061 §Decision 3: the companion comes from an install cache unless
+  // AGENTIC_COMPANIONS_ROOT names a development copy. consensus.mjs threads the
+  // variable into the env-free seam; without it, source-tree companions under
+  // the repository are never launched.
+  it('launches the companions AGENTIC_COMPANIONS_ROOT names instead of the installed ones', async () => {
+    const root = await seedPlan();
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-override-home-'));
+    await seedCompanionCache(homeDir);
+    const overrideDir = await realpath(await mkdtemp(join(tmpdir(), 'runtime-consensus-override-')));
+    for (const script of ['claude-companion.mjs', 'codex-companion.mjs']) {
+      await writeFile(join(overrideDir, script), "const CONTRACT_VERSION = '0.1.1'; // --prompt-file\n");
+    }
+    const calls = [];
+    const inner = fakeConsensusRunner();
+    const report = await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      env: { AGENTIC_COMPANIONS_ROOT: overrideDir },
+      now: new Date('2026-05-13T00:02:00.000Z'),
+      runner: async (command, args = [], options = {}) => {
+        calls.push({ command, args });
+        return inner(command, args, options);
+      },
+    });
+    strictEqual(report.execution_summary.passed, 2);
+    deepStrictEqual(calls.map((call) => call.args[0]), [
+      join(overrideDir, 'claude-companion.mjs'),
+      join(overrideDir, 'codex-companion.mjs'),
+    ]);
+  });
+
+  it('never launches source-tree companions under the repository when the install caches are empty', async () => {
+    const root = await seedPlan();
+    for (const dir of [join(root, 'companions'), join(root, 'plugins', 'companions', 'scripts')]) {
+      await mkdir(dir, { recursive: true });
+      for (const script of ['claude-companion.mjs', 'codex-companion.mjs']) {
+        await writeFile(join(dir, script), "const CONTRACT_VERSION = '0.1.1'; // --prompt-file\n");
+      }
+    }
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-empty-home-'));
+    const calls = [];
+    const inner = fakeConsensusRunner();
+    const report = await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      env: {},
+      now: new Date('2026-05-13T00:02:00.000Z'),
+      runner: async (command, args = [], options = {}) => {
+        calls.push({ command, args });
+        return inner(command, args, options);
+      },
+    });
+    deepStrictEqual(calls, [], 'no companion may be launched from the repository');
+    strictEqual(report.execution_summary.passed, 0);
   });
 
   it('executes a planned round only with --execute and stores raw outputs as artifacts', async () => {

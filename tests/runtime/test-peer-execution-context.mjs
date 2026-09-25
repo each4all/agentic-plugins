@@ -12,7 +12,8 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,9 +51,13 @@ function immediateImports(source) {
   return specs;
 }
 
+// Canonical temp dirs: the seam returns canonical companion paths, and macOS
+// tmpdir sits behind /var -> /private/var.
+const canonicalTmp = async (prefix) => realpath(await mkdtemp(join(tmpdir(), prefix)));
+
 async function seedFixture() {
-  const repoRoot = await mkdtemp(join(tmpdir(), 'peer-ctx-repo-'));
-  const homeDir = await mkdtemp(join(tmpdir(), 'peer-ctx-home-'));
+  const repoRoot = await canonicalTmp('peer-ctx-repo-');
+  const homeDir = await canonicalTmp('peer-ctx-home-');
 
   await mkdir(join(repoRoot, 'companions'), { recursive: true });
   await writeFile(join(repoRoot, 'companions', 'contract.md'), '# Companion contract\n\n**Version**: `0.1.1`\n');
@@ -173,6 +178,128 @@ describe('peer execution context (filesystem-only seam)', () => {
       strictEqual(companions.contract_path, null);
       strictEqual(companions.directions.claude_to_codex.status, 'not_installed');
       strictEqual(companions.directions.claude_to_codex.selected, null);
+    });
+  });
+
+  // ADR-0061 §Decision 3: installed caches only, the development path behind an
+  // explicit override, and the Codex marketplace clone never a candidate.
+  describe('candidates (ADR-0061 §Decision 3)', () => {
+    const COMPANION = "const CONTRACT_VERSION = '0.1.1'; // --prompt-file\n";
+
+    async function plantSourceTree(repoRoot) {
+      for (const dir of [join(repoRoot, 'companions'), join(repoRoot, 'plugins', 'companions', 'scripts')]) {
+        await mkdir(dir, { recursive: true });
+        for (const script of ['codex-companion.mjs', 'claude-companion.mjs']) await writeFile(join(dir, script), COMPANION);
+      }
+    }
+
+    async function plantCache(base, version, { manifestDir, script, name = 'companions' }) {
+      const root = join(base, version);
+      await mkdir(join(root, manifestDir), { recursive: true });
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, manifestDir, 'plugin.json'), JSON.stringify({ name, version }));
+      await writeFile(join(root, 'scripts', script), COMPANION);
+      return root;
+    }
+
+    it('an installed runtime with empty caches does not fall through to the repository source tree', async () => {
+      const repoRoot = await mkdtemp(join(tmpdir(), 'peer-ctx-source-'));
+      const homeDir = await mkdtemp(join(tmpdir(), 'peer-ctx-source-home-'));
+      await plantSourceTree(repoRoot);
+      const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir });
+      for (const key of ['claude_to_codex', 'codex_to_claude']) {
+        strictEqual(companions.directions[key].status, 'not_installed', `${key} must not select repository code`);
+        deepStrictEqual(companions.directions[key].candidates, [], `${key} lists no repository candidate`);
+      }
+      strictEqual(companions.override, null);
+    });
+
+    it('the explicit override replaces the caches, and says so', async () => {
+      const { repoRoot, homeDir } = await seedFixture();
+      await plantSourceTree(repoRoot);
+      const override = join(repoRoot, 'companions');
+      const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir, companionsOverride: override });
+      deepStrictEqual(companions.override, { variable: 'AGENTIC_COMPANIONS_ROOT', path: override });
+      for (const [key, script] of [['claude_to_codex', 'codex-companion.mjs'], ['codex_to_claude', 'claude-companion.mjs']]) {
+        const direction = companions.directions[key];
+        strictEqual(direction.selected.path, join(override, script));
+        strictEqual(direction.selected.source, 'env-override');
+        strictEqual(direction.candidates.length, 1, `${key}: the seeded caches are not candidates while the override is set`);
+      }
+    });
+
+    it('a relative override is blocked, never resolved against the working directory', async () => {
+      const { repoRoot, homeDir } = await seedFixture();
+      const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir, companionsOverride: 'companions' });
+      strictEqual(companions.directions.claude_to_codex.status, 'blocked');
+      strictEqual(companions.directions.claude_to_codex.selected, null);
+      ok(/absolute/.test(companions.directions.claude_to_codex.candidates[0].reason));
+    });
+
+    it('reads the Codex cache under CODEX_HOME, newest manifest-verified version first, and never the marketplace clone', async () => {
+      const repoRoot = await mkdtemp(join(tmpdir(), 'peer-ctx-codexhome-'));
+      const homeDir = await mkdtemp(join(tmpdir(), 'peer-ctx-codexhome-home-'));
+      const codexHome = await canonicalTmp('peer-ctx-codexhome-custom-');
+      const base = join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'companions');
+      await plantCache(base, '0.4.0', { manifestDir: '.codex-plugin', script: 'claude-companion.mjs' });
+      const newest = await plantCache(base, '0.5.0', { manifestDir: '.codex-plugin', script: 'claude-companion.mjs' });
+      await plantCache(base, '9.0.0', { manifestDir: '.codex-plugin', script: 'claude-companion.mjs', name: 'not-companions' });
+      // A newer marketplace clone (the plugin directory itself, unversioned),
+      // and a ~/.codex cache that the custom CODEX_HOME replaces.
+      await plantCache(join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins'), 'companions', { manifestDir: '.codex-plugin', script: 'claude-companion.mjs' });
+      await plantCache(join(homeDir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'companions'), '8.0.0', { manifestDir: '.codex-plugin', script: 'claude-companion.mjs' });
+
+      const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir, codexHome });
+      const direction = companions.directions.codex_to_claude;
+      strictEqual(direction.selected.path, join(newest, 'scripts', 'claude-companion.mjs'));
+      strictEqual(direction.selected.source, 'codex-cache');
+      deepStrictEqual(
+        direction.candidates.map((c) => c.path),
+        [join(newest, 'scripts', 'claude-companion.mjs'), join(base, '0.4.0', 'scripts', 'claude-companion.mjs')],
+        'only the manifest-verified versions under CODEX_HOME are candidates, newest first',
+      );
+    });
+
+    // The companion's CLI entry guard compares argv[1] with Node's canonical
+    // module path, so a path spelled through a symlink runs nothing. Each case
+    // runs the selected companion with no subcommand: the real CLI answers with
+    // a usage error (exit 2), the silent no-op exits 0 with no output.
+    const REAL_COMPANION = join(REPO_ROOT, 'companions', 'claude-companion.mjs');
+    const runs = (script) => spawnSync(process.execPath, [script], { encoding: 'utf8' });
+
+    it('under a symlinked CODEX_HOME the selected companion is canonical and actually runs', async () => {
+      const repoRoot = await canonicalTmp('peer-ctx-link-');
+      const homeDir = await canonicalTmp('peer-ctx-link-home-');
+      const realCodex = await canonicalTmp('peer-ctx-link-codex-');
+      const link = join(homeDir, 'codex-link');
+      await symlink(realCodex, link);
+      const versionRoot = join(link, 'plugins', 'cache', 'agentic-plugins', 'companions', '0.5.0');
+      await mkdir(join(versionRoot, '.codex-plugin'), { recursive: true });
+      await mkdir(join(versionRoot, 'scripts'), { recursive: true });
+      await writeFile(join(versionRoot, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'companions', version: '0.5.0' }));
+      await copyFile(REAL_COMPANION, join(versionRoot, 'scripts', 'claude-companion.mjs'));
+
+      const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir, codexHome: link });
+      const selected = companions.directions.codex_to_claude.selected.path;
+      strictEqual(selected, join(realCodex, 'plugins', 'cache', 'agentic-plugins', 'companions', '0.5.0', 'scripts', 'claude-companion.mjs'));
+      const run = runs(selected);
+      strictEqual(run.status, 2, 'the canonical path reaches the companion CLI');
+      ok(/subcommand/.test(run.stderr), run.stderr);
+      // Control (docket C48): the link spelling of the same file runs nothing.
+      const viaLink = runs(join(versionRoot, 'scripts', 'claude-companion.mjs'));
+      deepStrictEqual([viaLink.status, viaLink.stdout, viaLink.stderr], [0, '', '']);
+    });
+
+    it('an override that names a symlink selects the canonical companion, which runs', async () => {
+      const { repoRoot, homeDir } = await seedFixture();
+      const realDir = await canonicalTmp('peer-ctx-override-real-');
+      await copyFile(REAL_COMPANION, join(realDir, 'claude-companion.mjs'));
+      const link = join(homeDir, 'companions-link');
+      await symlink(realDir, link);
+      const { companions } = await resolvePeerExecutionContext({ repoRoot, homeDir, companionsOverride: link });
+      const selected = companions.directions.codex_to_claude.selected.path;
+      strictEqual(selected, join(realDir, 'claude-companion.mjs'));
+      strictEqual(runs(selected).status, 2);
     });
   });
 });
