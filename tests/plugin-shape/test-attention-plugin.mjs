@@ -49,7 +49,7 @@
 import { describe, it, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, throws, doesNotThrow } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile, utimes } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -567,7 +567,8 @@ describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', ()
 
   let stubHome;
   before(async () => {
-    stubHome = await mkdtemp(join(tmpdir(), 'attention-discover-'));
+    // Canonical: the resolver returns canonical roots (ADR-0061 S2).
+    stubHome = await realpath(await mkdtemp(join(tmpdir(), 'attention-discover-')));
   });
   after(async () => {
     await rm(stubHome, { recursive: true, force: true });
@@ -690,7 +691,8 @@ describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', ()
   });
 
   it('a cache holding a clean release and its own-core prerelease selects the release deterministically (tie-break)', async () => {
-    const tieHome = await mkdtemp(join(tmpdir(), 'attention-tiebreak-'));
+    // Canonical: the resolver returns canonical roots (ADR-0061 S2).
+    const tieHome = await realpath(await mkdtemp(join(tmpdir(), 'attention-tiebreak-')));
     try {
       const cacheBase = join(tieHome, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime');
       for (const version of ['0.83.0-beta.1', '0.83.0']) {

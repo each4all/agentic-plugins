@@ -19,7 +19,9 @@
 //     PENDING is empty.
 // OBSERVATION is the one file ADR-0061 keeps: machine-probe.mjs reports the
 // clone's presence as a fact and never resolves code from it (Decision 4:
-// "Snapshot presence remains 'not installation evidence'").
+// "Snapshot presence remains 'not installation evidence'"). doctor.mjs reads
+// that observation for its effective-hook fallthrough without spelling the
+// path itself, so this gate cannot see it; S3 owns removing that fallthrough.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok } from 'node:assert/strict';
@@ -29,20 +31,25 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 
-// Owned by ADR-0061 S2 (sibling resolvers) or S3 (runtime diagnostics and
-// receivers). Remove each entry in the change that removes its reference.
+// Owned by ADR-0061 S3 (runtime diagnostics and receivers). Remove each entry
+// in the change that removes its reference.
 const PENDING = [
-  'plugins/attention/scripts/discover-runtime.mjs', // S2
-  'plugins/designer/scripts/discover-runtime.mjs', // S2
-  'plugins/engineer/scripts/discover-runtime.mjs', // S2
-  'plugins/engineer/scripts/parent-writeback.mjs', // S2
-  'plugins/founder/scripts/discover-runtime.mjs', // S2
-  'plugins/orchestrator/scripts/discover-engineer.mjs', // S2
-  'plugins/orchestrator/scripts/discover-runtime.mjs', // S2
   'plugins/runtime/receivers/agentic-statusline.mjs', // S3
   'plugins/runtime/receivers/codex-notify-shuttle.mjs', // S3
-  'plugins/runtime/scripts/doctor.mjs', // S2 (engineer resolver), S3 (effective hooks)
-  'plugins/runtime/scripts/lib/peer-execution-context.mjs', // S2
+];
+
+// The sibling resolvers S2 moved off the clone. Each still names it in a
+// comment, which is why comment-only lines are excluded below.
+const MOVED_BY_S2 = [
+  'plugins/attention/scripts/discover-runtime.mjs',
+  'plugins/designer/scripts/discover-runtime.mjs',
+  'plugins/engineer/scripts/discover-runtime.mjs',
+  'plugins/engineer/scripts/parent-writeback.mjs',
+  'plugins/founder/scripts/discover-runtime.mjs',
+  'plugins/orchestrator/scripts/discover-engineer.mjs',
+  'plugins/orchestrator/scripts/discover-runtime.mjs',
+  'plugins/runtime/scripts/doctor.mjs',
+  'plugins/runtime/scripts/lib/peer-execution-context.mjs',
 ];
 
 const OBSERVATION = [
@@ -58,7 +65,18 @@ const CODE = /\.(?:mjs|cjs|js)$/;
 // Comment-only lines are prose, not locators: the comments that explain why
 // the clone is excluded have to be able to name it. A path on a code line
 // still counts, trailing comment or not.
-const codeLines = (text) => text.split('\n').filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line)).join('\n');
+//
+// One code line is exempt, by its exact text: the sibling resolvers list the
+// clone as one of Codex's host trees, to REFUSE it — a caller inside it is
+// Codex-hosted and a sibling resolving into it is not a checkout (ADR-0061 S2
+// review). That entry is the line below, alone on its line inside a `roots`
+// array. Any other spelling (a `base:`, a longer join, a string path) is still
+// a reference.
+const HOST_TREE_ROOT = "join(codexHome, '.tmp', 'marketplaces'),";
+const codeLines = (text) => text.split('\n')
+  .filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+  .filter((line) => line.trim() !== HOST_TREE_ROOT)
+  .join('\n');
 
 // A filesystem walk rather than `git ls-files`: an untracked new locator is
 // exactly what this gate should catch before it is committed, and the gate has
@@ -85,12 +103,13 @@ describe('ADR-0061 §Decision 3 — the Codex marketplace clone is never a disco
   it('the scanned corpus is the production code, not an empty list', () => {
     const files = productionCode();
     // Identity, not a count: the corpus must contain the files this gate is
-    // about, including ones S1 moved off the clone.
+    // about, including the ones S1 and S2 moved off the clone.
     for (const path of [
       'companions/discover-peer.mjs',
       'plugins/companions/scripts/discover-peer.mjs',
       'plugins/engineer/scripts/dispatch-peer.mjs',
       'plugins/image/scripts/compose-dispatch.mjs',
+      ...MOVED_BY_S2,
       ...PENDING,
       ...OBSERVATION,
     ]) {
@@ -98,7 +117,16 @@ describe('ADR-0061 §Decision 3 — the Codex marketplace clone is never a disco
     }
   });
 
-  it('exactly the pending (S2/S3) files and the machine-probe observation reference the clone', () => {
+  it('the host-tree exemption is used where it is meant to be, and nowhere else', () => {
+    const using = productionCode()
+      .filter((path) => readFileSync(join(REPO_ROOT, path), 'utf8').split('\n').some((line) => line.trim() === HOST_TREE_ROOT))
+      .sort();
+    // Every S2 sibling resolver refuses the clone through that entry; nothing
+    // else carries it.
+    deepStrictEqual(using, MOVED_BY_S2.filter((path) => !path.endsWith('peer-execution-context.mjs')).sort());
+  });
+
+  it('exactly the pending (S3) files and the machine-probe observation reference the clone', () => {
     const referencing = productionCode()
       .filter((path) => CLONE_REFERENCE.test(codeLines(readFileSync(join(REPO_ROOT, path), 'utf8'))))
       .sort();

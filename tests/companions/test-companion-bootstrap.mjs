@@ -92,7 +92,9 @@ async function freshHomes() {
 }
 
 before(async () => {
-  scratch = await mkdtemp(join(tmpdir(), 'companion-bootstrap-'));
+  // Canonical, so a planted path equals the canonical path a bootstrap returns
+  // (macOS tmpdir sits behind /var -> /private/var).
+  scratch = await realpath(await mkdtemp(join(tmpdir(), 'companion-bootstrap-')));
 });
 after(async () => {
   await rm(scratch, { recursive: true, force: true });
@@ -214,8 +216,10 @@ for (const { plugin, devRel } of DISPATCHERS) {
       const got = await resolveCompanion('claude', { env: { CODEX_HOME: link }, home, selfPath });
       strictEqual(got.callerHost, 'codex');
       strictEqual(got.host, 'codex');
-      ok(got.path.endsWith(join('0.5.0', 'scripts', 'claude-companion.mjs')), got.path);
-      void codexRoot;
+      // Canonical, not the link spelling: the companion's CLI entry guard
+      // compares argv[1] with Node's canonical module path and silently does
+      // nothing through a symlink.
+      strictEqual(got.path, join(codexRoot, 'scripts', 'claude-companion.mjs'));
     });
 
     it('a checkout caller has no implicit repository rung, even when the checkout holds an older library', async () => {
@@ -344,11 +348,12 @@ describe('plugins/image/scripts/compose-dispatch.mjs — companion lookup (ADR-0
     const { home, codexHome } = await freshHomes();
     const link = join(scratch, `image-codex-link-${seq}`);
     await symlink(codexHome, link);
-    await plantCompanions(companionsIn(codexCacheRoot(codexHome)), '0.5.0', { manifestRel: CODEX_MANIFEST });
+    const codexRoot = await plantCompanions(companionsIn(codexCacheRoot(codexHome)), '0.5.0', { manifestRel: CODEX_MANIFEST });
     await plantCompanions(companionsIn(claudeCacheRoot(home)), '0.9.0', { manifestRel: CLAUDE_MANIFEST });
     const selfPath = installedSelf(codexCacheRoot(await realpath(codexHome)), 'image', 'compose-dispatch.mjs');
     const got = await findCodexCompanion({ CODEX_HOME: link }, { home, selfPath });
-    ok(got && got.endsWith(join('0.5.0', 'scripts', 'codex-companion.mjs')), got);
+    // Canonical, not the link spelling (the companion's entry guard).
+    strictEqual(got, join(codexRoot, 'scripts', 'codex-companion.mjs'));
   });
 
   it('a Claude-installed caller takes the Claude cache first, skipping a directory whose manifest is not companions', async () => {
