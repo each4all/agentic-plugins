@@ -109,6 +109,12 @@ to be bypassed).
 Useful for development workflows (point at source-tree `companions/`
 without installing) and CI smoke flows.
 
+runtime's `doctor` and `consensus` honor the same variable, through
+their own filesystem-only reader rather than `discover-peer.mjs`: set, it
+replaces the install caches for both directions; unset, they read only the
+install caches, never the companions of the repository they run in
+(ADR-0061 §Decision 3).
+
 ### Cache-glob (auto-discovery fallback)
 
 When `AGENTIC_COMPANIONS_ROOT` is unset, the consumer plugin globs the
