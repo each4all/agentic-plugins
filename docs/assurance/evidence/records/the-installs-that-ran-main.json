@@ -1,0 +1,301 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-installs-that-ran-main",
+  "evidence_loop": {
+    "label": "Codex installs that ran main under a released version: install-cache discovery and pin diagnostics (ADR-0061 S1-S3)",
+    "summary": "Codex's catalog entries are local and its marketplace is a git clone of main, so a Codex start after main moves re-clones it and force-reinstalls every plugin under an unchanged version, and cross-plugin discovery on Codex also read that clone. S1 and S2 make companion discovery and every sibling resolver use the caller's own install cache, never the clone; S3 makes doctor report each Codex install against its catalog pin with target, installed version and content identity kept apart. One release commit cut nine tags, the floor ADR-0061 Decision 5 (a) is to name. Installed from it, the proof's permission and peer-smoke runs executed the installed companions from each host's cache where the preceding proof, run from the same checkout, executed the checkout's. Parity reads the same blocked 87% on the same compat criterion. Catalog pinning (S4) and machine acceptance (S6) remain."
+  },
+  "package_releases": [
+    {
+      "package": "companions",
+      "version": "0.3.2",
+      "tag": "companions-v0.3.2",
+      "release_pr": 811,
+      "squash": "a511c2940c0e12b402d37c8605b838ad53c0706a",
+      "marketplace_sync": "2d2c0c81c04fa7f1aba441b1150d206107acac20"
+    },
+    {
+      "package": "plugins/attention",
+      "version": "0.9.1",
+      "tag": "plugin-attention-v0.9.1",
+      "release_pr": 811,
+      "squash": "a511c2940c0e12b402d37c8605b838ad53c0706a",
+      "marketplace_sync": "2d2c0c81c04fa7f1aba441b1150d206107acac20"
+    },
+    {
+      "package": "plugins/companions",
+      "version": "0.4.2",
+      "tag": "plugin-companions-v0.4.2",
+      "release_pr": 811,
+      "squash": "a511c2940c0e12b402d37c8605b838ad53c0706a",
+      "marketplace_sync": "2d2c0c81c04fa7f1aba441b1150d206107acac20"
+    },
+    {
+      "package": "plugins/designer",
+      "version": "0.3.9",
+      "tag": "plugin-designer-v0.3.9",
+      "release_pr": 811,
+      "squash": "a511c2940c0e12b402d37c8605b838ad53c0706a",
+      "marketplace_sync": "2d2c0c81c04fa7f1aba441b1150d206107acac20"
+    },
+    {
+      "package": "plugins/engineer",
+      "version": "0.21.11",
+      "tag": "plugin-engineer-v0.21.11",
+      "release_pr": 811,
+      "squash": "a511c2940c0e12b402d37c8605b838ad53c0706a",
+      "marketplace_sync": "2d2c0c81c04fa7f1aba441b1150d206107acac20"
+    },
+    {
+      "package": "plugins/founder",
+      "version": "0.4.9",
+      "tag": "plugin-founder-v0.4.9",
+      "release_pr": 811,
+      "squash": "a511c2940c0e12b402d37c8605b838ad53c0706a",
+      "marketplace_sync": "2d2c0c81c04fa7f1aba441b1150d206107acac20"
+    },
+    {
+      "package": "plugins/image",
+      "version": "0.3.2",
+      "tag": "plugin-image-v0.3.2",
+      "release_pr": 811,
+      "squash": "a511c2940c0e12b402d37c8605b838ad53c0706a",
+      "marketplace_sync": "2d2c0c81c04fa7f1aba441b1150d206107acac20"
+    },
+    {
+      "package": "plugins/orchestrator",
+      "version": "0.13.8",
+      "tag": "plugin-orchestrator-v0.13.8",
+      "release_pr": 811,
+      "squash": "a511c2940c0e12b402d37c8605b838ad53c0706a",
+      "marketplace_sync": "2d2c0c81c04fa7f1aba441b1150d206107acac20"
+    },
+    {
+      "package": "plugins/runtime",
+      "version": "0.98.0",
+      "tag": "plugin-runtime-v0.98.0",
+      "release_pr": 811,
+      "squash": "a511c2940c0e12b402d37c8605b838ad53c0706a",
+      "marketplace_sync": "2d2c0c81c04fa7f1aba441b1150d206107acac20"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "3b3c90a9b213bd063d7534987b2fcd0f6707fc41",
+      "pr": 810,
+      "note": "S1: root companions/discover-peer.mjs resolves the Codex companion from the Codex installed cache; the marketplace clone is never a candidate."
+    },
+    {
+      "sha": "9942746a17f0a73890ac40c46a142a080fe633ad",
+      "pr": 810,
+      "note": "S1: the bundled copy in plugins/companions, kept equal by sync-companion-bundles."
+    },
+    {
+      "sha": "861aa2180b9232d11de3270e5cfacde0b5c18bc4",
+      "pr": 810,
+      "note": "S1: engineer dispatch-peer bootstrap resolves companions from the caller's own install cache, with same-host preference for a Codex-hosted caller."
+    },
+    {
+      "sha": "5bb7d9dcb8411b8e978e7bcf4b033c689f257cbc",
+      "pr": 810,
+      "note": "S1: founder dispatch-peer bootstrap, same change as engineer."
+    },
+    {
+      "sha": "b0f9272d84f91d1b7e27bfb75f436d6f03088efd",
+      "pr": 810,
+      "note": "S1: designer dispatch-peer bootstrap, same change as engineer."
+    },
+    {
+      "sha": "6eb0f5c9d9727742e6defedf92ec152da8dc4280",
+      "pr": 810,
+      "note": "S1: orchestrator dispatch-peer bootstrap, same change as engineer."
+    },
+    {
+      "sha": "61ae2424973c5bfe8a5c0f514ccd9800da0c56b1",
+      "pr": 810,
+      "note": "S1: image compose-dispatch locates companions in the host install caches, never the clone."
+    },
+    {
+      "sha": "6909dac197e7ccdd326937b06fa73ef0538e4a33",
+      "pr": 810,
+      "note": "S1 guard: plugin-shape test that companion discovery never selects the Codex marketplace clone."
+    },
+    {
+      "sha": "4ed53a80b099897ff808ddfbcffdd1e39302f887",
+      "pr": 812,
+      "note": "S2: attention's two runtime resolvers resolve from the caller's own install cache."
+    },
+    {
+      "sha": "e84f79c1a1a9986eb8d5a9d8423c0b38606bccf3",
+      "pr": 812,
+      "note": "S2: companions README says runtime honors AGENTIC_COMPANIONS_ROOT too."
+    },
+    {
+      "sha": "47ce9a18814ac484b64770cc074e9edf01fa4eb7",
+      "pr": 812,
+      "note": "S2: designer's runtime resolver and capability filter, from the caller's own install cache."
+    },
+    {
+      "sha": "4b5ad750951ef3702de6ec8ecc7bcf336fd260c9",
+      "pr": 812,
+      "note": "S2: engineer's sibling resolvers, from the caller's own install cache."
+    },
+    {
+      "sha": "09a6435631e0cfb8121394b4373282923b9761cd",
+      "pr": 812,
+      "note": "S2: founder's runtime resolver and capability filter, from the caller's own install cache."
+    },
+    {
+      "sha": "89e6bba972619c488c4c8426785656ae8291624e",
+      "pr": 812,
+      "note": "S2: image returns the companion path canonical."
+    },
+    {
+      "sha": "cba93acff1432875160f8e23e94f99e648f59b82",
+      "pr": 812,
+      "note": "S2: orchestrator discover-engineer and parent-writeback resolve siblings from the caller's own install cache."
+    },
+    {
+      "sha": "f8712e2ed65468647db6c87cc24d8f9a6a7082fa",
+      "pr": 812,
+      "note": "S2: runtime keeps peer companions and the proof's engineer to installs; peer-execution context prefers installed over repository."
+    },
+    {
+      "sha": "636907b392b9a94ce70c9d3d5c730d3b938eea43",
+      "pr": 812,
+      "note": "S2 guard: plugin-shape test that the sibling resolvers never read the marketplace clone."
+    },
+    {
+      "sha": "7fb284d83ad0c2b60eef17895f91d30a89be9650",
+      "pr": 813,
+      "note": "S3: doctor reports each Codex install against its catalog pin, with target, installed version and content identity as separate facts; receivers v2; the installed-vs-source comparison is removed."
+    }
+  ],
+  "hardening_commits": [
+    {
+      "sha": "dce659259e957dd4cd534bf66a31307ae2ce888a",
+      "pr": 814,
+      "note": "Docket C51: the protected baseline's Hooks row now says a Codex hook attestation binds the Codex CLI version, the hook-bearing set and Codex-installed versions. Merged just before the release so it ships in 0.98.0."
+    }
+  ],
+  "proofs": [
+    {
+      "run_id": "doctor-20260925T061801Z-0b292a",
+      "date": "2026-09-25",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:f5750a43bd751906f11e766c7cbd503049b5a221f0b6868e424ba7f403bb4a29",
+      "runtime_version": "0.98.0",
+      "installed": {
+        "claude": "0.98.0",
+        "codex": "0.98.0"
+      },
+      "host_cli": {
+        "claude": "2.1.282 (Claude Code)",
+        "codex": "codex-cli 0.156.1"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning; hard_failures empty; warnings: latest compatibility check requires release notes"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; issue_count 0; difference_count 2"
+        },
+        {
+          "key": "experience_parity",
+          "value": "blocked 87% (100/115); satisfied 7, blocked 1; manual_followup_count 0"
+        },
+        {
+          "key": "experience_parity.runtime_handoff_artifacts",
+          "value": "blocked: settings=available, consensus=available, compat=release_notes_required"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "permission_proof.claude_to_codex.companion_path",
+          "value": "~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs"
+        },
+        {
+          "key": "permission_proof.codex_to_claude.companion_path",
+          "value": "~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs"
+        },
+        {
+          "key": "deep_peer_smoke.claude_to_codex.companion_path",
+          "value": "~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs"
+        },
+        {
+          "key": "deep_peer_smoke.codex_to_claude.companion_path",
+          "value": "~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs"
+        },
+        {
+          "key": "companions.claude_to_codex",
+          "value": "selected ~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs; source claude-cache; candidates 2"
+        },
+        {
+          "key": "companions.codex_to_claude",
+          "value": "selected ~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs; source codex-cache; candidates 1"
+        },
+        {
+          "key": "workflow_continuation_proof.tool_root",
+          "value": "claude_to_codex ~/.claude/plugins/cache/agentic-plugins/engineer/0.21.11 (claude-cache); codex_to_claude ~/.claude/plugins/cache/agentic-plugins/engineer/0.21.11 (claude-cache)"
+        },
+        {
+          "key": "codex_plugin_hooks",
+          "value": "ready; hook_state expected 12, enabled 12, disabled 0, untrusted 0, missing 0"
+        },
+        {
+          "key": "settings_runs.codex_hook_review",
+          "value": "attested; current true; latest settings-20260925T061733Z-5344b0; bound codex 0.156.1; designer 0.3.9, engineer 0.21.11, founder 0.4.9, orchestrator 0.13.8"
+        },
+        {
+          "key": "plugins.runtime.installed.codex_resolved",
+          "value": "decision installed; source list; version 0.98.0; decision and source identical for all 8 plugins: true"
+        },
+        {
+          "key": "codex_install_identity",
+          "value": "catalog versionless; pin_phase unpinned; snapshot_root_registered true; 8 plugins, currentness unknown 8, identity unverified 8; reason: the catalog entry is not pinned"
+        },
+        {
+          "key": "receivers",
+          "value": "stale; reinstall_recommended true; agentic-statusline.mjs legacy (statusline delegating-shim v1), codex-notify-shuttle.mjs legacy (codex-notify delegating-shim v1), codex-notify-chain.mjs missing"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale; direction ahead; baseline 2.1.250 / 0.150.1 (2026-08-28) vs observed 2.1.282 / 0.156.1; provenance package; content_sha256 sha256:9cf521bf76445a3055d3d06e6d59d2a9a0d95c338f6b76b4d9139d9e51bbbc05"
+        },
+        {
+          "key": "compat_runs.latest",
+          "value": "compat-20260918T040728Z-6f1daa: release_notes_required; drift_class host-version-changed; claude 2.1.276 vs baseline 2.1.250; codex 0.155.0 vs baseline 0.150.1"
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available malformed=0 across 87 artifacts"
+        },
+        {
+          "key": "settings_runs",
+          "value": "available across 46 artifacts"
+        }
+      ]
+    }
+  ],
+  "install_method": "Claude: marketplace update, then settings executor settings-20260925T054211Z-52f408 (8 claude plugin update, 0 failed); installs record gitCommitSha 807f76a. Codex: three marketplace upgrades hit the 30 s clone timeout on slow GitHub transfer; one upgrade then ran with a process-scoped GIT_CONFIG insteadOf to a bare local mirror of main at 807f76a and reinstalled all eight.",
+  "narrative": "**The effect only a release could show is in the proof's own execution.** Both this proof and the 0.97.4 proof ran from this repository. That one's permission proof and deep peer smoke executed the checkout's companions/codex-companion.mjs and companions/claude-companion.mjs, with the Codex marketplace clone among the Codex-direction candidates; this one executed the installed companions 0.4.2 from Claude's cache and from Codex's cache, the Codex direction with no other candidate. The workflow-continuation proof ran the Claude-installed engineer both times. It does not show Decision 5 (b): no fresh Codex session was asked to resolve each sibling, and the receivers were not re-rendered.\n\n**The parity reading is not this loop's effect.** Its one blocked criterion sits on compat-20260918T040728Z-6f1daa, the same run that blocked the 0.97.4 proof. The new codex_install_identity reads unpinned and unknown for all eight, which is the correct pre-activation answer. receivers reads stale as an intended effect: S3 registered the v1 statusline and notify shims, current in the 0.97.4 proof, as legacy shapes, and re-rendering them is S6.\n\n**Delivery is byte-identical for all eight packages, on Codex by circumstance.** Every tracked file at each release tag blob-compares equal, owner-exec bit included and no extra file, in Claude's cache and in Codex's cache, 446 files per host; runtime reads 3216ed0992e59c9c6bbd8d65ed8485ec0c55f4411c279dae91af3fd4c5e0af04 over 122 files under the scorecard's path-first recipe, control-verified by reproducing 0.97.4's published digest. Codex matches because main held the release's package bytes when it refreshed; until S4 pins the catalog, the next package-path commit on main reaches Codex under these versions. The packaged baseline hash moved because C51 changed one sentence, not because the baseline was re-observed.\n\n**Codex's refresh needed a workaround, disclosed rather than hidden.** GitHub pack transfer to this machine ran at 65-100 KB/s while another registry served 1.5 MB/s, so three codex plugin marketplace upgrade attempts hit Codex's 30 s clone timeout, and a short codex exec started the background re-clone but exited before it finished. One upgrade then ran with GIT_CONFIG_* set in that command's environment only, redirecting the clone to a bare local mirror of main at 807f76a, the commit GitHub served. The snapshot's recorded source and origin stay on GitHub, and no persistent git or Codex configuration changed.\n\n**Hooks were re-attested on version binding alone.** No Codex hook file changed between the attested and released tags of the four hook-bearing packages and the Codex CLI stayed at 0.156.1, but the attestation binds installed versions (Decision 8), so after the Codex refresh the owner re-reviewed /hooks and settings-20260925T061733Z-5344b0 was recorded.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-capabilities-claude-registered-twice",
+      "note": "The preceding runtime loop, and this loop's control: its proof, taken from the same checkout before these releases, executed the checkout's companions and read the same blocked 87% on the same compatibility criterion."
+    }
+  ]
+}
