@@ -79,6 +79,7 @@ import {
   validateTelegramChatId,
   validateTelegramToken,
 } from './lib/egress-channel.mjs';
+import { fileURLToPath } from 'node:url';
 
 export const NOTIFY_LOG_MAX_BYTES = 1024 * 1024;
 export const NOTIFY_LOG_ROTATE_LOCK_STALE_MS = 60_000;
@@ -1045,7 +1046,20 @@ async function main(argv) {
   process.exitCode = 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run as a CLI only when this file is the entry point. Both sides are compared
+// canonical and as paths, so an install reached through a symlink (with or
+// without --preserve-symlinks-main), or under a directory whose name needs URL
+// escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2).
+function invokedAsCli() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsCli()) {
   main(process.argv.slice(2)).catch(() => {
     // Absolute backstop — the emit path never exits non-zero.
     process.exitCode = 0;

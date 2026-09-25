@@ -18,9 +18,23 @@
 // Doctor behavior is unchanged: doctor.mjs re-imports these and re-exports
 // CONTRACT_COMPATIBLE_MAJOR, so its public surface is identical.
 // Runtime-internal import only — the ADR-0010 §5 import ban is cross-plugin.
+//
+// Companion candidates follow ADR-0061 §Decision 3. Each direction reads the
+// versioned install cache of the host it starts from — the Claude cache for
+// Claude -> Codex, the Codex cache (under $CODEX_HOME) for Codex -> Claude —
+// manifest-verified, newest first. There is no repository candidate: the
+// companions under a checkout are reached only through the explicit
+// development override (`companionsOverride`, the caller's
+// AGENTIC_COMPANIONS_ROOT), which replaces the caches rather than preceding
+// them, so an installed runtime whose caches are empty never runs repository
+// code by accident. The Codex marketplace clone (~/.codex/.tmp/marketplaces/…)
+// tracks the repository's main branch and is never a candidate. Every candidate
+// path is canonical: the companion's CLI entry guard compares argv[1] with Node's
+// canonical module path and silently does nothing through a symlink spelling (a
+// symlinked CODEX_HOME, or an override that names a link).
 
-import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readdir, realpath } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 
 import { readJsonIfExists, readTextIfExists } from './state-readers.mjs';
 import { semverCompare } from './semver.mjs';
@@ -34,58 +48,58 @@ export const CONTRACT_COMPATIBLE_MAJOR = 0;
  *
  * `codexHome` honors `$CODEX_HOME` (machine-bootstrap-contract.md §2/§10.2); it is passed
  * as an already-resolved path so this env-free seam never reads `env` itself. It defaults
- * to `~/.codex` for callers that do not thread it.
+ * to `~/.codex` for callers that do not thread it. `companionsOverride` is the value of
+ * the caller's AGENTIC_COMPANIONS_ROOT, passed in for the same reason: a directory holding
+ * both companion scripts, used INSTEAD of the install caches (ADR-0061 §Decision 3's
+ * development path). Null or empty means the caches.
  */
 export async function resolvePeerExecutionContext({
   repoRoot,
   homeDir,
   codexHome = join(homeDir, '.codex'),
+  companionsOverride = null,
   explicitModel = null,
   explicitEffort = null,
 }) {
   const [companions, modelEffort] = await Promise.all([
-    inspectCompanionContract({ repoRoot, homeDir, codexHome }),
+    inspectCompanionContract({ repoRoot, homeDir, codexHome, companionsOverride }),
     inspectModelEffort({ repoRoot, homeDir, explicitModel, explicitEffort }),
   ]);
   return { companions, model_effort: modelEffort };
 }
 
-async function inspectCompanionContract({ repoRoot, homeDir, codexHome }) {
+async function inspectCompanionContract({ repoRoot, homeDir, codexHome, companionsOverride }) {
   const contractPath = join(repoRoot, 'companions', 'contract.md');
   const contractText = await readTextIfExists(contractPath);
   const contractVersion = contractText.ok ? parseContractDocVersion(contractText.text) : null;
-  const localRoot = join(repoRoot, 'plugins', 'companions');
-  const sourceRoot = join(repoRoot, 'companions');
+  const override = typeof companionsOverride === 'string' && companionsOverride.length > 0 ? companionsOverride : null;
   const directions = {
     claude_to_codex: await inspectCompanionDirection({
       label: 'Claude -> Codex',
       peer: 'codex',
       filename: 'codex-companion.mjs',
-      candidates: [
-        join(sourceRoot, 'codex-companion.mjs'),
-        join(localRoot, 'scripts', 'codex-companion.mjs'),
-        ...(await latestVersionedScriptCandidates({
+      candidates: override
+        ? overrideCandidates(override, 'codex-companion.mjs')
+        : await latestVersionedScriptCandidates({
           baseDir: join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions'),
           scriptRel: join('scripts', 'codex-companion.mjs'),
           manifestRel: join('.claude-plugin', 'plugin.json'),
-        })),
-      ],
+          source: 'claude-cache',
+        }),
       contractVersion,
     }),
     codex_to_claude: await inspectCompanionDirection({
       label: 'Codex -> Claude',
       peer: 'claude',
       filename: 'claude-companion.mjs',
-      candidates: [
-        join(sourceRoot, 'claude-companion.mjs'),
-        join(localRoot, 'scripts', 'claude-companion.mjs'),
-        ...(await latestVersionedScriptCandidates({
+      candidates: override
+        ? overrideCandidates(override, 'claude-companion.mjs')
+        : await latestVersionedScriptCandidates({
           baseDir: join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'companions'),
           scriptRel: join('scripts', 'claude-companion.mjs'),
           manifestRel: join('.codex-plugin', 'plugin.json'),
-        })),
-        join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'companions', 'scripts', 'claude-companion.mjs'),
-      ],
+          source: 'codex-cache',
+        }),
       contractVersion,
     }),
   };
@@ -93,11 +107,23 @@ async function inspectCompanionContract({ repoRoot, homeDir, codexHome }) {
     contract_path: contractText.ok ? contractPath : null,
     contract_version: contractVersion,
     compatible_major: CONTRACT_COMPATIBLE_MAJOR,
+    override: override ? { variable: 'AGENTIC_COMPANIONS_ROOT', path: override } : null,
     directions,
   };
 }
 
-async function latestVersionedScriptCandidates({ baseDir, scriptRel, manifestRel }) {
+// The development override names a directory holding the companion scripts
+// (the source tree's companions/, or any copy of it). It must be absolute, as
+// every AGENTIC_*_ROOT override is; a relative value is reported as blocked
+// rather than resolved against whatever the working directory happens to be.
+function overrideCandidates(override, filename) {
+  if (!isAbsolute(override)) {
+    return [{ path: override, source: 'env-override', invalid: 'AGENTIC_COMPANIONS_ROOT must be an absolute path' }];
+  }
+  return [{ path: join(override, filename), source: 'env-override' }];
+}
+
+async function latestVersionedScriptCandidates({ baseDir, scriptRel, manifestRel, source }) {
   let entries;
   try {
     entries = await readdir(baseDir, { withFileTypes: true });
@@ -108,24 +134,27 @@ async function latestVersionedScriptCandidates({ baseDir, scriptRel, manifestRel
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const manifest = await readJsonIfExists(join(baseDir, entry.name, manifestRel));
-    if (!manifest.ok) continue;
+    if (!manifest.ok || manifest.json?.name !== 'companions') continue;
     candidates.push({
       version: manifest.json.version ?? entry.name,
       path: join(baseDir, entry.name, scriptRel),
     });
   }
   candidates.sort((a, b) => semverCompare(String(b.version), String(a.version)));
-  return candidates.map((c) => c.path);
+  return candidates.map((c) => ({ path: c.path, source }));
 }
 
 async function inspectCompanionDirection({ label, peer, filename, candidates, contractVersion }) {
   const seen = new Set();
   const inspected = [];
   for (const candidate of candidates) {
-    if (seen.has(candidate)) continue;
-    seen.add(candidate);
-    const preflight = await preflightCompanionScript(candidate, contractVersion);
-    inspected.push({ path: candidate, ...preflight });
+    if (seen.has(candidate.path)) continue;
+    seen.add(candidate.path);
+    const preflight = candidate.invalid
+      ? { status: 'blocked', reason: candidate.invalid }
+      : await preflightCompanionScript(candidate.path, contractVersion);
+    const path = candidate.invalid ? candidate.path : await realpath(candidate.path).catch(() => candidate.path);
+    inspected.push({ path, source: candidate.source, ...preflight });
   }
   const selected = inspected.find((c) => c.status === 'available') ?? null;
   return {

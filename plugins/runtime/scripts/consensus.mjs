@@ -770,6 +770,10 @@ export async function executeRound(options = {}) {
     repoRoot,
     homeDir,
     codexHome: resolveCodexHome(env, homeDir),
+    // The development override (ADR-0061 §Decision 3) is read here, not in
+    // the env-free seam: an installed runtime reaches repository companions
+    // only when AGENTIC_COMPANIONS_ROOT says so.
+    companionsOverride: env.AGENTIC_COMPANIONS_ROOT ?? null,
     explicitModel: options.model ?? null,
     explicitEffort: options.effort ?? null,
   });

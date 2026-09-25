@@ -2302,6 +2302,16 @@ workspace remains the `mkdtemp` temp repo, and each executed direction reports
 installed nowhere resolves to `null` and the direction is `blocked` with recovery
 guidance, never a silent source-tree assumption.
 
+*Amended 2026-09-25 ([ADR-0061](../../../docs/adr/0061-codex-installs-pinned-to-release-commits.md)
+§Decision 3, implementation step S2):* the ladder above is the one S8a1 shipped. The
+Codex rung is now the versioned install cache under `$CODEX_HOME`
+(`<CODEX_HOME>/plugins/cache/agentic-plugins/engineer/<version>/`, manifest-verified,
+newest first), never the marketplace clone. A doctor running from a Codex install
+probes that cache before the Claude cache and uses the Claude cache only when Codex
+has no engineer installed, recording `tool_root_cross_host_fallback`. The sibling
+rung applies only when doctor itself runs from a checkout. The resolver still never
+consults `repoRoot`.
+
 **The egress-provider-ack executor (ADR-0048 §3 — the one real-network proof).**
 The same `resume` → `runtime:doctor --record` delegation carries the egress kind
 through the flag pair `--egress-ack-proof --execute-egress-ack-proof`, with four
