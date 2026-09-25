@@ -18,190 +18,20 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import {
-  cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
-} from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { validateMarketplace } from '../../scripts/validate-marketplace.mjs';
 import { validateVersions } from '../../scripts/validate-versions.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-
-// Copied into every fixture so the CLI cases run the real entry points with
-// the fixture as the root they derive from `import.meta.url`.
-const SCRIPTS = [
-  'scripts/validate-marketplace.mjs',
-  'scripts/validate-versions.mjs',
-  'scripts/lib/codex-catalog-pins.mjs',
-];
-
-const CODEX = '.agents/plugins/marketplace.json';
-const CLAUDE = '.claude-plugin/marketplace.json';
-const FLOORS = 'scripts/data/codex-pin-floors.json';
-const MANIFEST = '.release-please-manifest.json';
-const CONFIG = 'release-please-config.json';
-
-const git = (dir, args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
-
-function write(dir, rel, text) {
-  mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
-  writeFileSync(path.join(dir, rel), text);
-}
-const writeJSON = (dir, rel, value) => write(dir, rel, `${JSON.stringify(value, null, 2)}\n`);
-const readJSON = (dir, rel) => JSON.parse(readFileSync(path.join(dir, rel), 'utf8'));
-
-function commit(dir, message) {
-  git(dir, ['add', '-A']);
-  git(dir, ['commit', '-q', '--allow-empty', '-m', message]);
-  return git(dir, ['rev-parse', 'HEAD']).trim();
-}
-
-const peeled = (dir, tag) => git(dir, ['rev-parse', `refs/tags/${tag}^{commit}`]).trim();
-const tagObject = (dir, tag) => git(dir, ['rev-parse', `refs/tags/${tag}`]).trim();
-
-function tag(dir, name, { annotated = false, at = 'HEAD', force = false } = {}) {
-  const args = ['tag'];
-  if (force) args.push('-f');
-  if (annotated) args.push('-a', '-m', name);
-  git(dir, [...args, name, at]);
-}
-
-/** Set a package's version everywhere release-please and the catalog sync would. */
-function setVersion(dir, name, version) {
-  writeJSON(dir, `plugins/${name}/.claude-plugin/plugin.json`, { name, version });
-  writeJSON(dir, `plugins/${name}/.codex-plugin/plugin.json`, { name, version });
-  const manifest = readJSON(dir, MANIFEST);
-  manifest[`plugins/${name}`] = version;
-  writeJSON(dir, MANIFEST, manifest);
-  const claude = readJSON(dir, CLAUDE);
-  const entry = claude.plugins.find((p) => p.name === name);
-  if (entry) entry.version = version;
-  writeJSON(dir, CLAUDE, claude);
-}
-
-/** Register (or, with null, unregister) a package the way release-please-config.json does. */
-function setConfigPackage(dir, name, component = `plugin-${name}`) {
-  const config = readJSON(dir, CONFIG);
-  if (component === null) delete config.packages[`plugins/${name}`];
-  else config.packages[`plugins/${name}`] = { 'package-name': component, component };
-  writeJSON(dir, CONFIG, config);
-}
-
-const localSource = (name) => ({ source: 'local', path: `./plugins/${name}` });
-
-function pinSource(dir, name, version, overrides = {}) {
-  return {
-    source: 'git-subdir',
-    url: './',
-    path: `plugins/${name}`,
-    ref: `plugin-${name}-v${version}`,
-    sha: peeled(dir, `plugin-${name}-v${version}`),
-    ...overrides,
-  };
-}
-
-function codexEntry(name, source) {
-  return { name, source, policy: { installation: 'AVAILABLE', authentication: 'ON_USE' }, category: 'Productivity' };
-}
-
-function setCodexSource(dir, name, source) {
-  const codex = readJSON(dir, CODEX);
-  const entry = codex.plugins.find((p) => p.name === name);
-  if (source === null) codex.plugins = codex.plugins.filter((p) => p.name !== name);
-  else if (entry) entry.source = source;
-  else codex.plugins.push(codexEntry(name, source));
-  writeJSON(dir, CODEX, codex);
-}
-
-function setFloors(dir, patch) {
-  writeJSON(dir, FLOORS, { ...readJSON(dir, FLOORS), ...patch });
-}
-
-function setFloor(dir, name, version) {
-  const floors = readJSON(dir, FLOORS);
-  if (version === null) delete floors.floors[name];
-  else floors.floors[name] = version;
-  writeJSON(dir, FLOORS, floors);
-}
-
-/**
- * Two packages at 1.0.0, released: `alpha` with a lightweight tag, `beta`
- * with an annotated one. The Codex catalog is all-local and not activated —
- * the pre-activation state this repository is in today.
- */
-function makeRepo(t) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'codex-pins-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  git(dir, ['init', '-q', '-b', 'main']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
-  git(dir, ['config', 'user.name', 'test']);
-  git(dir, ['config', 'commit.gpgsign', 'false']);
-  git(dir, ['config', 'tag.gpgsign', 'false']);
-  const top = { name: 'fx', description: 'fixture marketplace' };
-  writeJSON(dir, MANIFEST, {});
-  writeJSON(dir, CONFIG, { packages: {} });
-  setConfigPackage(dir, 'alpha');
-  setConfigPackage(dir, 'beta');
-  writeJSON(dir, CLAUDE, {
-    ...top,
-    plugins: ['alpha', 'beta'].map((name) => ({ name, source: `./plugins/${name}`, version: '1.0.0' })),
-  });
-  writeJSON(dir, CODEX, { ...top, plugins: ['alpha', 'beta'].map((name) => codexEntry(name, localSource(name))) });
-  writeJSON(dir, FLOORS, {
-    schema: 'codex-pin-floors-1.0',
-    activated: false,
-    floors: { alpha: '1.0.0', beta: '1.0.0' },
-  });
-  setVersion(dir, 'alpha', '1.0.0');
-  setVersion(dir, 'beta', '1.0.0');
-  for (const rel of SCRIPTS) {
-    mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
-    cpSync(path.join(REPO_ROOT, rel), path.join(dir, rel));
-  }
-  commit(dir, 'chore: scaffold');
-  tag(dir, 'plugin-alpha-v1.0.0');
-  tag(dir, 'plugin-beta-v1.0.0', { annotated: true });
-  return dir;
-}
-
-/** Activate: every entry pinned to its current release, marker set. */
-function activate(dir, versions = { alpha: '1.0.0', beta: '1.0.0' }) {
-  for (const [name, version] of Object.entries(versions)) setCodexSource(dir, name, pinSource(dir, name, version));
-  setFloors(dir, { activated: true });
-}
-
-/** Cut a release of one package: bump, commit, tag. */
-function release(dir, name, version, { annotated = false } = {}) {
-  setVersion(dir, name, version);
-  const sha = commit(dir, `chore: release ${name} ${version}`);
-  tag(dir, `plugin-${name}-v${version}`, { annotated });
-  return sha;
-}
-
-/** Add a third package the way a new plugin lands: both catalogs' Claude side, manifest, dirs. */
-function addPackage(dir, name) {
-  const claude = readJSON(dir, CLAUDE);
-  claude.plugins.push({ name, source: `./plugins/${name}`, version: '0.1.0' });
-  writeJSON(dir, CLAUDE, claude);
-  setConfigPackage(dir, name);
-  setVersion(dir, name, '0.1.0');
-}
-
-function assertOk(r) {
-  assert.deepEqual(r.errors, [], 'expected no errors');
-}
-
-function assertError(r, pattern) {
-  assert.ok(
-    r.errors.some((e) => pattern.test(e)),
-    `expected an error matching ${pattern}, got:\n  ${r.errors.join('\n  ') || '(none)'}`,
-  );
-}
+import {
+  CLAUDE, CODEX, FLOORS, MANIFEST,
+  activate, addPackage, assertError, assertOk, commit, git, localSource, makeRepo, peeled, pinSource,
+  readJSON, release, runCli, setCodexSource, setConfigPackage, setFloor, setFloors, setVersion, tag,
+  tagObject, write, writeJSON,
+} from './fixtures/codex-pins-repo.mjs';
 
 // ---------------------------------------------------------------------------
 // Phase — Decision 2 "Validation states"
@@ -807,9 +637,6 @@ test('validate-versions never lets the release-PR window excuse a malformed pin'
 // CLI — the entry points run, including through a linked path
 // ---------------------------------------------------------------------------
 
-function runCli(root, script, args = []) {
-  return spawnSync(process.execPath, [path.join(root, script), ...args], { cwd: root, encoding: 'utf8' });
-}
 
 test('validate-marketplace CLI passes, states its phase, and says the baseline was not compared', (t) => {
   const dir = makeRepo(t);

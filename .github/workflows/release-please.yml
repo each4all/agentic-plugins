@@ -4,6 +4,19 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      activate_codex_pins:
+        # ADR-0061 Decision 5 (a), one-way. The owner's explicit intent to pin
+        # the Codex catalog to release commits for the first time. The writer
+        # still refuses, writing nothing, unless every package is released at
+        # its manifest version and meets its floor in
+        # scripts/data/codex-pin-floors.json. Before and after activation,
+        # leaving this false is always safe: a pre-activation catalog is left
+        # as it is, and an activated one advances on its own.
+        # Runbook: docs/runbooks/codex-pin-activation.md
+        description: 'Activate the Codex catalog pins (ADR-0061, one-way; see docs/runbooks/codex-pin-activation.md)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -25,9 +38,9 @@ jobs:
       # When release-please tags new releases, the per-package manifests
       # (.claude-plugin/plugin.json, .codex-plugin/plugin.json) are
       # already updated via release-please-config extra-files. The root
-      # .claude-plugin/marketplace.json is intentionally NOT an
-      # extra-files target (see AGENTS.md §Release process); we sync it
-      # here so catalog entries match the new manifest versions.
+      # catalogs are intentionally NOT extra-files targets (see AGENTS.md
+      # §Release process); we sync them here: Claude catalog versions, and
+      # once ADR-0061 is activated, the Codex catalog's release pins.
       - name: Checkout main for marketplace sync
         if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v6
@@ -44,9 +57,16 @@ jobs:
         with:
           node-version: 24
 
+      # The writer plans both catalogs, writes nothing if any part is refused,
+      # and validates what it wrote against HEAD (the catalog before this
+      # write) with the same gates marketplace-validate.yml runs, so a failure
+      # here stops the push below. A GITHUB_TOKEN push triggers no workflow,
+      # so this is the only gate the bot's commit gets.
       - name: Sync marketplace catalog versions
         if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
-        run: node scripts/sync-marketplace-versions.mjs
+        env:
+          ACTIVATE_CODEX_PINS: ${{ github.event_name == 'workflow_dispatch' && inputs.activate_codex_pins && '1' || '' }}
+        run: node scripts/sync-marketplace-versions.mjs ${ACTIVATE_CODEX_PINS:+--activate}
 
       # Every step below also runs on workflow_dispatch. release-please
       # reports `releases_created` exactly once, so if a push here fails —
@@ -70,10 +90,20 @@ jobs:
           GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
           GIT_COMMITTER_NAME: github-actions[bot]
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        # Both catalogs and the floor data file go in ONE commit: ADR-0061
+        # activation writes the pins and the `activated` marker together, and
+        # a commit carrying one without the other is invalid. The subject
+        # keeps "sync catalog versions", which scripts/lib/evidence-store.mjs
+        # recognizes as the release's marketplace sync.
         run: |
-          if [ -n "$(git status --porcelain .claude-plugin/marketplace.json)" ]; then
-            git add .claude-plugin/marketplace.json
-            git commit -m "chore(marketplace): sync catalog versions to release-please-manifest"
+          CATALOGS=".claude-plugin/marketplace.json .agents/plugins/marketplace.json scripts/data/codex-pin-floors.json"
+          if [ -n "$(git status --porcelain -- $CATALOGS)" ]; then
+            SUBJECT="chore(marketplace): sync catalog versions to release-please-manifest"
+            if ! git diff --quiet -- scripts/data/codex-pin-floors.json; then
+              SUBJECT="$SUBJECT and activate the Codex catalog pins"
+            fi
+            git add -- $CATALOGS
+            git commit -m "$SUBJECT"
             git push
           else
             echo "No marketplace catalog drift; nothing to commit."
