@@ -205,7 +205,9 @@ export async function findCodexCompanion(env = process.env, options = {}) {
         layout: 'multi-version',
         manifestPath: located.manifestPath,
       });
-  return result.ok ? result.path : null;
+  // Canonical: the companion's CLI entry guard compares argv[1] with Node's
+  // canonical module path, and does nothing through a symlink spelling.
+  return result.ok ? realOrResolved(result.path) : null;
 }
 
 // Zero-dependency image header sniff (PNG / JPEG / WebP VP8X/VP8/VP8L) — never
