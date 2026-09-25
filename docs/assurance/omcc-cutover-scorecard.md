@@ -1334,8 +1334,9 @@ relocated its Claude registration out of Codex default discovery entirely
 `doctor-20260711T045954Z-731e34` — parity `ready` `100%` restored, see the
 release/install narrative above). Runtime still records the
 operator attestation claim and does not mutate or independently prove Codex trust
-state; the attestation is valid only while the hook-bearing plugin set and source
-versions still match — which is exactly why adding designer invalidated the prior
+state; the attestation is valid only while the Codex CLI version, the hook-bearing
+plugin set, and the Codex-installed plugin versions still match — which is exactly
+why adding designer invalidated the prior
 `settings-20260704T170801Z-b66656` attestation and required a fresh `/hooks` review.
 The latest `plugin-runtime` `0.97.4` release/installed-state proof loop is the
 **capabilities Claude registered twice** slice, whose 0.97.4-native proof
