@@ -295,9 +295,11 @@ artifacts exist to clean.
 ## How events reach a channel
 
 Each sensor resolves the runtime plugin root via a copied
-`scripts/discover-runtime.mjs` (ADR-0039 §5 ladder: `AGENTIC_RUNTIME_ROOT`
-env override → Claude cache SemVer-max → Codex fixed cache → sibling
-monorepo), **version-gated to runtime ≥ 0.71.0** — the first released runtime
+`scripts/discover-runtime.mjs` (ADR-0039 §5 ladder with ADR-0061 §Decision 3's
+candidates: `AGENTIC_RUNTIME_ROOT` env override → the versioned install cache
+of the host attention runs from → the other host's cache only when that host
+has no runtime installed, reported on stderr → sibling monorepo only when
+attention runs from a checkout; never the Codex marketplace clone), **version-gated to runtime ≥ 0.71.0** — the first released runtime
 shipping `notify.mjs` (pinned by the ADR-0040 release-gate). A missing or
 too-old runtime is a silent no-op with no stale-cache fallback. The sensor
 then shells out to `notify.mjs emit` with the event JSON on stdin; the §1
