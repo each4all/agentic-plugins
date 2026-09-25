@@ -351,7 +351,15 @@ function pluginStatesFor(host, raw) {
     if (row) {
       // Codex reports a per-plugin enabled boolean; enabled === false is the
       // `disabled` state. Claude has no disabled state to report (test #31).
-      const state = host === 'codex' && row.enabled === false ? 'disabled' : 'installed';
+      let state = host === 'codex' && row.enabled === false ? 'disabled' : 'installed';
+      // ADR-0061 S3: Codex serves a plugin from the install-cache directory named by its
+      // version. Listed installed with no such directory, the install cannot be
+      // confirmed — its skills and hooks cannot be read — so it is `unknown`, not
+      // `installed`, and nothing (an attested hook set included) is credited to it.
+      const codexInstalled = host === 'codex' ? raw?.codexInstallIdentity?.plugins?.[name]?.installed : null;
+      if (state === 'installed' && codexInstalled?.source === 'plugin-list' && codexInstalled.version && !codexInstalled.cache_path) {
+        state = 'unknown';
+      }
       out[name] = { version: row.version ?? null, state };
     } else {
       out[name] = { version: null, state: listOk ? 'missing' : 'unknown' };
@@ -672,9 +680,16 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         const cmp = comparePrereleaseAware(entry.version, floor);
         if (cmp === null) return { status: 'unknown', recovery: `${name} version '${entry.version}' did not parse against floor ${floor}.` };
         if (cmp >= 0) return { status: 'satisfied', observed: entry.version };
-        return { status: 'pending', observed: entry.version, recovery: `${name}@${entry.version} is below the ${floor} correctness floor (§1.4); update via the presented plugin-management command.` };
+        return {
+          status: 'pending',
+          observed: entry.version,
+          recovery: host === 'codex'
+            ? codexBelowFloorRecovery({ name, version: entry.version, floor, install: raw?.codexInstallIdentity?.plugins?.[name] })
+            : `${name}@${entry.version} is below the ${floor} correctness floor (§1.4); update via the presented plugin-management command.`,
+        };
       }
       if (entry?.state === 'missing') return { status: 'pending' };
+      if (host === 'codex' && entry?.state === 'unknown' && entry.version) return { status: 'unknown', recovery: unreadableCodexInstallRecovery(name, entry.version) };
       return { status: 'unknown' };
     }
     m = id.match(/^plugin\.([a-z-]+)\.codex\.enabled$/);
@@ -688,6 +703,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         return { status: 'pending', observed: 'disabled', recovery: `Re-run \`codex plugin add ${name}@agentic-plugins\`; only if the post-probe still observes it disabled, set enabled = true for it in $CODEX_HOME/config.toml.` };
       }
       if (entry?.state === 'missing') return { status: 'pending' };
+      if (entry?.state === 'unknown' && entry.version) return { status: 'unknown', recovery: unreadableCodexInstallRecovery(name, entry.version) };
       return { status: 'unknown' };
     }
     if (id === stepIds.configModelEffort()) {
@@ -1459,6 +1475,41 @@ function buildStage0(probe, raw) {
   return presentation.stage0;
 }
 
+// Codex has no per-plugin update. Which remedy lifts a Codex install over its floor
+// depends on the catalog (ADR-0061 §Decision 4/7): when its pin already names a release
+// at or above the floor, the install failed to materialize that pin and only a reinstall
+// re-materializes it — a marketplace refresh that finds no new revision changes nothing.
+// Otherwise the catalog itself must move, which a marketplace refresh does.
+function codexBelowFloorRecovery({ name, version, floor, install }) {
+  const target = install?.catalog_target;
+  const pinSatisfiesFloor = target?.status === 'pinned' && comparePrereleaseAware(target.version, floor) >= 0;
+  if (pinSatisfiesFloor && ['behind', 'content-mismatch'].includes(install?.currentness)) {
+    return `${name}@${version} is below the ${floor} correctness floor (§1.4), though the catalog already pins ${target.ref}: the install did not materialize it. Reinstall it from the marketplace (\`codex plugin remove ${name}@agentic-plugins\`, then \`codex plugin add ${name}@agentic-plugins\`) and re-probe.`;
+  }
+  return `${name}@${version} is below the ${floor} correctness floor (§1.4); Codex has no per-plugin update — refresh the marketplace (\`codex plugin marketplace upgrade agentic-plugins\`) so Codex installs a newer release, then re-probe.`;
+}
+
+// A Codex plugin the list reports installed at `version`, with no install-cache
+// directory named by that version (ADR-0061 S3: the probe reads it `unknown`). Nothing
+// runtime executes repairs it; Codex re-materializes it when it reinstalls it.
+function unreadableCodexInstallRecovery(name, version) {
+  return `Codex lists ${name}@${version} installed, but no install-cache directory holds that version, so the install cannot be read. Reinstall it from the marketplace (\`codex plugin remove ${name}@agentic-plugins\`, then \`codex plugin add ${name}@agentic-plugins\`) and re-probe.`;
+}
+
+// The manual counterpart of the candidates below: Codex installs bootstrap can see are
+// broken but that no presented command repairs. Kept apart so they never pull in the
+// settings executor's plan hash or its presented command.
+function buildManualPluginRepairs({ effective, probe }) {
+  const repairs = [];
+  for (const name of effective.byHost.codex ?? []) {
+    const entry = probe.hosts.codex?.plugins?.[name];
+    if (entry?.state === 'unknown' && entry.version) {
+      repairs.push({ host: 'codex', plugin: name, action: 'reinstall', command: null, note: unreadableCodexInstallRecovery(name, entry.version) });
+    }
+  }
+  return repairs;
+}
+
 function buildPluginActionCandidates({ effective, pluginSet, probe }) {
   const actions = [];
   for (const name of effective.plugins) {
@@ -1515,10 +1566,11 @@ async function fetchSettingsPlanHash({ subprocessRunner, cwd, env }) {
   }
 }
 
-function presentPluginManagement({ candidates, planHash }) {
+function presentPluginManagement({ candidates, planHash, manualRepairs = [] }) {
   const base = 'runtime:settings --execute-plugin-management';
   return {
     actions: candidates,
+    ...(manualRepairs.length > 0 ? { manual_actions: manualRepairs } : {}),
     plan_hash: planHash.hash,
     plan_hash_status: planHash.status,
     ...(planHash.reason ? { plan_hash_reason: planHash.reason } : {}),
@@ -2641,7 +2693,7 @@ async function runPlan(ctx, opts) {
     completion,
     steps,
     stage0,
-    plugin_management: presentPluginManagement({ candidates, planHash }),
+    plugin_management: presentPluginManagement({ candidates, planHash, manualRepairs: buildManualPluginRepairs({ effective, probe }) }),
     value_decisions: valueDecisionRows(standingNow),
     ...(seededFrom ? { seeded_from: seededFrom } : {}),
     ...(seededProposals ? { proposals: seededProposals } : {}),
@@ -4764,6 +4816,7 @@ export function renderText(report) {
     lines.push(`- plugin management (presented, never executed here — §1.6):`);
     for (const action of report.plugin_management.actions) lines.push(`  - ${action.host}: ${renderSafe(action.command)}${action.note ? ` (${renderSafe(action.note)})` : ''}`);
     lines.push(`  - run: ${renderSafe(report.plugin_management.presented_command)}`);
+    for (const action of report.plugin_management.manual_actions ?? []) lines.push(`  - manual (${action.host}): ${renderSafe(action.note)}`);
   }
   // §3.3 — the STANDING VALUE DECISIONS, rendered as their own block.
   //

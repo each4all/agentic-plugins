@@ -63,6 +63,7 @@ import {
   parseCodexHookStateConfigToml,
 } from './lib/machine-probe.mjs';
 import { semverCompare } from './lib/semver.mjs';
+import { parseCodexCatalogTarget, selectInstalledCacheDir } from './lib/codex-install-identity.mjs';
 import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
 
 export { RUNTIME_VERSION };
@@ -199,19 +200,20 @@ export async function runDoctor({
     runner,
     timeoutMs: DEFAULT_TIMEOUT_MS,
   });
-  const { claude, codex, caches, claudePluginList, codexPluginList, marketplaceRegistration } = machine;
+  const { claude, codex, caches, claudePluginList, codexPluginList, marketplaceRegistration, codexInstallIdentity } = machine;
 
   // The REPO half stays here: source manifests + catalogs enrich the machine facts into
   // the plugin matrix.
   const source = await inspectSourcePluginState(resolvedRepoRoot);
   const catalogs = await inspectCatalogs(resolvedRepoRoot);
-  const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList });
+  const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList, codexInstallIdentity });
+  const codexInstallSummary = summarizeCodexInstallIdentity({ codexInstallIdentity, plugins });
   const codexPluginHooks = await buildCodexPluginHookReport({
     codex,
     plugins,
     observedCodexHookConfig: machine.codexHookConfig,
   });
-  const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList, codexPluginHooks });
+  const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList, codexPluginHooks, codexInstallSummary });
   // ⚠ STILL DESTRUCTURED, though only one name comes out now. Assigning the
   // whole result to `hostParityBaseline` would drop `.status` off the section
   // `cutover-audit.mjs` reads and change its verdict silently (cross-host
@@ -444,6 +446,10 @@ export async function runDoctor({
     // from the machine probe (lib/machine-probe.mjs). Read-only machine fact; settings' C3
     // repair sources its currentness target from here rather than a repo checkout.
     marketplace_registration: marketplaceRegistration,
+    // ADR-0061 §Decision 4: the Codex catalog pin phase, and which plugins' installs are
+    // behind, ahead, divergent or unverified against their pin. The per-plugin facts
+    // themselves are `plugins.<p>.codex_install`.
+    codex_install_identity: codexInstallSummary,
     plugins,
     plugin_command_surface: pluginCommandSurface,
     codex_plugin_hooks: codexPluginHooks,
@@ -639,6 +645,12 @@ function catalogSummary(readResult, host) {
         }
       : {
           source: entry.source?.path ?? null,
+          // Both catalog phases (ADR-0061): a `local` entry before activation, a
+          // release pin (`git-subdir`, `ref`, `sha`) after it.
+          source_kind: typeof entry.source?.source === 'string' ? entry.source.source : null,
+          ref: typeof entry.source?.ref === 'string' ? entry.source.ref : null,
+          sha: typeof entry.source?.sha === 'string' ? entry.source.sha : null,
+          target: parseCodexCatalogTarget(entry),
           installation: entry.policy?.installation ?? null,
           authentication: entry.policy?.authentication ?? null,
           category: entry.category ?? null,
@@ -647,7 +659,7 @@ function catalogSummary(readResult, host) {
   return { status: 'available', entries };
 }
 
-function buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList = { status: null, command: null, entries: {} } }) {
+function buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList = { status: null, command: null, entries: {} }, codexInstallIdentity = null }) {
   const result = {};
   for (const name of PLUGIN_NAMES) {
     // Resolve the Codex install decision once, here, so every downstream
@@ -676,6 +688,9 @@ function buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPl
         codex: caches.codex[name],
         codex_tmp_marketplace: caches.codex_tmp_marketplace[name],
       },
+      // ADR-0061 §Decision 4: catalog target, installed version, content identity, and the
+      // currentness they add up to. Null only when no machine probe produced them.
+      codex_install: codexInstallIdentity?.plugins?.[name] ?? null,
       status: summarizePluginStatus({
         source: source[name],
         claudeEntry: catalogs.claude.entries?.[name],
@@ -719,32 +734,35 @@ async function buildCodexPluginHookReport({ codex, plugins, observedCodexHookCon
     claude_root_command_plugins: [],
     claude_adapter_command_plugins: [],
     bare_node_command_plugins: [],
+    install_unreadable_plugins: [],
   };
 
   for (const [name, plugin] of Object.entries(plugins)) {
-    const source = buildCodexHookLocation({
-      manifestHooks: plugin.source?.codex_manifest?.hooks,
-      manifestHooksFile: plugin.source?.codex_manifest_hooks_file,
-      defaultHooksFile: plugin.source?.codex_default_hooks_file,
-      origin: 'source',
-    });
+    // ADR-0061 §Decision 4: Codex loads a plugin's hooks from its INSTALLED package, so
+    // that package is the only place effective hooks come from. An installed package with
+    // no hooks is authoritative — the lookup never falls through to the repository source
+    // (unreleased bytes a Codex install may not hold) or to the marketplace clone (which
+    // tracks main and is not installation evidence). A plugin Codex has not installed
+    // contributes no hooks at all.
+    const installedDir = installedCodexCacheEntry(plugin);
     const cache = buildCodexHookLocation({
-      manifestHooks: plugin.cache?.codex?.latest?.manifest_hooks,
-      manifestHooksFile: plugin.cache?.codex?.latest?.manifest_hooks_file,
-      defaultHooksFile: plugin.cache?.codex?.latest?.default_hooks_file,
+      manifestHooks: installedDir?.manifest_hooks,
+      manifestHooksFile: installedDir?.manifest_hooks_file,
+      defaultHooksFile: installedDir?.default_hooks_file,
       origin: 'codex_cache',
     });
-    const marketplaceCache = buildCodexHookLocation({
-      manifestHooks: plugin.cache?.codex_tmp_marketplace?.manifest_hooks,
-      manifestHooksFile: plugin.cache?.codex_tmp_marketplace?.manifest_hooks_file,
-      defaultHooksFile: plugin.cache?.codex_tmp_marketplace?.default_hooks_file,
-      origin: 'codex_tmp_marketplace',
-    });
-    const effective = source.status !== 'not_packaged' ? source : cache.status !== 'not_packaged' ? cache : marketplaceCache;
+    // Installed, but no install-cache directory holds the installed version: the hooks
+    // Codex loads cannot be read, and another version's hooks are not borrowed in their
+    // place. That is UNKNOWN, not "no hooks" — `install_unreadable` keeps the hook
+    // surface from reading ready, an attestation from covering it, and lifecycle
+    // continuity from scoring satisfied.
+    const effective = !codexPackageInstalled(plugin)
+      ? buildCodexHookLocation({ origin: 'not_installed' })
+      : installedDir
+        ? cache
+        : { ...buildCodexHookLocation({ origin: 'install_cache_unavailable' }), status: 'install_unreadable' };
     plugin_entries[name] = {
-      source,
       codex_cache: cache,
-      codex_tmp_marketplace: marketplaceCache,
       effective,
     };
     const claudeOnly = effective.status === 'claude_adapter_only';
@@ -767,19 +785,13 @@ async function buildCodexPluginHookReport({ codex, plugins, observedCodexHookCon
     // Command-portability warnings apply to such plugins like any other
     // bundler — Codex surfaces the hooks, so their command shape is host
     // truth, not noise.
-    // A temporary marketplace snapshot is a browsable catalog, NOT an
-    // installation (pinned by the existing not-installation contract test):
-    // a plugin whose hooks are visible ONLY there must not become a bundled/
-    // review/expected hook surface, and its command shape must not gate
-    // parity (refine-verify finding — the effective fallthrough above exists
-    // for file inspection, not for installation semantics).
-    const tmpMarketplaceOnly = effective.origin === 'codex_tmp_marketplace';
-    if (effective.bundled && !tmpMarketplaceOnly) summary.bundled_plugins.push(name);
+    if (effective.bundled) summary.bundled_plugins.push(name);
+    if (effective.status === 'install_unreadable') summary.install_unreadable_plugins.push(name);
     if (effective.manifest_declared) summary.manifest_exposed_plugins.push(name);
     if (effective.status === 'default_file_only') summary.default_file_only_plugins.push(name);
     if (claudeOnly) summary.claude_adapter_only_plugins.push(name);
     if (effective.status === 'manifest_declared_missing_file') summary.missing_hooks_file_plugins.push(name);
-    if (!tmpMarketplaceOnly && (effective.hooks_file?.command_analysis?.warnings ?? []).length > 0) summary.command_warning_plugins.push(name);
+    if ((effective.hooks_file?.command_analysis?.warnings ?? []).length > 0) summary.command_warning_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.claude_plugin_root_references ?? 0) > 0) summary.claude_root_command_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.claude_adapter_references ?? 0) > 0) summary.claude_adapter_command_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.bare_node_command_references ?? 0) > 0) summary.bare_node_command_plugins.push(name);
@@ -789,6 +801,16 @@ async function buildCodexPluginHookReport({ codex, plugins, observedCodexHookCon
   const reviewTargets = buildCodexHookReviewTargets({ summary, plugin_entries, plugins });
   const hookState = buildCodexHookStateReport({ observedConfig: observedCodexHookConfig, reviewTargets });
   const recommendations = [];
+  if (summary.install_unreadable_plugins.length > 0) {
+    recommendations.push({
+      host: 'codex',
+      area: 'hooks',
+      action: 'restore-codex-install-cache',
+      executable: false,
+      detail: `Codex lists ${summary.install_unreadable_plugins.join(', ')} installed, but no install cache directory holds the listed version, so the hooks Codex loads cannot be read or reviewed.`,
+      next_step: 'Reinstall the plugin from the marketplace (remove and re-add it) so the listed version is materialized, then re-run runtime:doctor.',
+    });
+  }
   if (summary.default_file_only_plugins.length > 0) {
     recommendations.push({
       host: 'codex',
@@ -860,7 +882,9 @@ async function buildCodexPluginHookReport({ codex, plugins, observedCodexHookCon
   const hookGateEnabled = pluginHooksRemoved
     ? codex.feature_surface.codex_global_hooks
     : codex.feature_surface.codex_plugin_hooks;
-  const status = summary.default_file_only_plugins.length > 0 || summary.missing_hooks_file_plugins.length > 0
+  const status = summary.install_unreadable_plugins.length > 0
+    ? 'install_unreadable'
+    : summary.default_file_only_plugins.length > 0 || summary.missing_hooks_file_plugins.length > 0
     ? 'packaging_gap'
     : summary.bundled_plugins.length === 0
       ? 'no_bundled_hooks'
@@ -871,7 +895,10 @@ async function buildCodexPluginHookReport({ codex, plugins, observedCodexHookCon
           : 'feature_unknown';
 
   return {
-    schema_version: 'runtime-codex-plugin-hooks-1.0',
+    // 1.1 (ADR-0061 S3): `plugin_entries.<name>` is `{ codex_cache, effective }`; the
+    // `source` and `codex_tmp_marketplace` locations are gone, because effective hooks
+    // come from the installed package alone.
+    schema_version: 'runtime-codex-plugin-hooks-1.1',
     status,
     feature_flags: {
       hooks: codex.feature_surface.codex_global_hooks,
@@ -888,17 +915,42 @@ async function buildCodexPluginHookReport({ codex, plugins, observedCodexHookCon
   };
 }
 
-// Version resolution for the hook review/attestation surfaces: source
-// manifest (dev checkout) → list-authoritative installed version (ADR-0034)
-// → Codex install-cache manifest. Cache-only consumer repos previously
-// resolved to null here, so a cache upgrade could never flip a recorded
-// /hooks attestation to plugin_version_changed (refine-verify finding).
+// Version resolution for the hook review/attestation surfaces: the version of the
+// installed package the hooks were read from — list-authoritative (ADR-0034), else the
+// Codex install-cache manifest. Never the source manifest: the review target describes
+// hooks Codex loaded from an install, and since ADR-0061 §Decision 4 that install is the
+// only place they come from.
 function resolveHookPluginVersion(plugin) {
-  return plugin?.source?.claude_manifest?.version
-    ?? plugin?.source?.codex_manifest?.version
-    ?? plugin?.installed?.codex_resolved?.version
-    ?? plugin?.cache?.codex?.latest?.manifest_version
-    ?? null;
+  const resolved = plugin?.installed?.codex_resolved;
+  if (resolved && resolved.decision !== 'fallback' && resolved.version) return resolved.version;
+  return installedCodexCacheEntry(plugin)?.manifest_version ?? null;
+}
+// (The version and the hooks come from one resolved install: installedCodexCacheEntry
+// returns only the directory holding the listed version, so a review target can never
+// name one version and point at another version's hooks file.)
+
+// Whether Codex has this plugin installed, list-authoritative (ADR-0034): the list's
+// answer when it gave one, the install cache when it did not.
+function codexPackageInstalled(plugin) {
+  const decision = plugin?.installed?.codex_resolved?.decision ?? 'fallback';
+  if (decision === 'not_installed') return false;
+  if (decision === 'installed' || decision === 'disabled') return true;
+  return plugin?.cache?.codex?.status === 'available';
+}
+
+// The install-cache directory Codex serves this plugin from: the one holding the listed
+// version when the list names one, else the newest manifest-verified directory (the list
+// was unavailable, or gave no version). Selection is lib/codex-install-identity.mjs's
+// rule — the directory named by the version wins a tie, and an unresolved tie is no
+// answer. Null when Codex has not installed the plugin or no directory holds it.
+function installedCodexCacheEntry(plugin) {
+  if (!codexPackageInstalled(plugin)) return null;
+  const resolved = plugin?.installed?.codex_resolved;
+  const versions = plugin?.cache?.codex?.versions ?? [];
+  const version = resolved && resolved.decision !== 'fallback' && resolved.version
+    ? resolved.version
+    : plugin?.cache?.codex?.latest?.manifest_version ?? null;
+  return selectInstalledCacheDir(versions, version).dir;
 }
 
 function buildCodexHookReviewTargets({ summary, plugin_entries, plugins }) {
@@ -1381,7 +1433,7 @@ function buildHostParityBaseline({ resolved, probe }) {
   };
 }
 
-function buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList = { status: null, command: null, entries: {} }, codexPluginHooks }) {
+function buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList = { status: null, command: null, entries: {} }, codexPluginHooks, codexInstallSummary = null }) {
   const issues = [];
   const differences = [];
 
@@ -1491,6 +1543,7 @@ function buildHostParity({ claude, codex, plugins, claudePluginList, codexPlugin
   for (const [name, plugin] of Object.entries(plugins)) {
     issues.push(...inspectPluginVersionParity(name, plugin));
   }
+  issues.push(...inspectCodexInstallIdentityParity(codexInstallSummary));
 
   for (const installed of Object.values(claudePluginList)) {
     if (!PLUGIN_NAMES.includes(installed.name)) {
@@ -1586,16 +1639,6 @@ function inspectPluginVersionParity(name, plugin) {
   }
 
   const claudeInstalledVersion = plugin.installed.claude_plugin_list?.version ?? plugin.cache.claude?.latest?.manifest_version ?? null;
-  // List-authoritative installed version (ADR-0034): when the list probe was
-  // authoritative, use the resolver's version (installed/disabled -> entry
-  // version; not_installed -> null, so a stale cache cannot manufacture a false
-  // version-drift parity issue after the list omitted the plugin). Fall back to
-  // the filesystem cache version ONLY when the list was unavailable.
-  const codexResolved = plugin.installed.codex_resolved;
-  const codexFromCache = codexResolved?.decision === 'fallback';
-  const codexInstalledVersion = codexFromCache
-    ? (plugin.cache.codex?.latest?.manifest_version ?? null)
-    : (codexResolved?.version ?? null);
   issues.push(...compareInstalledVersion({
     plugin: name,
     host: 'claude',
@@ -1603,14 +1646,190 @@ function inspectPluginVersionParity(name, plugin) {
     expected: sourceVersion,
     source: 'Claude installed/cache version',
   }));
-  issues.push(...compareInstalledVersion({
-    plugin: name,
-    host: 'codex',
-    actual: codexInstalledVersion,
-    expected: sourceVersion,
-    source: codexFromCache ? 'Codex cache version' : 'Codex plugin list version',
-  }));
+  // No Codex comparison against the source manifest (ADR-0061 §Decision 4): a Codex
+  // install is judged against its catalog pin — `codex_install_*` below — and an
+  // unpinned catalog leaves its currentness unknown, never stale against a checkout
+  // that may be ahead of every release.
 
+  return issues;
+}
+
+// The sibling lookups a Codex-installed plugin makes, by caller: each row names the
+// locator file that makes it. Every one of these locators follows ADR-0061 §Decision 3 —
+// its own host's install cache first, the other host's cache only when its own host has
+// no such sibling installed. (runtime's peer-execution-context is absent on purpose: each
+// companion direction reads only its own host's cache and never crosses; image resolves
+// companions only to reach Codex from Claude.)
+const CODEX_SIBLING_EDGES = [
+  { caller: 'attention', sibling: 'runtime', locator: 'scripts/discover-runtime.mjs' },
+  { caller: 'designer', sibling: 'runtime', locator: 'scripts/discover-runtime.mjs' },
+  { caller: 'engineer', sibling: 'runtime', locator: 'scripts/discover-runtime.mjs' },
+  { caller: 'founder', sibling: 'runtime', locator: 'scripts/discover-runtime.mjs' },
+  { caller: 'orchestrator', sibling: 'runtime', locator: 'scripts/discover-runtime.mjs' },
+  { caller: 'orchestrator', sibling: 'engineer', locator: 'scripts/discover-engineer.mjs' },
+  { caller: 'engineer', sibling: 'orchestrator', locator: 'scripts/parent-writeback.mjs' },
+  { caller: 'designer', sibling: 'companions', locator: 'scripts/dispatch-peer.mjs' },
+  { caller: 'engineer', sibling: 'companions', locator: 'scripts/dispatch-peer.mjs' },
+  { caller: 'founder', sibling: 'companions', locator: 'scripts/dispatch-peer.mjs' },
+  { caller: 'orchestrator', sibling: 'companions', locator: 'scripts/dispatch-peer.mjs' },
+  { caller: 'runtime', sibling: 'engineer', locator: 'scripts/doctor.mjs' },
+];
+
+// ADR-0061 §Decision 4: "Where a Codex-hosted caller resolved a sibling from the Claude
+// cache, diagnostics say so." Doctor runs no plugin's locator (it executes no installed
+// plugin code), so this is a PREDICTION from the install caches, labeled as one: each
+// Codex-installed caller's sibling resolves from the Codex cache when Codex has it,
+// else from the Claude cache (the cross-host fallback), else not at all. What it cannot
+// see is stated in `basis` — an AGENTIC_*_ROOT override in the Codex session wins, and
+// a locator's capability filter can fail closed where this predicts a root. The locators
+// report their actual resolution themselves, on stderr, when they cross.
+function predictCodexSiblingResolution(plugins) {
+  const edges = [];
+  for (const edge of CODEX_SIBLING_EDGES) {
+    if (!codexPackageInstalled(plugins?.[edge.caller])) continue;
+    const sibling = plugins?.[edge.sibling];
+    const predicted = sibling?.cache?.codex?.status === 'available'
+      ? 'codex-cache'
+      : sibling?.cache?.claude?.status === 'available' ? 'claude-cache' : 'none';
+    edges.push({ ...edge, predicted_source: predicted, cross_host_fallback: predicted === 'claude-cache' });
+  }
+  return {
+    basis: 'predicted from the Claude and Codex install caches; an AGENTIC_*_ROOT override in the Codex session, or a locator capability filter, can change the actual resolution',
+    edges,
+    cross_host: edges.filter((edge) => edge.cross_host_fallback),
+  };
+}
+
+/**
+ * The report-level view of ADR-0061 §Decision 4: the Codex catalog's pin phase, the
+ * per-plugin currentness from `plugins.<p>.codex_install`, and the predicted sibling
+ * resolution. Built from the machine probe's facts; null only when there were none.
+ */
+function summarizeCodexInstallIdentity({ codexInstallIdentity, plugins }) {
+  if (!codexInstallIdentity) return null;
+  const perPlugin = {};
+  const invalid = [];
+  const unpinned = [];
+  for (const [name, fact] of Object.entries(codexInstallIdentity.plugins ?? {})) {
+    const target = fact.catalog_target ?? {};
+    if (target.status === 'invalid') invalid.push({ plugin: name, reason: target.reason });
+    if (target.status === 'unpinned') unpinned.push(name);
+    const identity = fact.content_identity ?? {};
+    perPlugin[name] = {
+      currentness: fact.currentness,
+      target_status: target.status ?? null,
+      target_ref: target.ref ?? null,
+      target_sha: target.sha ?? null,
+      target_version: target.version ?? null,
+      installed_status: fact.installed?.status ?? null,
+      installed_version: fact.installed?.version ?? null,
+      installed_source: fact.installed?.source ?? null,
+      identity_status: identity.status ?? null,
+      identity_reason: identity.reason ?? null,
+      identity_detail: identity.status === 'mismatch'
+        ? `missing=${identity.missing_count}, extra=${identity.extra_count}, differing=${identity.differing_count}, mode-differing=${identity.mode_differing_count}`
+        : null,
+    };
+  }
+  return {
+    catalog_read_status: codexInstallIdentity.catalog_read_status,
+    pin_phase: codexInstallIdentity.pin_phase,
+    snapshot_root_registered: codexInstallIdentity.snapshot_root_registered,
+    invalid,
+    unpinned: unpinned.sort(),
+    plugins: perPlugin,
+    sibling_resolution: predictCodexSiblingResolution(plugins),
+  };
+}
+
+// ADR-0061 §Decision 4 as host-parity entries. An unpinned catalog (before
+// activation) produces none: its currentness is unknown, which is not a failure.
+function inspectCodexInstallIdentityParity(summary) {
+  const issues = [];
+  if (!summary) return issues;
+  if (summary.pin_phase === 'mixed') {
+    issues.push(parityEntry({
+      id: 'codex_catalog_pin_mixed',
+      severity: 'warning',
+      host: 'codex',
+      area: 'version',
+      summary: 'The registered Codex catalog mixes local entries with release pins, which no valid catalog does.',
+      evidence: `pin_phase=mixed; unpinned=${summary.unpinned.join(',') || 'none'}`,
+      next_step: 'Refresh the Codex marketplace; if the catalog on main is mixed, the release catalog sync needs repair (ADR-0061 §Decision 2).',
+    }));
+  }
+  for (const entry of summary.invalid) {
+    issues.push(parityEntry({
+      id: 'codex_catalog_pin_invalid',
+      severity: 'warning',
+      host: 'codex',
+      area: 'version',
+      plugin: entry.plugin,
+      summary: `${entry.plugin}'s Codex catalog pin is malformed, so its install cannot be checked against a release.`,
+      evidence: entry.reason,
+      next_step: 'Repair the catalog entry with the release catalog sync; runtime does not fall back to a repository or clone manifest.',
+    }));
+  }
+  const byCurrentness = (value) => Object.entries(summary.plugins).filter(([, fact]) => fact.currentness === value);
+  for (const [plugin, fact] of byCurrentness('behind')) {
+    issues.push(parityEntry({
+      id: 'codex_install_behind_catalog_target',
+      severity: 'warning',
+      host: 'codex',
+      area: 'version',
+      plugin,
+      summary: `${plugin} Codex install is older than the release its catalog pins: a materialization across a version change did not complete.`,
+      evidence: `installed=${fact.installed_version} (${fact.installed_source}), catalog=${fact.target_ref}@${fact.target_sha}`,
+      next_step: 'Codex installs the pin when it reinstalls from the marketplace (a marketplace revision change, or removing and re-adding the plugin); then re-run runtime:doctor.',
+    }));
+  }
+  for (const [plugin, fact] of byCurrentness('ahead')) {
+    issues.push(parityEntry({
+      id: 'codex_install_ahead_of_catalog_target',
+      severity: 'info',
+      host: 'codex',
+      area: 'version',
+      plugin,
+      summary: `${plugin} Codex install is newer than the release its catalog pins.`,
+      evidence: `installed=${fact.installed_version} (${fact.installed_source}), catalog=${fact.target_ref}@${fact.target_sha}`,
+      next_step: 'Confirm the install came from a deliberate local override; a catalog pin never moves to an older version.',
+    }));
+  }
+  for (const [plugin, fact] of byCurrentness('content-mismatch')) {
+    issues.push(parityEntry({
+      id: 'codex_install_content_mismatch',
+      severity: 'warning',
+      host: 'codex',
+      area: 'version',
+      plugin,
+      summary: `${plugin} Codex install carries the pinned version but not the pinned bytes: a same-version repair did not complete.`,
+      evidence: `version=${fact.installed_version}, catalog=${fact.target_ref}@${fact.target_sha}, ${fact.identity_detail}`,
+      next_step: 'Codex re-materializes the pin when it reinstalls from the marketplace (a marketplace revision change, or removing and re-adding the plugin); then re-run runtime:doctor.',
+    }));
+  }
+  for (const [plugin, fact] of byCurrentness('content-unverified')) {
+    issues.push(parityEntry({
+      id: 'codex_install_content_unverified',
+      severity: 'info',
+      host: 'codex',
+      area: 'version',
+      plugin,
+      summary: `${plugin} Codex install carries the pinned version, but its bytes could not be checked against the pinned commit; a matching version alone is not content identity.`,
+      evidence: `version=${fact.installed_version}, catalog=${fact.target_ref}@${fact.target_sha}, reason=${fact.identity_reason}`,
+      next_step: 'Resolve the reason above (the marketplace clone must hold the pinned commit, and git must be runnable), then re-run runtime:doctor.',
+    }));
+  }
+  if (summary.sibling_resolution.cross_host.length > 0) {
+    issues.push(parityEntry({
+      id: 'codex_sibling_cross_host_fallback',
+      severity: 'warning',
+      host: 'codex',
+      area: 'plugin-install',
+      summary: 'A Codex-installed plugin would resolve a sibling from the Claude cache, whose copy is not pinned to a release.',
+      evidence: summary.sibling_resolution.cross_host.map((edge) => `${edge.caller}->${edge.sibling}`).join(', '),
+      next_step: 'Install the named sibling on Codex so each resolves from the Codex install cache (ADR-0061 §Decision 3).',
+    }));
+  }
   return issues;
 }
 
@@ -1821,6 +2040,11 @@ function getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, pl
   const hookStateGate = evaluateCodexHookStateGate(codexPluginHooks?.hook_state ?? null);
   if (hookStateGate.blocked) {
     return { current: false, reason: hookStateGate.reason, attestation };
+  }
+  // An installed plugin whose hooks cannot be read (ADR-0061 S3): the covered set is
+  // unknown, so no attestation of it is current, however well the rest matches.
+  if ((codexPluginHooks?.summary?.install_unreadable_plugins ?? []).length > 0) {
+    return { current: false, reason: 'installed_hooks_unreadable', attestation };
   }
   const expectedPlugins = codexPluginHooks?.summary?.bundled_plugins ?? [];
   // Prefer the canonical attested_plugins set; fall back to legacy bundled_plugins so a
@@ -2156,10 +2380,28 @@ function evaluateRecordedDoctorProofRun({ run, plugins, claude, codex }) {
   for (const name of PLUGIN_NAMES) {
     const current = summarizePluginVersions(plugins?.[name]);
     const recorded = summarizePluginVersions(latestReport.plugins?.[name]);
-    for (const key of ['source', 'claude_cache', 'codex_installed']) {
+    for (const key of ['source', 'claude_cache', 'codex_installed', 'codex_content']) {
       if (current[key] !== recorded[key]) {
         reasons.push(`${name} ${key} mismatch: recorded=${recorded[key] ?? '<unknown>'}, current=${current[key] ?? '<unknown>'}`);
       }
+    }
+    // Bytes known to differ from the pinned tree are not an install any recorded proof
+    // vouches for, even when the recorded proof saw the same divergence.
+    if (current.codex_content?.startsWith('mismatch@')) {
+      reasons.push(`${name} codex install does not match the tree its catalog pins`);
+    }
+    // …and for a pinned install, bytes that could not be checked are no better: two
+    // unverified reads agree on nothing, so a changed tree under the same version would
+    // otherwise keep a proof reusable. Unpinned catalogs (before activation) are exempt —
+    // there is no pin to verify against, and the version comparison above is all there is.
+    // (A missing installed version is no exemption: a list row without one is still an
+    // install whose bytes nobody checked.)
+    const codexInstall = plugins?.[name]?.codex_install;
+    if (codexInstall?.catalog_target?.status === 'pinned'
+      && ['installed', 'disabled'].includes(codexInstall.installed?.status)
+      && codexInstall.content_identity?.status !== 'verified'
+      && !current.codex_content?.startsWith('mismatch@')) {
+      reasons.push(`${name} codex install is not verified against its catalog pin (${codexInstall.content_identity?.reason ?? 'unverified'})`);
     }
   }
 
@@ -2216,7 +2458,18 @@ function summarizePluginVersions(plugin) {
     source: plugin?.source?.claude_manifest?.version ?? null,
     claude_cache: plugin?.cache?.claude?.latest?.manifest_version ?? null,
     codex_installed: codexInstalled,
+    // ADR-0061 §Decision 4: a version is not content identity, so a proof recorded against
+    // one set of bytes is not reused against another set under the same version. Null on
+    // both sides until the catalog is pinned and the bytes are checked.
+    codex_content: summarizeCodexContent(plugin?.codex_install),
   };
+}
+
+function summarizeCodexContent(codexInstall) {
+  const status = codexInstall?.content_identity?.status;
+  const sha = codexInstall?.catalog_target?.sha ?? null;
+  if (!sha || (status !== 'verified' && status !== 'mismatch')) return null;
+  return `${status}@${sha}`;
 }
 
 function observedVersionText(version) {
@@ -5821,6 +6074,22 @@ export function formatText(report) {
     lines.push(`- ${name}: ${plugin.status}; source=${sourceVersion}; claude-cache=${plugin.cache.claude.status}; codex-cache=${plugin.cache.codex.status}`);
   }
   lines.push('');
+  const codexIdentity = report.codex_install_identity;
+  if (codexIdentity) {
+    // ADR-0061 §Decision 4: three facts per Codex plugin, never collapsed into one.
+    lines.push('Codex Install Identity');
+    lines.push(`- catalog: ${codexIdentity.catalog_read_status}; pin-phase=${codexIdentity.pin_phase ?? 'unknown'}${codexIdentity.pin_phase === 'unpinned' ? ' (before activation: currentness unknown, not stale)' : ''}`);
+    for (const name of PLUGIN_NAMES) {
+      const fact = codexIdentity.plugins?.[name];
+      if (!fact || (fact.target_status !== 'pinned' && fact.target_status !== 'invalid')) continue;
+      const target = fact.target_status === 'pinned' ? `${fact.target_ref}@${String(fact.target_sha).slice(0, 12)}` : `invalid pin`;
+      lines.push(`- ${name}: ${fact.currentness}; target=${target}; installed=${fact.installed_version ?? 'none'} (${fact.installed_source ?? 'n/a'}); identity=${fact.identity_status ?? 'n/a'}${fact.identity_reason ? ` (${fact.identity_reason})` : ''}`);
+    }
+    for (const edge of codexIdentity.sibling_resolution?.cross_host ?? []) {
+      lines.push(`- sibling: ${edge.caller} -> ${edge.sibling} predicted from the Claude cache (Codex has no ${edge.sibling} installed)`);
+    }
+    lines.push('');
+  }
   lines.push('Companions');
   for (const key of ['claude_to_codex', 'codex_to_claude']) {
     const direction = report.companions.directions[key];

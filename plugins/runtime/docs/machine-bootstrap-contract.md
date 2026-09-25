@@ -296,6 +296,24 @@ whether the *catalog* is stale — and it never blocks a terminal state. Where t
 host cannot answer (Codex), it is `unknown`, and `unknown` currentness is not a
 failure.
 
+*Amended 2026-09-25 ([ADR-0061](../../../docs/adr/0061-codex-installs-pinned-to-release-commits.md)
+§Decision 4, implementation step S3):* the Codex half of that sentence holds until
+the Codex catalog is pinned. Before ADR-0061's activation every Codex entry is a
+`local` path, the catalog is still versionless, and Codex currentness stays
+`unknown`. After it, each entry pins its release in `source.ref` / `source.sha`, and
+runtime reports three facts per Codex plugin: the catalog target, the installed
+version (list-authoritative, else the manifest-verified cache), and whether the
+installed files were verified against the tree at the pinned commit. Currentness is
+then `current`, `behind`, `ahead`, `content-mismatch`, `content-unverified`,
+`not-installed` or `unknown`, and a matching version whose files were not verified is
+never `current`. An entry that carries no pin leaves currentness `unknown`, and a
+malformed pin is reported as an error; neither is ever answered from the
+repository's or the marketplace clone's manifest. Currentness is
+still advisory and still never a completion gate. `runtime:settings` turns a `behind`
+or `content-mismatch` Codex install into a manual repair follow-up rather than an
+executable marketplace upgrade, because an upgrade that finds no new marketplace
+revision reinstalls nothing (ADR-0061 §Decision 7).
+
 This is also the fix for `runtime:settings`'s silent no-update path: its
 `sourceVersion` must come from the **registered marketplace catalog**, not from
 `repoRoot/plugins/<name>/.claude-plugin/plugin.json`. §11 pins that regression
@@ -1669,6 +1687,15 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   `MIN_RUNTIME_VERSION` the floor, and its required capability major the API
   shape. A shim whose floor or major the resolved runtime does not satisfy
   renders nothing at all — visibly empty, never silently stale.
+  *Amended 2026-09-25 ([ADR-0061](../../../docs/adr/0061-codex-installs-pinned-to-release-commits.md)
+  §Decision 3, implementation step S3):* the shim's runtime ladder
+  (`statusline delegating-shim v2`) reads the Claude install cache, then the
+  versioned Codex install cache under `$CODEX_HOME`; `v1` fell back to the Codex
+  marketplace clone, which tracks `main`. The notify shuttle
+  (`codex-notify delegating-shim v2`) changed the same way, Codex cache first.
+  Both `v1` shapes are registered in `data/released-receiver-shapes.json`, so an
+  installed `v1` reads as `legacy` until the operator re-renders it; a runtime
+  release does not rewrite home copies.
 - **`statusline_preset` export rule (owner-approved 2026-07-23)**: `profile
   export` writes `agentic-6` iff BOTH hosts' statusline configuration is
   observed canonical — the operator applying the rendered fragments IS the

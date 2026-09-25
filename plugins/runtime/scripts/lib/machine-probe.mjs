@@ -30,6 +30,16 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { singleLine, redactSecrets, sanitizeValue } from './sanitize.mjs';
 import { readJsonIfExists, readTextIfExists, resolveCodexHome } from './state-readers.mjs';
 import { semverCompare } from './semver.mjs';
+import { comparePrereleaseAware } from './runtime-floor.mjs';
+import {
+  assessCodexCurrentness,
+  compareInstalledToPinnedTree,
+  hashInstalledTreeStable,
+  parseLsTreeZ,
+  selectInstalledCacheDir,
+  summarizeCodexCatalogTargets,
+  unverifiedIdentity,
+} from './codex-install-identity.mjs';
 
 // $CODEX_HOME resolution lives in the host-CLI-free state-readers leaf (so importing it
 // does not drag this probe — which NAMES host CLIs — into a spawn-sensitive closure);
@@ -114,6 +124,16 @@ export async function probeMachineHostState({
     readRegisteredMarketplaceCatalog({ host: 'claude', installLocation: claudeMarketplaceReg.install_location }),
     readRegisteredMarketplaceCatalog({ host: 'codex', installLocation: codexMarketplaceReg.install_location }),
   ]);
+  const codexInstallIdentity = await inspectCodexInstallIdentity({
+    runner,
+    env,
+    cwd: probeCwd,
+    timeoutMs,
+    snapshotRoot: codexMarketplaceReg.install_location,
+    catalog: codexCatalog,
+    codexPluginList,
+    caches,
+  });
 
   return {
     codexHome: resolvedCodexHome,
@@ -127,6 +147,9 @@ export async function probeMachineHostState({
       claude: { ...claudeMarketplaceReg, catalog: claudeCatalog },
       codex: { ...codexMarketplaceReg, catalog: codexCatalog },
     },
+    // ADR-0061 §Decision 4: per Codex plugin, catalog target / installed version /
+    // content identity, kept as three separate facts.
+    codexInstallIdentity,
     codexHookConfig,
   };
 }
@@ -909,40 +932,187 @@ function marketplaceInstallLocation(entry) {
 // authority. Per-plugin versions come from the catalog the host actually registered, NEVER
 // from process.cwd() or a repo checkout (that is exactly the source-manifest path the
 // contract rejects). A missing installLocation or an unreadable catalog yields `unknown`
-// currentness with NO repo fallback (edge pin). Codex catalogs are versionless, so their
-// versions stay null. Never throws. `readJson` is injectable for tests.
+// currentness with NO repo fallback (edge pin). Never throws. `readJson` is injectable for
+// tests.
+//
+// A Codex catalog carries no top-level entry version. Before ADR-0061's activation its
+// entries are `local` paths and it is `versionless`; after, each entry pins its release in
+// `source.ref` / `source.sha`, and `versions` holds the pinned version of every VALID pin
+// (lib/codex-install-identity.mjs). `targets` keeps each entry's full catalog target, so a
+// malformed pin stays visible as `invalid` instead of reading as an absent version.
 export async function readRegisteredMarketplaceCatalog({ host, installLocation, readJson = readJsonIfExists }) {
+  const empty = host === 'claude' ? {} : { pin_phase: null, targets: {} };
   if (!installLocation) {
-    return { read_status: 'unknown', reason: 'no registered installLocation', path: null, last_updated: null, versions: {} };
+    return { read_status: 'unknown', reason: 'no registered installLocation', path: null, last_updated: null, versions: {}, ...empty };
   }
   const catalogPath = host === 'claude'
     ? join(installLocation, '.claude-plugin', 'marketplace.json')
     : join(installLocation, '.agents', 'plugins', 'marketplace.json');
   const read = await readJson(catalogPath);
   if (!read.ok) {
-    return { read_status: 'unreadable', reason: read.reason ?? 'catalog read failed', path: catalogPath, last_updated: null, versions: {} };
+    return { read_status: 'unreadable', reason: read.reason ?? 'catalog read failed', path: catalogPath, last_updated: null, versions: {}, ...empty };
   }
   const catalog = read.json;
   const plugins = Array.isArray(catalog?.plugins) ? catalog.plugins : [];
+  const codexTargets = host === 'claude' ? null : summarizeCodexCatalogTargets(plugins);
   const versions = {};
   for (const entry of plugins) {
     if (typeof entry?.name !== 'string') continue;
-    versions[entry.name] = typeof entry.version === 'string' ? entry.version : null;
+    versions[entry.name] = host === 'claude'
+      ? (typeof entry.version === 'string' ? entry.version : null)
+      : codexTargets.targets[entry.name]?.version ?? null;
   }
   const lastUpdated = typeof catalog?.metadata?.lastUpdated === 'string'
     ? catalog.metadata.lastUpdated
     : typeof catalog?.lastUpdated === 'string' ? catalog.lastUpdated : null;
   const anyVersion = Object.values(versions).some((v) => v !== null);
-  // Claude catalogs carry per-entry versions; Codex catalogs are deliberately versionless
-  // (§1.4.1), so a Codex catalog — or any catalog with no per-entry version — is reported
-  // `versionless`, which maps to `unknown` currentness (never a failure).
+  // A catalog with no per-entry version — Claude's never, Codex's before activation — is
+  // reported `versionless`, which maps to `unknown` currentness (never a failure).
   return {
     read_status: anyVersion ? 'read' : 'versionless',
     reason: null,
     path: catalogPath,
     last_updated: lastUpdated,
     versions,
+    ...(codexTargets ?? {}),
   };
+}
+
+// The git environment variables that would redirect `git -C <dir>` to some other
+// repository, index or object store, or inject configuration. The identity read must
+// look at the registered marketplace clone's own objects and nothing else, whatever
+// the caller exported.
+const GIT_REDIRECT_ENV = [
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE',
+  'GIT_CEILING_DIRECTORIES', 'GIT_DISCOVERY_ACROSS_FILESYSTEM', 'GIT_REPLACE_REF_BASE',
+  'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT',
+];
+
+// …and the read is pinned to be immutable and offline: replace refs cannot substitute
+// another object for the pinned commit, a partial clone cannot lazily fetch a missing
+// object over the network (a missing object leaves identity unverified instead), and
+// nothing may prompt.
+function scrubbedGitEnv(env) {
+  const out = { ...env };
+  for (const key of Object.keys(out)) {
+    if (GIT_REDIRECT_ENV.includes(key) || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) delete out[key];
+  }
+  return { ...out, GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1', GIT_TERMINAL_PROMPT: '0' };
+}
+
+// The installed Codex fact (Decision 4 fact 2), list-authoritative (ADR-0034): the list's
+// version when it answered, the newest manifest-verified cache directory when it did not.
+function codexInstalledFact({ name, codexPluginList, cache }) {
+  const decision = resolveCodexInstallState({
+    name,
+    listStatus: codexPluginList.status,
+    listCommand: codexPluginList.command ?? null,
+    entry: codexPluginList.entries?.[name] ?? null,
+  });
+  if (decision.decision === 'fallback') {
+    const latest = cache?.latest ?? null;
+    if (!latest) {
+      return { status: cache?.status === 'not_installed' || cache?.status === 'missing' ? 'not_installed' : 'unknown', version: null, source: 'cache', cache_path: null };
+    }
+    const version = latest.manifest_version ?? null;
+    const selected = selectInstalledCacheDir(cache?.versions, version);
+    return { status: 'installed', version, source: 'cache', cache_path: selected.dir?.path ?? null, cache_reason: selected.reason };
+  }
+  if (decision.decision === 'not_installed') {
+    return { status: 'not_installed', version: null, source: 'plugin-list', cache_path: null };
+  }
+  const version = decision.version ?? null;
+  // The directory that holds the listed version is the one Codex serves.
+  const selected = selectInstalledCacheDir(cache?.versions, version);
+  return {
+    status: decision.decision === 'disabled' ? 'disabled' : 'installed',
+    version,
+    source: 'plugin-list',
+    cache_path: selected.dir?.path ?? null,
+    cache_reason: selected.reason,
+    // The list carried more than one row for this plugin that disagree; the parser kept
+    // one, so its version is not a fact to verify bytes against.
+    ambiguous: codexPluginList.entries?.[name]?.ambiguous === true,
+  };
+}
+
+/**
+ * ADR-0061 §Decision 4 — the three facts for every Codex plugin: catalog target, observed
+ * installed version, and whether the installed bytes are the pinned tree.
+ *
+ * Content identity is checked only where it can mean something: a valid pin, an install
+ * whose version IS the pinned version, and a cache directory holding it. The pinned tree
+ * is read from the registered marketplace clone's object store by commit id — the
+ * released tree, never the clone's working tree, which tracks main — with one read-only
+ * `git ls-tree`. Every other case is `unverified` with the reason, never a success.
+ */
+async function inspectCodexInstallIdentity({ runner, env, cwd, timeoutMs, snapshotRoot, catalog, codexPluginList, caches }) {
+  const plugins = {};
+  for (const name of PLUGIN_NAMES) {
+    const target = catalog?.targets?.[name] ?? null;
+    const installed = codexInstalledFact({ name, codexPluginList, cache: caches.codex[name] });
+    let identity;
+    if (!target) {
+      identity = unverifiedIdentity(catalog?.read_status === 'read' || catalog?.read_status === 'versionless'
+        ? 'the registered catalog has no entry for this plugin'
+        : `the registered catalog was not read (${catalog?.read_status ?? 'unknown'})`);
+    } else if (target.status !== 'pinned') {
+      identity = unverifiedIdentity(target.status === 'unpinned' ? 'the catalog entry is not pinned' : `the catalog pin is invalid: ${target.reason}`);
+    } else if (installed.status === 'not_installed' || !installed.version) {
+      identity = unverifiedIdentity('no installed version to compare');
+    } else if (installed.ambiguous) {
+      identity = unverifiedIdentity('codex plugin list reports conflicting rows for this plugin');
+    } else if (comparePrereleaseAware(installed.version, target.version) !== 0) {
+      identity = unverifiedIdentity(`the installed version ${installed.version} is not the pinned ${target.version}`);
+    } else if (!installed.cache_path) {
+      identity = unverifiedIdentity(installed.cache_reason ?? `no install cache directory holds ${installed.version}`);
+    } else if (!snapshotRoot) {
+      identity = unverifiedIdentity('the marketplace install location is not registered');
+    } else {
+      identity = await verifyPinnedTree({ runner, env, cwd, timeoutMs, snapshotRoot, target, installRoot: installed.cache_path });
+    }
+    plugins[name] = {
+      catalog_target: target ?? { status: 'unknown', source_kind: null, path: null, url: null, ref: null, sha: null, version: null, reason: 'no catalog entry was read' },
+      installed,
+      content_identity: identity,
+      currentness: assessCodexCurrentness({ target, installed, identity }),
+    };
+  }
+  return {
+    catalog_read_status: catalog?.read_status ?? 'unknown',
+    pin_phase: catalog?.pin_phase ?? null,
+    snapshot_root_registered: Boolean(snapshotRoot),
+    plugins,
+  };
+}
+
+async function verifyPinnedTree({ runner, env, cwd, timeoutMs, snapshotRoot, target, installRoot }) {
+  const listed = await runner('git', ['--no-optional-locks', '-C', snapshotRoot, 'ls-tree', '-r', '-z', target.sha, '--', target.path], {
+    cwd,
+    env: scrubbedGitEnv(env),
+    timeoutMs,
+  });
+  if (!listed?.ok) {
+    return unverifiedIdentity(listed?.exit_code === null || listed?.exit_code === undefined
+      ? `git could not run (${listed?.error_code ?? 'unknown error'})`
+      : `the pinned commit ${target.sha} could not be read from the marketplace clone (git exit ${listed.exit_code})`);
+  }
+  // A marketplace refresh can reinstall the directory while it is being hashed, even
+  // under the same version. A tree that did not hold still is not one install, and the
+  // answer is unverified rather than a verdict about either.
+  let inspected;
+  try {
+    inspected = await hashInstalledTreeStable(installRoot);
+  } catch (err) {
+    return unverifiedIdentity(err?.code === 'EBOUNDS'
+      ? 'the install cache exceeds the inspection bounds'
+      : `the install cache could not be read (${err?.code ?? 'unknown error'})`);
+  }
+  if (!inspected.stable) {
+    return unverifiedIdentity('the install cache changed while it was being inspected');
+  }
+  return compareInstalledToPinnedTree(parseLsTreeZ(listed.stdout ?? '', target.path), inspected.tree);
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,7 +1189,15 @@ async function scanVersionedManifestDir({ baseDir, manifestRel, pluginName = nul
       default_hooks_file: await hooksFileSummary(join(pluginRoot, 'hooks', 'hooks.json')),
     });
   }
-  versions.sort((a, b) => semverCompare(String(b.manifest_version ?? b.version_dir), String(a.manifest_version ?? a.version_dir)));
+  // Newest first, prereleases RANKED (`1.0.0-rc.2` above `1.0.0-rc.1`): `latest` is what a
+  // list-unavailable probe reads as the install, and the shared semverCompare leaves
+  // equal-core prereleases tied (ADR-0061 S3, Codex review round 7). A version that is
+  // not SemVer falls back to that numeric order.
+  versions.sort((a, b) => {
+    const va = String(a.manifest_version ?? a.version_dir);
+    const vb = String(b.manifest_version ?? b.version_dir);
+    return comparePrereleaseAware(vb, va) ?? semverCompare(vb, va);
+  });
   return {
     status: versions.length > 0 ? 'available' : 'not_installed',
     base_dir: baseDir,

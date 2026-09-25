@@ -1,11 +1,19 @@
 # Released receiver templates (test fixtures)
 
-Verbatim copies of receiver **templates** as they shipped in
-`plugin-runtime-v0.91.2` — the last release before the receivers became
-delegating shims. Recovered with:
+Verbatim copies of receiver **templates** as they shipped in a past
+`plugin-runtime` release, one pair per generation:
+
+- `*.v0.91.2.template.mjs` — `plugin-runtime-v0.91.2`, the last release before
+  the receivers became delegating shims.
+- `*.v0.97.4.template.mjs` — `plugin-runtime-v0.97.4`, the last release of the
+  first delegating-shim generation (`delegating-shim v1`), whose runtime ladder
+  still read the Codex marketplace clone. ADR-0061 §Decision 3 replaced that
+  ladder.
+
+Recovered with:
 
 ```
-git show plugin-runtime-v0.91.2:plugins/runtime/receivers/<name> > <name>.v0.91.2.template.mjs
+git show <tag>:plugins/runtime/receivers/<name> > <name>.<version>.template.mjs
 ```
 
 They exist so the installed-receiver classifier can be tested against bytes that

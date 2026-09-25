@@ -301,6 +301,85 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
     // 0.10.0 > 0.2.0 > 0.1.0 numerically — a lexical sort would pick 0.2.0.
     strictEqual(r.stdout.trim(), 'NEW', 'SemVer-max, not lexical order');
   });
+
+  // ADR-0061 §Decision 3 — the Codex rung is the versioned install cache under
+  // $CODEX_HOME, and the marketplace clone (which tracks main) is never read.
+  // A Claude statusline takes the Codex cache only when Claude has no runtime.
+  async function runShimLadder(build) {
+    const dir = await mkdtemp(join(tmpdir(), 'statusline-shim-codex-'));
+    const home = join(dir, 'home');
+    const codexHome = join(dir, 'codex-home');
+    const install = async (root, manifestRel, { name = 'runtime', version = '0.5.0', marker }) => {
+      await mkdir(join(root, manifestRel, '..'), { recursive: true });
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, manifestRel), JSON.stringify({ name, version }));
+      await writeFile(join(root, 'scripts', 'receiver-api.mjs'),
+        `export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\nexport function renderStatusline() { return ${JSON.stringify(marker)}; }\n`);
+    };
+    await build({
+      install,
+      claudeCache: (version) => join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime', version),
+      codexCache: (version) => join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime', version),
+      clone: join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime'),
+    });
+    const shimPath = join(dir, 'shim.mjs');
+    await writeFile(shimPath, renderAgenticStatuslineShim({ minRuntimeVersion: '0.1.0' }).body);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome };
+    delete env.AGENTIC_RUNTIME_ROOT;
+    const r = spawnSync(process.execPath, [shimPath], {
+      input: JSON.stringify({ model: { display_name: 'M' } }), encoding: 'utf8', timeout: 5000, env,
+    });
+    strictEqual(r.status, 0);
+    strictEqual(r.stderr, '', 'a statusline never prints diagnostics');
+    return r.stdout.trim();
+  }
+  const CLAUDE_MANIFEST = join('.claude-plugin', 'plugin.json');
+  const CODEX_MANIFEST = join('.codex-plugin', 'plugin.json');
+
+  it('the RENDERED shim falls back to the Codex install cache under $CODEX_HOME, never the marketplace clone', async () => {
+    const out = await runShimLadder(async ({ install, codexCache, clone }) => {
+      await install(codexCache('0.5.0'), CODEX_MANIFEST, { marker: 'CODEX-CACHE' });
+      await install(clone, CODEX_MANIFEST, { version: '9.0.0', marker: 'CLONE' });
+    });
+    strictEqual(out, 'CODEX-CACHE', 'the install cache is the Codex candidate; the newer clone is not');
+  });
+
+  it('the RENDERED shim reads nothing from a marketplace clone alone', async () => {
+    // CONTROL for the case above: with only the clone present, the shim must
+    // find no runtime at all, rather than the clone.
+    const out = await runShimLadder(async ({ install, clone }) => {
+      await install(clone, CODEX_MANIFEST, { marker: 'CLONE' });
+    });
+    strictEqual(out, '', 'a clone is not an install');
+  });
+
+  it('the RENDERED shim judges the floor on the manifest the Codex selection read', async () => {
+    const out = await runShimLadder(async ({ install, codexCache }) => {
+      const root = codexCache('0.5.0');
+      await install(root, CODEX_MANIFEST, { marker: 'CODEX-CACHE' });
+      // A Claude manifest in the same directory declaring a version below the 0.1.0 floor.
+      await mkdir(join(root, '.claude-plugin'), { recursive: true });
+      await writeFile(join(root, CLAUDE_MANIFEST), JSON.stringify({ name: 'runtime', version: '0.0.1' }));
+    });
+    strictEqual(out, 'CODEX-CACHE');
+  });
+
+  it('the RENDERED shim orders retained prereleases by full SemVer precedence (round 5)', async () => {
+    const out = await runShimLadder(async ({ install, claudeCache }) => {
+      await install(claudeCache('1.0.0-alpha.1'), CLAUDE_MANIFEST, { version: '1.0.0-alpha.1', marker: 'ALPHA' });
+      await install(claudeCache('1.0.0-beta.2'), CLAUDE_MANIFEST, { version: '1.0.0-beta.2', marker: 'BETA' });
+    });
+    strictEqual(out, 'BETA');
+  });
+
+  it('the RENDERED shim prefers any Claude runtime to a newer Codex one, and verifies the manifest name', async () => {
+    const out = await runShimLadder(async ({ install, claudeCache, codexCache }) => {
+      await install(claudeCache('0.2.0'), CLAUDE_MANIFEST, { version: '0.2.0', marker: 'CLAUDE' });
+      await install(claudeCache('0.9.0'), CLAUDE_MANIFEST, { name: 'engineer', version: '0.9.0', marker: 'IMPOSTOR' });
+      await install(codexCache('0.9.0'), CODEX_MANIFEST, { version: '0.9.0', marker: 'CODEX' });
+    });
+    strictEqual(out, 'CLAUDE', 'same-host first; a directory naming another plugin is not a runtime install');
+  });
 });
 
 describe('statusline classification — observation, never operator choice (ADR-0048 §2)', () => {

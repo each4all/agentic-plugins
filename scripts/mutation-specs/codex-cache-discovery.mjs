@@ -12,8 +12,10 @@
 // green suite proves nothing here; breaking each rule on purpose does.
 //
 // S1 (companion discovery) authored the L/B/I/P/G/T groups. S2 (sibling
-// resolvers) added R/C/X/D and G3, and moved G2 onto a file S3 still owns; S3
-// extends this spec with its receivers and empties the guard's PENDING list.
+// resolvers) added R/C/X/D and G3. S3 emptied the guard's PENDING list,
+// retargeted G2 at a receiver the guard now covers, and added V (the
+// home-rendered receivers), Y (ADR-0061 §Decision 4's content identity), H
+// (doctor), M (plan and settings) and Z (bootstrap and cutover, review round 3).
 
 const T_LIB = 'tests/companions/test-discover-peer.mjs';
 const T_BOOT = 'tests/companions/test-companion-bootstrap.mjs';
@@ -25,6 +27,14 @@ const T_PEC = 'tests/runtime/test-peer-execution-context.mjs';
 const T_CONSENSUS = 'tests/runtime/test-consensus.mjs';
 const T_DOCTOR = 'tests/runtime/test-doctor.mjs';
 const T_ROOT_DOCS = 'tests/plugin-shape/test-codex-plugin-root-contract.mjs';
+const T_NOTIFY = 'tests/runtime/test-notification-plan.mjs';
+const T_STATUSLINE = 'tests/runtime/test-statusline-plan.mjs';
+const T_INVENTORY = 'tests/runtime/test-receiver-inventory.mjs';
+const T_IDENTITY = 'tests/runtime/test-codex-install-identity.mjs';
+const T_SETTINGS = 'tests/runtime/test-settings.mjs';
+const T_PLAN = 'tests/runtime/test-plugin-management-plan.mjs';
+const T_CUTOVER = 'tests/runtime/test-cutover-audit.mjs';
+const T_BOOTSTRAP = 'tests/runtime/test-bootstrap-cli.mjs';
 
 const LIB = 'companions/discover-peer.mjs';
 const LIB_BUNDLE = 'plugins/companions/scripts/discover-peer.mjs';
@@ -34,10 +44,17 @@ const IMAGE = 'plugins/image/scripts/compose-dispatch.mjs';
 const RUNNER = 'plugins/engineer/scripts/peer-runner.mjs';
 const ENG_RUNTIME = 'plugins/engineer/scripts/discover-runtime.mjs';
 const PEC = 'plugins/runtime/scripts/lib/peer-execution-context.mjs';
+const SHUTTLE = 'plugins/runtime/receivers/codex-notify-shuttle.mjs';
+const STATUSLINE = 'plugins/runtime/receivers/agentic-statusline.mjs';
+const PROBE = 'plugins/runtime/scripts/lib/machine-probe.mjs';
+const IDENTITY = 'plugins/runtime/scripts/lib/codex-install-identity.mjs';
+const DOCTOR = 'plugins/runtime/scripts/doctor.mjs';
+const PLAN = 'plugins/runtime/scripts/lib/plugin-management-plan.mjs';
+const SETTINGS = 'plugins/runtime/scripts/settings.mjs';
 const ORDER = "const order = caller === 'codex' ? ['codex', 'claude'] : ['claude', 'codex'];";
 const ORDER_FIXED = "const order = ['claude', 'codex'];";
 
-export const TESTS = [T_LIB, T_BOOT, T_GUARD, T_SIBLINGS, T_WRITEBACK, T_PEC, T_ROOT_DOCS];
+export const TESTS = [T_LIB, T_BOOT, T_GUARD, T_SIBLINGS, T_WRITEBACK, T_PEC, T_ROOT_DOCS, T_NOTIFY, T_STATUSLINE, T_INVENTORY, T_IDENTITY, T_DOCTOR, T_SETTINGS, T_PLAN, T_CUTOVER, T_BOOTSTRAP];
 
 export const MUTATIONS = [
   // ---- L: the canonical library ------------------------------------------
@@ -189,10 +206,10 @@ export const MUTATIONS = [
     why: 'a new clone reference appears in a file that S1 cleared',
   },
   {
-    id: 'G2', file: 'plugins/runtime/receivers/codex-notify-shuttle.mjs', tests: [T_GUARD],
-    from: "'.tmp', 'marketplaces'",
-    to: "'.tmpx', 'marketplaces'",
-    why: 'a PENDING file stops referencing the clone but stays listed, so the list outlives the code',
+    id: 'G2', file: SHUTTLE, tests: [T_GUARD, T_NOTIFY],
+    from: "    path.join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime'),",
+    to: "    path.join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime'),",
+    why: "the notify shuttle's Codex rung reverts to the marketplace clone",
   },
   {
     id: 'G3', file: ENG_RUNTIME, tests: [T_GUARD],
@@ -454,5 +471,351 @@ export const MUTATIONS = [
     from: '# image — cross-host image generation capability (ADR-0037)',
     to: '# image — cross-host image generation capability (ADR-0037)\n\nSet CODEX_HOME to point discovery elsewhere.',
     why: 'image prose regains the omcc-era CODEX_HOME discovery label',
+  },
+
+  // ---- V: the home-rendered receivers (S3) ----------------------------------
+  {
+    id: 'V1', file: SHUTTLE, tests: [T_NOTIFY],
+    from: "  if (codex.state === 'ok') return { root: canonical(codex.root), version: codex.version, crossHost: false };",
+    to: "  if (false) return { root: canonical(codex.root), version: codex.version, crossHost: false };",
+    why: 'the Codex notify shuttle never takes the Codex install cache',
+  },
+  {
+    id: 'V2', file: SHUTTLE, tests: [T_NOTIFY],
+    from: "    if (!manifest || manifest.name !== 'runtime') continue;",
+    to: '    if (!manifest) continue;',
+    why: 'the shuttle accepts a cache directory whose manifest names another plugin',
+  },
+  {
+    id: 'V3', file: SHUTTLE, tests: [T_NOTIFY],
+    from: "  if (codex.state === 'unusable') {",
+    to: '  if (false) {',
+    why: 'a Codex runtime without notify.mjs crosses to the Claude cache instead of failing closed',
+  },
+  {
+    id: 'V4', file: SHUTTLE, tests: [T_NOTIFY],
+    from: '  if (resolved.crossHost) {',
+    to: '  if (false) {',
+    why: 'the shuttle takes the Claude cache silently',
+  },
+  {
+    id: 'V5', file: SHUTTLE, tests: [T_NOTIFY],
+    from: '  const runtimeVersion = resolved.version;',
+    to: '  const runtimeVersion = readManifestVersion(runtimeRoot);',
+    why: "the floor is judged on the other host's manifest, not the one the selection read",
+  },
+  {
+    id: 'V6', file: SHUTTLE, tests: [T_NOTIFY],
+    from: "  if (codex.state === 'ok') return { root: canonical(codex.root),",
+    to: "  if (codex.state === 'ok') return { root: codex.root,",
+    why: 'a root reached through a symlinked CODEX_HOME is returned in its link spelling',
+  },
+  {
+    id: 'V7', file: STATUSLINE, tests: [T_STATUSLINE, T_GUARD],
+    from: "    path.join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime'),",
+    to: "    path.join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime'),",
+    why: "the statusline's Codex rung reverts to the marketplace clone",
+  },
+  {
+    id: 'V8', file: STATUSLINE, tests: [T_STATUSLINE],
+    from: '  const version = resolved.version;',
+    to: '  const version = readManifestVersion(root);',
+    why: "the statusline judges the floor on the other host's manifest",
+  },
+  {
+    id: 'V9', file: STATUSLINE, tests: [T_STATUSLINE],
+    from: "      if (!manifest || manifest.name !== 'runtime') continue;",
+    to: '      if (!manifest) continue;',
+    why: 'the statusline accepts a cache directory whose manifest names another plugin',
+  },
+  {
+    id: 'V10', file: 'plugins/runtime/data/released-receiver-shapes.json', tests: [T_INVENTORY],
+    from: ',\n      "046631eed57a2fb084e8b4ddd6e1e4eda524cf122d5de18146f19d99fa161b90": "plugin-runtime-v0.92.0 … v0.97.4"',
+    to: '',
+    why: 'the outgoing v1 statusline is not registered, so an installed one reads as foreign, not legacy',
+  },
+
+  // ---- Y: Decision 4's content identity (S3) ---------------------------------
+  {
+    id: 'Y1', file: PROBE, tests: [T_IDENTITY],
+    from: '      identity = await verifyPinnedTree({ runner, env, cwd, timeoutMs, snapshotRoot, target, installRoot: installed.cache_path });',
+    to: "      identity = { verified: true, status: 'verified', reason: null };",
+    why: 'a matching version is taken as content identity',
+  },
+  {
+    id: 'Y2', file: IDENTITY, tests: [T_IDENTITY],
+    from: '    else if (actual.mode !== entry.mode) modeDiffering.push(path);',
+    to: '',
+    why: 'a lost executable bit is not divergence',
+  },
+  {
+    id: 'Y3', file: IDENTITY, tests: [T_IDENTITY],
+    from: '  const extra = [...installed.keys()].filter((path) => !pinned.has(path));',
+    to: '  const extra = [];',
+    why: 'a file the release does not have is not divergence',
+  },
+  {
+    id: 'Y4', file: PROBE, tests: [T_IDENTITY],
+    from: "    if (GIT_REDIRECT_ENV.includes(key) || /^GIT_CONFIG_(KEY|VALUE)_\\d+$/.test(key)) delete out[key];",
+    to: '    if (false) delete out[key];',
+    why: "a caller's GIT_DIR redirects the identity read to another repository",
+  },
+  {
+    id: 'Y5', file: PROBE, tests: [T_IDENTITY],
+    from: "  return { ...out, GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1', GIT_TERMINAL_PROMPT: '0' };",
+    to: '  return out;',
+    why: 'the identity read may follow replace refs or fetch over the network',
+  },
+  {
+    id: 'Y6', file: IDENTITY, tests: [T_IDENTITY],
+    from: '  const order = comparePrereleaseAware(installed.version, target.version);',
+    to: "  const order = comparePrereleaseAware(installed.version.split('-')[0], target.version.split('-')[0]);",
+    why: 'a prerelease pin advance reads as the same version',
+  },
+  {
+    id: 'Y7', file: IDENTITY, tests: [T_IDENTITY],
+    from: '  if (sha === null || !SHA_RE.test(sha)) {',
+    to: '  if (sha === null) {',
+    why: 'a malformed sha is accepted as a pin',
+  },
+
+  // ---- H: doctor (S3) --------------------------------------------------------
+  {
+    id: 'H1', file: DOCTOR, tests: [T_DOCTOR],
+    from: '      : installedDir\n        ? cache\n',
+    to: "      : installedDir\n        ? (cache.status !== 'not_packaged' ? cache : buildCodexHookLocation({ manifestHooks: plugin.source?.codex_manifest?.hooks, manifestHooksFile: plugin.source?.codex_manifest_hooks_file, defaultHooksFile: plugin.source?.codex_default_hooks_file, origin: 'source' }))\n",
+    why: 'a hookless installed package falls through to the source hooks',
+  },
+  {
+    id: 'H2', file: DOCTOR, tests: [T_DOCTOR],
+    from: '    const effective = !codexPackageInstalled(plugin)\n',
+    to: '    const effective = false\n',
+    why: 'a plugin Codex has not installed still contributes hooks',
+  },
+  {
+    id: 'H3', file: DOCTOR, tests: [T_DOCTOR],
+    from: 'function resolveHookPluginVersion(plugin) {\n',
+    to: 'function resolveHookPluginVersion(plugin) {\n  if (plugin?.source?.claude_manifest?.version) return plugin.source.claude_manifest.version;\n',
+    why: 'the hook review target names the source version, not the installed one',
+  },
+  {
+    id: 'H4', file: DOCTOR, tests: [T_IDENTITY],
+    from: '  issues.push(...inspectCodexInstallIdentityParity(codexInstallSummary));',
+    to: '',
+    why: 'the three facts never reach host parity',
+  },
+  {
+    id: 'H5', file: DOCTOR, tests: [T_DOCTOR],
+    from: "    const predicted = sibling?.cache?.codex?.status === 'available'",
+    to: '    const predicted = false',
+    why: 'a sibling installed on Codex is predicted to cross hosts anyway',
+  },
+  {
+    id: 'H6', file: DOCTOR, tests: [T_DOCTOR],
+    from: "    for (const key of ['source', 'claude_cache', 'codex_installed', 'codex_content']) {",
+    to: "    for (const key of ['source', 'claude_cache', 'codex_installed']) {",
+    why: 'a recorded proof ignores a change of installed bytes under the same version',
+  },
+  {
+    id: 'H7', file: DOCTOR, tests: [T_DOCTOR],
+    from: "    if (current.codex_content?.startsWith('mismatch@')) {",
+    to: '    if (false) {',
+    why: 'a proof is reused against bytes known to differ from the pin',
+  },
+
+  // ---- M: plan and settings (S3) --------------------------------------------
+  {
+    id: 'M1', file: PLAN, tests: [T_SETTINGS, T_PLAN],
+    from: "      action: 'repair-codex-install',\n      executed: false,\n      command: null,\n      argv: null,\n      executable: false,",
+    to: "      action: 'repair-codex-install',\n      executed: false,\n      command: null,\n      argv: null,\n      executable: true,",
+    why: 'a repair Codex cannot run from a marketplace upgrade is offered as executable',
+  },
+  {
+    id: 'M2', file: PLAN, tests: [T_SETTINGS],
+    from: '  const codexAvailable = Boolean(codexTmpVersion) || catalogListsCodexEntry;',
+    to: '  const codexAvailable = Boolean(codexTmpVersion);',
+    why: 'a plugin the pinned catalog lists reads as unavailable without a clone directory',
+  },
+  {
+    id: 'M3', file: SETTINGS, tests: [T_SETTINGS],
+    from: '      version: resolveCodexInstalledPluginVersion(plugins?.[pluginName]).version ?? null,',
+    to: '      version: plugins?.[pluginName]?.installed_version ?? plugins?.[pluginName]?.source_version ?? null,',
+    why: 'the Codex review target borrows a Claude or source version',
+  },
+
+  // ---- S3 review round 1 (Codex): the fixes each get a mutation ------------
+  {
+    id: 'Y8', file: IDENTITY, tests: [T_IDENTITY],
+    from: '  const named = (Array.isArray(versions) ? versions : []).find((entry) => entry.version_dir === version) ?? null;',
+    to: '  const named = (Array.isArray(versions) ? versions : []).find((entry) => entry.manifest_version === version) ?? null;',
+    why: 'a retained directory under another name that declares the version is hashed instead of the one Codex serves',
+  },
+  {
+    id: 'Y9', file: IDENTITY, tests: [T_IDENTITY],
+    from: '  return { tree, stable: sameFingerprint(before, after) };',
+    to: '  return { tree, stable: true };',
+    why: 'a tree replaced while it is hashed is still certified',
+  },
+  {
+    id: 'H8', file: DOCTOR, tests: [T_DOCTOR],
+    from: '  return selectInstalledCacheDir(versions, version).dir;',
+    to: '  return selectInstalledCacheDir(versions, version).dir ?? plugin?.cache?.codex?.latest ?? null;',
+    why: "a listed version with no cache directory borrows another version's hooks",
+  },
+  {
+    id: 'M4', file: PLAN, tests: [T_PLAN],
+    from: "        ? `Codex has ${name} ${codexInstalledFactVersion ?? 'installed'} below",
+    to: "        ? `Codex has ${name} ${codexVersion ?? 'installed'} below",
+    why: "the repair names the newest retained cache's version, not the one the verdict used",
+  },
+  {
+    id: 'M5', file: PLAN, tests: [T_PLAN],
+    from: '  if (codexRepair.length > 0) {',
+    to: '  if (false) {',
+    why: 'a due repair never reaches the manual follow-ups aggregate',
+  },
+  {
+    id: 'V11', file: SHUTTLE, tests: [T_NOTIFY],
+    from: '  if (diagnosed) return;\n',
+    to: '',
+    why: 'a cross-host note and a failed spawn make two stderr lines',
+  },
+
+  // ---- S3 review round 2 (Codex) -------------------------------------------
+  {
+    id: 'Y10', file: IDENTITY, tests: [T_IDENTITY],
+    from: "        out.set(relPath, { mode: (info.mode & 0o100) !== 0 ? '100755' : '100644', oid: gitBlobId(await readFile(path)) });",
+    to: "        out.set(relPath, { mode: (info.mode & 0o111) !== 0 ? '100755' : '100644', oid: gitBlobId(await readFile(path)) });",
+    why: 'a file only group or other may execute reads as executable, unlike git',
+  },
+  {
+    id: 'Y11', file: IDENTITY, tests: [T_IDENTITY],
+    from: '  if (named.manifest_version !== version) {',
+    to: '  if (false) {',
+    why: 'the directory named by the version is hashed even when its manifest declares another',
+  },
+  {
+    id: 'H9', file: DOCTOR, tests: [T_DOCTOR, T_SETTINGS],
+    from: "        : { ...buildCodexHookLocation({ origin: 'install_cache_unavailable' }), status: 'install_unreadable' };",
+    to: "        : buildCodexHookLocation({ origin: 'install_cache_unavailable' });",
+    why: 'unreadable installed hooks read as no hooks, so the rest attests as complete',
+  },
+  {
+    id: 'H10', file: DOCTOR, tests: [T_DOCTOR],
+    from: '  if ((codexPluginHooks?.summary?.install_unreadable_plugins ?? []).length > 0) {',
+    to: '  if (false) {',
+    why: "an attestation of the readable hooks reads current while an installed plugin's hooks cannot be read",
+  },
+  {
+    id: 'H11', file: DOCTOR, tests: [T_DOCTOR],
+    from: "    if (codexInstall?.catalog_target?.status === 'pinned'",
+    to: '    if (false',
+    why: 'two unverified reads of a pinned install keep a proof reusable',
+  },
+  {
+    id: 'M6', file: PLAN, tests: [T_PLAN],
+    from: '    // either way, and enabling it would load bytes that are not the pinned release.\n    if (codexRepair) {',
+    to: '    // either way, and enabling it would load bytes that are not the pinned release.\n    if (false) {',
+    why: 'a disabled install behind its pin gets only the enable follow-up',
+  },
+
+  // ---- S3 review round 3 (Codex) -------------------------------------------
+  {
+    id: 'Z1', file: 'plugins/runtime/scripts/bootstrap.mjs', tests: [T_IDENTITY],
+    from: "        state = 'unknown';\n",
+    to: '',
+    why: 'bootstrap credits an installed plugin with no cache directory for its version as installed',
+  },
+  {
+    id: 'H12', file: DOCTOR, tests: [T_DOCTOR],
+    from: "      && ['installed', 'disabled'].includes(codexInstall.installed?.status)\n",
+    to: "      && ['installed', 'disabled'].includes(codexInstall.installed?.status)\n      && codexInstall.installed?.version\n",
+    why: 'a pinned install whose list row carries no version keeps an unverified proof reusable',
+  },
+  {
+    id: 'Z2', file: 'plugins/runtime/scripts/cutover-audit.mjs', tests: [T_CUTOVER],
+    from: '    codexRepair.length > 0\n',
+    to: '    false\n',
+    why: 'cutover sends a Codex install at another version to an executor that cannot repair it',
+  },
+
+  // ---- S3 review round 4 (Codex) -------------------------------------------
+  {
+    id: 'Z3', file: 'plugins/runtime/scripts/bootstrap.mjs', tests: [T_IDENTITY],
+    from: "          recovery: host === 'codex'\n",
+    to: '          recovery: false\n',
+    why: 'a Codex install below its floor is sent to a per-plugin update Codex does not have',
+  },
+  {
+    id: 'Z4', file: 'plugins/runtime/scripts/bootstrap.mjs', tests: [T_IDENTITY],
+    from: "      if (host === 'codex' && entry?.state === 'unknown' && entry.version) return { status: 'unknown', recovery: unreadableCodexInstallRecovery(name, entry.version) };\n",
+    to: '',
+    why: 'an unreadable Codex install reads unknown with no remedy named',
+  },
+  {
+    id: 'Z6', file: 'plugins/runtime/scripts/bootstrap.mjs', tests: [T_BOOTSTRAP],
+    from: '    ...(manualRepairs.length > 0 ? { manual_actions: manualRepairs } : {}),\n',
+    to: '',
+    why: 'bootstrap presents no remedy for an unreadable Codex install',
+  },
+
+  // ---- S3 review round 5 (Codex) -------------------------------------------
+  {
+    id: 'Y12', file: IDENTITY, tests: [T_IDENTITY],
+    from: "    if (path.includes('\\uFFFD')) return unverifiedIdentity('a path could not be decoded losslessly, so it cannot be compared');\n",
+    to: '',
+    why: 'two different file names that decode to the same replacement character compare equal',
+  },
+  {
+    id: 'V12', file: SHUTTLE, tests: [T_NOTIFY],
+    from: '  for (let i = 0; i < Math.max(ia.length, ib.length); i += 1) {\n',
+    to: '  return 0;\n  for (let i = 0; i < Math.max(ia.length, ib.length); i += 1) {\n',
+    why: 'the shuttle treats every prerelease of a core as equal',
+  },
+  {
+    id: 'V13', file: STATUSLINE, tests: [T_STATUSLINE],
+    from: '  for (let i = 0; i < Math.max(ia.length, ib.length); i += 1) {\n',
+    to: '  return 0;\n  for (let i = 0; i < Math.max(ia.length, ib.length); i += 1) {\n',
+    why: 'the statusline treats every prerelease of a core as equal',
+  },
+  {
+    id: 'Z7', file: 'plugins/runtime/scripts/bootstrap.mjs', tests: [T_IDENTITY],
+    from: "  if (pinSatisfiesFloor && ['behind', 'content-mismatch'].includes(install?.currentness)) {",
+    to: '  if (false) {',
+    why: 'a Codex install that failed to materialize a floor-satisfying pin is sent to a refresh that changes nothing',
+  },
+  {
+    id: 'Z8', file: 'plugins/runtime/scripts/cutover-audit.mjs', tests: [T_CUTOVER],
+    from: "  if (unreadableHooks.length > 0) {\n    items.push({",
+    to: "  if (false) {\n    items.push({",
+    why: 'cutover asks for a hook review settings will refuse to attest, with no restore step first',
+  },
+
+  // ---- S3 review round 6 (Codex) -------------------------------------------
+  {
+    id: 'Y13', file: IDENTITY, tests: [T_IDENTITY],
+    from: "        out.set(relPath, { mode: '120000', oid: gitBlobId(await readlink(path, { encoding: 'buffer' })) });",
+    to: "        out.set(relPath, { mode: '120000', oid: gitBlobId(Buffer.from(await readlink(path))) });",
+    why: 'a symlink target is decoded before it is hashed, so targets that decode alike collide',
+  },
+  {
+    id: 'Y14', file: IDENTITY, tests: [T_IDENTITY],
+    from: '  const refVersion = ref !== null && ref.startsWith(refPrefix) ? ref.slice(refPrefix.length) : null;',
+    to: "  const refVersion = ref !== null && ref.startsWith(refPrefix) ? ref.slice(ref.lastIndexOf('-v') + 2) : null;",
+    why: 'a version containing -v is split at the last -v and the pin reads as malformed',
+  },
+  {
+    id: 'Z9', file: 'plugins/runtime/scripts/cutover-audit.mjs', tests: [T_CUTOVER],
+    from: '  const codexRepair = codexWrongVersion.filter((entry) => entry.codex_catalog_target === entry.expected);',
+    to: '  const codexRepair = codexWrongVersion;',
+    why: 'cutover sends an install behind a pin that also trails the release to a reinstall that lands the older pin',
+  },
+
+  // ---- S3 review round 7 (Codex) -------------------------------------------
+  {
+    id: 'Y15', file: PROBE, tests: [T_IDENTITY],
+    from: '    return comparePrereleaseAware(vb, va) ?? semverCompare(vb, va);',
+    to: '    return semverCompare(vb, va);',
+    why: 'a list-unavailable probe reads an older retained prerelease as the install',
   },
 ];

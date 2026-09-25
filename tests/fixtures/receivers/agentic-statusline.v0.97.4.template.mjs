@@ -2,7 +2,7 @@
 // agentic-statusline.mjs — Claude Code statusLine shim for agentic-plugins
 // (rendered by the runtime:bootstrap statusline plan, ADR-0048 §2/§2.1).
 //
-// @agentic-receiver: statusline delegating-shim v2
+// @agentic-receiver: statusline delegating-shim v1
 //
 // Source template: plugins/runtime/receivers/agentic-statusline.mjs. It ships
 // with the runtime plugin as render-input DATA, deliberately outside
@@ -143,42 +143,18 @@ function semverCompare(a, b) {
   }
   // Equal core: a clean release ranks ABOVE any prerelease of it, so the
   // candidate sort cannot pick a beta by directory order when the released
-  // version is also installed; two prereleases order by SemVer §11 identifier
-  // precedence (numeric identifiers numerically and below alphanumeric ones, a
-  // shorter set below a longer one it prefixes).
-  const ia = na.indexOf('-') === -1 ? null : na.slice(na.indexOf('-') + 1).split('.');
-  const ib = nb.indexOf('-') === -1 ? null : nb.slice(nb.indexOf('-') + 1).split('.');
-  if (ia === null || ib === null) return (ia === null ? 1 : 0) - (ib === null ? 1 : 0);
-  for (let i = 0; i < Math.max(ia.length, ib.length); i += 1) {
-    if (ia[i] === undefined) return -1;
-    if (ib[i] === undefined) return 1;
-    const numA = /^\d+$/.test(ia[i]);
-    const numB = /^\d+$/.test(ib[i]);
-    if (numA && numB) {
-      const diff = Number.parseInt(ia[i], 10) - Number.parseInt(ib[i], 10);
-      if (diff !== 0) return diff;
-    } else if (numA !== numB) {
-      return numA ? -1 : 1;
-    } else if (ia[i] !== ib[i]) {
-      return ia[i] < ib[i] ? -1 : 1;
-    }
-  }
-  return 0;
+  // version is also installed.
+  const preA = na.indexOf('-') === -1 ? 0 : 1;
+  const preB = nb.indexOf('-') === -1 ? 0 : 1;
+  return preB - preA;
 }
 
-// ADR-0039 §5 discovery ladder, with the ADR-0061 §Decision 3 candidates. The
-// sibling-monorepo rung does not apply to a home-installed shim; point
-// AGENTIC_RUNTIME_ROOT at a source checkout instead.
-//
-// Each host's candidate is its versioned install cache. The Codex marketplace
-// clone ($CODEX_HOME/.tmp/marketplaces/...) is never a candidate, not even a
-// fallback: it tracks the repository's main branch, so reading it runs
-// unreleased code. v1 of this shim fell back to that clone.
+// ADR-0039 §5 discovery ladder. The sibling-monorepo rung does not apply to a
+// home-installed shim; point AGENTIC_RUNTIME_ROOT at a source checkout instead.
 //
 // Same-host preference: this is a CLAUDE statusline receiver, so the Claude
 // cache is probed FIRST — a stale opposite-host Codex install must never
-// shadow a current Claude one — and the Codex cache is used only when Claude
-// has no runtime installed at all.
+// shadow a current Claude one.
 //
 // The ladder resolves the AUTHORITATIVE root — the newest install that is a
 // runtime plugin at all — and stops. It deliberately does NOT filter candidates
@@ -191,65 +167,38 @@ function isRuntimePlugin(root) {
   return readManifestVersion(root) !== null;
 }
 
-// The newest install in one host's cache whose own manifest (`manifestRel`)
-// names the runtime plugin, as { root, version }, or null. A directory under
-// .../runtime/ that holds some other plugin is not a runtime install. The
-// version is the one that manifest declares, so the floor gate judges the same
-// manifest the selection did.
-function newestRuntimeInstall(base, manifestRel) {
-  const candidates = [];
-  try {
-    for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const root = path.join(base, entry.name);
-      let manifest;
-      try {
-        manifest = JSON.parse(fs.readFileSync(path.join(root, manifestRel), 'utf8'));
-      } catch {
-        continue;
-      }
-      if (!manifest || manifest.name !== 'runtime') continue;
-      candidates.push({ version: typeof manifest.version === 'string' ? manifest.version : '0.0.0', root: root });
-    }
-  } catch {
-    return null;
-  }
-  if (candidates.length === 0) return null;
-  candidates.sort(function (a, b) { return semverCompare(b.version, a.version); });
-  return candidates[0];
-}
-
-// The canonical path of a resolved root, so the module this shim imports from
-// it is named by one spelling however the cache was reached.
-function canonical(root) {
-  try {
-    return fs.realpathSync(root);
-  } catch {
-    return root;
-  }
-}
-
-// Returns { root, version } or null.
 function resolveRuntimeRoot() {
   const override = process.env.AGENTIC_RUNTIME_ROOT;
   if (typeof override === 'string' && override.length > 0) {
     if (!path.isAbsolute(override)) return null;
-    return isRuntimePlugin(override) ? { root: canonical(override), version: readManifestVersion(override) } : null;
+    return isRuntimePlugin(override) ? override : null;
   }
   const home = os.homedir();
-  const claude = newestRuntimeInstall(
-    path.join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime'),
-    path.join('.claude-plugin', 'plugin.json'),
-  );
-  if (claude !== null) return { root: canonical(claude.root), version: claude.version };
+  const claudeBase = path.join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime');
+  let candidates = [];
+  try {
+    for (const entry of fs.readdirSync(claudeBase, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const root = path.join(claudeBase, entry.name);
+      const version = readManifestVersion(root);
+      if (!version) continue;
+      candidates.push({ version: version, root: root });
+    }
+  } catch {
+    candidates = [];
+  }
+  if (candidates.length > 0) {
+    candidates.sort(function (a, b) { return semverCompare(b.version, a.version); });
+    return candidates[0].root;
+  }
   const codexHome = typeof process.env.CODEX_HOME === 'string' && process.env.CODEX_HOME.length > 0
     ? path.resolve(process.env.CODEX_HOME)
     : path.join(home, '.codex');
-  const codex = newestRuntimeInstall(
-    path.join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime'),
-    path.join('.codex-plugin', 'plugin.json'),
-  );
-  return codex === null ? null : { root: canonical(codex.root), version: codex.version };
+  const codexBase = path.join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime');
+  try {
+    if (isRuntimePlugin(codexBase)) return codexBase;
+  } catch {}
+  return null;
 }
 
 // The stable output envelope — see LINE_MAX_CHARS. Returns null when the value
@@ -275,10 +224,9 @@ async function main() {
   } catch {
     return;
   }
-  const resolved = resolveRuntimeRoot();
-  if (resolved === null) return;                // no runtime — print nothing
-  const root = resolved.root;
-  const version = resolved.version;
+  const root = resolveRuntimeRoot();
+  if (root === null) return;                    // no runtime — print nothing
+  const version = readManifestVersion(root);
   if (!version || !versionGte(version, MIN_RUNTIME_VERSION)) return;  // downgraded
   let api;
   try {

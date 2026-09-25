@@ -196,29 +196,39 @@ function buildPluginPlans(plugins, { codexPerPluginVerbList = [], marketplaceReg
     const codexTmpMarketplace = plugin.cache?.codex_tmp_marketplace ?? null;
     const codexResolved = plugin.installed?.codex_resolved ?? null;
     // §1.4.1 currentness authority: the registered marketplace catalog at installLocation
-    // (from C2's probe), NOT repoRoot/plugins/<name>. Claude catalogs carry versions; Codex
-    // catalogs are versionless, so codex currentness stays `unknown` and keeps the source
-    // fallback below. This is the fix for the silent no-update path — a consumer has no
-    // source manifest, but it does have a registered catalog.
+    // (from C2's probe), NOT repoRoot/plugins/<name>. This is the fix for the silent
+    // no-update path — a consumer has no source manifest, but it does have a registered
+    // catalog.
     const catalogClaudeVersion = marketplaceRegistration?.claude?.catalog?.versions?.[name] ?? null;
-    // Codex catalogs are deliberately versionless (§1.4.1), so this is null today and the
-    // codex currentness target below falls back to the source manifest — but routing codex
-    // through the SAME catalog-preferred target keeps the two hosts symmetric (no claude/codex
-    // mirror) and picks up a per-entry version automatically if a Codex catalog ever gains one.
-    const catalogCodexVersion = marketplaceRegistration?.codex?.catalog?.versions?.[name] ?? null;
+    // ADR-0061 §Decision 4: the Codex target is the catalog pin — the version in the entry's
+    // `ref` — and only a VALID pin carries one. Before activation every entry is a `local`
+    // path, so this is null and Codex currentness is unknown, which is not a failure. It
+    // never falls back to the source manifest or to the marketplace clone's manifest: that
+    // comparison is exactly the one that would mark a correct pinned install stale against
+    // unreleased main.
+    const catalogCodexTarget = marketplaceRegistration?.codex?.catalog?.targets?.[name] ?? null;
+    const catalogCodexVersion = catalogCodexTarget?.status === 'pinned'
+      ? marketplaceRegistration?.codex?.catalog?.versions?.[name] ?? null
+      : null;
+    // The machine probe's verdict over the three facts (catalog target, installed version,
+    // content identity) — doctor carries it per plugin. It, not a version comparison made
+    // here, decides whether a Codex install needs repair.
+    const codexCurrentness = plugin.codex_install?.currentness ?? null;
+    // …and the installed version that verdict was reached on, so the explanation
+    // names the same fact (list-authoritative), never a retained cache's newest.
+    const codexInstalledFactVersion = plugin.codex_install?.installed?.version ?? null;
     // Actual per-host INSTALLED version (peer #8 (b)/(c)) — mirrors doctor's list-authoritative
     // resolution. Bound to attestation/review-targets so they NEVER attest a catalog-latest
-    // version that may not be installed; falls back to the source version so a source-tree run
-    // (where nothing is "installed" via the host list) keeps reporting the built version.
-    // The fallback rule lives in codex-attestation-versions.mjs so doctor's currency
-    // mirror resolves an attestation's plugin versions through the identical authority.
+    // version that may not be installed. The Codex rule lives in codex-attestation-versions.mjs
+    // so doctor's currency mirror resolves an attestation's plugin versions through the
+    // identical authority.
     const codexInstalledVersion = pickCodexInstalledVersion(codexResolved, codexCacheLatest);
     result[name] = {
       status: plugin.status,
       source_version: sourceVersion,
       installed_version: codexInstalledVersion ?? claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null,
       // Codex list-authoritative installed evidence, kept SEPARATE from the generic
-      // installed_version above (which falls through Codex → Claude → source). A /hooks
+      // installed_version above (which falls through Codex → Claude). A /hooks
       // attestation must bind the version Codex actually loaded, so it reads this
       // decision + version via resolveCodexInstalledPluginVersion rather than the
       // fall-through field (machine-bootstrap-contract.md §8.2, S8a4).
@@ -240,7 +250,10 @@ function buildPluginPlans(plugins, { codexPerPluginVerbList = [], marketplaceReg
         name,
         sourceVersion,
         catalogClaudeVersion,
-        catalogCodexVersion,
+        catalogCodexRef: catalogCodexVersion ? catalogCodexTarget.ref : null,
+        catalogListsCodexEntry: Boolean(catalogCodexTarget),
+        codexCurrentness,
+        codexInstalledFactVersion,
         sourceExists,
         marketplace: plugin.marketplace,
         claudeInstalled,
@@ -272,18 +285,19 @@ function summarizeSingleManifest(manifest) {
   };
 }
 
-function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = null, catalogCodexVersion = null, sourceExists = false, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace, codexResolved = null, codexPerPluginVerbList = [] }) {
+function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = null, catalogCodexRef = null, catalogListsCodexEntry = false, codexCurrentness = null, codexInstalledFactVersion = null, sourceExists = false, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace, codexResolved = null, codexPerPluginVerbList = [] }) {
   const recommendations = [];
   // `add` is the per-plugin install verb and the threshold for recognizing the
   // surface; enumerate only the observed verbs so strings never overclaim.
   const codexPerPluginSurface = codexPerPluginVerbList.includes('add');
   const codexPerPluginVerbText = codexPerPluginVerbList.join('/') || 'add';
   // register-marketplace-entry is a REPO-CATALOG edit — it only makes sense where the
-  // `./plugins/<name>` source exists (a checkout). On a consumer machine the source is
-  // absent, so doctor honestly reports `marketplace: null`, and emitting "add <name> to
-  // .claude-plugin/marketplace.json with source ./plugins/<name>" is meaningless advice
-  // (machine-bootstrap-contract.md §1.1 — the sixteen false remediations). Gate it behind
-  // source existence. The consumer remedy is Stage-0 host-native `marketplace add`, which
+  // plugin's source exists (a checkout). On a consumer machine the source is absent, so
+  // doctor honestly reports `marketplace: null`, and emitting "add <name> to
+  // .claude-plugin/marketplace.json" is meaningless advice (machine-bootstrap-contract.md
+  // §1.1 — the sixteen false remediations). Gate it behind source existence. The detail
+  // names no entry shape: the Codex entry is a `local` path before ADR-0061's activation
+  // and a release pin after it, which the post-release catalog sync writes. The consumer remedy is Stage-0 host-native `marketplace add`, which
   // bootstrap detects and prints (§2 Stage 0) from C2's registration probe — not a per-plugin
   // repo-catalog edit here.
   if (sourceExists && !marketplace?.claude) {
@@ -292,7 +306,7 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
       action: 'register-marketplace-entry',
       executed: false,
       command: null,
-      detail: `Add ${name} to .claude-plugin/marketplace.json with source ./plugins/${name}.`,
+      detail: `Add ${name} to .claude-plugin/marketplace.json.`,
     });
   }
   if (sourceExists && !marketplace?.codex) {
@@ -301,19 +315,18 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
       action: 'register-marketplace-entry',
       executed: false,
       command: null,
-      detail: `Add ${name} to .agents/plugins/marketplace.json with source ./plugins/${name}.`,
+      detail: `Add ${name} to .agents/plugins/marketplace.json, in the source shape the catalog's other entries use.`,
     });
   }
 
   // §1.4.1 currentness target: the registered marketplace catalog version (from C2), falling
   // back to the source manifest ONLY when no registered catalog answered (a source-tree run,
   // or an unregistered marketplace). This is what moves the claude currentness check off the
-  // repo checkout so a consumer's stale install is actually detected.
+  // repo checkout so a consumer's stale install is actually detected. (ADR-0046's rule; the
+  // Claude catalog is unchanged by ADR-0061.)
   const claudeCurrentnessTarget = catalogClaudeVersion ?? sourceVersion;
-  // Same catalog-preferred, source-fallback target for Codex (symmetric with claude). Codex
-  // catalogs are versionless so this is `sourceVersion` today; both hosts route through one
-  // discipline so the currentness path never conflates with the installed-version attestation.
-  const codexCurrentnessTarget = catalogCodexVersion ?? sourceVersion;
+  // The Codex target is the catalog pin and nothing else (ADR-0061 §Decision 4) — see
+  // catalogCodexVersion above. No pin, no Codex currentness recommendation.
   const claudeVersion = claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null;
   if (!claudeInstalled && !claudeCacheLatest) {
     const command = buildPluginCommand({ host: 'claude', action: 'install-plugin', name });
@@ -343,6 +356,35 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
 
   const codexVersion = codexCacheLatest?.manifest_version ?? null;
   const codexTmpVersion = codexTmpMarketplace?.status === 'available' ? codexTmpMarketplace.manifest_version ?? null : null;
+  // Whether Codex can install the plugin at all: its marketplace clone holds it, or the
+  // registered catalog lists it. The catalog is the authority once entries are pinned —
+  // Codex materializes a pin from its commit, whatever the clone's working tree holds.
+  const codexAvailable = Boolean(codexTmpVersion) || catalogListsCodexEntry;
+  const codexAvailableText = codexTmpVersion
+    ? `the marketplace cache has ${codexTmpVersion}`
+    : `the registered marketplace catalog lists ${name}`;
+  // ADR-0061 §Decision 7: a failed materialization leaves the older cache in place. Across
+  // a version change the install is behind its pin; in a same-version repair its bytes
+  // differ from the pinned tree. Neither is a success, and neither is fixed by a
+  // marketplace upgrade: the clone already names the pin, so an upgrade that finds no new
+  // revision reinstalls nothing. Codex re-materializes a pin only when it reinstalls from
+  // the marketplace, so this stays a manual follow-up that doctor then re-verifies.
+  const codexRepair = codexCurrentness === 'behind' || codexCurrentness === 'content-mismatch'
+    ? {
+      id: `${name}:codex:repair-codex-install`,
+      host: 'codex',
+      action: 'repair-codex-install',
+      executed: false,
+      command: null,
+      argv: null,
+      executable: false,
+      detail: codexCurrentness === 'behind'
+        ? `Codex has ${name} ${codexInstalledFactVersion ?? 'installed'} below the release its catalog pins (${catalogCodexRef}); a materialization across a version change did not complete.`
+        : `Codex has ${name} at the pinned version, but its files differ from the tree the catalog pins (${catalogCodexRef}); a same-version repair did not complete.`,
+      next_step: `Codex installs the pin when it reinstalls ${name} from the marketplace — after the marketplace revision next changes, or by removing and re-adding the plugin (\`codex plugin remove\`, then \`codex plugin add ${name}@agentic-plugins\`). Then re-run runtime:doctor to verify content identity.`,
+      evidence: { currentness: codexCurrentness, catalog_ref: catalogCodexRef },
+    }
+    : null;
   // ADR-0034 cross-script consumer: when `codex plugin list` was authoritative,
   // it — not the filesystem cache — decides the install state, so the cache-driven
   // recommendations in the trailing `else if` chain must not contradict it. Only
@@ -353,18 +395,10 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
   const codexInstallCacheStatus = codexCacheLatest ? 'present' : 'missing';
   const codexListAuthoritative = Boolean(codexResolved) && codexDecision !== 'fallback';
   if (codexListAuthoritative && codexDecision === 'installed') {
-    if (codexCurrentnessTarget && codexListVersion && semverCompare(String(codexListVersion), String(codexCurrentnessTarget)) < 0) {
-      const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
+    if (codexRepair) {
       recommendations.push({
-        id: `${name}:codex:upgrade-marketplace`,
-        host: 'codex',
-        action: 'upgrade-marketplace',
-        executed: false,
-        command: command.display,
-        argv: command.argv,
-        executable: true,
-        detail: `Codex \`plugin list\` reports ${name} ${codexListVersion} installed; source/catalog ${codexCurrentnessTarget}. Codex upgrades via the marketplace, not a per-plugin update command.`,
-        evidence: { list_decision: codexDecision, list_version: codexListVersion, install_cache_status: codexInstallCacheStatus },
+        ...codexRepair,
+        evidence: { ...codexRepair.evidence, list_decision: codexDecision, list_version: codexListVersion, install_cache_status: codexInstallCacheStatus },
       });
     } else if (!codexCacheLatest) {
       recommendations.push({
@@ -389,7 +423,7 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
         },
       });
     }
-    // installed per list, current version, cache materialized → no recommendation.
+    // installed per list, not behind or divergent, cache materialized → no recommendation.
   } else if (codexListAuthoritative && codexDecision === 'disabled') {
     recommendations.push({
       id: `${name}:codex:enable-plugin`,
@@ -399,29 +433,29 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
       command: null,
       argv: null,
       executable: false,
-      detail: `Codex \`plugin list\` reports ${name}${codexListVersion ? ` ${codexListVersion}` : ''} installed but disabled. Cache materialization is not the issue — enable it in the host before relying on Codex-side parity.`,
+      detail: codexRepair
+        ? `Codex \`plugin list\` reports ${name}${codexListVersion ? ` ${codexListVersion}` : ''} installed but disabled — and the install is not the release its catalog pins (see the repair follow-up). Enable it in the host before relying on Codex-side parity.`
+        : `Codex \`plugin list\` reports ${name}${codexListVersion ? ` ${codexListVersion}` : ''} installed but disabled. Cache materialization is not the issue — enable it in the host before relying on Codex-side parity.`,
       next_step: `Enable ${name} in Codex (host plugin settings), then verify with runtime:doctor.`,
       evidence: { list_decision: codexDecision, list_version: codexListVersion, install_cache_status: codexInstallCacheStatus },
     });
+    // Disabled does not make a stale or divergent install current: the repair is due
+    // either way, and enabling it would load bytes that are not the pinned release.
+    if (codexRepair) {
+      recommendations.push({
+        ...codexRepair,
+        evidence: { ...codexRepair.evidence, list_decision: codexDecision, list_version: codexListVersion, install_cache_status: codexInstallCacheStatus },
+      });
+    }
   } else if (codexListAuthoritative && codexDecision === 'not_installed') {
     // The list authoritatively reports not installed: recommend making it
     // available based on the marketplace cache state, ignoring any stale install
-    // cache (which the list overrides).
-    if (codexCurrentnessTarget && codexTmpVersion && semverCompare(String(codexTmpVersion), String(codexCurrentnessTarget)) < 0) {
-      const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
-      recommendations.push({
-        id: `${name}:codex:upgrade-marketplace`,
-        host: 'codex',
-        action: 'upgrade-marketplace',
-        executed: false,
-        command: command.display,
-        argv: command.argv,
-        executable: true,
-        detail: `Codex \`plugin list\` does not report ${name} installed; marketplace cache has ${codexTmpVersion}, source/catalog ${codexCurrentnessTarget}. Refresh the marketplace before installing.`,
-        evidence: { list_decision: codexDecision, list_version: null, install_cache_status: codexInstallCacheStatus },
-      });
-    } else if (codexTmpVersion && codexPerPluginSurface) {
-      // The list says not installed; the marketplace cache has it; Codex exposes
+    // cache (which the list overrides). The marketplace clone's presence says the
+    // catalog is configured; its manifest VERSION is not compared with anything —
+    // Codex installs the catalog pin, not the clone's working tree, which tracks
+    // main (ADR-0061 §Decision 4).
+    if (codexAvailable && codexPerPluginSurface) {
+      // The list says not installed; the marketplace offers it; Codex exposes
       // the per-plugin `add` verb. This is an EXECUTABLE `codex plugin add`
       // (ADR-0035 §5/§6, C) — an H2 install behind --execute-plugin-management.
       // The actual installPolicy/authPolicy gate happens at execute time via a
@@ -437,7 +471,7 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
         command: command.display,
         argv: command.argv,
         executable: true,
-        detail: `Codex \`plugin list\` does not report ${name} installed; the marketplace cache has ${codexTmpVersion}. Codex exposes per-plugin ${codexPerPluginVerbText}; runtime can install it with \`codex plugin add ${name}@agentic-plugins\` (ADR-0035 §5/§6 H2 executor). Execution is policy-gated (pre-flight installPolicy=AVAILABLE + non-ON_INSTALL authPolicy via \`codex plugin list --available --json\`), runs only under --execute-plugin-management, and post-verifies installation. It never trusts hooks (enabled ≠ trusted; /hooks review is separate).`,
+        detail: `Codex \`plugin list\` does not report ${name} installed; ${codexAvailableText}. Codex exposes per-plugin ${codexPerPluginVerbText}; runtime can install it with \`codex plugin add ${name}@agentic-plugins\` (ADR-0035 §5/§6 H2 executor). Execution is policy-gated (pre-flight installPolicy=AVAILABLE + non-ON_INSTALL authPolicy via \`codex plugin list --available --json\`), runs only under --execute-plugin-management, and post-verifies installation. It never trusts hooks (enabled ≠ trusted; /hooks review is separate).`,
         next_step: `Run \`runtime:settings --execute-plugin-management\` to install ${name} from the marketplace cache (or \`codex plugin add ${name}@agentic-plugins\` manually), then verify with runtime:doctor.`,
         evidence: {
           command_surface: 'per-plugin-and-marketplace',
@@ -446,8 +480,8 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
           install_cache_status: codexInstallCacheStatus,
         },
       });
-    } else if (codexTmpVersion) {
-      // Not installed, marketplace cache present, but the current Codex CLI exposes
+    } else if (codexAvailable) {
+      // Not installed, marketplace offers it, but the current Codex CLI exposes
       // only marketplace add/upgrade/remove (no per-plugin install) — stays manual.
       recommendations.push({
         id: `${name}:codex:install-plugin-manual`,
@@ -457,7 +491,7 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
         command: null,
         argv: null,
         executable: false,
-        detail: `Codex \`plugin list\` does not report ${name} installed; the marketplace cache has ${codexTmpVersion}, but the current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot install it directly.`,
+        detail: `Codex \`plugin list\` does not report ${name} installed; ${codexAvailableText}, but the current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot install it directly.`,
         next_step: `Install ${name} through the Codex host plugin surface (the current CLI exposes no per-plugin install verb), then verify with runtime:doctor. A fresh session alone does not install it.`,
         evidence: {
           command_surface: 'marketplace-only',
@@ -483,19 +517,9 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
       });
     }
   } else if (!codexCacheLatest) {
-    if (codexCurrentnessTarget && codexTmpVersion && semverCompare(String(codexTmpVersion), String(codexCurrentnessTarget)) < 0) {
-      const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
-      recommendations.push({
-        id: `${name}:codex:upgrade-marketplace`,
-        host: 'codex',
-        action: 'upgrade-marketplace',
-        executed: false,
-        command: command.display,
-        argv: command.argv,
-        executable: true,
-        detail: `Codex marketplace cache has ${codexTmpVersion}; source/catalog ${codexCurrentnessTarget}. Codex upgrades via the marketplace, not a per-plugin update command.`,
-      });
-    } else if (codexTmpVersion) {
+    // As above: the clone's presence (or the registered catalog's entry) is evidence
+    // the catalog is configured, and the clone's version is never a currentness input.
+    if (codexAvailable) {
       recommendations.push({
         id: `${name}:codex:materialize-plugin-cache`,
         host: 'codex',
@@ -505,8 +529,8 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
         argv: null,
         executable: false,
         detail: codexPerPluginSurface
-          ? `Codex marketplace cache already has ${name} ${codexTmpVersion}, but no per-plugin install cache was found. Codex exposes per-plugin ${codexPerPluginVerbText}; runtime recognizes this surface but does not auto-execute codex plugin add (execution wiring is a deferred follow-up), so cache materialization stays manual.`
-          : `Codex marketplace cache already has ${name} ${codexTmpVersion}, but no per-plugin install cache was found. Current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot execute cache materialization directly.`,
+          ? `Codex marketplace offers ${name} (${codexAvailableText}), but no per-plugin install cache was found. Codex exposes per-plugin ${codexPerPluginVerbText}; runtime recognizes this surface but does not auto-execute codex plugin add (execution wiring is a deferred follow-up), so cache materialization stays manual.`
+          : `Codex marketplace offers ${name} (${codexAvailableText}), but no per-plugin install cache was found. Current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot execute cache materialization directly.`,
         next_step: codexPerPluginSurface
           ? `Run \`codex plugin add ${name}@agentic-plugins\` manually or start a fresh Codex session, then verify host cache materialization with runtime:doctor. Do not repeat marketplace add unless the marketplace cache is missing or stale.`
           : 'Start a fresh Codex session or invoke the plugin surface after marketplace refresh, then verify host cache materialization with runtime:doctor. Do not repeat marketplace add unless the marketplace cache is missing or stale.',
@@ -531,18 +555,8 @@ function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = nul
           : `Codex exposes marketplace add/upgrade/remove, not per-plugin install; add the marketplace catalog to make ${name} available.`,
       });
     }
-  } else if (codexCurrentnessTarget && codexVersion && semverCompare(String(codexVersion), String(codexCurrentnessTarget)) < 0) {
-    const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
-    recommendations.push({
-      id: `${name}:codex:upgrade-marketplace`,
-      host: 'codex',
-      action: 'upgrade-marketplace',
-      executed: false,
-      command: command.display,
-      argv: command.argv,
-      executable: true,
-      detail: `Cached ${codexVersion}; source/catalog ${codexCurrentnessTarget}. Codex upgrades via the marketplace, not a per-plugin update command.`,
-    });
+  } else if (codexRepair) {
+    recommendations.push(codexRepair);
   }
   return recommendations;
 }
@@ -676,6 +690,22 @@ function buildPluginManagementManualFollowups(plans) {
       reasons: uniqueStrings(codexInstallBlocked.map((plan) => plan.block_reason).filter(Boolean)),
       commands: uniqueStrings(codexInstallBlocked.map((plan) => plan.command).filter(Boolean)),
       verify: 'Resolve the policy condition (e.g. authenticate when authPolicy is ON_INSTALL), run the command manually, then re-run runtime:doctor.',
+    });
+  }
+  // ADR-0061 §Decision 4/7: a Codex install behind its pin, or carrying bytes that are
+  // not the pinned tree. Advisory — currentness never gates completion (ADR-0046
+  // §1.4.1) — but a reader of this aggregate must not miss that a repair is due.
+  const codexRepair = plans.filter((plan) => plan.host === 'codex' && plan.action === 'repair-codex-install');
+  if (codexRepair.length > 0) {
+    followups.push({
+      id: 'codex-install-repair',
+      host: 'codex',
+      status: 'advisory',
+      reason: `Codex installs that are not the release their catalog pins: ${uniqueStrings(codexRepair.map((plan) => plan.plugin)).join(', ')}.`,
+      environment: 'A shell with the Codex CLI; runtime does not repair the install itself.',
+      details: codexRepair.map((plan) => plan.detail),
+      commands: [],
+      verify: 'After Codex reinstalls from the marketplace (a marketplace revision change, or removing and re-adding the plugin), re-run runtime:doctor and confirm the plugin reads current.',
     });
   }
   return followups;

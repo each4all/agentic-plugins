@@ -410,6 +410,12 @@ export const ARGV_VERB_ALLOWLIST = {
     // pin scan's read-only tracked-file enumeration. `ls-files` never mutates;
     // `-z` is NUL-delimited output. Exact four-token literal (repoRoot → '*').
     ['-C', '*', 'ls-files', '-z'],
+    // lib/machine-probe.mjs verifyPinnedTree — the ADR-0061 §Decision 4 content-identity
+    // read: list the tree at a catalog-pinned commit from the registered Codex
+    // marketplace clone's object store (never its working tree). Read-only, index locks
+    // disabled, GIT_* redirect variables scrubbed from the child env. Exact literal:
+    // clone root, 40-hex sha and plugin path are the three '*' positions.
+    ['--no-optional-locks', '-C', '*', 'ls-tree', '-r', '-z', '*', '--', '*'],
   ],
   // notify.mjs macos-osascript channel (ADR-0040 §2): ONE verb-path pinning
   // the FIXED AppleScript program byte-for-byte, arity-locked. The program

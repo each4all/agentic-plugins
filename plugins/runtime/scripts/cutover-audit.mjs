@@ -309,6 +309,22 @@ function buildOperatorVerification({ checks, cutoverGate, readyCandidate, doctor
     criterion.id === 'lifecycle_hook_continuity'
       || criterion.id === 'plugin_management_followups'
   ));
+  // An installed plugin whose hooks cannot be read (ADR-0061 S3) blocks the hook review
+  // below: settings refuses to attest while it stands, so its restore comes first.
+  const unreadableHooks = doctor?.codex_plugin_hooks?.summary?.install_unreadable_plugins ?? [];
+  if (unreadableHooks.length > 0) {
+    items.push({
+      id: 'codex-install-cache-restore',
+      status: 'pending',
+      owner: 'operator',
+      command: unreadableHooks.map((plugin) => `codex plugin remove ${plugin}@agentic-plugins && codex plugin add ${plugin}@agentic-plugins`).join('; '),
+      verify: `Reinstall ${unreadableHooks.join(', ')} on Codex from the marketplace: Codex lists them installed, but no install-cache directory holds the listed version, so their hooks cannot be read or attested.`,
+      pass_condition: 'runtime:doctor no longer lists them under codex_plugin_hooks.summary.install_unreadable_plugins.',
+      fail_condition: 'runtime:doctor still reports codex_plugin_hooks.status install_unreadable.',
+      after: 'Then complete the Codex hook review below.',
+      reason: doctor?.codex_plugin_hooks?.recommendations?.find((rec) => rec.action === 'restore-codex-install-cache')?.detail ?? null,
+    });
+  }
   if (hookFollowups.length > 0 || hookCriteria.length > 0) {
     const hookCommands = uniqueStrings(hookFollowups.flatMap((action) => action.commands ?? []));
     // Prefer the explicit review targets; fall back to the bundled set, then to
@@ -333,7 +349,9 @@ function buildOperatorVerification({ checks, cutoverGate, readyCandidate, doctor
       verify: `In the active Codex session, review and enable/trust ${reviewSubject}.`,
       pass_condition: 'runtime:doctor reports observed experience parity ready, score 100%, and zero manual follow-ups.',
       fail_condition: 'Any bundled hook remains disabled, untrusted, inactive, or still points at an old cache-version command path.',
-      after: 'Run runtime:settings --attest-codex-hook-review, then rerun runtime:doctor and runtime:cutover audit.',
+      after: unreadableHooks.length > 0
+        ? 'After the install-cache restore above, run runtime:settings --attest-codex-hook-review, then rerun runtime:doctor and runtime:cutover audit.'
+        : 'Run runtime:settings --attest-codex-hook-review, then rerun runtime:doctor and runtime:cutover audit.',
       reason: hookReason,
     });
   }
@@ -1022,12 +1040,39 @@ function checkPluginVersions({ repoRoot, manifest, doctor }) {
       source,
       claude_cache: claudeCache,
       codex_installed: codexInstalled,
+      // ADR-0061 §Decision 4: the install measured against its catalog pin, and the
+      // release that pin names.
+      codex_currentness: plugin.codex_install?.currentness ?? null,
+      codex_catalog_target: plugin.codex_install?.catalog_target?.version ?? null,
       status: expected && source === expected && claudeCache === expected && codexInstalled === expected
         ? 'satisfied'
         : 'blocked',
     };
   });
   const blocked = entries.filter((entry) => entry.status !== 'satisfied');
+  // runtime:settings can execute Claude installs/updates and a Codex install. A Codex
+  // plugin installed at another version needs one of two things, and the catalog pin
+  // (ADR-0061 §Decision 4) says which: when the pin already names the expected release,
+  // the install is not that pin — behind it (a failed materialization) or ahead of it (a
+  // local override) — and a reinstall from the marketplace re-materializes the pin
+  // (§Decision 7); otherwise the catalog does not name the expected release yet, and the
+  // marketplace needs a refresh first — reinstalling an older pin would leave the gap.
+  // Codex has no per-plugin update either way.
+  const codexWrongVersion = blocked.filter((entry) => entry.codex_installed !== null && entry.codex_installed !== entry.expected);
+  const codexRepair = codexWrongVersion.filter((entry) => entry.codex_catalog_target === entry.expected);
+  const codexRefresh = codexWrongVersion.filter((entry) => !codexRepair.includes(entry));
+  const executable = blocked.filter((entry) => entry.source !== entry.expected
+    || entry.claude_cache !== entry.expected
+    || entry.codex_installed === null);
+  const steps = [
+    executable.length > 0 ? 'run runtime:settings --execute-plugin-management' : null,
+    codexRefresh.length > 0
+      ? `refresh the Codex marketplace (\`codex plugin marketplace upgrade agentic-plugins\`) so Codex installs the expected release of ${codexRefresh.map((entry) => entry.plugin).join(', ')}`
+      : null,
+    codexRepair.length > 0
+      ? `reinstall ${codexRepair.map((entry) => entry.plugin).join(', ')} on Codex from the marketplace (\`codex plugin remove\`, then \`codex plugin add\`) so Codex materializes the release its catalog pins`
+      : null,
+  ].filter(Boolean);
   return {
     id: 'installed_plugin_versions',
     label: 'Installed/cache plugin versions match release manifest',
@@ -1037,7 +1082,7 @@ function checkPluginVersions({ repoRoot, manifest, doctor }) {
       entries,
     },
     next_action: blocked.length > 0
-      ? 'Run runtime:settings --execute-plugin-management, then rerun this audit.'
+      ? `${steps.join('; ').replace(/^./, (c) => c.toUpperCase())}, then rerun this audit.`
       : null,
   };
 }

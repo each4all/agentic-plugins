@@ -37,7 +37,7 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
    - `--apply` may write only `.agentic-plugins/config.toml` in the repo and/or user home.
    - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It preflights the relevant host plugin command surface first, uses Claude's non-slash `claude plugin install/update` CLI when available, blocks unavailable CLI surfaces before execution, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
    - `--execute-plugin-cleanup` runs only `claude plugin uninstall <plugin>@agentic-plugins` commands generated from `runtime:doctor` retired/unknown `agentic-plugins` findings. It blocks unavailable Claude plugin surfaces, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts, and does not authorize general plugin uninstall.
-   - Codex bundled plugin hooks are reported read-only: packaged hook plugins, the `plugin_hooks`/generic `hooks` status, `~/.codex/config.toml` `[hooks.state]` enabled/disabled state for expected bundled hooks, the stage-appropriate gate (generic `[features].hooks`, default on, on current Codex; a manual `[features].plugin_hooks` edit on legacy Codex < ~0.134), and the `/hooks` manual follow-up when active-session review/trust cannot be verified. Settings never writes Codex host config — the former `--apply-codex-plugin-hooks` write was removed per ADR-0035 §6. After the operator reviews/trusts hooks in Codex with `/hooks`, `--attest-codex-hook-review` records a sanitized settings artifact that doctor can use while the hook-bearing plugin set and source versions still match and expected bundled hook state is not explicitly disabled.
+   - Codex bundled plugin hooks are reported read-only: packaged hook plugins, the `plugin_hooks`/generic `hooks` status, `~/.codex/config.toml` `[hooks.state]` enabled/disabled state for expected bundled hooks, the stage-appropriate gate (generic `[features].hooks`, default on, on current Codex; a manual `[features].plugin_hooks` edit on legacy Codex < ~0.134), and the `/hooks` manual follow-up when active-session review/trust cannot be verified. Settings never writes Codex host config — the former `--apply-codex-plugin-hooks` write was removed per ADR-0035 §6. After the operator reviews/trusts hooks in Codex with `/hooks`, `--attest-codex-hook-review` records a sanitized settings artifact that doctor can use while the Codex CLI version, the hook-bearing plugin set, and the Codex-installed plugin versions still match and expected bundled hook state is not explicitly disabled.
 
 ## Scope
 
@@ -205,9 +205,11 @@ $runtime:settings --attest-codex-hook-review
 
 Run it only after the active Codex session has opened `/hooks` and the operator
 has reviewed/trusted every listed bundled agentic-plugins hook review target.
-It records the current hook-bearing plugin set, source versions, and review
-target checklist so `runtime:doctor` can clear the manual follow-up until those
-change.
+It records the Codex CLI version, the current hook-bearing plugin set, the
+Codex-installed version of each covered plugin, and the review target checklist
+so `runtime:doctor` can clear the manual follow-up until those change. A plugin
+counts only once Codex has installed it: Codex loads hooks from the installed
+package (ADR-0061 §Decision 4).
 
 If Codex already has a current temporary marketplace cache but no per-plugin
 install cache, report that as manual cache materialization. Codex `0.137.0`

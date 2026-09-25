@@ -635,6 +635,75 @@ describe('runtime cutover audit', () => {
     const versionCheck = report.checks.find((check) => check.id === 'installed_plugin_versions');
     strictEqual(versionCheck.status, 'blocked');
     strictEqual(versionCheck.evidence.entries.find((entry) => entry.plugin === 'runtime').codex_installed, '0.34.0');
+    // No codex_install facts (an unpinned catalog, or a pin that lags the release):
+    // the catalog is what must move, so the marketplace needs a refresh.
+    strictEqual(versionCheck.next_action, 'Refresh the Codex marketplace (`codex plugin marketplace upgrade agentic-plugins`) so Codex installs the expected release of runtime, then rerun this audit.');
+  });
+
+  it('puts the install-cache restore before the hook review while an installed plugin\'s hooks cannot be read (round 5)', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const doctor = doctorReport({
+      experienceParity: {
+        status: 'partial',
+        score_percent: 91,
+        manual_followup_count: 1,
+        counts: { satisfied: 6, partial: 2, not_verified: 0, blocked: 0 },
+        criteria: [{ id: 'lifecycle_hook_continuity', status: 'partial' }],
+        next_actions: [{ id: 'codex-hook-review', host: 'codex', commands: ['/hooks'], reason: 'Review/trust bundled hooks with /hooks.' }],
+      },
+    });
+    doctor.codex_plugin_hooks = {
+      status: 'install_unreadable',
+      summary: { bundled_plugins: ['orchestrator'], install_unreadable_plugins: ['engineer'] },
+      review_targets: [{ plugin: 'orchestrator' }],
+      recommendations: [{ action: 'restore-codex-install-cache', detail: 'Codex lists engineer installed, but no install cache directory holds the listed version.' }],
+    };
+    const report = await runCutoverAudit({ repoRoot: root, now: NOW, doctorReport: doctor, footerState: 'closed', omccDevActive: 'no' });
+    const ids = report.operator_verification.map((entry) => entry.id);
+    ok(ids.indexOf('codex-install-cache-restore') >= 0, ids.join(','));
+    ok(ids.indexOf('codex-install-cache-restore') < ids.indexOf('codex-hook-review'), 'restore comes before the review it unblocks');
+    const restore = report.operator_verification.find((entry) => entry.id === 'codex-install-cache-restore');
+    strictEqual(restore.command, 'codex plugin remove engineer@agentic-plugins && codex plugin add engineer@agentic-plugins');
+    ok(report.operator_verification.find((entry) => entry.id === 'codex-hook-review').after.startsWith('After the install-cache restore above'));
+  });
+
+  it('names a manual Codex reinstall only when the install is behind or divergent from its pin (ADR-0061)', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const REINSTALL = 'Reinstall runtime on Codex from the marketplace (`codex plugin remove`, then `codex plugin add`) so Codex materializes the release its catalog pins, then rerun this audit.';
+    const REFRESH = 'Refresh the Codex marketplace (`codex plugin marketplace upgrade agentic-plugins`) so Codex installs the expected release of runtime, then rerun this audit.';
+    // The release the audit expects (the release-please manifest), read from the audit.
+    const probe = await runCutoverAudit({ repoRoot: root, now: NOW, doctorReport: doctorReport(), footerState: 'closed', omccDevActive: 'no' });
+    const release = probe.checks.find((check) => check.id === 'installed_plugin_versions').evidence.entries.find((entry) => entry.plugin === 'runtime').expected;
+    for (const [currentness, pin, expected] of [
+      ['behind', release, REINSTALL],
+      ['content-mismatch', release, REINSTALL],
+      // The install IS its pin; the pin trails the release — refresh, never reinstall.
+      ['current', '0.0.1', REFRESH],
+      // Round 6 (Codex review): behind a pin that ALSO trails the release — reinstalling
+      // would land the older pin, so the catalog must move first.
+      ['behind', '0.0.1', REFRESH],
+      // AHEAD of a pin that names the release (a local override): reinstalling returns
+      // it to the pin, which is the release.
+      ['ahead', release, REINSTALL],
+    ]) {
+      const doctor = doctorReport();
+      doctor.plugins.runtime.cache.codex.latest.manifest_version = currentness === 'ahead' ? '9.9.9' : '0.34.0';
+      doctor.plugins.runtime.codex_install = { currentness, catalog_target: { status: 'pinned', version: pin } };
+      const report = await runCutoverAudit({ repoRoot: root, now: NOW, doctorReport: doctor, footerState: 'closed', omccDevActive: 'no' });
+      const versionCheck = report.checks.find((check) => check.id === 'installed_plugin_versions');
+      strictEqual(versionCheck.evidence.entries.find((entry) => entry.plugin === 'runtime').codex_currentness, currentness);
+      strictEqual(versionCheck.next_action, expected, `${currentness} behind pin ${pin}`);
+    }
   });
 
   it('treats a list-authoritative installed codex version as satisfied without a filesystem cache (ADR-0034)', async () => {
@@ -696,6 +765,8 @@ describe('runtime cutover audit', () => {
     strictEqual(runtimeEntry.codex_installed, null);
     strictEqual(runtimeEntry.status, 'blocked');
     strictEqual(versionCheck.status, 'blocked');
+    // Not installed at all: settings can run the Codex install.
+    strictEqual(versionCheck.next_action, 'Run runtime:settings --execute-plugin-management, then rerun this audit.');
   });
 
   it('falls back to the codex cache version when the list was unavailable (ADR-0034)', async () => {
