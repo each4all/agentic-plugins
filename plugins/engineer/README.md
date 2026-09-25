@@ -318,6 +318,8 @@ user-facing warning.
 | Variable | Purpose | Default |
 |---|---|---|
 | `AGENTIC_COMPANIONS_ROOT` | Absolute path containing `claude-companion.mjs` and `codex-companion.mjs`; the discovery library resolves the peer companion under this root, bypassing cache-glob discovery. Useful for development workflows pointing at a source-tree checkout. | (cache-glob fallback through the `companions` plugin) |
+| `AGENTIC_ORCHESTRATOR_ROOT` | Absolute path of an orchestrator plugin root (holding `scripts/state.mjs`) for the ADR-0019 §4 parent writeback at Stop. Replaces the install-cache lookup and never falls through to it. | engineer's own host install cache, then the other host's (reported), then the sibling checkout when engineer runs from one |
+| `AGENTIC_RUNTIME_ROOT` | Absolute path of a runtime plugin root for the completion footer (`scripts/footer.mjs`) and the peer-run notification (`scripts/notify.mjs`). Replaces the install-cache lookup and never falls through to it. | same order as `AGENTIC_ORCHESTRATOR_ROOT` |
 | `PEER_RUN_CANCEL_GRACE_MS` | Grace period used by `scripts/peer-runner.mjs cancel` between TERM and KILL. | `10000` |
 | `PEER_RUN_STALE_GRACE_MS` | Age threshold used by `scripts/peer-runner.mjs sweep` before a dead, no-envelope non-terminal run is marked `orphaned`. | `60000` |
 | `PEER_RUN_RETENTION_TTL_DAYS` | Terminal peer-run ledger TTL used by `scripts/peer-runner.mjs sweep --apply`. | `14` |
@@ -329,6 +331,17 @@ Companion discovery flows through the canonical `companions` plugin's
 the cache-glob discovery for development workflows. Note that
 `discover-peer.mjs` itself is loaded from the consumer plugin's
 cache-glob bootstrap, not from the env-var-resolved directory.
+
+The sibling plugins engineer calls into (orchestrator for the parent
+writeback, runtime for the footer and notifications) resolve the same way
+(ADR-0061 §Decision 3): the `AGENTIC_*_ROOT` override when set, otherwise
+the versioned install cache of the host engineer itself runs from, and the
+other host's cache only when that host has none installed — a fallback
+engineer reports on stderr, because once ADR-0061's catalog pins are active a
+Codex install holds a release commit and the Claude copy does not. The sibling checkout (`plugins/<name>` beside
+`plugins/engineer`) applies only when engineer runs from a checkout. The
+Codex marketplace clone tracks the repository's `main` branch and is never a
+candidate.
 
 `RESEARCH_OUTPUT_ROOT` applies only to the `cited-brief` profile of
 `engineer:investigate` — see

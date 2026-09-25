@@ -1,15 +1,18 @@
 // ADR-0039 §5 — engineer discoverRuntimePluginRoot resolver tests.
 //
-// Mirrors the discover-engineer.mjs ladder (env → Claude-cache SemVer →
-// Codex-fixed-cache → sibling-monorepo), inverted for the runtime peer and
-// version-gated. Proves each rung + the fail-closed "missing / too-old"
+// Mirrors the discover-engineer.mjs ladder (env → the caller's own host
+// install cache → the other host's cache → sibling checkout), inverted for the
+// runtime peer and version-gated. The ADR-0061 §Decision 3 rules every copy
+// shares (custom CODEX_HOME, the clone never a candidate, cross-host fallback
+// reported, no sibling for an installed caller) are pinned across all copies in
+// tests/plugin-shape/test-installed-sibling-resolvers.mjs. Proves each rung + the fail-closed "missing / too-old"
 // contract (no fall-back to a stale cache). Host-free + deterministic: every
 // case injects env/home/selfUrl and builds throwaway fixtures. Run via
 // `node --test tests/engineer/test-discover-runtime.mjs`.
 
 import { describe, it } from 'node:test';
 import { strictEqual } from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -22,9 +25,9 @@ import {
 } from '../../plugins/engineer/scripts/discover-runtime.mjs';
 
 // Build a runtime plugin root at `root` with a manifest + a footer.mjs stub.
-async function mkRuntimeRoot(root, { version = '0.70.0', name = 'runtime', withFooter = true } = {}) {
-  await mkdir(join(root, '.claude-plugin'), { recursive: true });
-  await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name, version }));
+async function mkRuntimeRoot(root, { version = '0.70.0', name = 'runtime', withFooter = true, manifestDir = '.claude-plugin' } = {}) {
+  await mkdir(join(root, manifestDir), { recursive: true });
+  await writeFile(join(root, manifestDir, 'plugin.json'), JSON.stringify({ name, version }));
   if (withFooter) {
     await mkdir(join(root, 'scripts'), { recursive: true });
     await writeFile(join(root, 'scripts', 'footer.mjs'), '// stub footer\n');
@@ -41,15 +44,17 @@ async function mkClaudeCache(home, versions) {
   return base;
 }
 
-// Build the Codex fixed cache `<home>/.codex/.tmp/marketplaces/agentic-plugins/plugins/runtime/`.
+// Build the Codex install cache `<home>/.codex/plugins/cache/agentic-plugins/runtime/<version>/`.
 async function mkCodexCache(home, { version = '0.70.0' } = {}) {
-  const root = join(home, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime');
-  await mkRuntimeRoot(root, { version });
+  const root = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', 'runtime', version);
+  await mkRuntimeRoot(root, { version, manifestDir: '.codex-plugin' });
   return root;
 }
 
+// Canonical: the resolvers return canonical roots (ADR-0061 S2), and macOS
+// tmpdir sits behind /var -> /private/var.
 async function tmp(prefix) {
-  return mkdtemp(join(tmpdir(), prefix));
+  return realpath(await mkdtemp(join(tmpdir(), prefix)));
 }
 
 const NO_HOME = () => tmp('rt-emptyhome-'); // a home with no caches
@@ -91,7 +96,7 @@ describe('discoverRuntimePluginRoot (ADR-0039 §5)', () => {
     );
   });
 
-  it('Codex fixed cache → returns it when no Claude cache exists', async () => {
+  it('Codex install cache → returns it when no Claude cache exists', async () => {
     const home = await tmp('rt-codex-');
     const codexRoot = await mkCodexCache(home);
     strictEqual(
@@ -107,7 +112,7 @@ describe('discoverRuntimePluginRoot (ADR-0039 §5)', () => {
     const got = await discoverRuntimePluginRoot({
       env: {},
       home,
-      selfUrl: 'file:///Users/x/.codex/.tmp/marketplaces/agentic-plugins/plugins/engineer/scripts/discover-runtime.mjs',
+      selfUrl: pathToFileURL(join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', 'engineer', '0.18.0', 'scripts', 'discover-runtime.mjs')).href,
     });
     strictEqual(got, codexRoot, 'Codex-host self should prefer the Codex cache');
     // sanity: the Claude cache is present but not chosen
@@ -121,7 +126,7 @@ describe('discoverRuntimePluginRoot (ADR-0039 §5)', () => {
     const got = await discoverRuntimePluginRoot({
       env: {},
       home,
-      selfUrl: 'file:///Users/x/.claude/plugins/cache/agentic-plugins/engineer/0.18.0/scripts/discover-runtime.mjs',
+      selfUrl: pathToFileURL(join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer', '0.18.0', 'scripts', 'discover-runtime.mjs')).href,
     });
     strictEqual(got, join(claudeBase, '0.70.0'), 'Claude-host self should prefer the Claude cache');
   });

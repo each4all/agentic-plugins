@@ -11,10 +11,13 @@
 // it with minimal change.
 //
 // Responsibilities:
-//   1. Resolve the orchestrator plugin root (env override → Claude cache
-//      multi-version SemVer → Codex cache single fixed → monorepo
-//      sibling). Pattern mirrors `dispatch-peer.mjs`'s companion
-//      discovery — same env-then-cache-then-repo ladder.
+//   1. Resolve the orchestrator plugin root (env override → the install
+//      cache of the host engineer runs from → the other host's cache, only
+//      when the first has no orchestrator installed, and reported →
+//      monorepo sibling, only when engineer runs from a checkout). Every
+//      cache is versioned and manifest-verified; the Codex marketplace clone
+//      (~/.codex/.tmp/marketplaces/…) tracks the repository's main branch
+//      and is never a candidate (ADR-0061 §Decision 3).
 //   2. Resolve the parent workflow file path under canonical
 //      `<repoRoot>/.agentic-plugins/state/orchestrator/workflows/<parent>.md`
 //      or legacy `<repoRoot>/.claude/agentic-orchestrator/workflows/<parent>.md`.
@@ -41,7 +44,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, readdir, readFile as fsReadFile } from 'node:fs/promises';
-import { join, isAbsolute, resolve, dirname, basename } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { join, isAbsolute, resolve, dirname, basename, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
@@ -73,15 +77,6 @@ async function fileExists(path) {
   }
 }
 
-async function dirExists(path) {
-  try {
-    const st = await stat(path);
-    return st.isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 function semverCompare(a, b) {
   const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0);
   const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0);
@@ -93,35 +88,156 @@ function semverCompare(a, b) {
   return 0;
 }
 
-function cacheBases(home) {
+// Codex honors $CODEX_HOME for everything it writes, including the plugin
+// cache; an unset or empty value means ~/.codex.
+function codexHomeDir(env, home) {
+  const value = env.CODEX_HOME;
+  return typeof value === 'string' && value.length > 0 ? resolve(value) : join(home, '.codex');
+}
+
+function hostLayout(env, home) {
+  const codexHome = codexHomeDir(env, home);
   return {
-    claude: join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'orchestrator'),
-    codex: join(home, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'orchestrator'),
+    claude: {
+      // The trees a host installs into and clones marketplaces into. Code
+      // under them is that host's, never a checkout. Only these trees: a
+      // checkout elsewhere under the host's home is still a checkout.
+      roots: [
+        join(home, '.claude', 'plugins', 'cache'),
+        join(home, '.claude', 'plugins', 'marketplaces'),
+      ],
+      base: join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'orchestrator'),
+      manifest: join('.claude-plugin', 'plugin.json'),
+    },
+    codex: {
+      roots: [
+        join(codexHome, 'plugins', 'cache'),
+        join(codexHome, '.tmp', 'marketplaces'),
+      ],
+      base: join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'orchestrator'),
+      manifest: join('.codex-plugin', 'plugin.json'),
+    },
   };
+}
+
+// Canonical form: the nearest existing ancestor is realpath'd and the rest
+// re-appended, so a symlinked prefix (macOS /var -> /private/var, a symlinked
+// ~/.codex) compares equal on both sides even when the tail does not exist.
+// Every root this module returns is canonical too: the CLIs a root leads to
+// compare argv[1] with Node's canonical module path, and silently do nothing
+// when a symlink makes the two differ.
+function realOrResolved(path) {
+  let head = resolve(path);
+  const tail = [];
+  for (;;) {
+    try {
+      return join(realpathSync(head), ...tail.reverse());
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return resolve(path);
+      tail.push(basename(head));
+      head = parent;
+    }
+  }
+}
+
+function isWithin(child, parent) {
+  const rel = relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+function selfPathOf(selfUrl) {
+  if (typeof selfUrl !== 'string' || selfUrl.length === 0) return null;
+  try {
+    return fileURLToPath(selfUrl);
+  } catch {
+    return null;
+  }
+}
+
+// The length of the most specific root in `roots` that holds `path`, compared
+// both as spelled and canonically (so a path reached through a symlink, or a
+// tree symlinked elsewhere, still counts); 0 when none holds it. A symlink
+// below a root is not followed: the canonical comparison covers a root that is
+// itself a link or sits under one.
+function ownership(path, roots) {
+  const spelled = resolve(path);
+  const canonical = realOrResolved(path);
+  let best = 0;
+  for (const root of roots) {
+    const spelledRoot = resolve(root);
+    const canonicalRoot = realOrResolved(root);
+    if (isWithin(spelled, spelledRoot)) best = Math.max(best, spelledRoot.length);
+    if (isWithin(canonical, canonicalRoot)) best = Math.max(best, canonicalRoot.length);
+  }
+  return best;
+}
+
+// 'codex' | 'claude' when this file sits in that host's install cache or a
+// marketplace clone, else null (a checkout). When both hosts' trees hold it
+// (one cache relocated inside the other's), the more specific root wins.
+function callerHostOf(selfPath, hosts) {
+  if (!selfPath) return null;
+  const codex = ownership(selfPath, hosts.codex.roots);
+  const claude = ownership(selfPath, hosts.claude.roots);
+  if (codex === 0 && claude === 0) return null;
+  return codex >= claude ? 'codex' : 'claude';
+}
+
+/**
+ * The orchestrator install in one host cache: `{ state: 'absent' }` when no
+ * manifest-verified orchestrator is there, `{ state: 'unusable', version }`
+ * when one is but none carries scripts/state.mjs, else `{ state: 'ok', root,
+ * version }` for the newest that does.
+ */
+async function newestOrchestratorInstall({ base, manifest }) {
+  let entries;
+  try {
+    entries = await readdir(base, { withFileTypes: true });
+  } catch {
+    return { state: 'absent' };
+  }
+  const installed = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const versionRoot = join(base, entry.name);
+    let parsed;
+    try {
+      parsed = JSON.parse(await fsReadFile(join(versionRoot, manifest), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (parsed?.name !== 'orchestrator') continue;
+    installed.push({
+      version: typeof parsed.version === 'string' ? parsed.version : '0.0.0',
+      root: versionRoot,
+      capable: await fileExists(join(versionRoot, 'scripts', 'state.mjs')),
+    });
+  }
+  if (installed.length === 0) return { state: 'absent' };
+  installed.sort((a, b) => semverCompare(b.version, a.version));
+  const capable = installed.find((c) => c.capable);
+  if (!capable) return { state: 'unusable', version: installed[0].version };
+  return { state: 'ok', root: capable.root, version: capable.version };
 }
 
 /**
  * Resolve the orchestrator plugin root directory containing
- * `scripts/state.mjs`. Tries:
- *   1. `AGENTIC_ORCHESTRATOR_ROOT` env override
- *   2. Claude cache layout (multi-version; pick latest valid SemVer
- *      whose plugin.json `name` is "orchestrator" and whose
- *      scripts/state.mjs exists)
- *   3. Codex cache layout (single fixed path; verify scripts/state.mjs
- *      exists)
- *   4. Sibling fallback — derive engineer's own plugin root from
- *      `import.meta.url` (this file at `<engineer-root>/scripts/...`)
- *      and look for `<engineer-root>/../orchestrator/scripts/state.mjs`.
- *      Mirrors `plugins/engineer/scripts/dispatch-peer.mjs`'s
- *      `findCompanionsRootWithDiscovery` repo-fallback shape. This
- *      branch fires in monorepo dev (`<repo>/plugins/engineer/scripts/`
- *      → `<repo>/plugins/orchestrator/`) and in Codex's single-fixed-path
- *      cache (`<…>/plugins/engineer/scripts/` →
- *      `<…>/plugins/orchestrator/`). It does NOT depend on any
- *      caller-supplied repoRoot (the caller's repoRoot is the user's
- *      target project, NOT the engineer plugin checkout — passing it
+ * `scripts/state.mjs`, and report where it came from. Tries:
+ *   1. `AGENTIC_ORCHESTRATOR_ROOT` env override (absolute, with
+ *      scripts/state.mjs); it never falls through
+ *   2. the install cache of the host engineer itself runs from, then the
+ *      other host's cache only when the first has no orchestrator installed
+ *      (Claude first for a checkout caller). An orchestrator installed on the
+ *      caller's host without scripts/state.mjs is a failure, not a reason to
+ *      cross hosts.
+ *   3. Sibling fallback, only when engineer runs from a checkout — derive
+ *      engineer's own plugin root from `import.meta.url` (this file at
+ *      `<engineer-root>/scripts/...`) and look for
+ *      `<engineer-root>/../orchestrator/scripts/state.mjs`. It does NOT
+ *      depend on any caller-supplied repoRoot (the caller's repoRoot is the
+ *      user's target project, NOT the engineer plugin checkout — passing it
  *      here would let the lookup leak into unrelated trees).
- * Returns the absolute path on first hit, `null` if nothing resolves.
  *
  * @param {object} args
  * @param {Record<string,string>} [args.env=process.env]
@@ -129,6 +245,91 @@ function cacheBases(home) {
  * @param {string} [args.selfUrl=import.meta.url] — `import.meta.url` of
  *   this module. Tests inject a temp path to redirect the sibling
  *   fallback at a controlled directory.
+ * @returns {Promise<{root: ?string, source: ?string, host: ?string,
+ *   callerHost: string, crossHostFallback: boolean, version?: string,
+ *   reason?: string}>} `source` is 'env', 'claude-cache', 'codex-cache',
+ *   'sibling', or null when nothing resolved; `callerHost` is 'codex',
+ *   'claude' or 'checkout'.
+ */
+export async function locateOrchestratorPluginRoot({
+  env = process.env,
+  home = homedir(),
+  selfUrl = import.meta.url,
+} = {}) {
+  const hosts = hostLayout(env, home);
+  const selfPath = selfPathOf(selfUrl);
+  const caller = callerHostOf(selfPath, hosts);
+  const callerHost = caller ?? 'checkout';
+
+  // 1. Env override — must be absolute + scripts/state.mjs must exist.
+  // Best-effort: surface as not-found rather than throwing (callers handle
+  // null).
+  const overrideRoot = env[ENV_OVERRIDE];
+  if (typeof overrideRoot === 'string' && overrideRoot.length > 0) {
+    if (isAbsolute(overrideRoot) && (await fileExists(join(overrideRoot, 'scripts', 'state.mjs')))) {
+      return { root: realOrResolved(overrideRoot), source: 'env', host: null, callerHost, crossHostFallback: false };
+    }
+    return {
+      root: null,
+      source: 'env',
+      host: null,
+      callerHost,
+      crossHostFallback: false,
+      reason: `${ENV_OVERRIDE}=${overrideRoot} is not an absolute orchestrator root with scripts/state.mjs`,
+    };
+  }
+
+  // 2. Install caches, the caller's own host first.
+  const order = caller === 'codex' ? ['codex', 'claude'] : ['claude', 'codex'];
+  for (const host of order) {
+    const install = await newestOrchestratorInstall(hosts[host]);
+    if (install.state === 'absent') continue;
+    const provenance = {
+      source: `${host}-cache`,
+      host,
+      callerHost,
+      crossHostFallback: caller !== null && host !== caller,
+    };
+    if (install.state === 'unusable') {
+      return {
+        root: null,
+        ...provenance,
+        reason: `orchestrator ${install.version} in ${hosts[host].base} ships no scripts/state.mjs`,
+      };
+    }
+    return { root: realOrResolved(install.root), ...provenance, version: install.version };
+  }
+
+  // 3. Sibling checkout — <engineer-root>/scripts/parent-writeback.mjs →
+  // <engineer-root>/../orchestrator. Never the caller's repoRoot.
+  if (caller === null && selfPath) {
+    const sibling = resolve(dirname(selfPath), '..', '..', 'orchestrator');
+    // A sibling that resolves into an install cache or a marketplace clone is
+    // not a checkout.
+    const hostTrees = [...hosts.codex.roots, ...hosts.claude.roots];
+    if (ownership(sibling, hostTrees) === 0 && (await fileExists(join(sibling, 'scripts', 'state.mjs')))) {
+      return { root: realOrResolved(sibling), source: 'sibling', host: null, callerHost, crossHostFallback: false };
+    }
+  }
+
+  return {
+    root: null,
+    source: null,
+    host: null,
+    callerHost,
+    crossHostFallback: false,
+    reason: 'orchestrator plugin is not installed in the Claude or Codex plugin cache',
+  };
+}
+
+/**
+ * `locateOrchestratorPluginRoot` without the provenance: the absolute root,
+ * or `null` if nothing resolves.
+ *
+ * @param {object} args
+ * @param {Record<string,string>} [args.env=process.env]
+ * @param {string} [args.home=homedir()]
+ * @param {string} [args.selfUrl=import.meta.url]
  * @returns {Promise<?string>}
  */
 export async function discoverOrchestratorPluginRoot({
@@ -136,87 +337,7 @@ export async function discoverOrchestratorPluginRoot({
   home = homedir(),
   selfUrl = import.meta.url,
 } = {}) {
-  // 1. Env override — must be absolute + scripts/state.mjs must exist.
-  const overrideRoot = env[ENV_OVERRIDE];
-  if (typeof overrideRoot === 'string' && overrideRoot.length > 0) {
-    if (!isAbsolute(overrideRoot)) {
-      // Mirror dispatch-peer.mjs: absolute-only env values. Best-effort:
-      // surface as not-found rather than throwing (callers handle null).
-      return null;
-    }
-    if (await fileExists(join(overrideRoot, 'scripts', 'state.mjs'))) {
-      return overrideRoot;
-    }
-    return null;
-  }
-
-  const { claude: claudeBase, codex: codexBase } = cacheBases(home);
-
-  // 2. Claude cache — multi-version walk. Pick the highest SemVer that
-  // has a valid plugin.json (name=orchestrator) AND scripts/state.mjs.
-  if (await dirExists(claudeBase)) {
-    let entries = [];
-    try {
-      entries = await readdir(claudeBase, { withFileTypes: true });
-    } catch {
-      entries = [];
-    }
-    const candidates = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const versionRoot = join(claudeBase, entry.name);
-      const manifestFile = join(versionRoot, '.claude-plugin', 'plugin.json');
-      let manifest;
-      try {
-        manifest = JSON.parse(await fsReadFile(manifestFile, 'utf8'));
-      } catch {
-        continue;
-      }
-      if (manifest?.name !== 'orchestrator') continue;
-      const statePath = join(versionRoot, 'scripts', 'state.mjs');
-      if (!(await fileExists(statePath))) continue;
-      candidates.push({
-        version: typeof manifest.version === 'string' ? manifest.version : '0.0.0',
-        root: versionRoot,
-      });
-    }
-    if (candidates.length > 0) {
-      candidates.sort((a, b) => semverCompare(b.version, a.version));
-      return candidates[0].root;
-    }
-  }
-
-  // 3. Codex cache — single fixed path.
-  if ((await dirExists(codexBase))
-      && (await fileExists(join(codexBase, 'scripts', 'state.mjs')))) {
-    return codexBase;
-  }
-
-  // 4. Sibling fallback. Derive engineer's own plugin root from this
-  // file's location and look one level up + over for the orchestrator
-  // peer. Works in both monorepo dev and Codex's single-fixed-path
-  // cache (the Claude cache hits step 2 first, so this branch is
-  // effectively monorepo + Codex). Never use the caller's repoRoot —
-  // that's the user's target project, not the engineer plugin root.
-  if (typeof selfUrl === 'string' && selfUrl.length > 0) {
-    let here;
-    try {
-      here = fileURLToPath(selfUrl);
-    } catch {
-      here = null;
-    }
-    if (here) {
-      // here = <engineer-root>/scripts/parent-writeback.mjs
-      // dirname(here) = <engineer-root>/scripts
-      // resolve(..., '..', '..', 'orchestrator') = sibling orchestrator
-      const sibling = resolve(dirname(here), '..', '..', 'orchestrator');
-      if (await fileExists(join(sibling, 'scripts', 'state.mjs'))) {
-        return sibling;
-      }
-    }
-  }
-
-  return null;
+  return (await locateOrchestratorPluginRoot({ env, home, selfUrl })).root;
 }
 
 function orchWorkflowDirs(repoRoot) {
@@ -384,19 +505,28 @@ export async function writebackParent({
   // Step 2 — resolve orchestrator plugin root for the CLI spawn.
   let root = orchestratorRoot;
   if (typeof root !== 'string' || root.length === 0) {
-    root = await discoverOrchestratorPluginRoot(discoverOpts ?? {
+    const located = await locateOrchestratorPluginRoot(discoverOpts ?? {
       env: process.env,
       home: homedir(),
-      repoRoot,
     });
-  }
-  if (!root) {
-    stderr.write(
-      `engineer/parent-writeback: orchestrator plugin root not found ` +
-      `(checked ${ENV_OVERRIDE}, Claude cache, Codex cache, monorepo sibling) — ` +
-      `skipping writeback (manual reconciliation via /orchestrator:done)\n`,
-    );
-    return { ok: false, skipped: true, reason: 'orchestrator-root-not-found' };
+    root = located.root;
+    if (!root) {
+      stderr.write(
+        `engineer/parent-writeback: orchestrator plugin root not found ` +
+        `(${located.reason ?? 'no candidate resolved'}) — ` +
+        `skipping writeback (manual reconciliation via /orchestrator:done)\n`,
+      );
+      return { ok: false, skipped: true, reason: 'orchestrator-root-not-found' };
+    }
+    if (located.crossHostFallback) {
+      // ADR-0061 §Decision 4: once the catalog pins are active, a Codex
+      // install holds a release commit and the other host's copy does not, so
+      // the fallback is reported rather than taken silently.
+      stderr.write(
+        `engineer/parent-writeback: orchestrator resolved from the ${located.host} plugin cache ` +
+        `because the ${located.callerHost} cache has no orchestrator installed\n`,
+      );
+    }
   }
   const cliPath = join(root, 'scripts', 'state.mjs');
   if (!(await fileExists(cliPath))) {
