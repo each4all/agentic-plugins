@@ -8,12 +8,16 @@
 //   - NOTIFY pair (explicit): NOTIFY_MIN_RUNTIME_VERSION, gates on scripts/notify.mjs
 // Proves each ladder rung, the fail-closed "missing / too-old" contract (no
 // stale-cache fallback), and the capability independence of the two ladders.
+// The ADR-0061 §Decision 3 rules every copy shares (custom CODEX_HOME, the
+// clone never a candidate, cross-host fallback reported, no sibling for an
+// installed caller) are pinned across all copies in
+// tests/plugin-shape/test-installed-sibling-resolvers.mjs.
 // Host-free + deterministic: every case injects env/home/selfUrl and builds
 // throwaway fixtures. Run via `node --test tests/founder/test-discover-runtime.mjs`.
 
 import { describe, it } from 'node:test';
 import { strictEqual } from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -36,9 +40,10 @@ async function mkRuntimeRoot(root, {
   name = 'runtime',
   withFooter = true,
   withNotify = true,
+  manifestDir = '.claude-plugin',
 } = {}) {
-  await mkdir(join(root, '.claude-plugin'), { recursive: true });
-  await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name, version }));
+  await mkdir(join(root, manifestDir), { recursive: true });
+  await writeFile(join(root, manifestDir, 'plugin.json'), JSON.stringify({ name, version }));
   await mkdir(join(root, 'scripts'), { recursive: true });
   if (withFooter) await writeFile(join(root, 'scripts', 'footer.mjs'), '// stub footer\n');
   if (withNotify) await writeFile(join(root, 'scripts', 'notify.mjs'), '// stub notify\n');
@@ -55,15 +60,18 @@ async function mkClaudeCache(home, entries) {
   return base;
 }
 
-// Build the Codex fixed cache `<home>/.codex/.tmp/marketplaces/agentic-plugins/plugins/runtime/`.
+// Build the Codex install cache `<home>/.codex/plugins/cache/agentic-plugins/runtime/<version>/`.
 async function mkCodexCache(home, spec = {}) {
-  const root = join(home, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime');
-  await mkRuntimeRoot(root, spec);
+  const version = spec.version ?? '0.80.0';
+  const root = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', 'runtime', version);
+  await mkRuntimeRoot(root, { ...spec, version, manifestDir: '.codex-plugin' });
   return root;
 }
 
+// Canonical: the resolvers return canonical roots (ADR-0061 S2), and macOS
+// tmpdir sits behind /var -> /private/var.
 async function tmp(prefix) {
-  return mkdtemp(join(tmpdir(), prefix));
+  return realpath(await mkdtemp(join(tmpdir(), prefix)));
 }
 
 const NO_HOME = () => tmp('frt-emptyhome-'); // a home with no caches
@@ -161,7 +169,7 @@ describe('founder discoverRuntimePluginRoot — dual-consumer floors (ADR-0043 �
     );
   });
 
-  it('Codex fixed cache → returns it when no Claude cache exists', async () => {
+  it('Codex install cache → returns it when no Claude cache exists', async () => {
     const home = await tmp('frt-codex-');
     const codexRoot = await mkCodexCache(home);
     strictEqual(
@@ -177,7 +185,7 @@ describe('founder discoverRuntimePluginRoot — dual-consumer floors (ADR-0043 �
     const got = await discoverRuntimePluginRoot({
       env: {},
       home,
-      selfUrl: 'file:///Users/x/.codex/.tmp/marketplaces/agentic-plugins/plugins/founder/scripts/discover-runtime.mjs',
+      selfUrl: pathToFileURL(join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', 'founder', '0.18.0', 'scripts', 'discover-runtime.mjs')).href,
     });
     strictEqual(got, codexRoot, 'Codex-host self should prefer the Codex cache');
   });
