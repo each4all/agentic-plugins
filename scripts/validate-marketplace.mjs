@@ -30,7 +30,9 @@
 //     and so is a marker without pins
 //   - the migration floors (Decision 5 (a)): each names a plugins/* package;
 //     a released floor is a real release of it, and after activation every
-//     floor must be released; no pin is ever below its package's floor. Before
+//     floor must be released; no pin is ever below its package's floor. A
+//     published package's .codex-plugin/plugin.json declares
+//     interface.category, which a first pin copies. Before
 //     activation an unreleased floor, or a released package without one, is a
 //     warning: the catalog simply stays local until the writer's gate is met
 //   - with --base <rev> — the catalog on the target branch before the change —
@@ -226,6 +228,24 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
     }
   }
 
+  // A package's first Codex pin takes its category from the released
+  // .codex-plugin/plugin.json (ADR-0061 S4's writer). Requiring it here, for
+  // every published package, catches a missing one before that first release
+  // rather than after it, when only a further release could fix it.
+  for (const name of claudeNames) {
+    if (!releasePackages.has(name)) continue;
+    const manifestPath = resolve(repoRoot, 'plugins', name, '.codex-plugin/plugin.json');
+    let codexManifest;
+    try {
+      codexManifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    } catch {
+      continue; // reported with the entry that names it
+    }
+    if (typeof codexManifest?.interface?.category !== 'string') {
+      errors.push(`plugins/${name}/.codex-plugin/plugin.json: interface.category must be a string — a first Codex pin takes its category from it`);
+    }
+  }
+
   // Per-entry Codex validation
   const locals = [];
   const pins = new Map(); // name -> { version, sha }
@@ -333,7 +353,7 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
         // Before activation a floor may be declared ahead of its release:
         // Decision 5 (a) keeps the catalog local until every floor is met.
         if (floorData.activated) errors.push(`${FLOORS_PATH}: floor ${name}@${floor}: tag ${tag} does not resolve — after activation every floor is a release`);
-        else warnings.push(`${FLOORS_PATH}: floor ${name}@${floor} is not released yet (no ${tag}); activation waits for it`);
+        else warnings.push(`${FLOORS_PATH}: floor ${name}@${floor} is not a release yet (no ${tag}); the writer refuses to activate until it is — correct the floor if that version will never be tagged`);
         continue;
       }
       for (const e of checkRelease(repoRoot, { name, version: floor })) errors.push(`${FLOORS_PATH}: floor ${name}@${floor}: ${e}`);

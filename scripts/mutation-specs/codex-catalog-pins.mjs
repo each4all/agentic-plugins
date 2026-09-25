@@ -93,6 +93,13 @@ export const MUTATIONS = [
     why: "a local Codex entry may point at another package's directory",
   },
 
+  {
+    id: 'I3', file: VM,
+    from: "if (typeof codexManifest?.interface?.category !== 'string') {",
+    to: 'if (false) {',
+    why: 'a package reaches its first release without the category its first pin copies',
+  },
+
   // ---- R: the package registry ---------------------------------------------------
   {
     id: 'R1', file: VM,
