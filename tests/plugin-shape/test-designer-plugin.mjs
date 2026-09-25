@@ -63,6 +63,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
+import { assertCodexCatalogSource } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/designer');
@@ -1784,11 +1785,12 @@ describe('plugins/designer — marketplace catalog wiring (both hosts)', () => {
       'Claude catalog description must drop the incubating marker now that ADR-0042 is Accepted');
   });
 
-  it('the Codex catalog carries a designer entry resolving to the plugin dir', async () => {
+  it('the Codex catalog carries a designer entry in its ADR-0061 phase\'s source shape', async () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'designer');
     ok(entry, 'designer must appear in .agents/plugins/marketplace.json');
-    strictEqual(entry.source?.path, './plugins/designer');
+    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
+    assertCodexCatalogSource(entry, 'designer', { repoRoot: REPO_ROOT, version: manifest.version, allowLag: process.env.AGENTIC_RELEASE_PLEASE_PR === '1' });
   });
 });
 

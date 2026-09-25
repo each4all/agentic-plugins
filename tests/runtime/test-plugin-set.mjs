@@ -22,6 +22,7 @@ import {
   MANDATORY_PLUGINS,
 } from '../../plugins/runtime/scripts/lib/plugin-set.mjs';
 import { PLUGIN_NAMES, CANONICAL_MARKETPLACE } from '../../plugins/runtime/scripts/lib/machine-probe.mjs';
+import { expectedCodexCatalogNames } from '../plugin-shape/codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -111,7 +112,9 @@ describe('plugin-set — catalog consistency (#20)', () => {
     const codexNames = (codexCatalog.plugins ?? []).map((p) => p.name).sort();
 
     assert.deepEqual(setNames, claudeNames, 'plugin-set vs Claude catalog names');
-    assert.deepEqual(setNames, codexNames, 'plugin-set vs Codex catalog names');
+    // ADR-0061 Decision 2: after activation a package with no release yet has
+    // no Codex entry until its first pin, so the Codex side is phase-aware.
+    assert.deepEqual(expectedCodexCatalogNames(REPO_ROOT, setNames), codexNames, 'plugin-set vs Codex catalog names');
     assert.deepEqual(setNames, [...PLUGIN_NAMES].sort(), 'plugin-set vs PLUGIN_NAMES');
   });
 });

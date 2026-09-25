@@ -6,6 +6,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
+import { assertCodexCatalogSource, expectedCodexCatalogNames } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
@@ -150,8 +151,8 @@ describe('plugins/runtime marketplace and release registration', () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'runtime');
     ok(entry, 'runtime entry present in Codex catalog');
-    strictEqual(entry.source.source, 'local');
-    strictEqual(entry.source.path, './plugins/runtime');
+    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
+    assertCodexCatalogSource(entry, 'runtime', { repoRoot: REPO_ROOT, version: manifest.version, allowLag: RELEASE_PLEASE_PR });
     strictEqual(entry.policy.installation, 'AVAILABLE');
     strictEqual(entry.policy.authentication, 'ON_USE');
     strictEqual(entry.category, 'Productivity');
@@ -372,7 +373,10 @@ describe('plugins/runtime settings surface', () => {
     const claudeCatalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));
     const codexCatalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
     deepStrictEqual(claudeCatalog.plugins.map((p) => p.name).sort(), pluginNames, 'Claude catalog matches PLUGIN_NAMES');
-    deepStrictEqual(codexCatalog.plugins.map((p) => p.name).sort(), pluginNames, 'Codex catalog matches PLUGIN_NAMES');
+    // After ADR-0061 activation a package with no release yet has no Codex
+    // entry (Decision 2's untagged exemption), so the expected set is phase-aware.
+    deepStrictEqual(codexCatalog.plugins.map((p) => p.name).sort(), expectedCodexCatalogNames(REPO_ROOT, pluginNames),
+      'Codex catalog matches PLUGIN_NAMES, less any package not yet released after activation');
 
     // Every runtime-owned prose surface that enumerates the set must name all of
     // them. A four-name list here is how the drift started.

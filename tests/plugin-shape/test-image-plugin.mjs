@@ -20,6 +20,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
+import { assertCodexCatalogSource } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/image');
@@ -286,14 +287,14 @@ describe('plugins/image — Claude marketplace catalog entry', () => {
 });
 
 describe('plugins/image — Codex marketplace catalog entry', () => {
-  it('exists with the local-source/policy/category shape', async () => {
+  it('exists with its ADR-0061 phase\'s source shape and the policy/category shape', async () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'image');
     ok(entry, 'Codex catalog must list image');
-    deepStrictEqual(entry.source, { source: 'local', path: './plugins/image' });
+    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
+    assertCodexCatalogSource(entry, 'image', { repoRoot: REPO_ROOT, version: manifest.version, allowLag: process.env.AGENTIC_RELEASE_PLEASE_PR === '1' });
     deepStrictEqual(entry.policy, { installation: 'AVAILABLE', authentication: 'ON_USE' });
     strictEqual(entry.category, 'Productivity');
-    strictEqual(await exists(resolve(REPO_ROOT, entry.source.path)), true);
   });
 });
 

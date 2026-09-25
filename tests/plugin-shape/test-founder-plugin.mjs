@@ -36,6 +36,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
+import { assertCodexCatalogSource } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/founder');
@@ -740,8 +741,7 @@ describe('plugins/founder — Claude marketplace catalog entry', () => {
     const catalog = await readJSON(path);
     const entry = catalog.plugins.find((p) => p.name === 'founder');
     ok(entry, 'Claude catalog must list founder');
-    strictEqual(entry.source, './plugins/founder',
-      'validate-marketplace does not check the Claude source path — this test covers that gap');
+    strictEqual(entry.source, './plugins/founder', 'the Claude entry points at the founder package directory');
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(entry.version, manifest.version);
     strictEqual(entry.category, 'Productivity');
@@ -753,15 +753,14 @@ describe('plugins/founder — Claude marketplace catalog entry', () => {
 describe('plugins/founder — Codex marketplace catalog entry', () => {
   const path = resolve(REPO_ROOT, '.agents/plugins/marketplace.json');
 
-  it('exists with the local-source/policy/category shape (no per-entry description in the Codex schema)', async () => {
+  it('exists with its ADR-0061 phase\'s source shape and the policy/category shape (no per-entry description in the Codex schema)', async () => {
     const catalog = await readJSON(path);
     const entry = catalog.plugins.find((p) => p.name === 'founder');
     ok(entry, 'Codex catalog must list founder');
-    deepStrictEqual(entry.source, { source: 'local', path: './plugins/founder' });
+    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
+    assertCodexCatalogSource(entry, 'founder', { repoRoot: REPO_ROOT, version: manifest.version, allowLag: process.env.AGENTIC_RELEASE_PLEASE_PR === '1' });
     deepStrictEqual(entry.policy, { installation: 'AVAILABLE', authentication: 'ON_USE' });
     strictEqual(entry.category, 'Productivity');
-    strictEqual(await exists(resolve(REPO_ROOT, entry.source.path)), true,
-      'Codex source.path must resolve to the plugin directory');
   });
 });
 
