@@ -94,7 +94,7 @@ codex plugin marketplace add each4all/agentic-plugins
 
 Required peers:
 - `companions` (L1) — for the Plan-verify opposite-host peer ensemble inside `/orchestrator:plan`.
-- `engineer` (L3) — runtime peer for `/orchestrator:next` dispatch (the runbook spawns engineer's `state.mjs` CLI). Discovery is automatic (env override → Claude cache → Codex cache → monorepo sibling) per ADR-0019 §1; install engineer before `/orchestrator:next` invocations or set `AGENTIC_ENGINEER_ROOT=<path>` to override.
+- `engineer` (L3) — runtime peer for `/orchestrator:next` dispatch (the runbook spawns engineer's `state.mjs` CLI). Discovery is automatic per ADR-0019 §1, with ADR-0061 §Decision 3's candidates: the `AGENTIC_ENGINEER_ROOT` override, then the versioned install cache of the host orchestrator runs from, then the other host's cache only when that host has no engineer installed (the fallback is reported on stderr), then the monorepo sibling only when orchestrator itself runs from a checkout. The Codex marketplace clone is never a candidate. Install engineer before `/orchestrator:next` invocations or set `AGENTIC_ENGINEER_ROOT=<path>` to override.
 
 ## Environment
 

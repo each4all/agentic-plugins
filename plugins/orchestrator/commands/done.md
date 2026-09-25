@@ -127,7 +127,7 @@ fi
 
 ```bash
 if [ -z "$EXISTING_ENG_WF_ID" ]; then
-  ENGINEER_PLUGIN_ROOT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/discover-engineer.mjs" discover 2>/dev/null)"
+  ENGINEER_PLUGIN_ROOT="$(node "$CLAUDE_PLUGIN_ROOT/scripts/discover-engineer.mjs" discover)"  # stderr kept: a cross-host fallback is reported there (ADR-0061)
   if [ -z "$ENGINEER_PLUGIN_ROOT" ]; then
     echo "✗ engineer plugin not found — cannot fallback-scan for engineer_workflow_id. Install engineer or set AGENTIC_ENGINEER_ROOT=<path>." >&2
     exit 1

@@ -117,7 +117,7 @@ After this returns, the parent per-file lock is released. The macro now has all 
 Resolve the engineer plugin root + scan engineer workflows for children referencing this macro id. For each child:
 
 ```bash
-ENGINEER_PLUGIN_ROOT="$(node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" discover 2>/dev/null)"
+ENGINEER_PLUGIN_ROOT="$(node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" discover)"  # stderr kept: a cross-host fallback is reported there (ADR-0061)
 if [ -z "$ENGINEER_PLUGIN_ROOT" ]; then
   echo "✗ engineer plugin not found — cannot detach children. Install engineer or set AGENTIC_ENGINEER_ROOT=<path>." >&2
   exit 1
