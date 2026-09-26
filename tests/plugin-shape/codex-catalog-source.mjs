@@ -11,7 +11,9 @@
 // Written against the ADR text rather than by importing
 // scripts/lib/codex-catalog-pins.mjs: a bug shared with the validator would
 // otherwise pass both. The history half (tag resolves, peels to sha) is the
-// validator's alone — these tests read the working tree only.
+// validator's alone — these tests read the working tree only, except that the
+// activated catalog's expected names need the release tags (see
+// expectedCodexCatalogNames).
 //
 // Not discovered by `node --test`: the stem matches none of Node's test-file
 // patterns. Its own gate is tests/plugin-shape/test-codex-catalog-source.mjs,
@@ -76,12 +78,23 @@ export function assertCodexCatalogSource(entry, name, { repoRoot, version, allow
  * Before activation they are the same set. After it, Decision 2 exempts a
  * package with no release tag yet — it has no Codex entry until the writer
  * adds its first pin — and the exemption ends at its first release. Git is
- * read only once activated, so today's tests need no history.
+ * read only once activated, and then the answer depends on the release tags,
+ * so a checkout without them fails here and says so (Decision 2's "no
+ * history" rule). Without that, a shallow checkout reads as "nothing is
+ * released" and the assertion reports a catalog/expectation diff instead of
+ * the missing history.
  */
 export function expectedCodexCatalogNames(repoRoot, names, { activated } = {}) {
   const phaseActivated = activated ?? codexCatalogActivated(repoRoot);
   if (!phaseActivated) return [...names].sort();
-  const tags = execFileSync('git', ['-C', repoRoot, 'tag', '--list', 'plugin-*-v*'], { encoding: 'utf8' }).split('\n');
+  const git = (...args) => execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' });
+  if (git('rev-parse', '--is-shallow-repository').trim() === 'true') {
+    throw new Error('the activated Codex catalog names are decided by release tags, and this is a shallow clone (check out with fetch-depth: 0)');
+  }
+  const tags = git('tag', '--list', 'plugin-*-v*').split('\n').filter(Boolean);
+  if (tags.length === 0) {
+    throw new Error('the activated Codex catalog names are decided by release tags, and no plugin-*-v* tag is present (fetch the tags)');
+  }
   const released = (name) => tags.some((t) => t.startsWith(`plugin-${name}-v`) && /^\d+\.\d+\.\d+/.test(t.slice(`plugin-${name}-v`.length)));
   return names.filter(released).sort();
 }
