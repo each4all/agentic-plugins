@@ -204,20 +204,34 @@ package via `release-please-config.json` and writes new versions into
 `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` (per the
 `extra-files` mapping).
 
-The root `.claude-plugin/marketplace.json` catalog is **deliberately
-not** an `extra-files` target — keeping the catalog under
-release-please management would couple every plugin package to commits
-that touch any catalog entry, producing no-op version bumps on
-unrelated plugins. Instead, the catalog is synced separately by
-`scripts/sync-marketplace-versions.mjs` after each release. The
-release-please GitHub Action runs that sync as a follow-up step
-automatically, and `validate:versions` fails CI if catalog entries
-drift from the manifest.
+The two root catalogs are **deliberately not** `extra-files` targets.
+Keeping `.claude-plugin/marketplace.json` under release-please
+management would couple every plugin package to commits that touch any
+catalog entry, producing no-op version bumps on unrelated plugins. The
+Codex catalog, `.agents/plugins/marketplace.json`, has a second reason:
+each entry pins the commit its release tag peels to, so its pin can be
+derived only once release-please has cut that tag
+([ADR-0061](docs/adr/0061-codex-installs-pinned-to-release-commits.md)
+§Decision 2). Instead, `scripts/sync-marketplace-versions.mjs` syncs
+both catalogs after each release. It writes each Claude entry's
+`version`, and it advances a Codex entry's `ref` and `sha` only when
+that package's manifest version has moved past its pin. It plans every
+package before writing anything, so one package it cannot pin blocks
+both catalogs. The release-please GitHub Action runs that sync as a
+follow-up step automatically and validates what it wrote before
+pushing. Outside a release-please PR, where a catalog may trail the
+manifest, `validate:versions` fails CI if either catalog drifts from
+it. When the sync refuses, and for how the pins were first activated,
+see
+[`docs/runbooks/codex-pin-activation.md`](docs/runbooks/codex-pin-activation.md).
+Recovery is a new dispatch or a forward release, never a revert to
+`local`.
 
 The stage docs (`docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`,
 `docs/assurance/omcc-cutover-scorecard.md`) restate the shipped runtime
-version, and they follow the same pattern for the same reason. The
-tokens split into two classes, and the split is load-bearing:
+version, and they follow the same pattern: a script syncs them after
+each release. The tokens split into two classes, and the split is
+load-bearing:
 
 - **Derivable** — the `as of \`plugin-runtime\` vX` statements. True the
   moment release-please cuts the version, so `scripts/sync-doc-versions.mjs`
@@ -265,22 +279,43 @@ Two consequences for authors:
   is the failure ADR-0051 exists to eliminate. The check fails closed on a
   version regression rather than trying to interpret it.
 
-**On Codex this premise does not hold yet** (measured 2026-09-24, codex-cli
-0.156.1). With the Codex catalog's `local` entries and the marketplace added
-from Git without a ref, a `codex exec` or app-server start can upgrade the
-marketplace clone when `main` has moved, and then force-reinstalls every
-configured plugin from it without a version change. An installed Codex
-plugin then runs `main`'s bytes under its released version.
+**On Codex this premise holds machine by machine.** The Codex mechanism
+was measured on 2026-09-24 with codex-cli 0.156.1. When the marketplace is
+added from Git without a ref, a `codex exec` or app-server start can
+upgrade the marketplace clone once `main` has moved, and then
+force-reinstalls every configured plugin from it without a version change.
+While the Codex catalog's entries were `local`, an installed Codex plugin
+therefore ran `main`'s bytes under its released version.
 [ADR-0061](docs/adr/0061-codex-installs-pinned-to-release-commits.md) pins
 each Codex catalog entry to its release commit and moves cross-plugin
-discovery to the installed cache. Until its publisher activation
-(§Decision 5 (a)) lands, and on each machine until that machine passes
-§Decision 5 (b), "editing them on `main` changes nothing anyone runs" holds
-on Claude Code only, and there only for a version already materialized and
-not replaced.
+discovery to the installed cache. Its publisher activation (§Decision 5
+(a)) landed on 2026-09-26 in `3006c8b`. A machine receives the pinned
+catalog at its next successful marketplace refresh. From then on, on the
+measured version, the reinstall that follows a move of `main`
+materializes the pinned commits, and a materialization that fails leaves
+the older cache in place (§Decision 6, §Decision 7). The marketplace
+clone keeps tracking `main`. Codex materializes the pinned commits from
+it, but its checked-out package files are `main`'s, can hold unreleased
+changes, and are not an install surface. The premise holds on a machine
+only once that machine passes §Decision 5 (b):
 
-The doc-freshness gate is split along the same line so a token lag and
-a missing proof report different remedies. `npm run validate:doc-evidence`
+- its installed packages meet the migration floors;
+- its home receivers are re-rendered;
+- a fresh Codex session resolves each sibling under the Codex installed
+  cache;
+- the §Decision 8 evidence is recorded.
+
+On a machine past it, every package edit, including a `docs`- or
+`test`-typed one, reaches an installed Codex plugin only through a
+release and the pin that follows it. Exercising an unreleased change
+there takes a release or a deliberate local override, which never enters
+the catalog (§Decision 7). On a machine that has not passed it, "editing
+them on `main` changes nothing anyone runs" holds on Claude Code only,
+and on Claude only for a version already materialized and not replaced.
+
+The doc-freshness gate is split along the derivable / proof-coupled line
+above so a token lag and a missing proof report different remedies.
+`npm run validate:doc-evidence`
 (gated by `tests/scripts/test-doc-evidence-consistency.mjs`) additionally
 checks what the freshness gate structurally cannot see: that the
 `(release PR, squash, tag)` triples cited in prose match real tags and
