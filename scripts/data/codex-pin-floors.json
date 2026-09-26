@@ -1,7 +1,7 @@
 {
   "schema": "codex-pin-floors-1.0",
   "description": "ADR-0061 Decision 5 (a): the release of each plugin that first carries the installed-cache locators, receiver templates and diagnostics. The Codex catalog writer pins only once every package's tag meets its floor. `activated` is the Decision 2 phase marker: the writer sets it in the same commit as the first pins, and it never returns to false.",
-  "activated": false,
+  "activated": true,
   "floors": {
     "attention": "0.9.1",
     "companions": "0.4.2",

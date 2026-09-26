@@ -8,8 +8,11 @@
     {
       "name": "attention",
       "source": {
-        "source": "local",
-        "path": "./plugins/attention"
+        "source": "git-subdir",
+        "url": "./",
+        "path": "plugins/attention",
+        "ref": "plugin-attention-v0.9.1",
+        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -20,8 +23,11 @@
     {
       "name": "companions",
       "source": {
-        "source": "local",
-        "path": "./plugins/companions"
+        "source": "git-subdir",
+        "url": "./",
+        "path": "plugins/companions",
+        "ref": "plugin-companions-v0.4.2",
+        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -32,8 +38,11 @@
     {
       "name": "designer",
       "source": {
-        "source": "local",
-        "path": "./plugins/designer"
+        "source": "git-subdir",
+        "url": "./",
+        "path": "plugins/designer",
+        "ref": "plugin-designer-v0.3.9",
+        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -44,8 +53,11 @@
     {
       "name": "engineer",
       "source": {
-        "source": "local",
-        "path": "./plugins/engineer"
+        "source": "git-subdir",
+        "url": "./",
+        "path": "plugins/engineer",
+        "ref": "plugin-engineer-v0.21.11",
+        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -56,8 +68,11 @@
     {
       "name": "founder",
       "source": {
-        "source": "local",
-        "path": "./plugins/founder"
+        "source": "git-subdir",
+        "url": "./",
+        "path": "plugins/founder",
+        "ref": "plugin-founder-v0.4.9",
+        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -68,8 +83,11 @@
     {
       "name": "image",
       "source": {
-        "source": "local",
-        "path": "./plugins/image"
+        "source": "git-subdir",
+        "url": "./",
+        "path": "plugins/image",
+        "ref": "plugin-image-v0.3.2",
+        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -80,8 +98,11 @@
     {
       "name": "orchestrator",
       "source": {
-        "source": "local",
-        "path": "./plugins/orchestrator"
+        "source": "git-subdir",
+        "url": "./",
+        "path": "plugins/orchestrator",
+        "ref": "plugin-orchestrator-v0.13.8",
+        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -92,8 +113,11 @@
     {
       "name": "runtime",
       "source": {
-        "source": "local",
-        "path": "./plugins/runtime"
+        "source": "git-subdir",
+        "url": "./",
+        "path": "plugins/runtime",
+        "ref": "plugin-runtime-v0.98.0",
+        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
       },
       "policy": {
         "installation": "AVAILABLE",
