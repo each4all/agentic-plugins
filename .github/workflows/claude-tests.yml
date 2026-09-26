@@ -21,6 +21,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # ADR-0061 Decision 2: npm run test:plugin-shape runs below, and once the
+          # Codex catalog is activated its expected entry names are decided by
+          # the plugin-*-v* release tags. tests/plugin-shape/codex-catalog-source.mjs
+          # fails closed on a shallow or tagless checkout rather than reading it
+          # as "nothing is released", so this job needs the full history.
+          fetch-depth: 0
 
       - name: Setup Node ${{ matrix.node-version }}
         uses: actions/setup-node@v6
