@@ -1,0 +1,97 @@
+{
+  "_about": [
+    "What Claude Code 2.1.283 handed the model for a plugin command, measured 2026-09-28 (docket C67).",
+    "A scratch plugin (claude -p --plugin-dir, hooks and tools disabled) whose command bodies are below was invoked",
+    "with each argument string typed after the command name; each expanded body was read back from the session",
+    "transcript (<command-args> and the text between PROBE-BEGIN and PROBE-END). Nothing here is computed.",
+    "One cell is dropped from body and observation alike: PR=[${CLAUDE_PLUGIN_ROOT}], which a separate,",
+    "argument-independent pass fills with the plugin root. Re-measure with scripts/probe-claude-command-substitution.mjs."
+  ],
+  "claude_version": "2.1.283",
+  "measured_at": "2026-09-28",
+  "commands": {
+    "p": {
+      "argument_names": [],
+      "body": "T0=[$0] T1=[$1] T2=[$2] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[$ARGUMENTS] A0=[$ARGUMENTS[0]] A1=[$ARGUMENTS[1]] A7=[$ARGUMENTS[7]] AH=[$ARGUMENTS_HINT]\nQ=[\"$1\"] ESC=[\\$1] ESCA=[\\$ARGUMENTS] W=[$1abc] U=[$1_x] D=[$0.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    "q": {
+      "argument_names": [
+        "ticket",
+        "mode"
+      ],
+      "body": "T0=[$0] T1=[$1] T2=[$2] T3=[$3] T4=[$4] T5=[$5]\nN1=[$ticket] N2=[$mode] N3=[$ticketX] N4=[$mode_x] N5=[$ticket[0]] N6=[\\$ticket]\nA=[$ARGUMENTS]"
+    }
+  },
+  "cells": [
+    {
+      "command": "p",
+      "args": "",
+      "expanded": "T0=[$0] T1=[$1] T2=[$2] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[] A0=[$ARGUMENTS[0]] A1=[$ARGUMENTS[1]] A7=[$ARGUMENTS[7]] AH=[_HINT]\nQ=[\"$1\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[$0.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "C3",
+      "expanded": "T0=[C3] T1=[$1] T2=[$2] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[C3] A0=[C3] A1=[$ARGUMENTS[1]] A7=[$ARGUMENTS[7]] AH=[C3_HINT]\nQ=[\"$1\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[C3.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "C3 --pr=826",
+      "expanded": "T0=[C3] T1=[--pr=826] T2=[$2] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[C3 --pr=826] A0=[C3] A1=[--pr=826] A7=[$ARGUMENTS[7]] AH=[C3 --pr=826_HINT]\nQ=[\"--pr=826\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[C3.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "C3 \"two words\" --pr=826",
+      "expanded": "T0=[C3] T1=[two words] T2=[--pr=826] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[C3 \"two words\" --pr=826] A0=[C3] A1=[two words] A7=[$ARGUMENTS[7]] AH=[C3 \"two words\" --pr=826_HINT]\nQ=[\"two words\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[C3.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "q",
+      "args": "A $(touch /tmp/c67-never) \"$(id -u)\" 'x y' b\\ c",
+      "expanded": "T0=[A] T1=[$1] T2=[$2] T3=[$3] T4=[$4] T5=[$5]\nN1=[A] N2=[] N3=[$ticketX] N4=[$mode_x] N5=[$ticket[0]] N6=[$ticket]\nA=[A $(touch /tmp/c67-never) \"$(id -u)\" 'x y' b\\ c]"
+    },
+    {
+      "command": "q",
+      "args": "A; echo hi | cat",
+      "expanded": "T0=[A] T1=[$1] T2=[$2] T3=[$3] T4=[$4] T5=[$5]\nN1=[A] N2=[] N3=[$ticketX] N4=[$mode_x] N5=[$ticket[0]] N6=[$ticket]\nA=[A; echo hi | cat]"
+    },
+    {
+      "command": "p",
+      "args": "A 'x\"; touch /tmp/c67-m; \"' --pr=7",
+      "expanded": "T0=[A] T1=[x\"; touch /tmp/c67-m; \"] T2=[--pr=7] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[A 'x\"; touch /tmp/c67-m; \"' --pr=7] A0=[A] A1=[x\"; touch /tmp/c67-m; \"] A7=[$ARGUMENTS[7]] AH=[A 'x\"; touch /tmp/c67-m; \"' --pr=7_HINT]\nQ=[\"x\"; touch /tmp/c67-m; \"\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[A.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "A B\nC D",
+      "expanded": "T0=[A] T1=[B] T2=[$2] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[A B\nC D] A0=[A] A1=[B] A7=[$ARGUMENTS[7]] AH=[A B\nC D_HINT]\nQ=[\"B\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[A.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "A '' B",
+      "expanded": "T0=[A] T1=[] T2=[B] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[A '' B] A0=[A] A1=[] A7=[$ARGUMENTS[7]] AH=[A '' B_HINT]\nQ=[\"\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[A.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "$(x) A B",
+      "expanded": "T0=[$(x)] T1=[A] T2=[B] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[$(x) A B] A0=[$(x)] A1=[A] A7=[$ARGUMENTS[7]] AH=[$(x) A B_HINT]\nQ=[\"A\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[$(x).005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "A * B",
+      "expanded": "T0=[A] T1=[*] T2=[B] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[A * B] A0=[A] A1=[*] A7=[$ARGUMENTS[7]] AH=[A * B_HINT]\nQ=[\"*\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[A.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "A '$1' 'x !y' '`!z`'",
+      "expanded": "T0=[A] T1=[$1] T2=[x \\!y] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[A '$1' 'x \\!y' '` \\!z`'] A0=[A] A1=[$1] A7=[$ARGUMENTS[7]] AH=[A '$1' 'x \\!y' '` \\!z`'_HINT]\nQ=[\"$1\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[A.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "A \"x $y\" B",
+      "expanded": "T0=[A] T1=[x $y] T2=[B] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[A \"x $y\" B] A0=[A] A1=[x $y] A7=[$ARGUMENTS[7]] AH=[A \"x $y\" B_HINT]\nQ=[\"x $y\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[A.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    },
+    {
+      "command": "p",
+      "args": "A ~ B",
+      "expanded": "T0=[A] T1=[~] T2=[B] T9=[$9] T10=[$10] BR=[${1}] AT=[$@] ST=[$*]\nA=[A ~ B] A0=[A] A1=[~] A7=[$ARGUMENTS[7]] AH=[A ~ B_HINT]\nQ=[\"~\"] ESC=[$1] ESCA=[$ARGUMENTS] W=[$1abc] U=[$1_x] D=[A.005]\nPRB=[$CLAUDE_PLUGIN_ROOT]"
+    }
+  ]
+}

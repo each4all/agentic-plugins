@@ -312,7 +312,7 @@ export const MUTATIONS = [
   // ---- D: the /done runbook ---------------------------------------------------
   {
     id: 'D1', file: DONE, tests: [T_DONE],
-    from: 'COMMIT_SHA="$(landing commit)"',
+    from: `COMMIT_SHA="$(printf '%s' "$LANDING" | JSON_KEY=commit node -e "$JSON_FIELD")"`,
     to: 'COMMIT_SHA="$(git -C "$REPO_ROOT" rev-parse "refs/heads/$SUBTASK_BRANCH")"',
     why: '/done records the branch tip again',
   },
