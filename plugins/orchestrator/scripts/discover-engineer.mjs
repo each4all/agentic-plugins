@@ -365,7 +365,10 @@ export async function discoverEngineerPluginRoot({
  *   `discoverEngineerPluginRoot`)
  * @returns {Promise<{ok: boolean, reason?: string}>}
  */
-export async function preflightEngineerCapability(root) {
+export async function preflightEngineerCapability(root, { purpose = 'dispatch' } = {}) {
+  if (purpose !== 'dispatch' && purpose !== 'lifecycle') {
+    return { ok: false, reason: `preflight-purpose-invalid: ${JSON.stringify(purpose)}` };
+  }
   if (typeof root !== 'string' || root.length === 0) {
     return { ok: false, reason: 'preflight-root-invalid' };
   }
@@ -484,6 +487,30 @@ export async function preflightEngineerCapability(root) {
         'engineer to a PR-E-or-later version.',
     };
   }
+  // ADR-0062 §Decision 6 — an engineer whose parent writeback still sends
+  // `subtask-update --status=completed` would complete the subtask at its
+  // branch commit, before the work lands. The current one calls the
+  // orchestrator's `subtask-engineer-terminal`; probe for that literal in
+  // the helper, the same source-grep shape as the probes above. Only a
+  // dispatch needs it: /finalize and /abort (purpose 'lifecycle') use the
+  // engineer's detach-archive / stop-archive, which the probes above cover,
+  // and must not fail halfway after their own first step for want of it.
+  if (purpose === 'lifecycle') return { ok: true };
+  let writebackText = '';
+  try {
+    writebackText = await fsReadFile(join(root, 'scripts', 'parent-writeback.mjs'), 'utf8');
+  } catch {
+    // Absent helper → the probe below reports it.
+  }
+  if (!writebackText.includes("'subtask-engineer-terminal'")) {
+    return {
+      ok: false,
+      reason: 'preflight-missing-cli: engineer scripts/parent-writeback.mjs does NOT send ' +
+        'the `subtask-engineer-terminal` note — install pre-dates ADR-0062 and would ' +
+        'complete the subtask at its branch commit instead of when the work lands. ' +
+        'Upgrade engineer together with orchestrator before /orchestrator:next.',
+    };
+  }
   return { ok: true };
 }
 
@@ -518,7 +545,8 @@ async function cliMain(argv) {
         '    absolute path on stdout. Empty stdout + exit 0 if not resolved.',
         '    --json prints one JSON object with the root and where it came from.',
         '',
-        '  preflight --root <path>',
+        '  preflight --root <path> [--purpose dispatch|lifecycle]',
+        '    lifecycle (/finalize, /abort) skips the ADR-0062 dispatch probe.',
         '    Verify engineer install at <path> exposes ADR-0019 PR-A',
         '    `--parent-workflow` flag. Exit 0 + empty stdout on success;',
         '    exit 1 + reason to stderr on failure.',
@@ -553,15 +581,18 @@ async function cliMain(argv) {
   }
 
   if (subcommand === 'preflight') {
-    // Tiny flag parser — only `--root <path>` is supported.
+    // Tiny flag parser — `--root <path>` and `--purpose dispatch|lifecycle`.
     let root = null;
+    let purpose = 'dispatch';
     for (let i = 0; i < rest.length; i++) {
       const t = rest[i];
       if (t === '--root') { root = rest[++i]; continue; }
+      if (t === '--purpose') { purpose = rest[++i]; continue; }
       const eq = t.indexOf('=');
       if (eq !== -1 && t.startsWith('--')) {
         const name = t.slice(2, eq);
         if (name === 'root') { root = t.slice(eq + 1); continue; }
+        if (name === 'purpose') { purpose = t.slice(eq + 1); continue; }
       }
       process.stderr.write(`discover-engineer.mjs: unknown flag ${t}\n`);
       return 2;
@@ -570,7 +601,7 @@ async function cliMain(argv) {
       process.stderr.write('discover-engineer.mjs: --root <path> is required\n');
       return 2;
     }
-    const result = await preflightEngineerCapability(root);
+    const result = await preflightEngineerCapability(root, { purpose });
     if (!result.ok) {
       process.stderr.write(`${result.reason}\n`);
       return 1;

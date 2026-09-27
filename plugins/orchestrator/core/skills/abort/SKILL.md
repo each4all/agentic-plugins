@@ -72,7 +72,7 @@ Parent per-file lock is released after this command returns.
 
 This phase is identical to `finalize`:
 
-1. resolve and preflight the engineer plugin;
+1. resolve and preflight the engineer plugin (`preflight --purpose lifecycle`);
 2. scan engineer workflow homes for `parent_workflow == <macro id>`;
 3. route terminal children through engineer `state.mjs stop-archive`;
 4. route mid-flight, deleted-branch, or gate-not-met children through

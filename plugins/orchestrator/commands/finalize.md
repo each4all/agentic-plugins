@@ -53,8 +53,10 @@ MACRO_PATH=""
 if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
   # Reject path-component overrides (ADR-0019 §1 path-safety invariant).
   case "$EXPLICIT_WORKFLOW_ID" in
-    */*|*\\*|..|.*|*$'\0'*)
-      echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', leading '.', or NUL)." >&2
+    # No NUL case: a shell variable cannot hold NUL, and bash expands $'\0'
+    # to an empty string, which made the pattern match every id.
+    */*|*\\*|..|.*)
+      echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
       exit 1;;
   esac
   CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
@@ -122,7 +124,8 @@ if [ -z "$ENGINEER_PLUGIN_ROOT" ]; then
   echo "✗ engineer plugin not found — cannot detach children. Install engineer or set AGENTIC_ENGINEER_ROOT=<path>." >&2
   exit 1
 fi
-node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight --root "$ENGINEER_PLUGIN_ROOT" || exit 1
+# lifecycle: only detach-archive / stop-archive are needed here (ADR-0062 §Decision 6).
+node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight --root "$ENGINEER_PLUGIN_ROOT" --purpose lifecycle || exit 1
 
 # Child-archive failure counter (Codex P2 finding). The Node shim
 # writes the failure tally to this file; on >0 we abort BEFORE step 3

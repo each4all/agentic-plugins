@@ -7,7 +7,7 @@ argument-hint: [<subtask-id>] [--workflow=<macro-id>]
 
 $ARGUMENTS
 
-Dispatch one orchestrator macro subtask into the engineer plugin's command runbook, recording the immutable parent linkage (`AGENTIC_PARENT_WORKFLOW` + `AGENTIC_ORIGINATING_SUBTASK`) so engineer's terminal commit auto-writes back via `runStopArchive` per ADR-0019 §4. This is the **same-host default**; cross-host (`--peer`) remains trigger-deferred PR-F scope.
+Dispatch one orchestrator macro subtask into the engineer plugin's command runbook, recording the immutable parent linkage (`AGENTIC_PARENT_WORKFLOW` + `AGENTIC_ORIGINATING_SUBTASK`) so the engineer can note its terminal commit on the macro and bind ownership (Phase 7 and the Stop hook, ADR-0019 §4 as changed by ADR-0062). The subtask completes when `/orchestrator:done` records the merge. This is the **same-host default**; cross-host (`--peer`) remains trigger-deferred PR-F scope.
 
 Maintain one progress entry per phase across the five phases below and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. Each phase is a discrete bash snippet — execute them in order and **abort on any non-zero exit** unless the snippet's commentary explicitly handles the failure.
 
@@ -18,7 +18,7 @@ Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root fo
 - `EXPLICIT_WORKFLOW_ID` ← value of `--workflow=<id>` flag, or empty if absent.
 
 **Critical rules** (ADR-0019 §1):
-- Do NOT invoke the engineer skill directly (`core/skills/<verb>/SKILL.md`) — bypasses Phase 0 bootstrap and breaks §4 auto-writeback.
+- Do NOT invoke the engineer skill directly (`core/skills/<verb>/SKILL.md`) — bypasses Phase 0 bootstrap and drops the parent linkage the engineer terminal note needs.
 - Do NOT call `engineer state.mjs create` directly — bypasses the engineer command's runbook semantics.
 - All AGENTIC_* env exports + the engineer command's Phase 0+ snippets MUST run in the **same shell session** (a single Bash tool call). The Bash tool spawns a fresh process per call, so split execution drops the env exports — emit the prelude exports inline at the top of each engineer Phase 0 bash block, OR run the entire engineer Phase 0+verb as one consolidated Bash tool invocation. The CLAUDE_PLUGIN_ROOT rebind also lives in the same block; argv positions use `$ENGINEER_PLUGIN_ROOT` directly (not the rebound `$CLAUDE_PLUGIN_ROOT`).
 - Branch precondition order is fixed: clean-check → resolve `subtasks[i].branch` → ownership-check → switch → invoke. Any reordering breaks the §1 invariants.
@@ -45,8 +45,10 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
   # or unrelated files (Codex P2 finding; mirrors PR-C's path-traversal
   # guard in parent-writeback.mjs).
   case "$EXPLICIT_WORKFLOW_ID" in
-    */*|*\\*|..|.*|*$'\0'*)
-      echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', leading '.', or NUL)." >&2
+    # No NUL case: a shell variable cannot hold NUL, and bash expands $'\0'
+    # to an empty string, which made the pattern match every id.
+    */*|*\\*|..|.*)
+      echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
       rm -f "$FIND_ERR"
       exit 1;;
   esac
@@ -130,9 +132,11 @@ else
         echo "✓ All subtasks reached a terminal status — nothing to dispatch. The macro is ready to close via /orchestrator:finalize (terminal close), or the auto-archive Stop hook once terminal_marker is set." >&2
         exit 1;;
       in_progress_or_blocked)
-        echo "✗ No subtask is ready to dispatch — at least one is in_progress (waiting for completion) or blocked (waiting on a predecessor)." >&2
-        echo "  If a subtask completed externally, use /orchestrator:done <subtask-id> --commit=<sha> to record it." >&2
-        echo "  Diagnostic JSON: $NEXT_OUT" >&2
+        # ADR-0062 §Decision 5 — print the facts next-ready computed from the
+        # plan, not a guess from the status. An in_progress subtask whose
+        # engineer workflow has committed stays in_progress until it lands.
+        echo "✗ No subtask is ready to dispatch. Open subtasks:" >&2
+        echo "$NEXT_OUT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d);for(const r of o.readiness||[]){let why;if(r.status==="in_progress")why="in progress; once its pull request has merged, record it with /orchestrator:done "+r.id;else if(r.stale_blocked)why="marked blocked, but every predecessor is completed (written before the shared unblock pass); repair: state.mjs subtask-update --subtask-id="+r.id+" --status=pending";else if(r.waiting_on.length>0)why="waiting on "+r.waiting_on.join(", ");else why=r.status;process.stderr.write("  - "+r.id+": "+why+"\n")}})'
         exit 1;;
       *)
         echo "✗ Unexpected next-ready reason: $REASON" >&2
@@ -153,51 +157,33 @@ SUBTASK_EXISTING_ENG_WF_ID="$(echo "$SUBTASK_JSON" | node -e 'process.stdin.on("
 Validate the resolved subtask is dispatch-ready (mirrors `next-ready`'s gate so explicit-id selection cannot bypass dependency ordering — Codex P2 finding):
 
 ```bash
+# ADR-0062 §Decision 5 — the dependency facts come from the state CLI, which
+# parses the plan properly; they hold for an explicitly chosen subtask even
+# when another one is ready.
+READINESS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+  subtask-readiness --workflow-path "$MACRO_PATH" --subtask-id "$SUBTASK_ID")" || exit 1
+WAITING_ON="$(echo "$READINESS" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(JSON.parse(d).waiting_on.join(", ")))')"
+STALE_BLOCKED="$(echo "$READINESS" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>process.stdout.write(String(JSON.parse(d).stale_blocked)))')"
 case "$SUBTASK_STATUS" in
   completed) echo "✗ Subtask $SUBTASK_ID already completed; nothing to dispatch." >&2; exit 1;;
   deferred|abandoned) echo "✗ Subtask $SUBTASK_ID is terminal-partial ($SUBTASK_STATUS) — set by /orchestrator:finalize or /abort. Cannot re-dispatch." >&2; exit 1;;
   in_progress) ;;  # idempotent re-attach path handled in Phase 2 ownership check
   pending)
-    # Verify all blocked_by predecessors are completed. Engineer-side
-    # dispatch on a blocked subtask would corrupt macro ordering by
-    # forcing it to in_progress before its predecessors land.
-    NOT_READY="$(echo "$SUBTASK_JSON" | env MACRO_PATH="$MACRO_PATH" node -e '
-      const fs = require("fs");
-      process.stdin.on("data", async d => {
-        try {
-          const subtask = JSON.parse(d.toString());
-          const deps = Array.isArray(subtask.blocked_by) ? subtask.blocked_by : [];
-          if (deps.length === 0) { process.stdout.write(""); return; }
-          // Walk the full plan to confirm each predecessor is completed.
-          const text = fs.readFileSync(process.env.MACRO_PATH, "utf8");
-          const fmMatch = text.match(/^---\n([\s\S]*?)\n---/);
-          if (!fmMatch) { process.stdout.write("frontmatter-parse-failed"); return; }
-          // Extract subtask ids with status=completed via a tiny scanner.
-          const completed = new Set();
-          let inSubtasks = false; let current = null;
-          for (const line of fmMatch[1].split("\n")) {
-            if (line.match(/^plan:/)) { inSubtasks = false; continue; }
-            if (line.match(/^  subtasks:/)) { inSubtasks = true; continue; }
-            if (!inSubtasks) continue;
-            const idM = line.match(/^    - id: "?(.+?)"?$/);
-            if (idM) { current = idM[1]; continue; }
-            const stM = line.match(/^      status: "?(.+?)"?$/);
-            if (stM && stM[1] === "completed") completed.add(current);
-          }
-          const missing = deps.filter(d => !completed.has(d));
-          if (missing.length === 0) { process.stdout.write(""); return; }
-          process.stdout.write("waiting-on:" + missing.join(","));
-        } catch (e) { process.stdout.write("parse-failed:" + e.message); }
-      });
-    ')"
-    if [ -n "$NOT_READY" ]; then
-      echo "✗ Subtask $SUBTASK_ID is pending but not ready: $NOT_READY." >&2
-      echo "  Complete the predecessor subtask(s) first (use /orchestrator:done <id> when finished) or pick a different subtask." >&2
+    # Dispatching before every predecessor has landed would start this work
+    # on a base that lacks it.
+    if [ -n "$WAITING_ON" ]; then
+      echo "✗ Subtask $SUBTASK_ID is pending but waits on: $WAITING_ON." >&2
+      echo "  Record each predecessor with /orchestrator:done <id> once its pull request has merged, or pick a different subtask." >&2
       exit 1
     fi
     ;;
   blocked)
-    echo "✗ Subtask $SUBTASK_ID is blocked — its blocked_by predecessors have not completed. Drive the predecessors first." >&2
+    if [ "$STALE_BLOCKED" = "true" ]; then
+      echo "✗ Subtask $SUBTASK_ID is marked blocked, but every predecessor is completed — the file was written before the shared unblock pass (ADR-0062 §Decision 5)." >&2
+      echo "  Repair: node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" subtask-update --workflow-path \"$MACRO_PATH\" --host <host> --subtask-id $SUBTASK_ID --status=pending, then rerun /orchestrator:next." >&2
+    else
+      echo "✗ Subtask $SUBTASK_ID is blocked — it waits on: $WAITING_ON." >&2
+    fi
     exit 1;;
 esac
 ```
@@ -246,8 +232,8 @@ rm -f "$OWN_ERR"
 # branch with a stray active engineer workflow. Fail early instead.
 if [ -n "$SUBTASK_EXISTING_ENG_WF_ID" ] && [ -z "$EXISTING_ENG_PATH" ]; then
   echo "✗ Subtask $SUBTASK_ID references engineer_workflow_id=$SUBTASK_EXISTING_ENG_WF_ID but no active engineer workflow exists on branch '$SUBTASK_BRANCH'." >&2
-  echo "  The recorded child workflow may have been archived or deleted. Reconcile manually:" >&2
-  echo "    1. If the child completed externally, use /orchestrator:done $SUBTASK_ID --commit=<sha>." >&2
+  echo "  The recorded child has usually finished its commit and been archived; the subtask stays in_progress until the work lands (ADR-0062)." >&2
+  echo "    1. Once its pull request has merged, record it with /orchestrator:done $SUBTASK_ID." >&2
   echo "    2. If you want to dispatch a fresh attempt, clear the engineer_workflow_id field by re-running /orchestrator:plan (full re-plan)." >&2
   exit 1
 fi
@@ -271,11 +257,36 @@ fi
 
 # Step 4: switch. The user lands on $SUBTASK_BRANCH whether or not
 # we re-attached — engineer's resume keys on `git branch --show-current`.
+# A new branch starts from the integration branch (the macro's baseline
+# branch) as the remote last reported it, never from the checked-out HEAD:
+# after a squash or rebase merge, the previous subtask's branch is not part
+# of the integration branch, and a successor built on it would carry
+# obsolete history (ADR-0062 §Decision 2).
+# --- ADR-0062 branch-base step (extracted by tests) ---
+INTEGRATION_BRANCH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$MACRO_PATH" \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.parse(d).git_baseline.branch||"")}catch{}})')"
+if [ -z "$INTEGRATION_BRANCH" ]; then
+  echo "✗ The macro records no git_baseline.branch; cannot tell which branch subtasks start from." >&2
+  exit 1
+fi
 if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$SUBTASK_BRANCH"; then
   git -C "$REPO_ROOT" switch "$SUBTASK_BRANCH" || exit $?
+elif git -C "$REPO_ROOT" remote get-url origin >/dev/null 2>&1; then
+  if ! git -C "$REPO_ROOT" fetch --quiet origin "$INTEGRATION_BRANCH"; then
+    echo "⚠ git fetch origin $INTEGRATION_BRANCH failed; branching from the last fetched origin/$INTEGRATION_BRANCH." >&2
+  fi
+  if ! git -C "$REPO_ROOT" show-ref --verify --quiet "refs/remotes/origin/$INTEGRATION_BRANCH"; then
+    echo "✗ refs/remotes/origin/$INTEGRATION_BRANCH does not exist; cannot start $SUBTASK_BRANCH from the integration branch." >&2
+    exit 1
+  fi
+  git -C "$REPO_ROOT" switch --no-track -c "$SUBTASK_BRANCH" "refs/remotes/origin/$INTEGRATION_BRANCH" || exit $?
+  echo "→ Created $SUBTASK_BRANCH from origin/$INTEGRATION_BRANCH at $(git -C "$REPO_ROOT" rev-parse --short HEAD)." >&2
 else
-  git -C "$REPO_ROOT" switch -c "$SUBTASK_BRANCH" || exit $?
+  # A repository without an origin remote has only the local branch.
+  git -C "$REPO_ROOT" switch -c "$SUBTASK_BRANCH" "refs/heads/$INTEGRATION_BRANCH" || exit $?
+  echo "→ Created $SUBTASK_BRANCH from local $INTEGRATION_BRANCH (no origin remote)." >&2
 fi
+# --- end ADR-0062 branch-base step ---
 ```
 
 ---

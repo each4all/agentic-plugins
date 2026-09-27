@@ -1,7 +1,7 @@
 interface:
   display_name: "Orchestrator - Done"
-  short_description: "Manually record macro subtask completion as backup for engineer Stop-hook writeback"
-  default_prompt: "Use $orchestrator:done <subtask-id> to record a completed macro subtask with its terminal commit, preserving engineer workflow ownership."
+  short_description: "Record a macro subtask completed once its pull request has merged"
+  default_prompt: "Use $orchestrator:done <subtask-id> after the subtask's pull request merges, to record it completed with the merge commit, preserving engineer workflow ownership."
 
 policy:
   allow_implicit_invocation: false

@@ -75,7 +75,8 @@ The guard paths are:
 - `/orchestrator:next` dispatch guards → `empty_plan` points to
   `/orchestrator:plan`; `all_terminal` points to the terminal close
   (`/orchestrator:finalize` or the auto-archive Stop hook); `in_progress_or_blocked`
-  points to `/orchestrator:done` for the in-flight subtask.
+  points to `/orchestrator:done` for an in-flight subtask once its pull request
+  has merged (ADR-0062).
 - `/orchestrator:done` *no-child* → re-dispatch via `/orchestrator:next` (manual
   completion without a child is unsupported — `subtask-update` requires the
   `engineer_workflow_id`).
