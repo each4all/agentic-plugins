@@ -156,7 +156,7 @@ fi
 ## Phase 2 — Resolve the owning engineer workflow
 
 - `EXISTING_ENG_WF_ID` set → use it (the normal path after `/orchestrator:next` recorded it, or after the engineer terminal note bound it).
-- Otherwise scan the engineer workflow homes **and archive homes** — by the time the work has merged, the child has normally archived itself. **Both** `parent_workflow == $MACRO_ID` and `originating_subtask == $SUBTASK_ID` must match, and more than one distinct match is refused rather than guessed:
+- Otherwise scan the engineer workflow homes **and archive homes** — by the time the work has merged, the child has normally archived itself. **Both** `parent_workflow == $MACRO_ID` and `originating_subtask == $SUBTASK_ID` must match, and more than one distinct match is refused rather than guessed. A home or file that cannot be read (anything but a missing one) also refuses, since it could hide a second claimant:
 
 ```bash
 if [ -z "$EXISTING_ENG_WF_ID" ]; then
@@ -168,20 +168,28 @@ if [ -z "$EXISTING_ENG_WF_ID" ]; then
         [".agentic-plugins", "state", "engineer"], [".claude", "agentic-engineer"],
       ].flatMap((h) => ["workflows", "archive"].map((d) => path.join(REPO_ROOT, ...h, d)));
       const ids = new Set();
-      for (const dir of homes) {
-        let names = [];
-        try { names = fs.readdirSync(dir); } catch { continue; }
-        for (const name of names.filter((n) => n.endsWith(".md"))) {
-          let text; try { text = fs.readFileSync(path.join(dir, name), "utf8"); } catch { continue; }
-          const fm = (text.match(/^---\r?\n([\s\S]*?)\r?\n---/) || [])[1] || "";
-          if (!fm.includes(`parent_workflow: "${MACRO_ID}"`) || !fm.includes(`originating_subtask: "${SUBTASK_ID}"`)) continue;
-          const id = (fm.match(/^workflow_id:\s*"([^"]+)"/m) || [])[1];
-          if (id) ids.add(id);
+      // Only a missing home or file is "nothing there"; any other read error
+      // could hide a second claimant, so the scan fails instead of guessing.
+      const missing = (e) => e.code === "ENOENT";
+      try {
+        for (const dir of homes) {
+          let names = [];
+          try { names = fs.readdirSync(dir); } catch (e) { if (missing(e)) continue; throw e; }
+          for (const name of names.filter((n) => n.endsWith(".md"))) {
+            let text; try { text = fs.readFileSync(path.join(dir, name), "utf8"); } catch (e) { if (missing(e)) continue; throw e; }
+            const fm = (text.match(/^---\r?\n([\s\S]*?)\r?\n---/) || [])[1] || "";
+            if (!fm.includes(`parent_workflow: "${MACRO_ID}"`) || !fm.includes(`originating_subtask: "${SUBTASK_ID}"`)) continue;
+            const id = (fm.match(/^workflow_id:\s*"([^"]+)"/m) || [])[1];
+            if (id) ids.add(id);
+          }
         }
-      }
+      } catch (e) { process.stderr.write(`${e.message}\n`); process.exit(1); }
       process.stdout.write([...ids].join("\n"));
     '
-  )"
+  )" || {
+    echo "✗ Could not scan the engineer workflow homes for $SUBTASK_ID's owner (see the error above); refusing to guess." >&2
+    exit 1
+  }
   if [ -z "$MATCHES" ]; then
     echo "✗ No engineer workflow found with parent_workflow=$MACRO_ID AND originating_subtask=$SUBTASK_ID (active or archived)." >&2
     echo "  This subtask was likely never dispatched — run /orchestrator:next $SUBTASK_ID first." >&2
@@ -201,7 +209,7 @@ fi
 
 ## Phase 3a — `--no-commit`: completion without a landed commit
 
-Refused while an engineer workflow for this subtask is still **active**: a child whose branch never moved cannot archive itself, and it would keep the macro's no-active-children gate closed forever.
+Refused while an engineer workflow for this subtask is still **active**: a child whose branch never moved cannot archive itself, and it would keep the macro's no-active-children gate closed forever. Also refused when a workflow home or file cannot be read (anything but a missing one): the unreadable entry could be that child.
 
 ```bash
 if [ "${NO_COMMIT:-}" = "1" ]; then
@@ -209,15 +217,23 @@ if [ "${NO_COMMIT:-}" = "1" ]; then
     env MACRO_ID="$MACRO_ID" SUBTASK_ID="$SUBTASK_ID" REPO_ROOT="$REPO_ROOT" node -e '
       const fs = require("fs"); const path = require("path");
       const { MACRO_ID, SUBTASK_ID, REPO_ROOT } = process.env;
-      for (const dir of [path.join(REPO_ROOT, ".agentic-plugins", "state", "engineer", "workflows"), path.join(REPO_ROOT, ".claude", "agentic-engineer", "workflows")]) {
-        let names = []; try { names = fs.readdirSync(dir); } catch { continue; }
-        for (const name of names.filter((n) => n.endsWith(".md"))) {
-          const text = fs.readFileSync(path.join(dir, name), "utf8");
-          if (text.includes(`parent_workflow: "${MACRO_ID}"`) && text.includes(`originating_subtask: "${SUBTASK_ID}"`)) { process.stdout.write(path.join(dir, name)); process.exit(0); }
+      // Only a missing home or file is "no child"; any other read error could
+      // hide the active child, so the scan fails instead.
+      const missing = (e) => e.code === "ENOENT";
+      try {
+        for (const dir of [path.join(REPO_ROOT, ".agentic-plugins", "state", "engineer", "workflows"), path.join(REPO_ROOT, ".claude", "agentic-engineer", "workflows")]) {
+          let names = []; try { names = fs.readdirSync(dir); } catch (e) { if (missing(e)) continue; throw e; }
+          for (const name of names.filter((n) => n.endsWith(".md"))) {
+            let text; try { text = fs.readFileSync(path.join(dir, name), "utf8"); } catch (e) { if (missing(e)) continue; throw e; }
+            if (text.includes(`parent_workflow: "${MACRO_ID}"`) && text.includes(`originating_subtask: "${SUBTASK_ID}"`)) { process.stdout.write(path.join(dir, name)); process.exit(0); }
+          }
         }
-      }
+      } catch (e) { process.stderr.write(`${e.message}\n`); process.exit(1); }
     '
-  )"
+  )" || {
+    echo "✗ Could not scan the engineer workflow homes for an active child of $SUBTASK_ID (see the error above); refusing --no-commit." >&2
+    exit 1
+  }
   if [ -n "$ACTIVE_CHILD" ]; then
     echo "✗ An engineer workflow for $SUBTASK_ID is still active: $ACTIVE_CHILD" >&2
     echo "  Archive it first (/engineer:resume archive on its branch), then rerun /orchestrator:done $SUBTASK_ID --no-commit." >&2
