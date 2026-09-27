@@ -41,9 +41,12 @@
 // including the Claude catalog, because a half-synced pair would fail the
 // validation below anyway. After writing, both catalogs are validated
 // against HEAD — the catalog as it stood before this write — with the same
-// gates CI runs, and a failure exits 1 so the release job does not push. A
-// GITHUB_TOKEN push triggers no workflow, so nothing downstream would catch
-// it. Recovery from a partial activation: docs/runbooks/codex-pin-activation.md.
+// gates CI runs, and a failure exits 1 so the release job does not push.
+// Nothing else checks the commit before it lands: a GITHUB_TOKEN push triggers
+// no workflow, and the test runs the release job dispatches after its push see
+// the catalog only once it is on main, where marketplace-validate compares no
+// baseline. Recovery from a partial activation:
+// docs/runbooks/codex-pin-activation.md.
 //
 // Usage:
 //   node scripts/sync-marketplace-versions.mjs                       # apply

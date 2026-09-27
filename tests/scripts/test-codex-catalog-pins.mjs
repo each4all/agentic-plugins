@@ -511,8 +511,9 @@ test('a published package\'s pin cannot be dropped, even where its tags are miss
 });
 
 test('CONTROL — before activation a PR that restores an all-local catalog passes against a mis-pinned baseline', (t) => {
-  // main carries a pin without the marker — invalid, but reachable because a
-  // GITHUB_TOKEN push triggers no validation. The repair must not be blocked.
+  // main carries a pin without the marker — invalid, but reachable because
+  // nothing validates a GITHUB_TOKEN push before it lands. The repair must not
+  // be blocked.
   const dir = makeRepo(t);
   setCodexSource(dir, 'alpha', pinSource(dir, 'alpha', '1.0.0'));
   const base = commit(dir, 'chore: a bad bot push');
