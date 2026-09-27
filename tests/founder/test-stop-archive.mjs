@@ -339,14 +339,14 @@ describe('Claude stop hook — case (a) all gates pass → archive', () => {
 });
 
 describe('Claude stop hook — case (g) cross-branch workflow → no archive (ADR-0018 §sub-2)', () => {
-  it('leaves the workflow in workflows/ when its git_baseline.branch differs from current branch', async () => {
+  it('leaves a workflow on another branch whose own tip has not moved, although HEAD has', async () => {
     await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
       // 'other' is a REAL branch here. Fixture is on 'main', so
       // findActiveWorkflow returns null for the 'other' workflow and
-      // runStopArchive leaves it. The ADR-0031 orphan sweep ALSO leaves it,
-      // because branchRefState('other')='present' — a terminal cross-branch
-      // workflow whose branch still exists is something you can switch back
-      // to; only a DELETED-branch orphan is swept (covered separately).
+      // runStopArchive leaves it. The sweep judges it against 'other''s own
+      // tip, which is still the baseline: the commit below moves HEAD on
+      // 'main' only, and HEAD must never stand in for another branch. A kept
+      // branch that did move is archived (covered with the sweep tests).
       execFileSync('git', ['branch', 'other'], { cwd: repoRoot });
       const { filePath } = await createWorkflow({
         repoRoot,
@@ -985,7 +985,7 @@ describe('branchRefState — local branch ref classification', () => {
   });
 });
 
-describe('runStopArchiveOrphanSweep — ADR-0031 branch-deletion orphan sweep', () => {
+describe('runStopArchiveOrphanSweep — workflows whose branch is not checked out (deleted: ADR-0031; kept: C3)', () => {
   async function makeTerminal(filePath) {
     await setFrontmatter(filePath, (fm) => {
       fm.current_phase = 'summary-complete';
@@ -1008,19 +1008,174 @@ describe('runStopArchiveOrphanSweep — ADR-0031 branch-deletion orphan sweep', 
     });
   });
 
-  it('leaves a terminal workflow whose branch still exists (it archives normally on that branch)', async () => {
+  // C3: a terminal workflow on a branch that still exists but is not checked
+  // out is judged against that branch's own tip, as if the Stop had fired
+  // there. HEAD belongs to another branch and must never stand in for it.
+  for (const [host, hostScript] of [['claude', CLAUDE_STOP_PATH], ['codex', CODEX_STOP_PATH]]) {
+    it(`the ${host} Stop hook archives a terminal workflow on a kept branch that is not checked out once that branch has moved`, async () => {
+      await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+        execFileSync('git', ['switch', '-q', '-c', 'feat/kept'], { cwd: repoRoot });
+        makeAdvanceCommit(repoRoot);
+        execFileSync('git', ['switch', '-q', '-c', 'feat/next'], { cwd: repoRoot });
+        const { filePath } = await createWorkflow({
+          repoRoot, verb: 'compose', originalRequest: 'kept branch',
+          gitBaseline: { branch: 'feat/kept', head: baselineHead, status_digest: MIN_DIGEST },
+          host,
+        });
+        await makeTerminal(filePath);
+        const { code, stderr } = spawnStopHook({
+          hostScript, cwd: repoRoot, payload: JSON.stringify({ cwd: repoRoot }),
+        });
+        strictEqual(code, 0, `stderr: ${stderr}`);
+        strictEqual((await listWorkflows(repoRoot)).length, 0, stderr);
+        strictEqual((await listArchive(repoRoot)).length, 1);
+      });
+    });
+  }
+
+  it('leaves a terminal workflow on a kept branch whose tip has not moved, and writes nothing to it', async () => {
     await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
       execFileSync('git', ['branch', 'feat/live'], { cwd: repoRoot });
+      makeAdvanceCommit(repoRoot); // HEAD moved on main; feat/live did not
       const { filePath } = await createWorkflow({
-        repoRoot, verb: 'compose', originalRequest: 'live',
+        repoRoot, verb: 'compose', originalRequest: 'live, no commit',
         gitBaseline: { branch: 'feat/live', head: baselineHead, status_digest: MIN_DIGEST },
         host: 'claude',
       });
-      await makeTerminal(filePath); // feat/live exists → branchRefState='present' → leave
+      await makeTerminal(filePath);
+      const before = await readFile(filePath, 'utf8');
+      for (let i = 0; i < 2; i += 1) {
+        const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+        strictEqual(results.length, 0);
+      }
+      // No snapshot or host_history entry per Stop: a workflow that can never
+      // pass must not grow with every Stop on another branch.
+      strictEqual(await readFile(filePath, 'utf8'), before);
+    });
+  });
+
+  it('leaves the checked-out branch\'s workflow to the per-branch Stop path', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'current branch',
+        gitBaseline: { branch: 'main', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await makeTerminal(filePath);
+      makeAdvanceCommit(repoRoot);
       const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
       strictEqual(results.length, 0);
       strictEqual((await listWorkflows(repoRoot)).length, 1);
-      strictEqual((await listArchive(repoRoot)).length, 0);
+    });
+  });
+
+  it('leaves every kept branch when git cannot say which branch is checked out', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      // The checked-out branch's workflow belongs to the per-branch path; with
+      // the checkout unknown, any kept branch could be that one.
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'checkout unknown',
+        gitBaseline: { branch: 'main', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await makeTerminal(filePath);
+      makeAdvanceCommit(repoRoot);
+      const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      const bin = await mkdtemp(join(tmpdir(), 'fake-git-'));
+      await writeFile(join(bin, 'git'),
+        `#!/bin/sh\nif [ "$1" = "symbolic-ref" ]; then exit 128; fi\nexec "${realGit}" "$@"\n`, { mode: 0o755 });
+      const savedPath = process.env.PATH;
+      process.env.PATH = `${bin}:${savedPath}`;
+      try {
+        const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+        strictEqual(results.length, 0);
+      } finally {
+        process.env.PATH = savedPath;
+        await rm(bin, { recursive: true, force: true });
+      }
+      strictEqual((await listWorkflows(repoRoot)).length, 1);
+    });
+  });
+
+  it('judges kept branches against their own tips on a detached HEAD', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      execFileSync('git', ['switch', '-q', '-c', 'feat/kept'], { cwd: repoRoot });
+      makeAdvanceCommit(repoRoot);
+      execFileSync('git', ['switch', '-q', '--detach', baselineHead], { cwd: repoRoot });
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'detached checkout',
+        gitBaseline: { branch: 'feat/kept', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await makeTerminal(filePath);
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.filter((r) => r.archived).length, 1);
+      strictEqual((await listWorkflows(repoRoot)).length, 0);
+    });
+  });
+
+  it('leaves a kept branch reset below its baseline, and writes nothing to it', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      // The tip differs from the baseline but went backwards: nothing on the
+      // branch is evidence of the workflow's work.
+      execFileSync('git', ['switch', '-q', '-c', 'feat/rewound'], { cwd: repoRoot });
+      const workflowBaseline = makeAdvanceCommit(repoRoot);
+      execFileSync('git', ['reset', '-q', '--hard', baselineHead], { cwd: repoRoot });
+      execFileSync('git', ['switch', '-q', 'main'], { cwd: repoRoot });
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'rewound branch',
+        gitBaseline: { branch: 'feat/rewound', head: workflowBaseline, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await makeTerminal(filePath);
+      const before = await readFile(filePath, 'utf8');
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.length, 0);
+      strictEqual(await readFile(filePath, 'utf8'), before);
+    });
+  });
+
+  it('leaves a moved kept branch whose workflow still has an unfinished child, and writes nothing to it', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      execFileSync('git', ['switch', '-q', '-c', 'feat/kept'], { cwd: repoRoot });
+      makeAdvanceCommit(repoRoot);
+      execFileSync('git', ['switch', '-q', 'main'], { cwd: repoRoot });
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'unfinished child',
+        gitBaseline: { branch: 'feat/kept', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await setFrontmatter(filePath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+        fm.child_completions = [{ child_id: 'wf-unfinished-child', spawned_at: '2026-09-28T00:00:00Z', commit: 'abc1234', closed_at: '' }];
+      });
+      const before = await readFile(filePath, 'utf8');
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.length, 0);
+      strictEqual(await readFile(filePath, 'utf8'), before);
+    });
+  });
+
+  it('leaves a terminal workflow whose kept branch does not resolve to a commit', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      // A ref that exists (show-ref succeeds) but names a blob: the tip cannot
+      // be read, so the branch is neither judged nor treated as deleted.
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+        cwd: repoRoot, input: 'not a commit\n', encoding: 'utf8',
+      }).trim();
+      await mkdir(join(repoRoot, '.git/refs/heads/feat'), { recursive: true });
+      await writeFile(join(repoRoot, '.git/refs/heads/feat/blob'), `${blob}\n`);
+      strictEqual(branchRefState(repoRoot, 'feat/blob'), 'present');
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'unresolvable tip',
+        gitBaseline: { branch: 'feat/blob', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await makeTerminal(filePath);
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.length, 0);
+      strictEqual((await listWorkflows(repoRoot)).length, 1);
     });
   });
 
