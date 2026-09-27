@@ -73,7 +73,9 @@ parent lock while archiving engineer children.
 ## Phase 2 - Archive or detach engineer children
 
 Resolve and preflight the engineer plugin with
-`scripts/discover-engineer.mjs`.
+`scripts/discover-engineer.mjs` (`preflight --purpose lifecycle`: this path
+needs only the engineer's detach-archive / stop-archive, not the ADR-0062
+dispatch capability).
 
 Scan canonical and legacy engineer workflow homes for files whose
 frontmatter has `parent_workflow == <macro id>`.

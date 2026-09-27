@@ -6,8 +6,9 @@ description: "Dispatches the next ready orchestrator macro subtask into the engi
 # Next (orchestrator dispatch skill)
 
 `next` dispatches one ready macro subtask into `plugins/engineer` and
-records the immutable parent linkage needed for engineer Stop-hook
-writeback:
+records the immutable parent linkage the engineer needs to note its
+terminal commit on the macro (Phase 7 and the Stop hook; ADR-0062 — the
+subtask completes later, when `$orchestrator:done` records the merge):
 
 - `AGENTIC_PARENT_WORKFLOW=<macro id>`
 - `AGENTIC_ORIGINATING_SUBTASK=<subtask id>`
@@ -81,6 +82,18 @@ Reject dispatch when the selected subtask is `completed`, `deferred`,
 predecessors. `in_progress` is allowed only as the idempotent
 reattach path.
 
+Take the dependency facts from the state CLI, not from the status alone
+(ADR-0062 §Decision 5): `state.mjs subtask-readiness --workflow-path
+"$MACRO_PATH" --subtask-id "$SUBTASK_ID"` returns `waiting_on` (the
+predecessors not yet completed) and `stale_blocked` (marked `blocked` with
+nothing left to wait on — a file written before the shared unblock pass;
+repair it with `state.mjs subtask-update --status=pending`). When
+`next-ready` finds nothing, its `readiness` array carries the same facts
+for every open subtask; report them per subtask. An `in_progress` subtask
+whose engineer workflow has committed stays `in_progress` until its work
+lands: once its pull request has merged, record it with
+`$orchestrator:done <id>`.
+
 ---
 
 ## Phase 2 - Branch and ownership preconditions
@@ -98,7 +111,16 @@ match both `parent_workflow == <macro id>` and
 `originating_subtask == <subtask id>`. Otherwise stop; do not reuse an
 unrelated engineer workflow.
 
-Then switch to the subtask branch, creating it only when absent.
+Then switch to the subtask branch, creating it only when absent. A new
+branch starts from the integration branch — the macro's
+`git_baseline.branch` — as the remote last reported it, never from the
+checked-out `HEAD` (ADR-0062 §Decision 2): `git fetch origin
+<integration>`, then `git switch --no-track -c <subtask-branch>
+refs/remotes/origin/<integration>`, and stop if that remote-tracking ref
+does not exist. Only a repository with no `origin` remote branches from
+the local integration branch. After a squash or rebase merge, the previous
+subtask's branch is not part of the integration branch, so a successor
+built on it would carry obsolete history.
 
 ---
 

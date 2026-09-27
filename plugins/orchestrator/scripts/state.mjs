@@ -57,6 +57,7 @@ import { hrtime, pid } from 'node:process';
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { resolveLanding, dispatchTimeFromWorkflowId } from './landing.mjs';
 
 // -----------------------------------------------------------------------------
 // Constants — ADR-0018 §sub-decision-1 + §sub-decision-2
@@ -2136,6 +2137,19 @@ function validateSubtasks(
 // diagnostic so legacy plans don't get half-migrated. Users either
 // archive the legacy workflow or run /orchestrator:plan to start
 // fresh under 1.1.
+// ADR-0062 §Decision 7 — an archived macro is a frozen record. The subtask
+// writers (plan-set, subtask-update including --correct, the engineer
+// terminal note) refuse a path inside an `archive/` home, so a correction
+// cannot be applied to history by naming the archived file directly.
+function ensureNotArchived(workflowPath, writer) {
+  if (basename(dirname(workflowPath)) === 'archive') {
+    throw new Error(
+      `${writer}: ${workflowPath} is an archived macro; archived macros are frozen records ` +
+        `and are not changed in place (ADR-0062 §Decision 7).`,
+    );
+  }
+}
+
 function ensureMutable(fm) {
   if (fm.schema === '1.0') {
     throw new Error(
@@ -2314,6 +2328,11 @@ export async function appendPhase({
   nextAction,
   event = 'resumed',
   now = new Date(),
+  // ADR-0062 §Decision 4 — refuse, under this write's own lock, when the
+  // macro is terminal. /orchestrator:plan passes it on both of its phase
+  // appends, so a macro finalized by another session between a check and
+  // the append cannot be left with terminal_marker and a non-terminal phase.
+  requireOpen = false,
 }) {
   validateHost(host);
   validateHookEvent(event);
@@ -2323,6 +2342,13 @@ export async function appendPhase({
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     ensureMutable(frontmatter);
+    if (requireOpen && frontmatter.terminal_marker === true) {
+      throw new Error(
+        `append: this terminal macro is not revised (current_phase ` +
+          `${JSON.stringify(frontmatter.current_phase)}, ADR-0062 §Decision 4). ` +
+          `Archive it (/orchestrator:resume archive) and start a new /orchestrator:plan.`,
+      );
+    }
     const nowIso = isoUtc(now);
 
     if (currentPhase !== undefined) frontmatter.current_phase = currentPhase;
@@ -2629,6 +2655,90 @@ export async function commitEnsemble({
 // id uniqueness, blocked_by → existing id + acyclic (self-, mutual, and
 // longer cycles all rejected), and status enum.
 
+// ADR-0062 §Decision 5 — the unblock pass both plan writers run. A `blocked`
+// subtask whose `blocked_by` entries are all `completed` becomes `pending`;
+// an empty `blocked_by` counts as satisfied (a revision that removed the last
+// dependency). Mutates `subtasks` in place and returns the promoted ids.
+function applyUnblockPass(subtasks) {
+  const completedIds = new Set(
+    subtasks.filter((s) => s.status === 'completed').map((s) => s.id),
+  );
+  const promoted = [];
+  for (let i = 0; i < subtasks.length; i++) {
+    const s = subtasks[i];
+    if (s.status !== 'blocked') continue;
+    const deps = Array.isArray(s.blocked_by) ? s.blocked_by : [];
+    if (deps.every((depId) => completedIds.has(depId))) {
+      subtasks[i] = { ...s, status: 'pending' };
+      promoted.push(s.id);
+    }
+  }
+  return promoted;
+}
+
+// ADR-0062 §Decision 5 — readiness facts for /orchestrator:next, taken from
+// the plan rather than inferred from a status. `waiting_on` lists the
+// `blocked_by` entries not yet completed; `stale_blocked` marks a `blocked`
+// subtask with nothing left to wait on (a file written before the shared
+// unblock pass); `ready` is what next-ready would dispatch.
+export function subtaskReadiness(subtasks) {
+  const completedIds = new Set(
+    subtasks.filter((s) => s?.status === 'completed').map((s) => s.id),
+  );
+  return subtasks.map((s) => {
+    const blockedBy = Array.isArray(s?.blocked_by) ? s.blocked_by : [];
+    const waitingOn = blockedBy.filter((d) => !completedIds.has(d));
+    return {
+      id: s?.id,
+      status: s?.status,
+      blocked_by: blockedBy,
+      waiting_on: waitingOn,
+      stale_blocked: s?.status === 'blocked' && waitingOn.length === 0,
+      ready: s?.status === 'pending' && waitingOn.length === 0,
+    };
+  });
+}
+
+// ADR-0062 §Decision 3 — a completed subtask survives a plan revision
+// unchanged: the work it names (verb, branch, topic, …) and the record of its
+// completion alike. A field the revision omits is carried forward; changing
+// or dropping one, changing the status, or removing the subtask needs
+// `correct`. A field the record never had may be added. Returns the merged
+// list (new objects; the caller's array is not mutated) and the changes a
+// correction made, for the audit note.
+function carryCompletedSubtasks(previous, revised, { correct }) {
+  const merged = revised.map((s) => (s && typeof s === 'object' ? { ...s } : s));
+  const changes = [];
+  const refuse = (message) => {
+    throw new Error(
+      `setPlan: ${message}. A completed subtask is kept as recorded (ADR-0062 §Decision 3); ` +
+        `to change it deliberately, pass --correct with a reason.`,
+    );
+  };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  for (const prev of previous) {
+    if (!prev || prev.status !== 'completed') continue;
+    const next = merged.find((s) => s && s.id === prev.id);
+    if (!next) {
+      if (!correct) refuse(`completed subtask ${JSON.stringify(prev.id)} is missing from the revision`);
+      changes.push(`removed completed subtask ${JSON.stringify(prev.id)}`);
+      continue;
+    }
+    for (const key of Object.keys(prev)) {
+      if (!(key in next)) {
+        next[key] = prev[key];
+        continue;
+      }
+      if (same(next[key], prev[key])) continue;
+      if (!correct) {
+        refuse(`completed subtask ${JSON.stringify(prev.id)} would change ${key} from ${JSON.stringify(prev[key])} to ${JSON.stringify(next[key])}`);
+      }
+      changes.push(`${prev.id}.${key}: ${JSON.stringify(prev[key])} -> ${JSON.stringify(next[key])}`);
+    }
+  }
+  return { merged, changes };
+}
+
 export async function setPlan({
   workflowPath,
   decision = null,
@@ -2637,11 +2747,26 @@ export async function setPlan({
   host,
   event = 'updated',
   now = new Date(),
+  correct = false,
+  reason,
 }) {
   validateHost(host);
   validateHookEvent(event);
   if (!Array.isArray(subtasks)) {
     throw new Error('setPlan: subtasks must be an array');
+  }
+  if (typeof correct !== 'boolean') {
+    throw new Error('setPlan: correct must be a boolean');
+  }
+  if (reason !== undefined && typeof reason !== 'string') {
+    throw new Error('setPlan: reason must be a string');
+  }
+  const reasonText = typeof reason === 'string' ? scrubSecrets(reason).trim() : '';
+  if (correct && reasonText.length === 0) {
+    throw new Error(
+      'setPlan: --correct requires a non-empty reason (ADR-0062 §Decision 3: ' +
+        'a correction records why the recorded value was wrong).',
+    );
   }
   if (decision !== null && decision !== undefined && typeof decision !== 'string') {
     throw new Error(
@@ -2654,6 +2779,7 @@ export async function setPlan({
     );
   }
 
+  ensureNotArchived(workflowPath, 'setPlan');
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
@@ -2663,12 +2789,32 @@ export async function setPlan({
     // (which would mislead users who haven't realized their file
     // is the legacy shape).
     ensureMutable(frontmatter);
+    // ADR-0062 §Decision 4 — a terminal macro is not revised. The /plan
+    // runbook rewrites current_phase around plan-set, so revising a macro
+    // whose terminal_marker is set would leave the marker with a
+    // non-terminal phase (archive gate A2 then rejects it forever), and it
+    // would reopen a file the Stop hook may be archiving.
+    if (frontmatter.terminal_marker === true) {
+      throw new Error(
+        `setPlan: this terminal macro is not revised (current_phase ` +
+          `${JSON.stringify(frontmatter.current_phase)}, ADR-0062 §Decision 4). ` +
+          `Archive it (/orchestrator:resume archive) and start a new /orchestrator:plan.`,
+      );
+    }
+    const previous = Array.isArray(frontmatter.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+    const { merged, changes } = carryCompletedSubtasks(previous, subtasks, { correct });
     // Pass macro branch for the §1 prefix-collision gate so a subtask
     // branch cannot path-collide with the parent macro branch.
-    validateSubtasks(subtasks, frontmatter.schema, frontmatter.git_baseline?.branch ?? null);
+    validateSubtasks(merged, frontmatter.schema, frontmatter.git_baseline?.branch ?? null);
+    const promoted = applyUnblockPass(merged);
+    // setPlan never auto-terminals (ADR-0062 §Decision 5): the runbook would
+    // overwrite the terminal phase right after, and closing a macro is
+    // /orchestrator:finalize's decision. The caller reports it instead.
+    const allTerminal = merged.length > 0
+      && merged.every((s) => TERMINAL_SUBTASK_STATUSES.has(s.status));
     const nowIso = isoUtc(now);
 
-    const plan = { subtasks };
+    const plan = { subtasks: merged };
     if (decision !== null && decision !== undefined) {
       plan.decision = decision;
     }
@@ -2684,17 +2830,22 @@ export async function setPlan({
 
     const noteHeading = `### plan-set @ ${nowIso}\n\n`;
     const noteSummary =
-      `${subtasks.length} subtask${subtasks.length === 1 ? '' : 's'}` +
+      `${merged.length} subtask${merged.length === 1 ? '' : 's'}` +
       `${decision ? ', decision recorded' : ''}` +
-      `${architecture ? ', architecture recorded' : ''}.\n\n`;
-    const newBody = `${body}${noteHeading}${noteSummary}`;
+      `${architecture ? ', architecture recorded' : ''}` +
+      `${promoted.length > 0 ? `; unblocked: ${promoted.join(', ')}` : ''}.\n\n`;
+    const correctionNote = changes.length > 0
+      ? `Correction (--correct): ${changes.join('; ')}.\n\n`
+      : '';
+    const reasonNote = reasonText.length > 0 ? `Reason: ${reasonText}\n\n` : '';
+    const newBody = `${body}${noteHeading}${noteSummary}${correctionNote}${reasonNote}`;
 
     await atomicWrite(
       workflowPath,
       assembleWorkflowFile(frontmatter, newBody),
       { lockPath, token },
     );
-    return { frontmatter, workflowPath };
+    return { frontmatter, workflowPath, promoted, allTerminal };
   });
 }
 
@@ -2732,7 +2883,17 @@ const UPDATE_SUBTASK_ALLOWED_KEYS = new Set([
   // ADR-0031 amendment — behavioral opt-in for the activation sidecar (NOT a
   // subtask field; never enters the update payload). Production CLI passes true.
   'emitHandoff',
+  // ADR-0062 §Decision 3 — write controls, not subtask fields. `correct`
+  // (with a `reason`) is the only way to replace a recorded commit / pr_url /
+  // closed_at; `reason` alone is noted with the write; `expectBranch` refuses
+  // the write when the plan changed after the caller resolved the landing.
+  'correct', 'reason', 'expectBranch',
 ]);
+
+// ADR-0062 §Decision 3 — provenance fields a later write may fill but never
+// replace without `correct`. `closed_at` differs on every re-run (a fresh
+// timestamp), so a differing value is dropped rather than refused.
+const RECORDED_PROVENANCE_KEYS = ['commit', 'pr_url'];
 
 export async function updateSubtask(opts) {
   if (typeof opts !== 'object' || opts === null) {
@@ -2769,12 +2930,32 @@ export async function updateSubtask(opts) {
     // actually promotes the macro to terminal; default off keeps the helper
     // side-effect-free for tests / internal callers.
     emitHandoff = false,
+    correct = false,
+    reason,
+    expectBranch,
   } = opts;
   validateHost(host);
   validateHookEvent(event);
   if (typeof subtaskId !== 'string' || subtaskId.length === 0) {
     throw new Error('updateSubtask: subtaskId must be a non-empty string');
   }
+  if (typeof correct !== 'boolean') {
+    throw new Error('updateSubtask: correct must be a boolean');
+  }
+  if (reason !== undefined && typeof reason !== 'string') {
+    throw new Error('updateSubtask: reason must be a string');
+  }
+  const reasonText = typeof reason === 'string' ? scrubSecrets(reason).trim() : '';
+  if (correct && reasonText.length === 0) {
+    throw new Error(
+      'updateSubtask: --correct requires a non-empty reason (ADR-0062 §Decision 3: ' +
+        'a correction records why the recorded value was wrong).',
+    );
+  }
+  if (expectBranch !== undefined && (typeof expectBranch !== 'string' || expectBranch.length === 0)) {
+    throw new Error('updateSubtask: expectBranch must be a non-empty string');
+  }
+  ensureNotArchived(workflowPath, 'updateSubtask');
 
   // Build the update payload — only the mutation-allowed fields.
   // `undefined` means "leave existing value untouched"; explicit
@@ -2868,6 +3049,17 @@ export async function updateSubtask(opts) {
 
     const nowIso = isoUtc(now);
     const current = subtasks[targetIdx];
+
+    // ADR-0062 §Decision 3 — the caller resolved the landing against this
+    // branch; a plan revision in between must not let that result complete
+    // different work.
+    if (expectBranch !== undefined && current.branch !== expectBranch) {
+      throw new Error(
+        `updateSubtask: subtask ${JSON.stringify(subtaskId)} branch is ` +
+          `${JSON.stringify(current.branch)}, not the expected ${JSON.stringify(expectBranch)}; ` +
+          `the plan changed after the landing was resolved. Resolve it again.`,
+      );
+    }
 
     // ADR-0019 §4 precondition — terminal-partial states (deferred /
     // abandoned) are ABSORBING. Once `/orchestrator:finalize` or
@@ -2975,24 +3167,57 @@ export async function updateSubtask(opts) {
       }
     }
 
+    // ADR-0062 §Decision 3 — a recorded value is not replaced silently. The
+    // engineer Stop hook used to re-send the branch tip after Phase 7 had
+    // recorded it, and the merge below replaced the record (docket C14).
+    const corrections = [];
+    for (const key of RECORDED_PROVENANCE_KEYS) {
+      if (!(key in payload)) continue;
+      const recorded = current[key];
+      if (typeof recorded !== 'string' || recorded.length === 0 || recorded === payload[key]) continue;
+      if (!correct) {
+        throw new Error(
+          `updateSubtask: subtask ${JSON.stringify(subtaskId)} already records ${key} ` +
+            `${JSON.stringify(recorded)}; refusing ${JSON.stringify(payload[key])}. ` +
+            `Automatic writes never replace a recorded value (ADR-0062 §Decision 3). ` +
+            `To correct it deliberately, pass --correct with a reason.`,
+        );
+      }
+      corrections.push({ key, from: recorded, to: payload[key] });
+    }
+    if (
+      'closed_at' in payload
+      && typeof current.closed_at === 'string'
+      && current.closed_at.length > 0
+      && current.closed_at !== payload.closed_at
+    ) {
+      if (correct) {
+        corrections.push({ key: 'closed_at', from: current.closed_at, to: payload.closed_at });
+      } else {
+        // A re-run carries a fresh timestamp; the recorded completion time stays.
+        delete payload.closed_at;
+      }
+    }
+
+    const changedKeys = Object.keys(payload).filter((k) => current[k] !== payload[k]);
+    if (changedKeys.length === 0) {
+      return {
+        frontmatter,
+        workflowPath,
+        updatedSubtask: current,
+        autoTerminal: false,
+        skipped: true,
+        noop: true,
+        skipReason: `subtask ${JSON.stringify(subtaskId)} already records these values; nothing written.`,
+      };
+    }
+
     // Apply primary mutation.
     const updated = { ...current, ...payload };
     subtasks[targetIdx] = updated;
 
-    // Unblock pass — any blocked subtask whose blocked_by predecessors
-    // are now all completed transitions to pending.
-    const completedIds = new Set(
-      subtasks.filter((s) => s.status === 'completed').map((s) => s.id),
-    );
-    for (let i = 0; i < subtasks.length; i++) {
-      const s = subtasks[i];
-      if (s.status !== 'blocked') continue;
-      if (!Array.isArray(s.blocked_by) || s.blocked_by.length === 0) continue;
-      const allComplete = s.blocked_by.every((depId) => completedIds.has(depId));
-      if (allComplete) {
-        subtasks[i] = { ...s, status: 'pending' };
-      }
-    }
+    // Unblock pass — shared with setPlan (ADR-0062 §Decision 5).
+    applyUnblockPass(subtasks);
 
     // Auto-terminal pass — if all subtasks are now terminal AND macro
     // has not already been marked terminal (by /finalize or /abort),
@@ -3010,6 +3235,18 @@ export async function updateSubtask(opts) {
       // subtask lands — the sidecar footer would otherwise recommend it as
       // next work. Rewrite it to the auto-terminal reality in the same pass.
       frontmatter.next_action = 'All subtasks are terminal; the macro will auto-archive on the next Stop. Review the landed subtasks, then plan or dispatch the next work item.';
+    } else if (payload.status === 'completed' && current.status !== 'completed') {
+      // ADR-0062 — the engineer terminal note pointed next_action at
+      // /orchestrator:done for this subtask; once that is recorded, say what
+      // comes next instead of leaving the stale instruction for the footer.
+      const prefix = host === 'codex' ? '$' : '/';
+      const readyIds = subtaskReadiness(subtasks).filter((r) => r.ready).map((r) => r.id);
+      const inFlight = subtasks.filter((s) => s.status === 'in_progress').map((s) => s.id);
+      frontmatter.next_action = readyIds.length > 0
+        ? `${subtaskId} is recorded; dispatch ${readyIds[0]} with ${prefix}orchestrator:next`
+        : inFlight.length > 0
+          ? `${subtaskId} is recorded; record ${inFlight.join(', ')} with ${prefix}orchestrator:done once each pull request merges`
+          : `${subtaskId} is recorded; no subtask is ready — review the plan`;
     }
 
     // Re-validate the full plan against schema invariants (catches
@@ -3024,10 +3261,16 @@ export async function updateSubtask(opts) {
 
     const noteHeading = `### subtask-update ${JSON.stringify(subtaskId)} @ ${nowIso}\n\n`;
     const noteSummary =
-      `Fields updated: ${Object.keys(payload).join(', ')}` +
+      `Fields updated: ${changedKeys.join(', ')}` +
       (autoTerminalSetThisCall ? '. Auto-terminal: all subtasks terminal; terminal_marker + current_phase set.' : '.') +
       '\n\n';
-    const newBody = `${body}${noteHeading}${noteSummary}`;
+    const correctionNote = corrections.length > 0
+      ? `Correction (--correct): ${corrections
+        .map((c) => `${c.key}: ${JSON.stringify(c.from)} -> ${JSON.stringify(c.to)}`)
+        .join('; ')}.\n\n`
+      : '';
+    const reasonNote = reasonText.length > 0 ? `Reason: ${reasonText}\n\n` : '';
+    const newBody = `${body}${noteHeading}${noteSummary}${correctionNote}${reasonNote}`;
 
     await atomicWrite(
       workflowPath,
@@ -3051,6 +3294,97 @@ export async function updateSubtask(opts) {
     await fireMacroHandoffSidecar(workflowPath, host);
   }
   return result;
+}
+
+// -----------------------------------------------------------------------------
+// Public API: recordEngineerTerminal (ADR-0062 §Decision 2)
+//
+// What an engineer workflow tells its macro when it reaches its terminal
+// commit. It does not complete the subtask: that commit is on the subtask
+// branch, and this repository squash- or rebase-merges, so what lands is a
+// different commit that /orchestrator:done records after the merge.
+//
+// Under the macro's lock it:
+//   - skips a subtask that is already completed / deferred / abandoned, or
+//     blocked (nothing was dispatched for it), writing nothing;
+//   - binds the engineer workflow as owner when none is recorded (the
+//     recovery the old completion writeback gave when /next's post-create
+//     update was missed) and refuses a different owner;
+//   - moves a pending subtask to in_progress (same recovery);
+//   - appends one note per engineer workflow and branch commit, and points
+//     next_action at /orchestrator:done. A repeated call — Phase 7's P10 and
+//     then the Stop hook — finds its note and writes nothing.
+export async function recordEngineerTerminal({
+  workflowPath,
+  host,
+  subtaskId,
+  engineerWorkflowId,
+  branchCommit,
+  event = 'updated',
+  now = new Date(),
+}) {
+  validateHost(host);
+  validateHookEvent(event);
+  for (const [name, value] of [['subtaskId', subtaskId], ['engineerWorkflowId', engineerWorkflowId], ['branchCommit', branchCommit]]) {
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error(`recordEngineerTerminal: ${name} must be a non-empty string`);
+    }
+  }
+  ensureNotArchived(workflowPath, 'recordEngineerTerminal');
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
+    const subtasks = Array.isArray(frontmatter.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+    const idx = subtasks.findIndex((s) => s.id === subtaskId);
+    if (idx === -1) {
+      throw new Error(
+        `recordEngineerTerminal: subtask id ${JSON.stringify(subtaskId)} not found in plan.subtasks[]`,
+      );
+    }
+    const current = subtasks[idx];
+    if (TERMINAL_SUBTASK_STATUSES.has(current.status) || current.status === 'blocked') {
+      return {
+        workflowPath,
+        subtask: current,
+        skipped: true,
+        skipReason: `subtask ${JSON.stringify(subtaskId)} is ${current.status}; the engineer terminal note is not written.`,
+      };
+    }
+    const recordedOwner = current.engineer_workflow_id;
+    if (typeof recordedOwner === 'string' && recordedOwner.length > 0 && recordedOwner !== engineerWorkflowId) {
+      throw new Error(
+        `recordEngineerTerminal: engineer_workflow_id mismatch on subtask ${JSON.stringify(subtaskId)}. ` +
+          `Existing: ${JSON.stringify(recordedOwner)}, incoming: ${JSON.stringify(engineerWorkflowId)}.`,
+      );
+    }
+    const boundOwner = recordedOwner !== engineerWorkflowId;
+    const promotedToInProgress = current.status === 'pending';
+    const heading = `### engineer terminal: ${JSON.stringify(subtaskId)} @ ${engineerWorkflowId} ${branchCommit}\n`;
+    if (!boundOwner && !promotedToInProgress && body.includes(heading)) {
+      return { workflowPath, subtask: current, noop: true };
+    }
+
+    const updated = { ...current, engineer_workflow_id: engineerWorkflowId };
+    if (promotedToInProgress) updated.status = 'in_progress';
+    subtasks[idx] = updated;
+    const doneCommand = `${host === 'codex' ? '$' : '/'}orchestrator:done ${subtaskId}`;
+    const nowIso = isoUtc(now);
+    frontmatter.next_action = `After ${subtaskId}'s pull request merges, run ${doneCommand}`;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [...(frontmatter.host_history ?? []), { host, at: nowIso, event }];
+    const note = body.includes(heading)
+      ? ''
+      : `${heading}\nEngineer workflow ${engineerWorkflowId} reached its terminal commit ${branchCommit} ` +
+        `on ${current.branch}. The subtask stays in_progress until the work lands (ADR-0062): ` +
+        `after the pull request merges, run ${doneCommand}.\n\n`;
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, `${body}${note}`),
+      { lockPath, token },
+    );
+    return { workflowPath, subtask: updated, noted: note.length > 0, boundOwner, promotedToInProgress };
+  });
 }
 
 // -----------------------------------------------------------------------------
@@ -3547,6 +3881,32 @@ function cliRequire(flags, names) {
   }
 }
 
+// A boolean flag given without a value (`--correct`) or as `--correct=true`.
+// cliParseFlags would hand a following bare token to the flag as its value,
+// so anything other than '', 'true' or 'false' is refused instead of read as
+// true.
+function cliPresenceFlag(flags, name) {
+  if (!(name in flags)) return false;
+  const value = flags[name];
+  if (value === '' || value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`--${name} takes no value (got ${JSON.stringify(value)})`);
+}
+
+// ADR-0062 — `--reason-file <path>` (what runbooks use, so prose never passes
+// through the shell) or `--reason <text>`. A trailing newline from the file is
+// dropped; the text is otherwise kept as written.
+async function cliReasonFlag(flags) {
+  if ('reason-file' in flags && 'reason' in flags) {
+    throw new Error('pass --reason or --reason-file, not both');
+  }
+  if ('reason-file' in flags) {
+    if (flags['reason-file'].length === 0) throw new Error('--reason-file needs a path');
+    return (await readFile(flags['reason-file'], 'utf8')).replace(/\r?\n$/, '');
+  }
+  return flags.reason;
+}
+
 function cliPrintHelp() {
   process.stdout.write(
     [
@@ -3576,7 +3936,32 @@ function cliPrintHelp() {
       '    status=pending AND all blocked_by predecessors completed. JSON:',
       '    {ready: <subtask>} on success or',
       '    {ready: null, reason: empty_plan|all_terminal|in_progress_or_blocked,',
-      '     summary?: {...}} when no candidate is ready.',
+      '     summary?: {...}, readiness?: [...]} when no candidate is ready.',
+      '    readiness lists each open subtask as {id, status, blocked_by,',
+      '    waiting_on, stale_blocked, ready} (ADR-0062 §Decision 5).',
+      '',
+      '  subtask-engineer-terminal --workflow-path <path> --host claude|codex --subtask-id <id>',
+      '                            --engineer-workflow-id <id> --branch-commit <sha>',
+      '    ADR-0062 §Decision 2 — called by the engineer Phase 7 and Stop hook when its',
+      '    workflow reaches its terminal commit. Does not complete the subtask: binds an',
+      '    unrecorded owner (refuses a different one), moves pending to in_progress, notes',
+      '    the branch commit once and points next_action at /orchestrator:done. Skips',
+      '    completed / deferred / abandoned / blocked subtasks. JSON envelope on stdout.',
+      '',
+      '  resolve-landing --repo-root <path> --workflow-path <path> --subtask-id <id>',
+      '                  [--integration-branch <branch>] [--commit <sha>] [--pr <number>]',
+      '                  [--engineer-workflow-id <id>]',
+      '    ADR-0062 — the merge commit that landed the subtask: the merged pull request',
+      '    whose head is the subtask branch, opened after the engineer workflow was',
+      '    dispatched, based on the integration branch (default: the macro baseline',
+      '    branch), its merge commit reachable from refs/remotes/origin/<branch>.',
+      '    --commit must equal that merge commit; without a working gh it is',
+      '    verified by ancestry only. JSON {ok, commit, pr_url, pr_number,',
+      '    verification, integration_ref} or {ok: false, reason, detail} (exit 1).',
+      '',
+      '  subtask-readiness --workflow-path <path> --subtask-id <id>',
+      '    ADR-0062 §Decision 5 — the same readiness object for one subtask',
+      '    (the explicit-id path of /orchestrator:next). Exit 1 on unknown id.',
       '',
       '  create --repo-root <path> --verb plan --host claude|codex',
       '         --git-baseline-branch <name> --git-baseline-head <sha>',
@@ -3588,8 +3973,10 @@ function cliPrintHelp() {
       '  append --workflow-path <path> --host <host>',
       '         [--phase-label <text>] [--phase-note <text>]',
       '         [--current-phase <label>] [--next-action <text>]',
-      '         [--event created|updated|snapshot|resumed|checkpointed]',
+      '         [--event created|updated|snapshot|resumed|checkpointed] [--require-open]',
       '    Append a phase note to an existing workflow. Default event=resumed.',
+      '    --require-open refuses, under the write lock, a macro whose terminal_marker',
+      '    is set (ADR-0062 §Decision 4).',
       '',
       '  snapshot --workflow-path <path> --host <host> --trigger pre-compact|stop',
       '           [--status-digest <hex>]',
@@ -3616,7 +4003,12 @@ function cliPrintHelp() {
       '           --subtasks-json-file <path>',
       '           [--decision <text>] [--architecture <text>]',
       '           [--event updated|resumed]',
+      '           [--correct (--reason-file <path> | --reason <text>)]',
       '    ADR-0018 §sub-1 + ADR-0019 §2 — atomic write of plan.{decision?, architecture?, subtasks[]}.',
+      '    ADR-0062: refused on a terminal macro; runs the unblock pass; never',
+      '    auto-terminals (an all-terminal revision prints a /orchestrator:finalize',
+      '    hint on stderr); a completed subtask is carried unchanged (omitted',
+      '    provenance carried forward) unless --correct with a reason.',
       '    --subtasks-json-file points at a UTF-8 JSON file whose top-level value',
       '    is the subtasks array. Schema 1.1 subtask shape:',
       '      {id, verb, branch, blocked_by[], status,                      (REQUIRED)',
@@ -3631,7 +4023,8 @@ function cliPrintHelp() {
       '                 --subtask-id <id>',
       '                 [--status <status>] [--engineer-workflow-id <id>]',
       '                 [--commit <sha>] [--pr-url <url>] [--closed-at <iso>]',
-      '                 [--event updated|resumed]',
+      '                 [--event updated|resumed] [--expect-branch <branch>]',
+      '                 [--correct] [--reason-file <path> | --reason <text>]',
       '    ADR-0019 PR-C0 — atomic single-subtask mutation. Updates one',
       '    plan.subtasks[i] entry by id without rewriting the whole plan.',
       '    At least one mutable field must be supplied. Immutable fields',
@@ -3643,6 +4036,10 @@ function cliPrintHelp() {
       '    Status guard: deferred/abandoned are rejected — those terminal-partial',
       '    states are owned by /orchestrator:finalize and /orchestrator:abort',
       '    (via bulk-subtask-status + set-terminal below).',
+      '    ADR-0062 §Decision 3: a recorded commit / pr_url is never replaced',
+      '    and a recorded closed_at is kept unless --correct (reason required);',
+      '    a call that changes nothing writes nothing ({skipped, noop: true});',
+      '    --expect-branch refuses the write if the subtask branch changed.',
       '',
       '  bulk-subtask-status --workflow-path <path> --host claude|codex',
       '                      --from-statuses <csv> --to-status deferred|abandoned',
@@ -3780,20 +4177,13 @@ async function cliMain(argv) {
           process.stdout.write(`${JSON.stringify({ ready: null, reason: 'empty_plan' })}\n`);
           return 0;
         }
-        const completed = new Set(
-          subtasks.filter((s) => s?.status === 'completed').map((s) => s.id),
-        );
-        const ready = subtasks.find((s) => {
-          if (s?.status !== 'pending') return false;
-          const deps = Array.isArray(s.blocked_by) ? s.blocked_by : [];
-          return deps.every((d) => completed.has(d));
-        });
-        if (ready) {
-          process.stdout.write(`${JSON.stringify({ ready })}\n`);
+        const readiness = subtaskReadiness(subtasks);
+        const readyIdx = readiness.findIndex((r) => r.ready);
+        if (readyIdx !== -1) {
+          process.stdout.write(`${JSON.stringify({ ready: subtasks[readyIdx] })}\n`);
           return 0;
         }
-        const TERMINAL = new Set(['completed', 'deferred', 'abandoned']);
-        const allTerminal = subtasks.every((s) => TERMINAL.has(s?.status));
+        const allTerminal = subtasks.every((s) => TERMINAL_SUBTASK_STATUSES.has(s?.status));
         const summary = {
           total: subtasks.length,
           completed: subtasks.filter((s) => s?.status === 'completed').length,
@@ -3808,8 +4198,74 @@ async function cliMain(argv) {
             ready: null,
             reason: allTerminal ? 'all_terminal' : 'in_progress_or_blocked',
             summary,
+            // ADR-0062 §Decision 5 — the facts behind the diagnosis, for the
+            // subtasks that are still open.
+            readiness: readiness.filter((r) => !TERMINAL_SUBTASK_STATUSES.has(r.status)),
           })}\n`,
         );
+        return 0;
+      }
+
+      case 'resolve-landing': {
+        // ADR-0062 §Decisions 1-2 — the commit that landed a subtask, for
+        // /orchestrator:done. JSON on stdout either way; exit 1 on a refusal.
+        cliRequire(flags, ['repo-root', 'workflow-path', 'subtask-id']);
+        const text = await readFile(flags['workflow-path'], 'utf8');
+        const { frontmatter } = parseWorkflowFile(text);
+        const subtasks = Array.isArray(frontmatter?.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+        const subtask = subtasks.find((s) => s.id === flags['subtask-id']);
+        if (!subtask) {
+          throw new Error(`subtask id ${JSON.stringify(flags['subtask-id'])} not found in plan.subtasks[]`);
+        }
+        const integrationBranch = flags['integration-branch'] || frontmatter?.git_baseline?.branch;
+        if (!integrationBranch) {
+          throw new Error('the macro records no git_baseline.branch; pass --integration-branch');
+        }
+        // The owner comes from the macro, or from the caller when /done
+        // recovered it from the engineer archive (the macro never recorded it).
+        const owner = flags['engineer-workflow-id'] || subtask.engineer_workflow_id;
+        const result = await resolveLanding({
+          repoRoot: flags['repo-root'],
+          subtaskBranch: subtask.branch,
+          integrationBranch,
+          dispatchedAt: dispatchTimeFromWorkflowId(owner),
+          explicitCommit: flags.commit || null,
+          explicitPr: flags.pr || null,
+        });
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return result.ok ? 0 : 1;
+      }
+
+      case 'subtask-engineer-terminal': {
+        // ADR-0062 §Decision 2 — the engineer's Phase 7 and Stop hook call
+        // this instead of completing the subtask. JSON envelope on stdout.
+        cliRequire(flags, ['workflow-path', 'host', 'subtask-id', 'engineer-workflow-id', 'branch-commit']);
+        const result = await recordEngineerTerminal({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          subtaskId: flags['subtask-id'],
+          engineerWorkflowId: flags['engineer-workflow-id'],
+          branchCommit: flags['branch-commit'],
+          event: flags.event ?? 'updated',
+        });
+        if (result.skipped) process.stderr.write(`state.mjs subtask-engineer-terminal: ${result.skipReason}\n`);
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
+
+      case 'subtask-readiness': {
+        // ADR-0062 §Decision 5 — readiness of one subtask, for the explicit-id
+        // path of /orchestrator:next (next-ready only reports when nothing is
+        // dispatchable).
+        cliRequire(flags, ['workflow-path', 'subtask-id']);
+        const text = await readFile(flags['workflow-path'], 'utf8');
+        const { frontmatter } = parseWorkflowFile(text);
+        const subtasks = Array.isArray(frontmatter?.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+        const entry = subtaskReadiness(subtasks).find((r) => r.id === flags['subtask-id']);
+        if (!entry) {
+          throw new Error(`subtask id ${JSON.stringify(flags['subtask-id'])} not found in plan.subtasks[]`);
+        }
+        process.stdout.write(`${JSON.stringify(entry)}\n`);
         return 0;
       }
 
@@ -3847,6 +4303,7 @@ async function cliMain(argv) {
           currentPhase: flags['current-phase'],
           nextAction: flags['next-action'],
           event: flags.event ?? 'resumed',
+          requireOpen: cliPresenceFlag(flags, 'require-open'),
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
@@ -3948,14 +4405,24 @@ async function cliMain(argv) {
             `--subtasks-json-file top-level must be an array (got ${typeof subtasks})`,
           );
         }
-        await setPlan({
+        const planResult = await setPlan({
           workflowPath: flags['workflow-path'],
           decision: flags.decision ?? null,
           architecture: flags.architecture ?? null,
           subtasks,
           host: flags.host,
           event: flags.event ?? 'updated',
+          correct: cliPresenceFlag(flags, 'correct'),
+          reason: await cliReasonFlag(flags),
         });
+        // stdout stays the workflow path (the runbooks read it); the
+        // advisory goes to stderr.
+        if (planResult.allTerminal) {
+          process.stderr.write(
+            'plan-set: every subtask in the revised plan is terminal. setPlan does not close ' +
+              'the macro; run /orchestrator:finalize to close it (ADR-0062 §Decision 5).\n',
+          );
+        }
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
       }
@@ -4061,6 +4528,12 @@ async function cliMain(argv) {
           // opt in. The sidecar fires only when this call's auto-terminal pass
           // promotes the macro to terminal (guarded inside updateSubtask).
           emitHandoff: true,
+          // ADR-0062 §Decision 3. `--correct` is a presence flag. The reason is
+          // prose, so runbooks pass it as a file (ADR-0059's direction) rather
+          // than splicing it into argv.
+          correct: cliPresenceFlag(flags, 'correct'),
+          reason: await cliReasonFlag(flags),
+          expectBranch: flags['expect-branch'],
         });
         // Emit JSON envelope so callers (PR-C engineer parent-writeback
         // helper, PR-D /next + /done runbooks) can parse the result
@@ -4074,6 +4547,7 @@ async function cliMain(argv) {
         };
         if (result.skipped) {
           envelope.skipped = true;
+          if (result.noop) envelope.noop = true;
           envelope.skipReason = result.skipReason;
           // Also surface the diagnostic on stderr so shell callers
           // that don't parse JSON still see the suppression.

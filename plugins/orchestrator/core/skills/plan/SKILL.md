@@ -59,6 +59,8 @@ Full macro composition with Plan-verify opposite-host peer ensemble + state-writ
 
 Phase 0 of `commands/plan.md` resolves the active orchestrator workflow on the current git branch (per ADR-0018 §sub-2 — branch is the workflow context). If none exists, create one via `state.mjs create --verb plan ...`.
 
+If one exists, pass `--require-open` on the resume append and on the post-plan append: a terminal macro is not revised (ADR-0062 §Decision 4), and the flag makes each append refuse a macro whose `terminal_marker` is set under the same lock as the write — a separate check first would race a finalize in another session. Both appends rewrite `current_phase`, which would otherwise leave the marker set with a phase the archive gate rejects. On refusal, stop before writing anything else and tell the user to archive it (`$orchestrator:resume archive`) and plan the new work afresh. `state.mjs plan-set` refuses a terminal macro as well.
+
 Detached HEAD or empty branch is an error — the macro workflow needs a branch context.
 
 ### Step 2: Compose the macro plan

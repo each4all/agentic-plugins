@@ -53,7 +53,13 @@ rm -f "$FIND_ERR"
     --next-action "Run plan skill")"
   ```
 
-- Non-empty → append-on-resume:
+- Non-empty → append-on-resume. `--require-open` makes the append itself
+  refuse a macro whose `terminal_marker` is set, under the same lock as the
+  write (ADR-0062 §Decision 4): this append and the Phase 2 append both
+  rewrite `current_phase`, which would leave the marker set with a phase the
+  archive gate rejects. A separate check before the append would race a
+  `/orchestrator:finalize` in another session. On refusal, stop: archive the
+  macro with `/orchestrator:resume archive` and plan the new work afresh.
 
   ```bash
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
@@ -61,7 +67,7 @@ rm -f "$FIND_ERR"
     --phase-label "Phase 0: Resume macro plan" \
     --phase-note "Resumed prior orchestrator plan workflow." \
     --current-phase phase-0-resume \
-    --next-action "Run plan skill" --event resumed
+    --next-action "Run plan skill" --event resumed --require-open || exit 1
   ```
 
 `createWorkflowUnderLock` rejects same-branch duplicates per ADR-0018 §sub-2 — concurrent `/orchestrator:plan` invocations on the same branch race the directory lock, and the loser sees a clear error message pointing at the existing workflow.
@@ -169,7 +175,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
   --next-action "Await user approval of macro plan; then selected_next=/orchestrator:next dispatches the first ready subtask" \
-  --event updated
+  --event updated --require-open
 
 # Atomic three-step ensemble-results commit (pop pending → append result
 # → prune). $VERDICT is one of pass | concerns | conflict; $SUMMARY is a
