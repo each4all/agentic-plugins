@@ -116,8 +116,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/runtime",
-        "ref": "plugin-runtime-v0.98.0",
-        "sha": "a511c2940c0e12b402d37c8605b838ad53c0706a"
+        "ref": "plugin-runtime-v0.98.1",
+        "sha": "633b686193e32b23cfaf7a098992a6c1e7c939c0"
       },
       "policy": {
         "installation": "AVAILABLE",
