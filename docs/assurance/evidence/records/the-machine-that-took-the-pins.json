@@ -1,0 +1,183 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-machine-that-took-the-pins",
+  "evidence_loop": {
+    "label": "Machine that took the pins: ADR-0061 machine acceptance (S6) with runtime 0.98.1's re-observed host baseline",
+    "summary": "Machine acceptance for ADR-0061 on the owner's machine, after publisher activation pinned every Codex catalog entry to its release commit (3006c8b, 2026-09-26), together with runtime 0.98.1, which ships the host-parity and Codex capability baselines re-observed at Claude Code 2.1.283 / Codex 0.157.1 (docket C55). The proof reads ready 100% and overall pass: the release's effect, since the 0.98.0 proof was blocked only on a compat run that required release notes. It also reads the Codex installs pinned, current and verified for all eight plugins, and the receivers current. Decision 5 (b) is met condition by condition: installed versions at or above every floor; each cache blob-equal to its pinned tree, 446 files per host; the receivers re-rendered; a fresh Codex session resolving all 17 sibling edges under the Codex installed cache; and a renewed hook attestation bound to Codex 0.157.1. Content identity cannot name the materialized commit here, because no package byte differs between the pins and main."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.98.1",
+      "tag": "plugin-runtime-v0.98.1",
+      "release_pr": 821,
+      "squash": "633b686193e32b23cfaf7a098992a6c1e7c939c0",
+      "marketplace_sync": "b6df4af99e5c57e719a2980553a33457cf2bf1cf"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "651f15fdeea86b681e952050b31f7aa020e03b35",
+      "pr": 820,
+      "note": "Docket C55: runtime's host-parity and Codex capability baselines re-observed at Claude Code 2.1.283 / Codex 0.157.1. A protected asset, so it took effect only through the 0.98.1 release."
+    },
+    {
+      "sha": "49d6a698f19ef67d0a7e72f2c8f5b1c7e735ed4b",
+      "pr": 816,
+      "note": "ADR-0061 S4V: validators for the Codex catalog pin states, and the migration floor data file."
+    },
+    {
+      "sha": "6577e36b3810312203f108b882f7b2ec0407fcab",
+      "pr": 817,
+      "note": "ADR-0061 S4: the catalog writer that pins each Codex entry to its release commit after each release, behind an explicit activation."
+    },
+    {
+      "sha": "3006c8b75c41c85685e17808c67e7453e9b8701f",
+      "note": "ADR-0061 Decision 5 (a): the release job's catalog sync that activated the pins, writing all eight Codex entries at a511c29. A workflow_dispatch run, so no PR."
+    },
+    {
+      "sha": "85eabde20d6bc7c8d545669a89d5870db54f2aad",
+      "pr": 818,
+      "note": "ADR-0061 S5: AGENTS.md's Codex limitation reworded to hold per machine until Decision 5 (b), and its catalog-sync paragraph extended to the Codex catalog."
+    }
+  ],
+  "hardening_commits": [
+    {
+      "sha": "0fcb852bc004aad4560bafec9a0c07cae280267c",
+      "pr": 819,
+      "note": "CI: fail closed on a tagless checkout, and give the host test jobs the full history the pin checks need."
+    }
+  ],
+  "proofs": [
+    {
+      "run_id": "doctor-20260927T030924Z-61cd81",
+      "date": "2026-09-27",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:d3841e19cb15fee601f3acbc656106afad8b14f88ee4d1b736b807f5ccfeeb7f",
+      "runtime_version": "0.98.1",
+      "installed": {
+        "claude": "0.98.1",
+        "codex": "0.98.1"
+      },
+      "host_cli": {
+        "claude": "2.1.283 (Claude Code)",
+        "codex": "codex-cli 0.157.1"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "pass; hard_failures empty; warnings empty"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; issue_count 0; difference_count 2"
+        },
+        {
+          "key": "experience_parity",
+          "value": "ready 100% (115/115); satisfied 8, partial 0, not_verified 0, blocked 0; manual_followup_count 0"
+        },
+        {
+          "key": "experience_parity.runtime_handoff_artifacts",
+          "value": "satisfied: settings=available, consensus=available, compat=available; latest-settings=settings-20260927T030852Z-bda744; latest-consensus=consensus-20260611T022143Z-e70631; latest-compat=compat-20260927T030747Z-28c999"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "permission_proof.claude_to_codex.companion_path",
+          "value": "~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs"
+        },
+        {
+          "key": "permission_proof.codex_to_claude.companion_path",
+          "value": "~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs"
+        },
+        {
+          "key": "deep_peer_smoke.claude_to_codex.companion_path",
+          "value": "~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs"
+        },
+        {
+          "key": "deep_peer_smoke.codex_to_claude.companion_path",
+          "value": "~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs"
+        },
+        {
+          "key": "companions.claude_to_codex",
+          "value": "selected ~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs; source claude-cache; candidates 2"
+        },
+        {
+          "key": "companions.codex_to_claude",
+          "value": "selected ~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs; source codex-cache; candidates 1"
+        },
+        {
+          "key": "workflow_continuation_proof.tool_root",
+          "value": "claude_to_codex ~/.claude/plugins/cache/agentic-plugins/engineer/0.21.11 (claude-cache); codex_to_claude ~/.claude/plugins/cache/agentic-plugins/engineer/0.21.11 (claude-cache)"
+        },
+        {
+          "key": "codex_plugin_hooks",
+          "value": "ready; hook_state expected 12, enabled 12, disabled 0, untrusted 0, missing 0"
+        },
+        {
+          "key": "settings_runs.codex_hook_review",
+          "value": "attested; current true; latest settings-20260927T030852Z-bda744; bound codex 0.157.1; designer 0.3.9, engineer 0.21.11, founder 0.4.9, orchestrator 0.13.8"
+        },
+        {
+          "key": "plugins.runtime.installed.codex_resolved",
+          "value": "decision installed; source list; version 0.98.1; decision and source identical for all 8 plugins: true"
+        },
+        {
+          "key": "codex_install_identity",
+          "value": "catalog read; pin_phase pinned; snapshot_root_registered true; invalid 0; unpinned 0; 8 plugins, target pinned 8, currentness current 8, identity verified 8"
+        },
+        {
+          "key": "codex_install_identity.plugins.0",
+          "value": "attention plugin-attention-v0.9.1@a511c29 installed 0.9.1 (plugin-list); companions plugin-companions-v0.4.2@a511c29 installed 0.4.2 (plugin-list); designer plugin-designer-v0.3.9@a511c29 installed 0.3.9 (plugin-list); engineer plugin-engineer-v0.21.11@a511c29 installed 0.21.11 (plugin-list)"
+        },
+        {
+          "key": "codex_install_identity.plugins.1",
+          "value": "founder plugin-founder-v0.4.9@a511c29 installed 0.4.9 (plugin-list); image plugin-image-v0.3.2@a511c29 installed 0.3.2 (plugin-list); orchestrator plugin-orchestrator-v0.13.8@a511c29 installed 0.13.8 (plugin-list); runtime plugin-runtime-v0.98.1@633b686 installed 0.98.1 (plugin-list)"
+        },
+        {
+          "key": "codex_install_identity.sibling_resolution",
+          "value": "12 edges, predicted codex-cache 12; cross_host_fallback 0; cross_host 0; basis: predicted from the Claude and Codex install caches; an AGENTIC_*_ROOT override in the Codex session, or a locator capability filter, can change the actual resolution"
+        },
+        {
+          "key": "receivers",
+          "value": "current; reinstall_recommended false; agentic-statusline.mjs current (statusline delegating-shim v2), codex-notify-shuttle.mjs current (codex-notify delegating-shim v2), codex-notify-chain.mjs missing"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "current; direction exact; baseline 2.1.283 / 0.157.1 (2026-09-27) vs observed 2.1.283 / 0.157.1; provenance package; content_sha256 sha256:9c84206775d79b81642c50fc755795ce903d3f34cea5598ddd5091e5cf45c295"
+        },
+        {
+          "key": "compat_runs.latest",
+          "value": "compat-20260927T030747Z-28c999: current; drift_class none; release_notes_required false; claude 2.1.283 vs baseline 2.1.283 (matches); codex 0.157.1 vs baseline 0.157.1 (matches)"
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available malformed=0 across 88 artifacts"
+        },
+        {
+          "key": "settings_runs",
+          "value": "available across 47 artifacts"
+        }
+      ]
+    }
+  ],
+  "install_method": "Direct host commands, so no settings-executor artifact. Claude: claude plugin marketplace update agentic-plugins, then claude plugin update runtime@agentic-plugins -> 0.98.1 (gitCommitSha 58ed6a4). Codex CLI 0.157.1: codex plugin marketplace upgrade agentic-plugins, direct in 5.5 s with no mirror workaround; snapshot 85eabde -> 58ed6a4, all eight reinstalled.",
+  "narrative": "**Two causes, one control.** Against the 0.98.0 proof doctor-20260925T061801Z-0b292a, parity blocked 87% -> ready 100% and overall warning -> pass are the release's effect: its one blocked criterion sat on compat-20260918T040728Z-6f1daa's release_notes_required, and this proof selected compat-20260927T030747Z-28c999, taken from the installed 0.98.1, which reads current / drift none. codex_install_identity unpinned -> pinned and receivers stale -> current come from activation (3006c8b, 2026-09-26) and S6, not a runtime release. The companion paths did not move.\n\n**The pins materialize (Decision 5 (b)).** Installed versions meet every floor, runtime 0.98.1 above 0.98.0. On Codex 0.157.1 the marketplace upgrade ran direct in 5.5 s, moved the snapshot 85eabde -> 58ed6a4, reinstalled all eight, and replaced runtime 0.98.0's directory with 0.98.1. Against the pinned trees at catalog 58ed6a4 (git objects vs an lstat walk: path set, blob id, mode), Codex's cache reads 446 files, 0 missing, 0 differing, 0 mode, 0 extra; Claude's 446 files, 0 missing, 0 differing, 0 mode, 0 extra; the comparator's negative control detected 4 of 4 planted defects. Runtime's path-first digest is 71f131f1a99ca76ed02cfde973eafcf0722fe2682783daf0c308e89f43b79eaf over 122 files on both caches and git archive of its tag; the 0.98.0 cache reproduces the published 3216ed0992e59c9c6bbd8d65ed8485ec0c55f4411c279dae91af3fd4c5e0af04. A 2026-09-26 round on Codex 0.156.1, every pin at a511c29, read the same before and after its refresh. No package byte differs between the pins and main at 58ed6a4, so content identity cannot name the materialized commit; that rests on ADR-0061's 2026-09-24 fixture.\n\n**Sibling roots from a fresh Codex session.** An app-server thread 01a0e0d5-0896-7f10-9e4c-0b7f1ac0d1ea ran the probe through thread/shellCommand with no model turn (rollout sha256 25f1e22ca0740c6a783f5571b9f8118e4f31319a8732023afac21e5ba771f683). 17 of 17 edges resolve under ~/.codex/plugins/cache/agentic-plugins: runtime/0.98.1 x8, companions/0.4.2 x6, engineer/0.21.11 x2, orchestrator/0.13.8 x1; 0 cross-host fallbacks, no AGENTIC_* variable. The control, importing Claude's cache copies, resolves 16 of 17 to Claude's cache; the other is runtime's codex_to_claude peer-execution context, which selects the Codex install in both runs and so does not discriminate. Thread 01a0de41-3da1-72a2-bd6e-edd2cb07734f on 0.156.1 (rollout 86e9207de397687c618a91d969e960024de8e923632c1af24eed398febb1cacd) read 17/17, runtime then resolving to 0.98.0.\n\n**Receivers and Decision 8.** Re-rendered on 2026-09-26 by the installed runtime's packaged renderers (backups *.backup-20260926T150259Z; the shuttle byte-equal to notification-20260926T150225Z-3a7825). This proof reads agentic-statusline.mjs current (statusline delegating-shim v2, sha256 a8eb7780e9ca3ac39c54db839bbcfd3c83903a950f44691374b835b6cf5d93a6), codex-notify-shuttle.mjs current (codex-notify delegating-shim v2, sha256 d688022bfc6fd4eea2b99a5eedb8b0811966919e3002755cb5a5063067865299), codex-notify-chain.mjs missing, not opted in. No hook-bearing package moved, but the owner's Codex CLI move 0.156.1 -> 0.157.1 stales an attestation on version binding; the owner confirmed /hooks showed no new hook and twelve trusted, and settings-20260927T030852Z-bda744 bound 0.157.1 to designer 0.3.9 / engineer 0.21.11 / founder 0.4.9 / orchestrator 0.13.8, the versions the 0.98.0 attestation had bound to 0.156.1.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-installs-that-ran-main",
+      "note": "The preceding runtime loop and this loop's control. Its proof read blocked 87% on a compat run that required release notes, the catalog unpinned and the receivers stale, and its record said Decision 5 (b) was not shown. This record shows it."
+    }
+  ]
+}
