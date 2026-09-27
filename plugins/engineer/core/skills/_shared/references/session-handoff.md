@@ -52,7 +52,10 @@ Parent writeback is **not** part of this Stop step on the normal Phase 7 path:
 `phase7-commit.mjs` runs P10 `writebackParent` synchronously *before* it writes
 the terminal marker, and the Stop hook only retries idempotently, or acts as the
 backstop when Phase 7 died between the two. A verb-command terminal write (no
-Phase 7) leaves the writeback to that Stop.
+Phase 7) leaves the writeback to that Stop. Neither write completes the macro
+subtask (ADR-0062): the writeback notes the terminal commit on the macro and
+binds ownership, and `/orchestrator:done` records completion after the pull
+request merges.
 
 Consequences for a runbook author:
 

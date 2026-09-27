@@ -250,8 +250,10 @@ the agent dialog between the two CLI invocations):
    --confirm-non-interactive` — driver stages with explicit pathspecs
    (`git add <paths>`, never `-A`), commits per package (P8 split via
    repeated `--subject-pkg <pkg>=<subj>`), runs P11 / no-children /
-   clean-after-commit / P10 synchronous `writebackParent`, and writes
-   set-terminal LAST (P5 terminal-marker-last invariant). Per-path
+   clean-after-commit / P10 synchronous `writebackParent` (for a macro
+   subtask this notes the terminal commit on the macro; the subtask
+   completes when `/orchestrator:done` records the merge, ADR-0062), and
+   writes set-terminal LAST (P5 terminal-marker-last invariant). Per-path
    extras opt-in (option b above) is forwarded as repeated
    `--include-extra <path>`; each path MUST appear in the plan-mode
    extras list AND clear `assertSafePath` — invalid entries throw.

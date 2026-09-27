@@ -2,10 +2,17 @@
 // plugins/engineer/scripts/parent-writeback.mjs
 //
 // ADR-0019 PR-C — engineer-local parent-writeback helper. Engineer's
-// runStopArchive calls this after a successful archive when the
-// frontmatter has `parent_workflow` + `originating_subtask` set, to
-// dispatch a single-subtask update against the orchestrator macro
-// workflow. The helper is engineer-local for now (ADR-0010 §6 trigger 1
+// Phase 7 (P10) and its Stop hook call this when the workflow has
+// `parent_workflow` + `originating_subtask` set, to tell the orchestrator
+// macro that the workflow reached its terminal commit.
+//
+// ADR-0062 §Decision 2: this no longer completes the subtask. The terminal
+// commit is on the subtask branch, and a squash or rebase merge lands a
+// different commit, so /orchestrator:done records completion after the
+// merge. The macro gets an ownership-binding note instead
+// (`subtask-engineer-terminal`); a repeated call for the same commit is a
+// no-op on the orchestrator side, so Phase 7 and the Stop hook can both
+// call it. The helper is engineer-local for now (ADR-0010 §6 trigger 1
 // requires 2+ consumers before promotion to L1); generic interface so a
 // future designer (or other L3) becoming the second consumer can promote
 // it with minimal change.
@@ -24,13 +31,12 @@
 //      Apply the ADR-0019 §4 step 3 archive-fallback rule when the
 //      parent has already been moved to `archive/` (skip + stderr
 //      warning, do NOT throw — host stop lifecycle must not be blocked).
-//   3. Spawn the orchestrator state.mjs `subtask-update` CLI per
-//      PR-C0's public surface. PR-C0 does all the atomic work
-//      (primary mutation, unblock pass, auto-terminal pass, ownership
-//      checks) under its own parent per-file lock — §6 lock-order is
-//      naturally satisfied because the engineer side already released
-//      every workflow + directory lock when archiveWorkflow's callbacks
-//      exited before this helper is called.
+//   3. Spawn the orchestrator state.mjs `subtask-engineer-terminal` CLI
+//      (ADR-0062). It checks existence, ownership and terminal states and
+//      writes the note under its own parent per-file lock — §6 lock-order
+//      holds because the engineer side has released its own locks before
+//      this helper is called. An orchestrator from before ADR-0062 has no
+//      such subcommand; that is reported as `orchestrator-too-old`.
 //
 // Failure semantics: every error path returns
 // `{ok: false, skipped?: true, reason: '...', stderr?: '...'}` and
@@ -353,15 +359,14 @@ function parentFileBasename(parentWorkflowId) {
 }
 
 /**
- * Dispatch a single-subtask update against the orchestrator macro
- * workflow identified by `parentWorkflowId`, marking
- * `originatingSubtaskId` completed with the engineer terminal
- * commit/timestamp/workflow-id payload.
+ * Tell the orchestrator macro identified by `parentWorkflowId` that the
+ * engineer workflow owning `originatingSubtaskId` reached its terminal
+ * commit (ADR-0062 §Decision 2). The subtask is not completed here.
  *
- * Internally spawns `orchestrator/scripts/state.mjs subtask-update`
- * (PR-C0 public CLI) so all atomic mutation logic (precondition skip,
- * unblock pass, auto-terminal pass, single-writer ownership) stays
- * inside orchestrator — engineer here is a thin wrapper.
+ * Internally spawns `orchestrator/scripts/state.mjs
+ * subtask-engineer-terminal`, so ownership, terminal-state and
+ * idempotency checks stay inside orchestrator — engineer here is a thin
+ * wrapper.
  *
  * Failure modes — none throw past the caller:
  *   - parent file missing from workflows/ but present in archive/ →
@@ -370,12 +375,14 @@ function parentFileBasename(parentWorkflowId) {
  *     `{ok:false, skipped:true, reason:'parent-not-found'}`
  *   - orchestrator plugin root unresolved →
  *     `{ok:false, skipped:true, reason:'orchestrator-root-not-found'}`
- *   - state.mjs CLI exits non-zero →
+ *   - the orchestrator CLI has no `subtask-engineer-terminal` (a release
+ *     from before ADR-0062) → `{ok:false, reason:'orchestrator-too-old',
+ *     stderr, exitCode}`
+ *   - state.mjs CLI exits non-zero otherwise →
  *     `{ok:false, reason:'cli-failed', stderr, exitCode}`
- *   - PR-C0 precondition skip (deferred/abandoned subtask) → envelope
- *     surfaces `{skipped: true, skipReason: '...'}`; the helper still
- *     returns `{ok:true, envelope}`. The skip is informational —
- *     archive lifecycle is unaffected.
+ *   - subtask already completed / deferred / abandoned (or blocked) →
+ *     envelope `{skipped: true, skipReason}`; a repeated call for the same
+ *     commit → envelope `{noop: true}`. Both return `{ok:true, envelope}`.
  *
  * @param {object}  args
  * @param {string}  args.repoRoot — absolute path to the repo whose
@@ -385,8 +392,8 @@ function parentFileBasename(parentWorkflowId) {
  * @param {string}  args.engineerWorkflowId — owner id (must match the
  *   `engineer_workflow_id` already recorded on the subtask, if set)
  * @param {string}  args.commit — terminal commit SHA on the engineer
- *   workflow's branch
- * @param {string}  args.closedAt — ISO-8601 UTC timestamp
+ *   workflow's branch (noted on the macro, never recorded as the
+ *   subtask's `commit`)
  * @param {string}  args.host — 'claude' | 'codex'
  * @param {?string} [args.orchestratorRoot] — explicit override; when
  *   omitted, `discoverOrchestratorPluginRoot` runs with
@@ -404,7 +411,6 @@ export async function writebackParent({
   originatingSubtaskId,
   engineerWorkflowId,
   commit,
-  closedAt,
   host,
   orchestratorRoot = null,
   discoverOpts = undefined,
@@ -423,7 +429,6 @@ export async function writebackParent({
   requireString('originatingSubtaskId', originatingSubtaskId);
   requireString('engineerWorkflowId', engineerWorkflowId);
   requireString('commit', commit);
-  requireString('closedAt', closedAt);
   requireString('host', host);
 
   // Reject any parent_workflow id that is not a basename-shaped
@@ -538,8 +543,9 @@ export async function writebackParent({
   }
 
   // ---------------------------------------------------------------------------
-  // Step 3 — spawn PR-C0 CLI. Single-pass invocation; PR-C0 does all
-  // the lifecycle work atomically under its own parent per-file lock.
+  // Step 3 — spawn the orchestrator's engineer-terminal CLI (ADR-0062).
+  // Single-pass invocation; it does all its checks and the note atomically
+  // under its own parent per-file lock.
   // §6 lock-order: engineer-side locks are already released by the
   // time runStopArchive calls this helper (archiveWorkflow's
   // withDirectoryLock + withFileLock callbacks both exited).
@@ -554,14 +560,12 @@ export async function writebackParent({
   // those validator gaps.
   const args = [
     cliPath,
-    'subtask-update',
+    'subtask-engineer-terminal',
     `--workflow-path=${resolvedParentPath}`,
     `--host=${host}`,
     `--subtask-id=${originatingSubtaskId}`,
-    `--status=completed`,
     `--engineer-workflow-id=${engineerWorkflowId}`,
-    `--commit=${commit}`,
-    `--closed-at=${closedAt}`,
+    `--branch-commit=${commit}`,
     `--event=updated`,
   ];
 
@@ -577,8 +581,8 @@ export async function writebackParent({
       // is genuinely stuck.
       { encoding: 'utf8', timeout: 30_000 },
     );
-    // PR-C0 may emit informational warnings on stderr (e.g.,
-    // precondition-skip diagnostics for deferred/abandoned subtasks).
+    // The orchestrator may emit informational warnings on stderr (e.g.,
+    // the skip diagnostic for a completed / deferred / abandoned subtask).
     // Surface them on our stderr so the user sees the full chain.
     if (cliStderr && cliStderr.length > 0) {
       stderr.write(`engineer/parent-writeback (orchestrator stderr): ${cliStderr}`);
@@ -614,6 +618,19 @@ export async function writebackParent({
       return { ok: false, reason: 'cli-timeout', stderr: cliStderr };
     }
     const exitCode = typeof err.code === 'number' ? err.code : null;
+    if (exitCode === 2 && /unknown subcommand: subtask-engineer-terminal/.test(cliStderr)) {
+      // ADR-0062 §Decision 6: an orchestrator from before the landing-time
+      // completion. Nothing is recorded, and nothing should be: the subtask
+      // is completed by /orchestrator:done after the merge either way.
+      stderr.write(
+        `engineer/parent-writeback: the orchestrator at ${root} predates ADR-0062 and has no ` +
+        `subtask-engineer-terminal command; nothing was written to macro ${parentWorkflowId}. ` +
+        `Update orchestrator. Subtask ${originatingSubtaskId} stays in_progress: after its pull ` +
+        `request merges, record it with /orchestrator:done ${originatingSubtaskId} ` +
+        `--commit=<the merge commit>.\n`,
+      );
+      return { ok: false, reason: 'orchestrator-too-old', stderr: cliStderr, exitCode };
+    }
     stderr.write(
       `engineer/parent-writeback: orchestrator CLI exited ${exitCode ?? err.code}: ` +
       `${cliStderr.trim() || err.message}\n`,
