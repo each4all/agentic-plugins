@@ -32,8 +32,10 @@ All writing is done by `scripts/sync-marketplace-versions.mjs`, which
   gates CI runs (`validate-marketplace`, `validate-versions`). A failure
   exits 1, so the job does not push. A run with nothing to write is
   validated too, so a repair run on a broken catalog does not go green. A
-  `GITHUB_TOKEN` push triggers no workflow, so this is the only gate the
-  bot's commit gets.
+  `GITHUB_TOKEN` push triggers no workflow, so this is the only check before
+  the bot's commit reaches `main`. The release job then dispatches the test
+  workflows on `main`, but those runs see the commit only once it has
+  landed.
 
 ## Before dispatching
 

@@ -251,6 +251,33 @@ load-bearing:
   assertion until the proof exists — that red is the honest signal, not
   a defect to automate away.
 
+**Both sync pushes use `GITHUB_TOKEN`, and a push made that way starts no
+workflow**, so the release job starts post-sync `main`'s CI itself. After
+its last sync push it dispatches the workflows that a push of the sync
+paths would have started: `claude-tests`, `codex-tests`,
+`cross-host-tests`, `full-tests` and `marketplace-validate`
+(`scripts/dispatch-post-sync-ci.mjs`; a test derives that list from the
+workflow files). It records each run's `head_sha` against the commit it
+pushed. Three things follow for anyone reading those runs:
+
+- **They validate post-sync `main`, not the release commit.** The release
+  commit's own run read the catalogs before the sync and stays red on that
+  lag. Nothing re-runs it, because its tree really does trail the
+  manifest. After a runtime release the dispatched `full-tests` run is
+  still red on the proof-coupled assertion above until the recovery PR
+  lands: the dispatch removes the catalog lag, not that red.
+- **A run gets `main`'s head at the moment GitHub creates it**, because
+  `workflow_dispatch` takes a branch, not a commit. If `main` advanced
+  after the sync push, the run validates the newer head and the step
+  reports that as a warning. A head that does not contain the sync commit
+  fails the step.
+- **The retry path is a manual dispatch** of `release-please.yml`
+  (`gh workflow run release-please.yml --ref main`). Once its catalog sync
+  passes, it dispatches the runs again even when there is nothing new to
+  push. Do not re-run the failed job: release-please reports
+  `releases_created` only once, so a re-run skips the syncs and the
+  dispatch with them.
+
 **Some `plugins/runtime` assets do not take effect until a release ships
 them**, and that obligation is now mechanically detected. `runtime` commands
 resolve `plugins/runtime/docs/host-parity-baseline.md`,
