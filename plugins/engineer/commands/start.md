@@ -535,7 +535,9 @@ if [ "$PHASE7_RC" -ne 0 ]; then
   # at Phase 7.
   exit "$PHASE7_RC"
 fi
-# On success the driver already ran P10 writebackParent SYNCHRONOUSLY and
+# On success the driver already ran P10 writebackParent SYNCHRONOUSLY (for a
+# macro subtask: a note on the macro, not its completion — /orchestrator:done
+# records that after the merge, ADR-0062) and
 # then wrote set-terminal; the Stop hook evaluates the auto-archive gates
 # (ADR-0017 §sub-decision 5) and only retries the writeback idempotently, or
 # backstops a driver that died between the two writes. On Claude that

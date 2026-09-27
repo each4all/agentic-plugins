@@ -955,72 +955,57 @@ async function runPostCommitGates({ workflowPath, repoRoot, flags, stderr, lande
     );
     return { ok: false, reason: 'unclean-after-commit', landed };
   }
-  // P10 — synchronous writebackParent. Skipped when this workflow has
+  // P10 — synchronous parent writeback. Skipped when this workflow has
   // no orchestrator parent linkage (direct /engineer:start invocation).
   //
-  // PR4 review C2 (Codex Phase 5): the orchestrator `updateSubtask`
-  // path allows same-owner completed updates and rewrites
-  // `commit`/`closed_at`/`updated_at`/`host_history` rather than
-  // no-op'ing when the subtask is already completed. That means the
-  // A2 fast-path rerun (and any normal-path rerun after gate failure)
-  // would mutate parent state again instead of being idempotent.
-  //
-  // PR3 §P10 already installs the M3 write-ahead marker:
-  // `setParentWritebackMarker` writes `parent_writeback_at` BEFORE
-  // calling `writebackParent`, and `clearParentWritebackMarker` fires
-  // on failure. So a non-empty `fresh.parent_writeback_at` here means
-  // either (a) writeback was already attempted successfully in a
-  // prior run, OR (b) it was attempted, failed, and the clear-on-fail
-  // path also failed (a vanishingly rare crash-window case). Treat
-  // (a) as the dominant case — skip writebackParent and proceed to
-  // setTerminal. If (b) materializes the operator can clear the
-  // marker via /engineer:refine and rerun.
-  if (
+  // ADR-0062 §Decision 2: this notes the terminal commit on the macro and
+  // binds ownership; it does not complete the subtask. The commit made here
+  // is on the subtask branch, and a squash or rebase merge lands a different
+  // one, which /orchestrator:done records after the merge. The orchestrator
+  // writes nothing when the note for this commit already exists, so a rerun
+  // after a later gate failure (the A2 fast path) calls it again safely, and
+  // the Stop hook repeats it as a backstop. The `parent_writeback_at`
+  // write-ahead marker (ADR-0028 §P10) records that P10 tried; it no longer
+  // gates the call.
+  const parentLinked =
     typeof fresh.parent_workflow === 'string' &&
     fresh.parent_workflow.length > 0 &&
     typeof fresh.originating_subtask === 'string' &&
-    fresh.originating_subtask.length > 0
-  ) {
-    const alreadyAttempted =
-      typeof fresh.parent_writeback_at === 'string' &&
-      fresh.parent_writeback_at.length > 0;
-    if (alreadyAttempted) {
+    fresh.originating_subtask.length > 0;
+  if (parentLinked) {
+    const commitSha = gitSync(repoRoot, ['rev-parse', 'HEAD']);
+    await setParentWritebackMarker({
+      workflowPath, host: flags.host, at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    });
+    const wbResult = await writebackParent({
+      repoRoot,
+      parentWorkflowId: fresh.parent_workflow,
+      originatingSubtaskId: fresh.originating_subtask,
+      engineerWorkflowId: fresh.workflow_id,
+      commit: commitSha,
+      host: flags.host,
+      stderr,
+    });
+    if (wbResult && wbResult.ok === false) {
+      await clearParentWritebackMarker({ workflowPath, host: flags.host });
       stderr.write(
-        `ℹ parent-writeback already attempted (parent_writeback_at=${fresh.parent_writeback_at}); ` +
-        `skipping writebackParent for idempotency (PR4 review C2). Proceeding to setTerminal.\n`,
+        `⚠ parent-writeback failed but Phase 7 will continue: ${wbResult.reason}\n` +
+        `  The Stop hook sends the same note again; either way the subtask is ` +
+        `completed by /orchestrator:done after its pull request merges.\n`,
       );
-    } else {
-      const commitSha = gitSync(repoRoot, ['rev-parse', 'HEAD']);
-      const closedAtIso = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-      await setParentWritebackMarker({
-        workflowPath, host: flags.host, at: closedAtIso,
-      });
-      const wbResult = await writebackParent({
-        repoRoot,
-        parentWorkflowId: fresh.parent_workflow,
-        originatingSubtaskId: fresh.originating_subtask,
-        engineerWorkflowId: fresh.workflow_id,
-        commit: commitSha,
-        closedAt: closedAtIso,
-        host: flags.host,
-        stderr,
-      });
-      if (wbResult && wbResult.ok === false) {
-        await clearParentWritebackMarker({ workflowPath, host: flags.host });
-        stderr.write(
-          `⚠ parent-writeback failed but Phase 7 will continue: ${wbResult.reason}\n` +
-          `  The Stop hook deferred-writeback path is the backstop ` +
-          `(idempotent compare-and-no-op).\n`,
-        );
-      }
     }
   }
+  // For a macro subtask the next step is the merge, then /orchestrator:done
+  // (ADR-0062); the engineer workflow itself archives at the next Stop.
+  const doneCommand = `${flags.host === 'codex' ? '$' : '/'}orchestrator:done ${fresh.originating_subtask}`;
   await setTerminal({
     workflowPath,
     host: flags.host,
     terminalPhase: 'commit-complete',
     terminalMarker: true,
-    nextAction: 'archive',
+    nextAction: parentLinked
+      ? `Open and merge the pull request, then run ${doneCommand}`
+      : 'archive',
     event: 'updated',
     // ADR-0031 amendment — Phase 7 commit is a production completion entry
     // point; fire the session-handoff sidecar (after the terminal write).

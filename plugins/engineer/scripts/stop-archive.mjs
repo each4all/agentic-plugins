@@ -182,38 +182,25 @@ export async function runStopArchive({
     return { archived: false, reason: 'archive-threw' };
   }
 
-  // Step 5 — ADR-0019 §4 parent writeback. Engineer-side locks are
-  // already released here (archiveWorkflow's withDirectoryLock +
-  // withFileLock callbacks both exited before this point), so §6
-  // lock-order (child release → parent acquire) is naturally satisfied.
-  // The writeback is best-effort: any failure is reported via stderr
-  // but does NOT invalidate the archive that already succeeded —
-  // manual reconciliation is available through /orchestrator:done
-  // (ADR-0019 §4 backup path, PR-D scope).
+  // Step 5 — parent writeback (ADR-0019 §4, as changed by ADR-0062).
+  // Engineer-side locks are already released here (archiveWorkflow's
+  // withDirectoryLock + withFileLock callbacks both exited before this
+  // point), so §6 lock-order (child release → parent acquire) is naturally
+  // satisfied. The writeback is best-effort: a failure is reported via
+  // stderr but does NOT invalidate the archive that already succeeded, and
+  // the subtask is completed by /orchestrator:done after the merge either
+  // way.
   if (typeof frontmatter.parent_workflow === 'string'
       && typeof frontmatter.originating_subtask === 'string'
       && typeof frontmatter.workflow_id === 'string'
       && typeof headSha === 'string'
       && headSha.length > 0) {
-    // ADR-0028 §P10 (PR3 M3) — write-ahead marker is an INFORMATIONAL
-    // signal, not a hard skip. PR3 Codex peer review M3-race: if Phase 7
-    // crashed BETWEEN marker set and writeback completion, an
-    // unconditional skip here would orphan the subtask. The
-    // subtask-update CLI's `if_match` ownership check is the actual
-    // correctness backstop (idempotent: already-completed → no-op,
-    // still-open → completes). We log the marker for observability but
-    // always call writebackParent — the cost is one redundant CLI spawn
-    // on the happy path, the benefit is closing the crash-window orphan.
-    if (typeof frontmatter.parent_writeback_at === 'string'
-        && frontmatter.parent_writeback_at.length > 0) {
-      stderr.write(
-        `engineer/stop-archive: parent_writeback_at marker present ` +
-        `(${frontmatter.parent_writeback_at}); proceeding with deferred ` +
-        `writeback anyway (subtask-update if_match is idempotent — ` +
-        `already-completed becomes a no-op).\n`,
-      );
-    }
-    const closedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    // ADR-0062 §Decision 2 — the writeback notes the terminal commit on the
+    // macro; it does not complete the subtask. Phase 7's P10 has usually
+    // sent the same note already (its `parent_writeback_at` marker says it
+    // tried); calling again is safe because the orchestrator writes nothing
+    // when the note is already there, and it covers a crash between P10's
+    // marker and its write.
     try {
       await writebackParent({
         repoRoot,
@@ -221,7 +208,6 @@ export async function runStopArchive({
         originatingSubtaskId: frontmatter.originating_subtask,
         engineerWorkflowId: frontmatter.workflow_id,
         commit: headSha,
-        closedAt,
         host,
         stderr,
       });

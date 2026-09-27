@@ -904,9 +904,9 @@ const FRONTMATTER_KEY_ORDER = [
   'commit_manifest',
   // ADR-0028 §P10 schema 1.3 parent_writeback_at (additive optional).
   // ISO-8601 UTC timestamp scalar written BEFORE writebackParent fires
-  // and cleared on writeback failure. Stop hook's deferred-writeback
-  // path treats the marker as an idempotency gate (already-fired skip).
-  // PR3 M3.
+  // and cleared on writeback failure: a record that P10 tried. It gates
+  // nothing; the orchestrator's engineer-terminal note is idempotent, so
+  // P10 reruns and the Stop hook call again regardless (ADR-0062). PR3 M3.
   'parent_writeback_at',
 ];
 
@@ -2323,12 +2323,10 @@ export async function recordRefineFile({ workflowPath, path, op, recorded_at, no
  *
  * Phase 7 invokes this immediately BEFORE calling writebackParent so
  * that a crash between writeback and set-terminal leaves a durable
- * "writeback already attempted" signal. The Stop hook's deferred-
- * writeback path treats the marker as an idempotency gate (skip when
- * present) to avoid double-firing in the common case. The
- * `subtask-update` `if_match` ownership check on the orchestrator
- * side remains the correctness backstop per ADR-0028 §P10 second
- * paragraph.
+ * "writeback attempted" record. It does not gate later calls: the
+ * orchestrator writes its engineer-terminal note once per engineer
+ * workflow and commit and does nothing on a repeat, so the Stop hook
+ * calls again whether or not the marker is present (ADR-0062 §Decision 2).
  */
 export async function setParentWritebackMarker({
   workflowPath, host, at, now = new Date(),
@@ -2359,9 +2357,9 @@ export async function setParentWritebackMarker({
 /**
  * ADR-0028 §P10 — clear the parent_writeback_at write-ahead marker on
  * writeback failure. Idempotent: a missing marker leaves the file
- * unchanged. Phase 7 calls this when writebackParent returns a non-
- * skipped failure so a subsequent Stop hook retry sees the open slot
- * and re-attempts the writeback.
+ * unchanged. Phase 7 calls this when writebackParent returns a
+ * failure, so the record says the writeback did not happen; the Stop
+ * hook's call is the retry.
  */
 export async function clearParentWritebackMarker({
   workflowPath, host, now = new Date(),
