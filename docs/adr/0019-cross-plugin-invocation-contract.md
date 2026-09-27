@@ -4,6 +4,15 @@
 
 Superseded by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md) — the Codex layout of the sibling-plugin-root resolver only (2026-09-24)
 
+Superseded by [ADR-0062](0062-subtask-completion-recorded-at-landing.md) — §4 only: when a subtask is recorded `completed`, what its `commit` names, and `/orchestrator:done` idempotency (2026-09-27)
+
+> **§4 completion re-decided by
+> [ADR-0062](0062-subtask-completion-recorded-at-landing.md).** The
+> engineer terminal commit no longer completes the subtask: the Stop hook
+> and Phase 7 write an ownership-binding note, and `/orchestrator:done`
+> records `completed` after the merge with the pull request's merge commit
+> as `commit`. A recorded value is not replaced without `--correct`.
+
 > **Codex layout re-decided by
 > [ADR-0061](0061-codex-installs-pinned-to-release-commits.md)
 > §Decision 3.** A sibling plugin on Codex resolves from the installed version cache

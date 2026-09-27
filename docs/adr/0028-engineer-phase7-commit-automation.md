@@ -4,6 +4,8 @@
 
 Accepted (5-PR series complete: PR1 #349, PR2 #350, PR3 #352, PR4 #353, PR5 #356; orchestrator forward-compat port #357)
 
+Superseded in part by [ADR-0062](0062-subtask-completion-recorded-at-landing.md) — §P10 only (2026-09-27)
+
 > ADR number 0027 was ceded to
 > [`0027-decide-skill-multi-axis-evolution.md`](0027-decide-skill-multi-axis-evolution.md)
 > (PR #346), which opened mid-plan. This ADR documents the same EPCC
@@ -309,6 +311,13 @@ request or ensemble summary into Phase 7's commit body is exactly the
 class of accidental routing that ADR-0016 made convention.
 
 #### P10 — Synchronous parent-writeback policy
+
+> **Superseded by [ADR-0062](0062-subtask-completion-recorded-at-landing.md)
+> §Decision 2 (2026-09-27).** P10 no longer records the subtask's
+> completion: it writes the ownership-binding engineer-terminal note, and
+> `/orchestrator:done` records completion after the merge. The
+> `updateSubtask({if_match})` compare-and-no-op described below was never
+> implemented; ADR-0062 §Decision 3 is the guard that exists.
 
 Phase 7 invokes `writebackParent` *synchronously* after the
 clean-after-commit gate (step 6 of P5) and *before* `set-terminal`. A

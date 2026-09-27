@@ -723,6 +723,65 @@ describe('phase7-commit driver — sandbox e2e (Phase 5 critique gap closure)', 
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  // ADR-0062 §Decision 2 — P10 notes the terminal commit on the macro and
+  // leaves the subtask open: the commit it just made is a branch commit, and
+  // what lands after a squash or rebase merge is a different one.
+  it('P10 — a parent-linked commit notes the macro, keeps the subtask open, and points at /orchestrator:done', async () => {
+    const dir = await makeSandboxRepo();
+    try {
+      const ORCH_STATE = resolve(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs');
+      const macroPath = shell(dir, 'node', [
+        ORCH_STATE, 'create', '--repo-root', dir, '--verb', 'plan', '--host', 'claude',
+        '--git-baseline-branch', 'main', '--git-baseline-head', shell(dir, 'git', ['rev-parse', 'HEAD']),
+        '--original-request', 'phase7 P10 parent',
+      ]);
+      const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
+      const subtasksFile = join(dir, '.agentic-plugins', 'state', 'subtasks.json');
+      await writeFile(subtasksFile, JSON.stringify([
+        { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'in_progress' },
+        { id: 'T2', verb: 'compose', branch: 'feat/t2', blocked_by: ['T1'], status: 'blocked' },
+      ]));
+      shell(dir, 'node', [ORCH_STATE, 'plan-set', '--workflow-path', macroPath, '--host', 'claude', '--subtasks-json-file', subtasksFile]);
+
+      const head = shell(dir, 'git', ['rev-parse', 'HEAD']);
+      const wf = shell(dir, 'node', [
+        STATE_BIN, 'create', '--repo-root', dir, '--verb', 'compose', '--profile', 'code',
+        '--persona', 'engineer', '--host', 'claude', '--workflow-type', 'start',
+        '--git-baseline-branch', 'main', '--git-baseline-head', head, '--status-digest', '',
+        '--current-phase', 'phase-4-implement', '--next-action', 'phase 7 sandbox',
+        '--original-request', 'P10 sandbox', '--parent-workflow', macroId, '--originating-subtask', 'T1',
+      ]);
+      shell(dir, 'node', [STATE_BIN, 'record-composed-file', '--workflow-path', wf, '--path', 'README.md', '--op', 'edit']);
+      await writeFile(join(dir, 'README.md'), '# sandbox\nP10\n');
+      let result;
+      try {
+        const stdout = execFileSync('node', [
+          PHASE7_BIN, '--mode', 'execute', '--workflow-path', wf, '--repo-root', dir, '--host', 'claude',
+          '--subject', 'docs: P10 parent-linked commit', '--confirm-non-interactive', '--lenient-cc',
+        ], {
+          cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, AGENTIC_ORCHESTRATOR_ROOT: resolve(REPO_ROOT, 'plugins/orchestrator') },
+        });
+        result = { code: 0, stdout };
+      } catch (err) {
+        result = { code: err.status, stderr: String(err.stderr) };
+      }
+      strictEqual(result.code, 0, `expected exit 0; stderr=${result.stderr}`);
+      const committed = shell(dir, 'git', ['rev-parse', 'HEAD']);
+
+      const macroText = await readFile(macroPath, 'utf8');
+      ok(/id: "T1"[\s\S]*?status: "in_progress"/.test(macroText), 'T1 stays in_progress');
+      ok(!/^\s*commit: /m.test(macroText), 'no commit is recorded on the subtask');
+      ok(/id: "T2"[\s\S]*?status: "blocked"/.test(macroText), 'the successor stays blocked until T1 lands');
+      ok(macroText.includes(`### engineer terminal: "T1" @ `) && macroText.includes(committed), macroText);
+
+      const wfText = await readFile(wf, 'utf8');
+      ok(/next_action: ".*\/orchestrator:done T1/.test(wfText), `engineer next_action points at /orchestrator:done: ${wfText}`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // -----------------------------------------------------------------------------
