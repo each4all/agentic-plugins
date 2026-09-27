@@ -114,10 +114,13 @@ semantics plus orchestrator's **hardened delivery**:
   prevents double render, not cross-workflow overwrite).
 
 **Scope honesty (inherited limitations):** the branch-agnostic Stop-hook
-**orphan sweep** archives deleted-branch terminal workflows **without** a
-final sidecar emit attempt — same as engineer/orchestrator. A workflow
-that terminalizes and whose branch is deleted before any Stop fires gets
-no footer and no pending handoff. Two further slot-model properties are
+**orphan sweep** archives terminal workflows whose branch is not checked
+out — deleted, or kept and moved past its baseline — **without** a final
+sidecar emit attempt, same as engineer's sweep (orchestrator's Stop runs
+its handoff backstop before its archive scan). A workflow that
+terminalizes and whose branch is deleted or switched away from before any
+Stop fires on it gets no backstop emit, so a missed primary emit leaves it
+with no footer and no pending handoff. Two further slot-model properties are
 inherited and accepted (ADR-0043 §2 keeps the ADR-0031 single-slot design;
 per-workflow projection files are explicitly out of scope): projection and
 marker writes are plain truncating writes (a concurrent reader of a
