@@ -26,6 +26,9 @@
 import {
   archiveWorkflow,
   branchRefState,
+  branchTip,
+  checkedOutBranch,
+  descendsFrom,
   listWorkflowFilesAllHomes,
   noActiveChildrenCheck,
   parseWorkflowFile,
@@ -198,32 +201,43 @@ export async function runStopArchive({
 }
 
 /**
- * ADR-0031 branch-agnostic orphan sweep — archive terminal founder workflows
- * whose baseline branch was DELETED.
+ * Branch-agnostic sweep — archive terminal founder workflows whose branch is
+ * not checked out: those whose branch was DELETED (ADR-0031) and those whose
+ * branch still exists elsewhere (ADR-0017 sub-decision 5, amended 2026-09-28).
  *
  * Why: the per-branch Stop hook archives only the active workflow on the
  * current branch (`findActiveWorkflow` → `runStopArchive`). A terminal_marker'd
- * workflow whose `git_baseline.branch` was deleted (the common case after a
- * subtask feature branch merges and is pruned) can NEVER be re-found by branch,
- * so it leaks as a permanently-"active" workflow. This sweep is the
- * founder adaptation of the engineer/orchestrator branch-agnostic sweeps
- * (no macro A4 interaction — founder has no orchestrator parent).
+ * workflow whose `git_baseline.branch` is not checked out when a Stop fires —
+ * deleted after its merge, or left behind by a switch in the same turn — would
+ * otherwise stay "active" until someone returned to or deleted its branch.
+ * This sweep is the founder adaptation of the engineer/orchestrator
+ * branch-agnostic sweeps (no macro A4 interaction — founder has no
+ * orchestrator parent).
  *
- * Orphan criterion (intentionally narrow + safe):
- *   1. `terminal_marker === true` AND `current_phase` ∈ TERMINAL_PHASES — the
- *      work is done (set-terminal ran).
- *   2. the baseline branch is CONFIRMED absent (`branchRefState === 'absent'`).
- *      A still-present branch is left alone (it archives normally via
- *      `runStopArchive`'s head_moved gate when the user is next on it, so the
- *      per-branch single-active "switch-back to resume" semantics are
- *      preserved). A probe failure (`'unknown'`) is also left alone — a
- *      transient git error must never falsely archive a live workflow.
+ * Criterion, per `branchRefState` of the workflow's baseline branch:
+ *   - every case requires `terminal_marker === true` AND `current_phase` ∈
+ *     TERMINAL_PHASES — the work is done (set-terminal ran);
+ *   - the checked-out branch is skipped: the per-branch path owns it, and
+ *     snapshots it and fires the handoff backstop first. When git cannot say
+ *     which branch is checked out (`checkedOutBranch` → `'unknown'`), every
+ *     kept branch is left alone, since any of them could be that one; a
+ *     confirmed detached HEAD owns no branch;
+ *   - `'present'` (kept, not checked out): the four Stop gates are evaluated
+ *     against that branch's own tip (`branchTip`), as a Stop on that branch
+ *     would. HEAD belongs to another branch and is never used. Because nobody
+ *     is on the branch to see it, the tip must also descend from the baseline
+ *     (`descendsFrom`): a branch reset below its baseline or rebased onto
+ *     unrelated history is left alone. A gate that fails writes nothing — no
+ *     snapshot — so a workflow that cannot pass does not grow on every Stop;
+ *     a tip that does not resolve to a commit is left alone;
+ *   - `'absent'` (deleted): archived with no head_moved gate (a deleted
+ *     branch has no tip to judge; mirror of the macro's branch-gone logic);
+ *   - `'unknown'` (probe failure): left alone — a transient git error must
+ *     never falsely archive a live workflow.
  *
- * HEAD-independent: a deleted branch's baseline HEAD is meaningless, so there is
- * no head_moved gate here (mirror of the macro's branch-gone logic). Best-effort
- * and non-throwing per ADR-0011 §4 — a single corrupt/unreadable file is skipped
- * with a warning, never blocking the rest of the sweep or the host Stop
- * lifecycle.
+ * Best-effort and non-throwing per ADR-0011 §4 — a single corrupt/unreadable
+ * file is skipped with a warning, never blocking the rest of the sweep or the
+ * host Stop lifecycle.
  *
  * @returns {Promise<Array<{workflowPath: string, archived: boolean, to?: string, reason?: string}>>}
  *   one entry per workflow the sweep acted on (archived or attempted).
@@ -236,6 +250,7 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     stderr.write(`founder/stop-archive: orphan-sweep list failed: ${err.message}\n`);
     return [];
   }
+  const checkout = checkedOutBranch(repoRoot);
   const results = [];
   for (const workflowPath of files) {
     let frontmatter;
@@ -252,7 +267,15 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     if (!terminalPhaseCheck(frontmatter?.current_phase)) continue;
     const branch = frontmatter?.git_baseline?.branch;
     if (typeof branch !== 'string' || branch.length === 0) continue;
-    if (branchRefState(repoRoot, branch) !== 'absent') continue; // present | unknown → leave
+    if (checkout.state === 'branch' && branch === checkout.branch) continue; // the per-branch path owns it
+    const refState = branchRefState(repoRoot, branch);
+    if (refState === 'present') {
+      if (checkout.state === 'unknown') continue; // any kept branch could be the checked-out one
+      const result = await archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr });
+      if (result) results.push(result);
+      continue;
+    }
+    if (refState !== 'absent') continue; // unknown → leave
     // founder trim — no parent-linked-orphan special handling: founder
     // workflows never carry parent linkage (ADR-0036 Non-Goal 3), so
     // there is no macro A4 interaction and no missed-writeback case to
@@ -271,6 +294,36 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     }
   }
   return results;
+}
+
+/**
+ * Judge a terminal workflow whose branch still exists but is not checked out
+ * against that branch's tip, and archive it when every gate passes. Returns
+ * `null` when it is left alone (nothing was written).
+ */
+async function archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr }) {
+  const tip = branchTip(repoRoot, branch);
+  if (!tip) return null;
+  const verdict = evaluateStopArchive({ frontmatter, headSha: tip.sha, headSubject: tip.subject });
+  if (!verdict.shouldArchive) return null;
+  // Nobody is on this branch to see the archive, so a tip that merely differs
+  // from the baseline is not enough: it must have moved forward from it.
+  if (!descendsFrom(repoRoot, frontmatter?.git_baseline?.head, tip.sha)) return null;
+  for (const w of verdict.warnings) {
+    stderr.write(`founder/stop-archive: warning: ${w}\n`);
+  }
+  try {
+    const archiveResult = await archiveWorkflow({ workflowPath, host, repoRoot });
+    return {
+      workflowPath,
+      archived: archiveResult.archived === true,
+      to: archiveResult.to,
+      reason: archiveResult.reason,
+    };
+  } catch (err) {
+    stderr.write(`founder/stop-archive: orphan-sweep archive failed for ${workflowPath}: ${err.message}\n`);
+    return { workflowPath, archived: false, reason: 'archive-threw' };
+  }
 }
 
 function isConventionalCommitSubjectInline(subject) {
