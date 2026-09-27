@@ -591,11 +591,12 @@ export async function listWorkflowFilesAllHomes(repoRoot) {
  * exists and 1 when it is confirmed absent (clean miss). Any other failure
  * (git not on PATH → ENOENT, not a repo → 128, etc.) is `'unknown'`.
  *
- * The orphan sweep archives ONLY on `'absent'` (the branch was deleted, so the
- * terminal workflow can never archive via the branch-keyed Stop hook). A probe
- * failure (`'unknown'`) is treated conservatively — leave the workflow — so a
- * transient git error can never falsely archive a workflow whose branch may
- * still exist.
+ * The orphan sweep archives a terminal workflow on an `'absent'` branch (the
+ * branch was deleted, so there is no tip to judge), and judges one on a
+ * `'present'` branch that is not checked out against that branch's tip
+ * (`branchTip`). A probe failure (`'unknown'`) is treated conservatively —
+ * leave the workflow — so a transient git error can never falsely archive a
+ * workflow whose branch may still exist.
  */
 export function branchRefState(repoRoot, branch) {
   if (typeof branch !== 'string' || branch.length === 0) return 'unknown';
@@ -624,6 +625,78 @@ export function branchRefState(repoRoot, branch) {
     // The name is valid (guard above), so exit 1 here == ref confirmed absent.
     // Everything else (ENOENT no-git, 128 not-a-repo) stays unknown → conservative.
     return err && err.status === 1 ? 'absent' : 'unknown';
+  }
+}
+
+/**
+ * Resolve a local branch's tip commit and its subject, or `null` when the ref
+ * does not name a readable commit.
+ *
+ * The orphan sweep judges a terminal workflow on a branch that is not checked
+ * out against this tip, never against HEAD (which belongs to another branch).
+ * Call it only after `branchRefState` returned `'present'`; `null` here is the
+ * conservative "leave it" answer, not "deleted".
+ */
+export function branchTip(repoRoot, branch) {
+  if (typeof branch !== 'string' || branch.length === 0) return null;
+  try {
+    const sha = String(execFileSync(
+      'git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`],
+      { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] },
+    )).trim();
+    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) return null;
+    const subject = String(execFileSync(
+      'git', ['log', '-1', '--format=%s', sha],
+      { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] },
+    )).replace(/\n$/, '');
+    return { sha, subject };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The checkout as the orphan sweep needs it: `{ state: 'branch', branch }`,
+ * `{ state: 'detached' }` (confirmed: HEAD names no branch), or
+ * `{ state: 'unknown' }` when git cannot say. `currentGitBranch` folds the last
+ * two into `''`; the sweep must not, because without the checkout it cannot
+ * tell which workflow the per-branch Stop path owns.
+ *
+ * `git symbolic-ref --quiet HEAD` exits 0 with `refs/heads/<branch>` (also on
+ * an unborn branch), 1 when HEAD is detached, and 128 on failure.
+ */
+export function checkedOutBranch(repoRoot) {
+  try {
+    const ref = String(execFileSync('git', ['symbolic-ref', '--quiet', 'HEAD'], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })).replace(/\n$/, '');
+    return ref.startsWith('refs/heads/')
+      ? { state: 'branch', branch: ref.slice('refs/heads/'.length) }
+      : { state: 'unknown' };
+  } catch (err) {
+    return err && err.status === 1 ? { state: 'detached' } : { state: 'unknown' };
+  }
+}
+
+/**
+ * `true` only when `tip` is a strict descendant of `baseline` — the branch
+ * moved forward from where the workflow started. A branch reset below its
+ * baseline, or rebased onto unrelated history, also differs from the baseline
+ * but carries no evidence of the workflow's work, so it is `false`; so is any
+ * probe failure.
+ */
+export function descendsFrom(repoRoot, baseline, tip) {
+  if (typeof baseline !== 'string' || typeof tip !== 'string') return false;
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(baseline) || baseline === tip) return false;
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', baseline, tip], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
