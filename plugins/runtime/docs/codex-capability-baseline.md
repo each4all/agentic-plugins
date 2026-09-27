@@ -113,23 +113,24 @@ entries whose `installPolicy` is `INSTALLED_BY_DEFAULT`. No release is
 attributed for that; 0.153.0's remote-marketplace support in the plugin CLI
 (#42150) is a candidate. The eight agentic entries' `source` object now reads
 `{source: "git-subdir", url, path, ref, sha}`, mirroring the ADR-0061 catalog
-pins activated on 2026-09-26, with no control separating a CLI contribution. `codex features list` has 150 rows: 26 keys added,
-none removed, and seven existing keys changing stage, none of them a flag this
-file names. `daemon_auto_start` is one of the additions and is `stable`/true on
-`0.157.1`, matching 0.157.0's automatic background-server startup for eligible
-interactive sessions; since an app-server start is one of the triggers of the
-marketplace auto-upgrade ADR-0061 describes, that is worth knowing, and it was
-not probed. Other release-note changes touch surfaces this file describes, all
-read and none probed: hook execution (0.155.0 detaches Unix hook commands from
-the controlling terminal, #43876, stops command hooks hanging on blocked stdin,
-#44288, and distinguishes forked sessions in session-start hooks, #44349), skill
-discovery and loading routed through `EnvironmentAccess` (0.156.0, #46293), and the
-plugin CLI's remote marketplaces (0.153.0, #42150). Two bear directly on this
-repository. Since `0.152.0` the `update_plan` planning tool is off by default.
-Since `0.154.0` existing sessions refresh skills and hooks after an external
-plugin upgrade or rollback, which is what a pin advance under ADR-0061 is;
-whether a changed hook then needs `/hooks` review again is not stated.
-`R13` and `R16` in [`follow-ups.md`](follow-ups.md) stay open.
+pins activated on 2026-09-26, with no control separating a CLI contribution.
+`codex features list` has 150 rows: 26 keys added, none removed, and seven
+existing keys changing stage, none of them a flag this file names.
+`daemon_auto_start` is one of the additions and is `stable`/true on `0.157.1`,
+matching 0.157.0's automatic background-server startup for eligible interactive
+sessions; since an app-server start is one of the triggers of the marketplace
+auto-upgrade ADR-0061 describes, that is worth knowing, and it was not probed.
+Other release-note changes touch surfaces this file describes, all read and
+none probed: hook execution (0.155.0 detaches Unix hook commands from the
+controlling terminal, #43876, stops command hooks hanging on blocked stdin,
+#44288, and distinguishes forked sessions in session-start hooks, #44349),
+skill discovery and loading routed through `EnvironmentAccess` (0.156.0,
+#46293), and the plugin CLI's remote marketplaces (0.153.0, #42150). Two bear
+directly on this repository. Since `0.152.0` the `update_plan` planning tool is
+off by default. Since `0.154.0` existing sessions refresh skills and hooks
+after an external plugin upgrade or rollback, which is what a pin advance under
+ADR-0061 is; whether a changed hook then needs `/hooks` review again is not
+stated. `R13` and `R16` in [`follow-ups.md`](follow-ups.md) stay open.
 
 - `codex --version` -> `codex-cli 0.157.1`
 - `codex --help` (0.144.1 top-level surface: `exec`, `review`, `login`/`logout`,
@@ -142,7 +143,11 @@ whether a changed hook then needs `/hooks` review again is not stated.
   0.154.0 (#42993), a deprecated entry point runtime never called — and
   `agents`, `queue`, and `migrate-rollouts`, first recorded at 0.150.1, are
   still present)
-- `codex exec --help` (non-interactive run surface unchanged)
+- `codex exec --help` (re-run on 0.156.1 and 0.157.1: every host flag
+  `codex-companion.mjs` passes — `--skip-git-repo-check`, `--ephemeral`, `--cd`,
+  `--model`, `-c` — is still accepted, but the surface is not unchanged: 0.154.0
+  added `--worktree`, which runs the session in a new managed Git worktree
+  (#42652), and runtime does not use it)
 - `codex hooks --help` (re-observed on 0.144.1 to still fall back to top-level
   help; no `hooks` subcommand is listed)
 - `~/.codex/config.toml` `[hooks.state."<plugin>@<marketplace>:<hooks-path>:<event>:0:0"]`
