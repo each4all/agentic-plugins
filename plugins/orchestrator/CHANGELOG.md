@@ -18,6 +18,23 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.14.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.13.8...plugin-orchestrator-v0.14.0) (2026-09-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **plugin/orchestrator:** record a macro subtask completed when its pull request lands
+
+### Features
+
+* **plugin/orchestrator:** record a macro subtask completed when its pull request lands ([29555aa](https://github.com/each4all/agentic-plugins/commit/29555aa1a44e890536b8ef4f6275b32ec399c980))
+
+
+### Bug Fixes
+
+* **plugin/orchestrator:** read /orchestrator:done fields without positional parameters ([#827](https://github.com/each4all/agentic-plugins/issues/827)) ([1e695f9](https://github.com/each4all/agentic-plugins/commit/1e695f94524f35fd862e91be8c88cd4036011fde))
+* **plugin/orchestrator:** refuse /orchestrator:done when a workflow scan cannot read a home or file ([fe00cba](https://github.com/each4all/agentic-plugins/commit/fe00cba6f5352b5b35387a74808911ea3ece04be))
+
 ## [0.13.8](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.13.7...plugin-orchestrator-v0.13.8) (2026-09-25)
 
 

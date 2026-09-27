@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.22.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.11...plugin-engineer-v0.22.0) (2026-09-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **plugin/engineer:** note the terminal commit on the macro instead of completing the subtask
+
+### Bug Fixes
+
+* **plugin/engineer:** archive a terminal workflow left on a kept branch against that branch's tip ([622ab44](https://github.com/each4all/agentic-plugins/commit/622ab44d58f042e983987163d98b86686e30aac4))
+* **plugin/engineer:** note the terminal commit on the macro instead of completing the subtask ([4a66ee8](https://github.com/each4all/agentic-plugins/commit/4a66ee83bfea648be237f8e67f884d9b48b99cc8))
+
 ## [0.21.11](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.10...plugin-engineer-v0.21.11) (2026-09-25)
 
 

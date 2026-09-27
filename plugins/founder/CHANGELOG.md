@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.10](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.9...plugin-founder-v0.4.10) (2026-09-27)
+
+
+### Bug Fixes
+
+* **plugin/founder:** archive a terminal workflow left on a kept branch against that branch's tip ([c24162d](https://github.com/each4all/agentic-plugins/commit/c24162dca305a4af5cc86540b14efbd7b434fc20))
+
 ## [0.4.9](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.8...plugin-founder-v0.4.9) (2026-09-25)
 
 
