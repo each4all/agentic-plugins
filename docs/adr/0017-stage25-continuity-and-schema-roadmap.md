@@ -263,6 +263,33 @@ fires. This separation prevents Proposed-ADR drift.
   conventional-commit warning case + Codex parity + idempotency, all
   green).
 
+> **Amendment 2026-09-28 (docket C3)**: the head-moved verification
+> compares `git_baseline.head` with the tip of the workflow's **own**
+> branch, not with whatever happens to be checked out. When that branch
+> is checked out the two are the same (`git rev-parse HEAD`). When it is
+> not, the Stop hook's branch-agnostic sweep evaluates the same four
+> gates against `refs/heads/<git_baseline.branch>` and, for an engineer
+> workflow with an orchestrator parent, notes that tip on the parent;
+> HEAD never stands in for another branch. `/orchestrator:finalize` and
+> `/abort` already made this cross-branch call (`stop-archive
+> --head-sha`). Because nobody is on that branch to see the archive, the
+> sweep also requires the tip to descend from `git_baseline.head`: a
+> branch reset below its baseline, or rebased onto unrelated history, is
+> left alone. When git cannot say which branch is checked out, the sweep
+> leaves every kept branch, since any of them could be the one the
+> per-branch path owns. In the sweep, a gate that fails writes nothing,
+> not even a snapshot; the per-branch path and the `stop-archive` CLI
+> still snapshot first. A deleted branch is still archived without the
+> head gate and without a parent note (the ADR-0031 sweep), and a branch
+> whose ref does not resolve to a commit is left alone. Before this
+> amendment the sweep left any kept branch for the next Stop on that
+> branch. That Stop never
+> came when the subtask branch was kept after its merge and the turn had
+> already moved on (commit, merge, `/orchestrator:done`, then
+> `/orchestrator:next`), so the child stayed active and held the macro's
+> `no_active_engineer_children` gate closed. The designer and founder
+> copies of the sweep follow the same rule, without a parent.
+
 ### Schema versioning policy
 
 `SCHEMA_VERSION` in `plugins/engineer/scripts/state.mjs` bumps to

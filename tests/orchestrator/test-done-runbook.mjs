@@ -238,6 +238,44 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
     });
   });
 
+  // A scan that cannot read a workflow home or file must refuse, not read the
+  // failure as "no child": that would complete the subtask while its child is
+  // still active (C3 review, G3). The faults are ones root cannot bypass. The
+  // owner is recorded first so the --no-commit cases reach the active-child
+  // scan rather than stopping at the owner scan.
+  it('--no-commit refuses when an engineer workflow file cannot be read', async () => {
+    await withFixture(async ({ done, subtask, work, macroPath }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
+      await mkdir(join(work, '.agentic-plugins/state/engineer/workflows/compose-20260927T110000Z-bbbbbb.md'));
+      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
+      strictEqual(r.status, 1, r.stderr);
+      ok(/could not scan the engineer workflow homes for an active child of A/i.test(r.stderr), r.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress');
+    });
+  });
+
+  it('--no-commit refuses when an engineer workflow home cannot be listed', async () => {
+    await withFixture(async ({ done, subtask, work, macroPath }) => {
+      await updateSubtask({ workflowPath: macroPath, subtaskId: 'A', host: 'claude', engineerWorkflowId: ENGINEER_ID });
+      await mkdir(join(work, '.claude/agentic-engineer'), { recursive: true });
+      await writeFile(join(work, '.claude/agentic-engineer/workflows'), 'not a directory\n');
+      const r = await done({ NO_COMMIT: '1' }, { reason: 'investigation only' });
+      strictEqual(r.status, 1, r.stderr);
+      ok(/could not scan the engineer workflow homes for an active child of A/i.test(r.stderr), r.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress');
+    });
+  });
+
+  it('the owner scan refuses when an engineer workflow file cannot be read, rather than guessing', async () => {
+    await withFixture(async ({ done, subtask, work }) => {
+      await mkdir(join(work, '.agentic-plugins/state/engineer/archive/compose-20260927T110000Z-bbbbbb.md'));
+      const r = await done({});
+      strictEqual(r.status, 1, r.stderr);
+      ok(/could not scan the engineer workflow homes for A's owner/i.test(r.stderr), r.stderr);
+      strictEqual((await subtask('A')).status, 'in_progress');
+    });
+  });
+
   it('--no-commit excludes --commit', async () => {
     await withFixture(async ({ done, squash }) => {
       const r = await done({ NO_COMMIT: '1', EXPLICIT_COMMIT: squash }, { reason: 'x' });
