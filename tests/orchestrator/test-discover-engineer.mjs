@@ -330,4 +330,39 @@ describe('preflightEngineerCapability — PR-A flag detection', () => {
       match(result.reason, /stop-archive|PR-E/i);
     });
   });
+
+  // ADR-0062 §Decision 6 — an engineer from before the landing-time
+  // completion would still complete the subtask at its branch commit, so
+  // /orchestrator:next refuses to dispatch into it.
+  it('returns ok=false when engineer parent-writeback predates the ADR-0062 engineer terminal note', async () => {
+    await withTmpHomeAndRepo(async (dir) => {
+      const fakeRoot = join(dir, 'pre-adr-0062-engineer');
+      const q = (t) => `'${t}'`;
+      await writeEngineerLayout(fakeRoot, {
+        version: '0.21.11',
+        statePayload:
+          "#!/usr/bin/env node\n"
+          + "// PR-A gate marker: --parent-workflow flag\n"
+          + `const cases = [${q('detach-archive')}, ${q('stop-archive')}];\n`
+          + "if (process.argv.includes('--help')) process.stdout.write('pre-0062 engineer\\n');\n"
+          + "process.exit(0);\n",
+      });
+      await mkdir(join(fakeRoot, 'commands'), { recursive: true });
+      await writeFile(join(fakeRoot, 'commands', 'investigate.md'), '# investigate\nAGENTIC_PARENT_WORKFLOW reading boilerplate\n');
+      await writeFile(join(fakeRoot, 'scripts', 'parent-writeback.mjs'), "const args = ['subtask-update', '--status=completed'];\n");
+      await chmod(join(fakeRoot, 'scripts', 'state.mjs'), 0o755);
+      const result = await preflightEngineerCapability(fakeRoot);
+      strictEqual(result.ok, false);
+      match(result.reason, /ADR-0062/);
+      // /finalize and /abort need only detach-archive / stop-archive, so the
+      // same install passes their lifecycle preflight.
+      const lifecycle = await preflightEngineerCapability(fakeRoot, { purpose: 'lifecycle' });
+      strictEqual(lifecycle.ok, true, lifecycle.reason);
+    });
+  });
+
+  it('returns ok=true for this repository engineer, which ships the engineer terminal note', async () => {
+    const result = await preflightEngineerCapability(ENGINEER_ROOT);
+    strictEqual(result.ok, true, result.reason);
+  });
 });

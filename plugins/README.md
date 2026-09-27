@@ -83,7 +83,9 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   [ADR-0018](../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
   §sub-decision-1 and [ADR-0019](../docs/adr/0019-cross-plugin-invocation-contract.md):
   macro plan, Plan-verify peer ensemble, same-host engineer dispatch,
-  manual completion backup, finalize/abort lifecycle, and macro
+  completion recorded when the work lands
+  ([ADR-0062](../docs/adr/0062-subtask-completion-recorded-at-landing.md)),
+  finalize/abort lifecycle, and macro
   auto-archive A1-A4. First multi-verb L2 occupant; workflow files live
   at `<repo>/.agentic-plugins/state/orchestrator/workflows/<workflow_id>.md`
   for new repos, with legacy `.claude/agentic-orchestrator/` state

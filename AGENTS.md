@@ -115,8 +115,9 @@ per ADR-0010:
    §sub-decision-1, then expanded by [ADR-0019](docs/adr/0019-cross-plugin-invocation-contract.md)
    and [ADR-0023](docs/adr/0023-peer-runner-supervisor-layer.md) into
    macro planning, supervised Plan-verify peer dispatch, same-host
-   engineer dispatch, manual completion backup, finalize/abort, and
-   macro auto-archive. The Stage 1 `plugins/research` incumbent was
+   engineer dispatch, completion recorded when the work lands
+   ([ADR-0062](docs/adr/0062-subtask-completion-recorded-at-landing.md)),
+   finalize/abort, and macro auto-archive. The Stage 1 `plugins/research` incumbent was
    retired at Stage 2.5+ ([ADR-0014](docs/adr/0014-plugins-research-deprecation.md)),
    its cited-brief contract absorbed into `engineer:investigate`'s
    cited-brief profile. `plugins/image` shipped as an L2 capability

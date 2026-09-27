@@ -691,53 +691,86 @@ async function bootstrapMacroPlan(repoRoot, subtaskId = 'T1') {
   return { macroPath, macroId };
 }
 
-describe('ADR-0019 PR-C — runStopArchive parent-writeback (parent in workflows/)', () => {
-  it('marks the parent subtask completed after engineer archive succeeds', async () => {
+describe('ADR-0019 PR-C / ADR-0062 — runStopArchive parent writeback (parent in workflows/)', () => {
+  async function terminalChild(repoRoot, baselineHead, macroId, extra = () => {}) {
+    const { filePath, workflowId } = await createWorkflow({
+      repoRoot,
+      verb: 'compose',
+      originalRequest: 'pr-c child workflow',
+      gitBaseline: { branch: 'main', head: baselineHead, status_digest: MIN_DIGEST },
+      host: 'claude',
+      parentWorkflow: macroId,
+      originatingSubtask: 'T1',
+    });
+    await setFrontmatter(filePath, (fm) => {
+      fm.current_phase = 'summary-complete';
+      fm.terminal_marker = true;
+      extra(fm);
+    });
+    return { engineerPath: filePath, engineerId: workflowId };
+  }
+
+  const stop = (engineerPath, repoRoot, headSha, stderrBuf) => withOrchestratorEnv(ORCHESTRATOR_ROOT, () =>
+    runStopArchive({
+      workflowPath: engineerPath,
+      host: 'claude',
+      repoRoot,
+      headSha,
+      headSubject: 'feat(plugins/engineer): pr-c child terminal commit',
+      stderr: { write: (s) => stderrBuf.push(s) },
+    }));
+
+  // ADR-0062 §Decision 2: the child's terminal commit is a branch commit
+  // that a squash or rebase merge never lands, so the Stop hook notes it and
+  // leaves the subtask open for /orchestrator:done.
+  it('notes the terminal commit on the parent without completing the subtask', async () => {
     await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
       const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
-
-      const { filePath: engineerPath, workflowId: engineerId } = await createWorkflow({
-        repoRoot,
-        verb: 'compose',
-        originalRequest: 'pr-c child workflow',
-        gitBaseline: {
-          branch: 'main',
-          head: baselineHead,
-          status_digest: MIN_DIGEST,
-        },
-        host: 'claude',
-        parentWorkflow: macroId,
-        originatingSubtask: 'T1',
-      });
-      await setFrontmatter(engineerPath, (fm) => {
-        fm.current_phase = 'summary-complete';
-        fm.terminal_marker = true;
-      });
+      const { engineerPath, engineerId } = await terminalChild(repoRoot, baselineHead, macroId);
       const newHead = makeAdvanceCommit(repoRoot);
-
       const stderrBuf = [];
-      const result = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () =>
-        runStopArchive({
-          workflowPath: engineerPath,
-          host: 'claude',
-          repoRoot,
-          headSha: newHead,
-          headSubject: 'feat(plugins/engineer): pr-c child terminal commit',
-          stderr: { write: (s) => stderrBuf.push(s) },
-        }),
-      );
+      const result = await stop(engineerPath, repoRoot, newHead, stderrBuf);
 
       strictEqual(result.archived, true);
-      // engineer file moved to archive/
       strictEqual((await listWorkflows(repoRoot)).length, 0);
       strictEqual((await listArchive(repoRoot)).length, 1);
 
-      // Parent macro now has the subtask completed + auto-terminal.
       const macroText = await readFile(macroPath, 'utf8');
-      match(macroText, /status: "completed"/);
-      match(macroText, new RegExp(`commit: "${newHead}"`));
+      match(macroText, /status: "in_progress"/);
+      ok(!/^\s*commit: /m.test(macroText), 'no commit is recorded on the subtask');
+      ok(!/terminal_marker: true/.test(macroText), 'the macro is not promoted to terminal');
       match(macroText, new RegExp(`engineer_workflow_id: "${engineerId}"`));
-      match(macroText, /terminal_marker: true/);
+      ok(macroText.includes(`### engineer terminal: "T1" @ ${engineerId} ${newHead}`), macroText);
+    });
+  });
+
+  it('with the P10 marker set and the note already written, writes nothing more', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+      const { engineerPath, engineerId } = await terminalChild(repoRoot, baselineHead, macroId,
+        (fm) => { fm.parent_writeback_at = '2026-09-27T10:00:00Z'; });
+      const newHead = makeAdvanceCommit(repoRoot);
+      // What P10 wrote before this Stop.
+      execFileSync(process.execPath, [
+        ORCHESTRATOR_STATE, 'subtask-engineer-terminal', `--workflow-path=${macroPath}`,
+        '--host=claude', '--subtask-id=T1', `--engineer-workflow-id=${engineerId}`, `--branch-commit=${newHead}`,
+      ], { encoding: 'utf8' });
+      const before = await readFile(macroPath, 'utf8');
+      const result = await stop(engineerPath, repoRoot, newHead, []);
+      strictEqual(result.archived, true);
+      strictEqual(await readFile(macroPath, 'utf8'), before);
+    });
+  });
+
+  it('with the P10 marker set but no note (a crash between the two), still writes the note', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+      const { engineerPath, engineerId } = await terminalChild(repoRoot, baselineHead, macroId,
+        (fm) => { fm.parent_writeback_at = '2026-09-27T10:00:00Z'; });
+      const newHead = makeAdvanceCommit(repoRoot);
+      const result = await stop(engineerPath, repoRoot, newHead, []);
+      strictEqual(result.archived, true);
+      ok((await readFile(macroPath, 'utf8')).includes(`### engineer terminal: "T1" @ ${engineerId} ${newHead}`));
     });
   });
 });

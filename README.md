@@ -73,8 +73,10 @@ Eight installable plugins ship in this repository:
   §sub-decision-1 and
   [ADR-0019](docs/adr/0019-cross-plugin-invocation-contract.md):
   macro plan, Plan-verify opposite-host peer ensemble, same-host
-  engineer dispatch, manual completion backup, finalize/abort
-  lifecycle, meta continuity commands, and macro auto-archive.
+  engineer dispatch, completion recorded when the work lands
+  ([ADR-0062](docs/adr/0062-subtask-completion-recorded-at-landing.md)),
+  finalize/abort lifecycle, meta continuity commands, and macro
+  auto-archive.
 - [`plugins/runtime/`](plugins/runtime/) — Stage 3+ L1 framework
   primitive per
   [ADR-0024](docs/adr/0024-runtime-operator-control-plane.md):

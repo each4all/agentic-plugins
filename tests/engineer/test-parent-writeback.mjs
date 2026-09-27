@@ -286,12 +286,15 @@ async function withTmpRepoAndOrchestratorPlan(fn) {
 }
 
 describe('writebackParent — happy path (parent file in workflows/)', () => {
-  it('invokes the orchestrator CLI and marks the subtask completed', async () => {
+  // ADR-0062 §Decision 2: the engineer terminal commit is a branch commit
+  // that a squash or rebase merge never lands, so the writeback no longer
+  // completes the subtask. It notes the commit and keeps the subtask open;
+  // /orchestrator:done records completion after the merge.
+  it('notes the terminal commit on the macro without completing the subtask', async () => {
     await withTmpRepoAndOrchestratorPlan(async ({
       repoRoot, parentPath, parentWorkflowId, childWorkflowId, childSubtaskId,
     }) => {
       const commitSha = 'b'.repeat(40);
-      const closedAt = '2026-05-11T03:00:00Z';
       const stderrBuf = [];
 
       const result = await writebackParent({
@@ -300,27 +303,69 @@ describe('writebackParent — happy path (parent file in workflows/)', () => {
         originatingSubtaskId: childSubtaskId,
         engineerWorkflowId: childWorkflowId,
         commit: commitSha,
-        closedAt,
         host: 'claude',
         orchestratorRoot: ORCHESTRATOR_ROOT,
         stderr: { write: (s) => stderrBuf.push(s) },
       });
 
-      strictEqual(result.ok, true);
+      strictEqual(result.ok, true, stderrBuf.join(''));
       ok(result.envelope, 'envelope returned');
-      strictEqual(result.envelope.updatedSubtask.status, 'completed');
-      strictEqual(result.envelope.updatedSubtask.commit, commitSha);
-      strictEqual(result.envelope.updatedSubtask.closed_at, closedAt);
-      strictEqual(result.envelope.updatedSubtask.engineer_workflow_id, childWorkflowId);
-      strictEqual(result.envelope.autoTerminal, true,
-        'single-subtask plan: completing the only subtask → auto-terminal');
+      strictEqual(result.envelope.noted, true);
+      strictEqual(result.envelope.subtask.status, 'in_progress');
+      strictEqual(result.envelope.subtask.engineer_workflow_id, childWorkflowId);
+      strictEqual('commit' in result.envelope.subtask, false);
 
-      // Verify on-disk state matches the envelope. orchestrator's
-      // YAML emit quotes string scalars but leaves booleans bare.
       const text = await readFile(parentPath, 'utf8');
-      match(text, /status: "completed"/);
-      match(text, new RegExp(`commit: "${commitSha}"`));
-      match(text, /terminal_marker: true/);
+      match(text, /status: "in_progress"/);
+      ok(!/^\s*commit: /m.test(text), 'no commit is recorded');
+      ok(!/terminal_marker: true/.test(text), 'the macro is not promoted to terminal');
+      ok(text.includes(`### engineer terminal: "T1" @ ${childWorkflowId} ${commitSha}`), text);
+    });
+  });
+
+  it('a second call for the same commit writes nothing (Phase 7, then the Stop hook)', async () => {
+    await withTmpRepoAndOrchestratorPlan(async ({
+      repoRoot, parentPath, parentWorkflowId, childWorkflowId, childSubtaskId,
+    }) => {
+      const args = {
+        repoRoot, parentWorkflowId, originatingSubtaskId: childSubtaskId,
+        engineerWorkflowId: childWorkflowId, commit: 'b'.repeat(40), host: 'claude',
+        orchestratorRoot: ORCHESTRATOR_ROOT, stderr: { write: () => {} },
+      };
+      await writebackParent(args);
+      const before = await readFile(parentPath, 'utf8');
+      const again = await writebackParent(args);
+      strictEqual(again.ok, true);
+      strictEqual(again.envelope.noop, true);
+      strictEqual(await readFile(parentPath, 'utf8'), before);
+    });
+  });
+
+  it('reports an orchestrator that predates the engineer terminal note and records nothing', async () => {
+    await withTmpRepoAndOrchestratorPlan(async ({
+      repoRoot, parentPath, parentWorkflowId, childWorkflowId, childSubtaskId,
+    }) => {
+      // An installed orchestrator from before ADR-0062: its CLI has no
+      // subtask-engineer-terminal subcommand.
+      const oldRoot = await mkdtemp(join(tmpdir(), 'parent-writeback-old-orch-'));
+      try {
+        await mkdir(join(oldRoot, 'scripts'), { recursive: true });
+        await writeFile(join(oldRoot, 'scripts', 'state.mjs'),
+          "process.stderr.write(`state.mjs: unknown subcommand: ${process.argv[2]}\\n`); process.exit(2);\n");
+        const before = await readFile(parentPath, 'utf8');
+        const stderrBuf = [];
+        const result = await writebackParent({
+          repoRoot, parentWorkflowId, originatingSubtaskId: childSubtaskId,
+          engineerWorkflowId: childWorkflowId, commit: 'b'.repeat(40), host: 'claude',
+          orchestratorRoot: oldRoot, stderr: { write: (s) => stderrBuf.push(s) },
+        });
+        strictEqual(result.ok, false);
+        strictEqual(result.reason, 'orchestrator-too-old');
+        match(stderrBuf.join(''), /predates ADR-0062/);
+        strictEqual(await readFile(parentPath, 'utf8'), before);
+      } finally {
+        await rm(oldRoot, { recursive: true, force: true });
+      }
     });
   });
 });
@@ -350,7 +395,6 @@ describe('writebackParent — cross-host orchestrator fallback is reported', () 
           originatingSubtaskId: childSubtaskId,
           engineerWorkflowId: childWorkflowId,
           commit: 'b'.repeat(40),
-          closedAt: '2026-05-11T03:00:00Z',
           host: 'codex',
           discoverOpts: {
             env: { CODEX_HOME: codexHome },
@@ -360,7 +404,7 @@ describe('writebackParent — cross-host orchestrator fallback is reported', () 
           stderr: { write: (s) => stderrBuf.push(s) },
         });
         strictEqual(result.ok, true, stderrBuf.join(''));
-        strictEqual(result.envelope.updatedSubtask.status, 'completed');
+        strictEqual(result.envelope.subtask.status, 'in_progress');
         match(stderrBuf.join(''), /orchestrator resolved from the claude plugin cache because the codex cache has no orchestrator installed/);
       } finally {
         await rm(home, { recursive: true, force: true });
@@ -391,7 +435,6 @@ describe('writebackParent — archive fallback (parent file in archive/)', () =>
         originatingSubtaskId: childSubtaskId,
         engineerWorkflowId: childWorkflowId,
         commit: 'b'.repeat(40),
-        closedAt: '2026-05-11T03:00:00Z',
         host: 'claude',
         orchestratorRoot: ORCHESTRATOR_ROOT,
         stderr: { write: (s) => stderrBuf.push(s) },
@@ -423,7 +466,6 @@ describe('writebackParent — orchestrator root not found', () => {
         originatingSubtaskId: childSubtaskId,
         engineerWorkflowId: childWorkflowId,
         commit: 'b'.repeat(40),
-        closedAt: '2026-05-11T03:00:00Z',
         host: 'claude',
         // Force discovery failure by overriding every discovery channel
         // to a non-existent path: env empty, home + selfUrl both point
@@ -458,7 +500,6 @@ describe('writebackParent — cli-failed (orchestrator CLI exits non-zero)', () 
         originatingSubtaskId: 'T999-DOES-NOT-EXIST',
         engineerWorkflowId: childWorkflowId,
         commit: 'b'.repeat(40),
-        closedAt: '2026-05-11T03:00:00Z',
         host: 'claude',
         orchestratorRoot: ORCHESTRATOR_ROOT,
         stderr: { write: (s) => stderrBuf.push(s) },
@@ -493,7 +534,6 @@ describe('writebackParent — parent-not-found (linkage exists but file is missi
         originatingSubtaskId: childSubtaskId,
         engineerWorkflowId: childWorkflowId,
         commit: 'b'.repeat(40),
-        closedAt: '2026-05-11T03:00:00Z',
         host: 'claude',
         orchestratorRoot: ORCHESTRATOR_ROOT,
         stderr: { write: (s) => stderrBuf.push(s) },
@@ -527,7 +567,6 @@ describe('writebackParent — parent_workflow id traversal guard', () => {
           originatingSubtaskId: 'T1',
           engineerWorkflowId: 'compose-20260511T010000Z-aaa111',
           commit: 'b'.repeat(40),
-          closedAt: '2026-05-11T03:00:00Z',
           host: 'claude',
           orchestratorRoot: ORCHESTRATOR_ROOT,
           stderr: { write: (s) => stderrBuf.push(s) },
@@ -597,7 +636,6 @@ describe('writebackParent — subtask id starting with -- is not mis-parsed by t
         originatingSubtaskId: '--evil-id',
         engineerWorkflowId: 'compose-20260511T010000Z-evil11',
         commit: 'b'.repeat(40),
-        closedAt: '2026-05-11T03:00:00Z',
         host: 'claude',
         orchestratorRoot: ORCHESTRATOR_ROOT,
         stderr: { write: (s) => stderrBuf.push(s) },
@@ -605,53 +643,34 @@ describe('writebackParent — subtask id starting with -- is not mis-parsed by t
 
       strictEqual(result.ok, true,
         `expected ok=true, got stderr=${stderrBuf.join('')} envelope=${JSON.stringify(result.envelope)}`);
-      strictEqual(result.envelope.updatedSubtask.id, '--evil-id');
-      strictEqual(result.envelope.updatedSubtask.status, 'completed');
+      strictEqual(result.envelope.subtask.id, '--evil-id');
+      strictEqual(result.envelope.subtask.status, 'in_progress');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 });
 
-describe('writebackParent — PR-C0 precondition skip (subtask already terminal)', () => {
-  it('returns ok=true with envelope.skipped=true when subtask is already completed', async () => {
+describe('writebackParent — subtask already completed', () => {
+  it('returns ok=true with envelope.skipped=true and leaves the record alone', async () => {
     await withTmpRepoAndOrchestratorPlan(async ({
       repoRoot, parentPath, parentWorkflowId, childWorkflowId, childSubtaskId,
     }) => {
-      // First call — marks the subtask completed (auto-terminal).
-      await writebackParent({
-        repoRoot,
-        parentWorkflowId,
-        originatingSubtaskId: childSubtaskId,
-        engineerWorkflowId: childWorkflowId,
-        commit: 'b'.repeat(40),
-        closedAt: '2026-05-11T03:00:00Z',
-        host: 'claude',
-        orchestratorRoot: ORCHESTRATOR_ROOT,
-        stderr: { write: () => {} },
-      });
-
-      // Second call — idempotent: PR-C0 sees status==completed and
-      // either no-ops (same payload) or rejects status downgrades.
-      // Same payload: the absorbing-completed branch returns skipped=true.
-      const stderrBuf = [];
+      // /orchestrator:done has recorded the landing already.
+      execFileSync(process.execPath, [
+        ORCHESTRATOR_STATE, 'subtask-update', `--workflow-path=${parentPath}`, '--host=claude',
+        `--subtask-id=${childSubtaskId}`, '--status=completed',
+        `--engineer-workflow-id=${childWorkflowId}`, `--commit=${'c'.repeat(40)}`,
+      ], { encoding: 'utf8' });
+      const before = await readFile(parentPath, 'utf8');
       const result = await writebackParent({
-        repoRoot,
-        parentWorkflowId,
-        originatingSubtaskId: childSubtaskId,
-        engineerWorkflowId: childWorkflowId,
-        commit: 'b'.repeat(40),
-        closedAt: '2026-05-11T03:00:00Z',
-        host: 'claude',
-        orchestratorRoot: ORCHESTRATOR_ROOT,
-        stderr: { write: (s) => stderrBuf.push(s) },
+        repoRoot, parentWorkflowId, originatingSubtaskId: childSubtaskId,
+        engineerWorkflowId: childWorkflowId, commit: 'b'.repeat(40), host: 'claude',
+        orchestratorRoot: ORCHESTRATOR_ROOT, stderr: { write: () => {} },
       });
-      // Idempotent re-completion is NOT a downgrade — PR-C0 lets it
-      // through as a status:'completed' update on an already-completed
-      // subtask (the unblock pass + auto-terminal pass are still atomic
-      // and idempotent). So ok stays true and skipped stays false.
       strictEqual(result.ok, true);
-      ok(!result.skipped, 'idempotent re-completion is allowed by PR-C0');
+      strictEqual(result.envelope.skipped, true);
+      strictEqual(await readFile(parentPath, 'utf8'), before);
     });
   });
 });

@@ -501,7 +501,8 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
 
     const done = await readFile(skillsPath(PLUGIN_ROOT, 'done/SKILL.md'), 'utf-8');
     ok(done.includes('engineer_workflow_id'), 'done documents engineer workflow ownership');
-    ok(done.includes('refs/heads/<subtask.branch>'), 'done documents branch-tip commit resolution');
+    ok(done.includes('resolve-landing'), 'done resolves the landed merge commit (ADR-0062)');
+    ok(!done.includes('git rev-parse refs/heads/<subtask.branch>'), 'done no longer records the branch tip');
     ok(done.includes('status completed'), 'done documents completed subtask-update');
   });
 
