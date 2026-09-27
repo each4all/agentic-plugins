@@ -94,7 +94,8 @@ Prefer the subtask's recorded `engineer_workflow_id`.
 If absent, scan the engineer workflow homes **and archive homes** (by the
 time the work has merged the child has normally archived itself), and
 require both frontmatter keys to match; refuse more than one distinct
-match rather than guess:
+match rather than guess. Also refuse when a home or file cannot be read
+(anything but a missing one), since it could hide a second claimant:
 
 - `parent_workflow == <macro id>`;
 - `originating_subtask == <subtask id>`.
@@ -113,7 +114,9 @@ completion without a child is **not** supported — `subtask-update` requires
 
 With `--no-commit`: refuse while an engineer workflow for the subtask is
 still **active** (it could never archive and would keep the macro's
-no-active-children gate closed), then go to Phase 4 without a commit.
+no-active-children gate closed), and refuse when a workflow home or file
+cannot be read (anything but a missing one), since the unreadable entry
+could be that child; then go to Phase 4 without a commit.
 
 Otherwise `git fetch origin <integration>` and run:
 
