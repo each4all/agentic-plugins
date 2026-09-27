@@ -335,9 +335,10 @@ export AGENTIC_HOST="$DETECTED_HOST"
 # vars and forwards them as --profile / --original-request flags to
 # state.mjs create. This is the orchestrator-driven equivalent of the
 # user typing `--profile=<X>` / a topic argument at the command line —
-# the engineer command's `$ARGUMENTS` is replaced by env vars in the
-# dispatched path because `$ARGUMENTS` is a magic slash-command variable
-# that the host fills from user input, not from caller environment.
+# the engineer command's argument placeholder is replaced by env vars in
+# the dispatched path because the host fills that placeholder from what the
+# user typed, not from the caller's environment. (This comment does not
+# spell the placeholder: Claude would substitute it here too.)
 export AGENTIC_PROFILE="${SUBTASK_PROFILE:-}"
 export AGENTIC_TOPIC="${SUBTASK_TOPIC:-}"
 

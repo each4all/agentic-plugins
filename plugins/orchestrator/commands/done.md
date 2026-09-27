@@ -112,12 +112,18 @@ SUBTASK_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   read-subtask --workflow-path "$MACRO_PATH" --subtask-id "$EXPLICIT_SUBTASK_ID")" || exit 1
 
 SUBTASK_ID="$EXPLICIT_SUBTASK_ID"
-field() { echo "$SUBTASK_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(d)[process.argv[1]]??""))}catch{}})' "$1"; }
-SUBTASK_BRANCH="$(field branch)"
-SUBTASK_STATUS="$(field status)"
-EXISTING_ENG_WF_ID="$(field engineer_workflow_id)"
-EXISTING_COMMIT="$(field commit)"
-EXISTING_CLOSED_AT="$(field closed_at)"
+# Prints the field named by JSON_KEY of the JSON document on stdin, or "" when
+# it is absent or null. The key travels in the environment, not as a function
+# argument: before any shell sees this file, Claude replaces a dollar sign
+# followed by a digit with the command's argument at that index whenever there
+# is one (C67). The document goes through printf, not echo, whose zsh builtin
+# expands the backslash escapes inside JSON strings.
+JSON_FIELD='let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const v=JSON.parse(d)[process.env.JSON_KEY];process.stdout.write(v==null?"":String(v))}catch{}})'
+SUBTASK_BRANCH="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=branch node -e "$JSON_FIELD")"
+SUBTASK_STATUS="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=status node -e "$JSON_FIELD")"
+EXISTING_ENG_WF_ID="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=engineer_workflow_id node -e "$JSON_FIELD")"
+EXISTING_COMMIT="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=commit node -e "$JSON_FIELD")"
+EXISTING_CLOSED_AT="$(printf '%s' "$SUBTASK_JSON" | JSON_KEY=closed_at node -e "$JSON_FIELD")"
 
 if [ "${NO_COMMIT:-}" = "1" ] && { [ -n "${EXPLICIT_COMMIT:-}" ] || [ -n "${EXPLICIT_PR:-}" ] || [ "${CORRECT:-}" = "1" ]; }; then
   echo "✗ --no-commit excludes --commit, --pr and --correct." >&2
@@ -264,14 +270,13 @@ LANDING_ARGS=(--repo-root "$REPO_ROOT" --workflow-path "$MACRO_PATH" --subtask-i
 [ -n "${EXPLICIT_COMMIT:-}" ] && LANDING_ARGS+=(--commit "$EXPLICIT_COMMIT")
 LANDING="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" resolve-landing "${LANDING_ARGS[@]}")"
 LANDING_RC=$?
-landing() { echo "$LANDING" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const v=JSON.parse(d)[process.argv[1]];process.stdout.write(v==null?"":String(v))}catch{}})' "$1"; }
 if [ "$LANDING_RC" -ne 0 ]; then
-  echo "✗ Cannot record $SUBTASK_ID yet — $(landing reason): $(landing detail)" >&2
+  echo "✗ Cannot record $SUBTASK_ID yet — $(printf '%s' "$LANDING" | JSON_KEY=reason node -e "$JSON_FIELD"): $(printf '%s' "$LANDING" | JSON_KEY=detail node -e "$JSON_FIELD")" >&2
   exit 1
 fi
-COMMIT_SHA="$(landing commit)"
-PR_URL="$(landing pr_url)"
-if [ "$(landing verification)" = "ancestry-only" ]; then
+COMMIT_SHA="$(printf '%s' "$LANDING" | JSON_KEY=commit node -e "$JSON_FIELD")"
+PR_URL="$(printf '%s' "$LANDING" | JSON_KEY=pr_url node -e "$JSON_FIELD")"
+if [ "$(printf '%s' "$LANDING" | JSON_KEY=verification node -e "$JSON_FIELD")" = "ancestry-only" ]; then
   # Keep the weaker verification visible in the macro's record.
   { printf 'Landing verified by ancestry only: gh was unavailable, so %s could not be matched to its pull request.\n' "$COMMIT_SHA"; cat "$NOTE_FILE"; } > "$NOTE_FILE.tmp" && mv "$NOTE_FILE.tmp" "$NOTE_FILE"
 fi
