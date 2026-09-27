@@ -446,7 +446,7 @@ describe('plugins/runtime settings surface', () => {
   it('documents the Codex capability baseline with source-backed host boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/codex-capability-baseline.md'), 'utf-8');
     for (const token of [
-      'codex-cli 0.150.1',
+      'codex-cli 0.157.1',
       'marketplaceSource',
       'https://developers.openai.com/codex/skills',
       'https://developers.openai.com/codex/plugins/build',
@@ -473,7 +473,7 @@ describe('plugins/runtime settings surface', () => {
       // document whose header still read the previous release. A markdown table
       // cell cannot contain the raw newline this literal spans, so only the
       // header can satisfy it.
-      'Observed on 2026-08-28 with Claude Code `2.1.250`, Codex CLI\n`0.150.1`',
+      'Observed on 2026-09-27 with Claude Code `2.1.283`, Codex CLI\n`0.157.1`',
       'https://developers.openai.com/codex/subagents',
       'https://developers.openai.com/codex/hooks',
       'https://code.claude.com/docs/en/plugins',

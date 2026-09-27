@@ -1,6 +1,6 @@
 # Codex Capability Baseline
 
-Observed on 2026-08-28 with Codex CLI `0.150.1` plus official OpenAI
+Observed on 2026-09-27 with Codex CLI `0.157.1` plus official OpenAI
 developer docs. This file is a runtime-owned host-truth checkpoint, not a
 replacement for the upstream docs.
 
@@ -29,7 +29,7 @@ Official OpenAI developer docs:
 functional. A coordinated URL migration across both baseline docs and their
 test tokens is deliberately deferred to a follow-up.)
 
-Local CLI evidence (re-observed 2026-08-28 on `0.150.1`). Two observations
+Local CLI evidence (re-observed 2026-09-27 on `0.157.1`). Three observations
 are recorded here and they have different scopes; read them as such.
 
 The first is the `0.145.0`→`0.147.0` observation made on 2026-08-08, the first
@@ -101,14 +101,47 @@ three handlers behave identically under it was not probed; `R16` in
 skips plugin-hook loading outright when hooks are disabled — consistent with
 the enablement model runtime already diagnoses.
 
-- `codex --version` -> `codex-cli 0.150.1`
+The third is the `0.150.1`→`0.157.1` re-check made on 2026-09-27, bounded like
+the second: the same commands, plus each `codex plugin` and `codex plugin
+marketplace` subcommand's `-h` and `codex exec --help`, run first on `0.156.1`
+and again after the operator updated to `0.157.1`. The plugin and
+plugin-marketplace verb sets are unchanged, and the top level loses
+`mcp-server` (0.154.0). `codex plugin list --json` keeps the agentic entries'
+ten keys, but the installed set grew from nine to twelve: `github` is now a
+nine-key remote entry of `openai-curated-remote`, joined by three remote
+entries whose `installPolicy` is `INSTALLED_BY_DEFAULT`. No release is
+attributed for that; 0.153.0's remote-marketplace support in the plugin CLI
+(#42150) is a candidate. The eight agentic entries' `source` object now reads
+`{source: "git-subdir", url, path, ref, sha}`, mirroring the ADR-0061 catalog
+pins activated on 2026-09-26, with no control separating a CLI contribution. `codex features list` has 150 rows: 26 keys added,
+none removed, and seven existing keys changing stage, none of them a flag this
+file names. `daemon_auto_start` is one of the additions and is `stable`/true on
+`0.157.1`, matching 0.157.0's automatic background-server startup for eligible
+interactive sessions; since an app-server start is one of the triggers of the
+marketplace auto-upgrade ADR-0061 describes, that is worth knowing, and it was
+not probed. Other release-note changes touch surfaces this file describes, all
+read and none probed: hook execution (0.155.0 detaches Unix hook commands from
+the controlling terminal, #43876, stops command hooks hanging on blocked stdin,
+#44288, and distinguishes forked sessions in session-start hooks, #44349), skill
+discovery and loading routed through `EnvironmentAccess` (0.156.0, #46293), and the
+plugin CLI's remote marketplaces (0.153.0, #42150). Two bear directly on this
+repository. Since `0.152.0` the `update_plan` planning tool is off by default.
+Since `0.154.0` existing sessions refresh skills and hooks after an external
+plugin upgrade or rollback, which is what a pin advance under ADR-0061 is;
+whether a changed hook then needs `/hooks` review again is not stated.
+`R13` and `R16` in [`follow-ups.md`](follow-ups.md) stay open.
+
+- `codex --version` -> `codex-cli 0.157.1`
 - `codex --help` (0.144.1 top-level surface: `exec`, `review`, `login`/`logout`,
   `mcp`, `plugin`, `mcp-server`, `app-server`, `remote-control`, `app`,
   `completion`, `update`, `doctor`, `sandbox`, `debug`, `apply`, `resume`,
   `archive`/`delete`/`unarchive`, `fork`, `cloud`, `exec-server`, `features`;
   `delete` is additive since the 0.139.0 observation — retained-binary evidence
   dates it to ≤0.142.5; the `doctor`/`update`/`login`/`logout`/`archive`
-  additions date to 0.137.0)
+  additions date to 0.137.0. On 0.157.1 `mcp-server` is gone — removed in
+  0.154.0 (#42993), a deprecated entry point runtime never called — and
+  `agents`, `queue`, and `migrate-rollouts`, first recorded at 0.150.1, are
+  still present)
 - `codex exec --help` (non-interactive run surface unchanged)
 - `codex hooks --help` (re-observed on 0.144.1 to still fall back to top-level
   help; no `hooks` subcommand is listed)
