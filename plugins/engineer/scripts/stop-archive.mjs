@@ -22,6 +22,9 @@
 import {
   archiveWorkflow,
   branchRefState,
+  branchTip,
+  checkedOutBranch,
+  descendsFrom,
   listWorkflowFilesAllHomes,
   noActiveChildrenCheck,
   parseWorkflowFile,
@@ -183,78 +186,102 @@ export async function runStopArchive({
   }
 
   // Step 5 — parent writeback (ADR-0019 §4, as changed by ADR-0062).
-  // Engineer-side locks are already released here (archiveWorkflow's
-  // withDirectoryLock + withFileLock callbacks both exited before this
-  // point), so §6 lock-order (child release → parent acquire) is naturally
-  // satisfied. The writeback is best-effort: a failure is reported via
-  // stderr but does NOT invalidate the archive that already succeeded, and
-  // the subtask is completed by /orchestrator:done after the merge either
-  // way.
-  if (typeof frontmatter.parent_workflow === 'string'
-      && typeof frontmatter.originating_subtask === 'string'
-      && typeof frontmatter.workflow_id === 'string'
-      && typeof headSha === 'string'
-      && headSha.length > 0) {
-    // ADR-0062 §Decision 2 — the writeback notes the terminal commit on the
-    // macro; it does not complete the subtask. Phase 7's P10 has usually
-    // sent the same note already (its `parent_writeback_at` marker says it
-    // tried); calling again is safe because the orchestrator writes nothing
-    // when the note is already there, and it covers a crash between P10's
-    // marker and its write.
-    try {
-      await writebackParent({
-        repoRoot,
-        parentWorkflowId: frontmatter.parent_workflow,
-        originatingSubtaskId: frontmatter.originating_subtask,
-        engineerWorkflowId: frontmatter.workflow_id,
-        commit: headSha,
-        host,
-        stderr,
-      });
-    } catch (err) {
-      // writebackParent itself never throws past its contract, but
-      // defend against unexpected programmer errors (e.g., bad arg
-      // shape) so the stop lifecycle still completes cleanly. Surface
-      // the parent/subtask ids so the user has the concrete handles
-      // needed for manual reconciliation via /orchestrator:done.
-      stderr.write(
-        `engineer/stop-archive: parent-writeback threw unexpectedly for ` +
-        `parent=${frontmatter.parent_workflow} subtask=${frontmatter.originating_subtask}: ` +
-        `${err.message}\n`,
-      );
-    }
-  }
+  await noteTerminalOnParent({ frontmatter, commit: headSha, host, repoRoot, stderr });
 
   return { archived: true, to: archiveResult.to };
 }
 
 /**
- * ADR-0031 branch-agnostic orphan sweep — archive terminal engineer workflows
- * whose baseline branch was DELETED.
+ * Note an archived workflow's terminal commit on its orchestrator parent, when
+ * it has one (ADR-0019 §4, as changed by ADR-0062).
+ *
+ * Call only after the archive succeeded: engineer-side locks are released by
+ * then (archiveWorkflow's withDirectoryLock + withFileLock callbacks both
+ * exited), so §6 lock-order (child release → parent acquire) is naturally
+ * satisfied. Best-effort: a failure is reported via stderr but does NOT
+ * invalidate the archive, and the subtask is completed by /orchestrator:done
+ * after the merge either way.
+ */
+async function noteTerminalOnParent({ frontmatter, commit, host, repoRoot, stderr }) {
+  if (typeof frontmatter.parent_workflow !== 'string'
+      || typeof frontmatter.originating_subtask !== 'string'
+      || typeof frontmatter.workflow_id !== 'string'
+      || typeof commit !== 'string'
+      || commit.length === 0) {
+    return;
+  }
+  // ADR-0062 §Decision 2 — the writeback notes the terminal commit on the
+  // macro; it does not complete the subtask. Phase 7's P10 has usually
+  // sent the same note already (its `parent_writeback_at` marker says it
+  // tried); calling again is safe because the orchestrator writes nothing
+  // when the note is already there, and it covers a crash between P10's
+  // marker and its write.
+  try {
+    await writebackParent({
+      repoRoot,
+      parentWorkflowId: frontmatter.parent_workflow,
+      originatingSubtaskId: frontmatter.originating_subtask,
+      engineerWorkflowId: frontmatter.workflow_id,
+      commit,
+      host,
+      stderr,
+    });
+  } catch (err) {
+    // writebackParent itself never throws past its contract, but
+    // defend against unexpected programmer errors (e.g., bad arg
+    // shape) so the stop lifecycle still completes cleanly. Surface
+    // the parent/subtask ids so the user has the concrete handles
+    // needed for manual reconciliation via /orchestrator:done.
+    stderr.write(
+      `engineer/stop-archive: parent-writeback threw unexpectedly for ` +
+      `parent=${frontmatter.parent_workflow} subtask=${frontmatter.originating_subtask}: ` +
+      `${err.message}\n`,
+    );
+  }
+}
+
+/**
+ * Branch-agnostic sweep — archive terminal engineer workflows whose branch is
+ * not checked out: those whose branch was DELETED (ADR-0031) and those whose
+ * branch still exists elsewhere (ADR-0017 sub-decision 5, amended 2026-09-28).
  *
  * Why: the per-branch Stop hook archives only the active workflow on the
  * current branch (`findActiveWorkflow` → `runStopArchive`). A terminal_marker'd
- * workflow whose `git_baseline.branch` was deleted (the common case after a
- * subtask feature branch merges and is pruned) can NEVER be re-found by branch,
- * so it leaks as a permanently-"active" workflow — and transitively blocks an
- * orchestrator macro's A4 `no_active_engineer_children` gate. This sweep is the
- * engineer mirror of orchestrator's branch-agnostic `runMacroStopArchiveAll`.
+ * workflow whose `git_baseline.branch` is not checked out when a Stop fires —
+ * deleted after its merge, or left behind by a switch in the same turn (commit,
+ * merge, /orchestrator:done, then /orchestrator:next) — would otherwise stay
+ * "active" until someone returned to or deleted its branch, and transitively
+ * block an orchestrator macro's A4 `no_active_engineer_children` gate. This
+ * sweep is the engineer mirror of orchestrator's branch-agnostic
+ * `runMacroStopArchiveAll`.
  *
- * Orphan criterion (intentionally narrow + safe):
- *   1. `terminal_marker === true` AND `current_phase` ∈ TERMINAL_PHASES — the
- *      work is done (set-terminal ran).
- *   2. the baseline branch is CONFIRMED absent (`branchRefState === 'absent'`).
- *      A still-present branch is left alone (it archives normally via
- *      `runStopArchive`'s head_moved gate when the user is next on it, so the
- *      per-branch single-active "switch-back to resume" semantics are
- *      preserved). A probe failure (`'unknown'`) is also left alone — a
- *      transient git error must never falsely archive a live workflow.
+ * Criterion, per `branchRefState` of the workflow's baseline branch:
+ *   - every case requires `terminal_marker === true` AND `current_phase` ∈
+ *     TERMINAL_PHASES — the work is done (set-terminal ran);
+ *   - the checked-out branch is skipped: the per-branch path owns it, and
+ *     snapshots it and fires the handoff backstop first. When git cannot say
+ *     which branch is checked out (`checkedOutBranch` → `'unknown'`), every
+ *     kept branch is left alone, since any of them could be that one; a
+ *     confirmed detached HEAD owns no branch;
+ *   - `'present'` (kept, not checked out): the four Stop gates are evaluated
+ *     against that branch's own tip (`branchTip`), as a Stop on that branch
+ *     would, and the parent note carries that tip. HEAD belongs to another
+ *     branch and is never used. Because nobody is on the branch to see it, the
+ *     tip must also descend from the baseline (`descendsFrom`): a branch reset
+ *     below its baseline or rebased onto unrelated history is left alone. A
+ *     gate that fails writes nothing — no snapshot — so a workflow that cannot
+ *     pass does not grow on every Stop; a tip that does not resolve to a
+ *     commit is left alone;
+ *   - `'absent'` (deleted): archived with no head_moved gate (a deleted
+ *     branch has no tip to judge; mirror of the macro's branch-gone logic)
+ *     and no parent note — a parent-linked one is reported for
+ *     reconciliation instead;
+ *   - `'unknown'` (probe failure): left alone — a transient git error must
+ *     never falsely archive a live workflow.
  *
- * HEAD-independent: a deleted branch's baseline HEAD is meaningless, so there is
- * no head_moved gate here (mirror of the macro's branch-gone logic). Best-effort
- * and non-throwing per ADR-0011 §4 — a single corrupt/unreadable file is skipped
- * with a warning, never blocking the rest of the sweep or the host Stop
- * lifecycle.
+ * Best-effort and non-throwing per ADR-0011 §4 — a single corrupt/unreadable
+ * file is skipped with a warning, never blocking the rest of the sweep or the
+ * host Stop lifecycle.
  *
  * @returns {Promise<Array<{workflowPath: string, archived: boolean, to?: string, reason?: string}>>}
  *   one entry per workflow the sweep acted on (archived or attempted).
@@ -267,6 +294,7 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     stderr.write(`engineer/stop-archive: orphan-sweep list failed: ${err.message}\n`);
     return [];
   }
+  const checkout = checkedOutBranch(repoRoot);
   const results = [];
   for (const workflowPath of files) {
     let frontmatter;
@@ -283,7 +311,15 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     if (!terminalPhaseCheck(frontmatter?.current_phase)) continue;
     const branch = frontmatter?.git_baseline?.branch;
     if (typeof branch !== 'string' || branch.length === 0) continue;
-    if (branchRefState(repoRoot, branch) !== 'absent') continue; // present | unknown → leave
+    if (checkout.state === 'branch' && branch === checkout.branch) continue; // the per-branch path owns it
+    const refState = branchRefState(repoRoot, branch);
+    if (refState === 'present') {
+      if (checkout.state === 'unknown') continue; // any kept branch could be the checked-out one
+      const result = await archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr });
+      if (result) results.push(result);
+      continue;
+    }
+    if (refState !== 'absent') continue; // unknown → leave
     // Parent-linked orphan: archiving it is exactly the cleanup the macro's A4
     // (no_active_engineer_children) gate waits for — A4 wants the children
     // ARCHIVED, and a branch-deleted child can never archive via the branch-keyed
@@ -315,6 +351,40 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     }
   }
   return results;
+}
+
+/**
+ * Judge a terminal workflow whose branch still exists but is not checked out
+ * against that branch's tip, and archive it when every gate passes. Returns
+ * `null` when it is left alone (nothing was written).
+ */
+async function archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr }) {
+  const tip = branchTip(repoRoot, branch);
+  if (!tip) return null;
+  const verdict = evaluateStopArchive({ frontmatter, headSha: tip.sha, headSubject: tip.subject });
+  if (!verdict.shouldArchive) return null;
+  // Nobody is on this branch to see the archive, so a tip that merely differs
+  // from the baseline is not enough: it must have moved forward from it.
+  if (!descendsFrom(repoRoot, frontmatter?.git_baseline?.head, tip.sha)) return null;
+  for (const w of verdict.warnings) {
+    stderr.write(`engineer/stop-archive: warning: ${w}\n`);
+  }
+  let archiveResult;
+  try {
+    archiveResult = await archiveWorkflow({ workflowPath, host, repoRoot });
+  } catch (err) {
+    stderr.write(`engineer/stop-archive: orphan-sweep archive failed for ${workflowPath}: ${err.message}\n`);
+    return { workflowPath, archived: false, reason: 'archive-threw' };
+  }
+  if (archiveResult.archived === true) {
+    await noteTerminalOnParent({ frontmatter, commit: tip.sha, host, repoRoot, stderr });
+  }
+  return {
+    workflowPath,
+    archived: archiveResult.archived === true,
+    to: archiveResult.to,
+    reason: archiveResult.reason,
+  };
 }
 
 function isConventionalCommitSubjectInline(subject) {
