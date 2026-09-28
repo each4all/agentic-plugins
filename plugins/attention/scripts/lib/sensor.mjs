@@ -843,8 +843,9 @@ export function scanPeerRunLedgers({
 }
 
 // §2 rows 1/2 — one payload field's evidence. Probed contract
-// (Claude Code 2.1.216, 2026-07-21 — host-parity-baseline.md § Claude
-// Stop-payload matrix): on a supporting host BOTH fields are always present
+// (Claude Code 2.1.216, 2026-07-21 — recorded then in host-parity-baseline.md
+// § Claude Stop-payload matrix, a document ADR-0060 §Decision 2 later deleted
+// with its probed knowledge): on a supporting host BOTH fields are always present
 // as arrays (empty when nothing is pending); `background_tasks` entries
 // carry { id, type, status, … } with `status: "running"` observed live and
 // COMPLETED tasks REMOVED from the list; `session_crons` entries carry
