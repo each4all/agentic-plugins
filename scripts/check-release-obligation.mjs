@@ -81,6 +81,19 @@ import { gitHistoryAvailable } from './check-doc-evidence.mjs';
  * per §Decision 3: it is owned by a different release-please package, so
  * covering it needs an asset->owning-package registry and a cross-package
  * promotion rule. That is ADR-0052 item 6's follow-up, not this file's job.
+ *
+ * ⚠ THE BASELINE ENTRY OUTLIVES ITS FILE, FOR ONE RELEASE, ON PURPOSE.
+ * ADR-0060 deleted `host-parity-baseline.md` and shrinks this list to two
+ * (§Decision 5). Both sides of the comparison are read through THIS list, so
+ * dropping the entry in the change that deletes the file would compare the
+ * released tree and the current one without the baseline on either side, and
+ * report `fulfilled` while the newest release still ships it (measured in a
+ * scratch clone, 2026-09-28). Kept, the deletion is debt until the next
+ * `plugin-runtime-v*` tag carries it — the red window ADR-0060 §Decision 7
+ * names — and the entry is removed in that release's recovery, when the
+ * released tree no longer has the file either. A pathspec that matches
+ * nothing at HEAD is harmless here: the zero-size refusal below is about the
+ * whole set, and the other two entries keep it non-empty.
  */
 export const PROTECTED_PATHS = Object.freeze([
   'plugins/runtime/docs/host-parity-baseline.md',
@@ -158,8 +171,27 @@ export function compareSemver(a, b) {
  * set is compared whole rather than diffed, which is what makes deletion and
  * rename evasion structurally impossible instead of a case to remember.
  */
-export function protectedEntries(repoRoot, ref) {
-  const out = git(repoRoot, ['ls-tree', '-r', ref, '--', ...PROTECTED_PATHS]);
+// An empty list is not "protect nothing". With no pathspec after `--`,
+// `ls-tree -r` lists the whole tree and `rev-list` walks every commit, so the
+// check would judge the repository as if every file were protected and say
+// nothing about it (found in the ADR-0060 review). Both helpers refuse such a
+// list, and `classify` turns the refusal into a fail-closed verdict.
+export function pathListProblem(paths) {
+  if (!Array.isArray(paths) || paths.length === 0) return 'the protected path list is empty';
+  if (paths.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+    return 'the protected path list holds an entry that is not a path';
+  }
+  return null;
+}
+
+function requirePathList(paths) {
+  const problem = pathListProblem(paths);
+  if (problem) throw new Error(`${problem} — with no pathspec git would read the whole tree`);
+}
+
+export function protectedEntries(repoRoot, ref, paths = PROTECTED_PATHS) {
+  requirePathList(paths);
+  const out = git(repoRoot, ['ls-tree', '-r', ref, '--', ...paths]);
   return out
     .split('\n')
     .filter(Boolean)
@@ -243,8 +275,9 @@ export function releaseStateAt(repoRoot, ref) {
  * the report; the verdict now compares content instead, which no simplification
  * rule can perturb.
  */
-export function protectedChangesInWindow(repoRoot, { sinceRef, ref }) {
-  return git(repoRoot, ['rev-list', '--show-pulls', `${sinceRef}..${ref}`, '--', ...PROTECTED_PATHS])
+export function protectedChangesInWindow(repoRoot, { sinceRef, ref, paths = PROTECTED_PATHS }) {
+  requirePathList(paths);
+  return git(repoRoot, ['rev-list', '--show-pulls', `${sinceRef}..${ref}`, '--', ...paths])
     .split('\n')
     .filter(Boolean)
     .map((sha) => ({
@@ -270,9 +303,20 @@ function isAncestor(repoRoot, a, b) {
  * cannot reach a trustworthy verdict. Callers must treat that as FAILURE, not
  * as a skip: a check that silently no-ops reads as coverage it does not have,
  * which is the reason full-tests.yml already checks out at fetch-depth: 0.
+ *
+ * `paths` is the protected list to compare through, defaulting to the live
+ * one. It exists for the replays of real history: the counterexample this
+ * check was built on (`16b1833`) changed only the baseline, so once ADR-0060's
+ * recovery drops that entry the live list can no longer see it, and a replay
+ * has to name the list of its own time. Every digest and window below uses the
+ * SAME list — HEAD, the tag, the pending release, the epoch — because a verdict
+ * that compares two sets drawn through two lists compares nothing.
  */
-export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}) {
+export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH, paths = PROTECTED_PATHS } = {}) {
   const fail = (reason) => ({ ran: false, reason, state: null });
+
+  const pathProblem = pathListProblem(paths);
+  if (pathProblem) return fail(`${pathProblem} — with no pathspec git would read the whole tree, so there is nothing to judge`);
 
   const availability = gitHistoryAvailable(repoRoot);
   if (!availability.ok) return fail(availability.reason);
@@ -287,7 +331,7 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
     return fail(`adoption epoch '${epoch}' does not resolve to a commit in this repository`);
   }
 
-  const entries = protectedEntries(repoRoot, head);
+  const entries = protectedEntries(repoRoot, head, paths);
   // A zero-size protected set is fail-closed, never "nothing changed". It
   // means either the pathspecs drifted away from the tree or every protected
   // asset was deleted, and a digest over an empty set would compare equal at
@@ -296,7 +340,7 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
   if (entries.length === 0) {
     return fail(
       `no tracked files matched the protected pathspecs at ${ref} `
-        + `(${PROTECTED_PATHS.join(', ')}) — the patterns have drifted from the tree, `
+        + `(${paths.join(', ')}) — the patterns have drifted from the tree, `
         + 'or every protected asset was deleted; both need a human',
     );
   }
@@ -331,7 +375,7 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
         + 'a release tag must name the version its own commit set; this one was moved or fabricated',
     );
   }
-  const tagEntries = protectedEntries(repoRoot, newestTag.name);
+  const tagEntries = protectedEntries(repoRoot, newestTag.name, paths);
   if (tagEntries.length === 0) {
     return fail(
       `${newestTag.name} carries no files under the protected pathspecs — the released tree cannot be `
@@ -356,6 +400,7 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
     ref,
     resolvedRef: head,
     epoch,
+    protectedPaths: [...paths],
     protectedFiles: entries.map((e) => e.path),
     headDigest,
     tagDigest,
@@ -409,7 +454,7 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
     return { ...base, state: 'fulfilled', failing: false, detail: `${newestTag.name} carries the protected tree at ${ref}` };
   }
 
-  const inWindow = protectedChangesInWindow(repoRoot, { sinceRef: newestTag.name, ref: head });
+  const inWindow = protectedChangesInWindow(repoRoot, { sinceRef: newestTag.name, ref: head, paths });
 
   if (versionDelta > 0) {
     // A release commit is on this ref but its tag is not reachable yet. The
@@ -425,7 +470,7 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
     // `versionDelta > 0` and masked such changes for as long as the tag stayed
     // uncut, which is indefinitely if the release workflow fails.
     const advance = newestManifestAdvance(repoRoot, { sinceRef: newestTag.name, ref: head });
-    const pendingDigest = advance ? digestEntries(protectedEntries(repoRoot, advance)) : null;
+    const pendingDigest = advance ? digestEntries(protectedEntries(repoRoot, advance, paths)) : null;
     if (advance && pendingDigest !== headDigest) {
       return {
         ...base,
@@ -476,7 +521,7 @@ export function classify(repoRoot, { ref = 'HEAD', epoch = ADOPTION_EPOCH } = {}
   // actually meant — this is the same divergence, against the same release,
   // that existed when the rule was adopted. Once a release goes by without
   // discharging it, the amnesty is spent and it is live debt.
-  const epochDigest = digestEntries(protectedEntries(repoRoot, epoch));
+  const epochDigest = digestEntries(protectedEntries(repoRoot, epoch, paths));
   const epochTags = reachableRuntimeTags(repoRoot, epoch).tags;
   const epochAnchor = epochTags.length > 0 ? epochTags[0].name : null;
   if (epochDigest === headDigest && epochAnchor === newestTag.name) {
