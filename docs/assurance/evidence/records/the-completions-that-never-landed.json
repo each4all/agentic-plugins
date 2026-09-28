@@ -1,0 +1,228 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-completions-that-never-landed",
+  "evidence_loop": {
+    "label": "Completions that never landed: ADR-0062, C3 and C67 released, with C58's first live post-sync dispatch",
+    "summary": "The release of ADR-0062 and the two fixes that followed it, as designer 0.3.10, engineer 0.22.0, founder 0.4.10 and orchestrator 0.14.0 (release PR #825, runtime unchanged at 0.98.1). Before ADR-0062 the engineer marked a macro subtask completed at the branch commit, which a squash or rebase merge leaves outside main; now /orchestrator:done records the completion once the pull request lands. C3 archives a terminal workflow left on a kept branch against its tip and makes /orchestrator:done fail closed on an unreadable scan; C67 removes the positional parameters that Claude's argument substitution emptied. The release job's post-sync CI dispatch (C58) ran for the first time and validated the catalog sync commit with five green runs. Both hosts installed the new versions, each cache blob-equal to its pinned tree (447 files per host), and the owner renewed the Codex hook attestation for the four bumped packages. The proof reads ready 100% and overall pass, unchanged from the first 0.98.1 proof."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/designer",
+      "version": "0.3.10",
+      "tag": "plugin-designer-v0.3.10",
+      "release_pr": 825,
+      "squash": "e1c823a970b60cc2e47cfb6bf2573e49b7e8f9c1",
+      "marketplace_sync": "1a1f7ede7796e254046da5cf238d9cf78f73df95"
+    },
+    {
+      "package": "plugins/engineer",
+      "version": "0.22.0",
+      "tag": "plugin-engineer-v0.22.0",
+      "release_pr": 825,
+      "squash": "e1c823a970b60cc2e47cfb6bf2573e49b7e8f9c1",
+      "marketplace_sync": "1a1f7ede7796e254046da5cf238d9cf78f73df95"
+    },
+    {
+      "package": "plugins/founder",
+      "version": "0.4.10",
+      "tag": "plugin-founder-v0.4.10",
+      "release_pr": 825,
+      "squash": "e1c823a970b60cc2e47cfb6bf2573e49b7e8f9c1",
+      "marketplace_sync": "1a1f7ede7796e254046da5cf238d9cf78f73df95"
+    },
+    {
+      "package": "plugins/orchestrator",
+      "version": "0.14.0",
+      "tag": "plugin-orchestrator-v0.14.0",
+      "release_pr": 825,
+      "squash": "e1c823a970b60cc2e47cfb6bf2573e49b7e8f9c1",
+      "marketplace_sync": "1a1f7ede7796e254046da5cf238d9cf78f73df95"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "4a66ee83bfea648be237f8e67f884d9b48b99cc8",
+      "pr_attested": 824,
+      "note": "ADR-0062 (ORCH-STATE): the engineer notes its terminal commit on the macro instead of completing the subtask. Rebase merge, so the subject carries no PR number."
+    },
+    {
+      "sha": "29555aa1a44e890536b8ef4f6275b32ec399c980",
+      "pr_attested": 824,
+      "note": "ADR-0062 (ORCH-STATE): /orchestrator:done records a subtask completed once its pull request has landed, resolving the merge commit. Same rebase merge."
+    },
+    {
+      "sha": "85367b8427a11fdf61d88c21cb6843f7a9c3093f",
+      "pr_attested": 824,
+      "note": "ADR-0062 accepted, with its tests and mutation spec; GitHub reports it as PR #824's merge commit. Same rebase merge."
+    },
+    {
+      "sha": "282cc60961d0f6423a13d84307933b863671f9ab",
+      "pr_attested": 826,
+      "note": "Docket C3, designer: a terminal workflow left on a kept branch is archived against that branch's tip. Rebase merge."
+    },
+    {
+      "sha": "622ab44d58f042e983987163d98b86686e30aac4",
+      "pr_attested": 826,
+      "note": "Docket C3, engineer: the same kept-branch archive. Same rebase merge."
+    },
+    {
+      "sha": "c24162dca305a4af5cc86540b14efbd7b434fc20",
+      "pr_attested": 826,
+      "note": "Docket C3, founder: the same kept-branch archive. Same rebase merge."
+    },
+    {
+      "sha": "fe00cba6f5352b5b35387a74808911ea3ece04be",
+      "pr_attested": 826,
+      "note": "Docket C3, orchestrator: /orchestrator:done refuses when a workflow scan cannot read a home or file. Same rebase merge."
+    },
+    {
+      "sha": "6ce18370a7a915225e8b81bae398ab011da165a5",
+      "pr_attested": 826,
+      "note": "ADR-0017 amended for kept branches, with the C3 tests and mutation spec; PR #826's merge commit. Same rebase merge."
+    },
+    {
+      "sha": "1e695f94524f35fd862e91be8c88cd4036011fde",
+      "pr": 827,
+      "note": "Docket C67: /orchestrator:done reads its fields without positional parameters, since Claude substitutes a dollar sign followed by a digit in a command body with the argument at that index."
+    }
+  ],
+  "hardening_commits": [
+    {
+      "sha": "d1bc9fc20a2bbd77e6a05891c62bfab6fdf44eb9",
+      "pr": 823,
+      "note": "Docket C58: after its catalog and stage-doc syncs, the release job dispatches the test workflows on post-sync main. Touches no package; this loop's release is its first live run."
+    }
+  ],
+  "proofs": [
+    {
+      "run_id": "doctor-20260928T003506Z-039c6a",
+      "date": "2026-09-28",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:e9e6bf41147b59d483d15504c3f13b86cb999cced5a60e02d26975485c78e5c2",
+      "runtime_version": "0.98.1",
+      "installed": {
+        "claude": "0.98.1",
+        "codex": "0.98.1"
+      },
+      "host_cli": {
+        "claude": "2.1.283 (Claude Code)",
+        "codex": "codex-cli 0.157.1"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "pass; hard_failures empty; warnings empty"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; issue_count 0; difference_count 2"
+        },
+        {
+          "key": "experience_parity",
+          "value": "ready 100% (115/115); satisfied 8, partial 0, not_verified 0, blocked 0; manual_followup_count 0"
+        },
+        {
+          "key": "experience_parity.runtime_handoff_artifacts",
+          "value": "satisfied: settings=available, consensus=available, compat=available; latest-settings=settings-20260928T003446Z-d720aa; latest-consensus=consensus-20260611T022143Z-e70631; latest-compat=compat-20260927T030747Z-28c999"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "permission_proof.claude_to_codex.companion_path",
+          "value": "~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs"
+        },
+        {
+          "key": "permission_proof.codex_to_claude.companion_path",
+          "value": "~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs"
+        },
+        {
+          "key": "deep_peer_smoke.claude_to_codex.companion_path",
+          "value": "~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs"
+        },
+        {
+          "key": "deep_peer_smoke.codex_to_claude.companion_path",
+          "value": "~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs"
+        },
+        {
+          "key": "companions.claude_to_codex",
+          "value": "selected ~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs; source claude-cache; candidates 2"
+        },
+        {
+          "key": "companions.codex_to_claude",
+          "value": "selected ~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs; source codex-cache; candidates 1"
+        },
+        {
+          "key": "workflow_continuation_proof.tool_root",
+          "value": "claude_to_codex ~/.claude/plugins/cache/agentic-plugins/engineer/0.22.0 (claude-cache); codex_to_claude ~/.claude/plugins/cache/agentic-plugins/engineer/0.22.0 (claude-cache)"
+        },
+        {
+          "key": "codex_plugin_hooks",
+          "value": "ready; hook_state expected 12, enabled 12, disabled 0, untrusted 0, missing 0"
+        },
+        {
+          "key": "settings_runs.codex_hook_review",
+          "value": "attested; current true; latest settings-20260928T003446Z-d720aa; bound codex 0.157.1; designer 0.3.10, engineer 0.22.0, founder 0.4.10, orchestrator 0.14.0"
+        },
+        {
+          "key": "plugins.runtime.installed.codex_resolved",
+          "value": "decision installed; source list; version 0.98.1; decision and source identical for all 8 plugins: true"
+        },
+        {
+          "key": "codex_install_identity",
+          "value": "catalog read; pin_phase pinned; snapshot_root_registered true; invalid 0; unpinned 0; 8 plugins, target pinned 8, currentness current 8, identity verified 8"
+        },
+        {
+          "key": "codex_install_identity.plugins.0",
+          "value": "attention plugin-attention-v0.9.1@a511c29 installed 0.9.1 (plugin-list); companions plugin-companions-v0.4.2@a511c29 installed 0.4.2 (plugin-list); designer plugin-designer-v0.3.10@e1c823a installed 0.3.10 (plugin-list); engineer plugin-engineer-v0.22.0@e1c823a installed 0.22.0 (plugin-list)"
+        },
+        {
+          "key": "codex_install_identity.plugins.1",
+          "value": "founder plugin-founder-v0.4.10@e1c823a installed 0.4.10 (plugin-list); image plugin-image-v0.3.2@a511c29 installed 0.3.2 (plugin-list); orchestrator plugin-orchestrator-v0.14.0@e1c823a installed 0.14.0 (plugin-list); runtime plugin-runtime-v0.98.1@633b686 installed 0.98.1 (plugin-list)"
+        },
+        {
+          "key": "codex_install_identity.sibling_resolution",
+          "value": "12 edges, predicted codex-cache 12; cross_host_fallback 0; cross_host 0; basis: predicted from the Claude and Codex install caches; an AGENTIC_*_ROOT override in the Codex session, or a locator capability filter, can change the actual resolution"
+        },
+        {
+          "key": "receivers",
+          "value": "current; reinstall_recommended false; agentic-statusline.mjs current (statusline delegating-shim v2), codex-notify-shuttle.mjs current (codex-notify delegating-shim v2), codex-notify-chain.mjs missing"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "current; direction exact; baseline 2.1.283 / 0.157.1 (2026-09-27) vs observed 2.1.283 / 0.157.1; provenance package; content_sha256 sha256:9c84206775d79b81642c50fc755795ce903d3f34cea5598ddd5091e5cf45c295"
+        },
+        {
+          "key": "compat_runs.latest",
+          "value": "compat-20260927T030747Z-28c999: current; drift_class none; release_notes_required false; claude 2.1.283 vs baseline 2.1.283 (matches); codex 0.157.1 vs baseline 0.157.1 (matches)"
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available malformed=0 across 89 artifacts"
+        },
+        {
+          "key": "settings_runs",
+          "value": "available across 48 artifacts"
+        }
+      ]
+    }
+  ],
+  "install_method": "Direct host commands, so no settings-executor artifact. Claude: claude plugin marketplace update agentic-plugins, then claude plugin update for designer, engineer, founder and orchestrator (gitCommitSha 1a1f7ed); the owner restarted Claude. Codex CLI 0.157.1: codex plugin marketplace upgrade agentic-plugins, direct in 5 s; snapshot 1e695f9 -> 1a1f7ed, four version directories replaced.",
+  "narrative": "**C58, first live run.** Release PR #825 squashed as e1c823a; all four tags peel to it. The release job's catalog sync pushed 1a1f7ed, advancing exactly the four Claude versions and Codex pins (attention, companions and image stay at a511c29, runtime at 633b686); no stage-doc drift. The dispatch step named 1a1f7ed as the intended post-sync sha and started five runs, each a workflow_dispatch run with head_sha 1a1f7ed and conclusion success: claude-tests 36361540163, codex-tests 36361542190, cross-host-tests 36361543984, full-tests 36361545799, marketplace-validate 36361547673. The release commit's own push runs stayed red on the catalog lag alone: claude-tests, codex-tests and full-tests each failed six catalog-wiring tests for designer, founder or orchestrator, and marketplace-validate the four entries one version behind; cross-host-tests passed.\n\n**Installs, measured.** A session comparator independent of doctor (not retained in the repository) reads each cache against the git objects at its catalog pin (path set, blob id, git mode by the owner execute bit): 447 files per host, 0 missing, 0 differing, 0 mode, 0 extra, on Codex's cache and on Claude's, all eight packages. Its negative control planted a deleted file, an appended byte, an owner chmod +x and an extra file in a copy of the orchestrator 0.14.0 cache and detected all four; a group-only execute bit, which git ignores, was not flagged. No package file differs between any pin and main at 1a1f7ed, so the bytes cannot say which commit Codex materialized, and neither can the replaced version directories or the catalog pin codex plugin list reports; that the pin materializes rests on ADR-0061's 2026-09-24 fixture. Claude applies an update on restart and kept the old version directories, so the owner restarted Claude before REL1 was dispatched.\n\n**Decision 8.** The release bumped all four hook-bearing packages with the Codex CLI unchanged and no file under adapters/codex/hooks changed. The owner re-reviewed /hooks; settings-20260928T003446Z-d720aa binds codex 0.157.1 to designer 0.3.10 / engineer 0.22.0 / founder 0.4.10 / orchestrator 0.14.0, and runtime's own read is 12/12 enabled, 0 untrusted.\n\n**The proof against its control.** Against doctor-20260927T030924Z-61cd81, seven readings moved. Five are the release and its attestation: the four packages' pins and installed versions in codex_install_identity (a511c29 -> e1c823a), the continuation proof's engineer (0.21.11 -> 0.22.0, still claude-cache both ways), and the attestation it reads as current. The other two are counts: settings runs 47 -> 48 for this loop's attestation, doctor runs 88 -> 89 for the control proof itself, since doctor counts its runs before recording its own. The continuation proof ran from the Claude install both ways, so it exercises neither Codex's installed engineer nor the Stop archive nor /orchestrator:done. overall, host_parity, experience_parity, the companion paths, receivers and the host-parity baseline did not move.\n\n**The ritual it ships, used on itself.** /orchestrator:done C67 --pr=827, typed as a slash command with the two arguments that used to empty every field, read each field and recorded C67 at 1e695f9 (verification merge-commit), making REL1 dispatchable; orchestrator 0.14.0 was not installed yet, so it ran the repository's plugins/orchestrator at that commit. After the installs, /orchestrator:done --correct replaced the branch commits the old code had recorded for C58 and ORCH-STATE, neither reachable from main, with d1bc9fc (PR #823, squash) and 85367b8 (PR #824, rebase). A correction also moves closed_at to the correction time; the macro body keeps each old value, new value and reason. REL1 itself is recorded with /orchestrator:done only after the pull request carrying this record merges.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-machine-that-took-the-pins",
+      "note": "The first 0.98.1 loop and this loop's control: the same host pair and runtime, with the four packages at their a511c29 pins and engineer 0.21.11 in the continuation proof. Apart from two artifact counts, every reading that moved is one the release moved."
+    }
+  ]
+}
