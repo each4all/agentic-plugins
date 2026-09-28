@@ -40,8 +40,18 @@ function parseArgs(argv) {
   if ((opts.command === 'apply' || opts.command === 'resolve') && !opts.family) {
     return { ok: false, reason: `${opts.command} requires --family=<${RETENTION_FAMILIES.join('|')}>` };
   }
+  // compat was a registry family until ADR-0060 removed `runtime:compat`. An
+  // operator following older docs gets the reason and the remedy, not just an
+  // unknown name: its orphaned runs are left on disk and nothing manages them.
+  if (opts.family === 'compat') {
+    return {
+      ok: false,
+      reason: 'compat is no longer a retention family: ADR-0060 removed runtime:compat, and its recorded runs under '
+        + '.agentic-plugins/runs/compat/ are orphaned, not managed — review and remove them manually if they are not needed',
+    };
+  }
   if (opts.family && !RETENTION_FAMILIES.includes(opts.family)) {
-    return { ok: false, reason: `unknown family: ${opts.family} (v1: ${RETENTION_FAMILIES.join(', ')})` };
+    return { ok: false, reason: `unknown family: ${opts.family} (known: ${RETENTION_FAMILIES.join(', ')})` };
   }
   if (!['text', 'json'].includes(opts.format)) {
     return { ok: false, reason: `unknown format: ${opts.format}` };

@@ -10,7 +10,7 @@
 //     directly; doctor's {engineer, orchestrator} inspectWorkflowLedgers
 //     contract stays untouched) — peer runs with stale/non-terminal
 //     emphasis, orchestrator macro subtask progress, consensus run states.
-//   Tier 2 (operator health): doctor/compat/baseline freshness, settings +
+//   Tier 2 (operator health): recorded doctor freshness, settings +
 //     Codex hook-attestation recency, artifact-inventory attention items,
 //     notify-state health, and the file-log channel's recent notifications
 //     when configured.
@@ -19,7 +19,7 @@
 //     executor computes for the current branch, rendered as one section.
 //
 // R0 per ADR-0035: filesystem reads — no host-CLI probing (that is doctor's
-// job; the dashboard reports the RECORDED doctor/compat evidence and its age
+// job; the dashboard reports the RECORDED doctor evidence and its age
 // instead of re-probing), no mutation. One declared exception to the
 // no-spawn shape (ADR-0045 §7/§11): the snapshot-mode entry advisory pays
 // the entry arbiter's bounded git probes (repo-root/branch/porcelain via the
@@ -42,7 +42,6 @@ import { RUNTIME_VERSION } from './version.mjs';
 // section can never disagree with `runtime:context entry-brief` (§7 "the
 // same arbiter output"). Sibling-script import, same shape as notify.mjs.
 import { entryBriefContext } from './context.mjs';
-import { baselineFailure, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
 import { projectRecordedAssurance } from './lib/legacy-assurance-reader.mjs';
 import { sanitizeValue } from './lib/sanitize.mjs';
 import { elapsedMsSince } from './lib/clock.mjs';
@@ -51,7 +50,6 @@ import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantic
 import { NOTIFY_KEY_DEFAULTS } from './lib/runtime-config.mjs';
 import { loadNotifyConfig, resolveRepoRoot, NOTIFY_LOG_ROTATE_LOCK_STALE_MS } from './notify.mjs';
 import {
-  inspectCompatRuns,
   inspectConsensusRuns,
   inspectRuntimeArtifactInventory,
   inspectWorkflowNamespace,
@@ -92,7 +90,12 @@ import {
 // is computed fresh on every run; a doctor report version is stamped into
 // retained artifacts that `inspectDoctorRuns` re-reads by exact string equality,
 // which is why doctor bumps a MINOR and ships a dual reader in the same release.
-export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-2.0';
+//
+// 2.0 → 3.0 (ADR-0060 §Decision 3): `tier2.compat` and `tier2.baseline` are
+// REMOVED with host-version tracking. MAJOR for the reason 1.3 → 2.0 was: the
+// change is a deletion, and this report is never persisted, so there is no
+// historical corpus for a projection to serve.
+export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-3.0';
 export const DEFAULT_WATCH_INTERVAL_SECONDS = 2;
 export const MIN_WATCH_INTERVAL_SECONDS = 1;
 export const DEFAULT_RECENT_NOTIFICATIONS = 5;
@@ -127,6 +130,9 @@ const READABLE_DOCTOR_SCHEMA_PAIRS = Object.freeze([
   // this row would make every artifact recorded after the release `malformed` here,
   // which blocks the whole Tier 2 doctor row.
   Object.freeze({ artifact: 'runtime-doctor-artifact-1.2', report: 'runtime-doctor-1.2' }),
+  // 1.3 — ADR-0060 dropped `host_parity_baseline` and `compat_runs`. Shipped in the
+  // same release as doctor's producer bump, for the same reason as 1.2.
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.3', report: 'runtime-doctor-1.3' }),
 ]);
 // ADR-0040 §6 scopes the dashboard to attestation RECENCY. Doctor's stricter
 // CURRENCY judgment (plugin set/version drift, disabled hook state) needs
@@ -449,47 +455,6 @@ export async function inspectSettingsRecency({ repoRoot }) {
   };
 }
 
-// ADR-0051 — the shared resolver reads the PACKAGED copy, like every other
-// runtime consumer. No live host-version probes here: the drift verdict against
-// OBSERVED versions is compat's recorded job; the dashboard shows the recorded
-// baseline next to the latest compat drift.
-//
-// `repoRoot` is still accepted so the pointer stays repo-relative when the
-// packaged path happens to sit inside the checkout; it is no longer the source.
-export async function readHostParityBaseline({ repoRoot, pluginRoot } = {}) {
-  // `undefined` is "no override"; an explicit falsy value is a caller bug and
-  // now throws, instead of being laundered into the packaged default and
-  // reporting on a different install than the caller asked about.
-  const resolved = await resolveHostParityBaseline(pluginRoot === undefined ? {} : { pluginRoot });
-  const baselinePath = resolved.provenance.path;
-  const provenance = { ...resolved.provenance, status: resolved.status };
-  const asPointer = pointer(repoRoot ?? path.dirname(baselinePath), baselinePath);
-  // ONE branch, and it is the resolver's own predicate rather than a local
-  // list of its statuses. This function used to enumerate `missing` and
-  // `unparseable` and return `available` for everything else — so a third
-  // failure would have been rendered as an available baseline whose value is
-  // `null`, which is the one rendering that cannot be true. The failure's
-  // status and reason are carried verbatim; naming them here would be the
-  // fourth copy of the vocabulary.
-  const failure = baselineFailure(resolved);
-  if (failure) {
-    return {
-      status: failure.status,
-      pointer: asPointer,
-      baseline: null,
-      reason: resolved.provenance.reason ?? failure.status,
-      summary: failure.summary,
-      provenance,
-    };
-  }
-  return {
-    status: 'available',
-    pointer: asPointer,
-    baseline: resolved.baseline,
-    provenance,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Tier 2 — notify config, notify-state health, recent notifications
 // ---------------------------------------------------------------------------
@@ -730,8 +695,6 @@ export async function buildEntryAdvisory({ repoRoot, host = null, now = new Date
 
 export async function buildDashboardReport({
   repoRoot,
-  // ADR-0051 — packaged baseline source; injectable for fixture packages only.
-  pluginRoot,
   now = new Date(),
   homeDir = os.homedir(),
   staleGraceMs = DEFAULT_STALE_GRACE_MS,
@@ -767,8 +730,6 @@ export async function buildDashboardReport({
     : null;
 
   const doctor = await inspectLatestDoctorRun({ repoRoot });
-  const compat = await inspectCompatRuns({ repoRoot });
-  const baseline = await readHostParityBaseline({ repoRoot, pluginRoot });
   const settings = await inspectSettingsRecency({ repoRoot });
   const artifacts = await inspectRuntimeArtifactInventory({
     repoRoot,
@@ -858,23 +819,6 @@ export async function buildDashboardReport({
     },
     tier2: {
       doctor,
-      compat: {
-        status: compat.status,
-        count: compat.count,
-        malformed: compat.malformed,
-        latest: compat.latest
-          ? {
-              run_id: compat.latest.run_id,
-              status: compat.latest.status,
-              drift_class: compat.latest.drift_class,
-              selected_at: compat.latest.selected_at,
-              release_notes_required: compat.latest.release_notes_required,
-              host_gaps: compat.latest.host_gaps,
-              artifact_pointer: compat.latest.artifact_pointer,
-            }
-          : null,
-      },
-      baseline,
       settings,
       artifacts: {
         status: artifacts.status,
@@ -1003,20 +947,6 @@ export function renderDashboardText(report) {
   } else {
     lines.push(`- doctor: ${doctor.status} — no recorded runtime:doctor artifact`);
   }
-  const compat = report.tier2.compat;
-  if (compat.latest) {
-    const gaps = compat.latest.host_gaps
-      .filter((gap) => gap.status && !['current', 'matches'].includes(gap.status) && gap.observed_version !== gap.baseline_version)
-      .map((gap) => `${gap.host} ${gap.baseline_version ?? '?'}→${gap.observed_version ?? '?'}`)
-      .join(', ');
-    lines.push(`- compat: ${compat.latest.run_id} status=${compat.latest.status} drift=${compat.latest.drift_class} (${formatAge(nowMs, compat.latest.selected_at)})${gaps ? ` gaps: ${gaps}` : ''}`);
-  } else {
-    lines.push(`- compat: ${compat.status} — no recorded runtime:compat run`);
-  }
-  const baseline = report.tier2.baseline;
-  lines.push(baseline.baseline
-    ? `- baseline: observed ${baseline.baseline.date} — claude ${baseline.baseline.claude}, codex ${baseline.baseline.codex}`
-    : `- baseline: ${baseline.status} (${baseline.pointer})`);
   // ⚠ ONE LINE, AND IT IS LABELLED HISTORICAL. Three rows stood here — the
   // authored record, the newest recorded run, and an always-`not-evaluated`
   // machine row whose whole job was stating that this surface never probes. The

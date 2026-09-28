@@ -40,6 +40,24 @@ function scan(fileName, source) {
 }
 const rules = (vs) => vs.map((v) => v.rule);
 
+// A SYNTHETIC GET-only network importer, injected. ADR-0060 removed compat.mjs,
+// which was the only real network CAPABILITY_IMPORTERS entry, so no runtime
+// script exercises the network-gate any more. The gate stays as generic
+// infrastructure for the next network importer, and these cases prove it still
+// bites — against an injected registry, because a registry entry for a file that
+// does not exist would fail the drift checks below, as it should.
+const NET_IMPORTER = 'net-importer.mjs';
+const netRegistry = {
+  ...registry,
+  CAPABILITY_IMPORTERS: {
+    ...registry.CAPABILITY_IMPORTERS,
+    [NET_IMPORTER]: { modules: ['node:http', 'node:https'], primitives: ['get'] },
+  },
+};
+function scanNet(source) {
+  return scanFile({ fileName: NET_IMPORTER, source, registry: netRegistry }).violations;
+}
+
 // ---------------------------------------------------------------------------
 // (a) Tokenizer
 // ---------------------------------------------------------------------------
@@ -59,7 +77,7 @@ describe('ADR-0035 §4 guard — tokenizer (stripComments)', () => {
   });
 
   it('preserves a regex containing \\/\\/ without spawning a false comment', () => {
-    // compat.mjs: /^https?:\/\//i.test(url) — the trailing \/\/ must not be read
+    // A URL check like the removed compat.mjs's /^https?:\/\//i.test(url) — the trailing \/\/ must not be read
     // as a line comment that eats the rest of the line.
     const src = `if (!/^https?:\\/\\//i.test(url)) { THROW_MARKER(); }`;
     const code = stripComments(src);
@@ -272,8 +290,16 @@ describe('ADR-0035 §4 guard — bypass vectors are closed', () => {
   it('fake .kill() in doctor.mjs (not the own-child site) → kill-gate', () => {
     ok(rules(scan('doctor.mjs', `const victim = { kill() {} }; victim.kill('SIGTERM');`)).includes('kill-gate'));
   });
-  it('network .request() in compat → network-gate', () => {
-    ok(rules(scan('compat.mjs', `import https from 'node:https'; const c = https; c.request('https://x', { method: 'POST' });`)).includes('network-gate'));
+  it('network .request() in a GET-only importer → network-gate', () => {
+    ok(rules(scanNet(`import https from 'node:https'; const c = https; c.request('https://x', { method: 'POST' });`)).includes('network-gate'));
+  });
+  it('CONTROL: the allowed GET passes in the injected importer, and the same import fails the import-gate without it', () => {
+    deepStrictEqual(scanNet(`import https from 'node:https'; https.get('https://x', cb);`), []);
+    // No real runtime script is a network importer since ADR-0060: the
+    // identical source under the REAL registry is an unregistered capability
+    // import, which is what makes the injected entry — not the scanner being
+    // lax — the reason the line above passes.
+    ok(rules(scan(NET_IMPORTER, `import https from 'node:https'; https.get('https://x', cb);`)).includes('import-gate'));
   });
   it('tokenizer: code after a //-bearing regex is still scanned', () => {
     // a forbidden call hidden after `return /[//]/.test(x)` must NOT be masked
@@ -306,7 +332,7 @@ describe('ADR-0035 §4 guard — bypass vectors are closed', () => {
     ok(rules(scan('x.mjs', `const cp = await import('node:' + 'child_process'); cp.spawn('rm', ['-rf', '/']);`)).includes('import-gate'));
   });
   it('network method alias: const req = https.request → network-gate', () => {
-    ok(rules(scan('compat.mjs', `import https from 'node:https'; const req = https.request; req('https://x', { method: 'POST' });`)).includes('network-gate'));
+    ok(rules(scanNet(`import https from 'node:https'; const req = https.request; req('https://x', { method: 'POST' });`)).includes('network-gate'));
   });
   // Third adversarial pass
   it('parenthesized aliases (const r = (runCommand), r = (doctor.runCommand)) → caught', () => {
@@ -318,13 +344,13 @@ describe('ADR-0035 §4 guard — bypass vectors are closed', () => {
     ok(rules(scan('settings.mjs', `const argv = ['plugin', 'remove', name]; runner(plan.argv.command, argv, { cwd });`)).includes('argv-verb-gate'));
   });
   it('network destructuring: const { request } = https → network-gate', () => {
-    ok(rules(scan('compat.mjs', `import https from 'node:https'; const { request } = https; request('https://x', { method: 'POST' });`)).includes('network-gate'));
+    ok(rules(scanNet(`import https from 'node:https'; const { request } = https; request('https://x', { method: 'POST' });`)).includes('network-gate'));
   });
   it('namespace primitive in a registered importer: cp.execFile in doctor (spawn-only) → primitive-gate', () => {
     ok(rules(scan('doctor.mjs', `import * as cp from 'node:child_process'; cp.execFile('git', ['status']);`)).includes('primitive-gate'));
   });
   it('no false positive: unrelated .request property / unrelated const args', () => {
-    deepStrictEqual(scan('compat.mjs', `const x = { request: 1 }; doSomething(x.request);`), []);
+    deepStrictEqual(scanNet(`const x = { request: 1 }; doSomething(x.request);`), []);
     deepStrictEqual(scan('worktree.mjs', `const args = ['status', '--short']; somethingElse(args);`), []);
   });
 });
@@ -1100,7 +1126,7 @@ describe('ADR-0044 S3b guard — fs mutation gates (per-source negative conforma
   });
   it('a mutating call on a LITERAL absolute path → fs-mutation-gate', () => {
     ok(rules(scan('context.mjs', "import { rm } from 'node:fs/promises'; await rm('/tmp/not-owned', { force: true });")).includes('fs-mutation-gate'));
-    ok(rules(scan('compat.mjs', "import { writeFile } from 'node:fs/promises'; await writeFile('/etc/evil', d);")).includes('fs-mutation-gate'));
+    ok(rules(scan('consensus.mjs', "import { writeFile } from 'node:fs/promises'; await writeFile('/etc/evil', d);")).includes('fs-mutation-gate'));
   });
   it('O_EXCL WITHOUT O_CREAT (overwrite of an existing file) → fs-open-gate', () => {
     ok(rules(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, fsConstants.O_WRONLY | fsConstants.O_EXCL);")).includes('fs-open-gate'));

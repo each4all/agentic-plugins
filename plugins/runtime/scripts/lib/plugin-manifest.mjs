@@ -54,9 +54,10 @@ const MANIFESTS = Object.freeze([
 ]);
 
 // A manifest version must BE a version. `typeof === 'string' && length` let
-// `"banana"` through as `runtime_version`, while `normalizeVersion` one module
-// over rejects exactly that string — the package disagreeing with itself about
-// what a version is. The shape predicate is `semver.mjs`'s, shared with the
+// `"banana"` through as `runtime_version`, while the host-version grammar of the
+// time (`normalizeVersion`, removed with host-version tracking by ADR-0060)
+// rejected exactly that string — the package disagreeing with itself about what
+// a version is. The shape predicate is `semver.mjs`'s, shared with the
 // plugin-set validator: the first version of this file carried a loose private
 // copy that accepted `01.2.3` and `1.2.3-01`, neither of which is SemVer.
 function classify(raw) {

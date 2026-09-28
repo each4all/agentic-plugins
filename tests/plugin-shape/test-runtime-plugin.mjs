@@ -21,7 +21,6 @@ const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(s
 const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 const RUNTIME_COMMAND_SURFACES = [
   { name: 'bootstrap', script: 'bootstrap.mjs' },
-  { name: 'compat', script: 'compat.mjs' },
   { name: 'consensus', script: 'consensus.mjs' },
   { name: 'context', script: 'context.mjs' },
   { name: 'cutover', script: 'cutover-audit.mjs' },
@@ -58,7 +57,9 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.keywords.includes('settings'));
     ok(manifest.keywords.includes('migration'));
     ok(manifest.keywords.includes('consensus'));
-    ok(manifest.keywords.includes('compat'));
+    // ADR-0060 removed `runtime:compat`; a keyword naming it would advertise a
+    // command the package no longer ships.
+    ok(!manifest.keywords.includes('compat'));
     ok(manifest.keywords.includes('worktree'));
     ok(manifest.keywords.includes('context'));
     ok(manifest.keywords.includes('cutover'));
@@ -399,10 +400,15 @@ describe('plugins/runtime settings surface', () => {
 
   it('follow-ups document plugin-management boundaries plus deferred consensus/context/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer', 'Codex capability drift beyond the current baseline', 'Claude-vs-Codex parity drift beyond the current baseline', 'Probe-free `runtime:settings` mode']) {
+    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer', 'Probe-free `runtime:settings` mode']) {
       ok(followUps.includes(token), `${token} documented`);
     }
-    ok(/Codex capability drift/i.test(followUps), 'Codex capability drift documented');
+    // The two baseline-drift rows are CLOSED, not dropped: ADR-0060 deleted the
+    // documents they asked later work to refresh first, and §Decision 7 asks for
+    // a disposition per row rather than a silent removal.
+    for (const title of ['Codex capability drift beyond the current baseline', 'Claude-vs-Codex parity drift beyond the current baseline']) {
+      ok(followUps.includes(`- ~~${title}~~ — **RESOLVED BY REMOVAL ([ADR-0060]`), `${title} carries its ADR-0060 disposition`);
+    }
     ok(/Claude agent teams must not be treated as the portable cross-host team-mode substrate/i.test(followUps), 'Claude team-mode boundary documented');
   });
 
@@ -440,137 +446,6 @@ describe('plugins/runtime settings surface', () => {
     ok(
       new RegExp(`\\b${capMatch[1]} runs`).test(policy) || new RegExp(`last \\*\\*${capMatch[1]}\\*\\*`).test(policy),
       `artifact-policy.md states the machine retention cap of ${capMatch[1]} that the code enforces`,
-    );
-  });
-
-  it('documents the Codex capability baseline with source-backed host boundaries', async () => {
-    const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/codex-capability-baseline.md'), 'utf-8');
-    for (const token of [
-      'codex-cli 0.157.1',
-      'marketplaceSource',
-      'https://developers.openai.com/codex/skills',
-      'https://developers.openai.com/codex/plugins/build',
-      'https://developers.openai.com/codex/hooks',
-      'https://developers.openai.com/codex/concepts/sandboxing',
-      'no longer marketplace-only',
-      'plugin_hooks',
-      'manifest hook exposure',
-      'Do not claim Codex subagents run automatically',
-      '--apply-codex-plugin-hooks',
-      'host-parity-baseline.md',
-    ]) {
-      ok(baseline.includes(token), `${token} documented`);
-    }
-  });
-
-  it('documents the Claude-vs-Codex host parity baseline with source-backed non-parity boundaries', async () => {
-    const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
-    for (const token of [
-      // Hand-bumped every baseline refresh — this is the manual pin that forces
-      // a human to notice the version moved. Anchored to the whole header line,
-      // not a bare `Claude Code \`x.y.z\``: the bare form is satisfiable by any
-      // Version-History Note that names the version in prose, so it passed on a
-      // document whose header still read the previous release. A markdown table
-      // cell cannot contain the raw newline this literal spans, so only the
-      // header can satisfy it.
-      'Observed on 2026-09-27 with Claude Code `2.1.283`, Codex CLI\n`0.157.1`',
-      'https://developers.openai.com/codex/subagents',
-      'https://developers.openai.com/codex/hooks',
-      'https://code.claude.com/docs/en/plugins',
-      'https://code.claude.com/docs/en/agent-teams',
-      'https://code.claude.com/docs/en/hooks',
-      'codex plugin marketplace add',
-      'plugin_hooks',
-      'manifest hook exposure',
-      'Codex only spawns subagents when explicitly asked',
-      'Claude agent teams are not a portable cross-host primitive',
-      '.agentic-plugins/config.toml',
-      'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
-      'agents.max_threads',
-      'Do not collapse host-specific plugin metadata into `.agentic-plugins`',
-    ]) {
-      ok(baseline.includes(token), `${token} documented`);
-    }
-  });
-
-  it('keeps the host parity baseline internally consistent with its header versions', async () => {
-    // Regression gate for the 2026-07-10 recovery: four earlier refreshes
-    // updated the header (and appended history rows) while the Local CLI
-    // evidence block stayed at 2.1.173/0.139.0. Bare header tokens cannot
-    // catch that shape — this derives the header versions and requires the
-    // evidence block, the newest history row, and follow-ups.md to agree.
-    const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
-    const header = baseline.match(/Observed on ([0-9-]+) with Claude Code `([^`]+)`, Codex CLI\s*`([^`]+)`/);
-    ok(header, 'baseline header parseable by the doctor/compat regex shape');
-    const [, headerDate, headerClaude, headerCodex] = header;
-    ok(
-      baseline.includes(`\`claude --version\` -> \`${headerClaude} (Claude Code)\``),
-      `Local CLI evidence records claude --version ${headerClaude}`,
-    );
-    ok(
-      baseline.includes(`\`codex --version\` -> \`codex-cli ${headerCodex}\``),
-      `Local CLI evidence records codex --version ${headerCodex}`,
-    );
-    // Scope to the Version History section. The dated-pipe-row shape is not
-    // unique to it — the SessionStart and Stop-payload matrices above use the
-    // same `| <date> | <version> |` shape — so a document-wide filter both
-    // admits foreign rows into `historyRows` (making the non-empty assertion
-    // satisfiable with no Version History at all) and defines "newest" as the
-    // last dated row anywhere, which any table appended below would silently
-    // take over.
-    // Bound the slice at the next heading, not at end-of-document: splitting on
-    // the heading alone still swallows every later section, so a dated table
-    // appended below Version History would take over "newest" exactly as the
-    // document-wide filter did. Measured — the first attempt at this fix picked
-    // up an appended row.
-    const versionHistory = baseline.split(/^## Version History$/m)[1]?.split(/^## /m)[0];
-    ok(versionHistory, 'baseline has a Version History section');
-    const historyRows = versionHistory.split('\n').filter((line) => /^\| \d{4}-\d{2}-\d{2} \|/.test(line));
-    ok(historyRows.length > 0, 'version history section has dated rows');
-    const newestRow = historyRows[historyRows.length - 1];
-    // Compare the row's Observed/Claude/Codex *columns*, not a substring of the
-    // whole row. `newestRow.includes('`2.1.227`')` was vacuous in practice: every
-    // row's Note prose spells out the drift it records ("Claude `2.1.226`→`2.1.227`
-    // is ..."), so the header version is always somewhere in the row and the
-    // assertion passed with the version column left at the previous release.
-    // Measured 2026-08-11 by mutating the column alone — the old form stayed green.
-    const cells = newestRow.split('|').map((cell) => cell.trim());
-    const [, newestDate, newestClaude, newestCodex] = cells;
-    strictEqual(newestDate, headerDate, 'newest version-history row is dated for the header observation');
-    strictEqual(newestClaude, `\`${headerClaude}\``, 'newest version-history row Claude column records the header version');
-    strictEqual(newestCodex, `\`${headerCodex}\``, 'newest version-history row Codex column records the header version');
-    const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    ok(
-      followUps.includes(`local Claude Code \`${headerClaude}\` and Codex CLI \`${headerCodex}\` observations`),
-      'follow-ups.md current-baseline statement matches the header versions',
-    );
-
-    // Same defect class, sibling doc: the Codex capability baseline had also
-    // drifted (header + evidence pinned at 0.139.0 while its own drift policy
-    // requires refresh on any installed codex --version change).
-    const codexBaseline = await readFile(resolve(PLUGIN_ROOT, 'docs/codex-capability-baseline.md'), 'utf-8');
-    const codexHeader = codexBaseline.match(/Observed on ([0-9-]+) with Codex CLI\s*`([^`]+)`/);
-    ok(codexHeader, 'codex capability baseline header parseable');
-    const [, codexHeaderDate, codexHeaderVersion] = codexHeader;
-    // Both baselines observe the same installed codex; a host-parity refresh
-    // that leaves the capability doc behind (or vice versa) must go RED here,
-    // not survive on each doc's self-consistency alone.
-    strictEqual(
-      codexHeaderVersion,
-      headerCodex,
-      'codex-capability and host-parity baselines record the same Codex version',
-    );
-    ok(
-      codexBaseline.includes(`\`codex --version\` -> \`codex-cli ${codexHeaderVersion}\``),
-      `codex capability Local CLI evidence records codex --version ${codexHeaderVersion}`,
-    );
-    ok(
-      codexBaseline.includes(`Local CLI evidence (re-observed ${codexHeaderDate} on \`${codexHeaderVersion}\`)`),
-      'codex capability evidence heading carries the header date and version',
-    );
-    ok(
-      followUps.includes(`local CLI \`${codexHeaderVersion}\` observations`),
-      'follow-ups.md codex-capability statement matches that header version',
     );
   });
 });
@@ -699,22 +574,23 @@ describe('plugins/runtime consensus surface', () => {
   });
 });
 
-describe('plugins/runtime compat surface', () => {
-  it('ships compat command, skill wrapper, agent yaml, and executable script', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/compat.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/compat.mjs'));
-    ok(command.includes('release-note'));
-    ok(command.includes('does not fetch release-note URLs by default'));
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'compat/SKILL.md'), 'utf-8');
-    ok(/^name:\s*compat\s*$/m.test(skill));
-    ok(skill.includes('No automatic URL fetch'));
-    ok(skill.includes('No host-native config writes'));
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'compat/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:compat'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/compat.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'compat.mjs has executable bit');
+describe('plugins/runtime compat surface — removed (ADR-0060)', () => {
+  it('ships no compat command, skill, script or baseline document', async () => {
+    // The command-skill parity case above enumerates what IS shipped; this one
+    // pins what is not, so a surface restored by a stray revert or a bad merge
+    // fails by name instead of only as a longer directory listing.
+    for (const removed of [
+      'commands/compat.md',
+      `${SKILLS_REL}/compat`,
+      'scripts/compat.mjs',
+      'scripts/lib/compat-artifacts.mjs',
+      'scripts/lib/host-parity-baseline.mjs',
+      'scripts/lib/host-version-probe.mjs',
+      'docs/host-parity-baseline.md',
+      'docs/codex-capability-baseline.md',
+    ]) {
+      await rejects(() => stat(resolve(PLUGIN_ROOT, removed)), /ENOENT/, `${removed} must stay removed`);
+    }
   });
 });
 
@@ -918,10 +794,11 @@ describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
   // mention, which is loud and cheap, rather than a false green on a broken
   // record. The sentinels are matched because they are the machine-readable
   // delimiters, not the human heading.
-  it('the compatibility-assurance section and its schema stay removed', async () => {
-    const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
-    ok(!baseline.includes('<!-- BEGIN COMPATIBILITY ASSURANCE -->'), 'the packaged baseline must not carry an assurance block (ADR-0056)');
-    ok(!baseline.includes('<!-- END COMPATIBILITY ASSURANCE -->'), 'the packaged baseline must not carry an assurance block (ADR-0056)');
+  it('the compatibility-assurance schema stays removed, and so does the baseline that carried its section', async () => {
+    // ADR-0056 removed the assurance block from the packaged baseline; ADR-0060
+    // then removed the baseline itself, which is the stronger form of the same
+    // guarantee.
+    await rejects(() => readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8'), /ENOENT/);
     await rejects(
       () => readJSON(resolve(PLUGIN_ROOT, 'data/schemas/runtime-host-assurance-1.0.json')),
       /ENOENT/,
@@ -1037,7 +914,6 @@ describe('plugins/runtime repo documentation freshness', () => {
       'runtime:doctor',
       'runtime:settings',
       'runtime:consensus',
-      'runtime:compat',
       'runtime:worktree',
       'runtime:context',
       'runtime:cutover',
@@ -1047,6 +923,7 @@ describe('plugins/runtime repo documentation freshness', () => {
       ok(readme.includes(token), `README.md documents ${token}`);
     }
 
+    ok(!readme.includes('runtime:compat'), 'README.md must not advertise the command ADR-0060 removed');
     ok(!readme.includes('### Coming next'), 'README.md should not list shipped runtime surfaces as coming next');
     ok(!readme.includes('Runtime dynamic consensus, context hygiene, and completion footer'), 'README.md must not carry stale ADR-0024 follow-up wording');
   });

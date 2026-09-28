@@ -685,8 +685,8 @@ export const BOOTSTRAP_SCHEMA_FILES = PACKAGED_SCHEMA_FILES;
 export async function loadSchema(family, { pluginRoot } = {}) {
   const file = Object.hasOwn(PACKAGED_SCHEMA_FILES, family) ? PACKAGED_SCHEMA_FILES[family] : undefined;
   if (!file) throw new Error(`unknown schema family '${family}' (known: ${Object.keys(PACKAGED_SCHEMA_FILES).join(', ')})`);
-  // The same packaged-asset resolution the host-parity baseline uses, for the
-  // same reason. A constant relative path cannot escape LEXICALLY, so this had
+  // The same packaged-asset resolution the host-parity baseline used (until
+  // ADR-0060 removed it), for the same reason. A constant relative path cannot escape LEXICALLY, so this had
   // no containment check — measured on the baseline, it escapes anyway through
   // a symlinked directory or leaf, and a schema read from outside the package
   // would validate every bootstrap artifact against rules the package does not

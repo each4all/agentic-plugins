@@ -28,8 +28,11 @@ const ERAS = [
   { label: 'assurance-era producer', artifact: 'runtime-doctor-artifact-1.0', report: 'runtime-doctor-1.0' },
   // The ADR-0056 removal era.
   { label: 'post-assurance producer', artifact: 'runtime-doctor-artifact-1.1', report: 'runtime-doctor-1.1' },
-  // The version this runtime writes: ADR-0057 dropped `permission_diagnosis`.
+  // ADR-0057 dropped `permission_diagnosis`.
   { label: 'post-advisor producer', artifact: 'runtime-doctor-artifact-1.2', report: 'runtime-doctor-1.2' },
+  // The version this runtime writes: ADR-0060 dropped `host_parity_baseline` and
+  // `compat_runs`.
+  { label: 'post-host-tracking producer', artifact: 'runtime-doctor-artifact-1.3', report: 'runtime-doctor-1.3' },
 ];
 
 async function seed(runs) {
@@ -57,7 +60,7 @@ async function seed(runs) {
 // dashboard's reader IS exported (it is a public projection), so the mirror is
 // asserted directly below.
 
-describe('the dashboard pins the same two versions, independently', () => {
+describe('the dashboard pins the same versions, independently', () => {
   for (const era of ERAS) {
     it(`the newest ${era.label} artifact is available on the dashboard too`, async () => {
       const repoRoot = await seed([era]);
@@ -77,6 +80,8 @@ describe('the dashboard pins the same two versions, independently', () => {
       ['runtime-doctor-artifact-1.1', 'runtime-doctor-1.0'],
       ['runtime-doctor-artifact-1.1', 'runtime-doctor-1.2'],
       ['runtime-doctor-artifact-1.2', 'runtime-doctor-1.1'],
+      ['runtime-doctor-artifact-1.2', 'runtime-doctor-1.3'],
+      ['runtime-doctor-artifact-1.3', 'runtime-doctor-1.2'],
     ]) {
       const repoRoot = await seed([{ artifact, report }]);
       const latest = await inspectLatestDoctorRun({ repoRoot });

@@ -30,17 +30,18 @@
 //      PER PLUGIN: an aggregate "the sweep found files" passes happily while one
 //      plugin's root resolves to an empty directory and the other seven make up
 //      the number.
-//   3. Doc lockstep, scoped to the row that states the rule and asserting the
-//      PROHIBITION rather than the mere presence of the opt-in token. The
-//      earlier form checked only that `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` appeared
-//      somewhere in the row, which a row *recommending* the opt-in would satisfy
-//      just as well — an assertion weaker than its own failure message.
+//
+// A third pin held the rule's prose in lockstep with the Skills and commands row
+// of `plugins/runtime/docs/host-parity-baseline.md`, the document that stated
+// it. ADR-0060 deleted that document; the rule itself survives, stated here and
+// enforced by the two pins above, so the pin that tied it to its old home went
+// with the home.
 //
 // Known limit, stated rather than papered over: pin 2 matches identifiers. It
 // is deliberately strict — a runbook may not name these tools even to warn
-// against them, because that caution belongs in the baseline — and it cannot
-// catch a synonym ("use the todo tracker"). It is a guard against the exact
-// regression observed, not a proof that no host-tool dependency exists.
+// against them, because that caution belongs outside the runbook — and it
+// cannot catch a synonym ("use the todo tracker"). It is a guard against the
+// exact regression observed, not a proof that no host-tool dependency exists.
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
@@ -51,7 +52,6 @@ import { fileURLToPath } from 'node:url';
 import { resolveSkillsRoot } from '../_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
-const BASELINE = join(REPO_ROOT, 'plugins/runtime/docs/host-parity-baseline.md');
 
 // Plugins that package zero skills by design: the ADR-0008 script-only library
 // (companions) and the hook-only framework primitive (attention). Both keep a
@@ -203,26 +203,9 @@ describe('host-tool dependency contract', () => {
           `${relative(REPO_ROOT, file)} must not name \`${tool}\` — Claude Code 2.1.233 withdrew it `
           + 'from current models, and the Claude command markdown is also Codex’s behavioral source. '
           + 'Phrase progress tracking as intent with the host tool as an optional means; if the tool needs '
-          + 'discussing, discuss it in the host parity baseline rather than in a runbook.',
+          + 'discussing, discuss it outside the runbook.',
         );
       }
     }
-  });
-
-  it('keeps the prohibition stated in the Parity Matrix row that owns it', async () => {
-    const baseline = await readFile(BASELINE, 'utf8');
-    const row = baseline.split('\n').find((line) => line.startsWith('| Skills and commands |'));
-    ok(row, 'host-parity-baseline.md has a Skills and commands parity row');
-    const squashedRow = squash(row);
-    ok(
-      squashedRow.includes('must not hard-depend on a host tool a model may not carry'),
-      'the Skills and commands row states the no-hard-dependency rule',
-    );
-    // Assert the PROHIBITION, not the token. A row recommending the opt-in
-    // would contain `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` just as happily.
-    ok(
-      squashedRow.includes('Do not re-introduce the dependency by recommending `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`'),
-      'the Skills and commands row forbids re-introducing the dependency via the opt-in, rather than merely mentioning it',
-    );
   });
 });

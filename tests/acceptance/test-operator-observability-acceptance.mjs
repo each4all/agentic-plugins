@@ -805,22 +805,17 @@ describe('ADR-0040 acceptance (c) -- dashboard aggregate over fixture state', ()
     const report = dashboardJson();
     // Codex-caught: key presence is hollow (buildReport always emits these
     // keys). Assert the freshness readers actually RAN and CLASSIFIED the
-    // fixture: no doctor/compat/baseline artifacts were seeded, so each must
+    // fixture: no doctor or settings artifacts were seeded, so each must
     // report the concrete 'missing' status -- an inert `{}` would have an
     // undefined status and fail.
     strictEqual(report.tier2.doctor.status, 'missing', 'the doctor-freshness reader ran and classified absence');
-    strictEqual(report.tier2.compat.status, 'missing', 'the compat-freshness reader ran and classified absence');
-    // The baseline is NOT in that group any more. ADR-0051 makes it a packaged
-    // asset rather than a repo-local artifact, so an unseeded fixture repo does
-    // not make it absent — the running runtime always carries one. The reader
-    // is proven to have RUN by its parsed content and content hash, which is a
-    // stronger witness than `missing` ever was.
-    strictEqual(report.tier2.baseline.status, 'available', 'the baseline reader resolved the packaged copy');
-    ok(/^\d{4}-\d{2}-\d{2}$/.test(report.tier2.baseline.baseline.date), 'it parsed a dated header');
-    ok(report.tier2.baseline.baseline.claude, 'it parsed the Claude version');
-    ok(report.tier2.baseline.baseline.codex, 'it parsed the Codex version');
-    strictEqual(report.tier2.baseline.provenance.source, 'package');
-    ok(/^[0-9a-f]{64}$/.test(report.tier2.baseline.provenance.content_sha256), 'provenance identifies the bytes read');
+    strictEqual(report.tier2.settings.status, 'missing', 'the settings-recency reader ran and classified absence');
+    // ADR-0060 removed host-version tracking, and dashboard 3.0 dropped the
+    // compat and baseline rows with it. Their absence is the contract: a row
+    // that came back would report a check nothing performs any more.
+    strictEqual(report.schema_version, 'runtime-dashboard-3.0');
+    ok(!('compat' in report.tier2), 'the compat row is gone');
+    ok(!('baseline' in report.tier2), 'the baseline row is gone');
     // Notify Tier 2: channel + the SEEDED history record surfaced by content
     // (proving the reader parsed the seeded log, not just that a key exists).
     strictEqual(report.tier2.notify.config.channel, 'file-log');

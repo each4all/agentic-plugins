@@ -139,7 +139,6 @@ test('the protected pathspecs resolve to the assets ADR-0052 §Decision 2 names,
   const paths = protectedEntries(REPO_ROOT, 'HEAD').map((e) => e.path);
   // Pinned by name, not by count: a count-only assertion stays green if the
   // schema directory silently stops matching and some other file starts.
-  assert.ok(paths.includes('plugins/runtime/docs/host-parity-baseline.md'));
   assert.ok(paths.includes('plugins/runtime/data/plugin-set.json'));
   assert.ok(
     paths.includes('plugins/runtime/data/schemas/runtime-plugin-set-1.0.json'),
@@ -148,6 +147,12 @@ test('the protected pathspecs resolve to the assets ADR-0052 §Decision 2 names,
   assert.ok(paths.filter((p) => p.startsWith('plugins/runtime/data/schemas/')).length >= 7);
   // Out of first scope per §Decision 3 — a different release-please package.
   assert.ok(!paths.some((p) => p.startsWith('plugins/attention/')));
+  // ADR-0060 deleted the host-parity baseline and keeps its pathspec until the
+  // release that ships the deletion is tagged (see the note on PROTECTED_PATHS):
+  // the entry is still listed, and it matches nothing at HEAD. That release's
+  // recovery removes the entry and these two assertions together.
+  assert.ok(PROTECTED_PATHS.includes('plugins/runtime/docs/host-parity-baseline.md'));
+  assert.ok(!paths.includes('plugins/runtime/docs/host-parity-baseline.md'));
 });
 
 // ---------------------------------------------------------------------------

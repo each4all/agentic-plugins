@@ -1,6 +1,6 @@
 ---
 name: retention
-description: "ADR-0047 §7 citation-aware artifact retention for runtime. Use when the user wants to plan (read-only) or explicitly apply deletion of unpinned, over-cap, age-cleared run directories of the runtime-owned families (doctor/compat/settings) under a reviewed plan hash and write-ahead receipts. Dry-run by default; deletion needs --execute."
+description: "ADR-0047 §7 citation-aware artifact retention for runtime. Use when the user wants to plan (read-only) or explicitly apply deletion of unpinned, over-cap, age-cleared run directories of the runtime-owned families (doctor/settings) under a reviewed plan hash and write-ahead receipts. Dry-run by default; deletion needs --execute."
 ---
 
 # Retention (runtime framework primitive)
@@ -18,7 +18,7 @@ artifact retention. The planner is **read-only**; the apply executor is
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/retention.mjs" plan|apply|resolve [--family doctor|compat|settings] [--expected-plan-hash <hash>] [--execute] [--format text|json] --repo-root "$REPO_ROOT"
+node "<runtime-plugin-root>/scripts/retention.mjs" plan|apply|resolve [--family doctor|settings] [--expected-plan-hash <hash>] [--execute] [--format text|json] --repo-root "$REPO_ROOT"
 ```
 
 3. Present the result as an operator retention report.
@@ -31,17 +31,20 @@ node "<runtime-plugin-root>/scripts/retention.mjs" plan|apply|resolve [--family 
 ## Scope
 
 Deletion is confined to unpinned, over-cap, age-cleared run directories of the
-three v1 runtime-owned families (`doctor`, `compat`, `settings`) under
-`.agentic-plugins/runs/<family>/`. It never touches host config, never anything
-outside `runs/`, never a pinned/live/latest/young/unreadable run, and never
-`latest.json`.
+runtime-owned registry families (`doctor`, `settings`) under
+`.agentic-plugins/runs/<family>/`. `compat` was a third until ADR-0060 removed
+`runtime:compat`; its recorded runs are left on disk, unmanaged, and
+`--family compat` is refused with that reason. Every doctor run is pinned at
+v1, so in practice `settings` is the family whose runs can be deleted. It
+never touches host config, never anything outside `runs/`, never a
+pinned/live/latest/young/unreadable run, and never `latest.json`.
 
 ## Apply Boundary
 
 Apply mode is explicit-only and layered (ADR-0047 §7):
 
 ```bash
-$runtime:retention apply --family compat --expected-plan-hash <reviewed-hash> --execute
+$runtime:retention apply --family settings --expected-plan-hash <reviewed-hash> --execute
 ```
 
 Guarded by, in order: dry-run default → the reviewed plan hash must still match
@@ -66,4 +69,4 @@ Forbidden writes:
 - No automatic retention during engineer/orchestrator/runtime command execution.
 - No quarantine/move-aside (deletion is real recursive removal — a moved run
   breaks every pointer the pin scan protects).
-- No widening of the family registry beyond doctor/compat/settings at v1.
+- No widening of the family registry beyond doctor/settings.

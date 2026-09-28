@@ -43,8 +43,11 @@ export const WATCHED_CAPABILITY_MODULES = [
 ];
 
 // The only runtime scripts permitted to import a capability module, and which
-// primitives each may bind. Observed via `rg "from 'node:child_process'"` and
-// the compat.mjs http/https import.
+// primitives each may bind. Observed via `rg "from 'node:child_process'"`.
+// compat.mjs was the one NETWORK importer here (a GET-only release-note fetch);
+// ADR-0060 removed it, so no runtime script is a network capability importer
+// now. The network-gate stays in the scanner as generic infrastructure, and its
+// tests run against an injected registry rather than against a real file.
 export const CAPABILITY_IMPORTERS = {
   // doctor.mjs:315 runCommand → spawn(command, args, {stdio}) — the shared exec
   // wrapper every other runtime executor reuses. Tier M1/H2 per ADR-0035 §2.
@@ -62,10 +65,6 @@ export const CAPABILITY_IMPORTERS = {
   // source-snapshot.mjs:109 execFile('git', ['-C', root, ...readArgs]) — git
   // read snapshot (rev-parse / status). Tier R0/M1.
   'source-snapshot.mjs': { modules: ['node:child_process'], primitives: ['execFile'] },
-  // compat.mjs:615 client.get(...) where client = http|https — release-note URL
-  // fetch, https?:// validated and flag-gated. Tier M1. Only GET is allowed; a
-  // network member call other than `.get(` in this file fails the network-gate.
-  'compat.mjs': { modules: ['node:http', 'node:https'], primitives: ['get'] },
   // notify.mjs dispatchOsascript → spawn('/usr/bin/osascript', <fixed argv>) —
   // the ADR-0040 §2 notification-emit executor. The ONLY non-companion
   // external-process execution outside the host-CLI/git wrappers; ADR-0040
@@ -101,8 +100,9 @@ export const RAW_PROCESS_PRIMITIVES = [
   'spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork', 'execFileAsync',
 ];
 
-// Network primitive member calls (on an http/https/net binding). Only compat.mjs
-// is a network CAPABILITY_IMPORTERS entry, so these are allowed only there.
+// Network primitive member calls (on an http/https/net binding). They are allowed
+// only in a network CAPABILITY_IMPORTERS entry, and there is none today (see the
+// note on CAPABILITY_IMPORTERS).
 // `fetch` is included so a `binding.fetch(` member call inside a network-importer
 // is also gated; the GLOBAL `fetch` (a bare call with no import to anchor on) is
 // handled separately by the global-fetch-gate (ADR-0041 §2d).
@@ -255,7 +255,6 @@ export const NODE_COMMAND_SENTINEL = 'process.execPath';
 // command-gate.
 export const ALLOWED_COMMAND_VARIABLES = {
   'machine-probe.mjs': ['name'], // inspectCli(name, …) loops name over {claude, codex}
-  'compat.mjs': ['host'], // observeHost(host, …) probes host versions over {claude, codex}
 };
 
 // Exec wrappers whose first positional is a passthrough parameter; the raw
@@ -378,7 +377,7 @@ export const ARGV_VERB_ALLOWLIST = {
     ['plugin', 'add', '*'], // C: codex plugin add <name>@agentic-plugins (ADR-0035 §5/§6, H2 install)
     ['plugin', 'marketplace', '--help'],
     // machine-probe.mjs §1.2 marketplace-registration read probe: prefer --json
-    // (host-parity-baseline: source identity as of 0.139.0), text fallback for an older
+    // (source identity as of Codex 0.139.0), text fallback for an older
     // Codex without --json. Both read-only, source-identity match, never a mutation.
     ['plugin', 'marketplace', 'list'], ['plugin', 'marketplace', 'list', '--json'],
     ['plugin', 'marketplace', 'add', '*'],
@@ -587,12 +586,6 @@ export const FS_MUTATION_PRIMITIVES = [
 // bootstrap-only per ADR-0046), `os-tmpdir` marks self-created mkdtemp
 // scratch. Justifications cite the observed source sites.
 export const FS_MUTATION_USERS = {
-  // compat run artifacts + release-note copies under runs/compat.
-  'compat.mjs': {
-    primitives: ['copyFile', 'mkdir', 'writeFile'],
-    stateRoots: ['.agentic-plugins/runs/compat'],
-    justification: 'compat snapshot/check/plan artifacts (runs/compat) incl. release-note copyFile',
-  },
   // consensus run artifacts (task/prompt/raw/synthesis/decision files).
   'consensus.mjs': {
     primitives: ['mkdir', 'writeFile'],

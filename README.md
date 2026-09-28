@@ -82,8 +82,7 @@ Eight installable plugins ship in this repository:
   [ADR-0024](docs/adr/0024-runtime-operator-control-plane.md):
   `runtime:doctor` readiness diagnostics, dry-run/default
   `runtime:settings`, explicit `runtime:consensus` companion execution
-  artifacts, `runtime:compat` host-version drift planning, read-only
-  `runtime:worktree` planning, `runtime:context` handoff/check artifacts,
+  artifacts, read-only `runtime:worktree` planning, `runtime:context` handoff/check artifacts,
   read-only `runtime:cutover` readiness evidence, workflow-storage migration,
   and the pointer-only completion footer.
 

@@ -284,7 +284,7 @@ export async function assessSessionCaptureReadiness({
     result.states.push('safe-mode-hooks-disabled');
     result.recommendations.push({
       state: 'safe-mode-hooks-disabled',
-      detail: 'Claude safe mode disables plugins and hooks entirely (host-parity-baseline.md hooks row), so the Stop-fired publisher cannot run in this session.',
+      detail: 'Claude safe mode disables plugins and hooks entirely, so the Stop-fired publisher cannot run in this session.',
       next_step: 'Leave safe mode (unset CLAUDE_CODE_SAFE_MODE / drop --safe-mode) to restore the hook chain, or set session_capture=off while troubleshooting.',
     });
   }
@@ -440,7 +440,7 @@ export async function assessEntryBriefReadiness({
     result.states.push('safe-mode-hooks-disabled');
     result.recommendations.push({
       state: 'safe-mode-hooks-disabled',
-      detail: 'Claude safe mode disables plugins and hooks entirely (host-parity-baseline.md hooks row), so the SessionStart entry sensor cannot run in this session.',
+      detail: 'Claude safe mode disables plugins and hooks entirely, so the SessionStart entry sensor cannot run in this session.',
       next_step: 'Leave safe mode (unset CLAUDE_CODE_SAFE_MODE / drop --safe-mode) to restore the hook chain, or set entry_brief=off while troubleshooting.',
     });
   }
