@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (2026-07-21)
+Accepted (2026-07-21). Amended 2026-09-28 by
+[ADR-0060](0060-remove-host-version-tracking.md), which removed
+`runtime:compat`: the §5 standing notification watch no longer exists, and
+the §7 retention registry is `doctor` and `settings`. The notes sit at §5,
+§7 and Consequences; the rest of this ADR is unchanged.
 
 <!--
 This ADR sits inside the ADR-0024 runtime/operator control-plane track. It
@@ -383,6 +387,17 @@ only which structural signals may born a token:
   newly-observed variant requires a source-verified payload and its own
   follow-up decision (ADR-0030 discipline).
 
+  *(Amended 2026-09-28 by [ADR-0060](0060-remove-host-version-tracking.md)
+  §Decision 4.)* The watch was a set of rows inside `runtime:compat plan`,
+  and ADR-0060 removed that command, so the watch is gone. Nothing now
+  tracks either question: (a) whether Codex `notify=` sends any payload
+  variant beyond `agent-turn-complete`, and (b) whether Claude emits the
+  `agent_needs_input` / `agent_completed` notification types. The rest of
+  this bullet still holds: the shuttle ignores an unknown payload type, and
+  wiring a new variant still needs a source-verified payload and its own
+  decision. The line references above (`host-parity-baseline.md:272`,
+  `compat.mjs:332-376`) point at files ADR-0060 deleted.
+
 ### 6. Bounded expired-claim sweep + locking repair (realizing ADR-0040 §2's authorization)
 
 - **Repair `withReclaimLock` first**: the lock acquisition becomes
@@ -510,6 +525,15 @@ boundary between them:
   temp files, and lock directories are skipped as non-candidates (the
   family readers' validated-id discipline, `state-readers.mjs:314-318`).
   Widening the registry is a follow-up decision, not a config knob.
+
+  *(Amended 2026-09-28 by [ADR-0060](0060-remove-host-version-tracking.md)
+  §Decision 6.)* The registry is **`doctor`, `settings`**. `compat` left it
+  with its command, and the planner version moved to 1.1 because the plan
+  hash covers the registry. Recorded compat runs are orphaned, not
+  managed: the artifact inventory still reports them, and removing them is
+  a manual step. `runtime:retention --family compat` is refused with that
+  reason. Since every doctor run is pinned (pin 3 below), `settings` is now
+  the only family whose runs apply can delete.
 - **Pin taxonomy** (a run matching ANY pin is never deletable):
   1. **Tracked-doc citations** — a bounded scan of git-tracked text files
      for both citation shapes observed in the wild: bare or backticked
@@ -744,7 +768,8 @@ no classifier, no headline) — graceful degradation, not an error — and the
 
 - The kind enum grows to eight; `health` remains reserved/producer-less.
 - Retention v1 covers three families; the registry is closed and widening
-  is a decision, not drift.
+  is a decision, not drift. *(Amended 2026-09-28: two since ADR-0060
+  removed `compat`; see §7.)*
 - `pinned_overage` reframes some existing "over cap" warnings as
   informational — dashboards read differently, on purpose.
 - One lock protocol now governs reclaim, finalize, and sweep; the

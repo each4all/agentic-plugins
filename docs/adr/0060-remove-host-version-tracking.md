@@ -10,6 +10,11 @@ removed, not re-decided — and amends
 [ADR-0052](0052-release-obligation-enforcement.md) §Decision 1. Docs-only; an
 implementation subtask executes the manifest below.
 
+Amended 2026-09-28 by that implementation: see
+[§Amendment 2026-09-28](#amendment-2026-09-28--what-the-implementation-measured),
+which corrects Decision 1's neutral-module line, Decision 5's "tests
+untouched" claim and the Neutral consequence, and records the schema contract.
+
 Supersession was atomic with acceptance (the ADR-0056 §Decision 9 rule): the
 change that flipped this ADR to `Accepted` flipped both superseded ADRs' wording
 with it.
@@ -90,6 +95,10 @@ implementation**: their measured consumers are `compat.mjs` (removed) and
 `doctor.mjs` (inside the removed baseline check). If no consumer survives they
 go; the implementation re-measures rather than assuming.
 
+> **Amended 2026-09-28.** The re-measure found no survivor for `normalizeVersion`
+> either, so no neutral module was created and `lib/host-parity-baseline.mjs` was
+> deleted in full, not reduced. See §Amendment 2026-09-28 (a).
+
 ### Decision 2 — The probed knowledge is deleted, not relocated
 
 The document's locally measured content — the Claude `SessionStart` matrix
@@ -136,6 +145,13 @@ rather than leaving an accepted ADR describing a feature that no longer exists.
 `data/schemas` remain. The mechanism, its tests and ADR-0052's reasoning are
 untouched — only the list shrinks, so ADR-0052 is amended rather than superseded.
 
+> **Amended 2026-09-28.** "Its tests are untouched" is false, and the list
+> shrinks one release later than this paragraph implies. Removing the entry
+> fails 21 of the 48 release-obligation tests, and removing it in the change
+> that deletes the file would hide that deletion from the gate. See
+> §Amendment 2026-09-28 (b). The mechanism and ADR-0052's reasoning are still
+> unchanged.
+
 ### Decision 6 — Historical artifacts and records are not rewritten
 
 Recorded compat runs under `.agentic-plugins/runs/compat/` are local, gitignored
@@ -173,6 +189,10 @@ observation survives and only the verdict goes. The version grammar survives
 under a neutral module name. The release-obligation mechanism survives with a
 shorter list.
 
+> **Amended 2026-09-28.** The version grammar did not survive: nothing read it
+> once the baseline check was gone (§Amendment 2026-09-28 (a)). Doctor reports
+> the probed `--version` text as it is.
+
 ## Alternatives Considered
 
 **C — trim the narration, split the stamp from the claims.** Keep the probed
@@ -194,3 +214,112 @@ nobody acts on, which is worse than either keeping or removing the check.
 Rejected on measurement: without a baseline there is nothing for `check` to
 compare against, so `check`, `ingest-release-notes` and `plan` become hollow and
 `compat` collapses into a version recorder.
+
+## Amendment 2026-09-28 — what the implementation measured
+
+The implementation re-measured the Decision 1 manifest before deleting anything,
+as that decision asks. Eight findings change or add to what the sections above
+say. They are recorded here, with a note at each section they correct.
+
+**(a) No version grammar survives.** Decision 1 kept `normalizeVersion` for two
+consumers, `lib/plugin-manifest.mjs` and `lib/host-version-probe.mjs`. The first
+only named it in a comment; its own shape check is `semver.mjs`'s. The second
+had one importer, doctor's removed baseline check. So both libraries are
+deleted, `readVersionToken` and `scanVersionTokens` go with them (the Decision 1
+open item), and no neutral module exists. Two test files outside the Decision 1
+list follow their subjects: `tests/runtime/test-host-version-comparator.mjs` is
+deleted, and `test-host-plane-hardening.mjs` loses its version-token and
+dated-header `describe`s. Surviving properties that the deleted suites tested
+were moved first: the plugin-manifest readers (their only coverage) to a new
+`test-plugin-manifest.mjs`, and path containment, byte-exact artifact reads, the
+statusline shim and the cutover remediation fallback to the suites of the
+modules that own them. At deletion, 17 files and 7,466 lines were removed;
+Decision 1's in-full list accounts for 6,480 of them.
+
+**(b) The protected-path list shrinks in two steps, and its tests change.**
+Measured in a scratch clone: dropping `host-parity-baseline.md` from
+`PROTECTED_PATHS` fails 21 of the 48 release-obligation tests. Sixteen synthetic
+fixtures used the baseline as their protected specimen. Four real-history
+replays anchor on the `16b1833` counterexample, whose only protected change was
+the baseline, and none of the 15 real changes to the two remaining paths can stand in for it,
+because none had another release between the change and its tag. One identity
+test pins the list itself. Dropping the entry in the change that deletes the
+file has a worse effect: both sides of the comparison are read through the
+list, so the gate would report `fulfilled` while the newest release still ships
+the file. Therefore:
+
+- This change **keeps** the entry. The deletion is outstanding debt until the
+  next `plugin-runtime-v*` tag carries it. That is the red window Decision 7
+  names, and keeping the entry is what makes Decision 7 true.
+- `classify`, `protectedEntries` and `protectedChangesInWindow` take an optional
+  path list that defaults to `PROTECTED_PATHS`, and the report names the list it
+  used. The replays pass the three-entry list of their time, so they keep
+  testing what `16b1833` was. The synthetic fixtures moved to a schema specimen,
+  and the CLI tests, which always judge through the live list, re-anchored on
+  `f795085`, a schemas-only protected change.
+- The release that ships the deletion removes the entry in its recovery, with
+  the identity test's expectation. Nothing else changes then.
+
+**(c) Schema contract.** Every change below is a deletion, so each version moves
+and each reader states what it accepts.
+
+| Surface | Before | After | What the reader does |
+|---|---|---|---|
+| `runtime:doctor` artifact / report | `runtime-doctor-artifact-1.2` / `runtime-doctor-1.2` | `1.3` / `1.3`: `host_parity_baseline` and `compat_runs` removed | doctor and dashboard both accept the matched pairs `1.0` to `1.3`, in the same release as the producer (the ADR-0056 and ADR-0057 precedent). The removed sections in older retained artifacts are left unread, not projected as history |
+| `runtime-experience-parity` | `1.1` | `1.2`: `runtime_handoff_artifacts` is `settings + consensus` at weight 15, blocked if either collection is blocked, partial if either is missing | not persisted separately; rides the doctor report |
+| `runtime:dashboard` | `runtime-dashboard-2.0` | `3.0`: `tier2.baseline` and `tier2.compat` removed | computed fresh on every run, so no historical corpus needs a reader |
+| retention planner | `runtime-retention-planner-1.0` | `1.1`: the registry is `doctor` and `settings` | the planner version is part of the plan hash, so applying a plan reviewed under 1.0 is refused as `plan-hash-mismatch`, and the new plan's version field says why |
+| `runtime:cutover` report | unversioned | the compat check leaves `checks[]`; `observations.host_pair_identity`, a `limits` entry and `completion_audit.unverified_scope` state that host-pair identity is not verified | the identity statement is not a `missing_or_weak` blocker, because no operator action could clear it; `ready_candidate` is unaffected, and tests pin both. The scorecard check gains a `withdrawn` status, see (h) |
+
+**(d) Skew rule.** Accepting every older artifact in the new reader protects
+one direction only. Both hosts read the same `.agentic-plugins/runs/doctor/`, so
+a 1.3 proof recorded on one host while the other still runs the previous
+runtime is `malformed` to that host's doctor, and its dashboard reports the
+doctor row blocked (measured against the 1.2 dashboard reader) until that host
+is updated too. Update both hosts, then record the proof.
+
+**(e) Orphaned compat runs.** Recorded runs under `.agentic-plugins/runs/compat/`
+stay where they are (Decision 6); 44 exist on the machine that implemented this.
+The artifact inventory still reports them as over-cap attention, and its
+recommendation, manual review and removal, is the honest remedy now that
+retention does not manage the family. `runtime:retention --family compat` is
+refused with that reason. A compat retention receipt left open by an apply that
+was interrupted before the upgrade cannot be resolved afterwards; it blocks no
+other family. The implementing machine's receipt was closed (16 targets
+completed).
+
+**(f) The executor guard's network gate is dormant.** `compat.mjs` was the only
+network capability importer among the runtime scripts, through its GET-only
+release-note fetch. The gate stays in the scanner as generic infrastructure for
+the next network importer, and its tests run against an injected registry, so
+they still prove the gate works.
+
+**(g) Survivor-scan residual.** Docket C18's class, an unrecognised status read
+as a good one, was looked for in the readers that survive. Two have it: the
+consensus reader and doctor's settings reader both report an unrecognised
+latest-run status as `available`. `runtime_handoff_artifacts` is recomposed onto
+exactly those two collections, so it measures readability, not a recognised
+successful run, and its comment says so. The review of this implementation
+found a second gap in the same consensus reader: it skips an `execution.json`
+that fails to parse instead of counting it malformed, so a corrupt consensus
+history leaves the criterion `satisfied`, while the settings reader blocks on
+the same corruption. Both fixes predate this removal and are recorded in
+`plugins/runtime/docs/follow-ups.md`, not made here.
+
+**(h) Scorecard R9 is withdrawn, not satisfied.** R9 of
+`docs/assurance/omcc-cutover-scorecard.md` was the owner's requirement to track
+host versions and plan compatibility updates from release notes. This decision
+removed exactly that, so the row's evidence and gate stopped being true. The
+owner decided on 2026-09-28 to record it as `withdrawn`. `runtime:cutover` now
+reports a `withdrawn` row apart from both counts: it is not `satisfied`, and it
+does not hold readiness, for the reason the host-pair identity statement is not
+a blocker. The row stays visible in the completion audit, and every place that
+prints the count names the withdrawn rows beside it. Relabelling a row must
+not clear it, so a row counts as withdrawn only when its evidence or gate cell
+cites an ADR that exists under `docs/adr/`, is Accepted, and has a paragraph
+naming the row with a form of "withdraw" (this paragraph is that for R9). An
+uncited row is `withdrawn-uncited` and a citation that does not check out is
+`withdrawn-unverified`; both stay unresolved, and so does a requirement id
+that appears on two rows (`duplicate-id`). The check reads a reviewed
+document, so it catches a mistaken relabelling, not a determined one. The
+scorecard now reads 11/11 satisfied, with R9 withdrawn by this ADR.
