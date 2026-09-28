@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.22.0...plugin-engineer-v0.22.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** stop routing runtime questions to the removed runtime:compat ([b5e03e9](https://github.com/each4all/agentic-plugins/commit/b5e03e9f65965c02d5262e9a6591ead06d24107e))
+
 ## [0.22.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.11...plugin-engineer-v0.22.0) (2026-09-27)
 
 
