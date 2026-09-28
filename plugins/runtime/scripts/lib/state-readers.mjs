@@ -47,15 +47,6 @@
 //       failures: [{ peer, status, failure_type, operator_action_required, retryable,
 //                    retry_after, retry_command, raw_output }] } | null.
 //
-// inspectCompatRuns({ repoRoot })
-//   → { status: 'missing'|'empty'|'blocked'|'needs_attention'|'release_notes_required'|'available',
-//       root, count, malformed, latest, error? } where latest is
-//     { run_id, status: 'blocked'|'snapshot_only'|'gap_analysis_ready'|'plan_ready'
-//         |'release_notes_required'|'current', artifact_pointer, gap_pointer,
-//       plan_pointer, selected_at, selected_at_ms, drift_class,
-//       release_notes_required, host_gaps: [{ host, status, observed_version,
-//       baseline_version }], release_notes, malformed_artifacts?, next_steps } | null.
-//
 // inspectRuntimeArtifactInventory({ repoRoot, now, retentionCap, maxBytes })
 //   → { requested, executed, status: 'missing'|'blocked'|'needs_attention'|'available'|'empty',
 //       root, policy: { run_count_cap, byte_cap }, total, families, attention, limits, error? }
@@ -66,13 +57,13 @@
 // Low-level helpers (readJsonIfExists / readOptionalJson / readTextIfExists /
 // parseFrontmatterBlock / extractYamlScalar / extractNestedBranch / parseDateMs /
 // artifactTimestampMs / runIdTimestampMs / safeCount / pointer) and the run-id
-// regexes (CONSENSUS_RUN_ID_RE / COMPAT_RUN_ID_RE) are exported for the same
-// consumers. Summary/aggregation helpers stay module-private, exactly as they
+// regex (CONSENSUS_RUN_ID_RE) are exported for the same consumers. The compat
+// run reader and COMPAT_RUN_ID_RE were removed with `runtime:compat`
+// (ADR-0060). Summary/aggregation helpers stay module-private, exactly as they
 // were private to doctor.mjs.
 
 import { lstat, readdir, readFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { isReadyCompatState, projectGapFamily, projectPlanFamily } from './compat-artifacts.mjs';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { sanitizeValue } from './sanitize.mjs';
 import { elapsedMsSince } from './clock.mjs';
 
@@ -150,14 +141,13 @@ export const VALID_PEER_RUN_STATUSES = new Set([
 ]);
 
 export const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
-export const COMPAT_RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // 'permission' is the retired ADR-0038 permission advisory family. ADR-0057
 // §Decision 7 removed its PRODUCER but deliberately kept the family declared:
 // retained advisory runs are historical evidence of what the advisor recommended
 // (including the inverted plan the removal was built on), and stay visible,
 // countable and ageable in the inventory. Nothing writes it any more, and it is
 // NEVER projected into a current recommendation. It is also retention-EXCLUDED:
-// RETENTION_FAMILY_REGISTRY is a closed set of doctor/compat/settings and
+// RETENTION_FAMILY_REGISTRY is a closed set of doctor/settings and
 // `permission` was never a member, so these runs accumulate rather than expire —
 // widening deletion authority to a family whose producer is gone would need its
 // own ADR-0047 amendment. The registration is documentation rather than
@@ -167,6 +157,12 @@ export const COMPAT_RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // scripts/lib/notification-plan.mjs (NOTIFICATION_ARTIFACT_FAMILY).
 // 'egress-launcher' is the ADR-0041 §12 first-class egress launcher plan family,
 // owned by scripts/lib/egress-launcher-plan.mjs (EGRESS_LAUNCHER_ARTIFACT_FAMILY).
+// 'compat' is retired the same way, by ADR-0060 §Decision 6: `runtime:compat`
+// and its reader are gone, and so is compat's place in the retention registry,
+// but the runs it recorded stay on disk as local state. They are declared here
+// so they stay visible and countable rather than being discovered as an
+// unknown family, and an over-cap set keeps its attention — whose remedy is
+// manual review, since nothing in the runtime writes, reads or deletes them.
 const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor', 'permission', 'notification', 'egress-launcher'];
 
 // --- low-level fs / frontmatter / timestamp helpers (moved from doctor.mjs) ---
@@ -251,7 +247,7 @@ export function artifactTimestampMs(artifact, fallbackRunId) {
 }
 
 export function runIdTimestampMs(runId) {
-  const match = String(runId ?? '').match(/^(?:settings|consensus|compat|doctor)-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
+  const match = String(runId ?? '').match(/^(?:settings|consensus|doctor)-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
   if (!match) return null;
   const [, year, month, day, hour, minute, second] = match;
   const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
@@ -272,7 +268,7 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// --- consensus / compat run readers (moved from doctor.mjs) ---
+// --- consensus run reader (moved from doctor.mjs) ---
 
 export async function inspectConsensusRuns({ repoRoot }) {
   const root = join(repoRoot, '.agentic-plugins', 'runs', 'consensus');
@@ -333,383 +329,6 @@ export async function inspectConsensusRuns({ repoRoot }) {
     malformed,
     latest,
   };
-}
-
-export async function inspectCompatRuns({ repoRoot }) {
-  const root = join(repoRoot, '.agentic-plugins', 'runs', 'compat');
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (err) {
-    return {
-      status: 'missing',
-      root,
-      count: 0,
-      malformed: 0,
-      latest: null,
-      error: err.code ?? err.message,
-    };
-  }
-
-  const runs = [];
-  let malformed = 0;
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !COMPAT_RUN_ID_RE.test(entry.name)) continue;
-    const snapshotPath = join(root, entry.name, 'snapshot.json');
-    const snapshot = await readJsonIfExists(snapshotPath);
-    if (!snapshot.ok) {
-      malformed++;
-      runs.push({
-        run_id: entry.name,
-        status: 'blocked',
-        // No readable gap, so no era. `null` never satisfies the ready
-        // predicate, which is the direction a malformed artifact must fail in.
-        schema_era: null,
-        artifact_pointer: pointer(repoRoot, snapshotPath),
-        selected_at: null,
-        selected_at_ms: runIdTimestampMs(entry.name) ?? 0,
-        drift_class: 'unknown',
-        release_notes_required: false,
-        host_gaps: [],
-        release_notes: emptyCompatReleaseNotes(repoRoot, entry.name),
-        reason: snapshot.reason,
-        next_steps: ['Repair malformed runtime:compat snapshot artifacts before relying on compatibility drift checks.'],
-      });
-      continue;
-    }
-    const summary = await summarizeCompatArtifact({
-      repoRoot,
-      runId: entry.name,
-      snapshotPath,
-      snapshot: snapshot.json,
-    });
-    if (summary.status === 'blocked') malformed++;
-    runs.push(summary);
-  }
-
-  if (runs.length === 0) {
-    return {
-      status: 'empty',
-      root,
-      count: 0,
-      malformed,
-      latest: null,
-    };
-  }
-
-  runs.sort((a, b) => b.selected_at_ms - a.selected_at_ms || b.run_id.localeCompare(a.run_id));
-  const latest = runs[0];
-  // INVERTED so the fall-through is safe. This used to list the three
-  // attention-worthy per-run statuses and call everything else `available`, so
-  // a new per-run status — `baseline_unusable` is the one that arrived — would
-  // have been reported as a healthy compat state. Only `current` earns
-  // `available`; anything unrecognised needs attention.
-  //
-  // `available` is decided from the SHARED ready PREDICATE rather than from a
-  // literal, so the producer's positive vocabulary and the consumer's cannot
-  // drift apart — the failure this reader's own comment describes, repeated one
-  // release later for a second status.
-  //
-  // ⚠ THE PREDICATE TAKES THE ERA, NOT ONLY THE TOKEN (ADR-0056 §Decision 6
-  // rules 1-2). An assurance-era run whose stored status is `current` carries a
-  // token this era also uses, meaning something else: there it required a human
-  // grant, here it means no drift. Reading the token alone is the fail-open the
-  // removal review measured. `legacy_era` therefore falls through to
-  // `needs_attention` — the run is neither malformed nor broken, it is simply
-  // not a verdict this runtime may read as current.
-  const status = malformed > 0
-    || latest.status === 'baseline_unusable'
-    || latest.status === 'snapshot_unreadable'
-    || latest.status === 'host_version_unreadable'
-    || latest.status === 'unrecognized'
-    ? 'blocked'
-    : latest.status === 'release_notes_required'
-      ? 'release_notes_required'
-      : isReadyCompatState({ status: latest.status, schemaEra: latest.schema_era })
-        ? 'available'
-        : 'needs_attention';
-  return {
-    status,
-    root,
-    count: runs.length,
-    malformed,
-    latest,
-  };
-}
-
-async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot }) {
-  const gapPath = join(dirname(snapshotPath), 'gap-analysis.json');
-  const planPath = join(dirname(snapshotPath), 'plan.json');
-  const releaseNotesPath = join(dirname(snapshotPath), 'release-notes', 'index.json');
-  const [gap, plan, releaseNotes] = await Promise.all([
-    readOptionalJson(gapPath),
-    readOptionalJson(planPath),
-    readOptionalJson(releaseNotesPath),
-  ]);
-  const selectedAt = artifactTimestampMs(snapshot, runId);
-  const malformed = [gap, plan, releaseNotes].filter((item) => item.status === 'malformed');
-  const gapOverall = gap.json?.overall ?? {};
-  const planStatus = sanitizeValue(plan.json?.status);
-  const releaseNotesSummary = summarizeCompatReleaseNotes({
-    repoRoot,
-    runId,
-    releaseNotesPath,
-    releaseNotes,
-  });
-  // ADR-0053 §Decision 4 as amended by ADR-0056 §Decision 5 — the FAMILY and its
-  // ERA, resolved before any persisted status is read. Measured before the family
-  // check was written: a gap artifact declaring a schema this runtime has never
-  // heard of read as `available / current`, because nothing validated the family
-  // and every branch switched on the stored string. The ERA half is newer and
-  // closes the sibling hole: `current` exists in two eras and means two different
-  // things, so a token read without its era is a verdict read out of context.
-  const gapFamily = gap.status === 'available' ? projectGapFamily(gap.json) : null;
-  const gapFamilyEra = gapFamily?.era ?? null;
-  // ⚠ THE PLAN NEEDS THE SAME FAMILY CHECK THE GAP GETS, and its absence was a
-  // measured override (cross-host review of the removal). The branch below lets
-  // a plan outrank the gap's status, and it switched on the persisted
-  // `plan.status` string alone — so an assurance-era plan carrying
-  // `blocked_assurance` or `blocked_legacy_unassured` matched neither named
-  // status and fell through to `plan_ready`, presenting a verdict from the
-  // removed layer as this era's "there is a plan to act on".
-  //
-  // A non-current plan is POINTED AT and never DECIDES. It is not treated as
-  // malformed — it is a perfectly good artifact from an earlier contract — and
-  // `plan_pointer` below still carries it, so an operator can read what it said.
-  const planFamily = plan.status === 'available' ? projectPlanFamily(plan.json) : null;
-  const planDecides = planFamily?.kind === 'readable';
-  // A plan that declares itself non-actionable (runtime-compat-plan-1.2
-  // `actionable: false` — no drift, no surfaces, no notification-watch
-  // signal; the plan exists only to render the ADR-0047 standing watch)
-  // must not outrank a current gap: without this, every routine standing-
-  // watch plan run would flip doctor/dashboard/cutover compat state to
-  // plan_ready/needs_attention. Older plans without the field keep today's
-  // plan-presence-wins behavior.
-  //
-  // The gap side is the READY PREDICATE, not the literal `current`. Keyed on the
-  // literal, this protection did not reach `assured` — the status ADR-0053
-  // §Decision 4 added for drift a human reviewed — so a routine standing-watch
-  // plan flipped a reviewed host to `plan_ready / needs_attention`, which is the
-  // very failure this carve-out exists to prevent, reappearing one release later
-  // for the second ready status. `assured` is gone with the layer; the predicate
-  // stays because it now also carries the ERA, which is the thing a literal can
-  // never carry.
-  const planInformationalOnly = planDecides
-    && plan.json?.actionable === false
-    && isReadyCompatState({ status: gapOverall.status, schemaEra: gapFamilyEra });
-  // Ordered ABOVE the plan and gap branches, because it outranks both.
-  // `baseline_unusable` is compat's terminal marker for "nothing was
-  // compared": the packaged baseline could not be read, parsed, or contained.
-  // Without this it reached `gap_analysis_ready` — and, when a plan artifact
-  // also existed, `plan_ready` — so a broken package was reported as analysis
-  // that is ready to act on, carrying `runtime:compat plan` as its next step.
-  // That is the same defect compat's own `buildGapAnalysis` fixed one layer
-  // down, repeated by its reader. The single string is compat's; nothing is
-  // re-derived here.
-  const baselineUnusable = gap.status === 'available' && gapOverall.status === 'baseline_unusable';
-  // The snapshot-family guard outranks the plan for the same reason
-  // `baseline_unusable` does: a plan cannot be acted on when the observation
-  // behind it could not be read. Without this, an existing plan artifact turned
-  // a blocked run into `plan_ready`.
-  const snapshotUnreadable = gap.status === 'available' && gapOverall.status === 'snapshot_unreadable';
-  const hostVersionUnreadable = gap.status === 'available' && gapOverall.status === 'host_version_unreadable';
-  // An unread narrowing field is how a restricted verdict becomes an
-  // unrestricted one, so an unknown family is refused rather than consumed.
-  const unrecognizedFamily = gapFamily?.kind === 'unrecognized';
-  const legacyFamily = gapFamily?.kind === 'legacy';
-  const status = malformed.length > 0
-    ? 'blocked'
-    : unrecognizedFamily
-      ? 'unrecognized'
-      : baselineUnusable
-        ? 'baseline_unusable'
-        : snapshotUnreadable
-          ? 'snapshot_unreadable'
-        : hostVersionUnreadable
-          ? 'host_version_unreadable'
-        // History, and it cannot be planned away — the only honest next step is
-        // a fresh snapshot, so a plan artifact must not mask it either.
-        : legacyFamily
-          ? 'legacy_era'
-          : planDecides && !planInformationalOnly
-        ? planStatus === 'blocked_release_notes_required'
-          ? 'release_notes_required'
-          // A plan can also declare itself blocked on the baseline. The gap
-          // branch above normally catches that first; this keeps the two
-          // artifacts from disagreeing if only the plan carries the verdict.
-          : planStatus === 'blocked_baseline_unusable'
-            ? 'baseline_unusable'
-            : 'plan_ready'
-        : gap.status === 'available'
-          // The persisted `status` is the producer's decided verdict; the
-          // `release_notes_required` FLAG is evidence that travels beside it.
-          // Reading the flag first meant an `assured` run — where compat already
-          // decided a human grant outranks the release-note requirement —
-          // projected `release_notes_required`, re-deciding one layer up a
-          // question the producer had answered.
-          ? (gapOverall.status === 'release_notes_required'
-              || (gapOverall.release_notes_required === true
-                && !isReadyCompatState({ status: gapOverall.status, schemaEra: gapFamilyEra })))
-            ? 'release_notes_required'
-            : gapOverall.status === 'current'
-              ? 'current'
-              // Only compat's own vocabulary reaches `gap_analysis_ready`.
-              // This was the ELSE branch, so a persisted status this reader
-              // has never heard of — the very case the collection mapping
-              // below was hardened against — was projected as analysis ready
-              // to act on, with `runtime:compat plan` as its next step. The
-              // collection status stayed conservative and the per-run one did
-              // not, which is worse than either being wrong consistently:
-              // every surface that renders a run reads the per-run value.
-              // Reading an unrecognised artifact is a reason to stop.
-              //
-              // Its OWN status, not `blocked`: that value already means "a
-              // compat artifact on disk is malformed", and it feeds the
-              // malformed counter and the `malformed_artifacts` pointer list.
-              // A well-formed file carrying a verdict this runtime has never
-              // heard of is a different fact, and reusing `blocked` reported a
-              // malformed-artifact count with no artifact to point at.
-              : gapOverall.status === 'gap_analysis_ready'
-                ? 'gap_analysis_ready'
-                : 'unrecognized'
-          : 'snapshot_only';
-  return {
-    run_id: sanitizeValue(snapshot.run_id) ?? runId,
-    status,
-    // ⚠ THE ERA TRAVELS WITH THE STATUS (ADR-0056 §Decision 6 rule 2). This
-    // projection used to drop it, and the cross-host review of the removal
-    // measured what that costs: `current` exists in two schema eras and means
-    // two different things, so every downstream ready-set test that saw only the
-    // token was free to read an assurance-era record as a present-tense verdict.
-    // `null` is honest for a run whose gap could not be read at all.
-    schema_era: gapFamilyEra,
-    artifact_pointer: pointer(repoRoot, snapshotPath),
-    gap_pointer: gap.status === 'available' || gap.status === 'malformed' ? pointer(repoRoot, gapPath) : null,
-    plan_pointer: plan.status === 'available' || plan.status === 'malformed' ? pointer(repoRoot, planPath) : null,
-    selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
-    selected_at_ms: selectedAt ?? 0,
-    drift_class: sanitizeValue(gapOverall.drift_class) ?? 'unchecked',
-    release_notes_required: gapOverall.release_notes_required === true || status === 'release_notes_required',
-    host_gaps: Array.isArray(gap.json?.host_gaps)
-      ? gap.json.host_gaps.map((item) => ({
-          host: sanitizeValue(item.host),
-          status: sanitizeValue(item.status),
-          observed_version: sanitizeValue(item.observed_version),
-          baseline_version: sanitizeValue(item.baseline_version),
-        }))
-      : [],
-    release_notes: releaseNotesSummary,
-    malformed_artifacts: malformed.map((item) => pointer(repoRoot, item.path)),
-    next_steps: compatNextSteps({ runId, status, gap, plan }),
-  };
-}
-
-function summarizeCompatReleaseNotes({ repoRoot, runId, releaseNotesPath, releaseNotes }) {
-  if (releaseNotes.status === 'missing') return emptyCompatReleaseNotes(repoRoot, runId);
-  if (releaseNotes.status === 'malformed') {
-    return {
-      pointer: pointer(repoRoot, releaseNotesPath),
-      status: 'malformed',
-      count: 0,
-      content_backed: 0,
-      url_pointers: 0,
-      stored: 0,
-      not_fetched: 0,
-    };
-  }
-  const notes = Array.isArray(releaseNotes.json?.notes) ? releaseNotes.json.notes : [];
-  return {
-    pointer: pointer(repoRoot, releaseNotesPath),
-    status: 'available',
-    count: notes.length,
-    content_backed: notes.filter((note) => isContentBackedCompatReleaseNote(note)).length,
-    url_pointers: notes.filter((note) => note.kind === 'url').length,
-    stored: notes.filter((note) => note.status === 'stored').length,
-    not_fetched: notes.filter((note) => note.status === 'not_fetched').length,
-  };
-}
-
-function isContentBackedCompatReleaseNote(note) {
-  if (!note || note.status !== 'stored') return false;
-  if (note.kind === 'file') return Boolean(note.pointer);
-  if (note.kind === 'url') return Boolean(note.content_pointer);
-  return false;
-}
-
-function emptyCompatReleaseNotes(repoRoot, runId) {
-  return {
-    pointer: pointer(repoRoot, join(repoRoot, '.agentic-plugins', 'runs', 'compat', runId, 'release-notes', 'index.json')),
-    status: 'missing',
-    count: 0,
-    content_backed: 0,
-    url_pointers: 0,
-    stored: 0,
-    not_fetched: 0,
-  };
-}
-
-function compatNextSteps({ runId, status, gap, plan }) {
-  const storedGapSteps = Array.isArray(gap.json?.next_steps)
-    ? gap.json.next_steps.map((step) => sanitizeValue(step)).filter(Boolean)
-    : [];
-  if (status === 'blocked') return ['Repair malformed runtime:compat artifacts, then rerun runtime:compat check.'];
-  if (status === 'snapshot_only') return [`runtime:compat check --run-id ${runId}`];
-  // A terminal baseline failure carries the repair instruction the gap already
-  // stored. Falling through to the empty return dropped it — the reader made
-  // the status terminal and then discarded the only line saying what to do,
-  // which is exactly the defect just removed from cutover's next_actions.
-  if (status === 'baseline_unusable') {
-    return storedGapSteps.length > 0
-      ? storedGapSteps
-      : ['Repair the packaged host-parity baseline — reinstall or update the runtime plugin; compat cannot compare host versions until it resolves.'];
-  }
-  // The producer stores the specific repair instruction; re-deriving a generic
-  // line would discard the one field whose job is naming the observed family.
-  if (status === 'snapshot_unreadable') {
-    return storedGapSteps.length > 0
-      ? storedGapSteps
-      : ['Upgrade the runtime plugin — the recorded snapshot declares a compatibility schema this runtime does not read; re-running check would rewrite the same bytes.'];
-  }
-  if (status === 'host_version_unreadable') {
-    return storedGapSteps.length > 0
-      ? storedGapSteps
-      : ['A host printed a version this runtime cannot read faithfully — repair or re-probe the host CLI, then take a fresh snapshot.'];
-  }
-  // A run from an earlier schema era. ⚠ THE STORED STEPS ARE NOT USED HERE, and
-  // that is the one place this function deliberately does not prefer them: an
-  // assurance-era gap stored steps naming a review process that no longer exists
-  // (ADR-0056), so echoing them would hand the operator an action they cannot
-  // take. Every other branch keeps preferring the producer's own line.
-  if (status === 'legacy_era') {
-    return [`runtime:compat snapshot — this run was written by an earlier compatibility schema era, whose verdict this runtime does not read as current (ADR-0056 §Decision 5). Take a fresh snapshot, then runtime:compat check --run-id <new>.`];
-  }
-  if (status === 'release_notes_required') {
-    return storedGapSteps.length > 0 ? storedGapSteps : [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`];
-  }
-  if (status === 'gap_analysis_ready') return [`runtime:compat plan --run-id ${runId}`];
-  if (status === 'plan_ready') {
-    const steps = Array.isArray(plan.json?.recommended_sequence)
-      ? plan.json.recommended_sequence.map((item) => sanitizeValue(item.step)).filter(Boolean)
-      : [];
-    return steps.length > 0 ? steps : ['Review the runtime:compat update plan before changing compatibility-sensitive surfaces.'];
-  }
-  // `current` is the one status whose honest answer is silence: there is nothing
-  // to do. It has to be NAMED, because the line below fails closed. That line
-  // used to be `return []`, which served `current` only by accident, and when
-  // aaf4744 hardened it for `unrecognized`, every healthy run was told to re-run
-  // check with a newer runtime, on doctor's default text output.
-  //
-  // The gap's stored step is not echoed. For a current run it is
-  // `runtime:compat plan`, the ADR-0047 §5 standing watch, which is informational
-  // (see `planInformationalOnly`) and would read as outstanding work, even after
-  // the plan has run. An empty list is also what lets doctor's
-  // `runtime_handoff_artifacts` fall back to its own line when the collection
-  // that is short is not compat.
-  if (status === 'current') return [];
-  // `unrecognized` lands here on purpose, and so would a status added without a
-  // branch. Silence is the wrong answer for both: a run with no next step reads
-  // as a run with nothing to do.
-  return [`runtime:compat check --run-id ${runId} — this run's recorded state (${status}) is not one this runtime recognises; re-run check with a runtime new enough to read it.`];
 }
 
 function summarizeConsensusArtifact({ repoRoot, runId, artifactPath, artifact }) {

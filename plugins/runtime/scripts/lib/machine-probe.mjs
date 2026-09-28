@@ -817,7 +817,7 @@ function parseClaudeMarketplaceJson(stdout) {
 }
 
 // Codex `plugin marketplace list --json` carries the marketplace source for source-backed
-// marketplaces as of 0.139.0 (host-parity-baseline), but the exact object shape is not
+// marketplaces as of Codex 0.139.0 (observed), but the exact object shape is not
 // pinned by non-interactive help. Scan defensively for an explicit canonical github source
 // identity in a SOURCE field; degrade to `unknown` (never `missing`) on an unrecognized
 // shape so absence of a recognizable source is never read as "not registered". Codex is

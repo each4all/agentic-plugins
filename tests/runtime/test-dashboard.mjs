@@ -24,7 +24,6 @@ import {
   inspectSettingsRecency,
   parseDashboardArgs,
   parseMacroSubtasks,
-  readHostParityBaseline,
   readRecentNotifications,
   renderDashboardText,
   summarizeNotifyConfig,
@@ -179,7 +178,7 @@ describe('runtime dashboard macro subtask parsing', () => {
 describe('runtime dashboard report — empty repository', () => {
   it('degrades every section to missing/empty/off and keeps the three-persona contract', async () => {
     const root = makeRepo();
-    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
 
     assert.equal(report.schema_version, DASHBOARD_SCHEMA_VERSION);
     assert.equal(report.runtime_version, RUNTIME_VERSION);
@@ -207,7 +206,9 @@ describe('runtime dashboard report — empty repository', () => {
 
     assert.equal(report.tier2.doctor.status, 'missing');
     assert.equal(report.tier2.settings.status, 'missing');
-    assert.equal(report.tier2.baseline.status, 'missing');
+    // ADR-0060 — host-version tracking is gone, and so are both Tier 2 rows.
+    assert.equal(Object.hasOwn(report.tier2, 'baseline'), false);
+    assert.equal(Object.hasOwn(report.tier2, 'compat'), false);
     assert.equal(report.tier2.notify.config.status, 'off');
     assert.equal(report.tier2.notify.config.channel, 'none');
     assert.equal(report.tier2.notify.state.status, 'missing');
@@ -293,6 +294,8 @@ describe('runtime dashboard report — populated repository', () => {
       path.join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260701T000000Z-bbbbbb', 'settings.json'),
       JSON.stringify({ run_id: 'settings-20260701T000000Z-bbbbbb', status: 'completed', terminal: true, created_at: '2026-07-01T00:00:00Z' }),
     );
+    // An orphaned compat run (ADR-0060 §Decision 6). Nothing reads it any
+    // more; it is seeded so the rows below prove it reaches no Tier 2 row.
     writeFileDeep(
       path.join(root, '.agentic-plugins', 'runs', 'compat', 'compat-20260701T000000Z-aaaaaa', 'snapshot.json'),
       JSON.stringify({ run_id: 'compat-20260701T000000Z-aaaaaa', created_at: '2026-07-01T00:00:00Z' }),
@@ -307,16 +310,12 @@ describe('runtime dashboard report — populated repository', () => {
         summary: { executed: 2, passed: 2, failed: 0, skipped: 0 },
       }),
     );
-    writeFileDeep(
-      path.join(root, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md'),
-      '# Host parity baseline\n\nObserved on 2026-07-01 with Claude Code `2.1.197 (Claude Code)`, Codex CLI `codex-cli 0.142.4`.\n',
-    );
   }
 
   it('aggregates tier1 rows and tier2 recency with stale/attention emphasis', async () => {
     const root = makeRepo();
     populateRepo(root);
-    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
 
     const engineer = report.tier1.personas.engineer;
     assert.equal(engineer.workflows.active.length, 1);
@@ -359,22 +358,16 @@ describe('runtime dashboard report — populated repository', () => {
     // never re-judges doctor's currency (plugin drift, hook state).
     assert.match(report.tier2.settings.hook_attestation.scope, /recency only/);
 
-    assert.equal(report.tier2.compat.latest.run_id, 'compat-20260701T000000Z-aaaaaa');
-    assert.equal(report.tier2.compat.latest.status, 'snapshot_only');
-
-    assert.equal(report.tier2.baseline.status, 'available');
-    assert.deepEqual(report.tier2.baseline.baseline, {
-      date: '2026-07-01',
-      claude: '2.1.197 (Claude Code)',
-      codex: 'codex-cli 0.142.4',
-    });
+    assert.equal(Object.hasOwn(report.tier2, 'compat'), false, 'the orphaned compat run reaches no Tier 2 row');
+    assert.equal(Object.hasOwn(report.tier2, 'baseline'), false);
+    assert.equal(report.schema_version, 'runtime-dashboard-3.0');
 
     const text = renderDashboardText(report);
     assert.match(text, /engineer: 1 active workflow/);
     assert.match(text, /! peer-run plan-verify-20260704T115000Z-abcdef status=running STALE/);
     assert.match(text, /macro macro-plan-20260701T000000Z-aaaaaa: 1\/2 completed; open: two=in_progress/);
     assert.match(text, /doctor: doctor-20260601T000000Z-aaaaaa .*0\.0\.1 ≠ current .* STALE/);
-    assert.match(text, /baseline: observed 2026-07-01/);
+    assert.doesNotMatch(text, /- (compat|baseline):/);
   });
 });
 
@@ -470,7 +463,7 @@ describe('runtime dashboard notify sections', () => {
       path.join(notifyDir, 'log.ndjson'),
       '{"ts":"2026-07-04T11:00:00Z","kind":"workflow-terminal","urgency":"normal","title":"done","event_id":"w1"}\n',
     );
-    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
     assert.equal(report.tier2.notify.config.channel, 'file-log');
     assert.equal(report.tier2.notify.recent.status, 'available');
     assert.equal(report.tier2.notify.recent.entries.length, 1);
@@ -486,19 +479,22 @@ describe('runtime dashboard notify sections', () => {
 describe('runtime dashboard retention projection (ADR-0047 §7)', () => {
   it('carries the retention section (with the actionable/pinned split) in a snapshot', async () => {
     const root = makeAdvisoryRepo(); // git-inited so the citation scan can enumerate
-    const compatA = 'compat-20260101T000000Z-000001';
-    const compatB = 'compat-20260102T000000Z-000002';
-    for (const runId of [compatA, compatB]) {
-      writeFileDeep(path.join(root, '.agentic-plugins', 'runs', 'compat', runId, 'snapshot.json'), '{}\n');
+    // settings is the registry family with deletable runs since ADR-0060
+    // removed compat; a terminal artifact keeps the uncited run unpinned.
+    const settingsA = 'settings-20260101T000000Z-000001';
+    const settingsB = 'settings-20260102T000000Z-000002';
+    for (const runId of [settingsA, settingsB]) {
+      writeFileDeep(path.join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), JSON.stringify({ status: 'completed', terminal: true }));
     }
     // A tracked doc citing one run → that run is pinned; the other is not.
-    fs.writeFileSync(path.join(root, 'CITES.md'), `pinned: ${compatA}\n`);
+    fs.writeFileSync(path.join(root, 'CITES.md'), `pinned: ${settingsA}\n`);
     gitAdv(root, ['add', 'CITES.md']);
 
-    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome(), entryAdvisory: { host: 'claude' } });
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome(), entryAdvisory: { host: 'claude' } });
     assert.ok(report.tier2.retention, 'snapshot must carry tier2.retention');
     assert.equal(report.tier2.retention.scan_complete, true);
-    assert.ok(report.tier2.retention.projection.compat, 'compat projected');
+    assert.ok(report.tier2.retention.projection.settings, 'settings projected');
+    assert.equal(Object.hasOwn(report.tier2.retention.projection, 'compat'), false, 'compat is no longer a registry family');
     assert.ok(report.tier2.retention.plan_hash.startsWith('sha256:'));
     const text = renderDashboardText(report);
     assert.match(text, /- retention:/);
@@ -507,7 +503,7 @@ describe('runtime dashboard retention projection (ADR-0047 §7)', () => {
   it('omits the retention section entirely in a watch iteration (no git spawn, §17)', async () => {
     const root = makeAdvisoryRepo();
     // entryAdvisory omitted ⇒ watch-shaped build ⇒ no retention, no git.
-    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
     assert.ok(!('retention' in report.tier2), 'watch report must not carry tier2.retention');
   });
 });
@@ -542,7 +538,7 @@ describe('runtime dashboard egress attempt visibility (ADR-0041 §6)', () => {
       path.join(notifyDir, 'log.ndjson'),
       '{"ts":"2026-07-04T11:01:00Z","kind":"approval","urgency":"urgent","title":"egressed","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout"}\n',
     );
-    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
     assert.match(renderDashboardText(report), /egress:telegram=failed\(timeout\)/);
   });
 
@@ -565,7 +561,7 @@ describe('runtime dashboard egress attempt visibility (ADR-0041 §6)', () => {
     const throttleDir = egressThrottleDir(root);
     const key = egressThrottleKey({ eventId: 'e', service: 'telegram', fingerprint: 'fp' });
     recordEgressFailure({ throttleDir, key, now: NOW.getTime(), baseMs: 3_600_000 });
-    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
     assert.match(renderDashboardText(report), /egress: 1 throttled/);
   });
 
@@ -580,7 +576,7 @@ describe('runtime dashboard egress attempt visibility (ADR-0041 §6)', () => {
       path.join(notifyDir, 'log.ndjson'),
       '{"ts":"2026-07-04T11:00:00Z","kind":"approval","urgency":"urgent","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout"}\n',
     );
-    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
     assert.notEqual(report.tier2.notify.config.channel, 'file-log');
     assert.equal(report.tier2.notify.recent.status, 'available', 'egress mirror visible despite channel != file-log');
     assert.match(renderDashboardText(report), /egress:telegram=failed\(timeout\)/);
@@ -628,15 +624,6 @@ describe('runtime dashboard tier2 readers — degraded shapes', () => {
     assert.equal(settings.interrupted, true);
     assert.equal(settings.latest.status, 'in-progress');
     assert.equal(settings.latest.terminal, false);
-  });
-
-  it('reports an unparsed baseline file distinctly from a missing one', async () => {
-    const root = makeRepo();
-    writeFileDeep(path.join(root, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md'), 'no header here\n');
-    const baseline = await readHostParityBaseline({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime') });
-    // ADR-0051 §Decision 4 — one failure vocabulary across readers.
-    assert.equal(baseline.status, 'unparseable');
-    assert.equal(baseline.baseline, null);
   });
 });
 

@@ -1,7 +1,7 @@
 // ADR-0047 §7 retention-apply — the M1 DELETING executor over the read-only
 // planner (retention-planner.mjs). This is the ONE named runtime executor with
 // an enumerated grant to delete agentic-plugins-owned state: unpinned, over-cap,
-// age-cleared runs of the three v1 families (doctor / compat / settings), under
+// age-cleared runs of the registry families (doctor / settings), under
 // a reviewed plan hash, behind write-ahead receipts, an explicit --execute flag,
 // and containment + no-follow validation re-run at the destructive boundary.
 //
@@ -46,8 +46,8 @@ export const APPLY_MAX_BYTES = 500 * 1024 * 1024; // 500 MiB per apply run
 export const APPLY_MAX_ELAPSED_MS = 30_000;
 
 // Last-instant age margin: a run whose newest mtime is within this window of
-// `now` is conceded even if the plan listed it — a live writer (doctor/compat/
-// settings creating/resuming a run) must never lose data to the janitor. Wider
+// `now` is conceded even if the plan listed it — a live writer (doctor/settings
+// creating/resuming a run) must never lose data to the janitor. Wider
 // than the planner's min-age guard is unnecessary; equal is the floor.
 export const APPLY_AGE_MARGIN_MS = 15 * 60 * 1000; // 15 minutes
 

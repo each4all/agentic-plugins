@@ -14,8 +14,6 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
-import { baselineFailure, classifyHostPairRelation, normalizeVersion, readVersionToken, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
-import { buildHostVersionProbe } from './lib/host-version-probe.mjs';
 import { sanitizeValue } from './lib/sanitize.mjs';
 import { runEmit } from './notify.mjs';
 import { buildEventId, deriveRepoIdent } from './lib/notify-schema.mjs';
@@ -27,7 +25,6 @@ import { EGRESS_ATTEMPT_HASH_DOMAIN, deriveActivationFingerprint } from './lib/e
 import { EGRESS_CREDENTIAL_ENV_VAR } from './lib/machine-profile.mjs';
 import {
   artifactTimestampMs,
-  inspectCompatRuns,
   inspectConsensusRuns,
   inspectRuntimeArtifactInventory,
   inspectWorkflowNamespace,
@@ -101,8 +98,8 @@ const DOCTOR_RUN_ID_RE = /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // inner report alone moved `doctor_runs` from `available malformed=0` to
 // `blocked malformed=70`. So the READABLE lists below are the load-bearing half,
 // and the producer constants are only their newest members.
-const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.2';
-const DOCTOR_REPORT_SCHEMA_VERSION = 'runtime-doctor-1.2';
+const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.3';
+const DOCTOR_REPORT_SCHEMA_VERSION = 'runtime-doctor-1.3';
 // ⚠ MATCHED PAIRS, NOT TWO INDEPENDENT ALLOWLISTS. The outer artifact and the
 // inner report bump together, so exactly two tuples were ever written. Checking
 // each half against its own list would additionally admit `(artifact-1.1,
@@ -116,6 +113,21 @@ const READABLE_DOCTOR_SCHEMA_PAIRS = Object.freeze([
   // advisor. A non-additive field DELETION, so the pair bumps: a 1.1 reader meeting a
   // 1.2 report would find the field absent, and the version is what says why.
   Object.freeze({ artifact: 'runtime-doctor-artifact-1.2', report: 'runtime-doctor-1.2' }),
+  // 1.3 — ADR-0060 removed host-version tracking, and the report lost
+  // `host_parity_baseline` and `compat_runs` with it; `experience_parity` moved to
+  // 1.2 as well. Another non-additive deletion, so the pair bumps again. The
+  // sections an older retained artifact still carries are left unread: nothing
+  // here projects a recorded baseline verdict as history, because nothing
+  // consumes one any more (ADR-0060 §Decision 6).
+  //
+  // ⚠ THE SAME-RELEASE RULE PROTECTS ONE DIRECTION ONLY. It makes this reader
+  // accept every older artifact; it cannot make an OLDER installed reader accept
+  // this one. Both hosts read the same `.agentic-plugins/runs/doctor/`, so a 1.3
+  // proof recorded on one host while the other still runs the previous runtime
+  // makes that host's doctor count it `malformed` and its dashboard report the
+  // doctor row blocked (measured 2026-09-28 against the 1.2 dashboard reader)
+  // until that host is updated too. Install on both hosts, then record.
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.3', report: 'runtime-doctor-1.3' }),
 ]);
 function isReadableDoctorSchemaPair(artifactSchema, reportSchema) {
   return READABLE_DOCTOR_SCHEMA_PAIRS.some((pair) => pair.artifact === artifactSchema && pair.report === reportSchema);
@@ -124,10 +136,6 @@ const DOCTOR_LATEST_SCHEMA_VERSION = 'runtime-doctor-latest-1.0';
 
 export async function runDoctor({
   repoRoot = process.cwd(),
-  // ADR-0051 — the baseline comes from the packaged copy. Injectable only
-  // so tests can point at a fixture package; it is not a repository override.
-  pluginRoot,
-
   homeDir = homedir(),
   env = process.env,
   now = new Date(),
@@ -214,17 +222,9 @@ export async function runDoctor({
     observedCodexHookConfig: machine.codexHookConfig,
   });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList, codexPluginHooks, codexInstallSummary });
-  // ⚠ STILL DESTRUCTURED, though only one name comes out now. Assigning the
-  // whole result to `hostParityBaseline` would drop `.status` off the section
-  // `cutover-audit.mjs` reads and change its verdict silently (cross-host
-  // review) — the one shape this refactor could break without any test noticing.
-  // ADR-0056 §Decision 1 removed the second name (`assurance`); the shape is
-  // kept so the same mistake is not available to the next edit.
-  const { baseline: hostParityBaseline } = await buildHostParityFacts({
-    claude,
-    codex,
-    pluginRoot,
-  });
+  // ADR-0060 — no host-version verdict. The observed `claude --version` /
+  // `codex --version` text stays in `clis`, reported as a fact; nothing here
+  // compares it against a remembered pair any more.
   const settingsRuns = await inspectSettingsRuns({
     repoRoot: resolvedRepoRoot,
     // The currency mirror needs the SAME inputs the producer bound against: the strictly
@@ -253,9 +253,6 @@ export async function runDoctor({
     staleGraceMs: parseNonNegativeInt(env.PEER_RUN_STALE_GRACE_MS, DEFAULT_STALE_GRACE_MS),
   });
   const consensusRuns = await inspectConsensusRuns({
-    repoRoot: resolvedRepoRoot,
-  });
-  const compatRuns = await inspectCompatRuns({
     repoRoot: resolvedRepoRoot,
   });
   // ADR-0044 S4 — session-capture readiness via the shared assessment
@@ -408,7 +405,6 @@ export async function runDoctor({
     ledgers,
     settingsRuns,
     consensusRuns,
-    compatRuns,
     permissionProof: permissionProofSection,
     deepPeerSmoke: deepPeerSmokeSection,
     workflowContinuationProof: workflowContinuationProofSection,
@@ -454,12 +450,10 @@ export async function runDoctor({
     plugin_command_surface: pluginCommandSurface,
     codex_plugin_hooks: codexPluginHooks,
     host_parity: hostParity,
-    host_parity_baseline: hostParityBaseline,
     companions: companion,
     model_effort: modelEffort,
     settings_runs: settingsRuns,
     consensus_runs: consensusRuns,
-    compat_runs: compatRuns,
     session_capture: sessionCaptureReadiness,
     entry_brief: entryBriefReadiness,
     doctor_runs: doctorRuns,
@@ -977,8 +971,9 @@ function buildCodexHookReviewTargets({ summary, plugin_entries, plugins }) {
   return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
 }
 
-// Codex hook-state event vocabulary observed on codex-cli 0.144.1 (see
-// plugins/runtime/docs/codex-capability-baseline.md § Hooks): the events
+// Codex hook-state event vocabulary observed on codex-cli 0.144.1 (recorded at
+// the time in plugins/runtime/docs/codex-capability-baseline.md § Hooks, which
+// ADR-0060 §Decision 2 deleted with its probed knowledge): the events
 // Codex actually materializes as `[hooks.state]` entries. A hooks-file event
 // outside this set that has never been observed on this machine (e.g.
 // Claude's `Notification`, which current Codex does not recognize) must not
@@ -1265,171 +1260,6 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
     bundled,
     hooks_file: declared ? declaredFile : defaultHooksFile ?? { status: 'missing' },
     default_hooks_file: defaultHooksFile ?? { status: 'missing' },
-  };
-}
-
-// Baseline freshness lives in doctor (frequently run) so host-version drift
-// surfaces without a manual runtime:compat run. cutover-audit reuses this
-// result rather than re-parsing the baseline (single source of truth).
-//
-// ADR-0053 §Decision 3 split what used to be one verdict into THREE facts over
-// TWO report sections. ADR-0056 §Decision 1 removed the third: integrity
-// outranks the rest, exactness answers "does the packaged evidence describe this
-// machine", and there is no longer a fact answering "is this machine covered by
-// accepted review" — no machine verdict of `reviewed` exists, by decision.
-//
-// ⚠ EXACTNESS IS NOT RELAXED BY THAT REMOVAL. ADR-0053 §Decision 1's strict
-// normalized equality is exactly what it was; ADR-0056 §Consequences states the
-// boundary in one line — removing assurance removes the SECOND fact at the
-// freshness site, not the first.
-//
-// ⚠ WHAT THIS STILL GATES. `cutover-audit.mjs` reads
-// `host_parity_baseline.evidence.normalized_observed` for the live host pair
-// (ADR-0056 §Decision 6 item 3 moved it here from the removed section), so the
-// probe below is a readiness input and not report decoration. The note this
-// replaces was wrong in the other direction for one release — it claimed
-// "reporting only … nothing reads it" after two readers had been wired — and the
-// correction is kept as a warning about the class, not just the instance.
-async function buildHostParityFacts({ claude, codex, pluginRoot }) {
-  const probe = buildHostVersionProbe({
-    claudeProbe: claude?.version?.status ?? null,
-    codexProbe: codex?.version?.status ?? null,
-    claudeText: observedVersionText(claude?.version),
-    codexText: observedVersionText(codex?.version),
-  });
-  const resolved = await resolveHostParityBaseline({ pluginRoot });
-  return {
-    baseline: buildHostParityBaseline({ resolved, probe }),
-  };
-}
-
-/**
- * Layers 1 and 2 — integrity, then exactness. PURE: the one read happened above.
- *
- * The exactness COMPUTATION is unchanged by this slice, deliberately and by
- * decision (ADR-0053 §Decision 1): strict normalized equality is correct for
- * the question it answers, and relaxing it was rejected on measurement — 17 of
- * 18 Claude Code steps are patch-position and the single lap that produced real
- * adoption work is one of them, so a patch-tolerant verdict would have graded
- * the `2.1.233` tool withdrawal as not worth reporting.
- *
- * `evidence.direction` is evidence ONLY (§Decision 10) and no branch below reads
- * it. It was kept out of the coverage path deliberately when one existed; with
- * the coverage path removed (ADR-0056) the separation still matters, because
- * `direction` answers a comparative question that ADR-0053 §Decision 9 forbids
- * promoting into a readiness verdict at all.
- */
-function buildHostParityBaseline({ resolved, probe }) {
-  const { claude_probe: claudeProbe, codex_probe: codexProbe, probes_ok: probesOk } = probe;
-  const { claude: observedClaude, codex: observedCodex } = probe.observed;
-  const normalizedObserved = probe.normalized_observed;
-  const baseline = resolved.baseline;
-  // Both sides non-null explicitly. Comparing two nulls would call an
-  // unreadable probe "current"; the old code was saved from that only by
-  // `parseBaseline` guaranteeing a non-null baseline version, which is a
-  // property of a different module.
-  // Did reading either observed version DROP a component? The four-component
-  // class, decided once and consumed by the ladder below — deliberately not
-  // also anded into `current`, where a mutation proved it redundant: the ladder
-  // answers `unknown` before `current` is ever consulted, and a second copy
-  // five lines away is noise rather than defence.
-  const truncatedObserved = ['claude', 'codex'].some((host) => readVersionToken(probe.observed[host]).truncated);
-  const current = Boolean(probesOk && baseline
-    && normalizedObserved.claude && normalizedObserved.codex
-    && normalizedObserved.claude === normalizeVersion(baseline.claude)
-    && normalizedObserved.codex === normalizeVersion(baseline.codex));
-  // ADR-0051 §Decision 4 — visible failure. With no fallback source there is
-  // nothing to silently degrade through. Asking the resolver's own predicate
-  // rather than enumerating its statuses is what keeps a NEW failure from
-  // arriving here as `stale`: an integrity problem reported as a freshness
-  // problem sends the operator to refresh a baseline they cannot even read.
-  const failure = baselineFailure(resolved);
-  let status;
-  let nextAction;
-  // Integrity is ordered ABOVE the probe gate, because the two are independent
-  // facts and only one of them is about the hosts. With unavailable CLIs and a
-  // baseline resolving outside the package, this reported `unknown` and told
-  // the operator to probe their CLIs — hiding a broken install behind a
-  // missing one, and behind a remediation that would not have fixed it either
-  // (cross-host review, reproduced). The probe failure is not lost: the claude
-  // and codex checks report it directly, which is where it belongs.
-  if (failure) {
-    status = failure.status;
-    nextAction = failure.operator_action;
-  } else if (!probesOk) {
-    status = 'unknown';
-    nextAction = 'Probe host CLIs first — claude/codex --version did not return a usable version (one or both unavailable); cannot assess baseline freshness.';
-  } else if (truncatedObserved) {
-    // The FOUR-COMPONENT false-exact, closed here because the preceding subtask
-    // routed it to this one by name (`docs/follow-ups.md`) after finding it
-    // while single-sourcing the comparator, and because leaving it would ship a
-    // report that contradicts itself on adjacent lines — measured: `1.2.3.4`
-    // against a `1.2.3` baseline reported `baseline-freshness: current` beside
-    // `baseline-direction: unparseable`.
-    //
-    // `SEMVER_RE` matches the first three components, so `normalizeVersion`
-    // turns `1.2.3.4` into `1.2.3` and any equality over the result calls it
-    // EXACTLY equal to a genuine `1.2.3`. Refusing a truncated token is the
-    // same rule ADR-0054 §Decision 7 states for the membership path —
-    // "requiring the observed token's component count to match" — applied to
-    // the same two strings.
-    //
-    // A TIGHTENING, and therefore compatible with ADR-0053 §Decision 1's
-    // "strict normalized equality … is not relaxed": it can only refuse a
-    // version that was previously admitted, never admit one that was refused.
-    // The direction of the old error is why it matters — reporting a version as
-    // MORE equal than it is, is fail-OPEN for an exactness gate. No host has
-    // ever printed a four-component version, so the practical blast radius is
-    // zero; the self-contradiction it removes is the point.
-    //
-    // NOT `stale`, whose remediation names a runtime upgrade or a baseline
-    // refresh — neither of which is the problem. A host that printed a version
-    // this grammar has to truncate is an unreadable observation, and `unknown`
-    // is what the probe gate one branch up already calls one.
-    status = 'unknown';
-    nextAction = 'Probe host CLIs first — a host reported a version with more components than this grammar reads (e.g. `1.2.3.4`), '
-      + 'so comparing it against the packaged baseline would drop a component and report a match that was never observed.';
-  } else if (current) {
-    status = 'current';
-    nextAction = null;
-  } else {
-    status = 'stale';
-    // Two audiences, and the check cannot tell them apart from here, so it
-    // must not address only one. Naming a repository path alone repeats the
-    // defect ADR-0051 fixed for `missing`: an operator running the runtime in
-    // their own project cannot edit this project's source.
-    nextAction = 'Update the runtime plugin to a release whose packaged baseline covers these host versions. '
-      + 'If you maintain agentic-plugins: refresh plugins/runtime/docs/host-parity-baseline.md via '
-      + 'runtime:compat snapshot→check→ingest-release-notes→plan, then release runtime so the packaged copy carries it (ADR-0051 §Decision 2).';
-  }
-  return {
-    id: 'host_parity_baseline',
-    label: 'Host parity baseline freshness',
-    status,
-    evidence: {
-      baseline,
-      observed: { claude: observedClaude, codex: observedCodex },
-      normalized_observed: normalizedObserved,
-      probes: { claude: claudeProbe, codex: codexProbe },
-      // ADR-0053 §Decision 10 — recorded, never consulted. "The host moved past
-      // the last review" and "this machine is behind the reviewed baseline" are
-      // distinct states with distinct operator actions and stop sharing one
-      // word here; `same-precedence-nonexact` and `mixed-direction` exist
-      // because exactness and precedence genuinely disagree, and because one
-      // host ahead while the other is behind is not "drifted" in any single
-      // direction.
-      //
-      // Over RAW observed text rather than the normalized form: the normalized
-      // form cannot report `1.2.3.4` as unparseable, and evidence that quietly
-      // called a four-component version exact would agree with the bug it sits
-      // beside.
-      direction: classifyHostPairRelation({
-        observed: probe.observed,
-        reviewed: baseline ? { claude: baseline.claude, codex: baseline.codex } : null,
-      }),
-      provenance: { ...resolved.provenance, status: resolved.status },
-    },
-    next_action: nextAction,
   };
 }
 
@@ -2787,7 +2617,6 @@ function buildExperienceParity({
   ledgers,
   settingsRuns,
   consensusRuns,
-  compatRuns,
   permissionProof,
   deepPeerSmoke,
   workflowContinuationProof,
@@ -2801,14 +2630,20 @@ function buildExperienceParity({
     buildEngineerWorkflowExecutionExperienceCriterion({ readiness, workflowContinuationProof, recordedDoctorProof }),
     buildWorkflowContinuityExperienceCriterion(ledgers),
     buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommandSurface }),
-    buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, compatRuns }),
+    buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns }),
     // ⚠ THE NINTH CRITERION IS GONE, AND THAT MOVES THE DENOMINATOR
     // (ADR-0056 §Decision 8). `host_compatibility_assurance` carried weight 15
     // and sat in `totalWeight`, so removing it changes the criterion count, the
     // total weight, the score and possibly the headline. That is intended — a
     // criterion that can never be satisfied should not sit in a denominator —
     // but it is a SCORING change, not a field deletion, which is why
-    // `runtime-experience-parity` bumps below.
+    // `runtime-experience-parity` bumped to 1.1.
+    //
+    // 1.1 → 1.2 (ADR-0060 §Decision 3): `runtime_handoff_artifacts` keeps its
+    // weight and its id but no longer reads a compat collection, so the same
+    // criterion now measures something else. The count and the total weight are
+    // unchanged; the bump is what tells a reader of a recorded score that the
+    // criterion it sums is not the one a 1.1 score summed.
   ];
   const totalWeight = criteria.reduce((sum, item) => sum + item.weight, 0);
   const earnedWeight = criteria.reduce((sum, item) => sum + item.earned_weight, 0);
@@ -2820,7 +2655,7 @@ function buildExperienceParity({
   };
   const nextActions = buildExperienceParityNextActions(criteria, pluginCommandSurface.manual_followups);
   return {
-    schema_version: 'runtime-experience-parity-1.1',
+    schema_version: 'runtime-experience-parity-1.2',
     status: counts.blocked > 0
       ? 'blocked'
       : counts.partial > 0 || counts.not_verified > 0
@@ -3056,43 +2891,56 @@ function buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommand
   });
 }
 
-function buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, compatRuns }) {
-  const status = `settings=${settingsRuns.status}, consensus=${consensusRuns.status}, compat=${compatRuns.status}`;
-  if (settingsRuns.status === 'blocked' || consensusRuns.status === 'blocked' || ['blocked', 'release_notes_required'].includes(compatRuns.status)) {
+// ⚠ RECOMPOSED BY ADR-0060 §Decision 3, AT UNCHANGED WEIGHT. This criterion was
+// `settings + consensus + compat`; the compat collection went with its command,
+// and with it the criterion's `release_notes_required` branch and its compat-only
+// `empty` / `needs_attention` carve-outs, which had no counterpart for the other
+// two collections. What remains is the rule the other two always had:
+//
+//   blocked    either collection is blocked (its reader counted a malformed
+//              artifact; see the consensus caveat below)
+//   partial    either collection is missing (no runs directory at all)
+//   satisfied  otherwise — `empty`, `needs_attention` and `available` alike
+//
+// It is still a READABILITY criterion: a readable collection whose latest run
+// failed is readable, and the failure is reported by the collection itself.
+// Because it measures something different from before at the same weight,
+// `runtime-experience-parity` bumps (the ADR-0056 §Decision 8 precedent).
+//
+// ⚠ `available` IS NOT PROOF OF A RECOGNISED, SUCCESSFUL RUN. Both readers map
+// a latest-run status they do not recognise onto a readable collection:
+// consensus accepts any status string, and the settings reader falls through to
+// `available` for any status that is not interrupted or refused (measured during
+// the ADR-0060 Plan-verify; recorded in docs/follow-ups.md rather than widened
+// here, since it predates this recomposition).
+//
+// ⚠ A CORRUPT CONSENSUS ARTIFACT DOES NOT BLOCK. The consensus reader skips an
+// `execution.json` that fails to parse instead of counting it malformed, so one
+// corrupt run leaves the collection `empty` or `available` and this criterion
+// `satisfied` (measured in the ADR-0060 review). Only a parseable artifact with
+// no status string counts. The settings reader does count an unparseable
+// artifact. Same origin and same record as the caveat above.
+function buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns }) {
+  const status = `settings=${settingsRuns.status}, consensus=${consensusRuns.status}`;
+  if (settingsRuns.status === 'blocked' || consensusRuns.status === 'blocked') {
     return parityCriterion({
       id: 'runtime_handoff_artifacts',
-      label: 'Runtime execution and compatibility artifacts are readable for handoff and comparison',
+      label: 'Runtime execution artifacts are readable for handoff',
       status: 'blocked',
       weight: 15,
       evidence: status,
-      next_step: compatRuns.status === 'release_notes_required'
-        ? compatRuns.latest?.next_steps?.[0] ?? 'Ingest content-backed release notes for the latest runtime:compat run before relying on host compatibility.'
-        : 'Repair malformed runtime artifacts before relying on handoff, consensus, and compatibility history.',
+      next_step: 'Repair malformed runtime artifacts before relying on handoff and consensus history.',
     });
   }
-  const missing = [settingsRuns.status, consensusRuns.status, compatRuns.status].some((value) => value === 'missing');
-  // ⚠ THIS CRITERION IS ABOUT READABILITY, and the carve-out it used to carry is
-  // gone with its subject. Under ADR-0053 §Decision 4 a compat collection could
-  // be `needs_attention` for two very different reasons behind one word — its
-  // artifacts genuinely need attention, or they are perfectly readable and
-  // simply report that nobody has reviewed this host pair — and the second
-  // belonged to the assurance criterion, so counting it here charged one fact
-  // twice. ADR-0056 §Decision 1 removed the unreviewed states, so
-  // `needs_attention` has one meaning again.
-  //
-  // ⚠ `legacy_era` IS DELIBERATELY NOT CARVED OUT. It is `needs_attention` for
-  // the FIRST reason: a run from an earlier schema era is not a verdict this
-  // runtime may read, and the operator's action — take a fresh snapshot — is
-  // real work, not a review nobody has done.
-  const needsAttention = ['empty', 'needs_attention'].includes(compatRuns.status);
+  const missing = [settingsRuns.status, consensusRuns.status].some((value) => value === 'missing');
   return parityCriterion({
     id: 'runtime_handoff_artifacts',
-    label: 'Runtime execution and compatibility artifacts are readable for handoff and comparison',
-    status: missing || needsAttention ? 'partial' : 'satisfied',
+    label: 'Runtime execution artifacts are readable for handoff',
+    status: missing ? 'partial' : 'satisfied',
     weight: 15,
-    evidence: `${status}; latest-settings=${settingsRuns.latest?.run_id ?? 'none'}; latest-consensus=${consensusRuns.latest?.run_id ?? 'none'}; latest-compat=${compatRuns.latest?.run_id ?? 'none'}`,
-    next_step: missing || needsAttention
-      ? compatRuns.latest?.next_steps?.[0] ?? 'Run settings/consensus/compat flows when needed so future host handoffs have artifact evidence.'
+    evidence: `${status}; latest-settings=${settingsRuns.latest?.run_id ?? 'none'}; latest-consensus=${consensusRuns.latest?.run_id ?? 'none'}`,
+    next_step: missing
+      ? 'Run settings/consensus flows when needed so future host handoffs have artifact evidence.'
       : null,
   });
 }
@@ -5861,13 +5709,6 @@ function summarizeOverall(report) {
       warnings.push('latest consensus execution has failures');
     }
   }
-  if (report.compat_runs.status === 'blocked') {
-    warnings.push('compatibility artifact health blocked');
-  } else if (report.compat_runs.status === 'release_notes_required') {
-    warnings.push('latest compatibility check requires release notes');
-  } else if (report.compat_runs.status === 'needs_attention') {
-    warnings.push('latest compatibility check needs follow-up');
-  }
   // ADR-0044 S4 — a half-enabled capture chain is exactly the state the
   // readiness diagnosis exists to surface; `off` and `ready` stay silent.
   // Advisory infrastructure: warnings, never hard failures.
@@ -5885,7 +5726,7 @@ function summarizeOverall(report) {
   if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'blocked') {
     warnings.push('runtime artifact inventory blocked');
   } else if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'needs_attention') {
-    // ADR-0047 §7 — a registry family (doctor/compat/settings) over cap ONLY
+    // ADR-0047 §7 — a registry family (doctor/settings) over cap ONLY
     // because its runs are pinned (cited / live / latest) is informational, not
     // a fault. Consult the retention reconciliation: warn only when genuine
     // (non-demoted) attention remains, and always warn if the pin scan itself
@@ -6103,17 +5944,6 @@ export function formatText(report) {
     lines.push(`  evidence: ${entry.evidence}`);
     lines.push(`  next: ${entry.next_step}`);
   }
-  lines.push(`- baseline-freshness: ${report.host_parity_baseline.status}${report.host_parity_baseline.status === 'current' ? '' : ` (observed claude=${report.host_parity_baseline.evidence.observed.claude ?? 'unknown'}, codex=${report.host_parity_baseline.evidence.observed.codex ?? 'unknown'}; baseline=${report.host_parity_baseline.evidence.baseline ? `${report.host_parity_baseline.evidence.baseline.claude}/${report.host_parity_baseline.evidence.baseline.codex} @ ${report.host_parity_baseline.evidence.baseline.date}` : 'missing'})`}`);
-  if (report.host_parity_baseline.next_action) {
-    lines.push(`  next: ${report.host_parity_baseline.next_action}`);
-  }
-  // TWO facts, two lines. ADR-0053 §Decision 3 split one verdict into three and
-  // required three lines; ADR-0056 §Decision 1 removed the third. The rule the
-  // split encoded still holds for the two that remain: freshness and direction
-  // are separate answers and folding them would let a reader take "the strings
-  // match" for more than it says.
-  const direction = report.host_parity_baseline.evidence.direction;
-  lines.push(`- baseline-direction: ${direction?.state ?? 'unknown'} (claude=${direction?.hosts?.claude?.state ?? 'unknown'}, codex=${direction?.hosts?.codex?.state ?? 'unknown'})`);
   lines.push('');
   lines.push('Model / Effort');
   for (const key of ['claude_to_codex', 'codex_to_claude']) {
@@ -6291,23 +6121,6 @@ export function formatText(report) {
       lines.push(`  failure: ${failure.peer}; status=${failure.status}; type=${failure.failure_type}; operator-action-required=${failure.operator_action_required}; retryable=${failure.retryable}; raw=${failure.raw_output.pointer}; bytes=${failure.raw_output.bytes}; sha256=${failure.raw_output.sha256}`);
       if (failure.retry_after) lines.push(`    retry-after: ${failure.retry_after}`);
       if (failure.retry_command) lines.push(`    retry-command: ${failure.retry_command}`);
-    }
-  }
-  lines.push('');
-  lines.push('Compatibility Artifacts');
-  lines.push(`- status: ${report.compat_runs.status}; count=${report.compat_runs.count}; malformed=${report.compat_runs.malformed}`);
-  if (report.compat_runs.latest) {
-    const latest = report.compat_runs.latest;
-    lines.push(`- latest: ${latest.run_id}; status=${latest.status}; snapshot=${latest.artifact_pointer}; gap=${latest.gap_pointer ?? '<none>'}; plan=${latest.plan_pointer ?? '<none>'}`);
-    lines.push(`  drift=${latest.drift_class}; release-notes-required=${latest.release_notes_required}; notes=${latest.release_notes.count}; content-backed=${latest.release_notes.content_backed}; urls=${latest.release_notes.url_pointers}`);
-    for (const gap of latest.host_gaps) {
-      lines.push(`  host-gap: ${gap.host}; status=${gap.status}; observed=${gap.observed_version ?? 'unknown'}; baseline=${gap.baseline_version ?? 'unknown'}`);
-    }
-    for (const malformed of latest.malformed_artifacts ?? []) {
-      lines.push(`  malformed-artifact: ${malformed}`);
-    }
-    for (const step of latest.next_steps ?? []) {
-      lines.push(`  next: ${step}`);
     }
   }
   lines.push('');

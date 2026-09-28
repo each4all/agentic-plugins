@@ -12,7 +12,8 @@ import { readPluginManifestVersionsSync } from './lib/plugin-manifest.mjs';
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(SCRIPT_DIR);
 
-// One reader, shared with the host-parity baseline resolver. They used to read
+// One reader, once shared with the host-parity baseline resolver (removed by
+// ADR-0060). They used to read
 // the two manifests in OPPOSITE orders, so a package whose manifests disagreed
 // stamped artifacts with one version and reported provenance with the other,
 // and nothing said so. The order here is preserved (Codex first) precisely so

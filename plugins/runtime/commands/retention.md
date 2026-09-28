@@ -1,6 +1,6 @@
 ---
 description: ADR-0047 §7 citation-aware artifact retention — read-only plan, and an explicit dry-run/--execute apply that deletes only unpinned, over-cap, age-cleared runs of the runtime-owned families under a reviewed plan hash
-argument-hint: "plan | apply --family <doctor|compat|settings> --expected-plan-hash <hash> [--execute] | resolve --family <f> [--format text|json]"
+argument-hint: "plan | apply --family <doctor|settings> --expected-plan-hash <hash> [--execute] | resolve --family <f> [--format text|json]"
 ---
 
 # Runtime - Retention
@@ -12,10 +12,12 @@ apply executor is **dry-run by default** — deletion happens only with an
 explicit `--execute` AND the `--expected-plan-hash` of the plan you reviewed.
 
 Deletion is confined to unpinned, over-cap, age-cleared run directories of the
-three v1 runtime-owned families (`doctor`, `compat`, `settings`) under
-`.agentic-plugins/runs/<family>/`. It never touches host config, never anything
-outside `runs/`, never a pinned/live/latest/young/unreadable run, and never
-`latest.json`.
+runtime-owned registry families (`doctor`, `settings`) under
+`.agentic-plugins/runs/<family>/`. `compat` was a third until ADR-0060 removed
+`runtime:compat`; its recorded runs are left on disk, unmanaged, and
+`--family compat` is refused with that reason. It never touches host config,
+never anything outside `runs/`, never a pinned/live/latest/young/unreadable
+run, and never `latest.json`.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -64,5 +66,5 @@ wall-clock.
   comes from the layered guards above, not a second copy.
 - The plan the operator reviews and the apply MUST use the same caps — the plan
   hash covers the caps, so a cap change is a deliberate re-review.
-- `doctor:audit`-style widening of the family registry beyond doctor/compat/
-  settings is a follow-up decision, not a config knob.
+- `doctor:audit`-style widening of the family registry beyond doctor/settings
+  is a follow-up decision, not a config knob.

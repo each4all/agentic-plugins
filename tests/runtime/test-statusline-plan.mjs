@@ -8,9 +8,9 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 
 import {
@@ -620,5 +620,54 @@ describe('statusline end-to-end — plan renders fragments, desired seats, the n
     await boot({ argv: ['profile', 'export', '--name', 'sl-partial'], home, cwd });
     const profile = JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'sl-partial.json'), 'utf8'));
     strictEqual(profile.statusline_preset, null);
+  });
+});
+
+// Relocated from test-baseline-consumer-contract.mjs, which ADR-0060 deleted with
+// the baseline it was named for. The shim is the highest-stakes packaged reader:
+// it renders CODE the operator is invited to install.
+//
+// The template's location is fixed at import time (`RECEIVERS_DIR`, derived from
+// the module's own URL), so the only way to reach the packaged read is to import
+// a COPY of the package whose template is a symlink out of it. The case as first
+// relocated rendered an injected template and resolved the real one through the
+// shared predicate; neither call reached `readPackagedStatuslineTemplate`, so
+// deleting its containment check left it green (cross-host review, 2026-09-28).
+describe('statusline shim template containment', () => {
+  async function copiedPackage(t) {
+    const pkg = await mkdtemp(join(tmpdir(), 'shim-pkg-'));
+    t.after(() => rm(pkg, { recursive: true, force: true }));
+    for (const dir of ['.claude-plugin', '.codex-plugin', 'data', 'scripts', 'receivers']) {
+      await cp(join(RUNTIME_PLUGIN_ROOT, dir), join(pkg, dir), { recursive: true });
+    }
+    const shim = join(pkg, 'receivers', 'agentic-statusline.mjs');
+    const { renderAgenticStatuslineShim: render } = await import(
+      pathToFileURL(join(pkg, 'scripts', 'lib', 'statusline-plan.mjs')).href
+    );
+    return { shim, render };
+  }
+
+  it('the statusline shim refuses an escaped template rather than rendering it', async (t) => {
+    const { shim, render } = await copiedPackage(t);
+    // CONTROL: the copied package renders from its own template, so a refusal
+    // below is the escape and not a broken copy.
+    ok(!render().body.includes('__AGENTIC'), 'the copied package renders its packaged template');
+
+    const outside = await mkdtemp(join(tmpdir(), 'shim-out-'));
+    t.after(() => rm(outside, { recursive: true, force: true }));
+    // Carries BOTH placeholders the renderer substitutes — the delegating shim
+    // has a runtime floor as well as an item list, and substituteOnce is
+    // fail-closed on either being absent — so without the containment check
+    // this template would render.
+    await writeFile(join(outside, 'evil.mjs'), "const items = ['__AGENTIC_STATUSLINE_ITEMS__']; const v = '__AGENTIC_MIN_RUNTIME_VERSION__'; // OUTSIDE MARKER\n");
+    await rm(shim);
+    await symlink(join(outside, 'evil.mjs'), shim);
+
+    throws(() => render(), /could not be resolved inside the runtime package \(escaped/);
+  });
+
+  it('an explicitly injected template is the caller\'s choice, not a packaged read', () => {
+    const template = "const items = ['__AGENTIC_STATUSLINE_ITEMS__']; const v = '__AGENTIC_MIN_RUNTIME_VERSION__'; // INJECTED MARKER\n";
+    ok(renderAgenticStatuslineShim({ template }).body.includes('INJECTED MARKER'));
   });
 });

@@ -12,8 +12,8 @@
 //
 // Pure functions, no I/O — the test supplies file sources.
 
-// Sentinel: a command that is a registered command-variable (doctor `name`,
-// compat `host`) — known to range over the host CLIs {claude, codex}. Literal
+// Sentinel: a command that is a registered command-variable (machine-probe
+// `name`) — known to range over the host CLIs {claude, codex}. Literal
 // argv at such a call is validated against the UNION of host-CLI allowlists.
 const HOST_UNION = '*host-cli*';
 
@@ -719,8 +719,8 @@ export function findImports(code) {
   const dynamic = [];
   // The default-import clause's trailing comma is OPTIONAL so a LONE default import
   // (`import https from 'node:https'`) is parsed, not only `import def, { named }`.
-  // Before this, a lone-default import of a capability module (e.g. compat.mjs
-  // `import https from 'node:https'`, and the node:https E1 transport in notify.mjs,
+  // Before this, a lone-default import of a capability module (e.g. the removed
+  // compat.mjs's `import https from 'node:https'`, and the node:https E1 transport in notify.mjs,
   // ADR-0041 §2d) was INVISIBLE to the import-gate — a fail-open hole for every
   // watched module. `[\w$]+` never matches a leading `{`/`*`, so a named/namespace
   // import still skips this group.
@@ -1048,7 +1048,7 @@ export function scanFile({ fileName, source, registry }) {
 
   // --- Network-gate ----------------------------------------------------------
   // In a network-importer file, only the registered network primitive(s) may be
-  // used (compat allows GET only). A non-`get` network primitive is flagged when
+  // used (a GET-only importer allows `get` alone). A non-`get` network primitive is flagged when
   // it is (a) a member CALL `.request(`, (b) a member ALIAS `= x.request`, or (c)
   // DESTRUCTURED `const { request } = …`. A bare unrelated `.request` property
   // read is NOT flagged (Codex re-review false-positive), and `map.get` is fine

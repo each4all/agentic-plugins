@@ -548,9 +548,14 @@ function derivePostSyncSet(dir, synced) {
 test('POST_SYNC_WORKFLOWS is exactly the workflows a push of the sync paths to main would start', () => {
   const expected = derivePostSyncSet(WORKFLOWS_DIR, syncPaths(releaseYml()));
   assert.deepEqual([...POST_SYNC_WORKFLOWS].sort(), expected);
-  // Not vacuous: the derivation excluded a real push-to-main workflow on its paths.
-  assert.ok(!expected.includes('host-version-drift.yml'));
-  assert.ok(pushTrigger(readFileSync(path.join(WORKFLOWS_DIR, 'host-version-drift.yml'), 'utf8'), 'x').branches.includes('main'));
+  // Not vacuous, though the real directory no longer shows the path filter at
+  // work. It used to, through host-version-drift.yml — a push-to-main workflow
+  // whose paths the sync never touches — and ADR-0060 deleted that workflow; no
+  // other real one has that shape. The exclusion is proven by `d.yml` in the
+  // synthetic case below, which is a push-to-main workflow the derivation must
+  // leave out.
+  assert.ok(expected.length > 0, 'the derivation read real triggers');
+  assert.ok(!expected.includes(RELEASE_WORKFLOW), 'the dispatching job never dispatches itself');
 });
 
 test('the derivation reads .yaml files and every quoting form, and refuses shapes it does not model', (t) => {

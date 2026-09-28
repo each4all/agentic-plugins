@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { runRetentionCli } from '../../plugins/runtime/scripts/retention.mjs';
 import {
   RETENTION_PLANNER_VERSION,
   RETENTION_SCANNER_VERSION,
@@ -43,11 +44,29 @@ function familyDir(repoRoot, family) {
 // Seed a run directory with files and a controllable newest mtime (drives the
 // age guard). `ageMs` is how far in the past to stamp relative to NOW.
 const NOW = new Date('2026-07-21T12:00:00Z');
-function seedRun(repoRoot, family, runId, { files = { 'x.json': '{}' }, ageMs = RETENTION_MIN_AGE_MS + 60_000, bytes = null } = {}) {
+
+// A settings execution artifact the planner can confirm TERMINAL.
+//
+// ⚠ THE DELETABLE SPECIMEN IS `settings`, AND IT USED TO BE `compat`. ADR-0060
+// removed compat from the registry, which leaves settings as the only family
+// the planner ever makes deletable (every doctor run is pinned at v1). Unlike
+// compat, settings has a live pin of its own: a run whose `settings.json` is
+// missing, malformed or non-terminal is PINNED, because its terminality cannot
+// be confirmed. So a seeded settings run carries a terminal artifact by default
+// — otherwise every cap/age/hash case below would pass on that pin instead of
+// on the rule it names. A case that passes its own `files` states its artifact
+// (or its absence) explicitly.
+const TERMINAL_SETTINGS = JSON.stringify({ status: 'completed', terminal: true });
+
+function seedRun(repoRoot, family, runId, { files, ageMs = RETENTION_MIN_AGE_MS + 60_000, bytes = null } = {}) {
   const dir = path.join(familyDir(repoRoot, family), runId);
   fs.mkdirSync(dir, { recursive: true });
+  const seeded = files ?? (family === 'settings' ? { 'settings.json': TERMINAL_SETTINGS } : { 'x.json': '{}' });
+  files = seeded;
   for (const [name, content] of Object.entries(files)) {
-    const body = bytes !== null ? 'x'.repeat(bytes) : content;
+    // The byte padding never replaces the settings artifact: a padded
+    // `settings.json` is malformed, and a malformed one is pinned.
+    const body = bytes !== null && name !== 'settings.json' ? 'x'.repeat(bytes) : content;
     fs.writeFileSync(path.join(dir, name), body);
   }
   const stamp = new Date(NOW.getTime() - ageMs);
@@ -67,12 +86,16 @@ function writeLatest(repoRoot, family, runId) {
 
 const DOCTOR_A = 'doctor-20260101T000000Z-aaaaaa';
 const DOCTOR_B = 'doctor-20260201T000000Z-bbbbbb';
-const COMPAT_A = 'compat-20260101T000000Z-cccccc';
+const SETTINGS_B = 'settings-20260101T000000Z-cccccc';
 const SETTINGS_A = 'settings-20260101T000000Z-dddddd';
 
 describe('retention-planner registry + constants', () => {
-  it('pins the closed v1 family registry to exactly doctor/compat/settings', () => {
-    assert.deepEqual([...RETENTION_FAMILIES].sort(), ['compat', 'doctor', 'settings']);
+  it('pins the closed family registry to exactly doctor/settings', () => {
+    // compat left with its command (ADR-0060 §Decision 6): its runs are
+    // orphaned, not managed. A registry that still listed it would plan and
+    // delete runs no command writes or reads any more.
+    assert.deepEqual([...RETENTION_FAMILIES].sort(), ['doctor', 'settings']);
+    assert.equal(Object.hasOwn(RETENTION_FAMILY_REGISTRY, 'compat'), false);
     assert.ok(Object.isFrozen(RETENTION_FAMILY_REGISTRY));
     for (const family of RETENTION_FAMILIES) {
       assert.ok(RETENTION_FAMILY_REGISTRY[family].runIdRe instanceof RegExp);
@@ -80,7 +103,7 @@ describe('retention-planner registry + constants', () => {
   });
 
   it('pins scan-bound + version constants', () => {
-    assert.equal(RETENTION_PLANNER_VERSION, 'runtime-retention-planner-1.0');
+    assert.equal(RETENTION_PLANNER_VERSION, 'runtime-retention-planner-1.1');
     assert.equal(RETENTION_SCANNER_VERSION, 'runtime-retention-scanner-1.0');
     assert.equal(CITATION_SCAN_MAX_FILES, 5000);
     assert.equal(CITATION_SCAN_MAX_FILE_BYTES, 1024 * 1024);
@@ -100,11 +123,11 @@ describe('retention-planner pin 1 — tracked-doc citations', () => {
   it('pins a run-id cited as a bare token AND as a runs/ path string', async () => {
     const repo = tmpRepo();
     fs.writeFileSync(path.join(repo, 'doc1.md'), `see ${DOCTOR_A} for details`);
-    fs.writeFileSync(path.join(repo, 'doc2.md'), `path .agentic-plugins/runs/compat/${COMPAT_A}/snapshot.json`);
+    fs.writeFileSync(path.join(repo, 'doc2.md'), `path .agentic-plugins/runs/settings/${SETTINGS_B}/settings.json`);
     const res = await scanTrackedDocCitations({ repoRoot: repo, gitTrackedFiles: ['doc1.md', 'doc2.md'] });
     assert.equal(res.scanComplete, true);
     assert.ok(res.pinned.get('doctor').has(DOCTOR_A));
-    assert.ok(res.pinned.get('compat').has(COMPAT_A));
+    assert.ok(res.pinned.get('settings').has(SETTINGS_B));
   });
 
   // ADR-0049 §Neutral requires this as a regression, not an incidental
@@ -249,11 +272,11 @@ describe('retention-planner pin 2 — latest pointers', () => {
     // target is present.
     seedRun(repo, 'doctor', DOCTOR_A);
     writeLatest(repo, 'doctor', DOCTOR_A);
-    // compat + settings have no latest.json
+    // settings has no latest.json
     const res = await resolveLatestPins({ repoRoot: repo });
     assert.equal(res.scanComplete, true);
     assert.ok(res.pinned.get('doctor').has(DOCTOR_A));
-    assert.equal(res.pinned.get('compat').size, 0);
+    assert.equal(res.pinned.get('settings').size, 0);
   });
 
   it('flips scan_complete on a DANGLING latest.json (references a missing run)', async () => {
@@ -267,7 +290,7 @@ describe('retention-planner pin 2 — latest pointers', () => {
 
   it('flips scan_complete on a malformed latest.json', async () => {
     const repo = tmpRepo();
-    fs.writeFileSync(path.join(familyDir(repo, 'compat'), 'latest.json'), '{not json');
+    fs.writeFileSync(path.join(familyDir(repo, 'settings'), 'latest.json'), '{not json');
     const res = await resolveLatestPins({ repoRoot: repo });
     assert.equal(res.scanComplete, false);
     assert.match(res.incomplete[0].reason, /malformed/);
@@ -364,13 +387,13 @@ describe('retention-planner pin 3 — live / reader-selected', () => {
 describe('retention-planner pin 4 — cross-artifact references', () => {
   it('pins a run cited inside a doctor.json snapshot', async () => {
     const repo = tmpRepo();
-    // doctor run whose doctor.json embeds a COMPAT evidence id
+    // doctor run whose doctor.json embeds a SETTINGS evidence id
     seedRun(repo, 'doctor', DOCTOR_A, {
-      files: { 'doctor.json': JSON.stringify({ report: { compat: { recorded_run_id: COMPAT_A } } }) },
+      files: { 'doctor.json': JSON.stringify({ report: { settings_runs: { latest: { run_id: SETTINGS_B } } } }) },
     });
     const res = await scanCrossArtifactReferences({ repoRoot: repo });
     assert.equal(res.scanComplete, true);
-    assert.ok(res.pinned.get('compat').has(COMPAT_A));
+    assert.ok(res.pinned.get('settings').has(SETTINGS_B));
   });
 
   it('pins a run cited inside a cutover evidence artifact-pointer list', async () => {
@@ -413,23 +436,28 @@ describe('retention-planner pin 4 — cross-artifact references', () => {
 
   it('catches a cross-reference written as a JSON unicode escape (parse-then-harvest)', async () => {
     const repo = tmpRepo();
-    // doctor.json embeds a compat id with an escaped first char: "compat-…".
+    // doctor.json embeds a settings id with an escaped first char: "settings-…".
     // A raw-text regex misses it; parsing decodes the escape.
-    const escaped = COMPAT_A.replace('c', '\\u0063');
+    const escaped = SETTINGS_B.replace('s', '\\u0073');
+    // The escape must be REAL: a replace that matched nothing would leave the
+    // literal token, which the raw-text regex already catches, and the case
+    // would pass without testing the parse-then-harvest path at all.
+    assert.notEqual(escaped, SETTINGS_B);
+    assert.ok(escaped.startsWith('\\u0073ettings-'));
     const dir = path.join(familyDir(repo, 'doctor'), DOCTOR_A);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'doctor.json'), `{"ref":"${escaped}"}`);
     const res = await scanCrossArtifactReferences({ repoRoot: repo });
     assert.equal(res.scanComplete, true);
-    assert.ok(res.pinned.get('compat').has(COMPAT_A), 'the escaped reference must be pinned');
+    assert.ok(res.pinned.get('settings').has(SETTINGS_B), 'the escaped reference must be pinned');
   });
 
   it('FLIPS scan_complete when a cross-artifact JSON nests past the harvest depth cap', async () => {
     const repo = tmpRepo();
     // Build a doctor.json nested deeper than JSON_HARVEST_MAX_DEPTH (64) with a
-    // compat citation at the bottom — the harvest can't reach it, so the scan
+    // settings citation at the bottom — the harvest can't reach it, so the scan
     // must fail closed rather than silently drop the pin.
-    let obj = { ref: COMPAT_A };
+    let obj = { ref: SETTINGS_B };
     for (let i = 0; i < 70; i += 1) obj = { n: obj };
     const dir = path.join(familyDir(repo, 'doctor'), DOCTOR_A);
     fs.mkdirSync(dir, { recursive: true });
@@ -442,53 +470,53 @@ describe('retention-planner pin 4 — cross-artifact references', () => {
   it('excludes a doctor run\'s OWN run_id from cross-artifact self-pinning', async () => {
     const repo = tmpRepo();
     // doctor.json contains its own top-level run_id (as every real one does) and
-    // a genuine cross-ref to a compat run. Only the compat cross-ref should pin.
+    // a genuine cross-ref to a settings run. Only the settings cross-ref should pin.
     const dir = path.join(familyDir(repo, 'doctor'), DOCTOR_A);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'doctor.json'), JSON.stringify({ run_id: DOCTOR_A, ref: COMPAT_A }));
+    fs.writeFileSync(path.join(dir, 'doctor.json'), JSON.stringify({ run_id: DOCTOR_A, ref: SETTINGS_B }));
     const res = await scanCrossArtifactReferences({ repoRoot: repo });
     assert.ok(!res.pinned.get('doctor').has(DOCTOR_A), 'a doctor run must not self-pin via its own doctor.json');
-    assert.ok(res.pinned.get('compat').has(COMPAT_A), 'genuine cross-refs still pin');
+    assert.ok(res.pinned.get('settings').has(SETTINGS_B), 'genuine cross-refs still pin');
   });
 });
 
 describe('retention-planner planRetention integration', () => {
   it('classifies over-cap runs into actionable (unpinned, aged) vs pinned overage', async () => {
     const repo = tmpRepo();
-    // 3 compat runs, cap 1. One is pinned via latest, the other two are old + unpinned.
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001');
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002');
-    seedRun(repo, 'compat', 'compat-20260103T000000Z-000003');
-    writeLatest(repo, 'compat', 'compat-20260103T000000Z-000003'); // newest pinned
+    // 3 settings runs, cap 1. One is pinned via latest, the other two are old + unpinned.
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001');
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002');
+    seedRun(repo, 'settings', 'settings-20260103T000000Z-000003');
+    writeLatest(repo, 'settings', 'settings-20260103T000000Z-000003'); // newest pinned
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
-    const compat = plan.families.compat;
-    assert.equal(compat.over_cap, true);
+    const fam = plan.families.settings;
+    assert.equal(fam.over_cap, true);
     // cap 1, 3 runs, excess 2. newest is pinned → the two OLDEST unpinned are actionable.
-    assert.deepEqual(compat.actionable_excess, ['compat-20260101T000000Z-000001', 'compat-20260102T000000Z-000002']);
-    assert.deepEqual(compat.pinned_overage, ['compat-20260103T000000Z-000003']);
+    assert.deepEqual(fam.actionable_excess, ['settings-20260101T000000Z-000001', 'settings-20260102T000000Z-000002']);
+    assert.deepEqual(fam.pinned_overage, ['settings-20260103T000000Z-000003']);
   });
 
   it('never makes a run younger than the minimum-age guard actionable', async () => {
     const repo = tmpRepo();
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001', { ageMs: RETENTION_MIN_AGE_MS + 60_000 }); // old
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002', { ageMs: 60_000 }); // TOO YOUNG (1 min)
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001', { ageMs: RETENTION_MIN_AGE_MS + 60_000 }); // old
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002', { ageMs: 60_000 }); // TOO YOUNG (1 min)
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 0, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
-    const compat = plan.families.compat;
-    assert.deepEqual(compat.actionable_excess, ['compat-20260101T000000Z-000001']);
-    assert.deepEqual(compat.withheld_too_young, ['compat-20260102T000000Z-000002']);
+    const fam = plan.families.settings;
+    assert.deepEqual(fam.actionable_excess, ['settings-20260101T000000Z-000001']);
+    assert.deepEqual(fam.withheld_too_young, ['settings-20260102T000000Z-000002']);
   });
 
   it('when pins alone EXCEED the cap, an unpinned run is NOT actionable (mixed case)', async () => {
     const repo = tmpRepo();
     // 2 pinned + 1 old unpinned, cap 1. pins(2) > cap(1) ⇒ deleting the unpinned
     // run can never reach the cap ⇒ nothing deletable (the peer's reproduction).
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001'); // old unpinned
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002');
-    seedRun(repo, 'compat', 'compat-20260103T000000Z-000003');
-    fs.writeFileSync(path.join(repo, 'doc.md'), 'compat-20260102T000000Z-000002 compat-20260103T000000Z-000003');
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001'); // old unpinned
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002');
+    seedRun(repo, 'settings', 'settings-20260103T000000Z-000003');
+    fs.writeFileSync(path.join(repo, 'doc.md'), 'settings-20260102T000000Z-000002 settings-20260103T000000Z-000003');
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: ['doc.md'] });
-    assert.equal(plan.families.compat.actionable_excess.length, 0, 'pins exceed cap ⇒ nothing deletable');
-    assert.equal(plan.families.compat.pinned_overage.length, 2);
+    assert.equal(plan.families.settings.actionable_excess.length, 0, 'pins exceed cap ⇒ nothing deletable');
+    assert.equal(plan.families.settings.pinned_overage.length, 2);
   });
 
   it('pins exceeding the COUNT cap suppress BYTE-driven deletion too (holistic reading)', async () => {
@@ -496,35 +524,50 @@ describe('retention-planner planRetention integration', () => {
     // 2 small pinned runs over the count cap (cap 1) + 1 large unpinned run.
     // Byte pressure would otherwise delete the large unpinned run, but pins
     // already exceed the count cap ⇒ nothing deletable (Codex review MAJOR).
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001', { files: { 'big': '' }, bytes: 5_000_000 }); // large unpinned
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002', { files: { 's': 'x' } }); // small
-    seedRun(repo, 'compat', 'compat-20260103T000000Z-000003', { files: { 's': 'x' } }); // small
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001', { files: { 'settings.json': TERMINAL_SETTINGS, 'big': '' }, bytes: 5_000_000 }); // large unpinned
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002', { files: { 'settings.json': TERMINAL_SETTINGS, 's': 'x' } }); // small
+    seedRun(repo, 'settings', 'settings-20260103T000000Z-000003', { files: { 'settings.json': TERMINAL_SETTINGS, 's': 'x' } }); // small
     // Pin the two small runs (count 2 > cap 1).
-    fs.writeFileSync(path.join(repo, 'doc.md'), 'compat-20260102T000000Z-000002 compat-20260103T000000Z-000003');
+    fs.writeFileSync(path.join(repo, 'doc.md'), 'settings-20260102T000000Z-000002 settings-20260103T000000Z-000003');
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 1_000_000 }, gitTrackedFiles: ['doc.md'] });
-    assert.equal(plan.families.compat.over_cap_by_bytes, true, 'the family is over the byte cap');
-    assert.equal(plan.families.compat.actionable_excess.length, 0, 'pins exceed the count cap ⇒ nothing deletable even for byte pressure');
+    assert.equal(plan.families.settings.over_cap_by_bytes, true, 'the family is over the byte cap');
+    assert.equal(plan.families.settings.actionable_excess.length, 0, 'pins exceed the count cap ⇒ nothing deletable even for byte pressure');
   });
 
   it('pins EQUAL to the cap still allow deleting the unpinned runs down to the cap', async () => {
     const repo = tmpRepo();
     // 3 runs, cap 1, newest pinned. pins(1) == cap(1) ⇒ delete the 2 oldest unpinned.
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001');
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002');
-    seedRun(repo, 'compat', 'compat-20260103T000000Z-000003');
-    writeLatest(repo, 'compat', 'compat-20260103T000000Z-000003');
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001');
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002');
+    seedRun(repo, 'settings', 'settings-20260103T000000Z-000003');
+    writeLatest(repo, 'settings', 'settings-20260103T000000Z-000003');
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
-    assert.deepEqual(plan.families.compat.actionable_excess, ['compat-20260101T000000Z-000001', 'compat-20260102T000000Z-000002']);
+    assert.deepEqual(plan.families.settings.actionable_excess, ['settings-20260101T000000Z-000001', 'settings-20260102T000000Z-000002']);
   });
 
-  it('a fresh EMPTY run directory is never actionable (dir mtime seeds recency)', async () => {
+  it('a fresh run DIRECTORY is never actionable, however old its files (dir mtime seeds recency)', async () => {
+    // The original case was an EMPTY directory: with no files, the newest mtime
+    // was computed over nothing and the run looked decades old. That exact shape
+    // cannot be expressed on the one deletable family left — an empty settings
+    // run has no artifact and is PINNED before its age is ever consulted (the
+    // control below) — so the rule is pinned where it still decides: an old
+    // artifact inside a directory touched a minute ago. A planner that reads the
+    // files' mtimes and not the directory's makes this run actionable.
     const repo = tmpRepo();
-    const dir = path.join(familyDir(repo, 'compat'), 'compat-20260101T000000Z-000001');
-    fs.mkdirSync(dir, { recursive: true }); // empty — no files
-    fs.utimesSync(dir, new Date(NOW.getTime() - 60_000), new Date(NOW.getTime() - 60_000)); // 1 min old
+    const runId = 'settings-20260101T000000Z-000001';
+    const dir = seedRun(repo, 'settings', runId); // artifact stamped well past the age guard
+    fs.utimesSync(dir, new Date(NOW.getTime() - 60_000), new Date(NOW.getTime() - 60_000)); // dir 1 min old
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 0, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
-    assert.equal(plan.families.compat.actionable_excess.length, 0, 'a fresh empty run must not look decades old');
-    assert.deepEqual(plan.families.compat.withheld_too_young, ['compat-20260101T000000Z-000001']);
+    assert.equal(plan.families.settings.actionable_excess.length, 0, 'a freshly touched run must not look old');
+    assert.deepEqual(plan.families.settings.withheld_too_young, [runId]);
+
+    // CONTROL: the empty directory is still never actionable — by its pin.
+    const emptyRepo = tmpRepo();
+    const emptyDir = path.join(familyDir(emptyRepo, 'settings'), runId);
+    fs.mkdirSync(emptyDir, { recursive: true });
+    const emptyPlan = await planRetention({ repoRoot: emptyRepo, now: NOW, caps: { runCap: 0, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
+    assert.equal(emptyPlan.families.settings.actionable_excess.length, 0);
+    assert.ok(emptyPlan.families.settings.pins[runId], 'an empty settings run is pinned, not aged');
   });
 
   it('legitimately-encoded U+FFFD content is scanned, not skipped as binary (fatal decoder)', async () => {
@@ -540,51 +583,51 @@ describe('retention-planner planRetention integration', () => {
 
   it('when pins alone exceed the cap, nothing is actionable — all pinned overage', async () => {
     const repo = tmpRepo();
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001');
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002');
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001');
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002');
     // Both cited in a tracked doc → both pinned.
-    fs.writeFileSync(path.join(repo, 'doc.md'), 'compat-20260101T000000Z-000001 compat-20260102T000000Z-000002');
+    fs.writeFileSync(path.join(repo, 'doc.md'), 'settings-20260101T000000Z-000001 settings-20260102T000000Z-000002');
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: ['doc.md'] });
-    const compat = plan.families.compat;
-    assert.equal(compat.over_cap, true);
-    assert.equal(compat.actionable_excess.length, 0);
-    assert.equal(compat.pinned_overage.length, 2);
+    const fam = plan.families.settings;
+    assert.equal(fam.over_cap, true);
+    assert.equal(fam.actionable_excess.length, 0);
+    assert.equal(fam.pinned_overage.length, 2);
   });
 
   it('byte-cap pressure makes oldest unpinned runs actionable even under the count cap', async () => {
     const repo = tmpRepo();
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001', { files: { 'big': '' }, bytes: 2_000_000 });
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002', { files: { 'big': '' }, bytes: 2_000_000 });
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001', { files: { 'settings.json': TERMINAL_SETTINGS, 'big': '' }, bytes: 2_000_000 });
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002', { files: { 'settings.json': TERMINAL_SETTINGS, 'big': '' }, bytes: 2_000_000 });
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 10, maxBytes: 3_000_000 }, gitTrackedFiles: [] });
-    const compat = plan.families.compat;
-    assert.equal(compat.over_cap_by_bytes, true);
-    assert.equal(compat.over_cap_by_count, false);
+    const fam = plan.families.settings;
+    assert.equal(fam.over_cap_by_bytes, true);
+    assert.equal(fam.over_cap_by_count, false);
     // total 4MB, cap 3MB → must delete the oldest to get under.
-    assert.deepEqual(compat.actionable_excess, ['compat-20260101T000000Z-000001']);
+    assert.deepEqual(fam.actionable_excess, ['settings-20260101T000000Z-000001']);
   });
 
   it('withholds ALL actionable removals when scan_complete is false (fail-closed)', async () => {
     const repo = tmpRepo();
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001');
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002');
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001');
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002');
     // Force scan_complete false via a malformed latest.json.
     fs.writeFileSync(path.join(familyDir(repo, 'doctor'), 'latest.json'), '{broken');
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 0, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
     assert.equal(plan.scan_complete, false);
-    assert.equal(plan.families.compat.actionable_excess.length, 0);
-    assert.ok(plan.families.compat.actionable_withheld_scan_incomplete.length >= 1);
-    assert.equal(plan.families.compat.deletable_bytes, 0);
+    assert.equal(plan.families.settings.actionable_excess.length, 0);
+    assert.ok(plan.families.settings.actionable_withheld_scan_incomplete.length >= 1);
+    assert.equal(plan.families.settings.deletable_bytes, 0);
   });
 
   it('only counts validated run-id directories; ignores temp/lock/malformed names', async () => {
     const repo = tmpRepo();
-    const dir = familyDir(repo, 'compat');
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001');
-    fs.mkdirSync(path.join(dir, 'compat-tmp'), { recursive: true });
+    const dir = familyDir(repo, 'settings');
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001');
+    fs.mkdirSync(path.join(dir, 'settings-tmp'), { recursive: true });
     fs.mkdirSync(path.join(dir, '.lock'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'stray.json'), '{}');
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 20, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
-    assert.equal(plan.families.compat.run_count, 1);
+    assert.equal(plan.families.settings.run_count, 1);
   });
 });
 
@@ -595,7 +638,7 @@ describe('retention-planner plan hash', () => {
 
   it('is stable across runs with identical inputs and excludes volatile fields', async () => {
     const repo = tmpRepo();
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001');
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001');
     const a = await planWith(repo);
     const b = await planRetention({ repoRoot: repo, now: new Date(NOW.getTime() + 999_999), caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
     assert.equal(a.plan_hash, b.plan_hash, 'a different generated_at must not change the hash');
@@ -603,8 +646,8 @@ describe('retention-planner plan hash', () => {
 
   it('changes when a cap changes', async () => {
     const repo = tmpRepo();
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001');
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002');
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001');
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002');
     const a = await planWith(repo, { runCap: 1, maxBytes: 50 * 1024 * 1024 });
     const b = await planWith(repo, { runCap: 2, maxBytes: 50 * 1024 * 1024 });
     assert.notEqual(a.plan_hash, b.plan_hash);
@@ -612,30 +655,29 @@ describe('retention-planner plan hash', () => {
 
   it('changes when the pin set changes (a new citation pins a run)', async () => {
     const repo = tmpRepo();
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001');
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002');
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001');
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002');
     const before = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
-    fs.writeFileSync(path.join(repo, 'doc.md'), 'compat-20260101T000000Z-000001');
+    fs.writeFileSync(path.join(repo, 'doc.md'), 'settings-20260101T000000Z-000001');
     const after = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: ['doc.md'] });
     assert.notEqual(before.plan_hash, after.plan_hash);
   });
 
   it('is invariant to pin-key DISCOVERY ORDER for the same logical pin set (sorted keys)', () => {
-    // Build two plan-shaped objects whose compat.pins have the SAME entries in
+    // Build two plan-shaped objects whose settings.pins have the SAME entries in
     // OPPOSITE insertion order; the canonical hash must ignore order.
     const base = (pins) => ({
-      planner_version: 'runtime-retention-planner-1.0',
+      planner_version: 'runtime-retention-planner-1.1',
       scanner_version: 'runtime-retention-scanner-1.0',
       caps: { run_cap: 1, max_bytes: 50 * 1024 * 1024, min_age_ms: RETENTION_MIN_AGE_MS },
       scan_complete: true,
       families: {
-        compat: { pins, actionable_excess: [] },
         doctor: { pins: {}, actionable_excess: [] },
-        settings: { pins: {}, actionable_excess: [] },
+        settings: { pins, actionable_excess: [] },
       },
     });
-    const forward = { 'compat-20260101T000000Z-000001': ['latest-pointer'], 'compat-20260102T000000Z-000002': ['tracked-doc-citation'] };
-    const reverse = { 'compat-20260102T000000Z-000002': ['tracked-doc-citation'], 'compat-20260101T000000Z-000001': ['latest-pointer'] };
+    const forward = { 'settings-20260101T000000Z-000001': ['latest-pointer'], 'settings-20260102T000000Z-000002': ['tracked-doc-citation'] };
+    const reverse = { 'settings-20260102T000000Z-000002': ['tracked-doc-citation'], 'settings-20260101T000000Z-000001': ['latest-pointer'] };
     assert.equal(computeRetentionPlanHash(base(forward)), computeRetentionPlanHash(base(reverse)));
   });
 });
@@ -643,16 +685,16 @@ describe('retention-planner plan hash', () => {
 describe('retention-planner projection', () => {
   it('projects the actionable/pinned split for doctor/dashboard adoption', async () => {
     const repo = tmpRepo();
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001');
-    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002');
-    writeLatest(repo, 'compat', 'compat-20260102T000000Z-000002');
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001');
+    seedRun(repo, 'settings', 'settings-20260102T000000Z-000002');
+    writeLatest(repo, 'settings', 'settings-20260102T000000Z-000002');
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
     const proj = projectRetentionAttention(plan);
     assert.equal(proj.scan_complete, true);
     assert.equal(proj.plan_hash, plan.plan_hash);
-    assert.equal(proj.families.compat.over_cap, true);
-    assert.equal(proj.families.compat.actionable, 1);
-    assert.equal(proj.families.compat.pinned_overage, 1);
+    assert.equal(proj.families.settings.over_cap, true);
+    assert.equal(proj.families.settings.actionable, 1);
+    assert.equal(proj.families.settings.pinned_overage, 1);
   });
 });
 
@@ -668,8 +710,8 @@ describe('retention-planner reconciliation (doctor/dashboard adoption)', () => {
   const overCapItem = (family) => ({ family, kind: 'run_count_exceeds_cap', observed: 30, limit: 20, recommendation: 'x' });
 
   it('demotes a count-cap registry family over cap ONLY because of pins to informational', () => {
-    const projection = proj({ families: { compat: famStub({ actionable: 0, pinned_overage: 10 }) } });
-    const { attention, demoted } = reconcileRetentionAttention([overCapItem('compat')], projection);
+    const projection = proj({ families: { settings: famStub({ actionable: 0, pinned_overage: 10 }) } });
+    const { attention, demoted } = reconcileRetentionAttention([overCapItem('settings')], projection);
     assert.equal(attention.length, 0, 'pinned-only overage is not a fault');
     assert.equal(demoted.length, 1);
     assert.equal(demoted[0].kind, 'pinned_overage');
@@ -677,8 +719,8 @@ describe('retention-planner reconciliation (doctor/dashboard adoption)', () => {
   });
 
   it('keeps a registry family with genuine actionable overage as a fault', () => {
-    const projection = proj({ families: { compat: famStub({ actionable: 3, pinned_overage: 2 }) } });
-    const { attention, demoted } = reconcileRetentionAttention([overCapItem('compat')], projection);
+    const projection = proj({ families: { settings: famStub({ actionable: 3, pinned_overage: 2 }) } });
+    const { attention, demoted } = reconcileRetentionAttention([overCapItem('settings')], projection);
     assert.equal(attention.length, 1, 'actionable overage stays a fault');
     assert.equal(demoted.length, 0);
   });
@@ -686,8 +728,8 @@ describe('retention-planner reconciliation (doctor/dashboard adoption)', () => {
   it('does NOT demote when runs are withheld as too-young — ISOLATES the withheld_too_young guard', () => {
     // pinned_overage > 0 (so THAT guard passes) but runs are waiting to age in;
     // only the withheld_too_young===0 guard prevents the demotion here.
-    const projection = proj({ families: { compat: famStub({ actionable: 0, pinned_overage: 5, withheld_too_young: 3 }) } });
-    const { attention, demoted } = reconcileRetentionAttention([overCapItem('compat')], projection);
+    const projection = proj({ families: { settings: famStub({ actionable: 0, pinned_overage: 5, withheld_too_young: 3 }) } });
+    const { attention, demoted } = reconcileRetentionAttention([overCapItem('settings')], projection);
     assert.equal(demoted.length, 0, 'too-young runs will become actionable — not pins-only');
     assert.equal(attention.length, 1);
   });
@@ -695,15 +737,15 @@ describe('retention-planner reconciliation (doctor/dashboard adoption)', () => {
   it('does NOT demote when NO pinned overage explains the over-cap — ISOLATES the pinned_overage>0 guard', () => {
     // withheld_too_young === 0 (so THAT guard passes) but pinned_overage === 0;
     // only the pinned_overage>0 guard prevents the demotion here.
-    const projection = proj({ families: { compat: famStub({ actionable: 0, pinned_overage: 0, withheld_too_young: 0 }) } });
-    const { attention, demoted } = reconcileRetentionAttention([overCapItem('compat')], projection);
+    const projection = proj({ families: { settings: famStub({ actionable: 0, pinned_overage: 0, withheld_too_young: 0 }) } });
+    const { attention, demoted } = reconcileRetentionAttention([overCapItem('settings')], projection);
     assert.equal(demoted.length, 0, 'over cap but nothing pinned ⇒ not "over cap because cited"');
     assert.equal(attention.length, 1);
   });
 
   it('does NOT demote a byte-cap item when the family is over only its COUNT cap (per-kind attribution)', () => {
-    const projection = proj({ families: { compat: { over_cap: true, over_cap_by_count: true, over_cap_by_bytes: false, actionable: 0, pinned_overage: 10, withheld_too_young: 0 } } });
-    const byteItem = { family: 'compat', kind: 'bytes_exceed_cap', observed: 999, limit: 100, recommendation: 'x' };
+    const projection = proj({ families: { settings: { over_cap: true, over_cap_by_count: true, over_cap_by_bytes: false, actionable: 0, pinned_overage: 10, withheld_too_young: 0 } } });
+    const byteItem = { family: 'settings', kind: 'bytes_exceed_cap', observed: 999, limit: 100, recommendation: 'x' };
     const { attention, demoted } = reconcileRetentionAttention([byteItem], projection);
     assert.equal(demoted.length, 0, 'a byte fault is not explained by count-only pinned overage');
     assert.equal(attention.length, 1);
@@ -717,16 +759,58 @@ describe('retention-planner reconciliation (doctor/dashboard adoption)', () => {
   });
 
   it('does not demote when the pin scan is incomplete (fail-closed) and adds a scan-incomplete fault', () => {
-    const projection = proj({ scanComplete: false, families: { compat: famStub({ actionable: 0, pinned_overage: 10 }) } });
-    const { attention, demoted } = reconcileRetentionAttention([overCapItem('compat')], projection);
+    const projection = proj({ scanComplete: false, families: { settings: famStub({ actionable: 0, pinned_overage: 10 }) } });
+    const { attention, demoted } = reconcileRetentionAttention([overCapItem('settings')], projection);
     assert.equal(demoted.length, 0, 'an incomplete scan cannot prove pinned-only');
     assert.ok(attention.some((a) => a.kind === 'pin_scan_incomplete'));
-    assert.ok(attention.some((a) => a.family === 'compat'), 'the raw over-cap stays a fault too');
+    assert.ok(attention.some((a) => a.family === 'settings'), 'the raw over-cap stays a fault too');
   });
 
   it('tolerates a null/garbage attention array without throwing', () => {
     assert.doesNotThrow(() => reconcileRetentionAttention(null, proj()));
     assert.doesNotThrow(() => reconcileRetentionAttention(undefined, undefined));
+  });
+});
+
+describe('retention-planner — the retired compat family (ADR-0060 §Decision 6)', () => {
+  // compat runs recorded before ADR-0060 stay on disk, orphaned. The inventory
+  // still counts them (a declared, retired family), but retention neither plans
+  // nor deletes them, and so cannot explain an over-cap orphan set as pinned:
+  // the raw inventory attention stands, and its recommendation is manual review
+  // — the honest remedy for runs no command writes or reads any more.
+  it('never plans an orphaned compat run, however old or over cap', async () => {
+    const repo = tmpRepo();
+    for (const runId of ['compat-20260101T000000Z-000001', 'compat-20260102T000000Z-000002', 'compat-20260103T000000Z-000003']) {
+      seedRun(repo, 'compat', runId, { files: { 'snapshot.json': '{}' } });
+    }
+    const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
+    assert.equal(Object.hasOwn(plan.families, 'compat'), false, 'the family is not planned at all');
+    const listed = Object.values(plan.families).flatMap((f) => [...f.actionable_excess, ...f.pinned_overage]);
+    assert.ok(!listed.some((runId) => runId.startsWith('compat-')), 'no compat run is ever a candidate');
+  });
+
+  it('the CLI names the retired family and its remedy instead of an unknown name', async () => {
+    // Older docs told operators to run `apply --family compat`. The refusal says
+    // why and what to do; an unrecognised family keeps the generic message.
+    const repo = tmpRepo();
+    for (const command of ['apply', 'resolve']) {
+      const res = await runRetentionCli([command, '--family', 'compat', '--repo-root', repo]);
+      assert.equal(res.ok, false);
+      assert.match(res.reason, /no longer a retention family: ADR-0060 removed runtime:compat/);
+      assert.match(res.reason, /review and remove them manually/);
+    }
+    const bogus = await runRetentionCli(['apply', '--family', 'bogus', '--repo-root', repo]);
+    assert.equal(bogus.ok, false);
+    assert.match(bogus.reason, /^unknown family: bogus \(known: doctor, settings\)$/);
+  });
+
+  it('keeps an orphaned compat over-cap attention as a fault — nothing demotes it', async () => {
+    const repo = tmpRepo();
+    const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
+    const item = { family: 'compat', kind: 'run_count_exceeds_cap', observed: 44, limit: 20, recommendation: 'Review and remove manually.' };
+    const { attention, demoted } = reconcileRetentionAttention([item], projectRetentionAttention(plan));
+    assert.deepEqual(attention, [item]);
+    assert.deepEqual(demoted, []);
   });
 });
 
@@ -748,13 +832,13 @@ describe('retention-planner guards', () => {
   it('clamps an invalid minAgeMs override back to the safety constant (never disables the guard)', async () => {
     const repo = tmpRepo();
     // A run 1 minute old — younger than the 15-min guard.
-    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001', { ageMs: 60_000 });
+    seedRun(repo, 'settings', 'settings-20260101T000000Z-000001', { ageMs: 60_000 });
     for (const bad of [-1, NaN, null, undefined]) {
       const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 0, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [], minAgeMs: bad });
-      assert.equal(plan.families.compat.actionable_excess.length, 0, `minAgeMs=${String(bad)} must not disable the fresh-run guard`);
+      assert.equal(plan.families.settings.actionable_excess.length, 0, `minAgeMs=${String(bad)} must not disable the fresh-run guard`);
     }
     // Sanity control: the DEFAULT guard also withholds it.
     const def = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 0, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: [] });
-    assert.equal(def.families.compat.actionable_excess.length, 0);
+    assert.equal(def.families.settings.actionable_excess.length, 0);
   });
 });

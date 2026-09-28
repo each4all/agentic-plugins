@@ -23,8 +23,8 @@ schema inside an immutable record manufactures freshness debt.
 
 This document **ships inside the runtime plugin package**. That is load-bearing:
 a runtime command invoked from an arbitrary consumer repository can read
-`PLUGIN_ROOT/docs/…` (precedent: `scripts/compat.mjs` reading
-`docs/host-parity-baseline.md`) but cannot read `repoRoot/docs/…` (anti-pattern:
+`PLUGIN_ROOT/docs/…` (precedent at the time: `scripts/compat.mjs` reading
+`docs/host-parity-baseline.md`, both since removed) but cannot read `repoRoot/docs/…` (anti-pattern:
 `scripts/cutover-audit.mjs`). The ADR is for humans in the source tree; this
 contract is for the tool on the operator's machine.
 
@@ -45,6 +45,12 @@ contract is for the tool on the operator's machine.
 > `scripts/check-host-version-drift.mjs` is CI operating on the source tree and
 > keeps reading `repoRoot`, while importing the shared parser so the grammar
 > stays single-sourced.
+
+> **2026-09-28 — [ADR-0060](../../../docs/adr/0060-remove-host-version-tracking.md)**
+> removed the host-parity baseline, `scripts/compat.mjs` and
+> `scripts/check-host-version-drift.mjs`. The amendment above is kept as written;
+> its baseline-class rule still governs the assets that remain in that class,
+> `data/plugin-set.json` and `data/schemas/**`.
 
 Line references to other files are anchors observed at decision time and may
 drift; **the contract text governs**.
@@ -77,7 +83,8 @@ drift; **the contract text governs**.
 **Decision.** Bootstrap MUST NOT call `runDoctor`. `runDoctor` invokes
 `inspectSourcePluginState(repoRoot)` and `inspectCatalogs(repoRoot)`
 **unconditionally**, and also reads repo settings runs, doctor proofs, ledgers,
-consensus runs, compat runs, model/effort overlays, and baseline data. Calling it
+consensus runs, and model/effort overlays (and, until ADR-0060 removed them, compat
+runs and baseline data). Calling it
 and filtering the report afterwards does **not** satisfy "must not consume" — the
 reads still happen, and any future consumer of the filtered report re-inherits
 them.
@@ -290,7 +297,7 @@ path could not be.
 **Advisory, not a gate.** `complete` requires **installed + enabled + satisfies the
 floor**. It does **not** require "newest". A machine one patch behind is
 bootstrapped; keeping it current is `runtime:settings --execute-plugin-management`'s
-job, and `runtime:compat`'s. Currentness is reported — `current` / `stale` /
+job. Currentness is reported — `current` / `stale` /
 `unknown`, with the catalog's own `lastUpdated` shown so the operator can see
 whether the *catalog* is stale — and it never blocks a terminal state. Where the
 host cannot answer (Codex), it is `unknown`, and `unknown` currentness is not a

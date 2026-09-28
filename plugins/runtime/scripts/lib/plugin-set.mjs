@@ -5,7 +5,7 @@
 // membership, host-qualified dependency edges, per-host hook-bearing metadata,
 // and minimum-version floors. It ships INSIDE the runtime plugin package so a
 // `runtime:bootstrap` command invoked from an arbitrary consumer repository can
-// read it (the `compat.mjs` reading `docs/host-parity-baseline.md` precedent);
+// read it (the packaged-asset rule every runtime command follows);
 // it is resolved from `import.meta.url`, never from `process.cwd()`.
 //
 // This module owns ONLY the definition + its validation and bundle-closure
@@ -55,9 +55,9 @@ function isPlainObject(value) {
  * root). Never reads `process.cwd()`.
  */
 export async function loadPluginSet({ pluginRoot } = {}) {
-  // Containment and a strict override, matching the host-parity baseline
-  // resolver — this is the same packaged-asset contract, and it had the same
-  // two holes. A symlinked `data/` made an outside file the plugin set (which
+  // Containment and a strict override — the packaged-asset contract
+  // `path-containment.mjs` states, first applied to the host-parity baseline
+  // resolver (removed by ADR-0060), whose two holes this reader also had. A symlinked `data/` made an outside file the plugin set (which
   // decides what gets installed), and `pluginRoot: ''` silently read this
   // module's own package instead of the one the caller named.
   if (pluginRoot !== undefined && (typeof pluginRoot !== 'string' || !pluginRoot.trim())) {

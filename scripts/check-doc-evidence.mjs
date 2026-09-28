@@ -107,8 +107,9 @@ export const EVIDENCE_DOCS = [
  *     rule is unsafe here: 4 of the 442 real citations in this corpus are
  *     all-decimal, and 35 of the repository's 918 commits as of 2d6a667
  *     (3.8%) have an all-decimal 7-character abbreviation. The third citation (`16b1833`
- *     in `plugins/runtime/docs/host-parity-baseline.md`) is a fact
- *     `AGENTS.md` already states and this corpus therefore already gates.
+ *     in `plugins/runtime/docs/host-parity-baseline.md`) was a fact
+ *     `AGENTS.md` already states and this corpus therefore already gates;
+ *     ADR-0060 has since deleted that document.
  *     A future widening has to solve the decimal question first.
  *
  * Discovery goes through `git ls-files` rather than a filesystem walk so

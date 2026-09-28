@@ -181,7 +181,7 @@ describe('runtime doctor', () => {
     // so removing it changes the criterion count, the total weight and the
     // score. A field deletion would not have needed a bump; a scoring change
     // does.
-    strictEqual(report.experience_parity.schema_version, 'runtime-experience-parity-1.1');
+    strictEqual(report.experience_parity.schema_version, 'runtime-experience-parity-1.2');
     strictEqual(report.experience_parity.criteria.length, 8, 'the ninth criterion was removed, and the count is what the denominator is built from');
     strictEqual(report.experience_parity.weight.total, 115);
     strictEqual(
@@ -2365,247 +2365,103 @@ describe('runtime doctor', () => {
     ok(!JSON.stringify(report).includes('TIMED OUT RAW OUTPUT'), 'doctor must not read raw timeout output');
   });
 
-  it('summarizes latest compatibility drift artifacts without reading release-note bodies', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-artifact-'));
+  // ADR-0060 §Decision 3 — `runtime_handoff_artifacts` is recomposed from
+  // settings + consensus + compat to settings + consensus, at weight 15. The
+  // cases below pin the three rows of the matrix the criterion now states, and
+  // that a compat collection on disk no longer reaches it at all.
+  it('recomposes runtime_handoff_artifacts from settings and consensus only (ADR-0060)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-handoff-recomposed-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
-    const runId = 'compat-20260516T000000Z-abcdef';
-    await mkdir(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'release-notes'), { recursive: true });
-    await writeJson(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'snapshot.json'), {
-      schema_version: 'runtime-compat-snapshot-1.0',
-      runtime_version: RUNTIME_VERSION,
-      run_id: runId,
-      created_at: '2026-05-16T00:00:00.000Z',
-      updated_at: '2026-05-16T00:00:00.000Z',
-      hosts: {
-        claude: { available: true, version: '2.1.150', version_text: '2.1.150 (Claude Code)' },
-        codex: { available: true, version: '0.130.0', version_text: 'codex-cli 0.130.0' },
-      },
-      remembered_baseline: {
-        claude: { version: '2.1.141' },
-        codex: { version: '0.130.0' },
-      },
-    });
-    await writeJson(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'gap-analysis.json'), {
-      schema_version: 'runtime-compat-gap-1.2',
-      runtime_version: RUNTIME_VERSION,
-      run_id: runId,
-      created_at: '2026-05-16T00:01:00.000Z',
-      updated_at: '2026-05-16T00:01:00.000Z',
-      overall: {
-        status: 'release_notes_required',
-        drift_class: 'host-version-changed',
-        release_notes_required: true,
-        snapshot_schema_version: 'runtime-compat-snapshot-1.2',
-        snapshot_schema_era: 'post-assurance',
-      },
-      host_gaps: [
-        { host: 'claude', status: 'version_changed', observed_version: '2.1.150', baseline_version: '2.1.141' },
-        { host: 'codex', status: 'matches', observed_version: '0.130.0', baseline_version: '0.130.0' },
-      ],
-      next_steps: [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`],
-    });
-    await writeJson(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'release-notes', 'index.json'), {
-      schema_version: 'runtime-compat-release-notes-1.0',
-      run_id: runId,
-      notes: [{
-        id: 'claude-notes',
-        kind: 'url',
-        source: 'https://example.test/notes',
-        pointer: `.agentic-plugins/runs/compat/${runId}/release-notes/claude-notes.json`,
-        status: 'not_fetched',
-      }],
-    });
-    await writeFile(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'release-notes', 'raw.md'), 'RAW RELEASE NOTES MUST NOT LEAK\n');
-
-    const report = await runDoctor({
-      repoRoot: root,
-      homeDir: home,
-      runner: fakeRunner(defaultRuntimeProbeMap()),
-    });
-
-    strictEqual(report.compat_runs.status, 'release_notes_required');
-    strictEqual(report.compat_runs.latest.run_id, runId);
-    strictEqual(report.compat_runs.latest.drift_class, 'host-version-changed');
-    strictEqual(report.compat_runs.latest.release_notes.url_pointers, 1);
-    ok(report.experience_parity.criteria.some((entry) => entry.id === 'runtime_handoff_artifacts' && entry.status === 'blocked' && entry.evidence.includes('compat=release_notes_required')));
-    ok(report.overall.warnings.includes('latest compatibility check requires release notes'));
-
-    const text = formatText(report);
-    ok(text.includes('Compatibility Artifacts'));
-    ok(text.includes('host-gap: claude; status=version_changed'));
-    ok(text.includes(`runtime:compat ingest-release-notes --run-id ${runId}`));
-    ok(!JSON.stringify(report).includes('RAW RELEASE NOTES MUST NOT LEAK'), 'doctor must not read raw compatibility release-note bodies');
-    ok(!text.includes('RAW RELEASE NOTES'), 'doctor must not print raw compatibility release-note bodies');
-  });
-
-  it('keeps compat state current when the only plan is a non-actionable standing-watch plan (ADR-0047 §5)', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-standing-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    await seedRepo(root);
-    const runId = 'compat-20260721T000000Z-abcdef';
-    const runDir = join(root, '.agentic-plugins', 'runs', 'compat', runId);
-    await mkdir(join(runDir, 'release-notes'), { recursive: true });
-    await writeJson(join(runDir, 'snapshot.json'), {
-      schema_version: 'runtime-compat-snapshot-1.0',
-      runtime_version: RUNTIME_VERSION,
-      run_id: runId,
-      created_at: '2026-07-21T00:00:00.000Z',
-      updated_at: '2026-07-21T00:00:00.000Z',
-      hosts: {
-        claude: { available: true, version: '2.1.215', version_text: '2.1.215 (Claude Code)' },
-        codex: { available: true, version: '0.144.6', version_text: 'codex-cli 0.144.6' },
-      },
-      remembered_baseline: {
-        claude: { version: '2.1.215' },
-        codex: { version: '0.144.6' },
-      },
-    });
-    await writeJson(join(runDir, 'gap-analysis.json'), {
-      schema_version: 'runtime-compat-gap-1.2',
-      runtime_version: RUNTIME_VERSION,
-      run_id: runId,
-      created_at: '2026-07-21T00:01:00.000Z',
-      updated_at: '2026-07-21T00:01:00.000Z',
-      // ADR-0047 §5's contract is that a non-actionable standing-watch plan does
-      // not flip compat state. That rule is keyed on the READY predicate, which
-      // now takes the schema era as well as the token (ADR-0056 §Decision 6), so
-      // the fixture declares the post-assurance family — an assurance-era one
-      // would read `legacy_era` and this case would be measuring the era rule
-      // instead of the plan rule.
-      overall: { status: 'current', drift_class: 'none', release_notes_required: false, snapshot_schema_version: 'runtime-compat-snapshot-1.2', snapshot_schema_era: 'post-assurance' },
-      host_gaps: [
-        { host: 'claude', status: 'matches', observed_version: '2.1.215', baseline_version: '2.1.215' },
-        { host: 'codex', status: 'matches', observed_version: '0.144.6', baseline_version: '0.144.6' },
-      ],
-      next_steps: [],
-    });
-    const planFixture = {
-      schema_version: 'runtime-compat-plan-1.2',
-      runtime_version: RUNTIME_VERSION,
-      run_id: runId,
-      created_at: '2026-07-21T00:02:00.000Z',
-      status: 'planned',
-      actionable: false,
-      affected_surfaces: [],
-      notification_watch: [
-        { id: 'codex-notify-payload-variants', host: 'codex', standing: true, status: 'open', signal_detected: false, signal_notes: [] },
-        { id: 'claude-notification-agent-types', host: 'claude', standing: true, status: 'open', signal_detected: false, signal_notes: [] },
-      ],
-      recommended_sequence: [
-        { step: 'run-validation', reason: 'generic epilogue', required: true },
-      ],
-    };
-    await writeJson(join(runDir, 'plan.json'), planFixture);
-
-    const report = await runDoctor({
-      repoRoot: root,
-      homeDir: home,
-      runner: fakeRunner(defaultRuntimeProbeMap()),
-    });
-    strictEqual(report.compat_runs.latest.status, 'current', 'a standing-watch-only plan must not outrank a current gap');
-    strictEqual(report.compat_runs.status, 'available');
-
-    // Control: the same plan marked actionable (a detected watch signal or
-    // real update work) must surface as plan_ready/needs_attention.
-    await writeJson(join(runDir, 'plan.json'), { ...planFixture, actionable: true });
-    const actionableReport = await runDoctor({
-      repoRoot: root,
-      homeDir: home,
-      runner: fakeRunner(defaultRuntimeProbeMap()),
-    });
-    strictEqual(actionableReport.compat_runs.latest.status, 'plan_ready');
-    strictEqual(actionableReport.compat_runs.status, 'needs_attention');
-  });
-
-  // compat's `current` is the one per-run status with nothing to do, and an empty
-  // list is its true answer. aaf4744 (plugin-runtime v0.90.2) turned the trailing
-  // `return []` of compatNextSteps — which had served `current` only incidentally
-  // — into the fail-closed line meant for `unrecognized`, so every healthy run was
-  // told to re-run check "with a runtime new enough to read it", on doctor's
-  // default text output. The cases below read that answer on each surface doctor
-  // exposes it on, one surface per case, so a regression names the surface.
-  it('gives a current compat run no next step, and does not echo the stored standing-watch step', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-current-steps-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    await seedRepo(root);
-    await seedCurrentCompatRun(root);
+    // A MALFORMED compat run. Before ADR-0060 this blocked the criterion; now
+    // nothing reads the collection, so it must not reach the verdict.
+    const orphan = join(root, '.agentic-plugins', 'runs', 'compat', 'compat-20260828T000000Z-abcdef');
+    await mkdir(orphan, { recursive: true });
+    await writeFile(join(orphan, 'snapshot.json'), '{ not json');
 
     const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
-    const latest = report.compat_runs.latest;
-    // Preconditions: the healthy branch, in this era.
-    strictEqual(latest.status, 'current');
-    strictEqual(latest.schema_era, 'post-assurance');
-    strictEqual(report.compat_runs.status, 'available');
-    deepStrictEqual(latest.next_steps, []);
-    ok(!JSON.stringify(report).includes('not one this runtime recognises'), 'no field may send a current run to upgrade the runtime');
-  });
-
-  it('prints no next line for a current compat run in the default text output', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-current-text-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    await seedRepo(root);
-    const { runId } = await seedCurrentCompatRun(root);
-
-    const text = formatText(await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) }));
-    const start = text.indexOf('Compatibility Artifacts');
-    const section = text.slice(start, text.indexOf('\n\n', start));
-    // The slice must hold the run it judges, or the absence below proves nothing.
-    ok(section.includes(`- latest: ${runId}; status=current`), section);
-    ok(!section.includes('next:'), section);
-  });
-
-  it('lets runtime_handoff_artifacts use its own line when compat is current and another collection is missing', async () => {
-    // The criterion takes compat's first next step before its collection-agnostic
-    // line. Here the collections that are short are settings and consensus, and a
-    // healthy compat run has nothing to add, so the line must be the criterion's.
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-current-handoff-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    await seedRepo(root);
-    await seedCurrentCompatRun(root);
-
-    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
-    strictEqual(report.compat_runs.latest.status, 'current');
+    strictEqual(Object.hasOwn(report, 'compat_runs'), false, 'the report no longer carries a compat collection');
+    strictEqual(Object.hasOwn(report, 'host_parity_baseline'), false, 'nor a baseline verdict');
     strictEqual(report.settings_runs.status, 'missing');
     const handoff = report.experience_parity.criteria.find((entry) => entry.id === 'runtime_handoff_artifacts');
-    strictEqual(handoff.status, 'partial');
-    strictEqual(handoff.next_step, 'Run settings/consensus/compat flows when needed so future host handoffs have artifact evidence.');
+    strictEqual(handoff.weight, 15, 'recomposed at unchanged weight');
+    strictEqual(handoff.status, 'partial', 'a missing collection is partial — and the malformed compat run is not a block');
+    strictEqual(handoff.next_step, 'Run settings/consensus flows when needed so future host handoffs have artifact evidence.');
+    ok(!/compat/i.test(`${handoff.label} ${handoff.evidence} ${handoff.next_step}`), `${handoff.label} | ${handoff.evidence} | ${handoff.next_step}`);
+    ok(!/runtime:compat|baseline-freshness|Compatibility Artifacts/.test(formatText(report)), 'the text output names no compatibility surface');
   });
 
-  it('keeps a current compat run step-free under an informational plan, and surfaces the steps of an actionable one', async () => {
-    // Once the standing-watch plan has run, `plan` must not come back as a step.
-    // The actionable plan is the CONTROL: without it, the empty answer could be a
-    // reader that stopped returning steps altogether.
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-current-plan-'));
+  it('blocks runtime_handoff_artifacts on a malformed settings artifact, and is satisfied when both collections read', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-handoff-matrix-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
-    const { runId, runDir } = await seedCurrentCompatRun(root);
-    const planFixture = {
-      schema_version: 'runtime-compat-plan-1.2',
-      runtime_version: RUNTIME_VERSION,
-      run_id: runId,
-      created_at: '2026-08-28T00:02:00.000Z',
-      status: 'planned',
-      actionable: false,
-      affected_surfaces: [],
-      notification_watch: [
-        { id: 'codex-notify-payload-variants', host: 'codex', standing: true, status: 'open', signal_detected: false, signal_notes: [] },
-      ],
-      recommended_sequence: [
-        { step: 'run-validation', reason: 'generic epilogue', required: true },
-      ],
-    };
-    await writeJson(join(runDir, 'plan.json'), planFixture);
+    const settingsDir = join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260828T000000Z-abcdef');
+    await mkdir(settingsDir, { recursive: true });
+    await writeFile(join(settingsDir, 'settings.json'), '{ not json');
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'consensus'), { recursive: true });
 
-    const informational = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
-    strictEqual(informational.compat_runs.latest.status, 'current');
-    ok(informational.compat_runs.latest.plan_pointer, 'precondition: the plan was read');
-    deepStrictEqual(informational.compat_runs.latest.next_steps, []);
+    const blocked = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    const blockedCriterion = blocked.experience_parity.criteria.find((entry) => entry.id === 'runtime_handoff_artifacts');
+    strictEqual(blocked.settings_runs.status, 'blocked');
+    strictEqual(blockedCriterion.status, 'blocked');
+    strictEqual(blockedCriterion.next_step, 'Repair malformed runtime artifacts before relying on handoff and consensus history.');
 
-    await writeJson(join(runDir, 'plan.json'), { ...planFixture, actionable: true });
-    const actionable = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
-    strictEqual(actionable.compat_runs.latest.status, 'plan_ready');
-    deepStrictEqual(actionable.compat_runs.latest.next_steps, ['run-validation']);
+    // CONTROL: a readable settings artifact and an existing (empty) consensus
+    // collection satisfy the criterion — `empty` is readable.
+    await writeFile(join(settingsDir, 'settings.json'), JSON.stringify({ status: 'completed', terminal: true }));
+    const satisfied = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    const satisfiedCriterion = satisfied.experience_parity.criteria.find((entry) => entry.id === 'runtime_handoff_artifacts');
+    strictEqual(satisfied.consensus_runs.status, 'empty');
+    strictEqual(satisfiedCriterion.status, 'satisfied');
+    strictEqual(satisfiedCriterion.next_step, null);
+  });
+
+  // The two halves the cases above leave open, both found in review: each case
+  // there moves the settings collection, so a criterion that ignored a blocked
+  // CONSENSUS collection, or needed BOTH collections missing before reading
+  // partial, still passed them. Before ADR-0060 the compat collection's presence
+  // happened to cover the second half.
+  it('blocks runtime_handoff_artifacts on a blocked consensus collection alone', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-handoff-consensus-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const settingsDir = join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260828T000000Z-abcdef');
+    await mkdir(settingsDir, { recursive: true });
+    await writeFile(join(settingsDir, 'settings.json'), JSON.stringify({ status: 'completed', terminal: true }));
+    // Readable JSON with no status string: the consensus reader counts it
+    // malformed and blocks the collection.
+    const consensusDir = join(root, '.agentic-plugins', 'runs', 'consensus', 'consensus-20260828T000000Z-abcdef');
+    await mkdir(consensusDir, { recursive: true });
+    await writeFile(join(consensusDir, 'execution.json'), JSON.stringify({ summary: {} }));
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    const criterion = report.experience_parity.criteria.find((entry) => entry.id === 'runtime_handoff_artifacts');
+    strictEqual(report.settings_runs.status, 'available', 'the settings half is readable, so only consensus can block');
+    strictEqual(report.consensus_runs.status, 'blocked');
+    strictEqual(criterion.status, 'blocked');
+  });
+
+  it('reads runtime_handoff_artifacts as partial when exactly one collection is missing, in either direction', async () => {
+    for (const present of ['settings', 'consensus']) {
+      const root = await mkdtemp(join(tmpdir(), `runtime-doctor-handoff-only-${present}-`));
+      const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+      await seedRepo(root);
+      if (present === 'settings') {
+        const settingsDir = join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260828T000000Z-abcdef');
+        await mkdir(settingsDir, { recursive: true });
+        await writeFile(join(settingsDir, 'settings.json'), JSON.stringify({ status: 'completed', terminal: true }));
+      } else {
+        await mkdir(join(root, '.agentic-plugins', 'runs', 'consensus'), { recursive: true });
+      }
+
+      const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+      const criterion = report.experience_parity.criteria.find((entry) => entry.id === 'runtime_handoff_artifacts');
+      const other = present === 'settings' ? report.consensus_runs : report.settings_runs;
+      const own = present === 'settings' ? report.settings_runs : report.consensus_runs;
+      strictEqual(other.status, 'missing', `only ${present} exists`);
+      ok(own.status !== 'missing' && own.status !== 'blocked', `${present} reads: ${own.status}`);
+      strictEqual(criterion.status, 'partial', `one missing collection is partial (${present} present)`);
+    }
   });
 
   it('reports runtime artifact inventory pressure without reading artifact bodies', async () => {
@@ -2654,14 +2510,17 @@ describe('runtime doctor', () => {
     await seedRepo(root);
     // A real git repo so the citation scan's `git ls-files` succeeds.
     execFileSync('git', ['-C', root, 'init', '-q'], { stdio: 'ignore' });
-    const compatA = 'compat-20260101T000000Z-000001';
-    const compatB = 'compat-20260102T000000Z-000002';
-    for (const runId of [compatA, compatB]) {
-      await mkdir(join(root, '.agentic-plugins', 'runs', 'compat', runId), { recursive: true });
-      await writeFile(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'snapshot.json'), '{}\n');
+    // settings is the one deletable registry family since ADR-0060 removed
+    // compat, which was this case's specimen. Each run carries a TERMINAL
+    // artifact, so the citation is the only thing pinning it.
+    const settingsA = 'settings-20260101T000000Z-000001';
+    const settingsB = 'settings-20260102T000000Z-000002';
+    for (const runId of [settingsA, settingsB]) {
+      await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+      await writeFile(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), JSON.stringify({ status: 'completed', terminal: true }));
     }
     // A TRACKED doc citing BOTH runs → both pinned → the whole overage is pinned.
-    await writeFile(join(root, 'CITES.md'), `pinned: ${compatA} ${compatB}\n`);
+    await writeFile(join(root, 'CITES.md'), `pinned: ${settingsA} ${settingsB}\n`);
     execFileSync('git', ['-C', root, 'add', 'CITES.md'], { stdio: 'ignore' });
 
     const report = await runDoctor({
@@ -2675,20 +2534,20 @@ describe('runtime doctor', () => {
 
     strictEqual(report.retention.executed, true);
     strictEqual(report.retention.scan_complete, true);
-    strictEqual(report.retention.projection.compat.over_cap, true);
-    strictEqual(report.retention.projection.compat.actionable, 0);
-    strictEqual(report.retention.projection.compat.pinned_overage, 2);
-    ok(report.retention.reconciled.demoted.some((d) => d.family === 'compat'));
+    strictEqual(report.retention.projection.settings.over_cap, true);
+    strictEqual(report.retention.projection.settings.actionable, 0);
+    strictEqual(report.retention.projection.settings.pinned_overage, 2);
+    ok(report.retention.reconciled.demoted.some((d) => d.family === 'settings'));
     // The fault warning must NOT fire — the overage is entirely pinned.
     ok(!report.overall.warnings.includes('runtime artifact inventory exceeds retention guidance'),
       `pinned-only overage must not raise a fault; warnings=${JSON.stringify(report.overall.warnings)}`);
     const text = formatText(report);
     ok(text.includes('Runtime Retention Plan'));
-    ok(text.includes('retention-informational: compat/pinned_overage'));
+    ok(text.includes('retention-informational: settings/pinned_overage'));
     // The raw inventory block must NOT also render the demoted overage as a
     // fault-with-removal-recommendation (Codex review MAJOR — the double render
     // would tell the operator to delete pinned evidence).
-    ok(!text.includes('retention-attention: compat/run_count_exceeds_cap'),
+    ok(!text.includes('retention-attention: settings/run_count_exceeds_cap'),
       'a demoted pinned-only overage must not also render as a raw removal fault');
   });
 
@@ -2697,15 +2556,16 @@ describe('runtime doctor', () => {
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
     execFileSync('git', ['-C', root, 'init', '-q'], { stdio: 'ignore' });
-    // Two OLD compat runs, NEITHER pinned → both actionable over a cap of 1.
+    // Two OLD settings runs, NEITHER pinned → both actionable over a cap of 1.
+    // Each carries a TERMINAL artifact; without it a settings run is pinned.
     // Backdate their mtime well before the injected `now` so they clear the
     // minimum-age guard (a fresh run is never a candidate).
     const oldStamp = new Date('2026-07-01T00:00:00.000Z');
-    for (const runId of ['compat-20260101T000000Z-000001', 'compat-20260102T000000Z-000002']) {
-      const dir = join(root, '.agentic-plugins', 'runs', 'compat', runId);
+    for (const runId of ['settings-20260101T000000Z-000001', 'settings-20260102T000000Z-000002']) {
+      const dir = join(root, '.agentic-plugins', 'runs', 'settings', runId);
       await mkdir(dir, { recursive: true });
-      const f = join(dir, 'snapshot.json');
-      await writeFile(f, '{}\n');
+      const f = join(dir, 'settings.json');
+      await writeFile(f, JSON.stringify({ status: 'completed', terminal: true }));
       await utimes(f, oldStamp, oldStamp);
       await utimes(dir, oldStamp, oldStamp);
     }
@@ -2721,7 +2581,7 @@ describe('runtime doctor', () => {
       runner: fakeRunner(defaultRuntimeProbeMap()),
     });
     strictEqual(report.retention.executed, true);
-    ok(report.retention.projection.compat.actionable >= 1);
+    ok(report.retention.projection.settings.actionable >= 1);
     ok(report.overall.warnings.includes('runtime artifact inventory exceeds retention guidance'),
       `actionable overage must raise the fault; warnings=${JSON.stringify(report.overall.warnings)}`);
   });
@@ -3245,9 +3105,14 @@ describe('runtime doctor', () => {
     // measures as `malformed=1 count=2`.
     await seedRun('doctor-20260820T000000Z-aaaaaa', 'runtime-doctor-artifact-1.0', 'runtime-doctor-1.0');
     await seedRun('doctor-20260821T000000Z-bbbbbb', 'runtime-doctor-artifact-1.1', 'runtime-doctor-1.1');
+    // Every era this reader has to read, not only the two the ADR-0056 case
+    // started with: 1.2 (ADR-0057) and 1.3 (ADR-0060) each dropped report
+    // sections, and a retained artifact of either must not turn malformed.
+    await seedRun('doctor-20260821T010000Z-eeeeee', 'runtime-doctor-artifact-1.2', 'runtime-doctor-1.2');
+    await seedRun('doctor-20260821T020000Z-ffffff', 'runtime-doctor-artifact-1.3', 'runtime-doctor-1.3');
 
     const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
-    strictEqual(report.doctor_runs.count, 2);
+    strictEqual(report.doctor_runs.count, 4);
     strictEqual(report.doctor_runs.malformed, 0, 'neither era may be counted malformed');
     strictEqual(report.doctor_runs.status, 'available');
 
@@ -3708,160 +3573,6 @@ describe('runtime doctor', () => {
     rejects(async () => parseArgs(['--artifact-max-bytes', '0']), /positive integer/);
     rejects(async () => parseArgs(['--run-id', 'doctor-20260513T000000Z-abc123']), /requires --record/);
     rejects(async () => parseArgs(['--record', '--run-id', 'bad']), /Invalid doctor run id/);
-  });
-
-  it('reports host_parity_baseline freshness (current / stale / missing / unknown)', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-baseline-home-'));
-    const defaultProbes = {
-      'claude --version': okResult('2.1.161 (Claude Code)\n'),
-      'claude --help': okResult('Commands:\n  auth status\n  plugin list\n'),
-      'codex --version': okResult('codex-cli 0.136.0\n'),
-      'codex --help': okResult('Commands:\n  exec\n  plugin marketplace\n'),
-      'codex features list': okResult('hooks stable true\nplugin_hooks removed false\nplugins stable true\n'),
-    };
-    const runWith = async (baselineLine, probes = defaultProbes) => {
-      const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-baseline-'));
-      await seedRepo(root);
-      // ADR-0051 — the fixture PACKAGE lives OUTSIDE the fixture repo, on
-      // purpose. A package root nested at `<repoRoot>/plugins/runtime` makes
-      // the packaged read and the retired repository read indistinguishable:
-      // cross-host review reverted doctor to `join(repoRoot, 'plugins',
-      // 'runtime')` and all 172 doctor tests still passed. Separating the two
-      // roots is what gives this suite the power to reject that revert.
-      const pkg = await mkdtemp(join(tmpdir(), 'runtime-doctor-baseline-pkg-'));
-      if (baselineLine !== null) {
-        await mkdir(join(pkg, 'docs'), { recursive: true });
-        await writeFile(join(pkg, 'docs', 'host-parity-baseline.md'), baselineLine);
-      }
-      return runDoctor({
-        repoRoot: root,
-        pluginRoot: pkg,
-        homeDir: home,
-        runner: fakeRunner(probes),
-      });
-    };
-    // current: baseline Observed versions match installed
-    const current = await runWith('Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI\n`0.136.0`, docs.\n');
-    strictEqual(current.host_parity_baseline.status, 'current');
-    strictEqual(current.host_parity_baseline.next_action, null);
-    // normalize tolerates a v-prefix / trailing label on either side
-    const prefixed = await runWith('Observed on 2026-06-03 with Claude Code `v2.1.161`, Codex CLI\n`0.136.0`, docs.\n');
-    strictEqual(prefixed.host_parity_baseline.status, 'current');
-    // stale: baseline older than installed
-    const stale = await runWith('Observed on 2026-05-16 with Claude Code `2.1.143`, Codex CLI\n`0.130.0`, docs.\n');
-    strictEqual(stale.host_parity_baseline.status, 'stale');
-    ok(stale.host_parity_baseline.next_action.includes('runtime:compat'));
-    // ADR-0051 — the remediation must address the operator running runtime in
-    // their OWN project too. Naming only this repository's path repeats, for
-    // `stale`, the defect that was fixed for `missing`.
-    ok(
-      stale.host_parity_baseline.next_action.includes('Update the runtime plugin'),
-      'the stale remediation must lead with the action a consumer can actually take',
-    );
-    ok(formatText(stale).includes('baseline-freshness: stale'));
-    // missing: no baseline.md (seedRepo does not create it)
-    const missing = await runWith(null);
-    strictEqual(missing.host_parity_baseline.status, 'missing');
-    ok(missing.host_parity_baseline.next_action.includes('Reinstall or repair'));
-    // unparseable: present but no canonical header. ADR-0051 §Decision 4 —
-    // with no fallback source this must be a VISIBLE failure, distinct from
-    // `missing` and never quietly resolved to `current`. A mutation flipping
-    // this branch to `current` survived the first version of this suite.
-    const malformed = await runWith('a baseline file with no canonical header\n');
-    strictEqual(malformed.host_parity_baseline.status, 'unparseable');
-    strictEqual(malformed.host_parity_baseline.evidence.baseline, null);
-    ok(malformed.host_parity_baseline.next_action.includes('Observed on'));
-    ok(malformed.host_parity_baseline.evidence.provenance.content_sha256, 'malformed bytes are still identified');
-    ok(formatText(malformed).includes('baseline-freshness: unparseable'));
-    // unknown: version probe failed (claude --version omitted → ENOENT). A
-    // matching baseline must NOT be misreported current when the probe failed
-    // (version.text would otherwise carry stderr/error text).
-    const probeFailed = { ...defaultProbes };
-    delete probeFailed['claude --version'];
-    const unknown = await runWith('Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI\n`0.136.0`, docs.\n', probeFailed);
-    strictEqual(unknown.host_parity_baseline.status, 'unknown');
-    ok(unknown.host_parity_baseline.next_action.includes('Probe host CLIs'));
-    strictEqual(unknown.host_parity_baseline.evidence.observed.claude, null);
-    strictEqual(unknown.host_parity_baseline.evidence.probes.claude, 'unavailable');
-  });
-
-  it('reports an INTEGRITY failure as itself, never as staleness (ADR-0051 P2)', async () => {
-    // The branch under test used to enumerate `missing` and `unparseable` and
-    // let anything else fall to the `current`/`stale` comparison. With
-    // `baseline === null` that comparison is always false, so a package whose
-    // baseline could not be READ or was resolved OUTSIDE the package reported
-    // `stale` — a freshness verdict, whose remediation is "refresh the
-    // baseline via runtime:compat". An operator cannot refresh a file the
-    // resolver refuses to open.
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-home-'));
-    const probes = {
-      'claude --version': okResult('2.1.161 (Claude Code)\n'),
-      'claude --help': okResult('Commands:\n  auth status\n  plugin list\n'),
-      'codex --version': okResult('codex-cli 0.136.0\n'),
-      'codex --help': okResult('Commands:\n  exec\n  plugin marketplace\n'),
-      'codex features list': okResult('hooks stable true\nplugin_hooks removed false\nplugins stable true\n'),
-    };
-    const runWithPackage = async (prepare) => {
-      const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-'));
-      await seedRepo(root);
-      const pkg = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-pkg-'));
-      await mkdir(join(pkg, 'docs'), { recursive: true });
-      await prepare(pkg);
-      return runDoctor({ repoRoot: root, pluginRoot: pkg, homeDir: home, runner: fakeRunner(probes) });
-    };
-
-    // A baseline that resolves outside the package — the status no ladder listed.
-    const escaped = await runWithPackage(async (pkg) => {
-      const outside = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-out-'));
-      await writeFile(join(outside, 'evil.md'), 'Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI `0.136.0`.\n');
-      await symlink(join(outside, 'evil.md'), join(pkg, 'docs', 'host-parity-baseline.md'));
-    });
-    strictEqual(escaped.host_parity_baseline.status, 'escaped');
-    notStrictEqual(escaped.host_parity_baseline.status, 'stale');
-    strictEqual(escaped.host_parity_baseline.evidence.baseline, null, 'an escaped file must not supply baseline values');
-    ok(escaped.host_parity_baseline.next_action.includes('Reinstall'));
-    ok(formatText(escaped).includes('baseline-freshness: escaped'));
-
-    // Present but unreadable — reported as absent before this, sending the
-    // operator to reinstall a file already on disk. A directory in the file's
-    // place gives EISDIR regardless of platform or uid.
-    const unreadable = await runWithPackage(async (pkg) => {
-      await mkdir(join(pkg, 'docs', 'host-parity-baseline.md'), { recursive: true });
-    });
-    strictEqual(unreadable.host_parity_baseline.status, 'unreadable');
-    notStrictEqual(unreadable.host_parity_baseline.status, 'missing');
-    ok(unreadable.host_parity_baseline.next_action.includes('EISDIR'));
-
-    // CONTROL: a healthy package is still `current`. Without this the branch
-    // could report a failure unconditionally and both cases above stay green.
-    const healthy = await runWithPackage(async (pkg) => {
-      await writeFile(join(pkg, 'docs', 'host-parity-baseline.md'), 'Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI `0.136.0`.\n');
-    });
-    strictEqual(healthy.host_parity_baseline.status, 'current');
-
-    // And a FAILED probe must not hide it. The two are independent facts and
-    // only one is about the hosts; ordering the probe gate first reported
-    // `unknown` for a package whose baseline resolves outside itself, with a
-    // remediation ("probe your CLIs") that would not have fixed either problem
-    // (cross-host review, reproduced).
-    const unavailable = async () => ({ ok: false, exit_code: null, stdout: '', stderr: 'not found', error_code: 'ENOENT' });
-    const repoRoot = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-'));
-    await seedRepo(repoRoot);
-    const pkg = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-pkg-'));
-    await mkdir(join(pkg, 'docs'), { recursive: true });
-    const outside = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-out-'));
-    await writeFile(join(outside, 'evil.md'), 'Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI `0.136.0`.\n');
-    await symlink(join(outside, 'evil.md'), join(pkg, 'docs', 'host-parity-baseline.md'));
-    const blindProbes = await runDoctor({ repoRoot, pluginRoot: pkg, homeDir: home, runner: unavailable });
-    strictEqual(blindProbes.host_parity_baseline.status, 'escaped');
-    notStrictEqual(blindProbes.host_parity_baseline.status, 'unknown');
-
-    // CONTROL: with the package intact, failed probes ARE the honest answer.
-    const intact = await mkdtemp(join(tmpdir(), 'runtime-doctor-integrity-pkg-'));
-    await mkdir(join(intact, 'docs'), { recursive: true });
-    await writeFile(join(intact, 'docs', 'host-parity-baseline.md'), 'Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI `0.136.0`.\n');
-    const probeOnly = await runDoctor({ repoRoot, pluginRoot: intact, homeDir: home, runner: unavailable });
-    strictEqual(probeOnly.host_parity_baseline.status, 'unknown');
   });
 });
 
@@ -4671,43 +4382,6 @@ async function seedRepo(root) {
     effort: 'high',
     updated_at: '2026-05-12T23:00:00.000Z',
   });
-}
-
-// A post-assurance compat run whose gap is `current` and stores exactly what
-// compat's gapNextSteps stores for one: the ADR-0047 §5 standing-watch plan step.
-// It observes the host pair defaultRuntimeProbeMap reports.
-async function seedCurrentCompatRun(root, runId = 'compat-20260828T000000Z-abcdef') {
-  const runDir = join(root, '.agentic-plugins', 'runs', 'compat', runId);
-  await mkdir(runDir, { recursive: true });
-  await writeJson(join(runDir, 'snapshot.json'), {
-    schema_version: 'runtime-compat-snapshot-1.2',
-    runtime_version: RUNTIME_VERSION,
-    run_id: runId,
-    created_at: '2026-08-28T00:00:00.000Z',
-    updated_at: '2026-08-28T00:00:00.000Z',
-    hosts: {
-      claude: { available: true, version: '2.1.140', version_text: '2.1.140 (Claude Code)' },
-      codex: { available: true, version: '0.130.0', version_text: 'codex-cli 0.130.0' },
-    },
-    remembered_baseline: {
-      claude: { version: '2.1.140' },
-      codex: { version: '0.130.0' },
-    },
-  });
-  await writeJson(join(runDir, 'gap-analysis.json'), {
-    schema_version: 'runtime-compat-gap-1.2',
-    runtime_version: RUNTIME_VERSION,
-    run_id: runId,
-    created_at: '2026-08-28T00:01:00.000Z',
-    updated_at: '2026-08-28T00:01:00.000Z',
-    overall: { status: 'current', drift_class: 'none', release_notes_required: false, snapshot_schema_version: 'runtime-compat-snapshot-1.2', snapshot_schema_era: 'post-assurance' },
-    host_gaps: [
-      { host: 'claude', status: 'matches', observed_version: '2.1.140', baseline_version: '2.1.140' },
-      { host: 'codex', status: 'matches', observed_version: '0.130.0', baseline_version: '0.130.0' },
-    ],
-    next_steps: [`runtime:compat plan --run-id ${runId}`],
-  });
-  return { runId, runDir };
 }
 
 async function writeDisabledCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json') {

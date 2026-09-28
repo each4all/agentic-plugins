@@ -133,6 +133,7 @@ const argumentLinesInCode = (body) =>
 // three decide runbooks also name the placeholder in a comment beside their
 // splice. ADR-0059 removes all of them. Each is pinned by its line so a new
 // site cannot hide behind a removed one; delete an entry when its line goes.
+// ADR-0060 removed `runtime:compat`, so compat.md's site went with it: 15 remain.
 const ARGUMENT_LINES_IN_CODE = {
   'plugins/designer/commands/decide.md': [
     '# `$ARGUMENTS` is the verbatim user input. Expand unquoted so the shell',
@@ -158,7 +159,6 @@ const ARGUMENT_LINES_IN_CODE = {
     '--profile "${AGENTIC_PROFILE:-<profile from $ARGUMENTS — business-brief; default \'business-brief\'>}" \\',
   ],
   'plugins/runtime/commands/bootstrap.md': ['node "$RUNTIME_ROOT/scripts/bootstrap.mjs" $ARGUMENTS'],
-  'plugins/runtime/commands/compat.md': ['node "$RUNTIME_ROOT/scripts/compat.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
   'plugins/runtime/commands/consensus.md': ['node "$RUNTIME_ROOT/scripts/consensus.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
   'plugins/runtime/commands/context.md': ['node "$RUNTIME_ROOT/scripts/context.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
   'plugins/runtime/commands/cutover.md': ['node "$RUNTIME_ROOT/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],

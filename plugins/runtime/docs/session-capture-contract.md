@@ -443,8 +443,8 @@ ships:
     (fail-closed: never treated as satisfied);
   - declared floor newer than the installed runtime ⇒
     `runtime-below-publisher-floor`;
-  - safe mode (`CLAUDE_CODE_SAFE_MODE`, `host-parity-baseline.md` hooks
-    row) disables the whole hook chain ⇒ `safe-mode-hooks-disabled`.
+  - safe mode (`CLAUDE_CODE_SAFE_MODE`) disables the whole hook chain ⇒
+    `safe-mode-hooks-disabled`.
 - States compose (a machine can be in safe mode **and** below floor);
   the diagnosis reports all of them, plus a single overall status:
   `off` (gate off — informational, not a warning), `ready`,

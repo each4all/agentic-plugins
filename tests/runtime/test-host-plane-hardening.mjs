@@ -1,78 +1,39 @@
 // Regression tests for the reader/consumer hardening that SURVIVES the removal
-// of the compatibility-assurance plane (ADR-0056).
+// of the compatibility-assurance plane (ADR-0056) and of host-version tracking
+// (ADR-0060).
 //
 // ⚠ THIS FILE WAS `test-assurance-plane-hardening.mjs`, AND RENAMING IT IS THE
 // POINT. ADR-0056's test manifest listed that file for deletion in full. Four of
-// its `describe`s are not about assurance at all — they pin the version-token
-// grammar, the future-timestamp clock rule, the peer-run staleness rule, and the
-// exactly-one-dated-header rule — and every one of those subjects survives the
-// removal. Deleting the file wholesale would have deleted four guards because
-// their neighbours went away, which is the failure mode this repository has hit
-// before: a fix that removes a property nobody decided to remove.
+// its `describe`s were not about assurance at all, and deleting the file
+// wholesale would have deleted four guards because their neighbours went away,
+// which is the failure mode this repository has hit before: a fix that removes a
+// property nobody decided to remove.
 //
-// One file rather than four, because these are one finding class seen from four
-// modules: a reader that accepts input it cannot faithfully read, and a consumer
-// that reads absence as permission. Each `describe` names the measured failure,
-// and each carries the CONTROL that failed first when the fix was prototyped —
-// these fixes all tighten a predicate, and a tightening with no control is how a
-// guard grows until it refuses correct input.
+// ADR-0060 then removed two of those four subjects outright: the version-token
+// grammar (`readVersionToken`) and the exactly-one-dated-header rule
+// (`parseBaseline`) had no reader left once the host-parity baseline and
+// `runtime:compat` were deleted, so their `describe`s went with them. The
+// future-timestamp clock rule and the peer-run staleness rule survive, and so
+// does the byte-exact artifact read, relocated here from the deleted
+// `test-baseline-consumer-contract.mjs`.
+//
+// One file, because these are one finding class seen from several modules: a
+// reader that accepts input it cannot faithfully read, and a consumer that reads
+// absence as permission. Each `describe` names the measured failure and carries
+// the CONTROL that failed first when the fix was prototyped.
 //
 // Every test here was mutation-verified when it was written: reverting the
 // production line it names turns it red.
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  parseBaseline,
-  readVersionToken,
-} from '../../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
 import { FUTURE_SKEW_TOLERANCE_MS, elapsedMsSince } from '../../plugins/runtime/scripts/lib/clock.mjs';
-import { inspectWorkflowNamespace } from '../../plugins/runtime/scripts/lib/state-readers.mjs';
-
-// ---------------------------------------------------------------------------
-// A malformed observed version aliased to a reviewed release
-// ---------------------------------------------------------------------------
-
-describe('readVersionToken reports every DROPPED residue, not only a further component', () => {
-  // The old rule flagged `1.2.3.4` and nothing else, and its own note recorded
-  // the three shapes it let through as a stated residual to be decided
-  // deliberately. ST5 is that decision: `2.1.234-` reached `covered` against a
-  // human grant for `2.1.234`, which is the plane's whole failure mode.
-  for (const malformed of ['1.2.3.4', '1.2.3-', '1.2.3+', '1.2.3..4']) {
-    it(`refuses ${JSON.stringify(malformed)} — the token is not what the text said`, () => {
-      const read = readVersionToken(malformed);
-      assert.equal(read.token, '1.2.3');
-      assert.equal(read.truncated, true, `${malformed} must be flagged as having dropped something`);
-    });
-  }
-
-  // CONTROLS. These are the exact strings the original note named as the
-  // property a wider detector would cost, plus the two real host output shapes.
-  // A fix that flags any of them is over-tightened, not fixed.
-  for (const [faithful, token] of [
-    ['1.2.3', '1.2.3'],
-    ['1.2.3-rc.1', '1.2.3-rc.1'],
-    ['1.2.3+build.5', '1.2.3+build.5'],
-    ['0.147.0-rc.1', '0.147.0-rc.1'],
-    ['v1.2.3', '1.2.3'],
-    ['  1.2.3  ', '1.2.3'],
-    ['2.1.197 (Claude Code)', '2.1.197'],
-    ['codex-cli 0.142.4', '0.142.4'],
-    ['rust-v0.137.0', '0.137.0'],
-    ['2.1.233. See the note below.', '2.1.233'],
-    ['1.2', '1.2'],
-  ]) {
-    it(`CONTROL: ${JSON.stringify(faithful)} is read faithfully`, () => {
-      const read = readVersionToken(faithful);
-      assert.equal(read.token, token);
-      assert.equal(read.truncated, false, `${faithful} must NOT be flagged`);
-    });
-  }
-});
+import { inspectWorkflowNamespace, readBytesIfExists } from '../../plugins/runtime/scripts/lib/state-readers.mjs';
 
 describe('a beyond-skew future timestamp establishes no age', () => {
   const now = Date.parse('2026-08-18T12:00:00.000Z');
@@ -151,33 +112,30 @@ describe('a peer run stamped in the future is stale, not eternally fresh', () =>
   });
 });
 
-describe('exactly one dated header, and quoted ones do not count', () => {
-  const real = 'Observed on 2026-08-16 with Claude Code `2.1.233`, Codex CLI `0.147.0`.';
-  const stale = 'Observed on 2020-01-01 with Claude Code `1.0.0`, Codex CLI `0.1.0`.';
+describe('read-time artifact hashes identify the FILE, not a re-encoding of it', () => {
+  it('two files differing by one invalid byte do not share a digest', async () => {
+    // Two hashes documented as binding "the EXACT bytes on disk" read with
+    // `'utf8'` and hashed the decoded string, so two artifacts differing only
+    // by `0xff` versus `0xfe` certified identical (cross-host review). This
+    // pins the reader those hashes now go through — doctor's settings
+    // `artifact_hash` among them.
+    const dir = await mkdtemp(join(tmpdir(), 'hardening-bytes-'));
+    const a = join(dir, 'a.json');
+    const b = join(dir, 'b.json');
+    await writeFile(a, Buffer.concat([Buffer.from('{"x":"'), Buffer.from([0xff]), Buffer.from('"}')]));
+    await writeFile(b, Buffer.concat([Buffer.from('{"x":"'), Buffer.from([0xfe]), Buffer.from('"}')]));
 
-  it('CONTROL: one header parses', () => {
-    assert.deepEqual(parseBaseline(real), { date: '2026-08-16', claude: '2.1.233', codex: '0.147.0' });
-  });
-
-  it('a stale header ABOVE the canonical one is refused, not preferred by position', () => {
-    // `HEADER_RE` is unanchored and the reader took the FIRST match, so a stale
-    // line left above the real one silently won — and both the exactness verdict
-    // and the direction evidence then named a pair nobody observed.
-    assert.equal(parseBaseline(`${stale}\n\n${real}`), null);
-    assert.equal(parseBaseline(`${real}\n\n${stale}`), null);
-  });
-
-  it('a header that exists ONLY as a quoted example is not a header', () => {
-    assert.equal(parseBaseline(`# doc\n\n\`\`\`\n${real}\n\`\`\`\n`), null);
-    assert.equal(parseBaseline(`# doc\n\n<pre>\n${real}\n</pre>\n`), null);
-  });
-
-  it('CONTROL: a quoted example beside the real header leaves the real one readable', () => {
-    // This document explains its own grammar, so worked examples are expected.
-    // Counting them would make the shipped file ambiguous against itself.
-    assert.deepEqual(
-      parseBaseline(`\`\`\`\n${stale}\n\`\`\`\n\n${real}`),
-      { date: '2026-08-16', claude: '2.1.233', codex: '0.147.0' },
-    );
+    const ra = await readBytesIfExists(a);
+    const rb = await readBytesIfExists(b);
+    const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    assert.notEqual(hash(ra.bytes), hash(rb.bytes), 'different files must not share a digest');
+    // The byte count is the FILE's. Stated as the inequality rather than a
+    // literal, because the literal is what the re-encoding gets wrong: a lone
+    // 0xff decodes to U+FFFD and re-encodes to three bytes.
+    assert.notEqual(ra.bytes.byteLength, Buffer.byteLength(ra.text, 'utf8'));
+    assert.equal(ra.bytes.byteLength, 9);
+    // CONTROL: the decoded-string route is exactly what collapses them, which
+    // is why the byte reader had to exist.
+    assert.equal(hash(Buffer.from(ra.text, 'utf8')), hash(Buffer.from(rb.text, 'utf8')));
   });
 });

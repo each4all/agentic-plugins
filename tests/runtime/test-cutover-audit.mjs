@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test';
-import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
+import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert/strict';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -54,218 +54,112 @@ describe('runtime cutover audit', () => {
     ok(text.includes('- final-owner-declaration: manual; owner=owner'));
   });
 
-  it('passes through doctor host_parity_baseline freshness into observations, and the compat gate is what blocks', async () => {
+  // ADR-0060 §Decision 3 — the compat freshness check went with `runtime:compat`,
+  // and nothing replaces it. The audit must SAY that host-pair identity is not
+  // verified: an absent check must not read as a passing one. It must also not
+  // turn that statement into a blocker, because no operator action clears it.
+  it('states that host-pair identity is NOT verified — never a check, never a blocker, never a pass (ADR-0060)', async () => {
     const root = await seedRepo({
       scorecardStatus: 'satisfied',
       conditionStatus: 'satisfied',
       contextCreatedAt: '2026-05-16T07:30:00.000Z',
       cutoverEvidenceDates: oneWeekDogfoodDates(),
     });
-    // stale baseline from doctor → reused verbatim into `observations`
-    const staleReport = await runCutoverAudit({
+    const report = await runCutoverAudit({
       repoRoot: root,
       now: NOW,
-      doctorReport: doctorReport({
-        hostParityBaseline: {
-          id: 'host_parity_baseline',
-          label: 'Host parity baseline freshness',
-          status: 'stale',
-          evidence: {
-            normalized_observed: { claude: '2.1.143', codex: '0.130.0' },
-          },
-          next_action: 'Refresh plugins/runtime/docs/host-parity-baseline.md via runtime:compat snapshot→check→ingest-release-notes→plan for the current host versions.',
-        },
-      }),
+      doctorReport: doctorReport(),
       footerState: 'closed',
       footerReason: 'closed',
       omccDevActive: 'no',
+      completionAudit: true,
     });
-    // ⚠ EXACTNESS IS NOT ITS OWN CHECK, AND IT IS NOT NON-BLOCKING EITHER, and
-    // the difference between those two statements is what this case pins.
-    // ADR-0053 §Decision 4 moved exactness out of `checks` into `observations`,
-    // and ADR-0056 kept it there — it is still not a check of its own. But the
-    // compat check now READS the live baseline status, because `liveCovered`
-    // used to supply the "is the recorded run's baseline still the installed
-    // one" binding and its removal left nothing doing that (cross-host review).
-    // So a stale baseline is visible as an observation AND blocks through
-    // `latest_compat_snapshot` — which was `true` here before the binding
-    // landed.
-    const staleObservation = staleReport.observations.find((entry) => entry.id === 'host_parity_baseline');
-    strictEqual(staleObservation.status, 'stale');
-    strictEqual(staleReport.checks.some((check) => check.id === 'host_parity_baseline'), false);
-    strictEqual(staleReport.ready_candidate, false, 'a stale installed baseline is no longer re-bound to the recorded run');
-    const staleCompat = staleReport.checks.find((check) => check.id === 'latest_compat_snapshot');
-    strictEqual(staleCompat.status, 'blocked');
-    strictEqual(staleCompat.evidence.live_baseline_status, 'stale');
-    ok(/not re-bound/.test(staleCompat.evidence.reason), staleCompat.evidence.reason);
 
-    // older doctor shape (no host_parity_baseline) → observation falls back to
-    // `missing` and points at re-running doctor, NOT at a deleted file. The
-    // compat gate then blocks, because it has no live pair to bind against.
-    const olderShape = doctorReport();
-    delete olderShape.host_parity_baseline;
-    const fallbackReport = await runCutoverAudit({
-      repoRoot: root,
-      now: NOW,
-      doctorReport: olderShape,
-      footerState: 'closed',
-      footerReason: 'closed',
-      omccDevActive: 'no',
-    });
-    strictEqual(fallbackReport.observations.find((entry) => entry.id === 'host_parity_baseline').status, 'missing');
-    const compatCheck = fallbackReport.checks.find((check) => check.id === 'latest_compat_snapshot');
-    strictEqual(compatCheck.status, 'blocked');
-    strictEqual(compatCheck.evidence.identity_bound, false);
-    strictEqual(fallbackReport.ready_candidate, false);
+    // Not a blocker: every gating check passes, so the audit is a candidate.
+    strictEqual(report.ready_candidate, true);
+    strictEqual(report.checks.some((check) => /compat|host_pair|baseline/.test(check.id)), false, 'no check gates on host versions');
+    ok(!report.cutover_gate.candidate_required.some((line) => /compatib/i.test(line)), 'the gate list names no compatibility run');
+
+    // Not a pass: the observation says `not_verified`, with the versions as facts.
+    const identity = report.observations.find((entry) => entry.id === 'host_pair_identity');
+    strictEqual(identity.status, 'not_verified');
+    deepStrictEqual(identity.evidence.claude, { probe: 'available', version: '2.1.143 (Claude Code)' });
+    deepStrictEqual(identity.evidence.codex, { probe: 'available', version: 'codex-cli 0.130.0' });
+    ok(report.limits.some((limit) => /Host-pair identity is not verified \(ADR-0060\)/.test(limit)), 'the limit is stated');
+
+    // The completion audit reports it apart from what an operator can fix.
+    deepStrictEqual(report.completion_audit.unverified_scope.map((item) => item.id), ['host_pair_identity']);
+    strictEqual(report.completion_audit.missing_or_weak.some((item) => item.id === 'host_pair_identity'), false);
+    ok(!report.completion_audit.artifact_checklist.some((item) => ['host-parity-baseline', 'runtime-compat-freshness'].includes(item.id)));
+
+    const text = formatText(report);
+    ok(text.includes('- host_pair_identity: not_verified;'), text);
+    ok(text.includes('observed claude=2.1.143 (Claude Code); codex=codex-cli 0.130.0 (facts, not compared against anything)'));
+    ok(text.includes('not verified (scope limits, not blockers):'));
+    ok(!/runtime:compat/.test(text), 'no remediation names the removed command');
   });
 
-  it('an ASSURANCE-ERA recorded run never satisfies the gate — the fail-open the removal had to close', async () => {
-    // ⚠ ADDED BECAUSE THE REMOVAL CREATES THIS HOLE. `checkCompatFreshness` had
-    // four clauses, and it was `liveCovered` — not exactness — that stopped a
-    // STORED bit from passing on its own. Delete it without a replacement and an
-    // old `runtime-compat-gap-1.1` run whose status was `current` or `assured`
-    // satisfies CURRENT readiness: both tokens still parse, and its recorded
-    // host pair can still equal the live one.
-    //
-    // The replacement is the ERA, and this case is the mutation guard for it:
-    // reverting `isReadyCompatState` to a token-only test turns the two
-    // assurance-era cases below green while the CONTROL stays green, which is
-    // exactly the shape a token-only reader cannot distinguish.
-    const root = await seedRepo({
-      scorecardStatus: 'satisfied',
-      conditionStatus: 'satisfied',
-      contextCreatedAt: '2026-05-16T07:30:00.000Z',
-      cutoverEvidenceDates: oneWeekDogfoodDates(),
-    });
-    const audit = async (latest) => runCutoverAudit({
-      repoRoot: root, now: NOW,
-      doctorReport: doctorReport({
-        compatRuns: {
-          status: 'available',
-          malformed: 0,
-          latest: {
-            run_id: 'compat-20260516T073000Z-abc123',
-            selected_at: '2026-05-16T07:30:00.000Z',
-            drift_class: 'none',
-            host_gaps: [
-              { host: 'claude', observed_version: '2.1.143' },
-              { host: 'codex', observed_version: '0.130.0' },
-            ],
-            ...latest,
-          },
-        },
-      }),
-      footerState: 'closed', footerReason: 'closed', omccDevActive: 'no',
-    });
-    const compatCheck = (report) => report.checks.find((check) => check.id === 'latest_compat_snapshot');
-
-    // CONTROL — this era's `current` IS admitted, so the refusals below are
-    // about the era and not about the fixture being rejected wholesale.
-    const current = await audit({ status: 'current', schema_era: 'post-assurance' });
-    strictEqual(compatCheck(current).status, 'fresh');
-    strictEqual(current.ready_candidate, true);
-
-    // The assurance era's `current` meant "covered AND drift-free". Reading the
-    // token alone would silently re-interpret it as this era's weaker claim.
-    const eraCurrent = await audit({ status: 'current', schema_era: 'assurance-era' });
-    strictEqual(compatCheck(eraCurrent).status, 'blocked');
-    ok(/assurance-era/.test(compatCheck(eraCurrent).evidence.reason), compatCheck(eraCurrent).evidence.reason);
-    strictEqual(eraCurrent.ready_candidate, false);
-
-    // `assured` is not in this era's vocabulary at all, and must not pass on the
-    // strength of having been positive in its own.
-    const eraAssured = await audit({ status: 'assured', schema_era: 'assurance-era' });
-    strictEqual(compatCheck(eraAssured).status, 'blocked');
-    strictEqual(eraAssured.ready_candidate, false);
-
-    // A run with NO era at all — an older reader's projection — is refused too.
-    // `null` never satisfies the predicate, which is the fail-closed direction.
-    const noEra = await audit({ status: 'current', schema_era: null });
-    strictEqual(compatCheck(noEra).status, 'blocked');
+  it('never reports a failed version probe as an observed version', async () => {
+    // A failed `--version` probe carries its stderr or error message in `text`.
+    // Labelling that an observed version would invent one.
+    const repoRoot = await mkdtemp(join(tmpdir(), 'cutover-identity-probe-'));
+    const doctor = doctorReport();
+    doctor.clis.claude = { version: { status: 'unavailable', text: 'spawn claude ENOENT' } };
+    const report = await runCutoverAudit({ repoRoot, now: NOW, doctorReport: doctor });
+    const identity = report.observations.find((entry) => entry.id === 'host_pair_identity');
+    deepStrictEqual(identity.evidence.claude, { probe: 'unavailable', version: null });
+    deepStrictEqual(identity.evidence.codex, { probe: 'available', version: 'codex-cli 0.130.0' });
+    strictEqual(identity.status, 'not_verified');
+    ok(formatText(report).includes('observed claude=<unavailable>; codex=codex-cli 0.130.0'));
   });
 
-  it('the compat gate refuses each condition independently — and admits a current run', async () => {
-    // ⚠ ONE CASE PER CONDITION. Migrating the fixture so the suite goes green
-    // proves the gate can PASS; it proves nothing about what it refuses, and a
-    // condition nothing exercises is a condition that can be deleted without a
-    // test turning red.
-    const root = await seedRepo({
-      scorecardStatus: 'satisfied',
-      conditionStatus: 'satisfied',
-      contextCreatedAt: '2026-05-16T07:30:00.000Z',
-      cutoverEvidenceDates: oneWeekDogfoodDates(),
-    });
-    const audit = async (overrides) => runCutoverAudit({
-      repoRoot: root, now: NOW, doctorReport: doctorReport(overrides),
-      footerState: 'closed', footerReason: 'closed', omccDevActive: 'no',
-    });
-    const compatCheck = (report) => report.checks.find((check) => check.id === 'latest_compat_snapshot');
-    const base = {
-      status: 'available',
-      malformed: 0,
-      latest: {
-        run_id: 'compat-20260516T073000Z-abc123',
-        status: 'current',
-        schema_era: 'post-assurance',
-        drift_class: 'none',
-        selected_at: '2026-05-16T07:30:00.000Z',
-        host_gaps: [
-          { host: 'claude', observed_version: '2.1.143' },
-          { host: 'codex', observed_version: '0.130.0' },
-        ],
-      },
-    };
+  // Relocated from test-baseline-consumer-contract.mjs, which ADR-0060 deleted
+  // with the baseline it was named for. `next_actions` is the list an operator
+  // works through, so these pin that every unready check reaches it — with its
+  // own remediation when it has one — and that no passing check does.
+  it('an unready check carries its OWN remediation into next_actions', async () => {
+    // `checkUnready` is the COMPLEMENT of pass, which makes every status —
+    // known or not — unready; this case drives a real unready status that
+    // carries its own next action. (It used `latest_compat_snapshot` until
+    // ADR-0060 removed that check.)
+    const repoRoot = await mkdtemp(join(tmpdir(), 'cutover-remediation-'));
+    const report = await runCutoverAudit({ repoRoot, doctorReport: {}, now: NOW });
+    const footer = report.checks.find((entry) => entry.id === 'latest_completion_footer_state');
+    strictEqual(footer.status, 'not-verified');
+    ok(footer.next_action, 'CONTROL: this check must carry a remediation of its own, or the case proves nothing');
+    const surfaced = report.next_actions.find((entry) => entry.id === 'latest_completion_footer_state');
+    strictEqual(surfaced?.next_action, footer.next_action);
+    strictEqual(report.ready_candidate, false);
+  });
 
-    // CONTROL — an intact, bound, current run is ADMITTED. Without this, every
-    // refusal below would pass against a gate hard-wired to block.
-    const ok0 = await audit({ compatRuns: base });
-    strictEqual(compatCheck(ok0).status, 'fresh');
-    strictEqual(ok0.ready_candidate, true);
+  it('a blocking check with NO remediation of its own is still named — no silent blocker', async () => {
+    // `next_actions` used to drop any entry whose `next_action` was absent, so
+    // the audit refused readiness and printed nothing to fix.
+    // `omcc_replacement_scorecard` genuinely has no `next_action` of its own on a
+    // bare repo (measured), so it drives the synthesized line without a seam.
+    const repoRoot = await mkdtemp(join(tmpdir(), 'cutover-remediation-'));
+    const report = await runCutoverAudit({ repoRoot, doctorReport: {}, now: NOW });
+    const bare = report.checks.find((entry) => entry.id === 'omcc_replacement_scorecard');
+    strictEqual(bare.next_action ?? null, null, 'CONTROL: this check must have no remediation of its own, or the case proves nothing');
+    const surfaced = report.next_actions.find((entry) => entry.id === 'omcc_replacement_scorecard');
+    ok(surfaced, 'a blocking check must appear in next_actions even with no next_action of its own');
+    ok(/blocks readiness and reported no remediation/.test(surfaced.next_action), surfaced.next_action);
+    strictEqual(report.ready_candidate, false);
+  });
 
-    // ⚠ DRIFT NOW REFUSES, AND THAT IS A DELIBERATE NARROWING. Under ADR-0053
-    // §Decision 4 an `assured` run — drift a human reviewed — reached the gate.
-    // With no reviewer, ADR-0056 §Decision 6 item 4 chose `current` as the only
-    // ready status, openly restoring exactness as the gate rather than letting a
-    // pair nobody reconciled read healthy.
-    const drifted = await audit({
-      compatRuns: { ...base, latest: { ...base.latest, status: 'gap_analysis_ready', drift_class: 'host-version-changed' } },
-    });
-    strictEqual(compatCheck(drifted).status, 'blocked');
-    strictEqual(drifted.ready_candidate, false);
-
-    // COLLECTION INTEGRITY — one malformed historical artifact blocks, even
-    // though the NEWEST run is perfect.
-    const corrupt = await audit({ compatRuns: { ...base, status: 'blocked', malformed: 1 } });
-    strictEqual(compatCheck(corrupt).status, 'blocked');
-    ok(/malformed/.test(compatCheck(corrupt).evidence.reason), compatCheck(corrupt).evidence.reason);
-
-    // IDENTITY BINDING — a fresh, ready, intact run that observed a DIFFERENT
-    // machine. Both facts are true; they are not about the same host pair.
-    const otherMachine = await audit({
-      compatRuns: {
-        ...base,
-        latest: { ...base.latest, host_gaps: [{ host: 'claude', observed_version: '9.9.9' }, { host: 'codex', observed_version: '0.130.0' }] },
-      },
-    });
-    strictEqual(compatCheck(otherMachine).status, 'blocked');
-    strictEqual(compatCheck(otherMachine).evidence.identity_bound, false);
-
-    // DUPLICATE ROWS — the artifact cannot say which observation it made.
-    const duplicated = await audit({
-      compatRuns: {
-        ...base,
-        latest: {
-          ...base.latest,
-          host_gaps: [
-            { host: 'claude', observed_version: '2.1.143' },
-            { host: 'claude', observed_version: '2.1.144' },
-            { host: 'codex', observed_version: '0.130.0' },
-          ],
-        },
-      },
-    });
-    strictEqual(compatCheck(duplicated).status, 'blocked');
-    ok(/exactly one is required/.test(compatCheck(duplicated).evidence.reason));
+  it('cutover does NOT invent a remediation for a passing check — CONTROL', async () => {
+    // Complement-of-pass must not swallow the pass set. The relocated form of
+    // this case carried a sentinel on `host_parity_baseline` — an OBSERVATION,
+    // not a check, so it could never reach `next_actions` whatever the predicate
+    // did, and it passed vacuously from ADR-0053 on. A passing check is the only
+    // shape that isolates the predicate: with `checkUnready` returning true for
+    // everything, the synthesized fallback line names it, and this fails.
+    const repoRoot = await mkdtemp(join(tmpdir(), 'cutover-remediation-'));
+    const report = await runCutoverAudit({ repoRoot, doctorReport: {}, now: NOW, footerState: 'closed', omccDevActive: 'no' });
+    strictEqual(report.checks.find((entry) => entry.id === 'latest_completion_footer_state').status, 'satisfied');
+    strictEqual(report.checks.find((entry) => entry.id === 'omcc_dev_daily_workflow').status, 'not-active');
+    strictEqual(report.next_actions.some((entry) => entry.id === 'latest_completion_footer_state'), false);
+    strictEqual(report.next_actions.some((entry) => entry.id === 'omcc_dev_daily_workflow'), false);
   });
 
   it('builds a prompt-to-artifact completion audit checklist on request', async () => {
@@ -305,11 +199,8 @@ describe('runtime cutover audit', () => {
         && item.kind === 'command'
         && item.source.includes('runtime:doctor --permission-proof')
     )));
-    ok(report.completion_audit.artifact_checklist.some((item) => (
-      item.id === 'host-parity-baseline'
-        && item.kind === 'file'
-        && item.status === 'current'
-    )));
+    // ADR-0060 — the baseline and compat rows left the checklist with their subject.
+    ok(!report.completion_audit.artifact_checklist.some((item) => ['host-parity-baseline', 'runtime-compat-freshness'].includes(item.id)));
     ok(report.completion_audit.artifact_checklist.some((item) => (
       item.id === 'runtime-cutover-dogfood-records'
         && item.evidence === 'covered=1/7; window=2026-05-16..2026-05-22'
@@ -329,6 +220,132 @@ describe('runtime cutover audit', () => {
     ok(text.includes('- runtime-doctor-proof: satisfied; kind=command; source=runtime:doctor --permission-proof'));
     ok(text.includes('missing or weak:'));
     ok(text.includes('- ADR-0012 condition 3: partial; source=docs/DEVELOPMENT.md'));
+  });
+
+  // A requirement withdrawn by an accepted decision (R9, by ADR-0060) is reported
+  // apart from both counts: neither satisfied nor outstanding, and named
+  // wherever the count is, so 100% never hides a shrunken denominator. The
+  // decision must check out — an accepted ADR under docs/adr/ whose paragraph
+  // names the row and withdraws it — or the row stays unresolved
+  // (cross-host refine-verify: a bare `ADR-NNNN` mention used to be enough).
+  const WITHDRAWING_ADR = `# ADR-0060: Remove host-version tracking
+
+## Status
+
+Accepted (2026-09-18).
+
+## Amendment
+
+**(h) Scorecard R9 is withdrawn, not satisfied.** The owner decided to record it as withdrawn.
+`;
+  async function auditScorecard({ overrides = {}, extraRows = [], adrFiles = { '0060-remove-host-version-tracking.md': WITHDRAWING_ADR } } = {}) {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      scorecardOverrides: overrides,
+      scorecardExtraRows: extraRows,
+      adrFiles,
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport(),
+      footerState: 'closed',
+      footerReason: 'All PR, release, cleanup, and follow-up evidence is closed.',
+      omccDevActive: 'no',
+      completionAudit: true,
+    });
+    return { report, scorecard: report.checks.find((check) => check.id === 'omcc_replacement_scorecard') };
+  }
+  const R9_WITHDRAWN = { status: 'withdrawn', evidence: 'removed with host-version tracking', gate: 'Withdrawn by ADR-0060' };
+
+  it('reports a verified withdrawn scorecard row apart from the count, and never as a blocker', async () => {
+    const { report, scorecard } = await auditScorecard({ overrides: { R9: R9_WITHDRAWN } });
+    strictEqual(scorecard.status, 'satisfied');
+    strictEqual(scorecard.evidence.total, 11, 'the withdrawn row leaves the denominator');
+    strictEqual(scorecard.evidence.satisfied, 11);
+    deepStrictEqual(scorecard.evidence.withdrawn.map((row) => `${row.requirement}@${row.decision}`), ['R9@ADR-0060']);
+    deepStrictEqual(scorecard.evidence.unresolved, []);
+    strictEqual(report.ready_candidate, true, 'a withdrawn requirement does not hold readiness');
+    const r9 = report.completion_audit.requirements.find((row) => row.id === 'R9');
+    strictEqual(r9.status, 'withdrawn', 'the row stays visible, as withdrawn');
+    strictEqual(r9.decision, 'ADR-0060');
+    ok(!report.completion_audit.missing_or_weak.some((row) => row.id === 'R9'), 'a verified withdrawal is not a blocker');
+    strictEqual(report.cutover_gate.details.find((detail) => detail.id === 'scorecard_gate').current, '11/11 satisfied; withdrawn=R9');
+    const condition4 = report.completion_audit.adr0012_transition_advice.find((row) => row.condition === '4');
+    ok(condition4.evidence.includes('scorecard=11/11; withdrawn=R9'), JSON.stringify(condition4.evidence));
+    const text = formatText(report);
+    ok(text.includes('scorecard: satisfied=11/11; withdrawn=R9'), 'the count names what left it');
+    ok(text.includes('withdrawn scorecard detail: R9:withdrawn; decision=ADR-0060; requirement=compat; gate=Withdrawn by ADR-0060'));
+  });
+
+  it('keeps a withdrawn row unresolved unless its decision checks out', async () => {
+    const cases = [
+      {
+        name: 'no citation',
+        overrides: { R9: { status: 'withdrawn', evidence: 'no longer wanted', gate: 'none' } },
+        expected: 'R9:withdrawn-uncited',
+        problem: /cites no ADR/,
+      },
+      {
+        name: 'an ADR that withdraws a DIFFERENT row',
+        overrides: { R1: { status: 'withdrawn', evidence: 'ADR-0060 withdraws R9 only', gate: 'none' } },
+        expected: 'R1:withdrawn-unverified',
+        problem: /ADR-0060 does not say it withdraws R1/,
+      },
+      {
+        name: 'an ADR that does not exist',
+        overrides: { R9: { ...R9_WITHDRAWN, gate: 'Withdrawn by ADR-9999' } },
+        adrFiles: {},
+        expected: 'R9:withdrawn-unverified',
+        problem: /ADR-9999 is not under docs\/adr\//,
+      },
+      {
+        name: 'an ADR that is not Accepted',
+        overrides: { R9: R9_WITHDRAWN },
+        adrFiles: { '0060-remove-host-version-tracking.md': WITHDRAWING_ADR.replace('Accepted (2026-09-18).', 'Proposed') },
+        expected: 'R9:withdrawn-unverified',
+        problem: /ADR-0060 is not Accepted/,
+      },
+    ];
+    for (const entry of cases) {
+      const { report, scorecard } = await auditScorecard(entry);
+      strictEqual(scorecard.status, 'partial', entry.name);
+      deepStrictEqual(scorecard.evidence.unresolved.map((row) => `${row.requirement}:${row.status}`), [entry.expected], entry.name);
+      match(scorecard.evidence.unresolved[0].problem, entry.problem, entry.name);
+      deepStrictEqual(scorecard.evidence.withdrawn, [], entry.name);
+      strictEqual(report.ready_candidate, false, entry.name);
+      const blocker = report.completion_audit.missing_or_weak.find((row) => row.id === entry.expected.split(':')[0]);
+      match(blocker?.blocker ?? '', entry.problem, `${entry.name}: the blocker says why`);
+    }
+  });
+
+  it('refuses a requirement id that appears on more than one row', async () => {
+    // A stale satisfied R9 left beside the withdrawn one would otherwise count
+    // R9 as satisfied AND list it as withdrawn.
+    const { report, scorecard } = await auditScorecard({
+      overrides: { R9: R9_WITHDRAWN },
+      extraRows: ['| R9 | compat (old row) | evidence | satisfied | ok |'],
+    });
+    strictEqual(scorecard.status, 'partial');
+    deepStrictEqual(scorecard.evidence.unresolved.map((row) => `${row.requirement}:${row.status}`), ['R9:duplicate-id', 'R9:duplicate-id']);
+    deepStrictEqual(scorecard.evidence.withdrawn, []);
+    strictEqual(scorecard.evidence.satisfied, 11, 'neither copy counts as satisfied');
+    strictEqual(report.ready_candidate, false);
+  });
+
+  it('reads a scorecard whose every row is withdrawn as missing, not satisfied', async () => {
+    const ids = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7a', 'R7b', 'R8', 'R9', 'R10', 'R11'];
+    const adr = WITHDRAWING_ADR.replace('**(h) Scorecard R9 is withdrawn, not satisfied.**', `**(h) Scorecard ${ids.join(', ')} are withdrawn.**`);
+    const { report, scorecard } = await auditScorecard({
+      overrides: Object.fromEntries(ids.map((id) => [id, R9_WITHDRAWN])),
+      adrFiles: { '0060-remove-host-version-tracking.md': adr },
+    });
+    strictEqual(scorecard.evidence.withdrawn.length, 12, 'every withdrawal verified, so only the guard can refuse');
+    strictEqual(scorecard.status, 'missing');
+    strictEqual(report.ready_candidate, false);
   });
 
   it('blocks readiness on partial ADR/scorecard status, stale context, missing dogfood window, missing footer, and unknown omcc activity', async () => {
@@ -976,6 +993,9 @@ describe('runtime cutover audit against this repository', () => {
 
 async function seedRepo({
   scorecardStatus,
+  scorecardOverrides = {},
+  scorecardExtraRows = [],
+  adrFiles = {},
   conditionStatus,
   contextCreatedAt,
   legacyPatternMap = completeLegacyPatternMap(),
@@ -990,9 +1010,12 @@ async function seedRepo({
   await mkdir(join(root, 'plugins', 'engineer', '.claude-plugin'), { recursive: true });
   await mkdir(join(root, 'plugins', 'orchestrator', '.claude-plugin'), { recursive: true });
   await writeFile(join(root, 'docs', 'DEVELOPMENT.md'), conditionRows(conditionStatus));
-  await writeFile(join(root, 'docs', 'assurance', 'omcc-cutover-scorecard.md'), scorecardRows(scorecardStatus));
+  await writeFile(join(root, 'docs', 'assurance', 'omcc-cutover-scorecard.md'), scorecardRows(scorecardStatus, scorecardOverrides, scorecardExtraRows));
+  if (Object.keys(adrFiles).length) {
+    await mkdir(join(root, 'docs', 'adr'), { recursive: true });
+    for (const [name, text] of Object.entries(adrFiles)) await writeFile(join(root, 'docs', 'adr', name), text);
+  }
   await writeFile(join(root, 'docs', 'assurance', 'omcc-legacy-pattern-map.md'), legacyPatternMap);
-  await writeFile(join(root, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md'), 'Observed on 2026-05-16 with Claude Code `2.1.143`, Codex CLI\n`0.130.0`, official docs.\n');
   await writeFile(join(root, '.release-please-manifest.json'), JSON.stringify({
     'plugins/companions': '0.4.0',
     'plugins/engineer': '0.10.2',
@@ -1083,21 +1106,22 @@ function conditionRows(status) {
 `;
 }
 
-function scorecardRows(status) {
+// `overrides` replaces whole cells of named rows: { R9: { status, evidence, gate } }.
+// `extraRows` appends raw table rows, for duplicate-id cases.
+function scorecardRows(status, overrides = {}, extraRows = []) {
+  const rows = [
+    ['R1', 'superior compatible'], ['R2', 'remove overbuild'], ['R3', 'tool switching'],
+    ['R4', 'same UX'], ['R5', 'best result'], ['R6', 'context decisions'],
+    ['R7a', 'quality'], ['R7b', 'completion'], ['R8', 'entry routing'],
+    ['R9', 'compat'], ['R10', 'dual perspective'], ['R11', 'convergence'],
+  ];
+  const body = rows.map(([id, requirement]) => {
+    const row = { status, evidence: 'evidence', gate: 'ok', ...(overrides[id] ?? {}) };
+    return `| ${id} | ${requirement} | ${row.evidence} | ${row.status} | ${row.gate} |`;
+  }).concat(extraRows).join('\n');
   return `| ID | Requirement | Evidence | Status | Exit |
 |---|---|---|---|---|
-| R1 | superior compatible | evidence | ${status} | ok |
-| R2 | remove overbuild | evidence | ${status} | ok |
-| R3 | tool switching | evidence | ${status} | ok |
-| R4 | same UX | evidence | ${status} | ok |
-| R5 | best result | evidence | ${status} | ok |
-| R6 | context decisions | evidence | ${status} | ok |
-| R7a | quality | evidence | ${status} | ok |
-| R7b | completion | evidence | ${status} | ok |
-| R8 | entry routing | evidence | ${status} | ok |
-| R9 | compat | evidence | ${status} | ok |
-| R10 | dual perspective | evidence | ${status} | ok |
-| R11 | convergence | evidence | ${status} | ok |
+${body}
 `;
 }
 
@@ -1133,22 +1157,10 @@ function doctorReport(overrides = {}) {
     ],
     next_actions: [],
   };
-  const hostParityBaseline = overrides.hostParityBaseline ?? {
-    id: 'host_parity_baseline',
-    label: 'Host parity baseline freshness',
-    status: 'current',
-    evidence: {
-      baseline: { date: '2026-05-16', claude: '2.1.143', codex: '0.130.0' },
-      observed: { claude: '2.1.143 (Claude Code)', codex: 'codex-cli 0.130.0' },
-      normalized_observed: { claude: '2.1.143', codex: '0.130.0' },
-    },
-    next_action: null,
-  };
   return {
-    host_parity_baseline: hostParityBaseline,
     clis: {
-      claude: { version: { text: '2.1.143 (Claude Code)' } },
-      codex: { version: { text: 'codex-cli 0.130.0' } },
+      claude: { version: { status: 'available', text: '2.1.143 (Claude Code)' } },
+      codex: { version: { status: 'available', text: 'codex-cli 0.130.0' } },
     },
     plugins: Object.fromEntries(Object.entries(pluginVersions).map(([name, version]) => [name, {
       source: { claude_manifest: { version } },
@@ -1157,30 +1169,6 @@ function doctorReport(overrides = {}) {
         codex: { latest: { manifest_version: version } },
       },
     }])),
-    // ADR-0053 §Decision 4 — the compat gate requires collection integrity and
-    // an identity binding between the RECORDED observation and the live host
-    // pair, so the fixture carries both. Without the `host_gaps` rows a recorded
-    // run cannot be bound to this machine and correctly blocks.
-    //
-    // ⚠ `schema_era` IS PART OF THE FIXTURE NOW (ADR-0056 §Decision 6 rules 1-2).
-    // The live-coverage clause used to be what stopped a stored bit from passing
-    // on its own; the era replaces it, so a fixture that omitted the field would
-    // silently exercise the fail-open the replacement exists to close.
-    compat_runs: overrides.compatRuns ?? {
-      status: 'available',
-      malformed: 0,
-      latest: {
-        run_id: 'compat-20260516T073000Z-abc123',
-        status: 'current',
-        schema_era: 'post-assurance',
-        drift_class: 'none',
-        selected_at: '2026-05-16T07:30:00.000Z',
-        host_gaps: [
-          { host: 'claude', status: 'matches', observed_version: '2.1.143', baseline_version: '2.1.143' },
-          { host: 'codex', status: 'matches', observed_version: '0.130.0', baseline_version: '0.130.0' },
-        ],
-      },
-    },
     consensus_runs: {
       latest: {
         run_id: 'consensus-20260516T073000Z-abc123',

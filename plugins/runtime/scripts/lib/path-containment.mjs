@@ -65,8 +65,9 @@ export function isUnder(child, parent) {
 //
 // The third question this module answers, and the one `isUnder` alone cannot:
 // runtime resolves several assets by joining a CONSTANT relative path onto a
-// package root — the host-parity baseline, `data/plugin-set.json`,
-// `data/schemas/**`. A constant relative path cannot escape lexically, so the
+// package root — the plugin manifests, `data/plugin-set.json`,
+// `data/schemas/**`, the rendered receiver templates (and, until ADR-0060, the
+// host-parity baseline). A constant relative path cannot escape lexically, so the
 // old readers did no containment check at all. Measured: it escapes anyway,
 // through the filesystem rather than through the string. A symlink at the leaf,
 // a symlinked `docs/`, or a symlinked manifest each made a file OUTSIDE the

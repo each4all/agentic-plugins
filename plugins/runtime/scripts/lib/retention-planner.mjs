@@ -8,9 +8,11 @@
 // because cited" stops reading as a fault.
 //
 // Load-bearing contract (ADR-0047 §7):
-//   - CLOSED family registry: v1 is exactly doctor / compat / settings —
-//     runtime-owned, latest.json-bearing. Widening it is a follow-up decision,
-//     never a config knob. Only VALIDATED run-id directories are candidates;
+//   - CLOSED family registry: exactly doctor / settings — runtime-owned,
+//     latest.json-bearing. v1 also listed compat; ADR-0060 removed the compat
+//     command, and its recorded runs are orphaned rather than managed (see the
+//     registry note below). Widening it is a follow-up decision, never a config
+//     knob. Only VALIDATED run-id directories are candidates;
 //     malformed names, temp files, and lock dirs are non-candidates.
 //   - FAIL-CLOSED pin scanning: every pin source degrades the same way. If any
 //     source cannot be fully evaluated (enumeration failure, cap exhaustion,
@@ -39,7 +41,11 @@ import path from 'node:path';
 
 // ── Versions (part of the plan hash — a change here invalidates every prior
 // reviewed plan, which is the point) ──
-export const RETENTION_PLANNER_VERSION = 'runtime-retention-planner-1.0';
+// 1.0 → 1.1 (ADR-0060): the registry lost `compat`. The plan hash covers every
+// registry family, so a plan reviewed under 1.0 no longer matches one computed
+// now whatever its content; the bump says why instead of leaving an operator to
+// discover a hash mismatch with no reason attached.
+export const RETENTION_PLANNER_VERSION = 'runtime-retention-planner-1.1';
 export const RETENTION_SCANNER_VERSION = 'runtime-retention-scanner-1.0';
 
 // ── Bounds — implementation constants pinned by test (ADR-0047 §7). The
@@ -54,7 +60,7 @@ export const CROSS_ARTIFACT_MAX_FILE_BYTES = 1024 * 1024; // 1 MiB per artifact 
 
 // Minimum-age guard: a run whose newest mtime is younger than this is NEVER a
 // deletion candidate regardless of cap pressure. Closes the window against the
-// family's own writers (doctor/compat/settings creating or resuming a run) that
+// family's own writers (doctor/settings creating or resuming a run) that
 // do not take the retention lock; retention-apply adds the in-lock last-instant
 // re-check on top.
 export const RETENTION_MIN_AGE_MS = 15 * 60 * 1000; // 15 minutes
@@ -62,17 +68,22 @@ export const RETENTION_MIN_AGE_MS = 15 * 60 * 1000; // 15 minutes
 // The registry families. run-id shape is `<family>-YYYYMMDDTHHMMSSZ-<6hex>`
 // (identical discipline to state-readers.mjs / the family scripts). `latestFile`
 // is the family's latest.json pointer; `livePins` names the per-family reader-
-// selected pin sources (pin 3). compat has no v1 live pin beyond latest.
+// selected pin sources (pin 3).
+//
+// ⚠ `compat` LEFT THE REGISTRY WITH ITS COMMAND (ADR-0060 §Decision 6). Its
+// recorded runs under `.agentic-plugins/runs/compat/` are orphaned, not deleted:
+// the inventory still declares and counts the family (state-readers.mjs, the
+// same treatment the retired `permission` family gets), so an over-cap orphan set
+// keeps its inventory attention, whose recommendation is manual review — the
+// honest remedy for runs no command writes or reads any more. Retention neither
+// plans nor deletes them, and a compat receipt left OPEN by an apply interrupted
+// before the upgrade cannot be resolved by this runtime; it blocks no other
+// family, because receipts and locks are per family.
 export const RETENTION_FAMILY_REGISTRY = Object.freeze({
   doctor: Object.freeze({
     family: 'doctor',
     runIdRe: /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/,
     livePins: ['reusable-proof'],
-  }),
-  compat: Object.freeze({
-    family: 'compat',
-    runIdRe: /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/,
-    livePins: [],
   }),
   settings: Object.freeze({
     family: 'settings',
@@ -88,7 +99,7 @@ export const RETENTION_FAMILIES = Object.freeze(Object.keys(RETENTION_FAMILY_REG
 // path strings — CONTAIN this token, so one token scan catches both (a path
 // string is the token with a directory prefix). Global + case-sensitive:
 // run-ids are lowercase-hex by construction.
-const RUN_ID_TOKEN_RE = /\b(?:doctor|compat|settings)-\d{8}T\d{6}Z-[0-9a-f]{6}\b/g;
+const RUN_ID_TOKEN_RE = /\b(?:doctor|settings)-\d{8}T\d{6}Z-[0-9a-f]{6}\b/g;
 
 // Families whose recorded artifacts are scanned for cross-artifact references
 // (pin 4). doctor.json report snapshots embed other families' evidence ids;
@@ -291,7 +302,7 @@ function harvestRunIdTokens(text, pinned, exclude = null) {
 export const JSON_HARVEST_MAX_DEPTH = 64;
 
 // Harvest run-id tokens from PARSED JSON string values (Codex review MAJOR): a
-// raw-text regex misses a JSON unicode escape (`"compat-…"` parses to a
+// raw-text regex misses a JSON unicode escape (`"settings-…"` parses to a
 // real run-id but never matches the literal-token regex). Walking the parsed
 // value scans the DECODED strings, catching escaped references. Non-string
 // leaves are ignored; the walk is depth-bounded against a pathological blob.
@@ -379,7 +390,6 @@ export async function resolveLatestPins({ repoRoot }) {
 //     survives — is bounded: the reader falls back to the (pinned) latest and
 //     recomputes proof rather than dangling. Documented, not vacuous overall
 //     (settings carries the genuinely-additional live pins).
-//   - compat: no v1 live pin beyond latest.
 export async function resolveLivePins({ repoRoot }) {
   const pinned = new Map(RETENTION_FAMILIES.map((f) => [f, new Set()]));
   const incomplete = [];
@@ -459,8 +469,8 @@ export async function resolveLivePins({ repoRoot }) {
   // delete an older run the reader currently selects. Since ANY doctor run could
   // be the reader's reusable pick and the planner cannot prove which, v1 treats
   // doctor as retention-OBSERVED but not retention-DELETABLE (all runs pinned);
-  // a future slice that gathers host state can narrow this. compat/settings are
-  // the deletable families at v1.
+  // a future slice that gathers host state can narrow this. settings is the
+  // one deletable family (compat was the other until ADR-0060 removed it).
   const doctorRoot = familyRoot(repoRoot, 'doctor');
   let doctorEntries = null;
   try {

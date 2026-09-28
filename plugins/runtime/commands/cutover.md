@@ -57,28 +57,42 @@ Checks:
 
 - ADR-0012 condition statuses in `docs/DEVELOPMENT.md`;
 - omcc replacement scorecard rows in `docs/assurance/omcc-cutover-scorecard.md`;
+  a row marked `withdrawn` (R9, by ADR-0060) is reported apart from the count
+  and named beside it, but only when it cites an ADR that exists under
+  `docs/adr/`, is Accepted, and has a paragraph naming the row with a form of
+  "withdraw"; otherwise it stays unresolved (`withdrawn-uncited` or
+  `withdrawn-unverified`), and a requirement id on two rows is `duplicate-id`;
 - legacy omcc-dev pattern-map rows in `docs/assurance/omcc-legacy-pattern-map.md`;
 - observed Claude/Codex runtime experience parity from `runtime:doctor`;
   recorded doctor proof is accepted only when version-matched and reported as
   reusable by doctor;
-- host parity baseline freshness against current `runtime:doctor` evidence;
 - installed/cache plugin versions against `.release-please-manifest.json`;
-- latest compat, consensus, and context artifacts;
+- latest consensus and context artifacts;
 - forward-looking one-week omcc-dev-free dogfood evidence from recorded
   cutover artifacts;
 - latest recorded or explicit footer state and reason evidence;
 - latest recorded or explicit omcc-dev daily-workflow evidence.
+
+It does **not** check host-pair identity. ADR-0060 removed the compat freshness
+check, and with it every binding between a readiness verdict and the Claude
+Code / Codex CLI versions on the machine. The audit states that in its
+`limits` and in a non-gating `host_pair_identity` observation (the observed
+versions as facts, status `not_verified`) — an absent check is reported as
+absent, never as passed, and never as a blocker nobody can clear.
 
 With `--completion-audit`, the report also includes:
 
 - each R1-R11/R7a/R7b scorecard row with its source document and evidence cell;
 - each ADR-0012 condition row with source document and status;
 - command/artifact checklist entries for `runtime:doctor`, `runtime:settings`,
-  `runtime:compat`, consensus/context artifacts, cutover records, footer state,
-  omcc-dev activity, and the manual final owner declaration;
+  consensus/context artifacts, cutover records, footer state, omcc-dev
+  activity, and the manual final owner declaration;
 - ADR-0012 transition advice for condition 3/4 promotion blockers;
 - a deduplicated `missing or weak` list for unresolved requirements, conditions,
-  artifacts, or gates.
+  artifacts, or gates;
+- an `unverified_scope` list — what the audit does not check at all, kept apart
+  from `missing or weak` because no operator action clears it (today:
+  `host_pair_identity`).
 
 The operator verification checklist is emitted in normal audit output as well
 as JSON. It is intentionally advisory: it does not enable hooks, mutate trust
