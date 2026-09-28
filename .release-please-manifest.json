@@ -2,10 +2,10 @@
   "companions": "0.3.2",
   "plugins/attention": "0.9.1",
   "plugins/companions": "0.4.2",
-  "plugins/designer": "0.3.9",
-  "plugins/engineer": "0.21.11",
-  "plugins/founder": "0.4.9",
+  "plugins/designer": "0.3.10",
+  "plugins/engineer": "0.22.0",
+  "plugins/founder": "0.4.10",
   "plugins/image": "0.3.2",
-  "plugins/orchestrator": "0.13.8",
+  "plugins/orchestrator": "0.14.0",
   "plugins/runtime": "0.98.1"
 }

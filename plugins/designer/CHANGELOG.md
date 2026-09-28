@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.10](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.9...plugin-designer-v0.3.10) (2026-09-27)
+
+
+### Bug Fixes
+
+* **plugin/designer:** archive a terminal workflow left on a kept branch against that branch's tip ([282cc60](https://github.com/each4all/agentic-plugins/commit/282cc60961d0f6423a13d84307933b863671f9ab))
+
 ## [0.3.9](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.8...plugin-designer-v0.3.9) (2026-09-25)
 
 
