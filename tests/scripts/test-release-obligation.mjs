@@ -51,10 +51,24 @@ const git = (dir, args) => execFileSync('git', ['-C', dir, ...args], { encoding:
 // hours.
 const COUNTEREXAMPLE = '16b1833c051b12220aa6d5f812c8ac2383b36c79';
 
+// The protected list as ADR-0052 adopted it, which is the list every commit
+// replayed below was made under. The counterexample changed the host-parity
+// baseline and nothing else, and ADR-0060's release recovery removes that
+// entry from the live list — so a replay judged through the live list would
+// see no change at all and pass for the wrong reason. Each replay names the
+// list of its own time instead; the synthetic seam cases in
+// test-release-obligation-paths.mjs prove that the list reaches every
+// comparison `classify` makes.
+const HISTORICAL_PATHS = Object.freeze([
+  'plugins/runtime/docs/host-parity-baseline.md',
+  'plugins/runtime/data/plugin-set.json',
+  'plugins/runtime/data/schemas',
+]);
+
 test('the counterexample classifies as outstanding debt at exactly its own commit', () => {
   // Epoch is its parent, so the commit itself is the only one in scope. This
   // is the `16b1833^..16b1833` range, expressed as the check expresses it.
-  const r = classify(REPO_ROOT, { ref: COUNTEREXAMPLE, epoch: `${COUNTEREXAMPLE}^` });
+  const r = classify(REPO_ROOT, { ref: COUNTEREXAMPLE, epoch: `${COUNTEREXAMPLE}^`, paths: HISTORICAL_PATHS });
   assert.equal(r.ran, true, r.reason ?? '');
   assert.equal(r.state, 'outstanding_debt');
   assert.equal(r.failing, true);
@@ -66,7 +80,7 @@ test('the counterexample classifies as outstanding debt at exactly its own commi
 });
 
 test('CONTROL — the counterexample PARENT is fulfilled, so the gate flips at that one commit', () => {
-  const r = classify(REPO_ROOT, { ref: `${COUNTEREXAMPLE}^`, epoch: `${COUNTEREXAMPLE}^^` });
+  const r = classify(REPO_ROOT, { ref: `${COUNTEREXAMPLE}^`, epoch: `${COUNTEREXAMPLE}^^`, paths: HISTORICAL_PATHS });
   assert.equal(r.ran, true, r.reason ?? '');
   assert.equal(r.state, 'fulfilled');
   assert.equal(r.failing, false);
@@ -77,11 +91,11 @@ test('CONTROL — a wider range hides the counterexample, which is why the range
   // plugin-runtime-v0.90.0 shipped bytes identical to the counterexample's.
   // Evaluating there reports fulfilled — a test written against this ref
   // would pass with the check deleted.
-  const r = classify(REPO_ROOT, { ref: 'plugin-runtime-v0.90.0', epoch: `${COUNTEREXAMPLE}^` });
+  const r = classify(REPO_ROOT, { ref: 'plugin-runtime-v0.90.0', epoch: `${COUNTEREXAMPLE}^`, paths: HISTORICAL_PATHS });
   assert.equal(r.state, 'fulfilled');
   assert.equal(
     r.headDigest,
-    digestEntries(protectedEntries(REPO_ROOT, COUNTEREXAMPLE)),
+    digestEntries(protectedEntries(REPO_ROOT, COUNTEREXAMPLE, HISTORICAL_PATHS)),
     'the later tag carries byte-identical protected bytes — this is what makes the wide range vacuous',
   );
 });
@@ -91,7 +105,7 @@ test('a release that bumped OTHER packages does not discharge runtime debt', () 
   // eventual tag: it bumped designer, engineer, founder and orchestrator and
   // left runtime at 0.89.0. A check keyed on "a release happened" would clear
   // the debt here.
-  const r = classify(REPO_ROOT, { ref: 'fd7ab8e', epoch: `${COUNTEREXAMPLE}^` });
+  const r = classify(REPO_ROOT, { ref: 'fd7ab8e', epoch: `${COUNTEREXAMPLE}^`, paths: HISTORICAL_PATHS });
   assert.equal(r.state, 'outstanding_debt');
   assert.equal(r.newestTag, 'plugin-runtime-v0.89.0');
 });
@@ -99,10 +113,22 @@ test('a release that bumped OTHER packages does not discharge runtime debt', () 
 test('the adoption epoch is load-bearing — the same commit passes when it predates the epoch', () => {
   // Identical ref, default epoch. If the epoch were ignored, this would fail
   // like the first test does, and main would be red from the gate's first run.
-  const r = classify(REPO_ROOT, { ref: COUNTEREXAMPLE });
+  const r = classify(REPO_ROOT, { ref: COUNTEREXAMPLE, paths: HISTORICAL_PATHS });
   assert.equal(r.state, 'pre_epoch_divergence');
   assert.equal(r.failing, false);
   assert.deepEqual(r.inScopeChanges, []);
+});
+
+test('the replays need the list of their time — through the live-to-be list the counterexample vanishes', () => {
+  // Why HISTORICAL_PATHS exists, shown on the real commit rather than argued:
+  // judged through the list ADR-0060's recovery leaves behind, the
+  // counterexample reports `fulfilled`, and every replay above would pass
+  // with the check deleted.
+  const withoutBaseline = HISTORICAL_PATHS.filter((p) => p !== 'plugins/runtime/docs/host-parity-baseline.md');
+  const r = classify(REPO_ROOT, { ref: COUNTEREXAMPLE, epoch: `${COUNTEREXAMPLE}^`, paths: withoutBaseline });
+  assert.equal(r.ran, true, r.reason ?? '');
+  assert.equal(r.state, 'fulfilled');
+  assert.equal(r.failing, false);
 });
 
 // ---------------------------------------------------------------------------
@@ -130,7 +156,7 @@ test('the adoption epoch resolves, is an ancestor of HEAD, and grandfathers noth
   // between the epoch and HEAD. That is true today and becomes false forever
   // the first time a legitimate baseline refresh lands — it would have turned
   // main permanently red on exactly the change this gate exists to permit.
-  const atEpoch = classify(REPO_ROOT, { ref: ADOPTION_EPOCH });
+  const atEpoch = classify(REPO_ROOT, { ref: ADOPTION_EPOCH, paths: HISTORICAL_PATHS });
   assert.equal(atEpoch.ran, true, atEpoch.reason ?? '');
   assert.equal(atEpoch.state, 'fulfilled', 'the epoch must be a clean boundary, not a covered-up debt');
 });
@@ -159,7 +185,14 @@ test('the protected pathspecs resolve to the assets ADR-0052 §Decision 2 names,
 // Synthetic repositories — diff semantics and fail-closed matrix
 // ---------------------------------------------------------------------------
 
-const BASELINE = 'plugins/runtime/docs/host-parity-baseline.md';
+// The specimen every diff-semantics case edits. It was the host-parity baseline
+// until ADR-0060 deleted that document and scheduled its pathspec for removal;
+// a synthetic case that depends on a list entry about to disappear would start
+// failing for a reason unrelated to what it tests. The specimen now sits under
+// `data/schemas`, which the live list keeps, and carries the same bytes the
+// baseline specimen did, so the revert and coalescing cases still restore
+// exactly what they wrote.
+const SPECIMEN = 'plugins/runtime/data/schemas/runtime-specimen-1.0.json';
 const PLUGIN_SET = 'plugins/runtime/data/plugin-set.json';
 const SCHEMA = 'plugins/runtime/data/schemas/runtime-thing-1.0.json';
 
@@ -188,7 +221,7 @@ function makeRepo(t, { version = '1.0.0' } = {}) {
   git(dir, ['config', 'user.email', 'test@example.com']);
   git(dir, ['config', 'user.name', 'test']);
   git(dir, ['config', 'commit.gpgsign', 'false']);
-  write(dir, BASELINE, '# baseline\nClaude Code 1.0.0\n');
+  write(dir, SPECIMEN, '# baseline\nClaude Code 1.0.0\n');
   write(dir, PLUGIN_SET, '{"plugins":["runtime"]}\n');
   write(dir, SCHEMA, '{"$id":"runtime-thing-1.0"}\n');
   write(dir, 'plugins/attention/data/runtime-floors.json', '{"runtime":"1.0.0"}\n');
@@ -207,7 +240,7 @@ function release(dir, version, { tag = true } = {}) {
   return sha;
 }
 
-test('synthetic baseline scaffold is fulfilled — the control every other case deviates from', (t) => {
+test('synthetic scaffold is fulfilled — the control every other case deviates from', (t) => {
   const { dir, epoch } = makeRepo(t);
   const r = classify(dir, { epoch });
   assert.equal(r.ran, true, r.reason ?? '');
@@ -216,8 +249,8 @@ test('synthetic baseline scaffold is fulfilled — the control every other case 
 
 test('editing a protected file without a release is outstanding debt', (t) => {
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nClaude Code 1.0.1\n');
-  const sha = commit(dir, 'docs(runtime): refresh host-parity baseline');
+  write(dir, SPECIMEN, '# baseline\nClaude Code 1.0.1\n');
+  const sha = commit(dir, 'docs(runtime): refresh the protected specimen');
   const r = classify(dir, { epoch });
   assert.equal(r.state, 'outstanding_debt');
   assert.deepEqual(r.inScopeChanges.map((c) => c.sha), [sha]);
@@ -251,11 +284,11 @@ test('DELETING a protected file cannot evade the check', (t) => {
 
 test('renaming a protected file OUT of the protected set is caught as a removal', (t) => {
   const { dir, epoch } = makeRepo(t);
-  renameSync(path.join(dir, BASELINE), path.join(dir, 'plugins/runtime/docs/host-parity-baseline-v2.md'));
-  commit(dir, 'refactor(runtime): rename the baseline');
+  renameSync(path.join(dir, SPECIMEN), path.join(dir, 'plugins/runtime/data/runtime-specimen-1.0.json'));
+  commit(dir, 'refactor(runtime): rename the specimen out of the protected set');
   const r = classify(dir, { epoch });
   assert.equal(r.state, 'outstanding_debt');
-  assert.ok(!r.protectedFiles.includes(BASELINE), 'the old path leaves the set, which is what moves the digest');
+  assert.ok(!r.protectedFiles.includes(SPECIMEN), 'the old path leaves the set, which is what moves the digest');
 });
 
 test('renaming a protected file WITHIN a protected directory is caught, though the bytes are identical', (t) => {
@@ -290,7 +323,7 @@ test('a MODE change on a protected file is caught, though path and bytes are ide
 
 test('a multi-package commit is judged on its runtime part alone', (t) => {
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nClaude Code 1.0.2\n');
+  write(dir, SPECIMEN, '# baseline\nClaude Code 1.0.2\n');
   write(dir, 'plugins/attention/data/runtime-floors.json', '{"runtime":"9.9.9"}\n');
   commit(dir, 'chore: touch two packages');
   assert.equal(classify(dir, { epoch }).state, 'outstanding_debt');
@@ -309,8 +342,8 @@ test('CONTROL — a commit touching only the out-of-scope package is fulfilled',
 
 test('a release that ships the bytes discharges the debt — no actor bypass involved', (t) => {
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nClaude Code 1.0.3\n');
-  commit(dir, 'docs(runtime): refresh baseline');
+  write(dir, SPECIMEN, '# baseline\nClaude Code 1.0.3\n');
+  commit(dir, 'docs(runtime): refresh the specimen');
   assert.equal(classify(dir, { epoch }).state, 'outstanding_debt');
   release(dir, '1.1.0');
   const r = classify(dir, { epoch });
@@ -320,9 +353,9 @@ test('a release that ships the bytes discharges the debt — no actor bypass inv
 
 test('coalescing is free — one tag discharges several protected changes', (t) => {
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nfirst\n');
+  write(dir, SPECIMEN, '# baseline\nfirst\n');
   commit(dir, 'docs(runtime): refresh once');
-  write(dir, BASELINE, '# baseline\nsecond\n');
+  write(dir, SPECIMEN, '# baseline\nsecond\n');
   write(dir, PLUGIN_SET, '{"plugins":["runtime","attention"]}\n');
   commit(dir, 'docs(runtime): refresh again');
   // Identity, not count: a list that returned the newest sha twice satisfies
@@ -357,11 +390,11 @@ test('a version-only release commit changes nothing when there is no debt', (t) 
 
 test('reverting a released protected change re-opens the obligation', (t) => {
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nchanged\n');
+  write(dir, SPECIMEN, '# baseline\nchanged\n');
   commit(dir, 'docs(runtime): refresh');
   release(dir, '1.1.0');
-  write(dir, BASELINE, '# baseline\nClaude Code 1.0.0\n'); // back to the v1.0.0 bytes
-  commit(dir, 'revert: restore the previous baseline');
+  write(dir, SPECIMEN, '# baseline\nClaude Code 1.0.0\n'); // back to the v1.0.0 bytes
+  commit(dir, 'revert: restore the previous specimen');
   const r = classify(dir, { epoch });
   assert.equal(
     r.state,
@@ -372,7 +405,7 @@ test('reverting a released protected change re-opens the obligation', (t) => {
 
 test('a manifest bump without its tag is release_in_flight, and passes', (t) => {
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nrefreshed\n');
+  write(dir, SPECIMEN, '# baseline\nrefreshed\n');
   commit(dir, 'docs(runtime): refresh');
   release(dir, '1.1.0', { tag: false });
   const r = classify(dir, { epoch });
@@ -384,7 +417,7 @@ test('a manifest bump without its tag is release_in_flight, and passes', (t) => 
 test('a protected change landing inside the in-flight window is debt immediately, not once the tag appears', (t) => {
   const { dir, epoch } = makeRepo(t);
   release(dir, '1.1.0', { tag: false });
-  write(dir, BASELINE, '# baseline\nlanded after the release commit\n');
+  write(dir, SPECIMEN, '# baseline\nlanded after the release commit\n');
   const late = commit(dir, 'docs(runtime): refresh during the window');
   // The pending tag is cut at the release commit, so it provably will not
   // carry these bytes. Waiting for the tag to reveal that would mask the debt
@@ -404,10 +437,10 @@ test('in-flight does not mask a stacked release that never gets tagged', (t) => 
   // tag, then the tree moves again. An unconditional `versionDelta > 0` pass
   // returned exit 0 here forever while released bytes were two changes behind.
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nY\n');
+  write(dir, SPECIMEN, '# baseline\nY\n');
   commit(dir, 'docs(runtime): refresh — debt opens');
   release(dir, '2.0.0', { tag: false });
-  write(dir, BASELINE, '# baseline\nZ\n');
+  write(dir, SPECIMEN, '# baseline\nZ\n');
   commit(dir, 'docs(runtime): refresh again, still no tag');
   const r = classify(dir, { epoch });
   assert.equal(r.state, 'outstanding_debt');
@@ -416,7 +449,7 @@ test('in-flight does not mask a stacked release that never gets tagged', (t) => 
 
 test('CONTROL — an ordinary in-flight release still passes', (t) => {
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nrefreshed\n');
+  write(dir, SPECIMEN, '# baseline\nrefreshed\n');
   commit(dir, 'docs(runtime): refresh');
   release(dir, '1.1.0', { tag: false });
   const r = classify(dir, { epoch });
@@ -429,7 +462,7 @@ test('CONTROL — divergence that already existed at adoption IS grandfathered',
   // already diverged. Without this the first run would be red for a state
   // nobody created after the rule.
   const { dir } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\ndiverged before the rule existed\n');
+  write(dir, SPECIMEN, '# baseline\ndiverged before the rule existed\n');
   const epoch = commit(dir, 'docs(runtime): pre-adoption refresh');
   const r = classify(dir, { epoch });
   assert.equal(r.state, 'pre_epoch_divergence');
@@ -439,15 +472,15 @@ test('CONTROL — divergence that already existed at adoption IS grandfathered',
 
 test('the amnesty is spent once a release goes by without discharging it', (t) => {
   const { dir } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\ndiverged before the rule existed\n');
+  write(dir, SPECIMEN, '# baseline\ndiverged before the rule existed\n');
   const epoch = commit(dir, 'docs(runtime): pre-adoption refresh');
   assert.equal(classify(dir, { epoch }).state, 'pre_epoch_divergence');
   // A release is cut that does NOT carry the accepted bytes (it reverts them),
   // so the tree still differs — but the anchor moved, so this is no longer the
   // divergence that was forgiven.
-  write(dir, BASELINE, '# baseline\nClaude Code 1.0.0\n');
+  write(dir, SPECIMEN, '# baseline\nClaude Code 1.0.0\n');
   release(dir, '1.1.0');
-  write(dir, BASELINE, '# baseline\ndiverged before the rule existed\n');
+  write(dir, SPECIMEN, '# baseline\ndiverged before the rule existed\n');
   commit(dir, 'docs(runtime): put it back');
   const r = classify(dir, { epoch });
   assert.equal(r.headDigest, digestEntries(protectedEntries(dir, epoch)), 'the tree matches the epoch again');
@@ -463,7 +496,7 @@ test('a merge that first introduces a protected change after adoption is not gra
   // by comparing trees, which no simplification rule can perturb.
   const { dir } = makeRepo(t);
   git(dir, ['switch', '-q', '-c', 'side']);
-  write(dir, BASELINE, '# baseline\nY\n');
+  write(dir, SPECIMEN, '# baseline\nY\n');
   const side = commit(dir, 'side: protected change authored before adoption');
   git(dir, ['switch', '-q', 'main']);
   write(dir, 'README.md', 'epoch lands after the side commit\n');
@@ -473,7 +506,7 @@ test('a merge that first introduces a protected change after adoption is not gra
 
   // Pin the simplification itself, so this test keeps proving what it claims
   // even if git's default behaviour changes.
-  const simplified = git(dir, ['rev-list', 'plugin-runtime-v1.0.0..HEAD', '--', BASELINE]).split('\n').filter(Boolean);
+  const simplified = git(dir, ['rev-list', 'plugin-runtime-v1.0.0..HEAD', '--', SPECIMEN]).split('\n').filter(Boolean);
   assert.ok(!simplified.includes(merge), 'default rev-list must omit the merge, or this fixture proves nothing');
   assert.ok(simplified.includes(side));
   assert.throws(
@@ -490,10 +523,10 @@ test('a merge that first introduces a protected change after adoption is not gra
 
 test('a version that DECREASED fails closed — rollback is a forward patch, never a version reuse', (t) => {
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nchanged\n');
+  write(dir, SPECIMEN, '# baseline\nchanged\n');
   commit(dir, 'docs(runtime): refresh');
   release(dir, '1.1.0');
-  write(dir, BASELINE, '# baseline\nrolled back\n');
+  write(dir, SPECIMEN, '# baseline\nrolled back\n');
   setVersion(dir, '1.0.0'); // the wrong way to roll back
   commit(dir, 'revert: roll the version back too');
   const r = classify(dir, { epoch });
@@ -522,7 +555,7 @@ test('a tag whose commit declares a different version fails closed', (t) => {
   // every outstanding obligation: the digest at that tag is the debt's own
   // tree, so it compares equal and reports fulfilled.
   const { dir, epoch } = makeRepo(t);
-  write(dir, BASELINE, '# baseline\nunreleased\n');
+  write(dir, SPECIMEN, '# baseline\nunreleased\n');
   const debt = commit(dir, 'docs(runtime): refresh, no release');
   assert.equal(classify(dir, { epoch }).state, 'outstanding_debt');
   git(dir, ['tag', 'plugin-runtime-v2.0.0', debt]); // fabricated: the commit still says 1.0.0
@@ -534,11 +567,11 @@ test('a tag whose commit declares a different version fails closed', (t) => {
 test('a tag carrying no protected files fails closed rather than matching nothing', (t) => {
   const { dir } = makeRepo(t);
   git(dir, ['tag', '-d', 'plugin-runtime-v1.0.0']);
-  git(dir, ['rm', '-r', '-q', 'plugins/runtime/docs', 'plugins/runtime/data']);
+  git(dir, ['rm', '-r', '-q', 'plugins/runtime/data']);
   const empty = commit(dir, 'refactor: remove every protected asset');
   git(dir, ['tag', 'plugin-runtime-v1.0.0']);
-  write(dir, BASELINE, '# baseline\nreintroduced\n');
-  commit(dir, 'docs(runtime): reintroduce the baseline, unreleased');
+  write(dir, SPECIMEN, '# baseline\nreintroduced\n');
+  commit(dir, 'docs(runtime): reintroduce the specimen, unreleased');
   const r = classify(dir, { epoch: empty });
   assert.equal(r.ran, false);
   assert.match(r.reason, /carries no files/);
@@ -563,11 +596,11 @@ test('a tag that exists but is not REACHABLE fails closed', (t) => {
 test('a release tagged only on an unmerged branch does not discharge debt on main', (t) => {
   const { dir, epoch } = makeRepo(t);
   git(dir, ['switch', '-q', '-c', 'side']);
-  write(dir, BASELINE, '# baseline\nY\n');
+  write(dir, SPECIMEN, '# baseline\nY\n');
   commit(dir, 'docs(runtime): refresh on a side branch');
   release(dir, '1.1.0');
   git(dir, ['switch', '-q', 'main']);
-  write(dir, BASELINE, '# baseline\nZ\n');
+  write(dir, SPECIMEN, '# baseline\nZ\n');
   commit(dir, 'docs(runtime): a different refresh on main');
   const r = classify(dir, { epoch });
   assert.equal(r.state, 'outstanding_debt');
@@ -619,7 +652,7 @@ test('a repository with no runtime tags fails closed', (t) => {
 test('drifted pathspecs fail closed instead of comparing two empty sets', (t) => {
   const { dir, epoch } = makeRepo(t);
   // Simulate the whole protected area moving without this file being updated.
-  git(dir, ['rm', '-r', '-q', 'plugins/runtime/docs', 'plugins/runtime/data']);
+  git(dir, ['rm', '-r', '-q', 'plugins/runtime/data']);
   commit(dir, 'refactor(runtime): relocate the packaged assets');
   const r = classify(dir, { epoch });
   assert.equal(r.ran, false, 'an empty protected set compares equal at every ref — a permanent vacuous green');
@@ -647,11 +680,20 @@ test('an unresolvable ref or epoch fails closed', (t) => {
 const SCRIPT = path.join(REPO_ROOT, 'scripts', 'check-release-obligation.mjs');
 const runCli = (args) => execFileSync('node', [SCRIPT, ...args], { cwd: REPO_ROOT, encoding: 'utf8' });
 
+// The CLI always judges through the live list — it takes no list of its own —
+// so its real-history anchor must be a change the live list will keep seeing.
+// f795085 (#739) reached the protected set only through packaged schemas (its
+// scripts, commands, docs and tests sit outside every protected path): debt at its own
+// commit, fulfilled at its parent, through the current list AND through the
+// one ADR-0060's recovery leaves (both measured 2026-09-28), so this contract
+// does not silently start passing when the baseline entry goes.
+const CLI_ANCHOR = 'f79508505ee21fdc36e34e04a611573cca2be8e2';
+
 test('the CLI exits 1 on debt and 0 on a fulfilled ref', () => {
-  assert.match(runCli(['--ref', `${COUNTEREXAMPLE}^`, '--epoch', `${COUNTEREXAMPLE}^^`]), /fulfilled/);
+  assert.match(runCli(['--ref', `${CLI_ANCHOR}^`, '--epoch', `${CLI_ANCHOR}^^`]), /fulfilled/);
 
   assert.throws(
-    () => runCli(['--ref', COUNTEREXAMPLE, '--epoch', `${COUNTEREXAMPLE}^`]),
+    () => runCli(['--ref', CLI_ANCHOR, '--epoch', `${CLI_ANCHOR}^`]),
     (err) => {
       assert.equal(err.status, 1);
       assert.match(err.stdout, /outstanding_debt/);
@@ -693,10 +735,12 @@ test('the CLI refuses a flag given without a value instead of auditing HEAD', ()
 });
 
 test('--json emits the classification as data', () => {
-  const out = runCli(['--ref', `${COUNTEREXAMPLE}^`, '--epoch', `${COUNTEREXAMPLE}^^`, '--json']);
+  const out = runCli(['--ref', `${CLI_ANCHOR}^`, '--epoch', `${CLI_ANCHOR}^^`, '--json']);
   const parsed = JSON.parse(out);
   assert.equal(parsed.state, 'fulfilled');
-  assert.equal(parsed.newestTag, 'plugin-runtime-v0.89.0');
+  assert.equal(parsed.newestTag, 'plugin-runtime-v0.93.0');
+  // The report names the list it judged through.
+  assert.deepEqual(parsed.protectedPaths, [...PROTECTED_PATHS]);
 });
 
 test('SemVer parsing rejects leading zeroes', () => {
