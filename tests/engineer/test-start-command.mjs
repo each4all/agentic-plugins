@@ -246,7 +246,6 @@ describe('/engineer:start — entry routing and decision contract', () => {
         '$runtime:worktree',
         '/runtime:doctor',
         '/runtime:settings',
-        '/runtime:compat',
         '/runtime:context',
         '/runtime:cutover',
         '/engineer:<verb>',
@@ -254,6 +253,9 @@ describe('/engineer:start — entry routing and decision contract', () => {
       ]) {
         ok(text.includes(token), `surface missing ${token}`);
       }
+      // ADR-0060 removed `runtime:compat`; a routing surface that still offered
+      // it would send the agent to a command the installed runtime lacks.
+      ok(!text.includes('/runtime:compat'), 'surface still routes to the removed /runtime:compat');
     }
   });
 

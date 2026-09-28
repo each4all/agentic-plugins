@@ -16,7 +16,7 @@ recommendation:
 | `engineer:start` | One coherent deliverable can be carried from idea to commit on the current branch. | `/engineer:start` or `$engineer:start` |
 | `orchestrator:plan` | The work naturally splits into 2+ independently completable deliverables, PRs, branches, owners, or dependency edges. | `/orchestrator:plan` or `$orchestrator:plan` |
 | `runtime:worktree` | The next slice should be isolated because the current checkout is dirty, long-running, risky, or parallelizable. | `/runtime:worktree plan` or `$runtime:worktree` |
-| `runtime:*` | The problem is host readiness, plugin install/update, compatibility drift, context handoff, cutover readiness, or workflow storage. | `/runtime:doctor`, `/runtime:settings`, `/runtime:compat`, `/runtime:context`, `/runtime:cutover` or Codex equivalents |
+| `runtime:*` | The problem is host readiness, plugin install/update, context handoff, cutover readiness, or workflow storage. | `/runtime:doctor`, `/runtime:settings`, `/runtime:context`, `/runtime:cutover` or Codex equivalents |
 | Single verb | The user only needs investigation, framing, decision support, composition, critique, or refinement without lifecycle state. | `/engineer:<verb>` or `$engineer:<verb>` |
 
 The recommendation must include the selected route, the rejected
