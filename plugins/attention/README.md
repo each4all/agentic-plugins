@@ -259,14 +259,17 @@ entirely (probed matrix, failure-isolation row); a marker-*wrapped*
 `{"continue": false}` is inert data and additionally fails the schema
 check.
 
-**Probe gate** (ADR-0045 §7/§12, S9 gate policy): registration is valid only
-while the version-bound SessionStart matrix verdict in
-`plugins/runtime/docs/host-parity-baseline.md` holds for the installed CLI —
-`matcher: "startup"` fires exactly once per fresh session, injects stdout
-into context, is non-blocking on failure, and honors the explicit per-hook
-`timeout` (seconds). Probed PASS on `2.1.214` (2026-07-18), re-validated
-live on `2.1.215` (2026-07-20). On a failed or stale re-validation the hook
-surface stays unshipped; the CLI + dashboard surfaces ship regardless.
+**Probe gate** (ADR-0045 §7/§12, S9 gate policy): the registration shipped on a
+probed SessionStart matrix — `matcher: "startup"` fires exactly once per fresh
+session, injects stdout into context, is non-blocking on failure, and honors
+the explicit per-hook `timeout` (seconds). Probed PASS on `2.1.214`
+(2026-07-18), re-validated live on `2.1.215` (2026-07-20). That matrix, and the
+version-bound re-validation that kept the gate current, lived in
+`plugins/runtime/docs/host-parity-baseline.md`, which
+[ADR-0060](../../docs/adr/0060-remove-host-version-tracking.md) deleted
+(§Decision 2). The gate is therefore no longer re-checked: the hook stays
+registered, and a host change that breaks one of those behaviours is
+discovered when the entry brief stops arriving, not before.
 
 ### SessionStart budget (contract values)
 
