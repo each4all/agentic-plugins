@@ -16,6 +16,18 @@ and gated by `tests/scripts/test-release-obligation.mjs`.
 > The Decision is unchanged: reconciling the protected tree against the
 > newest reachable tag is still the right check.
 
+> **Amended 2026-09-28 by [ADR-0060](0060-remove-host-version-tracking.md).**
+> ADR-0060 deleted `host-parity-baseline.md`, so Decision 2's protected set
+> becomes `plugin-set.json` and `data/schemas/**`. The list shrinks in two
+> steps. The change that deletes the file keeps its entry, so the gate sees
+> the deletion as debt until a `plugin-runtime-v*` tag carries it; that
+> release's recovery then removes the entry. The check itself is unchanged,
+> except that `classify` now takes an optional path list that defaults to
+> the live one. The real-history replays pass the three-entry list of their
+> time, because their counterexample, `16b1833`, changed only the baseline
+> among the protected paths and no later change to the other two can stand in
+> for it. See ADR-0060 §Amendment 2026-09-28 (b).
+
 ## Context
 
 [ADR-0051](0051-host-parity-baseline-source.md) §Decision 2 made a change to
@@ -185,6 +197,10 @@ assumed.**
    | `plugins/runtime/docs/host-parity-baseline.md` | `plugins/runtime` |
    | `plugins/runtime/data/plugin-set.json` | `plugins/runtime` |
    | `plugins/runtime/data/schemas/**` | `plugins/runtime` |
+
+   > Amended 2026-09-28: ADR-0060 deleted the first row's file. The row stays
+   > in `PROTECTED_PATHS` until the release that ships the deletion is tagged,
+   > and that release's recovery removes it (see Status).
 
    A directory pattern rather than a file list, deliberately. An enumerated
    list has to be kept in sync with `PACKAGED_SCHEMA_FILES`, and this
@@ -579,9 +595,9 @@ error is the kind worth being able to re-recognize.
 - `scripts/check-host-version-drift.mjs` and
   `.github/workflows/host-version-drift.yml` — the scheduled tracking-issue
   detector whose shape this decision reuses, and the patch-tolerance policy
-  that contradicts the runtime's.
+  that contradicts the runtime's. Both were deleted by ADR-0060 (2026-09-28).
 - `scripts/sync-doc-versions.mjs:306` — the proof-coupled documentation gate
   that supplies ~23h of the measured 51.84h.
 - `plugins/runtime/scripts/lib/host-parity-baseline.mjs` — the resolver whose
   `import.meta.url`-derived root is what makes ADR-0051 §Decision 1
-  shadow-proof.
+  shadow-proof. Deleted by ADR-0060 (2026-09-28).
