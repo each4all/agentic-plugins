@@ -113,6 +113,16 @@ another one. Records written before this decision stay as written.
   on" and "committed, waiting to land"; the macro note and `next_action`
   say which.
 
+> **Note ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** completion is
+> unchanged — `/orchestrator:done` records it after the pull request merges. In
+> autopilot mode verbs do not set the terminal marker; only the verb-chain
+> commit surface (`/engineer:commit`) does, and a subtask with nothing to commit
+> is archived and then completed with `/orchestrator:done --no-commit`. The
+> autopilot driver never pushes, opens or merges a pull request: it waits for
+> the owner's landing, records it by running `/orchestrator:done` once
+> `state.mjs resolve-landing` reports the merge, and halts `awaiting-landing`
+> when nothing else can be dispatched (ADR-0063 D3a).
+
 ### 3. A recorded value is not replaced silently
 
 - `updateSubtask` refuses to replace a recorded `commit` or `pr_url` and

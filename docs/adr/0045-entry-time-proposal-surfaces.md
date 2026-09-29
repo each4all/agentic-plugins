@@ -416,6 +416,15 @@ else becomes rows in this same order):
 This table is exhaustive over the §3 source classes and is part of
 the security boundary: a state not in this table gets no command.
 
+> **Amendment ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** the §5 state
+> table (packaged as `session-capture-contract.md` §16) gains rows for engineer
+> `next_step_*`, `awaiting_owner_*` (engineer and macro), and an unapproved macro
+> plan (`plan_approval_status=pending`). Commands stay synthesized only from
+> the table, never from stored text; a set `awaiting_owner_gate` or a pending
+> approval yields `owner-choice-required`.
+> Schema `runtime-entry-brief-1.1` adds closed enums only. R0 is unchanged: no
+> writes, no consumption. Row design: ADR-0063's plugin change specification §3.
+
 ### 6. Dispositions
 
 `disposition ∈ { lead, owner-choice-required, no-branch-context,

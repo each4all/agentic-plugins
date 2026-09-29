@@ -2,9 +2,9 @@
 
 ## Status
 
-Proposed (2026-09-29).
+Accepted (2026-09-29, owner decision).
 - Drafted 2026-09-24/25 in the owner's handoff package, outside this repository.
-- Adopted here with its probe record,
+- Adopted here as Proposed on 2026-09-29 (#835) with its probe record,
   [`docs/assurance/evidence/autopilot-probes-2026-09-24/`](../assurance/evidence/autopilot-probes-2026-09-24/).
 - Realigned before adoption to ADR-0059–0062 (§Context, "Since the probes").
 - Owner decisions taken for this ADR on 2026-09-29:
@@ -12,8 +12,13 @@ Proposed (2026-09-29).
   - D2: a new `/engineer:commit`;
   - D4: v1 covers macros and verb-chains only;
   - D23: the owner lands, and the driver records the landing.
-- The owner flips it to Accepted in a later change, which applies the
-  §Amendment cascade in the same commit.
+- Accepted the same day. The accepting commit applied the §Amendment cascade,
+  with one citation corrected:
+  - The draft named the entry-brief state→command table "ADR-0045 §16".
+  - ADR-0045 has no §16. The table is its §5, and §16 is the section of
+    `plugins/runtime/docs/session-capture-contract.md` that carries it.
+  - Cascade item 6 therefore amends ADR-0045 §5, and §Context and §References
+    cite §5.
 
 <!--
 Adds one named effect domain — S1, owner-launched fresh-session spawn —
@@ -37,7 +42,7 @@ the owner opens a new session and types `/orchestrator:next` or
 
 That relay carries **no judgment**:
 - workflow state is durable under `.agentic-plugins/state/`;
-- the next command is derivable from it (ADR-0045 §16 table, `next_action`).
+- the next command is derivable from it (ADR-0045 §5 table, `next_action`).
 
 The owner acts as the actuator, and often as the sensor, for a decision the
 system already computes. Two gaps sit at the root:
@@ -625,7 +630,12 @@ cost profile). Deferred:
 - A split remains open if the cost/permission profile warrants its own install
   unit.
 
-## Amendment cascade (apply verbatim on acceptance)
+## Amendment cascade (applied on acceptance, 2026-09-29)
+
+The accepting commit applied these blocks as written, except in three places:
+- item 1's date is filled in;
+- item 6 cites ADR-0045 §5, not §16 (§Status);
+- item 8's status column reads Accepted.
 
 **1. ADR-0035 — Status block, after the ADR-0044 paragraph:**
 
@@ -689,14 +699,15 @@ sessions, and `runtime:context entry-brief` stays R0. See ADR-0063 D1 and the
 > and never parse `next_action`.
 ```
 
-**6. ADR-0045 §16 — amendment (entry-brief 1.1 rows):**
+**6. ADR-0045 §5 — amendment (entry-brief 1.1 rows):**
 
 ```markdown
-> **Amendment ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** the §16 state
-> table gains rows for engineer `next_step_*`, `awaiting_owner_*` (engineer and
-> macro), and an unapproved macro plan (`plan_approval_status=pending`). Commands
-> stay synthesized only from the table, never from stored text; a set
-> `awaiting_owner_gate` or a pending approval yields `owner-choice-required`.
+> **Amendment ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** the §5 state
+> table (packaged as `session-capture-contract.md` §16) gains rows for engineer
+> `next_step_*`, `awaiting_owner_*` (engineer and macro), and an unapproved macro
+> plan (`plan_approval_status=pending`). Commands stay synthesized only from
+> the table, never from stored text; a set `awaiting_owner_gate` or a pending
+> approval yields `owner-choice-required`.
 > Schema `runtime-entry-brief-1.1` adds closed enums only. R0 is unchanged: no
 > writes, no consumption. Row design: ADR-0063's plugin change specification §3.
 ```
@@ -760,7 +771,7 @@ that part of §4 before this ADR was adopted.
 - ADR-0035 §2–§5
 - ADR-0041 (bounded-domain amendment precedent)
 - ADR-0044 §6
-- ADR-0045 §7, §16
+- ADR-0045 §5, §7
 - ADR-0047 (notification kinds, retention)
 - ADR-0059 (args-file transport; its cleanup trap is removed by the headless-runbook slice)
 - ADR-0061 §Decision 3 (cross-plugin discovery reads the caller's install cache)

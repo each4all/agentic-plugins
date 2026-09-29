@@ -341,6 +341,12 @@ converged both models on **C3**:
   guidance가 이미 same-host driving이 default; `plan.md:98,110`은
   companions task를 peer-verify 용도로만 사용).
 
+> **Note ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** the same-host
+> runbook path is unchanged. The autopilot driver invokes `/orchestrator:next`
+> and `/engineer:<verb>` inside fresh `claude -p` worker processes; each worker
+> runs this same-host path in full (exports, engineer Phase 0, Phase 4 writeback
+> in one process). `--peer` (PR-F) stays deferred and is not used for workers.
+
 ### §2 Subtask schema extension — D2=A + Lifecycle
 
 `SUBTASK_KEYS`

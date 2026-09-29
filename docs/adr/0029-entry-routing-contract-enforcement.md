@@ -215,6 +215,15 @@ single source of axis truth; no second axis list is created.
   vs auto-activated `decide-registry` reach difference is ADR-0013
   territory.
 
+> **Amendment ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** the compact
+> durable next-action (selected_next + one-line rationale + next_command) keeps
+> its free-text form for humans. Forward-decision verb completions additionally
+> persist its closed-enum projection as flat scalars `next_step_kind`
+> (`verb | commit | owner-decision | done`), `next_step_verb` (present iff
+> kind=verb) and `next_step_confidence` (`HIGH | MEDIUM | LOW`). Confidence
+> otherwise has no durable home. Machine consumers read only the closed-enum keys
+> and never parse `next_action`.
+
 ### §4 — Implementation roadmap (trigger-driven, not a committed timeline)
 
 | PR | Scope | Trigger |
