@@ -14,17 +14,18 @@ plan-verify → Phase 4 implement → Phase 5 review → Phase 6 resolve
 → Phase 7 commit through the six engineer verb skills.
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/core/skills/start/SKILL.md`** per ADR-0021 (macro-
+`${CLAUDE_PLUGIN_ROOT}/core/skills/start/SKILL.md`** per ADR-0021 (macro-
 skill category). This command file owns the Claude-host bootstrap
 (Phase 0 below) and the `state.mjs` writes at each phase boundary;
 for each Phase 1–7 below, follow the matching `§ Phase N` section
 of SKILL.md for the cognitive description, user-approval gates, and
 ensemble dispatch points.
 
-The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT`
-(set by Claude Code for plugin slash commands). If unset for any
-reason, fall back to
-`$(find ~/.claude/plugins/cache/agentic-plugins/engineer -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ENGINEER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 **Quality-first defaults**: optimize for
 `best-results-over-token-minimization`, not token saving. Default peer breadth
@@ -69,13 +70,13 @@ Then run the block with `ARGS_DIR` set to that directory. The extractor takes
 the text as the feature description and removes one `--base-branch <ref>`
 wherever it sits; a second `--base-branch`, the `--base-branch=<ref>`
 spelling, or a missing ref is refused. Nothing else in the description is
-quoted, expanded or split. The block's `trap` removes the directory on every
-exit and keeps the command's exit status.
+quoted, expanded or split. The command removes the args file and its
+directory once it has read them.
 
 `BASE_BRANCH` and `FEATURE` are read by later blocks — the Phase 0c
 redundancy probe and the bootstrap `state.mjs create` — and shell variables do
-not outlive a Bash call, while the trap removes the directory when this one
-ends. So run this block in the same Bash call as whichever of those comes next.
+not outlive a Bash call, while the extractor removes the args file once it
+has read it. So run this block in the same Bash call as whichever of those comes next.
 When the flow stops between them (a redundancy finding waits for the user's
 proceed-or-abort decision), write the args file again (steps 1–2) and run this
 block again ahead of the bootstrap. Never paste the description into a
@@ -83,7 +84,8 @@ command line instead.
 
 ```bash
 ARGS_DIR='<directory from step 1>'
-trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
 printf '%s\n' "$START_ARGS"
 BASE_BRANCH="$(printf '%s' "$START_ARGS" | jq -r .base_branch)"
@@ -119,17 +121,15 @@ branch is going to receive a NEW workflow). ADR-0020 §Implementation
 Guide step 1 specifies this ordering.
 
 ```bash
-FIND_ERR="$(mktemp -t engineer-start-find-active.XXXXXX)"
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+  find-active --repo-root "$REPO_ROOT")"
 FIND_RC=$?
 if [ "$FIND_RC" -ne 0 ]; then
-  echo "✗ find-active failed (exit $FIND_RC):" >&2
-  cat "$FIND_ERR" >&2
-  rm -f "$FIND_ERR"
+  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
-rm -f "$FIND_ERR"
 ```
 
 Branch on the result:
@@ -143,19 +143,17 @@ path handles that case). This ordering matches ADR-0020
 §Implementation Guide step 1's empty-active branch.
 
 ```bash
-DIAG_ERR="$(mktemp -t engineer-start-diagnose.XXXXXX)"
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 DIAG="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" diagnose-redundancy \
-  --repo-root "$REPO_ROOT" --base-branch "$BASE_BRANCH" 2>"$DIAG_ERR")"
+  --repo-root "$REPO_ROOT" --base-branch "$BASE_BRANCH")"
 DIAG_RC=$?
 if [ "$DIAG_RC" -ne 0 ]; then
-  echo "✗ diagnose-redundancy failed (exit $DIAG_RC):" >&2
-  cat "$DIAG_ERR" >&2
-  rm -f "$DIAG_ERR"
+  echo "✗ diagnose-redundancy failed (exit $DIAG_RC); its error is above." >&2
   # Continue bootstrap — the probe is informational. A failed probe
   # MUST NOT block the user from starting a workflow.
   DIAG=""
 fi
-rm -f "$DIAG_ERR"
 DIAG_STATUS="$(echo "$DIAG" | jq -r '.status // ""' 2>/dev/null)"
 GIT_PRESENT="$(echo "$DIAG" | jq -r '.scanned.git_present // false' 2>/dev/null)"
 BASE_FAILED="$(echo "$DIAG" | jq -r '.scanned.base_resolution_failed // false' 2>/dev/null)"
@@ -197,21 +195,19 @@ would let phase7-commit.mjs sweep adjacent unrelated changes into the
 workflow's commit.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 BASELINE_ARGS=()
 if [ "${ACCEPT_CURRENT_TREE:-}" = "1" ]; then
   BASELINE_ARGS=(--accept-current-tree true)
 fi
-BASELINE_ERR="$(mktemp -t engineer-start-baseline.XXXXXX)"
 BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline \
-  --repo-root "$REPO_ROOT" "${BASELINE_ARGS[@]}" 2>"$BASELINE_ERR")"
+  --repo-root "$REPO_ROOT" "${BASELINE_ARGS[@]}")"
 BASELINE_RC=$?
 if [ "$BASELINE_RC" -ne 0 ]; then
-  echo "✗ check-clean-baseline failed (exit $BASELINE_RC):" >&2
-  cat "$BASELINE_ERR" >&2
-  rm -f "$BASELINE_ERR"
+  echo "✗ check-clean-baseline failed (exit $BASELINE_RC); its error is above." >&2
   exit "$BASELINE_RC"
 fi
-rm -f "$BASELINE_ERR"
 BASELINE_STATUS="$(echo "$BASELINE" | jq -r .status)"
 if [ "$BASELINE_STATUS" = "dirty" ]; then
   echo "✗ Working tree is dirty — /engineer:start requires a clean baseline (ADR-0028 §Layer-1)." >&2
@@ -235,6 +231,8 @@ phase boundaries rotate `verb` to the phase-primary value via
 `state.mjs append --verb`.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 GIT_HEAD="$(git rev-parse HEAD)"
 STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
@@ -252,6 +250,8 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
 ### Non-empty `$ACTIVE` → inspect `workflow_type`
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 ACTIVE_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
   --workflow-path "$ACTIVE" | jq -r '.workflow_type // "verb-chain"')"
 ```
@@ -261,6 +261,8 @@ ACTIVE_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
   engineer six-verb commands' Phase 0 append-on-resume.
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --event resumed \
@@ -275,6 +277,8 @@ ACTIVE_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
   `commit-complete`, or `/engineer:resume archive <id>`).
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   CURRENT_PHASE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
     --workflow-path "$ACTIVE" | jq -r .current_phase)"
   echo "✗ Active workflow on '$GIT_BRANCH' is workflow_type=verb-chain, not start." >&2
@@ -353,6 +357,8 @@ re-injection sees the active cognitive activity (intra-document
 execution, no recursive slash dispatch):
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # Sub-phase 1a — Investigate (option generation)
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
@@ -385,6 +391,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 ## Phase 2 — Explore codebase (investigate --profile=analysis)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb investigate --profile analysis \
@@ -398,6 +406,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 ## Phase 3 — Plan-verify (compose --profile=plan + critique)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb compose --profile plan \
@@ -424,6 +434,8 @@ abort vs single-pass continuation.
 ## Phase 4 — Implement (compose --profile=code)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb compose --profile code \
@@ -437,6 +449,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 ## Phase 5 — Review (critique --profile=parallel-review)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb critique --profile parallel-review \
@@ -450,6 +464,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 ## Phase 6 — Resolve (refine)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb refine \
@@ -477,22 +493,19 @@ user, gets approval; then invokes `--mode execute --subject "..."`
 with the user-confirmed text.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # Step 1 — plan mode: read workflow + git state, suggest subjects.
-PHASE7_PLAN_ERR="$(mktemp -t phase7-plan.XXXXXX)"
 PHASE7_PLAN="$(node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
   --mode plan \
   --workflow-path "$ACTIVE" \
   --repo-root "$REPO_ROOT" \
-  --host "${AGENTIC_HOST:-claude}" \
-  2>"$PHASE7_PLAN_ERR")"
+  --host "${AGENTIC_HOST:-claude}")"
 PHASE7_PLAN_RC=$?
 if [ "$PHASE7_PLAN_RC" -ne 0 ]; then
-  echo "✗ phase7-commit --mode plan failed (exit $PHASE7_PLAN_RC):" >&2
-  cat "$PHASE7_PLAN_ERR" >&2
-  rm -f "$PHASE7_PLAN_ERR"
+  echo "✗ phase7-commit --mode plan failed (exit $PHASE7_PLAN_RC); its error is above." >&2
   exit "$PHASE7_PLAN_RC"
 fi
-rm -f "$PHASE7_PLAN_ERR"
 # Agent: parse $PHASE7_PLAN (JSON), present commits[].suggested_subject
 # to the user with [a]ccept / [e]dit / [c]ancel. If ask_user=true also
 # confirm the staging_set + extras with the user. The user picks ONE of:

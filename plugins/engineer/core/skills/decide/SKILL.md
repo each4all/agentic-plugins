@@ -81,8 +81,8 @@ weight in every decision — state which are most decisive for this
 choice and why.
 
 When invoked by command (`/engineer:decide`), the active axis set is
-the **resolved preset** from `$AGENTIC_DECIDE_CONTEXT_FILE` (built
-in commands/decide.md Phase 0.5 from
+the **resolved preset** in the `ResolvedDecisionContext` that
+commands/decide.md Phase 0.5 prints (resolved from
 `core/skills/decide/references/decision-axes.yml` per ADR-0027 §1).
 Render the comparison using those axes in document order. The axis
 table below is the `default` preset's documentation rendering and is
@@ -129,7 +129,7 @@ axis-set and `--size` independently controls per-axis rendering depth
 Example: `--size=minor --preset=nine-axis` renders **9 axes at minor
 depth** — NOT 4 axes at minor depth.
 
-In auto-activated mode (no command, no `$AGENTIC_DECIDE_CONTEXT_FILE`),
+In auto-activated mode (no command, so no Phase 0.5 context),
 the skill MAY read `--size`-style hints from the user's prose per
 ADR-0027 §2.6 (e.g., "compare these as a minor decision" → minor
 ritual; "this is a major architectural choice" → major ritual). Absent
@@ -146,7 +146,7 @@ with its multi-perspective analysis.
 #### REQUIRED output format — for each option:
 
 For command-invoked mode, render one bullet per axis in the resolved
-preset (from `$AGENTIC_DECIDE_CONTEXT_FILE`), in document order, with
+preset (from the Phase 0.5 context), in document order, with
 the axis's English label. The five-bullet template below is the
 `default` preset's rendering at `size=standard`.
 
@@ -234,7 +234,7 @@ This region renders ONLY when the sensitivity opt-in gate fires:
 `context.weights_explicit === true` (user passed `--weights=<spec>`,
 emitted by `decide-registry.mjs` per ADR-0027 §5.6 PR4 amendment)
 OR `context.size === "major"`. Both signals are top-level fields of
-`$AGENTIC_DECIDE_CONTEXT_FILE`, so the LLM reads them directly — do
+the Phase 0.5 `ResolvedDecisionContext`, so the LLM reads them directly — do
 NOT infer explicit-presence from `Object.keys(context.weights).length > 0`,
 which would re-introduce the object-identity bug peer G3 warded off
 at the JS API. In all other cases, omit this entire section so
@@ -449,7 +449,7 @@ Full decision support with Task Profile + peer ensemble +
 state-write integration.
 
 **Cross-host scope note (ADR-0001 §5 honest scope)**: the Phase 0.5
-flag-parser bootstrap that writes `$AGENTIC_DECIDE_CONTEXT_FILE` lives
+flag-parser bootstrap that prints the `ResolvedDecisionContext` lives
 in `commands/decide.md` on the Claude side. Codex `$engineer:decide`
 skill mentions reach this SKILL.md directly without the Claude command
 file (Codex's plugin manifest currently has no `commands` field; a
@@ -476,12 +476,10 @@ On that path the user's flags and decision text go into the args file,
 never onto the command line (ADR-0059): write `{"agentic_args": 1, "text": "…"}` with
 your file-editing tool into a directory from
 `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, then run the resolver
-with the cleanup installed first — it removes the directory on every exit,
-signals included, and keeps the resolver's exit status:
+— it removes the args file and its directory once it has read them:
 
 ```bash
 ARGS_DIR='<directory mktemp printed>'
-trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 node "<engineer-plugin-root>/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"
 ```
 

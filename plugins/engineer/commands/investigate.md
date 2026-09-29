@@ -15,10 +15,11 @@ whether to invoke the peer, and never direct them to run companion
 CLIs manually. When the companions plugin or peer CLI is unavailable,
 the ensemble degrades silently to local-only.
 
-The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT`
-(set by Claude Code for plugin slash commands). If unset for any
-reason, fall back to
-`$(find ~/.claude/plugins/cache/agentic-plugins/engineer -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ENGINEER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 ---
 
@@ -29,6 +30,8 @@ Determine workflow state via the host-shared canonical I/O module:
 1. **Find active workflow**:
 
    ```bash
+   CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
    REPO_ROOT="$(git rev-parse --show-toplevel)"
    GIT_BRANCH="$(git branch --show-current)"
    # ADR-0018 §sub-2 — engineer workflows are anchored to a branch;
@@ -38,17 +41,13 @@ Determine workflow state via the host-shared canonical I/O module:
      echo "  Switch to a branch first: git switch <branch>" >&2
      exit 1
    fi
-   FIND_ERR="${TMPDIR:-/tmp}/engineer-find-active-$$.err"
    ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-     find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+     find-active --repo-root "$REPO_ROOT")"
    FIND_RC=$?
    if [ "$FIND_RC" -ne 0 ]; then
-     echo "✗ find-active failed (exit $FIND_RC):" >&2
-     cat "$FIND_ERR" >&2
-     rm -f "$FIND_ERR"
+     echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
      exit "$FIND_RC"
    fi
-   rm -f "$FIND_ERR"
    ```
 
    - Empty `$ACTIVE` → no active workflow on this branch → bootstrap a new one (Step 2).
@@ -58,6 +57,8 @@ Determine workflow state via the host-shared canonical I/O module:
 2. **Bootstrap** (no active workflow):
 
    ```bash
+   CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
    GIT_BRANCH="$(git branch --show-current)"
    GIT_HEAD="$(git rev-parse HEAD)"
    STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
@@ -94,6 +95,8 @@ Determine workflow state via the host-shared canonical I/O module:
 3. **Append-on-resume** (active workflow exists):
 
    ```bash
+   CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
    node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
      --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
      --verb investigate \
@@ -113,7 +116,7 @@ Determine workflow state via the host-shared canonical I/O module:
 ## Phase 1 — Execute investigate
 
 Follow the investigate skill's "When invoked by command" mode at
-`$CLAUDE_PLUGIN_ROOT/core/skills/investigate/SKILL.md`. The skill performs:
+`${CLAUDE_PLUGIN_ROOT}/core/skills/investigate/SKILL.md`. The skill performs:
 
 - **Step 1**: Build the Task Profile (persona=engineer, profile, scope,
   layers, risks, complexity, ensemble affinity per
@@ -130,7 +133,7 @@ Follow the investigate skill's "When invoked by command" mode at
   analysis/root-cause profiles, OR research-scan point type per
   `core/skills/investigate/references/cited-brief-ensemble.md` for the
   cited-brief profile — via
-  `$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs run`. The peer runs in
+  `${CLAUDE_PLUGIN_ROOT}/scripts/peer-runner.mjs run`. The peer runs in
   the background; the orchestrator continues its own analysis (or
   per-sub-question web search for cited-brief) in parallel.
 - **Step 4**: Collect both sources, classify findings per the
@@ -154,6 +157,8 @@ directly per `companions/contract.md` §3) and spawn the peer in the
 background:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 PROMPT_FILE="$(mktemp -t engineer-investigate-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 # `$ENSEMBLE_TYPE` is `investigate` for analysis profile, `root-cause`
@@ -215,6 +220,8 @@ saved brief artifact MUST NOT, per
 Policy.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: investigate at <iso-utc>
 
 ### Ensemble synthesis: investigate verdict=<agreed|concerns|conflict>
@@ -289,7 +296,7 @@ the proposal below — surface a **compact multi-axis lens** comparing
 the branches across the resolved decisive axes (본질/근본
 essence/foundation) + supporting axes, instead of a flat list. Resolve
 the sized axis set from the shared
-`$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs resolve --size=<minor|standard|major>`
+`${CLAUDE_PLUGIN_ROOT}/scripts/decide-registry.mjs resolve --size=<minor|standard|major>`
 resolver — the single axis source of truth, not a hand-authored list —
 per `core/skills/_shared/references/entry-routing-contract.md`
 § "Surfacing the multi-axis lens from a non-decide verb".

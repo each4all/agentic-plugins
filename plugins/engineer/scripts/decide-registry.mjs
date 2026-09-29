@@ -344,7 +344,7 @@ export function resolvePreset({
     // exactly the disambiguation §4.3 hinges on. Surface the JS-internal
     // `fallbackTriggered` as a snake_case context field so the LLM
     // body consumer (commands/decide.md Phase 1 prompt builder) can
-    // gate axis_awareness emission directly from $AGENTIC_DECIDE_CONTEXT_FILE.
+    // gate axis_awareness emission directly from the printed context.
     registry_fallback: !!fallback,
   };
 
