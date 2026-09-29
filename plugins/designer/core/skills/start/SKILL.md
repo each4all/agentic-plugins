@@ -126,7 +126,9 @@ resolver says so on stderr).
 survive across Bash tool invocations, so an `export` recorded here is gone
 by the time Phase 1c resolves the preset in a later block. Prefix the
 `decide-registry.mjs resolve` invocation in the same block:
-`AGENTIC_DESIGNER_PROFILE="<archetype>" node …/decide-registry.mjs resolve …`.
+`AGENTIC_DESIGNER_PROFILE="<archetype>" node …/decide-registry.mjs resolve --args-file …`
+(the decide arguments travel in an ADR-0059 args file, never on the command
+line).
 A lost value silently downgrades the lifecycle to `balanced`; a stale value
 left exported in the operator's shell silently upgrades an unrelated
 standalone `/designer:decide`. The resolver's provenance diagnostic on

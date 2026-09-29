@@ -141,9 +141,10 @@ Prefix the resolve invocation in the **same block** instead, so the value
 cannot be lost and cannot be inherited from a stale ambient export:
 
 ```bash
-# Phase 1c, in the same Bash block as the resolve call:
+# Phase 1c, in the same Bash block as the resolve call (the args file is the
+# one commands/decide.md Phase 0.5 has you write — ADR-0059):
 AGENTIC_DESIGNER_PROFILE="<general|ui|flow|cta|content>" \
-  node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \
+  node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json" \
   > "$AGENTIC_DECIDE_CONTEXT_FILE" 2>"$DECIDE_RESOLVE_ERR"
 ```
 

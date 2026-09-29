@@ -135,14 +135,6 @@ const argumentLinesInCode = (body) =>
 // whose commit has not landed. Each is pinned by its line so a new site
 // cannot hide behind a removed one.
 const ARGUMENT_LINES_IN_CODE = {
-  'plugins/designer/commands/decide.md': [
-    '# `$ARGUMENTS` is the verbatim user input. Expand unquoted so the shell',
-    'node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \\',
-  ],
-  'plugins/designer/commands/investigate.md': [
-    '--profile "${AGENTIC_PROFILE:-<profile from $ARGUMENTS — design-brief; default \'design-brief\'>}" \\',
-  ],
-  'plugins/designer/commands/start.md': ['node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \\'],
   'plugins/founder/commands/decide.md': [
     '# `$ARGUMENTS` is the verbatim user input. Expand unquoted so the shell',
     'node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \\',
