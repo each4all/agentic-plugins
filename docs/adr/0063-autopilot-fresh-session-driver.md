@@ -760,6 +760,61 @@ that part of §4 before this ADR was adopted.
     is the opt-in.
   - The prototype mirrors this with `--dry-run`.
 
+## Implementation note 2026-09-29 — S0 (headless-safe runbooks)
+
+- **"Claude-provided" is a load-time substitution, not an environment
+  variable.**
+  - Claude Code 2.1.284 writes the plugin's path in place of the braced
+    `${CLAUDE_PLUGIN_ROOT}` when it loads a plugin command or skill body. It
+    leaves the bare `$CLAUDE_PLUGIN_ROOT` alone, and that is empty in a Bash
+    tool call (probe B). Measured with a `--plugin-dir` probe and with this
+    repository's directory marketplace.
+  - So every command block that uses the root now opens with
+    `CLAUDE_PLUGIN_ROOT="${AGENTIC_<PLUGIN>_ROOT:-${CLAUDE_PLUGIN_ROOT}}"`.
+    When that is still empty, it falls back to the newest cached version.
+    Only release directory names count: `X.Y.Z` without leading zeros,
+    optionally with build metadata whose identifiers are all non-empty. `sort -V` alone ranks a prerelease or a
+    stray name above the newest release. The resolution order in D5 is
+    unchanged.
+  - Path references in command prose use the braced form too, so the model
+    reads where the skill files are.
+- **On a directory marketplace the substituted path is the marketplace
+  source.** On the owner's machine that is the repository's `plugins/<name>`,
+  not the install cache. An interactive session there therefore runs the
+  working tree's scripts with the text it loaded. A worker still runs the
+  installed version, because the driver's `AGENTIC_<PLUGIN>_ROOT` exports come
+  first (D5 Env).
+- **No `rm` in runbook shell.** No runbook writes a temporary file it would
+  have to remove:
+  - stderr passes straight through;
+  - the decide context is printed
+    ([ADR-0027](0027-decide-skill-multi-axis-evolution.md) amendment of this
+    date);
+  - `/orchestrator:done` pipes its note to `state.mjs --reason-file -`;
+  - `/orchestrator:abort` and `/orchestrator:finalize` take the step-2 tally
+    from the shim's exit status;
+  - the args-file reader removes what it read
+    ([ADR-0059](0059-runbook-argument-transport.md) amendment of this date).
+- **Runbook defects found on the way.** `/abort` and `/finalize` had four:
+  - They ended with exit 0 when find-active or find-macro failed, because
+    `$?` inside an `if !` branch is the negation's status.
+  - Their step-2 gate skipped its check when the tally file was missing.
+  - Their step-2 shim logged a child of the macro it could not read and moved
+    on without counting it, so step 3 closed the macro over a live child.
+  - Phases 1–3 read what Phase 0 set, but nothing said to run them in one
+    shell. Run one per Bash call, they called `/scripts/state.mjs`, and
+    Phase 3 printed success anyway.
+
+  All four are fixed. The runbooks now say to run Phases 0–3 in one Bash
+  invocation, and each later block stops when Phase 0 has not run in its
+  shell. `tests/orchestrator/test-abort-finalize-runbook.mjs` runs the blocks
+  to show it.
+- `tests/plugin-shape/test-headless-safe-runbooks.mjs` pins both rules, and
+  `scripts/mutation-specs/headless-safe-runbooks.mjs` shows each check fails
+  on the defect it guards.
+- **The plugin-root hint (D5)** is no longer needed by an installed version
+  that carries S0.
+
 ## References
 
 - ADR-0001 (honest scope)

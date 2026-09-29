@@ -1032,6 +1032,22 @@ PR3 and PR4 from inventing parallel state shapes and gives PR5 a
 single surface to validate. The object is in-memory only; no
 schema-1.1 frontmatter change is implied.
 
+**Amendment 2026-09-29 — the context is printed, not written to a file**
+([ADR-0063](0063-autopilot-fresh-session-driver.md) S0). The Claude
+`decide` runbooks of engineer, designer and founder no longer redirect the
+resolver's output into `$AGENTIC_DECIDE_CONTEXT_FILE`. Phase 0.5 prints the
+object, and the session reads it from that output, as the Codex path already
+did. Three defects went with the file:
+
+- its path lived only in the shell of the Phase 0.5 Bash call, so Phase 1's
+  prompt builder and the terminal cleanup saw an empty variable unless the
+  model re-typed the path;
+- the cleanup then ran `rm -f ""`;
+- `$(mktemp -t …).json` left mktemp's own file behind on every run.
+
+The mentions of `$AGENTIC_DECIDE_CONTEXT_FILE` above describe the design as
+PR4 and PR5 shipped it. The object and its fields are unchanged.
+
 ## Consequences
 
 **Positive**:

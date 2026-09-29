@@ -354,6 +354,9 @@ stated rather than closed: SIGKILL cannot be caught, and a flow abandoned
 between creating the directory and running the block leaves the directory
 behind — it holds only this file, under `$TMPDIR`.
 
+*The trap was removed on 2026-09-29; the reader now removes the file. See
+the amendment of that date at the end of this record.*
+
 **(g) The Codex skills carry the same instructions.** The ten runtime skills,
 the three `decide` skills and the engineer and designer `start` skills tell a
 Codex model to put the user's arguments in an args file and pass
@@ -422,3 +425,72 @@ asks for approval instead were not measured. The fix changes the
 packages' instructions and needs its own release, so it is left for a
 follow-up; the evidence-loop record `the-arguments-the-shell-never-sees`
 carries the run.
+
+*Closed by the amendment of 2026-09-29 below.*
+
+## Amendment 2026-09-29 — the reader removes the args file
+
+Made by the headless-runbook slice of
+[ADR-0063](0063-autopilot-fresh-session-driver.md) (S0). (f) installed a
+shell trap to remove the args file and its directory. The trap is gone, and
+the reader removes both instead.
+
+**Why the trap went.**
+- **Codex.** Read from the rust-v0.158.0 source, not measured:
+  - `codex-rs/shell-command/src/command_safety/is_dangerous_command.rs`
+    classifies an `rm` whose options include `-f` or `--force` as dangerous.
+    It parses a `trap` action as `sh -c` source to find one. An `rm` without
+    a force flag is not classified dangerous.
+  - `codex-rs/core/src/exec_policy.rs` forbids a dangerous command when the
+    approval policy is `never`, with the message the Observation above
+    recorded, and asks for approval under `on-request`.
+  - `codex-rs/exec/src/lib.rs` sets `codex exec` to `never` unless its
+    approvals reviewer is `AutoReview`.
+  - That accounts for the refusal the Observation saw. An interactive session
+    under `on-request` would ask instead.
+- **Claude.** An owner's user-level `permissions.ask` entry `Bash(rm:*)` makes
+  a headless run deny a direct `rm -f` (autopilot probes W2–W5, R1/R2). Measured
+  on 2026-09-29 with Claude Code 2.1.284, one run each: the same rule did not
+  match the `rm` inside the trap's quoted string, and that block ran. The trap
+  failed on Codex only. The runbooks' other `rm` lines failed on both hosts,
+  and S0 removes those too.
+
+**What changed.**
+- The four copies of `scripts/lib/args-file.mjs` remove the file and its
+  directory once they have read its bytes. They do this before decoding, so a
+  refused file goes too.
+- **Ownership rule.** The reader removes only what the runbook's `mktemp -d`
+  step made:
+  - a file named `args.json`;
+  - that is the only entry of a directory named `agentic-args.<suffix>`;
+  - directly under the temporary directory: `$TMPDIR`, the platform's
+    temporary directory or `/tmp`, compared after resolving links;
+  - with neither the file nor the directory a symbolic link;
+  - and only if that file is the one the reader opened. The path is normalized
+    before these checks. Otherwise `<dir>//args.json` would name its
+    directory with a trailing separator, and lstat would follow a link. The
+    reader also compares the opened file with the file it would remove by
+    device and inode, because Node folds `..` by spelling while the
+    operating system follows a link first. Both cases came from the
+    Refine-verify review of this change.
+
+  Any other path is read and left alone. A matching directory that holds
+  anything else is left whole, with a warning. The directory is removed with
+  `rmdir`, never as a tree.
+- Every runbook and Codex skill block that reads an args file drops its trap
+  line, and its prose says the command removes the file.
+- **The gaps.** A block that exits before the reader runs leaves the directory
+  behind. (f) already stated this for a flow abandoned before the block.
+  SIGKILL during the read does the same. The file is read once, so running a
+  block again needs a new args file.
+- **Tests.**
+  - `tests/plugin-shape/test-runbook-shell-portability.mjs` checks that no
+    block installs a shell cleanup. It runs a block in sh, bash, zsh and dash
+    and checks that no directory is left when the reader succeeds, when it
+    rejects the text, or when the file is not valid JSON. It also states the
+    early-exit gap as a test.
+  - `tests/plugin-shape/test-args-file-transport.mjs` §2b checks the ownership
+    rule. Each case that must leave a path in place is paired with the owned
+    case it differs from.
+  - The K group of `scripts/mutation-specs/args-file-transport.mjs` was
+    rewritten for this cleanup.
