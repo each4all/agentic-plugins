@@ -9,13 +9,19 @@ $ARGUMENTS
 
 Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. The peer ensemble runs automatically per `core/skills/_shared/references/ensemble-protocol.md` (Plan-verify point type). Never ask the user whether to invoke the peer. When the companions plugin or peer CLI is unavailable, the ensemble degrades silently to a LOCAL-ONLY plan (`peer-runner.mjs run` returns `peer_cli_not_found` with no peer-run ledger or orphan-pending entry — orchestrator-specific graceful degradation contract).
 
-Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root. Fallback: discover via `find ~/.claude/plugins/cache/agentic-plugins/orchestrator -maxdepth 3 -name plugin.json` SemVer walk if `$CLAUDE_PLUGIN_ROOT` is unset.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ORCHESTRATOR_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 ---
 
 ## Phase 0 — Workflow continuity (per ADR-0011 §5 + ADR-0018 §sub-2)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
 # ADR-0018 §sub-2 — orchestrator workflows are anchored to a branch;
@@ -25,22 +31,20 @@ if [ -z "$GIT_BRANCH" ]; then
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
-FIND_ERR="${TMPDIR:-/tmp}/orchestrator-find-active-$$.err"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+  find-active --repo-root "$REPO_ROOT")"
 FIND_RC=$?
 if [ "$FIND_RC" -ne 0 ]; then
-  echo "✗ find-active failed (exit $FIND_RC):" >&2
-  cat "$FIND_ERR" >&2
-  rm -f "$FIND_ERR"
+  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
-rm -f "$FIND_ERR"
 ```
 
 - Empty → bootstrap with verb=plan:
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   GIT_HEAD="$(git rev-parse HEAD)"
   STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
   ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
@@ -62,6 +66,8 @@ rm -f "$FIND_ERR"
   macro with `/orchestrator:resume archive` and plan the new work afresh.
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host claude \
     --phase-label "Phase 0: Resume macro plan" \
@@ -76,7 +82,7 @@ rm -f "$FIND_ERR"
 
 ## Phase 1 — Execute plan skill (decompose + dependency graph)
 
-Follow the plan skill's command-invoked mode at `$CLAUDE_PLUGIN_ROOT/core/skills/plan/SKILL.md`. Produce a draft `plan.subtasks[]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 schema (1.1):
+Follow the plan skill's command-invoked mode at `${CLAUDE_PLUGIN_ROOT}/core/skills/plan/SKILL.md`. Produce a draft `plan.subtasks[]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 schema (1.1):
 
 ```yaml
 - id: <unique short token (e.g. PR1, schema-reader)>
@@ -95,9 +101,11 @@ Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blo
 
 ### Ensemble dispatch (Plan-verify point type)
 
-Build the Plan-verify prompt per `$CLAUDE_PLUGIN_ROOT/core/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol). The `<grounding_rules>` section MUST include the schema 1.1 constraints so peer-emitted plan revisions don't bypass validation: every subtask requires `verb` (canonical 6-verb whitelist: investigate / frame / decide / compose / critique / refine) AND `branch` (git ref-format), plus `id` (unique) / `blocked_by` (array of existing ids forming a DAG — self-reference, mutual `A<->B`, and longer cycles are rejected) / `status` (`pending|blocked|in_progress|completed|deferred|abandoned`) per ADR-0019 §2.
+Build the Plan-verify prompt per `${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol). The `<grounding_rules>` section MUST include the schema 1.1 constraints so peer-emitted plan revisions don't bypass validation: every subtask requires `verb` (canonical 6-verb whitelist: investigate / frame / decide / compose / critique / refine) AND `branch` (git ref-format), plus `id` (unique) / `blocked_by` (array of existing ids forming a DAG — self-reference, mutual `A<->B`, and longer cycles are rejected) / `status` (`pending|blocked|in_progress|completed|deferred|abandoned`) per ADR-0019 §2.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 PROMPT_FILE="$(mktemp -t orchestrator-plan-prompt.XXXXXX).xml"
 # Generate a stable run-id BEFORE dispatch so the pending entry, the
 # peer's eventual result, and the ensemble-commit call all share the
@@ -131,6 +139,8 @@ Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT categories (host-agnos
 Materialize the synthesized subtasks into a JSON file and call `plan-set`:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 SUBTASKS_JSON="$(mktemp -t orchestrator-subtasks.XXXXXX).json"
 # ... LLM writes the synthesized subtasks array (top-level JSON array
 # of subtask objects matching the ADR-0018 §sub-1 schema) to $SUBTASKS_JSON ...
@@ -146,6 +156,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-set \
 Then record the phase note + ensemble result:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: plan at <iso-utc>
 
 ### Ensemble synthesis: plan-verify verdict=<pass|concerns|conflict>

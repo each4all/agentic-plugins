@@ -17,7 +17,7 @@ for new repos; legacy `.claude/agentic-orchestrator/` state remains active
 until explicit migration.
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/core/skills/peer-now/SKILL.md`**. The skill contains
+`${CLAUDE_PLUGIN_ROOT}/core/skills/peer-now/SKILL.md`**. The skill contains
 the host-availability matrix, prompt guidance, and status/cancel
 controls.
 
@@ -38,6 +38,8 @@ or unreadable prompt file. Do not self-dispatch.
 ## Phase 1 — Dispatch with operational tracking
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 RUN_JSON="$(mktemp -t orchestrator-peer-now.XXXXXX).json"
@@ -63,6 +65,8 @@ ERROR_KIND="$(jq -r '.error_kind // empty' "$RUN_JSON" 2>/dev/null)"
 Status/cancel controls:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" status \
   --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --json
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" cancel \
@@ -79,6 +83,8 @@ On non-zero exit, surface the first useful stderr/error line, include
 Locate the active macro:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" 2>/tmp/orchestrator-peer-now-find.err)"
 FIND_RC=$?
@@ -89,6 +95,8 @@ FIND_RC=$?
   phase or next action:
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   RESPONSE="$(head -c 4000 "$STDOUT_PATH")"
   NOTE="peer: $PEER
   run_id: $RUN_ID

@@ -15,7 +15,7 @@ new repos; legacy `.claude/agentic-orchestrator/` state remains active
 until explicit migration.
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/core/skills/checkpoint/SKILL.md`**. This command owns
+`${CLAUDE_PLUGIN_ROOT}/core/skills/checkpoint/SKILL.md`**. This command owns
 Claude-host shell bootstrap; the skill documents Codex use and Codex
 hook-gate boundaries.
 
@@ -37,6 +37,8 @@ kept in full.
 ## Phase 1 — Locate active macro workflow
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" 2>/tmp/orchestrator-checkpoint-find.err)"
@@ -62,6 +64,8 @@ Branch on the result:
 ## Phase 2 — Set checkpoint
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" checkpoint-set \
   --workflow-path "$ACTIVE" --host claude --summary "$SUMMARY"
 ```

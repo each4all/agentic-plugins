@@ -11,7 +11,11 @@ Record a macro subtask as `completed` once its work has **landed** on the integr
 
 The recorded `commit` is the pull request's **merge commit** — the squash commit for a squash merge, the last rebased commit for a rebase merge — resolved and verified by `state.mjs resolve-landing` (ADR-0062 §Decision 1).
 
-Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ORCHESTRATOR_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 **Argument parsing**: extract from `$ARGUMENTS`:
 - `EXPLICIT_SUBTASK_ID` ← the leading positional token (required).
@@ -23,7 +27,7 @@ Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root.
 - `EXPLICIT_INTEGRATION_BRANCH` ← value of `--integration-branch=<b>`; default is the macro's `git_baseline.branch`.
 - `REASON` ← the remaining free text, verbatim. It never passes through the shell (ADR-0059): before running the block below, write it to a new file with your file-writing tool (Claude: the Write tool), exactly as given, and set `REASON_FILE` to that file's path at the top of the block. Leave `REASON_FILE` unset when there is no reason. A heredoc is not safe here: a reason that contains the delimiter line ends it and runs what follows.
 
-**Run Phases 0–3 in one Bash invocation.** Each Bash tool call is a fresh shell, so the variables and the note file created in Phase 1 do not survive into a later call. Write `REASON_FILE` (when there is a reason) before that invocation.
+**Run Phases 0–3 in one Bash invocation.** Each Bash tool call is a fresh shell, so the variables set in Phase 1 do not survive into a later call. Write `REASON_FILE` (when there is a reason) before that invocation.
 
 **Critical rules** (ADR-0062):
 - Never record the subtask branch tip or `git rev-parse HEAD`. A squash or rebase merge leaves both outside the integration branch.
@@ -37,6 +41,8 @@ Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root.
 ## Phase 0 — Resolve the macro plan
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
 if [ -z "$GIT_BRANCH" ]; then
@@ -49,7 +55,6 @@ if [ -z "${EXPLICIT_SUBTASK_ID:-}" ]; then
   exit 1
 fi
 
-FIND_ERR="${TMPDIR:-/tmp}/orchestrator-done-find-$$.err"
 MACRO_PATH=""
 if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
   # Reject path-component overrides — `--workflow=../archive/<id>` would
@@ -59,7 +64,6 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
     # to an empty string, which made the pattern match every id.
     */*|*\\*|..|.*)
       echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
-      rm -f "$FIND_ERR"
       exit 1;;
   esac
   CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
@@ -70,26 +74,24 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
     MACRO_PATH="$LEGACY_MACRO_PATH"
   else
     echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes (archived macros are not addressed)." >&2
-    rm -f "$FIND_ERR"
     exit 1
   fi
 else
   MACRO_PATH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-    find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+    find-active --repo-root "$REPO_ROOT")"
   RC=$?
   if [ "$RC" -ne 0 ]; then
-    cat "$FIND_ERR" >&2; rm -f "$FIND_ERR"; exit "$RC"
+    exit "$RC"
   fi
   if [ -z "$MACRO_PATH" ]; then
     MACRO_PATH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-      find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH" 2>"$FIND_ERR")"
+      find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH")"
     RC=$?
     if [ "$RC" -ne 0 ]; then
-      cat "$FIND_ERR" >&2; rm -f "$FIND_ERR"; exit "$RC"
+      exit "$RC"
     fi
   fi
 fi
-rm -f "$FIND_ERR"
 if [ -z "$MACRO_PATH" ]; then
   echo "✗ No macro workflow references branch '$GIT_BRANCH'. Use --workflow=<id>." >&2
   exit 1
@@ -108,6 +110,8 @@ esac
 ## Phase 1 — Read the subtask, check the flags, write the reason file
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 SUBTASK_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   read-subtask --workflow-path "$MACRO_PATH" --subtask-id "$EXPLICIT_SUBTASK_ID")" || exit 1
 
@@ -139,19 +143,16 @@ if [ "$SUBTASK_STATUS" = "completed" ] && [ "${CORRECT:-}" != "1" ]; then
 fi
 ```
 
-When `CORRECT=1` or `NO_COMMIT=1`, a reason is required. The note the macro records is assembled in a file the runbook owns; the reason is copied into it from `REASON_FILE`, never read by the shell as text:
+When `CORRECT=1` or `NO_COMMIT=1`, a reason is required. The reason stays in `REASON_FILE`: the runbook only checks that it holds text, and Phase 3 hands the file's bytes to `state.mjs`, so the shell never reads the reason as text:
 
 ```bash
-NOTE_FILE="$(mktemp "${TMPDIR:-/tmp}/orchestrator-done-note.XXXXXX")"
-trap 'rm -f "$NOTE_FILE"' EXIT
-if [ -n "${REASON_FILE:-}" ]; then
-  if [ ! -f "$REASON_FILE" ]; then
-    echo "✗ REASON_FILE=$REASON_FILE does not exist; write the reason with your file-writing tool first." >&2
-    exit 1
-  fi
-  cat "$REASON_FILE" > "$NOTE_FILE"
+if [ -n "${REASON_FILE:-}" ] && [ ! -f "$REASON_FILE" ]; then
+  echo "✗ REASON_FILE=$REASON_FILE does not exist; write the reason with your file-writing tool first." >&2
+  exit 1
 fi
-if { [ "${CORRECT:-}" = "1" ] || [ "${NO_COMMIT:-}" = "1" ]; } && ! grep -q '[^[:space:]]' "$NOTE_FILE"; then
+HAS_REASON=0
+if [ -n "${REASON_FILE:-}" ] && grep -q '[^[:space:]]' "$REASON_FILE"; then HAS_REASON=1; fi
+if { [ "${CORRECT:-}" = "1" ] || [ "${NO_COMMIT:-}" = "1" ]; } && [ "$HAS_REASON" -eq 0 ]; then
   echo "✗ --correct and --no-commit need a reason (the free text after the flags)." >&2
   exit 1
 fi
@@ -218,6 +219,8 @@ fi
 Refused while an engineer workflow for this subtask is still **active**: a child whose branch never moved cannot archive itself, and it would keep the macro's no-active-children gate closed forever. Also refused when a workflow home or file cannot be read (anything but a missing one): the unreadable entry could be that child.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 if [ "${NO_COMMIT:-}" = "1" ]; then
   ACTIVE_CHILD="$(
     env MACRO_ID="$MACRO_ID" SUBTASK_ID="$SUBTASK_ID" REPO_ROOT="$REPO_ROOT" node -e '
@@ -249,7 +252,7 @@ if [ "${NO_COMMIT:-}" = "1" ]; then
     --workflow-path="$MACRO_PATH" --host="$DETECTED_HOST" --subtask-id="$SUBTASK_ID" \
     --status=completed --engineer-workflow-id="$EXISTING_ENG_WF_ID" \
     --closed-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --expect-branch="$SUBTASK_BRANCH" \
-    --reason-file="$NOTE_FILE" --event=updated || exit $?
+    --reason-file="$REASON_FILE" --event=updated || exit $?
   exit 0
 fi
 ```
@@ -259,6 +262,8 @@ fi
 ## Phase 3b — Resolve the landing and record it
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 INTEGRATION_BRANCH="${EXPLICIT_INTEGRATION_BRANCH:-$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$MACRO_PATH" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.parse(d).git_baseline.branch||"")}catch{}})')}"
 if ! git -C "$REPO_ROOT" fetch --quiet origin "$INTEGRATION_BRANCH"; then
   echo "⚠ git fetch origin $INTEGRATION_BRANCH failed; verifying against the last fetched origin/$INTEGRATION_BRANCH." >&2
@@ -276,9 +281,10 @@ if [ "$LANDING_RC" -ne 0 ]; then
 fi
 COMMIT_SHA="$(printf '%s' "$LANDING" | JSON_KEY=commit node -e "$JSON_FIELD")"
 PR_URL="$(printf '%s' "$LANDING" | JSON_KEY=pr_url node -e "$JSON_FIELD")"
+LANDING_NOTE=""
 if [ "$(printf '%s' "$LANDING" | JSON_KEY=verification node -e "$JSON_FIELD")" = "ancestry-only" ]; then
   # Keep the weaker verification visible in the macro's record.
-  { printf 'Landing verified by ancestry only: gh was unavailable, so %s could not be matched to its pull request.\n' "$COMMIT_SHA"; cat "$NOTE_FILE"; } > "$NOTE_FILE.tmp" && mv "$NOTE_FILE.tmp" "$NOTE_FILE"
+  LANDING_NOTE="Landing verified by ancestry only: gh was unavailable, so $COMMIT_SHA could not be matched to its pull request."
 fi
 
 UPDATE_ARGS=(--workflow-path="$MACRO_PATH" --host="$DETECTED_HOST" --subtask-id="$SUBTASK_ID"
@@ -286,8 +292,16 @@ UPDATE_ARGS=(--workflow-path="$MACRO_PATH" --host="$DETECTED_HOST" --subtask-id=
   --closed-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --expect-branch="$SUBTASK_BRANCH" --event=updated)
 [ -n "$PR_URL" ] && UPDATE_ARGS+=(--pr-url="$PR_URL")
 [ "${CORRECT:-}" = "1" ] && UPDATE_ARGS+=(--correct)
-grep -q '[^[:space:]]' "$NOTE_FILE" && UPDATE_ARGS+=(--reason-file="$NOTE_FILE")
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-update "${UPDATE_ARGS[@]}" || exit $?
+if [ -n "$LANDING_NOTE" ] || [ "$HAS_REASON" -eq 1 ]; then
+  # The note reaches state.mjs on stdin: the landing line, then the reason
+  # copied byte for byte from REASON_FILE. No temporary file is written.
+  {
+    if [ -n "$LANDING_NOTE" ]; then printf '%s\n' "$LANDING_NOTE"; fi
+    if [ "$HAS_REASON" -eq 1 ]; then cat "$REASON_FILE"; fi
+  } | node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-update "${UPDATE_ARGS[@]}" --reason-file=- || exit $?
+else
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" subtask-update "${UPDATE_ARGS[@]}" || exit $?
+fi
 ```
 
 `subtask-update` handles ownership, the provenance guard (a different recorded value is refused and names `--correct`), the unblock pass and the auto-terminal pass atomically; surface its JSON envelope. `noop: true` means the record already held these values.

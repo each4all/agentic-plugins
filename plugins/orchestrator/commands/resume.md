@@ -17,13 +17,15 @@ canonical `.agentic-plugins/state/orchestrator/` (legacy
 migration per ADR-0025).
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/core/skills/resume/SKILL.md`**. This command file owns
+`${CLAUDE_PLUGIN_ROOT}/core/skills/resume/SKILL.md`**. This command file owns
 Claude-host shell bootstrap and state writes; the skill documents the
 cross-host runbook and Codex hook-gate caveats.
 
-Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin root. If
-unset, discover the latest Claude cache entry under
-`~/.claude/plugins/cache/agentic-plugins/orchestrator`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ORCHESTRATOR_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 ---
 
@@ -41,6 +43,8 @@ Inspect `$ARGUMENTS`:
 ## Phase 1 — Locate active macro workflow
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" 2>/tmp/orchestrator-resume-find.err)"
@@ -70,6 +74,8 @@ Read frontmatter and compare current git state against the macro's
 `git_baseline`:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
   --workflow-path "$ACTIVE" > /tmp/orchestrator-resume-frontmatter.json
 
@@ -129,6 +135,8 @@ When the baseline commit object is available, append a resume marker.
 Do not mutate `current_phase` or `next_action`.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host claude \
   --phase-label "Resume: drift=<clean|dirty>" \
@@ -156,6 +164,8 @@ phase, subtask counts, and path.
 On confirmation:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" archive \
   --workflow-path "$WORKFLOW" --host claude --repo-root "$REPO_ROOT"
 ```

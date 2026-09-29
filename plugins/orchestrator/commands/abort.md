@@ -18,18 +18,27 @@ The semantic distinction: **deferred** means "could be revisited" (future plan r
 
 Step 2 (active-children detach pass) is identical to finalize — the engineer parent-writeback's absorbing-precondition treats `deferred` and `abandoned` the same way, so any concurrent engineer Stop hook firing during step 2 skips its writeback regardless of which terminal-partial label step 1 assigned.
 
-Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root. Engineer plugin root resolved separately via `discover-engineer.mjs`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ORCHESTRATOR_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call. The engineer plugin root is
+resolved separately, by `discover-engineer.mjs`.
 
 **Argument parsing**: extract from `$ARGUMENTS`:
 - `EXPLICIT_WORKFLOW_ID` ← value of `--workflow=<id>` flag, or empty if absent.
 
 **P1-i defense**: every engineer-side CLI invocation MUST use `$ENGINEER_PLUGIN_ROOT` in `argv[1]` (NOT the rebound `$CLAUDE_PLUGIN_ROOT`).
 
+**Run Phases 0–3 in one Bash invocation.** Each Bash tool call is a fresh shell, so what Phase 0 sets — `ORCH_PLUGIN_ROOT`, `MACRO_PATH`, `MACRO_ID`, `DETECTED_HOST` — does not survive into a later call. Each later block stops with a message when Phase 0 has not run in its shell.
+
 ---
 
 ## Phase 0 — Resolve the macro plan
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 set -e
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
@@ -47,8 +56,6 @@ case "$CLAUDE_PLUGIN_ROOT" in
   *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
 esac
 
-FIND_ERR="${TMPDIR:-/tmp}/orchestrator-abort-find-$$.err"
-trap 'rm -f "$FIND_ERR"' EXIT
 MACRO_PATH=""
 if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
   case "$EXPLICIT_WORKFLOW_ID" in
@@ -69,22 +76,16 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
     exit 1
   fi
 else
-  # Codex P3 finding: `set -e` + `MACRO_PATH="$(...)"` would exit
-  # immediately on non-zero, skipping the `RC=$?`/`cat $FIND_ERR` block.
-  # `if !` gates `set -e` so the diagnostic block runs on failure.
-  if ! MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
-      find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"; then
-    RC=$?
-    cat "$FIND_ERR" >&2
-    exit "$RC"
-  fi
+  # stderr is not redirected: find-active and find-macro write to it only
+  # when they fail, so the error is already on screen. `|| { RC=$?; … }`
+  # keeps the failing status and holds under `set -e` (Codex P3 finding);
+  # an `if ! cmd; then RC=$?` branch reads the negation's status, which is
+  # always 0, so that form exited 0 on a failure.
+  MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
+      find-active --repo-root "$REPO_ROOT")" || { RC=$?; exit "$RC"; }
   if [ -z "$MACRO_PATH" ]; then
-    if ! MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
-        find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH" 2>"$FIND_ERR")"; then
-      RC=$?
-      cat "$FIND_ERR" >&2
-      exit "$RC"
-    fi
+    MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
+        find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH")" || { RC=$?; exit "$RC"; }
   fi
 fi
 if [ -z "$MACRO_PATH" ]; then
@@ -100,12 +101,13 @@ echo "→ Aborting macro: $MACRO_ID (host=$DETECTED_HOST)"
 ## Phase 1 — Step 1: bulk subtask status transition (abandoned)
 
 ```bash
+: "${MACRO_PATH:?Phase 0 did not run in this shell — run Phases 0–3 in one Bash invocation}"
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   bulk-subtask-status \
   --workflow-path "$MACRO_PATH" \
   --host "$DETECTED_HOST" \
   --from-statuses pending,blocked,in_progress \
-  --to-status abandoned
+  --to-status abandoned || exit $?
 ```
 
 Parent per-file lock released after this returns.
@@ -117,6 +119,7 @@ Parent per-file lock released after this returns.
 Identical to `/orchestrator:finalize` step 2. Engineer children get routed to `stop-archive` (terminal) or `detach-archive` (mid-flight, deleted branch, or gate-not-met).
 
 ```bash
+: "${MACRO_PATH:?Phase 0 did not run in this shell — run Phases 0–3 in one Bash invocation}"
 ENGINEER_PLUGIN_ROOT="$(node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" discover)"  # stderr kept: a cross-host fallback is reported there (ADR-0061)
 if [ -z "$ENGINEER_PLUGIN_ROOT" ]; then
   echo "✗ engineer plugin not found — cannot detach children." >&2
@@ -125,10 +128,9 @@ fi
 # lifecycle: only detach-archive / stop-archive are needed here (ADR-0062 §Decision 6).
 node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight --root "$ENGINEER_PLUGIN_ROOT" --purpose lifecycle || exit 1
 
-# Child-archive failure counter (Codex P2 finding) — same pattern as
-# /orchestrator:finalize.
-FAILURES_FILE="${TMPDIR:-/tmp}/orchestrator-abort-failures-$$.cnt"
-trap 'rm -f "$FIND_ERR" "$FAILURES_FILE"' EXIT
+# Child-archive failure gate (Codex P2 finding) — same pattern as
+# /orchestrator:finalize. The shim exits non-zero when any child failed.
+STEP2_RC=0
 CANONICAL_ENG_WORKFLOW_DIR="$REPO_ROOT/.agentic-plugins/state/engineer/workflows"
 LEGACY_ENG_WORKFLOW_DIR="$REPO_ROOT/.claude/agentic-engineer/workflows"
 if [ -d "$CANONICAL_ENG_WORKFLOW_DIR" ] || [ -d "$LEGACY_ENG_WORKFLOW_DIR" ]; then
@@ -136,14 +138,13 @@ if [ -d "$CANONICAL_ENG_WORKFLOW_DIR" ] || [ -d "$LEGACY_ENG_WORKFLOW_DIR" ]; th
     ENG_WORKFLOW_DIRS="$CANONICAL_ENG_WORKFLOW_DIR:$LEGACY_ENG_WORKFLOW_DIR" \
     ENGINEER_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT" \
     DETECTED_HOST="$DETECTED_HOST" \
-    FAILURES_FILE="$FAILURES_FILE" \
     node -e '
       const fs = require("fs/promises");
       const path = require("path");
       const { execFile } = require("child_process");
       const { promisify } = require("util");
       const execFileAsync = promisify(execFile);
-      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIRS, ENGINEER_PLUGIN_ROOT, DETECTED_HOST, FAILURES_FILE } = process.env;
+      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIRS, ENGINEER_PLUGIN_ROOT, DETECTED_HOST } = process.env;
       const ENG_STATE = path.join(ENGINEER_PLUGIN_ROOT, "scripts/state.mjs");
       let failures = 0;
       (async () => {
@@ -175,7 +176,10 @@ if [ -d "$CANONICAL_ENG_WORKFLOW_DIR" ] || [ -d "$LEGACY_ENG_WORKFLOW_DIR" ]; th
               );
               frontmatter = JSON.parse(stdout);
             } catch (err) {
+              // A child of this macro that cannot be read cannot be archived
+              // either; counting it keeps step 3 from closing the macro over it.
               process.stderr.write(`  ! failed to read ${name}: ${err.message}\n`);
+              failures += 1;
               continue;
             }
             const branch = frontmatter?.git_baseline?.branch;
@@ -242,19 +246,23 @@ if [ -d "$CANONICAL_ENG_WORKFLOW_DIR" ] || [ -d "$LEGACY_ENG_WORKFLOW_DIR" ]; th
         }
       })()
         .catch((err) => { process.stderr.write(`  ! abort step 2 error: ${err.message}\n`); failures += 1; })
-        .finally(async () => { await fs.writeFile(FAILURES_FILE, String(failures)); });
-    '
+        .finally(() => {
+          // The tally leaves as the exit status, so the outer shell refuses
+          // step 3 on any failure — including a shim that never reached here.
+          if (failures > 0) {
+            process.stderr.write(`✗ ${failures} engineer child(ren) failed to archive in abort step 2.\n`);
+            process.exitCode = 3;
+          }
+        });
+    ' || STEP2_RC=$?
 fi
 
 # Codex P2 finding (Phase 6 resolve): refuse to mark macro terminal when
 # any child failed to archive — A4 would keep failing forever otherwise.
-if [ -f "$FAILURES_FILE" ]; then
-  ABORT_FAILURES="$(cat "$FAILURES_FILE")"
-  if [ "${ABORT_FAILURES:-0}" -gt 0 ]; then
-    echo "✗ $ABORT_FAILURES engineer child(ren) failed to archive in step 2 — refusing to set macro terminal markers." >&2
-    echo "  Reconcile manually and re-run /orchestrator:abort." >&2
-    exit 1
-  fi
+if [ "$STEP2_RC" -ne 0 ]; then
+  echo "✗ Step 2 did not archive every engineer child (exit $STEP2_RC; see above) — refusing to set macro terminal markers." >&2
+  echo "  Reconcile manually and re-run /orchestrator:abort." >&2
+  exit 1
 fi
 ```
 
@@ -263,6 +271,7 @@ fi
 ## Phase 3 — Step 3: terminal markers (parent lock re-acquired)
 
 ```bash
+: "${MACRO_PATH:?Phase 0 did not run in this shell — run Phases 0–3 in one Bash invocation}"
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # macro archive gates are evaluated at the end of THIS turn, not at session
 # close; if a gate fails (a subtask still non-terminal, an engineer child
@@ -279,7 +288,7 @@ node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   --host "$DETECTED_HOST" \
   --terminal-phase aborted \
   --terminal-marker true \
-  --next-action archive
+  --next-action archive || exit $?
 echo "✓ macro $MACRO_ID marked terminal (current_phase=aborted, terminal_marker=true)."
 echo "  Next Stop event will evaluate A1-A4 and auto-archive the macro file."
 ```
