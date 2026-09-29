@@ -277,3 +277,121 @@ Not part of the decision, but required when it lands:
 - The temporary file is removed on every exit path, and the CLI's exit
   status must survive that removal — a naive `cmd; rm -f "$F"` returns the
   status of `rm`.
+
+## Amendment 2026-09-29 — what the implementation measured
+
+The implementation re-measured the sites before changing any, and spelled out
+the grammars Decisions 3, 5 and 7 left to it. What it found changes or adds to
+the sections above in these respects.
+
+**(a) Fifteen sites, not sixteen.** ADR-0060 removed `runtime:compat`, and
+with it `compat.md`'s splice: runtime had 10, engineer 2, designer 2 and
+founder 1, plus the three quoted `investigate` placeholders. All eighteen are
+gone. `tests/plugin-shape/test-command-argument-substitution.mjs`, which
+pinned each by its line, now holds an empty list: no fenced block in any
+command body receives host-substituted text.
+
+**(b) One library in four byte-identical copies.** `scripts/lib/args-file.mjs`
+ships in runtime, engineer, designer and founder, because each is installed on
+its own, and `tests/plugin-shape/test-args-file-transport.mjs` fails when the
+copies differ. The file is `{"agentic_args": 1, "text": "…"}`. Invalid UTF-8,
+invalid JSON, another version, a missing or non-string `text`, an extra field,
+a lone surrogate, a NUL and a file over 1 MiB are each refused with a message.
+
+**(c) The runtime grammar (Decision 5) is the words of a POSIX command line
+with every expansion removed.** Quoting and backslash escapes decode as they
+would in a shell; `*`, `?`, `[`, `{`, `!` and `=` are ordinary characters. The
+characters a shell would act on instead — the operators `; & | < > ( )`, a
+backquote, `$` before a name, digit, `{` or `(`, and a word-initial `#` or `~`
+— are refused unquoted rather than reinterpreted, so a user who expected a
+shell is told so instead of being silently read otherwise. The words replace
+`--args-file <path>` where it sat, which matters for `retention`, whose
+subcommand must come first. A malformed file takes each CLI's existing
+usage-error exit: 2 for `doctor` and `settings`, 40 for `bootstrap`, 1 for the
+others.
+
+**(d) The persona CLIs take the file as their only argument (Decision 3).**
+`decide-registry.mjs resolve --args-file <path>` refuses any other argument
+beside it, and only the first argument can name the file, so
+`resolve -- --args-file` still passes `--args-file` as the body. Text that
+starts with no flag is its own body, byte for byte, leading whitespace
+included; after flags, the body follows the one run of whitespace that
+separates them. A leading flag word that holds a quote or backslash is
+refused rather than read as quoting — the flag values are bare by ADR-0027
+§2.2. The resolver now sets its exit status instead of calling
+`process.exit()`, which cut a piped context at 64 KiB while exiting zero; the
+context carries the body, and the file allows one of up to 1 MiB.
+
+**(e) The start rule (Decision 7)** lives in `scripts/start-args.mjs`: at most
+one `--base-branch <ref>`, anywhere in the text; one pair of matching quotes
+around the ref is removed; a second option, the `--base-branch=<ref>`
+spelling, a missing or empty ref, or a quote, backslash or leading `-` left in
+it is refused; the option and the whitespace separating it from the
+description are removed and every other byte stays. A description that must
+mention the option quotes it.
+
+**(f) The file goes in a directory, and a trap removes it.** The runbook
+creates a directory with `mktemp -d` and the model writes a new `args.json`
+into it, so the writing step always creates a file and never replaces one.
+Claude's file-writing tool documents a refusal to overwrite a file it has not
+read; measured on 2026-09-29 it overwrote both an empty and a non-empty
+unread file, so the design relies on that behaviour in neither direction. The
+block that runs the CLI installs, immediately after assigning `ARGS_DIR`,
+
+```text
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo … >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+```
+
+Run by sh, bash, zsh and dash, it removes the directory on success, failure,
+an early exit, and a hangup, interrupt or termination signal (each turned
+into an exit with the conventional 128+n status); it keeps the command's exit
+status otherwise, and warns — status still kept, even under `set -e` — when
+the file or the directory cannot be removed. The test that checks this
+replaces the guard-presence assertion (Decision 8). It removes only the file
+and an empty directory, never a tree, because the directory path is
+transcribed by the model from one call to the next. Two gaps remain and are
+stated rather than closed: SIGKILL cannot be caught, and a flow abandoned
+between creating the directory and running the block leaves the directory
+behind — it holds only this file, under `$TMPDIR`.
+
+**(g) The Codex skills carry the same instructions.** The ten runtime skills,
+the three `decide` skills and the engineer and designer `start` skills tell a
+Codex model to put the user's arguments in an args file and pass
+`--args-file`. Measured on 2026-09-29 with codex-cli 0.158.0 in its
+`workspace-write` sandbox: asked to write the file into a `mktemp -d`
+directory under `$TMPDIR`, Codex used `apply_patch`, and the file held the
+text — an apostrophe, `;`, `$(…)` and `>` included — byte for byte.
+
+**(h) The corpus had grown to 351 distinct topics, and every one passed** —
+through all four library copies and all three persona parsers, with each
+topic written to a real file outside the repository and read back. The topics
+are not committed: the state they come from is gitignored, and they carry
+local paths and host names. The suite replays their shapes instead
+(`tests/fixtures/args-file-topic-shapes.json`): each topic with its letters
+and digits replaced by a placeholder of the same class, and every whitespace,
+quote, operator and option name kept, which is all a grammar reads.
+`scripts/replay-args-file-corpus.mjs` replays the real topics on a machine
+that has them and regenerates the fixture. A mutation spec
+(`scripts/mutation-specs/args-file-transport.mjs`) puts 31 defects back into
+the library, the CLIs, the runbooks and the cleanup; each is caught.
+
+**(i) An observation on transcription, not a decision.** While this change
+was being written, a `\u`-escape the model emitted in a file-writing tool call
+arrived in the file as the character it names, while `\n` and `\t` stayed
+escapes. In an args file that is harmless when the character may appear raw
+in a JSON string, and a refusal when it may not: a raw control character makes
+the file invalid JSON. The codec's strictness therefore turns this part of the
+transcription residue into an explicit failure instead of a silent change. It
+does not bound transcription, and the Negative consequence above stands.
+
+**(j) Found, and not decided here.** Twenty persona runbook blocks create
+their workflow with `--original-request "${AGENTIC_TOPIC:-<one-line scrubbed
+user request>}"`, and `orchestrator:plan` with
+`--original-request "<one-line scrubbed user feature description>"` —
+placeholders the model fills with text derived from the request. That is
+model-authored rather than host-substituted text, so it is outside this
+decision, but it reaches a double-quoted shell string the same way. The
+`decide` runbooks also create or resume their workflow in Phase 0, before
+Phase 0.5 reads the args file, so a malformed file fails after that write;
+parser errors already failed at the same point before this change. Both are
+left for a follow-up.
