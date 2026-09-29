@@ -648,6 +648,16 @@ export const FS_MUTATION_USERS = {
     justification: 'explicit --apply config.toml upsert AND removal (repo + user-global) and settings run artifacts. The config write is temp+rename ATOMIC because it is now a read-modify-write that can DELETE lines (`--unset`), so an interrupted in-place write would truncate the operator\'s config — `rename` publishes, and `rm` drops ONLY this process\'s own `<target>.agentic-tmp-<pid>` staging file when the publish fails. `realpath` resolves a symlinked config so the temp lands on the same filesystem as its rename target and so the report can DISCLOSE where the bytes actually went; a symlinked config is a legitimate dotfiles layout and is followed deliberately, never rewritten.',
   },
   // lib/ (basename-keyed like every other registry table)
+  // ADR-0059 args-file reader, amended 2026-09-29 (ADR-0063 S0): after
+  // reading, it removes the file and its directory — the ones the runbook's
+  // own `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"` step made — so no
+  // runbook runs `rm`. Never recursive: unlink of `args.json`, then rmdir of
+  // the now-empty directory.
+  'args-file.mjs': {
+    primitives: ['rmdirSync', 'unlinkSync'],
+    stateRoots: ['os-tmpdir'],
+    justification: 'ADR-0059 (amended 2026-09-29) consume-on-read cleanup: unlinkSync of the args.json just read and rmdirSync of its agentic-args.<suffix> directory, only when that directory sits directly under the temporary directory, holds nothing else, and neither is a symbolic link (removeReadArgsFile); any other path is read and left in place',
+  },
   'bootstrap-artifacts.mjs': {
     primitives: ['link', 'mkdir', 'open', 'rename', 'rmdir', 'unlink', 'writeFile'],
     stateRoots: ['HOME:.agentic-plugins'],

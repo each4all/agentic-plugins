@@ -11,9 +11,6 @@
 //
 // Groups: L the library, C the CLIs, R the runbooks, K the cleanup.
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-
 const T_ARGS = 'tests/plugin-shape/test-args-file-transport.mjs';
 const T_PORT = 'tests/plugin-shape/test-runbook-shell-portability.mjs';
 const T_SUB = 'tests/plugin-shape/test-command-argument-substitution.mjs';
@@ -175,83 +172,63 @@ export const MUTATIONS = [
     why: 'the typed text is no longer shown above the steps that ask the model to copy it',
   },
   // ── K: the cleanup ───────────────────────────────────────────────────────
+  // Since the amendment of 2026-09-29 to ADR-0059 (f) the reader removes the
+  // file and its directory; no runbook line does. Each defect below breaks the
+  // removal or its ownership rule in every library copy, or puts a shell
+  // cleanup back into a runbook.
   {
     id: 'K1', tests: [T_PORT], file: 'plugins/runtime/commands/doctor.md',
-    from: `ARGS_DIR='<directory from step 1>'\n${TRAP}\nREPO_ROOT=`,
-    to: `ARGS_DIR='<directory from step 1>'\nREPO_ROOT=`,
-    why: 'a block reads the args file with no cleanup installed',
+    from: `ARGS_DIR='<directory from step 1>'\nREPO_ROOT=`,
+    to: `ARGS_DIR='<directory from step 1>'\n${TRAP}\nREPO_ROOT=`,
+    why: 'a runbook installs the retired shell cleanup again',
   },
   {
-    id: 'K2', tests: [T_PORT], file: 'plugins/runtime/commands/context.md',
-    from: `${TRAP}\nREPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"`,
-    to: `REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"\n${TRAP}`,
-    why: 'the cleanup is installed after a line that can already exit',
+    id: 'K2', tests: [T_ARGS, T_PORT],
+    prepare: everyCopy("    removeReadArgsFile(path, { warn });\n", ''),
+    why: 'the reader stops removing what it read — every args directory is left under the temporary directory',
   },
   {
-    id: 'K3', tests: [T_PORT], file: 'plugins/engineer/commands/start.md',
-    from: TRAP,
-    to: `trap 'rm -rf -- "$ARGS_DIR"' EXIT`,
-    why: 'one runbook spells its cleanup differently',
+    id: 'K3', tests: [T_ARGS],
+    prepare: everyCopy("  if (!OWNED_DIRECTORY.test(basename(directory))) return 'not-owned';\n", ''),
+    why: 'any directory holding an args.json is emptied, whatever its name',
+  },
+  {
+    id: 'K4', tests: [T_ARGS],
+    prepare: everyCopy("  if (parent === null || !temporaryRoots().has(parent)) return 'not-owned';\n", ''),
+    why: 'an agentic-args directory anywhere — not only under the temporary directory — is emptied',
+  },
+  {
+    id: 'K6', tests: [T_ARGS],
+    prepare: everyCopy("  if (entries.length !== 1) {", "  if (false) {"),
+    why: 'a directory that holds other files loses its args.json instead of being left whole',
+  },
+  {
+    id: 'K7', tests: [T_ARGS],
+    prepare: everyCopy("  if (!directoryStats.isDirectory() || !fileStats.isFile()) return 'not-owned';\n", ''),
+    why: 'a symbolic link named like an owned directory is followed, and its target emptied',
+  },
+  {
+    id: 'K8', tests: [T_ARGS, T_PORT],
+    prepare: (copy, tools) => {
+      everyCopy("  } finally {\n    removeReadArgsFile(path, { warn });\n  }\n  return decodeArgsFile(bytes);",
+        "  } finally {}\n  const text = decodeArgsFile(bytes);\n  removeReadArgsFile(path, { warn });\n  return text;")(copy, tools);
+    },
+    why: 'the file is removed only when its text is valid, so a refused file is left behind',
+  },
+  {
+    id: 'K9', tests: [T_ARGS],
+    prepare: everyCopy("  const file = resolve(path);\n", "  const file = path;\n"),
+    why: 'a doubled separator leaves the directory named with a trailing slash, and lstat then follows a link to it (Refine-verify finding)',
+  },
+  {
+    id: 'K10', tests: [T_ARGS],
+    prepare: everyCopy("  if (opened.dev !== fileStats.dev || opened.ino !== fileStats.ino) return 'not-owned';\n", ''),
+    why: 'a .. after a link reads one file and removes another, owned one',
   },
   {
     id: 'K5', tests: [T_ARGS], file: 'plugins/engineer/commands/start.md',
     from: `FEATURE="$(printf '%s' "$START_ARGS" | jq -j .feature; printf x)"; FEATURE="\${FEATURE%x}"`,
     to: `FEATURE="$(printf '%s' "$START_ARGS" | jq -r .feature)"`,
     why: 'the start block reads FEATURE through a bare command substitution, which drops trailing newlines',
-  },
-  {
-    id: 'K4', tests: [T_PORT],
-    prepare: (copy) => {
-      // Every copy of the line, and the test's own, swallow the status the
-      // same way — so only the shell scenarios can tell.
-      const swallowing = TRAP.replace(`>&2' EXIT;`, `>&2; exit 0' EXIT;`);
-      const files = [];
-      const walk = (dir) => {
-        for (const entry of readdirSync(dir)) {
-          const path = join(dir, entry);
-          if (statSync(path).isDirectory()) walk(path);
-          else if (entry.endsWith('.md')) files.push(path);
-        }
-      };
-      walk(join(copy, 'plugins'));
-      let changed = 0;
-      for (const path of files) {
-        const text = readFileSync(path, 'utf8');
-        if (text.includes(TRAP)) { writeFileSync(path, text.split(TRAP).join(swallowing)); changed += 1; }
-      }
-      const test = join(copy, T_PORT);
-      const source = readFileSync(test, 'utf8');
-      const constant = ">&2' EXIT; trap 'exit 129' HUP;";
-      if (changed < 20 || source.split(constant).length !== 2) throw new Error(`K4 prepare matched ${changed} runbooks`);
-      writeFileSync(test, source.replace(constant, ">&2; exit 0' EXIT; trap 'exit 129' HUP;"));
-    },
-    why: 'every cleanup swallows the status (exit 0 in the trap) — only the shell scenarios can see it',
-  },
-  {
-    id: 'K6', tests: [T_PORT],
-    prepare: (copy) => {
-      // Every copy of the line, and the test's own, drop the signal traps the
-      // same way — so only the signal scenarios can tell.
-      const signals = "; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM";
-      const files = [];
-      const walk = (dir) => {
-        for (const entry of readdirSync(dir)) {
-          const path = join(dir, entry);
-          if (statSync(path).isDirectory()) walk(path);
-          else if (entry.endsWith('.md')) files.push(path);
-        }
-      };
-      walk(join(copy, 'plugins'));
-      let changed = 0;
-      for (const path of files) {
-        const text = readFileSync(path, 'utf8');
-        if (text.includes(TRAP)) { writeFileSync(path, text.split(TRAP).join(TRAP.replace(signals, ''))); changed += 1; }
-      }
-      const test = join(copy, T_PORT);
-      const source = readFileSync(test, 'utf8');
-      if (changed < 20 || source.split(signals).length !== 2) throw new Error(`K6 prepare matched ${changed} runbooks`);
-      writeFileSync(test, source.replace(signals, ''));
-    },
-    why: 'every cleanup handles EXIT only, so a hangup, interrupt or termination leaves the file behind',
   },
 ];

@@ -19,25 +19,24 @@
 // guard with nothing to guard protects nothing, so this file's assertion that
 // "at least one runbook still carries a globbing guard" — which would have
 // blocked that change — is replaced by assertions on the transport that took
-// the splice's place (Decision 8):
+// the splice's place (Decision 8).
 //
-//   - every block that reads an args file installs its cleanup before
-//     anything else, so every exit path of the block runs it;
-//   - the cleanup is the same single line everywhere;
-//   - that line, taken from the runbooks and run by sh, bash, zsh and dash, removes
-//     the directory on success, on failure, on an early exit and on a hangup,
-//     interrupt or termination signal (each turned into an exit with the
-//     conventional 128+n status), keeps the command's exit status in every
-//     other case, and warns — still keeping the status, even under `set -e` —
-//     when the file or the directory cannot be removed. A naive
-//     `cmd; rm -f "$F"` would return rm's status instead. SIGKILL cannot be
-//     caught; nothing here claims it.
+// ADR-0059 first removed the file with a shell trap at the top of each block.
+// Codex's exec policy refuses that trap's `rm -f`, and an owner's
+// `Bash(rm:*)` ask rule stops a runbook `rm` in Claude, so since the
+// amendment of 2026-09-29 the reading CLI removes the file and its directory
+// itself (lib/args-file.mjs, "Removing what was read"). The checks are now:
+//
+//   - every block that reads an args file opens with the ARGS_DIR assignment;
+//   - no block installs a shell cleanup for it;
+//   - the block, run by sh, bash, zsh and dash, leaves no directory behind
+//     when the reader succeeds, when it rejects the text and when the file is
+//     not valid JSON, and its status is the reader's;
+//   - the one gap is stated as a test: a block that exits before the reader
+//     runs leaves the directory (one small file under the temporary directory).
 //
 // A shell that is not installed — zsh on the CI image, dash on some macOS
-// machines — is reported as skipped rather than passed. The trap semantics
-// these checks depend on are POSIX, which sh and bash exercise on every
-// runner; all four shells were measured with the same scenarios on
-// 2026-09-29 (macOS) and behaved alike.
+// machines — is reported as skipped rather than passed.
 
 import { test } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -68,11 +67,9 @@ const EXECUTABLE_SET_F = /^[ \t]*set [-+]f[ \t]*$/;
 const NOGLOB_ON = /^[ \t]*set -o noglob[ \t]*$/;
 const NOGLOB_OFF = /^[ \t]*set \+o noglob[ \t]*$/;
 
-// The transport's two opening lines (ADR-0059). The directory assignment's
-// placeholder differs between a command runbook and a Codex skill; the trap
-// line does not.
+// The transport's opening line (ADR-0059). Its placeholder differs between a
+// command runbook and a Codex skill.
 const ARGS_DIR_LINE = /^ARGS_DIR='<[^'>]+>'$/;
-const TRAP_LINE = `trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM`;
 const PASSES_ARGS_FILE = '--args-file "$ARGS_DIR/args.json"';
 // A block that shows the resolve call inside the decide runbook's own block
 // rather than being run on its own.
@@ -129,12 +126,12 @@ test('runbook shell portability', async (t) => {
   });
 });
 
-test('args-file transport (ADR-0059 Decision 8)', async (t) => {
+test('args-file transport (ADR-0059 Decision 8, amended 2026-09-29)', async (t) => {
   const readers = [];
-  const trapLines = new Set();
+  const trapLines = [];
   for (const f of FILES) {
     for (const block of fencedBlocks(readFileSync(f, 'utf8'))) {
-      for (const line of block) if (line.trimStart().startsWith("trap '") && line.includes('ARGS_DIR')) trapLines.add(line.trim());
+      for (const line of block) if (/(^|[;&|\s])trap\s/.test(line) && line.includes('ARGS_DIR')) trapLines.push(`${rel(f)}: ${line.trim()}`);
       if (block.some((l) => l.includes(PASSES_ARGS_FILE))) readers.push({ file: rel(f), block });
     }
   }
@@ -147,50 +144,42 @@ test('args-file transport (ADR-0059 Decision 8)', async (t) => {
     }
   });
 
-  await t.test('every block that reads an args file installs its cleanup first', () => {
+  await t.test('every block that reads an args file opens with the ARGS_DIR assignment', () => {
     const offenders = [];
     for (const { file, block } of readers) {
       if (ILLUSTRATIONS.has(file)) continue;
       const code = block.filter((l) => l.trim() !== '');
-      if (!ARGS_DIR_LINE.test(code[0] ?? '') || code[1] !== TRAP_LINE) offenders.push(`${file}: ${JSON.stringify(code.slice(0, 2))}`);
+      if (!ARGS_DIR_LINE.test(code[0] ?? '')) offenders.push(`${file}: ${JSON.stringify(code[0])}`);
     }
-    deepStrictEqual(offenders, [], 'the trap must follow the ARGS_DIR assignment before any line that can exit');
+    deepStrictEqual(offenders, [], 'the block must start by naming the directory the model wrote into');
   });
 
-  await t.test('the cleanup is one line, the same everywhere', () => {
-    deepStrictEqual([...trapLines], [TRAP_LINE]);
+  await t.test('no block installs a shell cleanup: the reading CLI removes the file', () => {
+    deepStrictEqual(trapLines, [], 'a trap here runs `rm`, which Codex refuses and an rm ask rule stops (C74)');
   });
 
+  // The block as a runbook shows it, run by each shell: the reader removes the
+  // file and the directory, on success and when it rejects what it read, and
+  // the block's status is the reader's.
+  const START_ARGS = join(PLUGINS_DIR, 'engineer', 'scripts', 'start-args.mjs');
   const shells = ['sh', 'bash', 'zsh', 'dash'];
   for (const shell of shells) {
     const available = spawnSync(shell, ['-c', 'exit 0']).status === 0;
-    await t.test(`${shell}: the cleanup removes the directory on every exit and keeps the status`, { skip: available ? false : `${shell} is not installed` }, () => {
+    await t.test(`${shell}: the reader removes the directory and the block keeps its status`, { skip: available ? false : `${shell} is not installed` }, () => {
       const scenarios = [
-        { name: 'success', body: 'node -e "process.exit(0)"', status: 0 },
-        { name: 'the command fails', body: 'node -e "process.exit(7)"', status: 7 },
-        { name: 'an early exit', body: 'exit 3\nnode -e 0', status: 3 },
-        { name: 'a later command decides the status', body: 'node -e "process.exit(5)"\nRC=$?\n[ "$RC" -eq 5 ] && exit 42', status: 42 },
-        { name: 'the directory cannot be removed', body: 'touch "$ARGS_DIR/extra"\nnode -e "process.exit(9)"', status: 9, stays: true },
-        { name: 'the file cannot be removed, under set -e', body: 'set -e\nrm -f "$ARGS_DIR/args.json"\nmkdir "$ARGS_DIR/args.json"\nnode -e "process.exit(7)"', status: 7, stays: true },
-        { name: 'a termination signal', body: 'kill -TERM $$\nsleep 5', status: 143 },
-        { name: 'an interrupt', body: 'kill -INT $$\nsleep 5', status: 130 },
-        { name: 'a hangup', body: 'kill -HUP $$\nsleep 5', status: 129 },
+        { name: 'the reader succeeds', text: '{"agentic_args":1,"text":"add a flag"}\n', status: 0 },
+        { name: 'the reader rejects the text', text: '{"agentic_args":1,"text":"x --base-branch=main"}\n', status: 2 },
+        { name: 'the file is not valid JSON', text: '{', status: 2 },
       ];
       for (const s of scenarios) {
         const dir = mkdtempSync(join(tmpdir(), 'agentic-args.'));
         const cwd = mkdtempSync(join(tmpdir(), 'agentic-args-cwd.'));
-        writeFileSync(join(dir, 'args.json'), '{"agentic_args":1,"text":""}\n');
+        writeFileSync(join(dir, 'args.json'), s.text);
         try {
-          const script = `ARGS_DIR='${dir}'\n${TRAP_LINE}\n${s.body}\n`;
+          const script = `ARGS_DIR='${dir}'\nnode '${START_ARGS}' --args-file "$ARGS_DIR/args.json" >/dev/null\n`;
           const r = spawnSync(shell, ['-c', script], { cwd, encoding: 'utf8' });
           strictEqual(r.status, s.status, `${shell} / ${s.name}: status ${r.status}, stderr ${r.stderr}`);
-          if (!s.stays) ok(!existsSync(join(dir, 'args.json')), `${shell} / ${s.name}: the args file survived`);
-          if (s.stays) {
-            ok(existsSync(dir), `${shell} / ${s.name}: the scenario did not stop the removal`);
-            ok(r.stderr.includes('could not remove'), `${shell} / ${s.name}: no warning`);
-          } else {
-            ok(!existsSync(dir), `${shell} / ${s.name}: the directory survived`);
-          }
+          ok(!existsSync(dir), `${shell} / ${s.name}: the directory survived`);
           deepStrictEqual(readdirSync(cwd), [], `${shell} / ${s.name}: the block wrote into its working directory`);
         } finally {
           rmSync(dir, { recursive: true, force: true });
@@ -200,11 +189,15 @@ test('args-file transport (ADR-0059 Decision 8)', async (t) => {
     });
   }
 
-  await t.test('control: the naive cleanup this replaces does lose the status', () => {
+  await t.test('the gap that remains: a block that exits before the reader runs leaves the directory', () => {
+    // Stated, not closed (ADR-0059 (f) as amended): it holds one small file
+    // under the temporary directory.
     const dir = mkdtempSync(join(tmpdir(), 'agentic-args.'));
+    writeFileSync(join(dir, 'args.json'), '{"agentic_args":1,"text":""}\n');
     try {
-      const r = spawnSync('sh', ['-c', `node -e "process.exit(7)"; rm -rf -- '${dir}'`], { cwd: dir });
-      strictEqual(r.status, 0, 'the naive form kept the status — the scenarios above would not tell the forms apart');
+      const r = spawnSync('sh', ['-c', `ARGS_DIR='${dir}'\nexit 3\nnode '${START_ARGS}' --args-file "$ARGS_DIR/args.json"\n`], { encoding: 'utf8' });
+      strictEqual(r.status, 3);
+      ok(existsSync(join(dir, 'args.json')), 'the early exit removed the file, so this test no longer describes the gap');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

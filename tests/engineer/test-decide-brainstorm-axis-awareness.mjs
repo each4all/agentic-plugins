@@ -4,8 +4,8 @@
 //   1. plugins/engineer/core/skills/_shared/references/ensemble-protocol.md
 //      § Brainstorm — canonical template specification (both hosts read this)
 //   2. plugins/engineer/commands/decide.md Phase 1 — Claude-host prompt
-//      builder boilerplate (instructs the LLM to read $AGENTIC_DECIDE_CONTEXT_FILE
-//      and emit the <axis_awareness> block per §4.3 presence rule)
+//      builder boilerplate (instructs the LLM to read the ResolvedDecisionContext
+//      Phase 0.5 printed and emit the <axis_awareness> block per §4.3 presence rule)
 //   3. plugins/engineer/core/skills/decide/SKILL.md "Step 5: Peer ensemble" —
 //      ADR-0027 §4 pointer so SKILL.md readers discover the contract
 //
@@ -207,11 +207,11 @@ test("PR5 (E5): § Brainstorm or ADR §1.1 references XML escaping for axis labe
 // T3 — commands/decide.md Phase 1 enrichment
 // =============================================================================
 
-test("PR5: commands/decide.md Phase 1 instructs the LLM to read $AGENTIC_DECIDE_CONTEXT_FILE for prompt construction", () => {
+test("PR5: commands/decide.md Phase 1 instructs the LLM to read the Phase 0.5 context for prompt construction", () => {
   const text = readFileSync(COMMAND_PATH, "utf8");
   const phase1 = extractPhase(text, "## Phase 1 — Execute decide");
-  assert.match(phase1, /\$AGENTIC_DECIDE_CONTEXT_FILE/,
-    "Phase 1 must instruct the LLM to read the resolved context file");
+  assert.match(phase1, /ResolvedDecisionContext JSON Phase 0\.5 printed/,
+    "Phase 1 must instruct the LLM to read the context Phase 0.5 printed");
 });
 
 test("PR5: commands/decide.md Phase 1 references the <axis_awareness> block + ADR-0027 §4 contract", () => {
