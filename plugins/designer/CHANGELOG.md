@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.12](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.11...plugin-designer-v0.3.12) (2026-09-29)
+
+
+### Bug Fixes
+
+* **plugin/designer:** keep rm out of the designer runbooks and resolve the plugin root first ([ae8110b](https://github.com/each4all/agentic-plugins/commit/ae8110b36e68ff446205a58047fd2c9e3306eaa4))
+
 ## [0.3.11](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.10...plugin-designer-v0.3.11) (2026-09-29)
 
 

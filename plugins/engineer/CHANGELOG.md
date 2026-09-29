@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.22.2...plugin-engineer-v0.22.3) (2026-09-29)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** keep rm out of the engineer runbooks and resolve the plugin root first ([74a965b](https://github.com/each4all/agentic-plugins/commit/74a965bd77b7a42549d9b1bd0c2fcb05bf40b25c))
+
 ## [0.22.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.22.1...plugin-engineer-v0.22.2) (2026-09-29)
 
 
