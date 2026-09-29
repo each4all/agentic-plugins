@@ -11,7 +11,11 @@ Dispatch one orchestrator macro subtask into the engineer plugin's command runbo
 
 Maintain one progress entry per phase across the five phases below and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not. Each phase is a discrete bash snippet — execute them in order and **abort on any non-zero exit** unless the snippet's commentary explicitly handles the failure.
 
-Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root for this command. Fallback when unset: `$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -maxdepth 3 -name plugin.json | xargs -I{} dirname {} | xargs -I{} dirname {} | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ORCHESTRATOR_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 **Argument parsing**: extract from `$ARGUMENTS`:
 - `EXPLICIT_SUBTASK_ID` ← the leading positional token (e.g., `PR1`), or empty if absent.
@@ -30,6 +34,8 @@ Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root fo
 ADR-0019 §1 lines 187-213 — orchestrator workflows span multiple branches (macro + N subtask branches). Resolution order: `--workflow=<id>` override → `find-active` on current branch → `find-macro` branch-agnostic scan.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
 if [ -z "$GIT_BRANCH" ]; then
@@ -37,7 +43,6 @@ if [ -z "$GIT_BRANCH" ]; then
   echo "  Switch to the macro branch first: git switch <branch>" >&2
   exit 1
 fi
-FIND_ERR="${TMPDIR:-/tmp}/orchestrator-next-find-$$.err"
 MACRO_PATH=""
 if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
   # Reject path-component overrides — `--workflow=../archive/<id>` would
@@ -49,7 +54,6 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
     # to an empty string, which made the pattern match every id.
     */*|*\\*|..|.*)
       echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', or leading '.')." >&2
-      rm -f "$FIND_ERR"
       exit 1;;
   esac
   CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
@@ -61,32 +65,26 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
   else
     echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes." >&2
     echo "  Use \`gh pr list\` or run /orchestrator:plan to start a new macro." >&2
-    rm -f "$FIND_ERR"
     exit 1
   fi
 else
   MACRO_PATH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-    find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+    find-active --repo-root "$REPO_ROOT")"
   RC=$?
   if [ "$RC" -ne 0 ]; then
-    cat "$FIND_ERR" >&2
-    rm -f "$FIND_ERR"
     exit "$RC"
   fi
   if [ -z "$MACRO_PATH" ]; then
     MACRO_PATH="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-      find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH" 2>"$FIND_ERR")"
+      find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH")"
     RC=$?
     if [ "$RC" -ne 0 ]; then
       # find-macro exits 1 + ambiguous diagnostic when two macros
       # reference the same subtask branch (ADR-0019 §1 fail-closed).
-      cat "$FIND_ERR" >&2
-      rm -f "$FIND_ERR"
       exit "$RC"
     fi
   fi
 fi
-rm -f "$FIND_ERR"
 if [ -z "$MACRO_PATH" ]; then
   echo "✗ No macro workflow references branch '$GIT_BRANCH'." >&2
   echo "  Use --workflow=<id> to specify, or run /orchestrator:plan to start one." >&2
@@ -102,6 +100,8 @@ MACRO_ID="$(basename "$MACRO_PATH" .md)"
 Three outcomes — explicit id, automatic first-ready, or actionable diagnostic:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 SUBTASK_JSON=""
 if [ -n "${EXPLICIT_SUBTASK_ID:-}" ]; then
   # Explicit id — read that subtask. PR-C0's absorbing-completed
@@ -157,6 +157,8 @@ SUBTASK_EXISTING_ENG_WF_ID="$(echo "$SUBTASK_JSON" | node -e 'process.stdin.on("
 Validate the resolved subtask is dispatch-ready (mirrors `next-ready`'s gate so explicit-id selection cannot bypass dependency ordering — Codex P2 finding):
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # ADR-0062 §Decision 5 — the dependency facts come from the state CLI, which
 # parses the plan properly; they hold for an explicitly chosen subtask even
 # when another one is ready.
@@ -193,6 +195,8 @@ esac
 ## Phase 2 — Branch precondition (ADR-0019 §1 lines 122-185, fixed order)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # Step 1: clean-worktree check — BEFORE any git switch.
 if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]; then
   echo "✗ Working tree not clean — commit, stash, or revert before /orchestrator:next dispatches." >&2
@@ -209,19 +213,15 @@ if [ -z "$ENGINEER_PLUGIN_ROOT" ]; then
 fi
 
 # Step 3: ownership check on the subtask branch — re-attach / mismatch / no-active.
-# Capture stderr so engineer's per-branch single-active invariant
-# violations (multiple workflow files on the branch, corrupt file) are
-# surfaced rather than swallowed (Codex P2 finding).
-OWN_ERR="${TMPDIR:-/tmp}/orchestrator-next-own-$$.err"
+# stderr is left alone, not redirected, so engineer's per-branch
+# single-active invariant violations (multiple workflow files on the branch,
+# corrupt file) reach the output rather than being swallowed (Codex P2 finding).
 EXISTING_ENG_PATH="$(node "$ENGINEER_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" --branch "$SUBTASK_BRANCH" 2>"$OWN_ERR")"
+  find-active --repo-root "$REPO_ROOT" --branch "$SUBTASK_BRANCH")"
 RC=$?
 if [ "$RC" -ne 0 ]; then
-  cat "$OWN_ERR" >&2
-  rm -f "$OWN_ERR"
   exit "$RC"
 fi
-rm -f "$OWN_ERR"
 
 # Recorded engineer_workflow_id missing from active workflows (Codex P2
 # finding): if the subtask already references an engineer workflow id
@@ -294,6 +294,8 @@ fi
 ## Phase 3 — Engineer plugin minimum-version preflight
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight \
   --root "$ENGINEER_PLUGIN_ROOT" || {
   echo "✗ engineer install at $ENGINEER_PLUGIN_ROOT does not satisfy ADR-0019 PR-A minimum (preflight failed; see preceding diagnostic for cause)." >&2
@@ -312,6 +314,8 @@ ADR-0019 §1 lines 252-287 — every emitted engineer snippet runs in a subshell
 **Host auto-detection** (Codex P2 finding): infer the host from `$CLAUDE_PLUGIN_ROOT` path shape (Claude cache lives under `~/.claude/`; Codex cache lives under `~/.codex/`). Direct-checkout development falls back to `claude` (override via `AGENTIC_HOST=codex` env if needed):
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 case "$CLAUDE_PLUGIN_ROOT" in
   *"/.codex/"*) DETECTED_HOST="codex" ;;
   *"/.claude/"*) DETECTED_HOST="claude" ;;
@@ -322,6 +326,8 @@ esac
 Then drive the engineer command's runbook from a single Bash tool call. **Save the orchestrator's plugin root BEFORE rebinding** — Phase 5's `subtask-update` writeback is an orchestrator CLI that MUST be invoked through the orchestrator's `state.mjs`, not engineer's:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"          # save before rebind — Phase 5 needs this
 
 export CLAUDE_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT"

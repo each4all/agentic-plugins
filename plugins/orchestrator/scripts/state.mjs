@@ -3895,16 +3895,27 @@ function cliPresenceFlag(flags, name) {
 
 // ADR-0062 — `--reason-file <path>` (what runbooks use, so prose never passes
 // through the shell) or `--reason <text>`. A trailing newline from the file is
-// dropped; the text is otherwise kept as written.
+// dropped; the text is otherwise kept as written. `--reason-file -` reads
+// standard input, so a runbook can pipe a note it assembles from files without
+// writing (and later removing) a temporary file of its own.
 async function cliReasonFlag(flags) {
   if ('reason-file' in flags && 'reason' in flags) {
     throw new Error('pass --reason or --reason-file, not both');
   }
   if ('reason-file' in flags) {
     if (flags['reason-file'].length === 0) throw new Error('--reason-file needs a path');
-    return (await readFile(flags['reason-file'], 'utf8')).replace(/\r?\n$/, '');
+    const text = flags['reason-file'] === '-'
+      ? await readStandardInput()
+      : await readFile(flags['reason-file'], 'utf8');
+    return text.replace(/\r?\n$/, '');
   }
   return flags.reason;
+}
+
+async function readStandardInput() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function cliPrintHelp() {
@@ -4024,7 +4035,7 @@ function cliPrintHelp() {
       '                 [--status <status>] [--engineer-workflow-id <id>]',
       '                 [--commit <sha>] [--pr-url <url>] [--closed-at <iso>]',
       '                 [--event updated|resumed] [--expect-branch <branch>]',
-      '                 [--correct] [--reason-file <path> | --reason <text>]',
+      '                 [--correct] [--reason-file <path>|- | --reason <text>]',
       '    ADR-0019 PR-C0 — atomic single-subtask mutation. Updates one',
       '    plan.subtasks[i] entry by id without rewriting the whole plan.',
       '    At least one mutable field must be supplied. Immutable fields',
