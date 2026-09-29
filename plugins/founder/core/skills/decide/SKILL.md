@@ -301,11 +301,25 @@ flag-parser bootstrap that writes `$AGENTIC_DECIDE_CONTEXT_FILE` lives in
 `commands/decide.md` on the Claude side. Codex `$founder:decide` skill
 mentions reach this SKILL.md directly. A Codex LLM serving
 `$founder:decide` MAY replicate the contract by invoking
-`scripts/decide-registry.mjs resolve` itself with the user's flag string
-and reading the resulting `ResolvedDecisionContext` before emitting the
-Brainstorm prompt — best-effort cross-host equivalence per ADR-0001 §5.
+`scripts/decide-registry.mjs resolve --args-file <path>` itself and reading
+the resulting `ResolvedDecisionContext` before emitting the Brainstorm
+prompt — best-effort cross-host equivalence per ADR-0001 §5.
 Absent that step, Codex falls back to the `default` business axes at
 standard depth (no `--weights` / `--size` parsing).
+
+On that path the user's flags and decision text go into the args file,
+never onto the command line (ADR-0059): write
+`{"agentic_args": 1, "text": "…"}` with your file-editing tool into a
+directory from
+`mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, then run the resolver
+with the cleanup installed first — it removes the directory on every exit,
+signals included, and keeps the resolver's exit status:
+
+```bash
+ARGS_DIR='<directory mktemp printed>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+node "<founder-plugin-root>/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"
+```
 
 ### Pre-decide: Business Task Profile
 
