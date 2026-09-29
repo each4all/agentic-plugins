@@ -29,17 +29,14 @@ Then run the block with `ARGS_DIR` set to that directory. The command reads
 the text as shell-style words and expands nothing: quote a value that holds
 spaces, and quote `;` `&` `|` `<` `>` `(` `)`, a backquote, a `$` expansion,
 or a word-initial `#` or `~` to pass it as text — unquoted, each is refused
-with a message rather than reinterpreted. The block's `trap` removes the
-directory on every exit and keeps the command's exit status.
+with a message rather than reinterpreted. The command removes the args file
+and its directory once it has read them.
 
 ```bash
 ARGS_DIR='<directory from step 1>'
-trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-RUNTIME_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
-if [ -z "$RUNTIME_ROOT" ]; then
-  RUNTIME_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-fi
+RUNTIME_ROOT="${AGENTIC_RUNTIME_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$RUNTIME_ROOT" ] || RUNTIME_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/runtime -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 
 node "$RUNTIME_ROOT/scripts/context.mjs" --repo-root "$REPO_ROOT" --args-file "$ARGS_DIR/args.json"
 ```

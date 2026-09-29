@@ -38,15 +38,14 @@ with your file-editing tool, holding `{"agentic_args": 1, "text": "…"}` with
 
 ```bash
 ARGS_DIR='<directory mktemp printed>'
-trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" --args-file "$ARGS_DIR/args.json"
 ```
 
 `text` is read as shell-style words that expand nothing: quote a value that
 holds spaces, and quote `;` `&` `|` `<` `>` `(` `)`, a backquote, a `$`
 expansion, or a word-initial `#` or `~` — unquoted, each is refused with a
-message. The `trap` removes the directory on every exit and keeps the exit
-status.
+message. The command removes the args file and its directory once it has
+read them.
 
 3. Pace the interview as **diagnose → profile-seeded-default → ask → render →
    apply-command → re-probe + confirm**:
