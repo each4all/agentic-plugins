@@ -27,6 +27,14 @@ their own lock, temp/staging, and expired-claim files under
 `.agentic-plugins/state/runtime/session-capture/`. Every other executor
 remains bound by §3 as written; the §4 ceiling is untouched.
 
+**§2 / §4 cross-referenced by [ADR-0063](0063-autopilot-fresh-session-driver.md)
+(2026-09-29, domain S1).** ADR-0063 adds exactly one named effect domain —
+**S1 (owner-launched fresh-session spawn)** — executed by the orchestrator
+Claude adapter, **not by runtime**. Runtime's tiers and §4 ceiling are
+unchanged: runtime still MUST NOT start, resume, fork, compact or switch host
+sessions, and `runtime:context entry-brief` stays R0. See ADR-0063 D1 and the
+§4 note below.
+
 <!--
 Refines (does not supersede) ADR-0024. ADR-0024 established
 `plugins/runtime` as the operator control plane that is "read-only by
@@ -199,6 +207,17 @@ Independent of any flag, runtime MUST NOT:
 > payload remain forbidden. This is a **bounded** amendment, not a general
 > network-egress precedent — the enumerated-metadata + fixed-service +
 > verified-local narrowing is the deliberate suppressant (ADR-0041 §1–§2, §10).
+
+> **Cross-reference — domain S1 (owner-launched fresh-session spawn),
+> [ADR-0063](0063-autopilot-fresh-session-driver.md):** the "hidden host
+> startup" line above continues to bind runtime without exception. ADR-0063
+> authorizes, **outside runtime**, exactly one shape of host startup: the
+> orchestrator Claude adapter's foreground driver, started by an explicit owner
+> invocation, spawning **new** `claude -p` processes (never resuming, forking or
+> compacting an existing session) under an owner-declared, never-escalated
+> permission posture, with §3 invariants 2–10 adopted by reference, a finite
+> per-step timeout, and child-only process-group termination. This is a bounded
+> cross-reference, not a precedent for runtime-hosted session control.
 
 **Enforcement is required as a registry plus tests, not prose — and is
 planned, not yet built.** Every executor action MUST appear in an

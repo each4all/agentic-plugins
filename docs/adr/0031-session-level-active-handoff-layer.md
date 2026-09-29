@@ -143,6 +143,14 @@ decision from bounded inputs and never reads higher-layer state.
    the next-session prompt reuses the **existing** `runtime:context`
    artifact rather than introducing a second state-like artifact.
 
+   > **Note ([ADR-0063](0063-autopilot-fresh-session-driver.md)):** §6 continues to
+   > bind runtime. The `fresh_or_resumed` recommendation may now be *acted on* by
+   > the owner-launched autopilot driver outside runtime, which rotates at every
+   > step boundary and never compacts. §7 is unchanged for the footer: the driver's
+   > context sensor is scoped to its own worker streams. The Amendment item 7
+   > residual ("cannot guarantee a workflow is driven to completion") narrows, for
+   > autopilot runs, to "the driver halts at owner gates".
+
 7. **Honest limit.** Context budget risk is **caller-supplied**, not
    host-measured (`context.mjs:344`). The session preflight cannot read
    true token usage on its own; it composes whatever risk the caller
