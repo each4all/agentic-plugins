@@ -16,7 +16,7 @@ single-pass; a program spanning design **and** frontend implementation runs
 designer to a saved spec, then hands that spec to the engineer persona.
 
 **Cognitive runbook + the Host-availability matrix live in
-`$CLAUDE_PLUGIN_ROOT/core/skills/start/SKILL.md`** per ADR-0021. This command
+`${CLAUDE_PLUGIN_ROOT}/core/skills/start/SKILL.md`** per ADR-0021. This command
 file owns the Claude-host Phase 0 bootstrap bash; the per-phase cognitive
 description, approval-gate prompts, and the privacy gate delegate to
 SKILL.md.
@@ -27,15 +27,19 @@ SKILL.md.
 > parent-linkage flags at the CLI. `start` sequences designer's own verbs
 > in-place; it never transits cross-plugin boundaries.
 
-Plugin root is `$CLAUDE_PLUGIN_ROOT` (set by Claude Code). If unset, fall
-back to
-`$(find ~/.claude/plugins/cache/agentic-plugins/designer -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_DESIGNER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 ---
 
 ## Phase 0 — Bootstrap (continuity + clean-baseline gate)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
 # ADR-0018 §sub-2 — designer workflows are anchored to a branch.
@@ -44,28 +48,26 @@ if [ -z "$GIT_BRANCH" ]; then
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
-FIND_ERR="${TMPDIR:-/tmp}/designer-start-find-$$.err"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+  find-active --repo-root "$REPO_ROOT")"
 FIND_RC=$?
 if [ "$FIND_RC" -ne 0 ]; then
-  echo "✗ find-active failed (exit $FIND_RC):" >&2; cat "$FIND_ERR" >&2; rm -f "$FIND_ERR"; exit "$FIND_RC"
+  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
+  exit "$FIND_RC"
 fi
-rm -f "$FIND_ERR"
 ```
 
 - Empty `$ACTIVE` → **clean-baseline gate, then bootstrap** with
   `workflow_type=start`:
 
   ```bash
-  BASELINE_ERR="${TMPDIR:-/tmp}/designer-start-baseline-$$.err"
-  BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline --repo-root "$REPO_ROOT" 2>"$BASELINE_ERR")"
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+  BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline --repo-root "$REPO_ROOT")"
   BASELINE_RC=$?
   if [ "$BASELINE_RC" -ne 0 ]; then
-    echo "✗ clean-baseline check failed (exit $BASELINE_RC):" >&2
-    cat "$BASELINE_ERR" >&2; rm -f "$BASELINE_ERR"; exit "$BASELINE_RC"
+    echo "✗ clean-baseline check failed (exit $BASELINE_RC); its error is above." >&2; exit "$BASELINE_RC"
   fi
-  rm -f "$BASELINE_ERR"
   STATUS="$(printf '%s' "$BASELINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{process.stdout.write("")}})')"
   # Fail CLOSED: only an explicit clean/accepted proceeds. A dirty tree, an
   # empty status, or any unrecognized value stops the bootstrap — the gate
@@ -102,6 +104,8 @@ rm -f "$FIND_ERR"
   `start` as a separate discriminator):
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   WF_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" \
     | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.stdout.write("verb-chain")}})')"
   ```
@@ -141,11 +145,12 @@ Prefix the resolve invocation in the **same block** instead, so the value
 cannot be lost and cannot be inherited from a stale ambient export:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # Phase 1c, in the same Bash block as the resolve call (the args file is the
 # one commands/decide.md Phase 0.5 has you write — ADR-0059):
 AGENTIC_DESIGNER_PROFILE="<general|ui|flow|cta|content>" \
-  node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json" \
-  > "$AGENTIC_DECIDE_CONTEXT_FILE" 2>"$DECIDE_RESOLVE_ERR"
+  node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"
 ```
 
 Two hazards this closes. (1) A *lost* export silently downgrades a `cta`
@@ -175,7 +180,7 @@ flag, so peer verification stays code/text. See
 
 ## Entry routing + Phases 1–4 + terminal
 
-Follow `$CLAUDE_PLUGIN_ROOT/core/skills/start/SKILL.md` for the cognitive runbook:
+Follow `${CLAUDE_PLUGIN_ROOT}/core/skills/start/SKILL.md` for the cognitive runbook:
 
 1. **Entry routing recommendation** (Options / Tradeoffs / Risks /
    Recommendation / Confidence / Evidence pointers / Default next command):
@@ -220,6 +225,8 @@ flow spec / wireframe spec / CTA copy at its
 **only when Phase 4 converged**:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # CONVERGENCE GUARD — FAIL-CLOSED. A paused Phase 4 (a new accessibility
 # barrier, an exhausted bounded loop, or a vision re-critique that could not
 # run) must leave the workflow ACTIVE so the Stop hook cannot auto-archive an
