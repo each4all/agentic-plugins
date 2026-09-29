@@ -7,7 +7,7 @@ argument-hint: (candidate styles/variants or natural-language choice)
 
 $ARGUMENTS
 
-Follow the decide skill at `$CLAUDE_PLUGIN_ROOT/core/skills/decide/SKILL.md`.
+Follow the decide skill at `${CLAUDE_PLUGIN_ROOT}/core/skills/decide/SKILL.md`.
 
 Chooses among candidate approaches, styles, or generated variants under
 the brief's constraints. Variant selection marks `selected`/`rejected` in
@@ -21,6 +21,8 @@ Enumerate candidates (zero-based index + path + `manifest.cost`), then **select*
 a generated variant by recording it in the run manifest:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_IMAGE_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/image -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/variant-select.mjs" --manifest-file <run-dir>/manifest.json --select <index>
 ```
 
@@ -30,6 +32,8 @@ png/jpeg/webp variants whose real path is inside the run dir — never
 `manifest.json`/`brief.json`):
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_IMAGE_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/image -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/variant-select.mjs" --manifest-file <...> --prune-rejected
 ```
 

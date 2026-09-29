@@ -7,7 +7,7 @@ argument-hint: (path to a generated image, or natural-language critique target)
 
 $ARGUMENTS
 
-Follow the critique skill at `$CLAUDE_PLUGIN_ROOT/core/skills/critique/SKILL.md`.
+Follow the critique skill at `${CLAUDE_PLUGIN_ROOT}/core/skills/critique/SKILL.md`.
 
 Evaluates a generated image against the brief's success criteria using
 **vision**: Codex reads + visually inspects the image. `codex-companion` has no
@@ -15,6 +15,8 @@ Evaluates a generated image against the brief's success criteria using
 (prompt-mediated vision, feasibility-confirmed):
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_IMAGE_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/image -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/critique-dispatch.mjs" \
   --image <absolute-path> --criteria-file <criteria.txt> --repo-root "$REPO_ROOT"
 ```

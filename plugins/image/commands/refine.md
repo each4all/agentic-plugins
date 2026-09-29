@@ -7,7 +7,7 @@ argument-hint: (feedback to apply, or natural-language refinement)
 
 $ARGUMENTS
 
-Follow the refine skill at `$CLAUDE_PLUGIN_ROOT/core/skills/refine/SKILL.md`.
+Follow the refine skill at `${CLAUDE_PLUGIN_ROOT}/core/skills/refine/SKILL.md`.
 
 Applies critique/feedback and regenerates through Codex's integrated
 gpt-image (the same dispatch path as `image:compose`). Each regeneration
@@ -26,6 +26,8 @@ clamped); no auto-retry of user/moderation errors. Regenerate with the feedback
 applied (reuses compose-dispatch):
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_IMAGE_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/image -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" --base-prompt-file <base.txt> --feedback-file <feedback.txt> --iteration <N> --max-iterations 3 --repo-root "$REPO_ROOT" --format png --quality low [--background opaque|auto|transparent]
 ```
 
