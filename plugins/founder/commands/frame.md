@@ -14,9 +14,11 @@ ask the user whether to invoke the peer, and never direct them to run
 companion CLIs manually. When the companions plugin or peer CLI is
 unavailable, the ensemble degrades silently to local-only.
 
-Plugin root: `$CLAUDE_PLUGIN_ROOT` (set by Claude Code for plugin slash
-commands). If unset, fall back to
-`$(find ~/.claude/plugins/cache/agentic-plugins/founder -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_FOUNDER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 > **founder is not an orchestrator dispatch target** (ADR-0036 Non-Goal
 > 3): this command does NOT read `AGENTIC_PARENT_WORKFLOW` /
@@ -29,6 +31,8 @@ commands). If unset, fall back to
 ## Phase 0 — Workflow continuity (per ADR-0011 §5)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
 # ADR-0018 §sub-2 — founder workflows are anchored to a branch.
@@ -40,22 +44,20 @@ fi
 # ADR-0036 SD5 — founder requires a git workspace (recommended: a
 # per-venture content repository). If git rev-parse fails, refuse with
 # manual-init guidance (git init, or cd into your venture content repo).
-FIND_ERR="${TMPDIR:-/tmp}/founder-find-active-$$.err"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+  find-active --repo-root "$REPO_ROOT")"
 FIND_RC=$?
 if [ "$FIND_RC" -ne 0 ]; then
-  echo "✗ find-active failed (exit $FIND_RC):" >&2
-  cat "$FIND_ERR" >&2
-  rm -f "$FIND_ERR"
+  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
-rm -f "$FIND_ERR"
 ```
 
 - Empty `$ACTIVE` → bootstrap a new workflow with verb=frame:
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   GIT_BRANCH="$(git branch --show-current)"
   GIT_HEAD="$(git rev-parse HEAD)"
   STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
@@ -72,6 +74,8 @@ rm -f "$FIND_ERR"
 - Non-empty `$ACTIVE` → append-on-resume:
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb frame \
     --phase-label "Phase 0: Resume into frame" \
@@ -89,7 +93,7 @@ ownership token + stale window per ADR-0011 §3, and writes only persona
 ## Phase 1 — Execute frame
 
 Follow the frame skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/core/skills/frame/SKILL.md`. The skill articulates the
+`${CLAUDE_PLUGIN_ROOT}/core/skills/frame/SKILL.md`. The skill articulates the
 business opportunity model: problem/opportunity, customer + job-to-be-done,
 value hypothesis, business-model sketch, constraints, validation criteria,
 key risks, out-of-scope items.
@@ -144,6 +148,8 @@ de-anonymize a genericized concept to a specific named company/product.
 Then write that prompt to a tempfile and dispatch:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 PROMPT_FILE="$(mktemp -t founder-frame-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="frame-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
@@ -176,6 +182,8 @@ above mirrors the research-scan dispatch in
 ## Phase 2 — State finalize
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: frame at <iso-utc>
 
 ### Ensemble synthesis: frame verdict=<agreed|concerns|conflict>
