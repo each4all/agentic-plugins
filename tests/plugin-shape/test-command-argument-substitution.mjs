@@ -143,14 +143,6 @@ const ARGUMENT_LINES_IN_CODE = {
     '--profile "${AGENTIC_PROFILE:-<profile from $ARGUMENTS — design-brief; default \'design-brief\'>}" \\',
   ],
   'plugins/designer/commands/start.md': ['node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \\'],
-  'plugins/engineer/commands/decide.md': [
-    '# `$ARGUMENTS` is the verbatim user input from the slash command.',
-    'node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \\',
-  ],
-  'plugins/engineer/commands/investigate.md': [
-    '--profile "${AGENTIC_PROFILE:-<profile from $ARGUMENTS — analysis|root-cause|cited-brief; default \'analysis\'>}" \\',
-  ],
-  'plugins/engineer/commands/start.md': ['set -- $ARGUMENTS'],
   'plugins/founder/commands/decide.md': [
     '# `$ARGUMENTS` is the verbatim user input. Expand unquoted so the shell',
     'node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \\',

@@ -80,7 +80,7 @@ Determine workflow state via the host-shared canonical I/O module:
      --git-baseline-head "$GIT_HEAD" \
      --status-digest "$STATUS_DIGEST" \
      --persona engineer \
-     --profile "${AGENTIC_PROFILE:-<profile from $ARGUMENTS — analysis|root-cause|cited-brief; default 'analysis'>}" \
+     --profile "${AGENTIC_PROFILE:-<profile from the arguments above — analysis|root-cause|cited-brief; default 'analysis'>}" \
      --original-request "${AGENTIC_TOPIC:-<one-line scrubbed user request>}" \
      --current-phase phase-0-bootstrap \
      --next-action "Run investigate skill" \
