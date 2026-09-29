@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.12](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.11...plugin-founder-v0.4.12) (2026-09-29)
+
+
+### Bug Fixes
+
+* **plugin/founder:** keep rm out of the founder runbooks and resolve the plugin root first ([7da9208](https://github.com/each4all/agentic-plugins/commit/7da9208c8b3457e3b75cb501ec51c4ed3523457b))
+
 ## [0.4.11](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.10...plugin-founder-v0.4.11) (2026-09-29)
 
 

@@ -2,6 +2,13 @@
 
 All notable changes to the `image` plugin are documented here.
 
+## [0.3.3](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.3.2...plugin-image-v0.3.3) (2026-09-29)
+
+
+### Bug Fixes
+
+* **plugin/image:** resolve the plugin root at the top of every command block ([048e143](https://github.com/each4all/agentic-plugins/commit/048e14315d5e90c3eff1cd94e7085f7b75f7d222))
+
 ## [0.3.2](https://github.com/each4all/agentic-plugins/compare/plugin-image-v0.3.1...plugin-image-v0.3.2) (2026-09-25)
 
 
