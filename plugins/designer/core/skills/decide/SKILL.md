@@ -88,8 +88,8 @@ from best-effort recall.
 ### Step 3: Compare across the resolved design axes
 
 When invoked by command (`/designer:decide`), the active axis set is the
-**resolved preset** from `$AGENTIC_DECIDE_CONTEXT_FILE` (built in
-`commands/decide.md` Phase 0.5 from `references/decision-axes.yml`). Render
+**resolved preset** in the `ResolvedDecisionContext` that
+`commands/decide.md` Phase 0.5 prints (resolved from `references/decision-axes.yml`). Render
 the comparison using those axes in document order. The table below is the
 `balanced` preset's documentation rendering — the **fallback** axes when
 the registry is missing or invalid (graceful-degradation per ADR-0027 §1.6).
@@ -190,7 +190,7 @@ weighting/sensitivity rows below.
 This region renders ONLY when the opt-in gate fires:
 `context.weights_explicit === true` (user passed `--weights=<spec>`) OR
 `context.size === "major"`. Both are top-level fields of
-`$AGENTIC_DECIDE_CONTEXT_FILE` — read them directly; do NOT infer
+the Phase 0.5 `ResolvedDecisionContext` — read them directly; do NOT infer
 explicit-presence from `Object.keys(context.weights).length`. In all other
 cases, omit this section so default `/designer:decide <prose>` output stays
 prose-only (backward-compat).
@@ -332,7 +332,7 @@ Full decision support with Design Task Profile + peer ensemble +
 state-write integration.
 
 **Cross-host scope note (ADR-0001 §5 honest scope)**: the Phase 0.5
-flag-parser bootstrap that writes `$AGENTIC_DECIDE_CONTEXT_FILE` lives in
+flag-parser bootstrap that prints the `ResolvedDecisionContext` lives in
 `commands/decide.md` on the Claude side. Codex `$designer:decide` skill
 mentions reach this SKILL.md directly. A Codex LLM serving
 `$designer:decide` MAY replicate the contract by invoking
@@ -347,12 +347,10 @@ never onto the command line (ADR-0059): write
 `{"agentic_args": 1, "text": "…"}` with your file-editing tool into a
 directory from
 `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, then run the resolver
-with the cleanup installed first — it removes the directory on every exit,
-signals included, and keeps the resolver's exit status:
+— it removes the args file and its directory once it has read them:
 
 ```bash
 ARGS_DIR='<directory mktemp printed>'
-trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 node "<designer-plugin-root>/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"
 ```
 

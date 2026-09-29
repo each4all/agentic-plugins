@@ -15,10 +15,11 @@ point type) — never ask the user whether to invoke the peer, and never
 direct them to run companion CLIs manually. When the companions plugin or
 peer CLI is unavailable, the ensemble degrades silently to local-only.
 
-The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT` (set by
-Claude Code for plugin slash commands). If unset for any reason, fall back
-to
-`$(find ~/.claude/plugins/cache/agentic-plugins/designer -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_DESIGNER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 > **designer is not an orchestrator dispatch target** (ADR-0042 Non-Goal
 > 2): unlike the engineer commands, this command does NOT read
@@ -35,6 +36,8 @@ Determine workflow state via the host-shared canonical I/O module:
 1. **Find active workflow**:
 
    ```bash
+   CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
    REPO_ROOT="$(git rev-parse --show-toplevel)"
    GIT_BRANCH="$(git branch --show-current)"
    # ADR-0018 §sub-2 — designer workflows are anchored to a branch;
@@ -49,17 +52,13 @@ Determine workflow state via the host-shared canonical I/O module:
    # deliverables that feed frontend code). git rev-parse above fails outside
    # a repo; if so, refuse with manual-init guidance:
    #   git init   # or: cd into your frontend/design project repo
-   FIND_ERR="${TMPDIR:-/tmp}/designer-find-active-$$.err"
    ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-     find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+     find-active --repo-root "$REPO_ROOT")"
    FIND_RC=$?
    if [ "$FIND_RC" -ne 0 ]; then
-     echo "✗ find-active failed (exit $FIND_RC):" >&2
-     cat "$FIND_ERR" >&2
-     rm -f "$FIND_ERR"
+     echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
      exit "$FIND_RC"
    fi
-   rm -f "$FIND_ERR"
    ```
 
    - Empty `$ACTIVE` → no active workflow on this branch → bootstrap (Step 2).
@@ -69,6 +68,8 @@ Determine workflow state via the host-shared canonical I/O module:
 2. **Bootstrap** (no active workflow):
 
    ```bash
+   CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
    GIT_BRANCH="$(git branch --show-current)"
    GIT_HEAD="$(git rev-parse HEAD)"
    STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
@@ -92,6 +93,8 @@ Determine workflow state via the host-shared canonical I/O module:
 3. **Append-on-resume** (active workflow exists):
 
    ```bash
+   CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
    node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
      --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
      --verb investigate \
@@ -108,7 +111,7 @@ Determine workflow state via the host-shared canonical I/O module:
 ## Phase 1 — Execute investigate
 
 Follow the investigate skill's "When invoked by command" mode at
-`$CLAUDE_PLUGIN_ROOT/core/skills/investigate/SKILL.md`. The skill performs:
+`${CLAUDE_PLUGIN_ROOT}/core/skills/investigate/SKILL.md`. The skill performs:
 
 - **Step 1**: Build the Design Task Profile (Persona=designer,
   Skill-profile=design-brief, Profile=general (L4 archetype), Surface,
@@ -123,7 +126,7 @@ Follow the investigate skill's "When invoked by command" mode at
   frontend code for the surface in scope.
 - **Step 3**: Dispatch the reference-scan peer ensemble per
   `core/skills/investigate/references/design-brief-ensemble.md` via
-  `$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs run`. The peer runs in the
+  `${CLAUDE_PLUGIN_ROOT}/scripts/peer-runner.mjs run`. The peer runs in the
   background; the orchestrator continues its own per-sub-question web
   search + frontend read in parallel.
 - **Step 4**: Collect both sources, classify findings per AGREED /
@@ -162,6 +165,8 @@ scope, platform, and the `<citation_contract>` + `<privacy_contract>` XML
 blocks) and spawn the peer in the background:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 PROMPT_FILE="$(mktemp -t designer-investigate-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="reference-scan-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
@@ -201,6 +206,8 @@ phase notes MAY carry source-of-discovery labels (`[Both]` / `[Local]` /
 Policy.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: reference-scan at <iso-utc>
 
 ### Ensemble synthesis: design-brief verdict=<agreed|concerns|conflict>

@@ -13,9 +13,11 @@ invoke the peer, and never direct them to run companion CLIs manually. When
 the companions plugin or peer CLI is unavailable, the ensemble degrades
 silently to local-only.
 
-Plugin root: `$CLAUDE_PLUGIN_ROOT` (set by Claude Code for plugin slash
-commands). If unset, fall back to
-`$(find ~/.claude/plugins/cache/agentic-plugins/designer -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_DESIGNER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 > **designer is not an orchestrator dispatch target** (ADR-0042 Non-Goal
 > 2): this command does NOT read `AGENTIC_PARENT_WORKFLOW` /
@@ -28,6 +30,8 @@ commands). If unset, fall back to
 ## Phase 0 — Workflow continuity (per ADR-0011 §5)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
 # ADR-0018 §sub-2 — designer workflows are anchored to a branch.
@@ -36,22 +40,20 @@ if [ -z "$GIT_BRANCH" ]; then
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
-FIND_ERR="${TMPDIR:-/tmp}/designer-find-active-$$.err"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+  find-active --repo-root "$REPO_ROOT")"
 FIND_RC=$?
 if [ "$FIND_RC" -ne 0 ]; then
-  echo "✗ find-active failed (exit $FIND_RC):" >&2
-  cat "$FIND_ERR" >&2
-  rm -f "$FIND_ERR"
+  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
-rm -f "$FIND_ERR"
 ```
 
 - Empty `$ACTIVE` → bootstrap with verb=decide (single-mode — no `--profile`):
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   GIT_BRANCH="$(git branch --show-current)"
   GIT_HEAD="$(git rev-parse HEAD)"
   STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
@@ -68,6 +70,8 @@ rm -f "$FIND_ERR"
 - Non-empty `$ACTIVE` → append-on-resume:
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb decide \
     --phase-label "Phase 0: Resume into decide" \
@@ -85,9 +89,11 @@ ownership token + stale window per ADR-0011 §3, and writes only persona
 ## Phase 0.5 — Resolve design decision axes from the registry (ADR-0042 SD3 / ADR-0027 §5.6)
 
 Parse the arguments into flags + body and resolve the preset from
-`core/skills/decide/references/decision-axes.yml`. The resulting
-`ResolvedDecisionContext` JSON is stashed at
-`$AGENTIC_DECIDE_CONTEXT_FILE` for the skill body to consume.
+`core/skills/decide/references/decision-axes.yml`. The block prints the
+resulting `ResolvedDecisionContext` JSON on stdout, and the skill body reads
+it from that output. Nothing is written to disk: the context stays in the
+session for the duration of the command (ADR-0027 §4.3), and no later Bash
+call has to find a file whose path lived only in an earlier call's shell.
 
 The CLI reuses `scripts/lib/decide-args.mjs` internally so the same flag
 grammar applies: unknown flags, invalid `--size=<tier>` values, or
@@ -120,26 +126,20 @@ zero. Before the block below:
 Then run the block with `ARGS_DIR` set to that directory. The resolver reads
 leading `--key=value` flags and takes the rest, byte for byte, as the
 decision body — a lone `--` ends the flags, and nothing in the body is
-quoted, expanded or split. The block's `trap` removes the directory on every
-exit and keeps the command's exit status.
+quoted, expanded or split. The command removes the args file and its
+directory once it has read them.
 
 ```bash
 ARGS_DIR='<directory from step 1>'
-trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
-AGENTIC_DECIDE_CONTEXT_FILE="$(mktemp -t designer-decide-context.XXXXXX).json"
-DECIDE_RESOLVE_ERR="$(mktemp -t designer-decide-resolve.XXXXXX).err"
-export AGENTIC_DECIDE_CONTEXT_FILE
-
-node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json" \
-  > "$AGENTIC_DECIDE_CONTEXT_FILE" 2>"$DECIDE_RESOLVE_ERR"
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# stdout: the ResolvedDecisionContext JSON. stderr: the resolver's warnings
+# and diagnostics, shown as they are written.
+node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"
 RESOLVE_RC=$?
-
-[ -s "$DECIDE_RESOLVE_ERR" ] && cat "$DECIDE_RESOLVE_ERR" >&2
-rm -f "$DECIDE_RESOLVE_ERR"
 
 if [ "$RESOLVE_RC" -eq 2 ]; then
   echo "✗ decide-registry rejected the argument list — fix the invocation and rerun." >&2
-  rm -f "$AGENTIC_DECIDE_CONTEXT_FILE"
   exit 1
 elif [ "$RESOLVE_RC" -ne 0 ]; then
   echo "✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above." >&2
@@ -147,7 +147,7 @@ elif [ "$RESOLVE_RC" -ne 0 ]; then
 fi
 ```
 
-The skill body reads `$AGENTIC_DECIDE_CONTEXT_FILE` to obtain:
+The skill body reads the `ResolvedDecisionContext` Phase 0.5 printed to obtain:
 
 - `axes[]` — ordered axis descriptors (id, en/ko labels, question, role,
   `gate`) for the resolved preset. `gate: true` marks the **veto gate**
@@ -172,9 +172,9 @@ graceful-degradation artifact per ADR-0027 §1.6.
 ## Phase 1 — Execute decide
 
 Follow the decide skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/core/skills/decide/SKILL.md`. The skill performs 2+
+`${CLAUDE_PLUGIN_ROOT}/core/skills/decide/SKILL.md`. The skill performs 2+
 design-direction generation, evidence-based comparison across **the axes
-resolved from `$AGENTIC_DECIDE_CONTEXT_FILE`** (usability / consistency /
+resolved in Phase 0.5** (usability / consistency /
 conversion / desirability / content-clarity / feasibility, plus the
 accessibility veto gate), and recommends a direction with explicit
 rationale. The user makes the final call.
@@ -206,6 +206,8 @@ dispatch shape mirrors the reference-scan dispatch in
 `core/skills/investigate/references/design-brief-ensemble.md`:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 PROMPT_FILE="$(mktemp -t designer-decide-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
@@ -236,6 +238,8 @@ Graceful degradation: companion missing or exit code 3
 ## Phase 2 — State finalize
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: decide at <iso-utc>
 
 ### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>
@@ -298,11 +302,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --terminal-marker true \
   --next-action "Compose the flows/specs for the chosen direction (/designer:compose)" \
   --event updated
-
-# ADR-0027 §4.3 snapshot rule — remove the temp context file once the
-# skill body has consumed it (symmetric with the parser-error cleanup
-# in Phase 0.5).
-rm -f "$AGENTIC_DECIDE_CONTEXT_FILE"
 ```
 
 ---

@@ -13,9 +13,11 @@ the peer, and never direct them to run companion CLIs manually. When the
 companions plugin or peer CLI is unavailable, the ensemble degrades silently to
 local-only.
 
-Plugin root: `$CLAUDE_PLUGIN_ROOT` (set by Claude Code for plugin slash
-commands). If unset, fall back to
-`$(find ~/.claude/plugins/cache/agentic-plugins/designer -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_DESIGNER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 > **designer is not an orchestrator dispatch target** (ADR-0042 Non-Goal
 > 2): this command does NOT read `AGENTIC_PARENT_WORKFLOW` /
@@ -28,6 +30,8 @@ commands). If unset, fall back to
 ## Phase 0 — Workflow continuity (per ADR-0011 §5)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
 # ADR-0018 §sub-2 — designer workflows are anchored to a branch.
@@ -36,22 +40,20 @@ if [ -z "$GIT_BRANCH" ]; then
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
-FIND_ERR="${TMPDIR:-/tmp}/designer-find-active-$$.err"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+  find-active --repo-root "$REPO_ROOT")"
 FIND_RC=$?
 if [ "$FIND_RC" -ne 0 ]; then
-  echo "✗ find-active failed (exit $FIND_RC):" >&2
-  cat "$FIND_ERR" >&2
-  rm -f "$FIND_ERR"
+  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
-rm -f "$FIND_ERR"
 ```
 
 - Empty `$ACTIVE` → bootstrap with verb=refine (single-mode — **no `--profile`**):
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   GIT_BRANCH="$(git branch --show-current)"
   GIT_HEAD="$(git rev-parse HEAD)"
   STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
@@ -68,6 +70,8 @@ rm -f "$FIND_ERR"
 - Non-empty `$ACTIVE` → append-on-resume (refine is single-mode — no `--profile`):
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb refine \
     --phase-label "Phase 0: Resume into refine" \
@@ -81,7 +85,7 @@ rm -f "$FIND_ERR"
 ## Phase 1 — Execute refine
 
 Follow the refine skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/core/skills/refine/SKILL.md`. Refine is **single-mode** (no
+`${CLAUDE_PLUGIN_ROOT}/core/skills/refine/SKILL.md`. Refine is **single-mode** (no
 `--profile` argument). The L4 design archetype flows through the Design Task
 Profile per `core/skills/investigate/SKILL.md` § Design Task Profile (the shared
 `core/skills/_shared/references/orchestration.md` reference).
@@ -113,7 +117,7 @@ accessibility gate is **not FAIL** — `PASS`, or `CONDITIONAL` with every
 remediation named as a blocking precondition. `CONDITIONAL` converges on purpose:
 static critique is candidate-level (ADR-0042 Non-Goal 6), so an honest,
 well-specified design lands there rather than on `PASS`. See
-`$CLAUDE_PLUGIN_ROOT/core/skills/refine/SKILL.md` @refine:convergence-predicate.
+`${CLAUDE_PLUGIN_ROOT}/core/skills/refine/SKILL.md` @refine:convergence-predicate.
 
 ### Privacy gate (before any external call)
 
@@ -141,6 +145,8 @@ dispatch shape mirrors the reference-scan dispatch in
 `core/skills/investigate/references/design-brief-ensemble.md`:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 PROMPT_FILE="$(mktemp -t designer-refine-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="refine-verify-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
@@ -192,6 +198,8 @@ Graceful degradation: companion missing or exit code 3
 ## Phase 2 — State finalize
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: refine at <iso-utc>
 
 ### Ensemble synthesis: refine verdict=<resolved|concerns|regression|conflict>
