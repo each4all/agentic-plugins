@@ -41,8 +41,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/designer",
-        "ref": "plugin-designer-v0.3.10",
-        "sha": "e1c823a970b60cc2e47cfb6bf2573e49b7e8f9c1"
+        "ref": "plugin-designer-v0.3.11",
+        "sha": "622c5c99c29b6733c52d1614ff6f1fe93c3f5aed"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -56,8 +56,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/engineer",
-        "ref": "plugin-engineer-v0.22.1",
-        "sha": "d91b35869965c50df3ca7bd0abe25862fc221bb8"
+        "ref": "plugin-engineer-v0.22.2",
+        "sha": "622c5c99c29b6733c52d1614ff6f1fe93c3f5aed"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -71,8 +71,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/founder",
-        "ref": "plugin-founder-v0.4.10",
-        "sha": "e1c823a970b60cc2e47cfb6bf2573e49b7e8f9c1"
+        "ref": "plugin-founder-v0.4.11",
+        "sha": "622c5c99c29b6733c52d1614ff6f1fe93c3f5aed"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -116,8 +116,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/runtime",
-        "ref": "plugin-runtime-v0.99.0",
-        "sha": "d91b35869965c50df3ca7bd0abe25862fc221bb8"
+        "ref": "plugin-runtime-v0.99.1",
+        "sha": "622c5c99c29b6733c52d1614ff6f1fe93c3f5aed"
       },
       "policy": {
         "installation": "AVAILABLE",
