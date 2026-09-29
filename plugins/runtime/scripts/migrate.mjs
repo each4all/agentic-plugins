@@ -36,6 +36,7 @@ import { parse as parsePath, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { safeOperatorText } from './lib/egress-intent-wal.mjs';
+import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
 
 // The workflow-storage half — the M1 MUTATOR, which imports node:child_process
 // at module scope — is loaded DYNAMICALLY, inside the branch that routes to it.
@@ -273,7 +274,16 @@ export async function runMigrateCli(argv) {
 }
 
 async function main() {
-  const res = await runMigrateCli(process.argv.slice(2));
+  let argv;
+  try {
+    argv = expandArgsFile(process.argv.slice(2));
+  } catch (error) {
+    if (!(error instanceof ArgsFileError)) throw error;
+    process.stderr.write(`runtime:migrate: ${error.message}\n${migrateUsage()}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const res = await runMigrateCli(argv);
   if (!res.ok) {
     process.stderr.write(`runtime:migrate: ${res.reason}\n`);
     process.stderr.write(`${res.usage ?? migrateUsage()}\n`);

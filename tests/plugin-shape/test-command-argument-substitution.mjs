@@ -129,11 +129,11 @@ const argumentLinesInCode = (body) =>
     .filter((line) => line.includes(SENTINEL))
     .map((line) => line.trim().replaceAll(SENTINEL, '$ARGUMENTS'));
 
-// ADR-0059 §Context: 16 unquoted splice sites and 3 quoted placeholders; the
-// three decide runbooks also name the placeholder in a comment beside their
-// splice. ADR-0059 removes all of them. Each is pinned by its line so a new
-// site cannot hide behind a removed one; delete an entry when its line goes.
-// ADR-0060 removed `runtime:compat`, so compat.md's site went with it: 15 remain.
+// ADR-0059 §Context: 16 unquoted splice sites and 3 quoted placeholders (15
+// sites once ADR-0060 removed `runtime:compat`). ADR-0059 removes them one
+// package per commit (ADR-0016); the entries left belong to the packages
+// whose commit has not landed. Each is pinned by its line so a new site
+// cannot hide behind a removed one.
 const ARGUMENT_LINES_IN_CODE = {
   'plugins/designer/commands/decide.md': [
     '# `$ARGUMENTS` is the verbatim user input. Expand unquoted so the shell',
@@ -158,16 +158,6 @@ const ARGUMENT_LINES_IN_CODE = {
   'plugins/founder/commands/investigate.md': [
     '--profile "${AGENTIC_PROFILE:-<profile from $ARGUMENTS — business-brief; default \'business-brief\'>}" \\',
   ],
-  'plugins/runtime/commands/bootstrap.md': ['node "$RUNTIME_ROOT/scripts/bootstrap.mjs" $ARGUMENTS'],
-  'plugins/runtime/commands/consensus.md': ['node "$RUNTIME_ROOT/scripts/consensus.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
-  'plugins/runtime/commands/context.md': ['node "$RUNTIME_ROOT/scripts/context.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
-  'plugins/runtime/commands/cutover.md': ['node "$RUNTIME_ROOT/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
-  'plugins/runtime/commands/dashboard.md': ['node "$RUNTIME_ROOT/scripts/dashboard.mjs" --repo-root "$REPO_ROOT" --host claude $ARGUMENTS'],
-  'plugins/runtime/commands/doctor.md': ['node "$RUNTIME_ROOT/scripts/doctor.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
-  'plugins/runtime/commands/migrate.md': ['node "$RUNTIME_ROOT/scripts/migrate.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
-  'plugins/runtime/commands/retention.md': ['node "$RUNTIME_ROOT/scripts/retention.mjs" $ARGUMENTS --repo-root "$REPO_ROOT"'],
-  'plugins/runtime/commands/settings.md': ['node "$RUNTIME_ROOT/scripts/settings.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
-  'plugins/runtime/commands/worktree.md': ['node "$RUNTIME_ROOT/scripts/worktree.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS'],
 };
 
 test('Claude command-argument substitution', async (t) => {

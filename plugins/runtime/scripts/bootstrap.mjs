@@ -135,6 +135,7 @@ import { FINDINGS_MAX_PER_ARTIFACT, loadSchema, makeValidator } from './lib/sche
 import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
 import { gatherEgressLauncherInputs, buildEgressLauncherPlanSection, egressFragmentApplyGuidance, makeEgressLauncherRunId } from './lib/egress-launcher-plan.mjs';
+import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
 
 export { RUNTIME_VERSION };
 
@@ -4900,15 +4901,16 @@ export async function runBootstrap({
 } = {}) {
   let opts;
   try {
-    opts = parseBootstrapArgs(argv ?? []);
+    opts = parseBootstrapArgs(expandArgsFile(argv ?? []));
   } catch (err) {
-    if (err instanceof UsageError) {
+    // ADR-0059: an args file the grammar cannot read is a usage error too.
+    if (err instanceof UsageError || err instanceof ArgsFileError) {
       // The message interpolates the OFFENDING ARGUMENT, so it is neutralized
       // on the same terms as every other rendered line (§3): an argv value
       // carrying a newline could otherwise forge a row above the usage block.
       // The JSON `error` keeps the raw text — a JSON string escapes control
       // characters, so there is no row to forge there.
-      return { exitCode: err.exitCode, report: { error: err.message }, rendered: `✗ ${renderSafe(err.message)}\n${usage()}` };
+      return { exitCode: err.exitCode ?? EXIT.INVALID, report: { error: err.message }, rendered: `✗ ${renderSafe(err.message)}\n${usage()}` };
     }
     throw err;
   }

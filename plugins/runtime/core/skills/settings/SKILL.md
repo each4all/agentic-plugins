@@ -18,6 +18,25 @@ description: "Dry-run settings planner for agentic-plugins config and host readi
 node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>] [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>] [--session-capture off|stop-hook] [--entry-brief off|startup] [--entry-brief-empty silent|report] [--model-effort-fallback host-native] [--unset <key>[,<key>...]] [--notification-plan] [--egress-launcher-plan] [--skip-host-cli-probes] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--expected-plan-hash <sha256>] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
 ```
 
+Pass the subcommand and options above through an args file, never on the
+command line (ADR-0059): text spliced into a shell line is cut at `;`,
+expanded at `$(…)` and redirected at `>`. Create a directory with
+`mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, write `args.json` in it
+with your file-editing tool, holding `{"agentic_args": 1, "text": "…"}` with
+`text` set to them as a JSON string, and run:
+
+```bash
+ARGS_DIR='<directory mktemp printed>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" --args-file "$ARGS_DIR/args.json"
+```
+
+`text` is read as shell-style words that expand nothing: quote a value that
+holds spaces, and quote `;` `&` `|` `<` `>` `(` `)`, a backquote, a `$`
+expansion, or a word-initial `#` or `~` — unquoted, each is refused with a
+message. The `trap` removes the directory on every exit and keeps the exit
+status.
+
 3. Present the result as a settings plan, not as proof of host parity.
    - Dry-run output is the default and must be safe to run repeatedly.
    - `--skip-host-cli-probes` is the probe-free local plan (contract:

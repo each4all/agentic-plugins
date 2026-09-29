@@ -62,6 +62,7 @@ import {
 import { semverCompare } from './lib/semver.mjs';
 import { parseCodexCatalogTarget, selectInstalledCacheDir } from './lib/codex-install-identity.mjs';
 import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
+import { expandArgsFile } from './lib/args-file.mjs';
 
 export { RUNTIME_VERSION };
 
@@ -7031,7 +7032,7 @@ function parsePositiveIntArg(value, flag) {
 async function main() {
   let opts;
   try {
-    opts = parseArgs(process.argv.slice(2));
+    opts = parseArgs(expandArgsFile(process.argv.slice(2)));
   } catch (err) {
     process.stderr.write(`${err.message}\n${usage()}`);
     process.exit(EXIT.INVALID);

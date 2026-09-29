@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
+import { expandArgsFile } from './lib/args-file.mjs';
 
 const VERSION = RUNTIME_VERSION;
 const SCHEMA_VERSION = 'runtime-worktree-plan-1.0';
@@ -444,7 +445,7 @@ function quoteShell(value) {
 
 async function main() {
   try {
-    const options = parseArgs(process.argv.slice(2));
+    const options = parseArgs(expandArgsFile(process.argv.slice(2)));
     if (options.help) {
       console.log(helpText());
       return;
