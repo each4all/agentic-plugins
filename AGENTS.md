@@ -289,9 +289,9 @@ release is tagged
 enforced by [ADR-0052](docs/adr/0052-release-obligation-enforcement.md)).
 `plugins/runtime/docs/host-parity-baseline.md` was the third such asset until
 [ADR-0060](docs/adr/0060-remove-host-version-tracking.md) deleted it; the
-checker keeps its pathspec until the release that ships the deletion is
-tagged, so the deletion itself is seen as a protected change, and that
-release's recovery removes the entry.
+checker kept its pathspec until plugin-runtime-v0.99.0 shipped the deletion,
+so the deletion itself was seen as a protected change, and that release's
+recovery removed the entry.
 `npm run validate:release-obligation` reconciles the protected tree against
 the newest reachable `plugin-runtime-v*` tag; it runs in `full-tests.yml`
 (which is why that job checks out at `fetch-depth: 0`) and again inside

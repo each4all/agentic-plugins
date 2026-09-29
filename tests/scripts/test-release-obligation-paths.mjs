@@ -4,7 +4,7 @@
 // one the newest release tag carries — and both are drawn through ONE list. The
 // real-history replays in test-release-obligation.mjs need that list to be the
 // one of their time: the counterexample they replay (`16b1833`) changed only the
-// host-parity baseline, and ADR-0060's release recovery removes the baseline
+// host-parity baseline, and ADR-0060's release recovery removed the baseline
 // entry from the live list. `classify` therefore takes the list as `paths`.
 //
 // These cases live in their own file, and every one of them builds its own

@@ -53,7 +53,7 @@ const COUNTEREXAMPLE = '16b1833c051b12220aa6d5f812c8ac2383b36c79';
 
 // The protected list as ADR-0052 adopted it, which is the list every commit
 // replayed below was made under. The counterexample changed the host-parity
-// baseline and nothing else, and ADR-0060's release recovery removes that
+// baseline and nothing else, and ADR-0060's release recovery removed that
 // entry from the live list — so a replay judged through the live list would
 // see no change at all and pass for the wrong reason. Each replay names the
 // list of its own time instead; the synthetic seam cases in
@@ -119,12 +119,13 @@ test('the adoption epoch is load-bearing — the same commit passes when it pred
   assert.deepEqual(r.inScopeChanges, []);
 });
 
-test('the replays need the list of their time — through the live-to-be list the counterexample vanishes', () => {
+test('the replays need the list of their time — through the live list the counterexample vanishes', () => {
   // Why HISTORICAL_PATHS exists, shown on the real commit rather than argued:
-  // judged through the list ADR-0060's recovery leaves behind, the
+  // judged through the list ADR-0060's recovery left behind, the
   // counterexample reports `fulfilled`, and every replay above would pass
   // with the check deleted.
   const withoutBaseline = HISTORICAL_PATHS.filter((p) => p !== 'plugins/runtime/docs/host-parity-baseline.md');
+  assert.deepEqual(withoutBaseline, [...PROTECTED_PATHS], 'the live list is the historical one without the baseline');
   const r = classify(REPO_ROOT, { ref: COUNTEREXAMPLE, epoch: `${COUNTEREXAMPLE}^`, paths: withoutBaseline });
   assert.equal(r.ran, true, r.reason ?? '');
   assert.equal(r.state, 'fulfilled');
@@ -173,11 +174,11 @@ test('the protected pathspecs resolve to the assets ADR-0052 §Decision 2 names,
   assert.ok(paths.filter((p) => p.startsWith('plugins/runtime/data/schemas/')).length >= 7);
   // Out of first scope per §Decision 3 — a different release-please package.
   assert.ok(!paths.some((p) => p.startsWith('plugins/attention/')));
-  // ADR-0060 deleted the host-parity baseline and keeps its pathspec until the
-  // release that ships the deletion is tagged (see the note on PROTECTED_PATHS):
-  // the entry is still listed, and it matches nothing at HEAD. That release's
-  // recovery removes the entry and these two assertions together.
-  assert.ok(PROTECTED_PATHS.includes('plugins/runtime/docs/host-parity-baseline.md'));
+  // ADR-0060 deleted the host-parity baseline, and its pathspec outlived the
+  // file until plugin-runtime-v0.99.0 shipped the deletion (see the note on
+  // PROTECTED_PATHS). That release's recovery removed the entry, so it is
+  // neither listed nor matched.
+  assert.ok(!PROTECTED_PATHS.includes('plugins/runtime/docs/host-parity-baseline.md'));
   assert.ok(!paths.includes('plugins/runtime/docs/host-parity-baseline.md'));
 });
 
@@ -186,8 +187,8 @@ test('the protected pathspecs resolve to the assets ADR-0052 §Decision 2 names,
 // ---------------------------------------------------------------------------
 
 // The specimen every diff-semantics case edits. It was the host-parity baseline
-// until ADR-0060 deleted that document and scheduled its pathspec for removal;
-// a synthetic case that depends on a list entry about to disappear would start
+// until ADR-0060 deleted that document and its release recovery removed the
+// pathspec; a synthetic case that depended on that entry would have started
 // failing for a reason unrelated to what it tests. The specimen now sits under
 // `data/schemas`, which the live list keeps, and carries the same bytes the
 // baseline specimen did, so the revert and coalescing cases still restore
@@ -684,9 +685,9 @@ const runCli = (args) => execFileSync('node', [SCRIPT, ...args], { cwd: REPO_ROO
 // so its real-history anchor must be a change the live list will keep seeing.
 // f795085 (#739) reached the protected set only through packaged schemas (its
 // scripts, commands, docs and tests sit outside every protected path): debt at its own
-// commit, fulfilled at its parent, through the current list AND through the
-// one ADR-0060's recovery leaves (both measured 2026-09-28), so this contract
-// does not silently start passing when the baseline entry goes.
+// commit, fulfilled at its parent, through the three-entry list AND through
+// the one ADR-0060's recovery left (both measured 2026-09-28), so this
+// contract did not silently start passing when the baseline entry went.
 const CLI_ANCHOR = 'f79508505ee21fdc36e34e04a611573cca2be8e2';
 
 test('the CLI exits 1 on debt and 0 on a fulfilled ref', () => {

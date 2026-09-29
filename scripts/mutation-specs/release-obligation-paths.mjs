@@ -6,8 +6,8 @@
 // one list, and a list that reaches only some of them fails quietly: the verdict
 // is still one of the states the checker knows, and in the common case —
 // supplied list equal to the live one — every mutation below is invisible. The
-// seam exists for the real-history replays after ADR-0060's recovery drops the
-// baseline entry, and those replays cannot run in this harness (no `.git`), so
+// seam exists for the real-history replays now that ADR-0060's recovery has
+// dropped the baseline entry, and those replays cannot run in this harness (no `.git`), so
 // the synthetic file is where the seam is proven.
 
 const T = 'tests/scripts/test-release-obligation-paths.mjs';
