@@ -7,7 +7,7 @@ argument-hint: (natural-language image request)
 
 $ARGUMENTS
 
-Follow the frame skill at `$CLAUDE_PLUGIN_ROOT/core/skills/frame/SKILL.md`.
+Follow the frame skill at `${CLAUDE_PLUGIN_ROOT}/core/skills/frame/SKILL.md`.
 
 Produces an explicit `ImageBrief` (`docs/contracts.md` §3) that
 `image:compose` renders into a prompt. Warn/reject brief fields gpt-image-2
@@ -25,6 +25,8 @@ variants, and the `background` policy — enum, png-only transparency, and prose
 that contradicts or fails to record an explicit `output.background`):
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_IMAGE_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/image -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/brief-validate.mjs" --brief-file <brief.json>
 ```
 

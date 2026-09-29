@@ -7,7 +7,7 @@ argument-hint: (image brief or natural-language image description)
 
 $ARGUMENTS
 
-Follow the compose skill at `$CLAUDE_PLUGIN_ROOT/core/skills/compose/SKILL.md`.
+Follow the compose skill at `${CLAUDE_PLUGIN_ROOT}/core/skills/compose/SKILL.md`.
 
 Generation runs **only** through Codex's integrated gpt-image tool: native
 `codex exec` on the Codex host, or the `codex-companion` bridge on the
@@ -30,6 +30,8 @@ disclose the estimated per-image cost (`docs/contracts.md` §7). Then run the
 helper (Claude host):
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_IMAGE_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/image -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/compose-dispatch.mjs" \
   --prompt-file <genericized-prompt-file> --repo-root "$REPO_ROOT" \
   --format png --quality low|medium|high [--size <WxH>] [--slug <slug>] \
