@@ -45,6 +45,24 @@ invocation on Codex follows the equivalent operational sequence inline
 using the same engineer `scripts/state.mjs` CLI (the state writer is
 host-agnostic).
 
+Argument parsing is `scripts/start-args.mjs --args-file <path>` on both
+hosts (ADR-0059 Decision 7). The feature description, with any
+`--base-branch <ref>` in it, goes into an args file — never into a command
+line, where an apostrophe aborts the line and `;` or `$(…)` cuts or runs it.
+Write `{"agentic_args": 1, "text": "…"}` with the file-editing tool into a
+directory from `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, then run
+the extractor with the cleanup installed first, in the same shell as the
+steps that read `BASE_BRANCH` and `FEATURE`:
+
+```bash
+ARGS_DIR='<directory mktemp printed>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+START_ARGS="$(node "<engineer-plugin-root>/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
+printf '%s\n' "$START_ARGS"
+BASE_BRANCH="$(printf '%s' "$START_ARGS" | jq -r .base_branch)"
+FEATURE="$(printf '%s' "$START_ARGS" | jq -j .feature; printf x)"; FEATURE="${FEATURE%x}"
+```
+
 The **Layer 1 clean-baseline gate** (ADR-0028 §Layer-1) runs on the
 bootstrap branch — i.e., when `find-active` returns empty and a new
 workflow is about to be created — before `state.mjs create`. It calls

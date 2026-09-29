@@ -17,6 +17,9 @@
 // CLI:
 //   node decide-registry.mjs resolve
 //     [--preset=<id>] [--size=<tier>] [--weights=<spec>] [-- <decision body>]
+//   node decide-registry.mjs resolve --args-file <path>
+//     the same arguments as one text in an ADR-0059 args file; its leading
+//     flags and intact body become [...flags, "--", body]
 //     stdout — JSON ResolvedDecisionContext (§5.6 + PR4 amendment fields)
 //     stderr — fallback diagnostics + chosen-source diagnostic (one line each)
 //     exit 0 — registry resolved (with or without graceful-degradation diagnostics)
@@ -29,6 +32,7 @@ import { dirname, resolve } from "node:path";
 
 import { parse as parseYaml, YamlParseError } from "./lib/yaml-mini.mjs";
 import { normalizeWeights } from "./lib/decide-weights.mjs";
+import { ArgsFileError, personaArgv, readArgsFile, soleArgsFilePath } from "./lib/args-file.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PATH = resolve(HERE, "..", "core", "skills", "decide", "references", "decision-axes.yml");
@@ -360,7 +364,9 @@ export function resolvePreset({
   return { context, diagnostics: diags, fallbackTriggered: fallback };
 }
 
-// CLI mode. Exits:
+// CLI mode. Exit statuses — set through process.exitCode, never process.exit(),
+// which cuts a piped stdout at 64 KiB; the context carries the body, and an
+// ADR-0059 args file lets the body be up to 1 MiB:
 //   0 — registry resolved (with or without graceful-degradation diagnostics)
 //   2 — argument-parser errors (unknown flag, invalid --size tier, etc.) per ADR-0027 §2.3(3-4)
 //
@@ -372,16 +378,31 @@ async function main(argv) {
   if (args[0] !== "resolve") {
     process.stderr.write(
       "decide-registry.mjs — engineer:decide registry reader\n" +
-      "usage: node decide-registry.mjs resolve [--preset=<id>] [--size=<tier>] [--weights=<spec>] [-- <decision body>]\n",
+      "usage: node decide-registry.mjs resolve [--preset=<id>] [--size=<tier>] [--weights=<spec>] [-- <decision body>]\n" +
+      "       node decide-registry.mjs resolve --args-file <path>\n",
     );
-    process.exit(args.length === 0 ? 0 : 2);
+    process.exitCode = args.length === 0 ? 0 : 2;
+    return;
   }
 
   // Reuse the shared argument-parser skeleton so the CLI honors the
   // same §2.3 grammar + --size tier whitelist + --weights validation
   // (PR4 active) as `/engineer:decide`. (peer P-9 / M5 fix)
   const { parseArgs } = await import("./lib/decide-args.mjs");
-  const parsed = parseArgs(args.slice(1));
+  // ADR-0059: the runbook has the model write the argument text into an args
+  // file, so no shell parses it on the way here. Its leading flags and its
+  // body, byte for byte, reach the same parser as `[...flags, "--", body]`.
+  let argList = args.slice(1);
+  try {
+    const argsFilePath = soleArgsFilePath(argList);
+    if (argsFilePath !== null) argList = personaArgv(readArgsFile(argsFilePath));
+  } catch (error) {
+    if (!(error instanceof ArgsFileError)) throw error;
+    process.stderr.write(`error: ${error.message}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const parsed = parseArgs(argList);
 
   // Surface warnings (last-wins repeats, etc.).
   for (const w of parsed.warnings) process.stderr.write(`warning: ${w}\n`);
@@ -389,7 +410,8 @@ async function main(argv) {
   // §2.3(3-4): hard halt on parser errors.
   if (parsed.errors.length > 0) {
     for (const e of parsed.errors) process.stderr.write(`error: ${e}\n`);
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   const { context, diagnostics } = resolvePreset({
@@ -402,7 +424,7 @@ async function main(argv) {
   });
   for (const line of diagnostics) process.stderr.write(`registry: ${line}\n`);
   process.stdout.write(JSON.stringify(context, null, 2) + "\n");
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 // Guard against `process.argv[1]` being undefined (e.g., the module is

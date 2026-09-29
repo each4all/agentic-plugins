@@ -88,7 +88,7 @@ rm -f "$FIND_ERR"
 
 ## Phase 0.5 — Resolve decision axes from the registry (ADR-0027 §5.6)
 
-Parse `$ARGUMENTS` into flags + body and resolve the preset from
+Parse the arguments into flags + body and resolve the preset from
 `core/skills/decide/references/decision-axes.yml`. The resulting
 `ResolvedDecisionContext` JSON is stashed at
 `$AGENTIC_DECIDE_CONTEXT_FILE` for the skill body to consume.
@@ -102,30 +102,42 @@ spec, whitespace) produce a parser error and exit 2 (we halt).
 resolved by the registry per ADR-0027 §1.6 graceful-degradation —
 an unknown preset id triggers `context.registry_fallback = true` +
 fall-back to the `default` preset (no halt, peer dispatch still
-proceeds with `<axis_awareness>` omitted per §4.3). Body tokens go
-after a `--` separator and are threaded into `context.body` per §5.6.
+proceeds with `<axis_awareness>` omitted per §4.3). The body —
+everything after the flags, byte for byte — is threaded into
+`context.body` per §5.6.
+
+The arguments above reach the resolver through an args file, never
+through the shell (ADR-0059): typed text spliced into a command line is cut
+at `;`, expanded at `$(…)` and redirected at `>`, and the damage can exit
+zero. Before the block below:
+
+1. Create a private directory for the file, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `args.json` in that
+   directory holding `{"agentic_args": 1, "text": "…"}`, with `text` set to
+   the arguments above exactly as typed, as a JSON string (`""` when there
+   are none).
+
+Then run the block with `ARGS_DIR` set to that directory. The resolver reads
+leading `--key=value` flags and takes the rest, byte for byte, as the
+decision body — a lone `--` ends the flags, and nothing in the body is
+quoted, expanded or split. The block's `trap` removes the directory on every
+exit and keeps the command's exit status.
 
 ```bash
+ARGS_DIR='<directory from step 1>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 AGENTIC_DECIDE_CONTEXT_FILE="$(mktemp -t engineer-decide-context.XXXXXX).json"
 DECIDE_RESOLVE_ERR="$(mktemp -t engineer-decide-resolve.XXXXXX).err"
 export AGENTIC_DECIDE_CONTEXT_FILE
 
-# `$ARGUMENTS` is the verbatim user input from the slash command.
-# We expand it unquoted so the shell word-tokenizes flags / body
-# tokens for the CLI; quoted body words in the user's input are
-# preserved by shell quoting rules. `set -o noglob` disables pathname
-# expansion (globbing) during the expansion so body tokens like
-# `*.md`, `B냐?` or `[A]` reach the CLI literally instead of being
-# expanded against the cwd — restore globbing immediately after.
-# NOT `set -f`: measured 2026-09-09, that form does not set `noglob`
-# in zsh (`zsh -c 'set -f; setopt | grep -c noglob'` reports 0), so the
-# guard was inert on a zsh default shell while working in bash. The
-# `-o` form is honored by both.
-set -o noglob
-node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \
+node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json" \
   > "$AGENTIC_DECIDE_CONTEXT_FILE" 2>"$DECIDE_RESOLVE_ERR"
 RESOLVE_RC=$?
-set +o noglob
 
 # Surface warnings + diagnostics on stderr for the LLM and user.
 [ -s "$DECIDE_RESOLVE_ERR" ] && cat "$DECIDE_RESOLVE_ERR" >&2

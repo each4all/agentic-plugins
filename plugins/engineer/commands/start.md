@@ -38,50 +38,57 @@ findings converge or a design-level issue is surfaced.
 
 ## Phase 0 — Argument parsing
 
-Inspect `$ARGUMENTS`:
+The arguments above are a feature description with an optional
+`--base-branch <ref>` anywhere in it (ADR-0059 Decision 7;
+`scripts/start-args.mjs`):
 
-- Empty → reject with a one-line usage hint and stop. `/engineer:start`
-  requires a feature description so the workflow's `original_request`
-  has substance.
-- Contains `--base-branch <ref>` → extract `<ref>` for the redundancy
-  probe (Phase 0c-bootstrap). Default when omitted: `origin/main`.
-- Remaining text after stripping the flag is the feature description.
+- Empty → rejected with a one-line diagnostic (exit 2), and the block
+  stops. `/engineer:start` requires a feature description so the
+  workflow's `original_request` has substance.
+- `--base-branch <ref>` → `<ref>` is the redundancy probe's base
+  (Phase 0c-bootstrap). Default when omitted: `origin/main`.
+- The text without the option is the feature description.
+
+The arguments above reach the extractor through an args file, never
+through the shell (ADR-0059): typed text spliced into a command line is cut
+at `;`, expanded at `$(…)` and redirected at `>`, and the damage can exit
+zero. Before the block below:
+
+1. Create a private directory for the file, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `args.json` in that
+   directory holding `{"agentic_args": 1, "text": "…"}`, with `text` set to
+   the arguments above exactly as typed, as a JSON string (`""` when there
+   are none).
+
+Then run the block with `ARGS_DIR` set to that directory. The extractor takes
+the text as the feature description and removes one `--base-branch <ref>`
+wherever it sits; a second `--base-branch`, the `--base-branch=<ref>`
+spelling, or a missing ref is refused. Nothing else in the description is
+quoted, expanded or split. The block's `trap` removes the directory on every
+exit and keeps the command's exit status.
+
+`BASE_BRANCH` and `FEATURE` are read by later blocks — the Phase 0c
+redundancy probe and the bootstrap `state.mjs create` — and shell variables do
+not outlive a Bash call, while the trap removes the directory when this one
+ends. So run this block in the same Bash call as whichever of those comes next.
+When the flow stops between them (a redundancy finding waits for the user's
+proceed-or-abort decision), write the args file again (steps 1–2) and run this
+block again ahead of the bootstrap. Never paste the description into a
+command line instead.
 
 ```bash
-BASE_BRANCH="origin/main"
-FEATURE=""
-# Token-level parsing — portable across GNU/BSD shell environments
-# (macOS BSD sed does not support `\+` in basic regex; bash positional
-# iteration sidesteps that compatibility surface). `set -o noglob`
-# disables glob expansion for the unquoted split — without this guard,
-# an `*`, `?` or `[...]` token would glob-expand into matching filenames
-# (or abort the block outright under zsh's NOMATCH) and corrupt FEATURE
-# before it lands in --original-request (Codex Phase 6 re-review MAJOR).
-# NOT `set -f`: measured 2026-09-09, that form does not set `noglob`
-# in zsh (`zsh -c 'set -f; setopt | grep -c noglob'` reports 0), so the
-# guard was inert on a zsh default shell while working in bash. The
-# `-o` form is honored by both.
-set -o noglob
-set -- $ARGUMENTS
-SKIP_NEXT=0
-for tok in "$@"; do
-  if [ "$SKIP_NEXT" = 1 ]; then
-    BASE_BRANCH="$tok"
-    SKIP_NEXT=0
-    continue
-  fi
-  if [ "$tok" = "--base-branch" ]; then
-    SKIP_NEXT=1
-    continue
-  fi
-  if [ -z "$FEATURE" ]; then
-    FEATURE="$tok"
-  else
-    FEATURE="$FEATURE $tok"
-  fi
-done
-set +o noglob
-[ -z "$FEATURE" ] && { echo "✗ /engineer:start requires a feature description (got '--base-branch' only)"; exit 1; }
+ARGS_DIR='<directory from step 1>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
+printf '%s\n' "$START_ARGS"
+BASE_BRANCH="$(printf '%s' "$START_ARGS" | jq -r .base_branch)"
+# A command substitution drops trailing newlines; the sentinel keeps them.
+FEATURE="$(printf '%s' "$START_ARGS" | jq -j .feature; printf x)"; FEATURE="${FEATURE%x}"
 ```
 
 ---

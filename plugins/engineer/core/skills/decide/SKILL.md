@@ -458,10 +458,10 @@ The full-fidelity axis-awareness contract (ADR-0027 §1.5 sizing,
 §2.2 flag grammar, §4 Brainstorm `<axis_awareness>` block) is
 therefore **Claude-command-mode** today. Codex skill-mention LLM
 serving `$engineer:decide` MAY replicate the contract by invoking
-`scripts/decide-registry.mjs resolve` itself with the user's flag
-string and reading the resulting `ResolvedDecisionContext` before
-emitting the Brainstorm prompt — best-effort cross-host equivalence
-per ADR-0001 §5. Build that script path from the Codex install root as
+`scripts/decide-registry.mjs resolve --args-file <path>` itself and
+reading the resulting `ResolvedDecisionContext` before emitting the
+Brainstorm prompt — best-effort cross-host equivalence per ADR-0001 §5.
+Build that script path from the Codex install root as
 `../checkpoint/SKILL.md` § Claude/Codex command resolution describes it:
 a Codex skill mention has no plugin-root variable in its shell, so
 `$CLAUDE_PLUGIN_ROOT` resolves empty there, but Codex injects the
@@ -471,6 +471,19 @@ ADR-0013 defers is the command file that would run this automatically,
 not the script's reachability. Absent that step, Codex falls back to free-form
 2-3 approaches (axis-awareness omitted), matching the §4.3
 presence-rule omit branch.
+
+On that path the user's flags and decision text go into the args file,
+never onto the command line (ADR-0059): write `{"agentic_args": 1, "text": "…"}` with
+your file-editing tool into a directory from
+`mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, then run the resolver
+with the cleanup installed first — it removes the directory on every exit,
+signals included, and keeps the resolver's exit status:
+
+```bash
+ARGS_DIR='<directory mktemp printed>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+node "<engineer-plugin-root>/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"
+```
 
 ### Pre-decide: Task Profile
 

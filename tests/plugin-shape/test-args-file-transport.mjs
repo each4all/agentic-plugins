@@ -49,7 +49,7 @@ const rel = (p) => relative(REPO_ROOT, p).split('\\').join('/');
 // The packages whose runbooks pass typed text by --args-file. ADR-0059 landed
 // one package per commit (ADR-0016), runtime first, and each commit added its
 // package here; every check below that concerns a package reads this list.
-const CONVERTED = ['runtime'];
+const CONVERTED = ['engineer', 'runtime'];
 const LIB_PACKAGES = CONVERTED;
 const PERSONAS = ['designer', 'engineer', 'founder'];
 const CONVERTED_PERSONAS = PERSONAS.filter((p) => CONVERTED.includes(p));
