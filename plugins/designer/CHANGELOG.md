@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.11](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.10...plugin-designer-v0.3.11) (2026-09-29)
+
+
+### Bug Fixes
+
+* **designer:** read decide arguments from an args file, not the shell (ADR-0059) ([032ae6d](https://github.com/each4all/agentic-plugins/commit/032ae6d6d9475ccc9e3d6fb568f08847641a7606))
+
 ## [0.3.10](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.9...plugin-designer-v0.3.10) (2026-09-27)
 
 

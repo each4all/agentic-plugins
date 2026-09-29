@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.11](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.10...plugin-founder-v0.4.11) (2026-09-29)
+
+
+### Bug Fixes
+
+* **founder:** read decide arguments from an args file, not the shell (ADR-0059) ([e578155](https://github.com/each4all/agentic-plugins/commit/e578155f445769a46acb0d4baf6627b4eca8cee7))
+
 ## [0.4.10](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.9...plugin-founder-v0.4.10) (2026-09-27)
 
 

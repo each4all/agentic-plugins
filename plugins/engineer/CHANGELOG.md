@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.22.1...plugin-engineer-v0.22.2) (2026-09-29)
+
+
+### Bug Fixes
+
+* **engineer:** read decide and start arguments from an args file, not the shell (ADR-0059) ([17d540b](https://github.com/each4all/agentic-plugins/commit/17d540bea35f6f724325bbb4be08a407b76d2364))
+
 ## [0.22.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.22.0...plugin-engineer-v0.22.1) (2026-09-28)
 
 
