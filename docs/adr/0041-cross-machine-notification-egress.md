@@ -4,6 +4,8 @@
 
 Accepted (2026-07-06)
 
+**Proposed to be superseded** in full by [ADR-0064](0064-runtime-surface-reduction.md) (proposed 2026-09-29); this line becomes `Superseded by ADR-0064` in the same commit that flips ADR-0064 to Accepted.
+
 *Amended 2026-07-07 ([decide-headline] / macro `…85bdad`, subtask `adr-amend`):
 §3a adds the opt-in, closed-vocabulary `headline` status token as a
 **DECIDED-but-not-yet-shipped** payload field **within** the existing E1 tier (a

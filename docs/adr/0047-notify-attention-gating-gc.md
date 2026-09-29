@@ -8,6 +8,8 @@ Accepted (2026-07-21). Amended 2026-09-28 by
 the §7 retention registry is `doctor` and `settings`. The notes sit at §5,
 §7 and Consequences; the rest of this ADR is unchanged.
 
+**Proposed to be superseded** by [ADR-0064](0064-runtime-surface-reduction.md) (proposed 2026-09-29) **except §7** (citation-aware artifact retention, `runtime:retention`); this line becomes `Superseded by ADR-0064 (except §7)` in the same commit that flips ADR-0064 to Accepted.
+
 <!--
 This ADR sits inside the ADR-0024 runtime/operator control-plane track. It
 composes — and narrowly amends where stated — ADR-0035 (execution-boundary
