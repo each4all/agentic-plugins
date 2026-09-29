@@ -79,7 +79,7 @@ Determine workflow state via the host-shared canonical I/O module:
      --git-baseline-branch "$GIT_BRANCH" \
      --git-baseline-head "$GIT_HEAD" \
      --status-digest "$STATUS_DIGEST" \
-     --profile "${AGENTIC_PROFILE:-<profile from $ARGUMENTS — design-brief; default 'design-brief'>}" \
+     --profile "${AGENTIC_PROFILE:-<profile from the arguments above — design-brief; default 'design-brief'>}" \
      --original-request "${AGENTIC_TOPIC:-<one-line genericized design/UX topic>}" \
      --current-phase phase-0-bootstrap \
      --next-action "Run investigate skill")"
