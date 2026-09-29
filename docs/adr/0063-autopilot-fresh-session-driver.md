@@ -58,7 +58,7 @@ system already computes. Two gaps sit at the root:
    2026-06-22 amendment names the residual limit exactly: a markdown
    command "cannot guarantee a workflow is driven to completion at all"
    (ADR-0031 Amendment item 7,
-   `docs/adr/0031-session-level-active-handoff-layer.md:341-352`).
+   `docs/adr/0031-session-level-active-handoff-layer.md:349-360`).
 
 ### Owner requirements (2026-09-24)
 

@@ -142,12 +142,12 @@ presentation (ADR-0044 `:129-138` records the split).
   operator's user-global value — a cloned repository can flip any
   repo-readable key.
 - **ADR-0031 explicitly rejected a runtime active resolver**
-  (Alternative A, `0031:163-176`): shelling into persona state "makes
+  (Alternative A, `0031:199-212`): shelling into persona state "makes
   L1 runtime know L2/L3 script paths and frontmatter schemas, inverting
   the ADR-0010 dependency direction", and "pulls runtime toward owning
   persona/macro semantics … it explicitly does not own". It also
   rejected the neutral per-persona projection artifact (Approach C,
-  `0031:177-185`) as over-machinery for that slice while calling it
+  `0031:214-225`) as over-machinery for that slice while calling it
   "the best long-term shape". Separately, ADR-0040 §6/§B **shipped** a
   runtime surface that scans persona workflow namespaces and macro
   subtask progress directly — the dashboard "never reads
