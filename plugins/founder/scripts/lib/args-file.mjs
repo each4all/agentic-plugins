@@ -22,12 +22,18 @@
 // it is acceptable, which is what lets a future hook producer replace the
 // model's writing step without touching a consumer (Decision 6).
 //
+// The reader also removes the file once it has read it, when the runbook's
+// own `mktemp -d` step created it (see "Removing what was read" below), so no
+// runbook line has to run `rm`.
+//
 // Byte-identical copies ship in plugins/{runtime,engineer,designer,founder}/
 // scripts/lib/args-file.mjs, because each package is installed on its own;
 // tests/plugin-shape/test-args-file-transport.mjs fails when they differ.
 // Library only — no CLI entry.
 
-import { readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, resolve } from 'node:path';
 
 export const ARGS_FILE_VERSION = 1;
 // Far above any argument string a person types (the largest recorded topic is
@@ -111,24 +117,129 @@ export function decodeArgsFile(bytes) {
   return value.text;
 }
 
-/** The argument text in the args file at `path`. */
-export function readArgsFile(path) {
+/**
+ * The argument text in the args file at `path`. When the runbook's `mktemp -d`
+ * step created the file, it is removed with its directory once read, whether
+ * or not the text is valid.
+ */
+export function readArgsFile(path, { warn = (line) => process.stderr.write(line) } = {}) {
   if (typeof path !== 'string' || path === '') fail('no path was given');
-  let stats;
-  try {
-    stats = statSync(path);
-  } catch (error) {
-    fail(error.code === 'ENOENT' ? `no file at ${shown(path)}` : `cannot read ${shown(path)} (${shown(error.code ?? error.message)})`);
-  }
-  if (!stats.isFile()) fail(`${shown(path)} is not a regular file`);
-  if (stats.size > ARGS_FILE_MAX_BYTES) fail(`the file is ${stats.size} bytes; the limit is ${ARGS_FILE_MAX_BYTES}`);
   let bytes;
   try {
-    bytes = readFileSync(path);
-  } catch (error) {
-    fail(`cannot read ${shown(path)} (${shown(error.code ?? error.message)})`);
+    let stats;
+    try {
+      stats = statSync(path);
+    } catch (error) {
+      fail(error.code === 'ENOENT' ? `no file at ${shown(path)}` : `cannot read ${shown(path)} (${shown(error.code ?? error.message)})`);
+    }
+    if (!stats.isFile()) fail(`${shown(path)} is not a regular file`);
+    if (stats.size > ARGS_FILE_MAX_BYTES) fail(`the file is ${stats.size} bytes; the limit is ${ARGS_FILE_MAX_BYTES}`);
+    try {
+      bytes = readFileSync(path);
+    } catch (error) {
+      fail(`cannot read ${shown(path)} (${shown(error.code ?? error.message)})`);
+    }
+  } finally {
+    removeReadArgsFile(path, { warn });
   }
   return decodeArgsFile(bytes);
+}
+
+// ── Removing what was read ──────────────────────────────────────────────────
+//
+// The runbook makes a directory with `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`
+// and the model writes args.json into it; each block reads its file once. The
+// runbook used to remove both with a shell trap, and that `rm` is what Codex's
+// exec policy refuses (`rm -f`) and what an owner's `Bash(rm:*)` ask rule stops
+// in Claude — so the reader removes them instead (ADR-0059, amendment of
+// 2026-09-29 to (f)).
+//
+// Only what that step created is removed: a file named args.json that is the
+// only entry of a directory named agentic-args.<suffix> directly under the
+// temporary directory, neither of them a symbolic link, and the very file the
+// reader opened. The path is normalized before any of that is checked. Any
+// other path is read and left where it is, so a caller who names a file of
+// their own never loses it. A directory that matches but holds anything else is left whole, with a
+// warning, as the trap did. The directory is removed with rmdir, never as a
+// tree.
+
+const OWNED_DIRECTORY = /^agentic-args\.[A-Za-z0-9]{6,}$/;
+
+const realOrNull = (path) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+};
+
+/** The directories `mktemp -d "${TMPDIR:-/tmp}/…"` can have used, resolved. */
+function temporaryRoots() {
+  const roots = new Set();
+  for (const candidate of [process.env.TMPDIR, tmpdir(), '/tmp']) {
+    if (typeof candidate !== 'string' || candidate === '') continue;
+    const real = realOrNull(candidate);
+    if (real) roots.add(real);
+  }
+  return roots;
+}
+
+/**
+ * Remove the args file at `path` and its directory when the runbook's
+ * `mktemp -d` step created them; otherwise leave the path alone. Returns
+ * 'removed', 'not-owned' or 'kept' (owned, but it could not be removed).
+ */
+export function removeReadArgsFile(path, { warn = (line) => process.stderr.write(line) } = {}) {
+  if (typeof path !== 'string' || path === '') return 'not-owned';
+  // resolve() drops a doubled or trailing separator and every `.` and `..`.
+  // Without it, `<dir>//args.json` names its directory `<dir>/`, and lstat of
+  // a path ending in a separator follows a symbolic link to a directory.
+  const file = resolve(path);
+  if (basename(file) !== 'args.json') return 'not-owned';
+  const directory = dirname(file);
+  if (!OWNED_DIRECTORY.test(basename(directory))) return 'not-owned';
+  let directoryStats;
+  let fileStats;
+  try {
+    directoryStats = lstatSync(directory);
+    fileStats = lstatSync(file);
+  } catch {
+    return 'not-owned';
+  }
+  if (!directoryStats.isDirectory() || !fileStats.isFile()) return 'not-owned';
+  const parent = realOrNull(dirname(directory));
+  if (parent === null || !temporaryRoots().has(parent)) return 'not-owned';
+  // The file the reader opened — `path` as the operating system resolves it —
+  // must be the one about to be removed. resolve() folds `..` by spelling, so
+  // a `..` after a symbolic link would otherwise read one file and name
+  // another; realpathSync folds it the same way, so the check compares the two
+  // files themselves.
+  let opened;
+  try {
+    opened = statSync(path);
+  } catch {
+    return 'not-owned';
+  }
+  if (opened.dev !== fileStats.dev || opened.ino !== fileStats.ino) return 'not-owned';
+  let entries;
+  try {
+    entries = readdirSync(directory);
+  } catch (error) {
+    warn(`⚠ --args-file: could not remove ${shown(directory)} (${shown(error.code ?? error.message)})\n`);
+    return 'kept';
+  }
+  if (entries.length !== 1) {
+    warn(`⚠ --args-file: left ${shown(directory)} in place; it holds files other than args.json\n`);
+    return 'kept';
+  }
+  try {
+    unlinkSync(file);
+    rmdirSync(directory);
+  } catch (error) {
+    warn(`⚠ --args-file: could not remove ${shown(directory)} (${shown(error.code ?? error.message)})\n`);
+    return 'kept';
+  }
+  return 'removed';
 }
 
 // ── Locating the option ─────────────────────────────────────────────────────

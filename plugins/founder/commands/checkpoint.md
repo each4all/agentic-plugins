@@ -22,14 +22,16 @@ NOT bootstrap a new workflow — use one of the six verbs
 `/founder:compose`, `/founder:critique`, `/founder:refine`) for that.
 
 **Cognitive runbook + the Host-availability matrix live in
-`$CLAUDE_PLUGIN_ROOT/core/skills/checkpoint/SKILL.md`** per ADR-0022. This
+`${CLAUDE_PLUGIN_ROOT}/core/skills/checkpoint/SKILL.md`** per ADR-0022. This
 command file owns the Claude-host bash bootstrap and the `state.mjs` writes
 below; the summary-length guidance, privacy note, and host-availability
 matrix delegate to SKILL.md via the matching `§ Phase N` pointer.
 
-Plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT` (set by Claude
-Code for plugin slash commands). If unset, fall back to
-`$(find ~/.claude/plugins/cache/agentic-plugins/founder -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_FOUNDER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 ---
 
@@ -55,6 +57,8 @@ long (>1000 chars); do not silently truncate.
 ## Phase 1 — Locate active workflow
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" 2>/tmp/founder-checkpoint-find.err)"
@@ -78,6 +82,8 @@ Branch on the result:
 ## Phase 2 — Set checkpoint
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" checkpoint-set \
   --workflow-path "$ACTIVE" --host claude --summary "$SUMMARY"
 ```
