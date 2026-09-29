@@ -27,14 +27,15 @@
 //   6. the runbooks and the Codex skills: every one that took typed text now
 //      passes it by `--args-file`.
 //
-// Cleanup — the trap that removes the directory and keeps the exit status —
-// is exercised in tests/plugin-shape/test-runbook-shell-portability.mjs,
-// whose guard assertion it replaces (ADR-0059 Decision 8).
+// Cleanup — the reader removing the file it read, under an ownership rule —
+// is checked in section 2b; the block as a runbook runs it, in each shell, in
+// tests/plugin-shape/test-runbook-shell-portability.mjs (ADR-0059 Decision 8,
+// and the amendment of 2026-09-29 that moved the cleanup out of a shell trap).
 
 import { test } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -188,6 +189,158 @@ test('the args file carries the text byte for byte, and refuses every malformed 
   await t.test('a message quoting file or command-line text cannot forge a terminal line', () => {
     throws(() => lib.readArgsFile('/absent\nforged line'), (e) => !e.message.includes('\n') && e.message.includes('<U+000A>'));
     throws(() => lib.splitPersonaArguments(`--x${ch(0x1b)}[2J"`), (e) => !e.message.includes(ch(0x1b)) && e.message.includes('<U+001B>'));
+  });
+});
+
+// ── 2b. Removing what was read ──────────────────────────────────────────────
+//
+// The reader removes the file and its directory when the runbook's
+// `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"` step made them, and leaves
+// every other path alone (ADR-0059 (f), amended 2026-09-29). Each case below
+// that expects a path to survive is paired with the owned case it differs
+// from in one respect, so a reader that removed everything, or nothing, fails.
+
+test('the reader removes what the runbook created, and nothing else', async (t) => {
+  const owned = (text = '') => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-args.'));
+    writeFileSync(join(dir, 'args.json'), lib.encodeArgsFile(text));
+    return dir;
+  };
+  const warnings = [];
+  const warn = (line) => warnings.push(line);
+
+  await t.test('owned: removed after a valid read', () => {
+    const dir = owned('x y');
+    try {
+      strictEqual(lib.readArgsFile(join(dir, 'args.json'), { warn }), 'x y');
+      ok(!existsSync(dir), 'the directory survived');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('owned, spelled with a doubled separator: still removed', () => {
+    const dir = owned('x');
+    try {
+      strictEqual(lib.readArgsFile(`${dir}//args.json`, { warn }), 'x');
+      ok(!existsSync(dir), 'the directory survived');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('owned: removed even when the text is refused', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-args.'));
+    writeFileSync(join(dir, 'args.json'), '{"agentic_args": 2, "text": ""}\n');
+    try {
+      throws(() => lib.readArgsFile(join(dir, 'args.json'), { warn }), ArgsFileError);
+      ok(!existsSync(dir), 'the directory survived a refused file');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('another directory name: read, and left in place', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-argz.'));
+    writeFileSync(join(dir, 'args.json'), lib.encodeArgsFile('keep'));
+    try {
+      strictEqual(lib.readArgsFile(join(dir, 'args.json'), { warn }), 'keep');
+      ok(existsSync(join(dir, 'args.json')), 'a directory the runbook did not name was emptied');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('another file name in an owned directory: left in place', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-args.'));
+    writeFileSync(join(dir, 'mine.json'), lib.encodeArgsFile('keep'));
+    try {
+      strictEqual(lib.readArgsFile(join(dir, 'mine.json'), { warn }), 'keep');
+      ok(existsSync(join(dir, 'mine.json')), 'a file other than args.json was removed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('an owned directory that holds another file: left whole, with a warning', () => {
+    const dir = owned('x');
+    writeFileSync(join(dir, 'other'), 'mine');
+    warnings.length = 0;
+    try {
+      strictEqual(lib.readArgsFile(join(dir, 'args.json'), { warn }), 'x');
+      ok(existsSync(join(dir, 'args.json')) && existsSync(join(dir, 'other')), 'part of the directory was removed');
+      ok(warnings.some((w) => w.includes('left') && w.includes('other than args.json')), `no warning: ${JSON.stringify(warnings)}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('an agentic-args directory that is not directly under the temporary directory: left in place', () => {
+    const outer = scratch('nested');
+    const dir = join(outer, 'agentic-args.ABCDEF');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'args.json'), lib.encodeArgsFile('keep'));
+    try {
+      strictEqual(lib.readArgsFile(join(dir, 'args.json'), { warn }), 'keep');
+      ok(existsSync(join(dir, 'args.json')), 'a directory outside the temporary directory was emptied');
+    } finally {
+      rmSync(outer, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('a symbolic link named like an owned directory: the link and its target stay', () => {
+    const target = scratch('link-target');
+    writeFileSync(join(target, 'args.json'), lib.encodeArgsFile('keep'));
+    const link = join(tmpdir(), `agentic-args.link${process.pid}`);
+    symlinkSync(target, link);
+    try {
+      // `//` and `/./` leave a separator at the end of the directory name, and
+      // lstat of such a path follows the link (Refine-verify finding, 2026-09-29).
+      for (const spelling of [join(link, 'args.json'), `${link}//args.json`, `${link}/./args.json`]) {
+        strictEqual(lib.readArgsFile(spelling, { warn }), 'keep', spelling);
+        ok(existsSync(join(target, 'args.json')), `the link target was emptied through ${spelling}`);
+        ok(lstatSync(link).isSymbolicLink(), `the link was removed through ${spelling}`);
+      }
+    } finally {
+      unlinkSync(link);
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('a `..` after a symbolic link: the file read is not the owned one, so nothing is removed', () => {
+    // resolve() and realpathSync fold `..` by spelling; the operating system
+    // follows the link first. Reading `<link>/../agentic-args.X/args.json`
+    // opens a file beside the link's target, while its spelling names the
+    // owned directory under the temporary directory.
+    const name = `agentic-args.DOTDOT${process.pid}`;
+    const elsewhere = scratch('dotdot');
+    mkdirSync(join(elsewhere, 'sub'));
+    mkdirSync(join(elsewhere, name));
+    writeFileSync(join(elsewhere, name, 'args.json'), lib.encodeArgsFile('theirs'));
+    const ours = join(tmpdir(), name);
+    mkdirSync(ours);
+    writeFileSync(join(ours, 'args.json'), lib.encodeArgsFile('ours'));
+    const link = join(tmpdir(), `args-file-dotdot-link${process.pid}`);
+    symlinkSync(join(elsewhere, 'sub'), link);
+    try {
+      strictEqual(lib.readArgsFile(`${link}/../${name}/args.json`, { warn }), 'theirs');
+      ok(existsSync(join(ours, 'args.json')), 'the owned file was removed although another file was read');
+      ok(existsSync(join(elsewhere, name, 'args.json')), 'the file that was read, outside the temporary directory, was removed');
+    } finally {
+      unlinkSync(link);
+      rmSync(ours, { recursive: true, force: true });
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('an absent file: refused, and nothing is removed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-args.'));
+    try {
+      throws(() => lib.readArgsFile(join(dir, 'args.json'), { warn }), /no file at/);
+      ok(existsSync(dir), 'an empty owned directory was removed although nothing was read');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

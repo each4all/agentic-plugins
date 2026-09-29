@@ -324,8 +324,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D3', file: DONE, tests: [T_DONE],
-    from: '  cat "$REASON_FILE" > "$NOTE_FILE"',
-    to: '  eval "printf \'%s\' \\"$(cat "$REASON_FILE")\\"" > "$NOTE_FILE"',
+    from: '    if [ "$HAS_REASON" -eq 1 ]; then cat "$REASON_FILE"; fi',
+    to: '    if [ "$HAS_REASON" -eq 1 ]; then eval "printf \'%s\' \\"$(cat "$REASON_FILE")\\""; fi',
     why: 'the shell evaluates the reason text',
   },
   {

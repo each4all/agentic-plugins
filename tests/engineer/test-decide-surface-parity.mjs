@@ -126,19 +126,36 @@ test("PR5 surface-parity: preset id 'compact' mirrored", () => {
 });
 
 // =============================================================================
-// Mirror set 3 — Context-file plumbing ($AGENTIC_DECIDE_CONTEXT_FILE)
+// Mirror set 3 — Context plumbing (the ResolvedDecisionContext Phase 0.5 prints)
 // =============================================================================
+//
+// The context used to go to a temp file named by $AGENTIC_DECIDE_CONTEXT_FILE.
+// A Bash tool call is a fresh shell, so no later call knew that path unless the
+// model re-typed it; the final cleanup expanded to `rm -f ""`; and
+// `$(mktemp …).json` left mktemp's own file behind on every run. The
+// resolver now prints the context and the session holds it (ADR-0027 §4.3).
 
-test("PR5 surface-parity: $AGENTIC_DECIDE_CONTEXT_FILE plumbing mirrored", () => {
+test("PR5 surface-parity: the ResolvedDecisionContext plumbing is mirrored", () => {
   const cmdPhase0_5 = extractCommandRegion("## Phase 0.5");
   const cmdPhase1 = extractCommandRegion("## Phase 1");
   const skillFullText = readFileSync(SKILL_PATH, "utf8");
-  assert.match(cmdPhase0_5, /\$AGENTIC_DECIDE_CONTEXT_FILE/,
-    "Phase 0.5 must export/write $AGENTIC_DECIDE_CONTEXT_FILE");
-  assert.match(cmdPhase1, /\$AGENTIC_DECIDE_CONTEXT_FILE/,
-    "Phase 1 must reference $AGENTIC_DECIDE_CONTEXT_FILE for axis_awareness emission");
-  assert.match(skillFullText, /\$AGENTIC_DECIDE_CONTEXT_FILE/,
-    "SKILL.md must reference $AGENTIC_DECIDE_CONTEXT_FILE so the skill body knows where to read context");
+  assert.match(cmdPhase0_5, /prints the\s+resulting `ResolvedDecisionContext` JSON on stdout/,
+    "Phase 0.5 must say the resolver prints the context");
+  assert.match(cmdPhase1, /ResolvedDecisionContext JSON Phase 0\.5 printed/,
+    "Phase 1 must read the printed context for axis_awareness emission");
+  assert.match(skillFullText, /`ResolvedDecisionContext` that\s+commands\/decide\.md Phase 0\.5 prints/,
+    "SKILL.md must say where the skill body reads the context");
+});
+
+test("PR5 surface-parity: no persona writes the context to a file whose path a later Bash call cannot see", () => {
+  for (const persona of ["engineer", "designer", "founder"]) {
+    for (const rel of ["commands/decide.md", "core/skills/decide/SKILL.md"]) {
+      const text = readFileSync(new URL(`../../plugins/${persona}/${rel}`, import.meta.url), "utf8");
+      assert.doesNotMatch(text, /AGENTIC_DECIDE_CONTEXT_FILE/, `plugins/${persona}/${rel} names the retired context file`);
+      assert.doesNotMatch(text, /decide-registry\.mjs" resolve[^\n]*(\\\n[^\n]*)*>\s*"/,
+        `plugins/${persona}/${rel} redirects the resolver's output into a file`);
+    }
+  }
 });
 
 // =============================================================================

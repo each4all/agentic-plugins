@@ -240,6 +240,22 @@ describe('updateSubtask — recorded values are not replaced silently (ADR-0062 
     });
   });
 
+  // ADR-0063 S0 — /orchestrator:done pipes its note in rather than writing a
+  // temporary file it would then have to remove.
+  it('CLI: --reason-file - reads the reason from standard input', async () => {
+    await withTmpRepo('cli-stdin', async (root) => {
+      const filePath = await setupCompleted(root);
+      const corrected = spawnSync(process.execPath, [
+        STATE_MJS, 'subtask-update', `--workflow-path=${filePath}`, '--host=claude',
+        '--subtask-id=A', '--engineer-workflow-id=eng-X', '--commit=ddd', '--correct', '--reason-file=-',
+      ], { encoding: 'utf8', input: 'first line\nsecond; "quoted" $(not run)\n' });
+      strictEqual(corrected.status, 0, corrected.stderr);
+      strictEqual(JSON.parse(corrected.stdout.trim()).updatedSubtask.commit, 'ddd');
+      const { body } = await readWorkflow(filePath);
+      ok(body.includes('first line\nsecond; "quoted" $(not run)'), body);
+    });
+  });
+
   it('refuses any write, a correction included, to an archived macro (ADR-0062 §Decision 7)', async () => {
     await withTmpRepo('archived', async (root) => {
       const filePath = await setupCompleted(root);
