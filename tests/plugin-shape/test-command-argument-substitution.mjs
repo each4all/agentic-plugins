@@ -12,9 +12,10 @@
 // The grammar and how it was measured: tests/_claude-command-substitution.mjs.
 //
 // THE RULE. A command body may use `$ARGUMENTS`: that is how a runbook
-// receives its arguments, and ADR-0059 decides where it may reach shell
-// source (the last check below holds those places to a named list). Nothing
-// else from the grammar may appear:
+// receives its arguments. ADR-0059 decides that it never reaches shell
+// source — the model copies it into an args file instead — and the last
+// check below holds every fenced block to that. Nothing else from the
+// grammar may appear:
 //
 //   - a dollar sign followed by a digit, in any spelling. Claude replaces
 //     `$1`, `"$1"`, `$0.005`, and `\$1` too (it eats the backslash, so the
@@ -27,9 +28,9 @@
 //   - an `arguments:` frontmatter key, which turns `$<name>` into a
 //     substitution as well (a missing token becomes "").
 //
-// `$@` and `$*` are not substituted and stay the shell's:
-// plugins/engineer/commands/start.md reads `"$@"` after its
-// `set -- $ARGUMENTS` splice, which ADR-0059 retires.
+// `$@` and `$*` are not substituted and stay the shell's (until ADR-0059,
+// plugins/engineer/commands/start.md read `"$@"` after a
+// `set -- $ARGUMENTS` splice).
 //
 // The corpus is every body Claude loads from these plugins. Codex injects a
 // SKILL.md byte-for-byte (measured 0.156.1 and 0.157.1), so the skills under
@@ -129,20 +130,13 @@ const argumentLinesInCode = (body) =>
     .filter((line) => line.includes(SENTINEL))
     .map((line) => line.trim().replaceAll(SENTINEL, '$ARGUMENTS'));
 
-// ADR-0059 §Context: 16 unquoted splice sites and 3 quoted placeholders (15
-// sites once ADR-0060 removed `runtime:compat`). ADR-0059 removes them one
-// package per commit (ADR-0016); the entries left belong to the packages
-// whose commit has not landed. Each is pinned by its line so a new site
-// cannot hide behind a removed one.
-const ARGUMENT_LINES_IN_CODE = {
-  'plugins/founder/commands/decide.md': [
-    '# `$ARGUMENTS` is the verbatim user input. Expand unquoted so the shell',
-    'node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \\',
-  ],
-  'plugins/founder/commands/investigate.md': [
-    '--profile "${AGENTIC_PROFILE:-<profile from $ARGUMENTS — business-brief; default \'business-brief\'>}" \\',
-  ],
-};
+// ADR-0059 §Context counted 16 unquoted splice sites and 3 quoted
+// placeholders (15 once ADR-0060 removed `runtime:compat`), and the change
+// that implemented it removed every one: the runbooks pass typed text through
+// an args file (tests/plugin-shape/test-args-file-transport.mjs). The list
+// that pinned each site by its line is therefore empty. Adding a line here is
+// a decision against ADR-0059, not a test update.
+const ARGUMENT_LINES_IN_CODE = {};
 
 test('Claude command-argument substitution', async (t) => {
   await t.test('the port reproduces every measured cell', () => {
@@ -274,13 +268,13 @@ test('Claude command-argument substitution', async (t) => {
       'an `arguments:` frontmatter key makes `$<name>` a substitution too (a missing token becomes "")');
   });
 
-  await t.test('typed text reaches fenced code only on the lines ADR-0059 counts', () => {
+  await t.test('typed text reaches no fenced code (ADR-0059)', () => {
     const found = {};
     for (const f of CORPUS) {
       const lines = argumentLinesInCode(splitFrontmatter(readFileSync(f, 'utf8')).body);
       if (lines.length > 0) found[rel(REPO_ROOT, f)] = lines;
     }
     deepStrictEqual(found, ARGUMENT_LINES_IN_CODE,
-      'a new line puts typed text into shell source (ADR-0059); a removed one must be removed from ARGUMENT_LINES_IN_CODE');
+      'typed text reaches shell source again; pass it by --args-file instead (ADR-0059)');
   });
 });
