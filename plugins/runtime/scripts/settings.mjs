@@ -59,6 +59,7 @@ import {
 // here and doctor's currency mirror MUST resolve "the installed version" through the
 // SAME leaf, or a freshly recorded attestation reads stale on the machine that wrote it.
 import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/codex-attestation-versions.mjs';
+import { expandArgsFile } from './lib/args-file.mjs';
 
 // 1.17 → 1.18 (additive): report.plugin_management / report.plugin_cleanup gain
 // `plan_hash` (§1.6 drift guard) so bootstrap can read a dry-run plan's hash and
@@ -2849,7 +2850,7 @@ function requireValue(argv, index, flag) {
 async function main() {
   let opts;
   try {
-    opts = parseArgs(process.argv.slice(2));
+    opts = parseArgs(expandArgsFile(process.argv.slice(2)));
   } catch (err) {
     process.stderr.write(`${err.message}\n${usage()}`);
     process.exit(2);

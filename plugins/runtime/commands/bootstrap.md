@@ -12,13 +12,38 @@ and the completion reducer** (`docs/machine-bootstrap-contract.md` is the
 normative contract); this command owns conversational pacing only — no schema
 decision lives in this file.
 
+The arguments above reach the command through an args file, never through
+the shell (ADR-0059): typed text spliced into a command line is cut at `;`,
+expanded at `$(…)` and redirected at `>`, and the damage can exit zero.
+Before the block below:
+
+1. Create a private directory for the file, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `args.json` in that
+   directory holding `{"agentic_args": 1, "text": "…"}`, with `text` set to
+   the arguments above exactly as typed, as a JSON string (`""` when there
+   are none).
+
+Then run the block with `ARGS_DIR` set to that directory. The command reads
+the text as shell-style words and expands nothing: quote a value that holds
+spaces, and quote `;` `&` `|` `<` `>` `(` `)`, a backquote, a `$` expansion,
+or a word-initial `#` or `~` to pass it as text — unquoted, each is refused
+with a message rather than reinterpreted. The block's `trap` removes the
+directory on every exit and keeps the command's exit status.
+
 ```bash
+ARGS_DIR='<directory from step 1>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 RUNTIME_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 if [ -z "$RUNTIME_ROOT" ]; then
   RUNTIME_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
-node "$RUNTIME_ROOT/scripts/bootstrap.mjs" $ARGUMENTS
+node "$RUNTIME_ROOT/scripts/bootstrap.mjs" --args-file "$ARGS_DIR/args.json"
 ```
 
 ## Interview pacing (the only thing this file owns)

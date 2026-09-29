@@ -28,6 +28,7 @@ import { resolveRepoRoot } from './notify.mjs';
 import { buildSourceFreshness, formatSourceFreshness, observeCurrentBranch, observeSessionGitFacts, observeWorktreeDirtyCount, resolveGitTopLevel, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { collectEntrySources } from './lib/entry-brief-readers.mjs';
 import { ENTRY_BRIEF_SCHEMA_ID, arbitrateEntryBrief, semanticEntryBriefViolation } from './lib/entry-brief-arbiter.mjs';
+import { expandArgsFile } from './lib/args-file.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -2491,8 +2492,27 @@ function isHookGradeArgv(argv) {
     || (argv.includes('entry-brief') && argv.includes('session-start-hook'));
 }
 
+// The argv the hook-grade classification reads, once any ADR-0059 args file is
+// expanded — kept here so the entry point's backstop classifies the same argv
+// main() did.
+let classifiedArgv = null;
+
 async function main() {
-  const argv = process.argv.slice(2);
+  const rawArgv = process.argv.slice(2);
+  // ADR-0059: expand the args file before classifying, so a hook-grade shape
+  // carried in the file is treated as one. A hook never passes an args file;
+  // if expansion fails, the raw argv decides, exactly as for a parse failure.
+  let argv;
+  try {
+    argv = expandArgsFile(rawArgv);
+  } catch (error) {
+    if (isHookGradeArgv(rawArgv)) {
+      process.stderr.write(`runtime:context: args failed: ${truncateReason(error?.message)}\n`);
+      return;
+    }
+    throw error;
+  }
+  classifiedArgv = argv;
   // ADR-0044 §9 output-mode split, made explicit: operator invocations stay on
   // the reporter path (stdout report, exit 1 on error) while the hook/sidecar
   // modes are fail-closed silent: exit 0 always, nothing on stdout, at most
@@ -2554,7 +2574,7 @@ if (isMain) {
     // Backstop for the hook-grade contract: a failure that escapes main()
     // must still exit 0 with no report when --hook-grade was requested or
     // the command is the intrinsically hook-grade publish-session.
-    if (isHookGradeArgv(process.argv)) {
+    if (isHookGradeArgv(classifiedArgv ?? process.argv)) {
       process.exitCode = 0;
       return;
     }

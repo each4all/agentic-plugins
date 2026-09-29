@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { runCommand } from './doctor.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { resolveCodexHome } from './lib/state-readers.mjs';
+import { expandArgsFile } from './lib/args-file.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -3253,7 +3254,7 @@ function buildRoundPolicy(configuredMaxRounds) {
 }
 
 async function main() {
-  const options = parseArgs(process.argv.slice(2));
+  const options = parseArgs(expandArgsFile(process.argv.slice(2)));
   if (options.help) {
     console.log(helpText());
     return;

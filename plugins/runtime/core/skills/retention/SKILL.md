@@ -21,6 +21,25 @@ artifact retention. The planner is **read-only**; the apply executor is
 node "<runtime-plugin-root>/scripts/retention.mjs" plan|apply|resolve [--family doctor|settings] [--expected-plan-hash <hash>] [--execute] [--format text|json] --repo-root "$REPO_ROOT"
 ```
 
+Pass the subcommand and options above through an args file, never on the
+command line (ADR-0059): text spliced into a shell line is cut at `;`,
+expanded at `$(…)` and redirected at `>`. Create a directory with
+`mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, write `args.json` in it
+with your file-editing tool, holding `{"agentic_args": 1, "text": "…"}` with
+`text` set to them as a JSON string, and run:
+
+```bash
+ARGS_DIR='<directory mktemp printed>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+node "<runtime-plugin-root>/scripts/retention.mjs" --args-file "$ARGS_DIR/args.json" --repo-root "$REPO_ROOT"
+```
+
+`text` is read as shell-style words that expand nothing: quote a value that
+holds spaces, and quote `;` `&` `|` `<` `>` `(` `)`, a backquote, a `$`
+expansion, or a word-initial `#` or `~` — unquoted, each is refused with a
+message. The `trap` removes the directory on every exit and keeps the exit
+status.
+
 3. Present the result as an operator retention report.
    - `plan` is read-only and safe to run repeatedly; it prints the
      actionable/pinned split and the plan hash to review.

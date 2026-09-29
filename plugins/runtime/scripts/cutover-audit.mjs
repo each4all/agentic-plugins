@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runDoctor } from './doctor.mjs';
 import { elapsedMsSince } from './lib/clock.mjs';
+import { expandArgsFile } from './lib/args-file.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -2008,7 +2009,7 @@ cutover still requires explicit user declaration.`;
 
 async function main() {
   try {
-    const options = parseArgs(process.argv.slice(2));
+    const options = parseArgs(expandArgsFile(process.argv.slice(2)));
     const report = options.help
       ? { help: true, version: VERSION }
       : options.command === 'record'

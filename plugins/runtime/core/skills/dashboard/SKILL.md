@@ -18,6 +18,25 @@ description: "Read-only ADR-0040 runtime operator dashboard. Use when the user w
 node "<runtime-plugin-root>/scripts/dashboard.mjs" --repo-root "$REPO_ROOT" --host codex [--format text|json] [--watch] [--interval-seconds <n>] [--watch-count <n>] [--recent <n>]
 ```
 
+Pass the subcommand and options above through an args file, never on the
+command line (ADR-0059): text spliced into a shell line is cut at `;`,
+expanded at `$(…)` and redirected at `>`. Create a directory with
+`mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, write `args.json` in it
+with your file-editing tool, holding `{"agentic_args": 1, "text": "…"}` with
+`text` set to them as a JSON string, and run:
+
+```bash
+ARGS_DIR='<directory mktemp printed>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+node "<runtime-plugin-root>/scripts/dashboard.mjs" --repo-root "$REPO_ROOT" --host codex --args-file "$ARGS_DIR/args.json"
+```
+
+`text` is read as shell-style words that expand nothing: quote a value that
+holds spaces, and quote `;` `&` `|` `<` `>` `(` `)`, a backquote, a `$`
+expansion, or a word-initial `#` or `~` — unquoted, each is refused with a
+message. The `trap` removes the directory on every exit and keeps the exit
+status.
+
 3. Present only the rendered snapshot.
    - Keep attention rows (stale peer runs, artifact-cap breaches, notify-state issues, stale doctor evidence) visible.
    - When the operator needs a live host diagnosis rather than recorded evidence, route to `/runtime:doctor` instead of re-running the dashboard.

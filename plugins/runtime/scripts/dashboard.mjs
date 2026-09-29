@@ -48,6 +48,7 @@ import { elapsedMsSince } from './lib/clock.mjs';
 import { isClaimExpired, isLockStale, notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
 import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
 import { NOTIFY_KEY_DEFAULTS } from './lib/runtime-config.mjs';
+import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
 import { loadNotifyConfig, resolveRepoRoot, NOTIFY_LOG_ROTATE_LOCK_STALE_MS } from './notify.mjs';
 import {
   inspectConsensusRuns,
@@ -1126,8 +1127,14 @@ async function renderOnce(opts, repoRoot, { ndjson = false, includeEntryAdvisory
   return renderDashboardText(report);
 }
 
-async function main(argv) {
-  const parsed = parseDashboardArgs(argv);
+async function main(rawArgv) {
+  let parsed;
+  try {
+    parsed = parseDashboardArgs(expandArgsFile(rawArgv));
+  } catch (error) {
+    if (!(error instanceof ArgsFileError)) throw error;
+    parsed = { ok: false, reason: error.message };
+  }
   if (!parsed.ok) {
     process.stderr.write(`dashboard: ${parsed.reason}\n`);
     process.stderr.write('usage: dashboard.mjs [--repo-root <path>] [--format text|json] [--host claude|codex] [--watch] [--interval-seconds <n>] [--watch-count <n>] [--recent <n>]\n');

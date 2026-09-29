@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { RETENTION_FAMILIES, planRetention, projectRetentionAttention } from './lib/retention-planner.mjs';
 import { applyRetention, resolveOpenReceipt, computeExpectedHashHex, RETENTION_APPLY_VERSIONS } from './lib/retention-apply.mjs';
 import { resolveRepoRoot } from './notify.mjs';
+import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
 
 function parseArgs(argv) {
   const opts = { command: null, family: null, format: 'text', execute: false, expectedPlanHash: null, repoRoot: null };
@@ -111,7 +112,13 @@ function renderApplyText(result) {
 }
 
 export async function runRetentionCli(argv, { cwd = process.cwd() } = {}) {
-  const parsed = parseArgs(argv);
+  let parsed;
+  try {
+    parsed = parseArgs(expandArgsFile(argv));
+  } catch (error) {
+    if (!(error instanceof ArgsFileError)) throw error;
+    return { ok: false, reason: error.message };
+  }
   if (!parsed.ok) return { ok: false, reason: parsed.reason };
   const opts = parsed.opts;
   const repoRoot = resolveRepoRoot({ cwd, explicit: opts.repoRoot });

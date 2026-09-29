@@ -9,14 +9,39 @@ $ARGUMENTS
 
 Render the ADR-0040 §6 aggregate operator view in one read-only snapshot. This command is R0 per ADR-0035: filesystem reads — it never probes host CLIs (that is `runtime:doctor`'s job; the dashboard reports the recorded doctor evidence and its age instead) and never mutates state or host config. One declared exception to the no-spawn shape (ADR-0045 §7/§11): the **snapshot-mode entry advisory** pays the entry arbiter's bounded git probes (repo-root/branch/porcelain via the shared `runtime:context entry-brief` executor). `--watch` never does — the watch loop stays filesystem-only and spawn-free.
 
+The arguments above reach the command through an args file, never through
+the shell (ADR-0059): typed text spliced into a command line is cut at `;`,
+expanded at `$(…)` and redirected at `>`, and the damage can exit zero.
+Before the block below:
+
+1. Create a private directory for the file, and note the path it prints:
+
+   ```bash
+   mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"
+   ```
+
+2. With your file-writing tool, not the shell, create `args.json` in that
+   directory holding `{"agentic_args": 1, "text": "…"}`, with `text` set to
+   the arguments above exactly as typed, as a JSON string (`""` when there
+   are none).
+
+Then run the block with `ARGS_DIR` set to that directory. The command reads
+the text as shell-style words and expands nothing: quote a value that holds
+spaces, and quote `;` `&` `|` `<` `>` `(` `)`, a backquote, a `$` expansion,
+or a word-initial `#` or `~` to pass it as text — unquoted, each is refused
+with a message rather than reinterpreted. The block's `trap` removes the
+directory on every exit and keeps the command's exit status.
+
 ```bash
+ARGS_DIR='<directory from step 1>'
+trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RUNTIME_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 if [ -z "$RUNTIME_ROOT" ]; then
   RUNTIME_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
-node "$RUNTIME_ROOT/scripts/dashboard.mjs" --repo-root "$REPO_ROOT" --host claude $ARGUMENTS
+node "$RUNTIME_ROOT/scripts/dashboard.mjs" --repo-root "$REPO_ROOT" --host claude --args-file "$ARGS_DIR/args.json"
 ```
 
 Examples:
