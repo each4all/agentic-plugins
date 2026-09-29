@@ -1,0 +1,179 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "the-host-versions-nobody-tracks",
+  "evidence_loop": {
+    "label": "Host versions nobody tracks: ADR-0060 released as runtime 0.99.0, with engineer 0.22.1",
+    "summary": "The release of ADR-0060, which removed host-version tracking: runtime lost its host-parity baseline, its Codex capability sibling, runtime:compat and the twice-daily drift check, and doctor now reports the probed Claude Code and Codex CLI versions as facts with no verdict. Its doctor report moved to 1.3, experience parity to 1.2, the dashboard to 3.0, and runtime:cutover reports host-pair identity as not verified. Release PR #830 shipped runtime 0.99.0 and engineer 0.22.1. The release-obligation window ADR-0060 named closed at the tag, and the recovery removed the baseline pathspec that had outlived its file for that one release. Both hosts installed the new versions, each cache blob-equal to its release tag (438 files per host), and for the first time on this machine a pin and main differed: Codex rewrote attention from its tag, not from main. The owner renewed the Codex hook attestation in a Codex 0.158.0 session. The proof, the first under the 1.3 shape, reads ready 100% and overall pass, and the new reader reads all 90 retained doctor artifacts with none malformed."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.99.0",
+      "tag": "plugin-runtime-v0.99.0",
+      "release_pr": 830,
+      "squash": "d91b35869965c50df3ca7bd0abe25862fc221bb8",
+      "marketplace_sync": "beeab0b64c97fa911fc1e51c77e3690928a2e3d4"
+    },
+    {
+      "package": "plugins/engineer",
+      "version": "0.22.1",
+      "tag": "plugin-engineer-v0.22.1",
+      "release_pr": 830,
+      "squash": "d91b35869965c50df3ca7bd0abe25862fc221bb8",
+      "marketplace_sync": "beeab0b64c97fa911fc1e51c77e3690928a2e3d4"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "1a6aa892c5207a71e2f9ca606f667b6b528c669e",
+      "pr_attested": 829,
+      "note": "ADR-0060: removes the host-parity baseline, its Codex sibling, runtime:compat and the drift check; doctor 1.3, parity 1.2, dashboard 3.0, and runtime:cutover reports host-pair identity as not verified. Rebase merge, so the subject carries no PR number."
+    },
+    {
+      "sha": "b5e03e9f65965c02d5262e9a6591ead06d24107e",
+      "pr_attested": 829,
+      "note": "Engineer stops routing runtime questions to the removed runtime:compat; the only engineer change in 0.22.1. Same rebase merge."
+    },
+    {
+      "sha": "35f92591de4ee29e41898805566debe22562a776",
+      "pr_attested": 829,
+      "note": "Attention README and a sensor.mjs comment stop citing the deleted baseline; docs-typed, so attention did not release. Same rebase merge."
+    },
+    {
+      "sha": "3372eded3a166652ff3abee2916bfd25509b2e45",
+      "pr_attested": 829,
+      "note": "ADR-0060's dated amendment recording what the implementation measured, with ADR-0047 and ADR-0052 amended. Same rebase merge."
+    }
+  ],
+  "hardening_commits": [
+    {
+      "sha": "1d86cb732dfd2c38b63fce5566aab1aa4ce1f8a7",
+      "pr_attested": 829,
+      "note": "The release-obligation check judges history through an explicit path list, so the baseline pathspec could outlive its file until this release and the replays keep the list of their time. Same rebase merge."
+    }
+  ],
+  "proofs": [
+    {
+      "run_id": "doctor-20260928T235027Z-349792",
+      "date": "2026-09-28",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:ecbb96d632f3eb57b5cf7965e32a62954a0125da6a898a465d32a652c566a2db",
+      "runtime_version": "0.99.0",
+      "installed": {
+        "claude": "0.99.0",
+        "codex": "0.99.0"
+      },
+      "host_cli": {
+        "claude": "2.1.284 (Claude Code)",
+        "codex": "codex-cli 0.158.0"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "pass; hard_failures empty; warnings empty"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; issue_count 0; difference_count 2"
+        },
+        {
+          "key": "experience_parity",
+          "value": "ready 100% (115/115); satisfied 8, partial 0, not_verified 0, blocked 0; manual_followup_count 0"
+        },
+        {
+          "key": "experience_parity.runtime_handoff_artifacts",
+          "value": "satisfied: settings=available, consensus=available; latest-settings=settings-20260928T234614Z-4fb591; latest-consensus=consensus-20260611T022143Z-e70631"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed=true; claude_to_codex passed; codex_to_claude passed"
+        },
+        {
+          "key": "permission_proof.claude_to_codex.companion_path",
+          "value": "~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs"
+        },
+        {
+          "key": "permission_proof.codex_to_claude.companion_path",
+          "value": "~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs"
+        },
+        {
+          "key": "deep_peer_smoke.claude_to_codex.companion_path",
+          "value": "~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs"
+        },
+        {
+          "key": "deep_peer_smoke.codex_to_claude.companion_path",
+          "value": "~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs"
+        },
+        {
+          "key": "companions.claude_to_codex",
+          "value": "selected ~/.claude/plugins/cache/agentic-plugins/companions/0.4.2/scripts/codex-companion.mjs; source claude-cache; candidates 2"
+        },
+        {
+          "key": "companions.codex_to_claude",
+          "value": "selected ~/.codex/plugins/cache/agentic-plugins/companions/0.4.2/scripts/claude-companion.mjs; source codex-cache; candidates 1"
+        },
+        {
+          "key": "workflow_continuation_proof.tool_root",
+          "value": "claude_to_codex ~/.claude/plugins/cache/agentic-plugins/engineer/0.22.1 (claude-cache); codex_to_claude ~/.claude/plugins/cache/agentic-plugins/engineer/0.22.1 (claude-cache)"
+        },
+        {
+          "key": "codex_plugin_hooks",
+          "value": "ready; hook_state expected 12, enabled 12, disabled 0, untrusted 0, missing 0"
+        },
+        {
+          "key": "settings_runs.codex_hook_review",
+          "value": "attested; current true; latest settings-20260928T234614Z-4fb591; bound codex 0.158.0; designer 0.3.10, engineer 0.22.1, founder 0.4.10, orchestrator 0.14.0"
+        },
+        {
+          "key": "plugins.runtime.installed.codex_resolved",
+          "value": "decision installed; source list; version 0.99.0; decision and source identical for all 8 plugins: true"
+        },
+        {
+          "key": "codex_install_identity",
+          "value": "catalog read; pin_phase pinned; snapshot_root_registered true; invalid 0; unpinned 0; 8 plugins, target pinned 8, currentness current 8, identity verified 8"
+        },
+        {
+          "key": "codex_install_identity.plugins.0",
+          "value": "attention plugin-attention-v0.9.1@a511c29 installed 0.9.1 (plugin-list); companions plugin-companions-v0.4.2@a511c29 installed 0.4.2 (plugin-list); designer plugin-designer-v0.3.10@e1c823a installed 0.3.10 (plugin-list); engineer plugin-engineer-v0.22.1@d91b358 installed 0.22.1 (plugin-list)"
+        },
+        {
+          "key": "codex_install_identity.plugins.1",
+          "value": "founder plugin-founder-v0.4.10@e1c823a installed 0.4.10 (plugin-list); image plugin-image-v0.3.2@a511c29 installed 0.3.2 (plugin-list); orchestrator plugin-orchestrator-v0.14.0@e1c823a installed 0.14.0 (plugin-list); runtime plugin-runtime-v0.99.0@d91b358 installed 0.99.0 (plugin-list)"
+        },
+        {
+          "key": "codex_install_identity.sibling_resolution",
+          "value": "12 edges, predicted codex-cache 12; cross_host_fallback 0; cross_host 0; basis: predicted from the Claude and Codex install caches; an AGENTIC_*_ROOT override in the Codex session, or a locator capability filter, can change the actual resolution"
+        },
+        {
+          "key": "receivers",
+          "value": "current; reinstall_recommended false; agentic-statusline.mjs current (statusline delegating-shim v2), codex-notify-shuttle.mjs current (codex-notify delegating-shim v2), codex-notify-chain.mjs missing"
+        },
+        {
+          "key": "doctor_runs",
+          "value": "available malformed=0 across 90 artifacts"
+        },
+        {
+          "key": "settings_runs",
+          "value": "available across 49 artifacts"
+        }
+      ]
+    }
+  ],
+  "install_method": "Direct host commands, so no settings-executor artifact. Claude: claude plugin marketplace update agentic-plugins, then claude plugin update for runtime and engineer (gitCommitSha 0f87500); not restarted, the proof ran the installed 0.99.0 by path. Codex CLI 0.157.1: codex plugin marketplace upgrade agentic-plugins, direct in 4 s; snapshot at 0f87500, all eight package directories rewritten.",
+  "narrative": "**The release window.** From 1a6aa89 until the tag the release-obligation check read the baseline's deletion as outstanding_debt, and main's full-tests run 36442564782 on 3372ede failed on that test alone (1 of 7476). Release PR #830 squashed as d91b358, both tags peeling to it; the release job's obligation step passed after the tag, the catalog sync beeab0b advanced runtime's and engineer's Claude versions and Codex pins to d91b358, and the stage-doc sync is 0f87500. The recovery then removed the baseline pathspec from PROTECTED_PATHS and turned the identity test from listed-but-absent into not-listed; re-listing it in a scratch worktree fails that test and the replay test, and the path-list mutation spec reads 8 of 8.\n\n**C58, second run.** The dispatch step started five workflow_dispatch runs with head_sha 0f87500: claude-tests 36499331880, codex-tests 36499335098, cross-host-tests 36499338252, full-tests 36499341196, marketplace-validate 36499344204. cross-host-tests and marketplace-validate passed; the other three failed only on the proof-coupled installed-state test, full-tests also on the docs-in-sync check, both of which this record clears. The release commit's push runs failed on the catalog lag, and its full-tests also on a peer-runner ENOTEMPTY teardown failure in orchestrator's copy, the failure engineer's copy hit on codex-tests run 36290608476; the test passed in the dispatched run.\n\n**Installs, measured.** A session comparator (not retained in the repository) reads each cache against the git objects at its release tag, path set, blob id and owner execute bit: 438 files per host, none missing, differing, mode-differing or extra, on both hosts. As negative control, Claude's retained runtime 0.98.1 cache read against plugin-runtime-v0.99.0 shows 40 defects. For the first time a pin and main differ: 35f9259 changed attention's README and sensor.mjs after plugin-attention-v0.9.1, the Codex snapshot at 0f87500 holds main's README, and the cache Codex rewrote at 23:43Z holds the tag's blobs for both files.\n\n**Decision 8.** A quick doctor at 23:44Z read Codex 0.157.1 and the attestation stale on plugin_version_changed. By the review Codex had moved to 0.158.0: its update record and global install date from 23:45Z, the owner confirmed the review session ran 0.158.0, and what triggered the update was not measured. No file under adapters/codex/hooks changed between the engineer tags. The owner reviewed /hooks in that 0.158.0 session, and settings-20260928T234614Z-4fb591 binds codex 0.158.0 to designer 0.3.10 / engineer 0.22.1 / founder 0.4.10 / orchestrator 0.14.0.\n\n**The proof against its control.** Against doctor-20260928T003506Z-039c6a, the release removed the host_parity_baseline and compat_runs readings and compat from runtime_handoff_artifacts, and moved runtime's and engineer's pins and versions and the continuation proof's engineer (0.22.0 to 0.22.1). The attestation reading is this loop's; settings runs rose to 49 for it and doctor runs to 90 for the control proof itself. overall, host_parity, parity, the three proofs, companion paths, hook state, sibling resolution and receivers did not move. The 90 artifacts it read were 79 at schema 1.0, 1 at 1.1 and 10 at 1.2, none malformed; a later read counts 91.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "the-completions-that-never-landed",
+      "note": "The second 0.98.1 loop and this loop's control: runtime 0.98.1 under Claude Code 2.1.283 and Codex 0.157.1, with the host-parity baseline and compat run still in the report. Apart from two counts and the attestation, every reading that moved is one the release moved."
+    }
+  ]
+}

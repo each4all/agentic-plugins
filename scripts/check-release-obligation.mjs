@@ -82,21 +82,21 @@ import { gitHistoryAvailable } from './check-doc-evidence.mjs';
  * covering it needs an asset->owning-package registry and a cross-package
  * promotion rule. That is ADR-0052 item 6's follow-up, not this file's job.
  *
- * ⚠ THE BASELINE ENTRY OUTLIVES ITS FILE, FOR ONE RELEASE, ON PURPOSE.
- * ADR-0060 deleted `host-parity-baseline.md` and shrinks this list to two
- * (§Decision 5). Both sides of the comparison are read through THIS list, so
- * dropping the entry in the change that deletes the file would compare the
- * released tree and the current one without the baseline on either side, and
- * report `fulfilled` while the newest release still ships it (measured in a
- * scratch clone, 2026-09-28). Kept, the deletion is debt until the next
- * `plugin-runtime-v*` tag carries it — the red window ADR-0060 §Decision 7
- * names — and the entry is removed in that release's recovery, when the
- * released tree no longer has the file either. A pathspec that matches
- * nothing at HEAD is harmless here: the zero-size refusal below is about the
- * whole set, and the other two entries keep it non-empty.
+ * ⚠ A PROTECTED FILE IS DELETED FIRST, AND ITS ENTRY ONE RELEASE LATER.
+ * The list had a third entry, `plugins/runtime/docs/host-parity-baseline.md`,
+ * until the recovery for `plugin-runtime-v0.99.0` removed it (ADR-0060
+ * §Decision 5). Both sides of the comparison are read through THIS list, so
+ * dropping the entry in the change that deleted the file would have compared
+ * the released tree and the current one without the baseline on either side,
+ * and reported `fulfilled` while the newest release still shipped it (measured
+ * in a scratch clone, 2026-09-28). Kept, the deletion was debt until
+ * `plugin-runtime-v0.99.0` carried it — the red window ADR-0060 §Decision 7
+ * names — and the entry went in that release's recovery, once the released
+ * tree no longer had the file either. Removing any other protected path takes
+ * the same order. Replays of history made under the three-entry list name
+ * that list themselves; the default is always this one.
  */
 export const PROTECTED_PATHS = Object.freeze([
-  'plugins/runtime/docs/host-parity-baseline.md',
   'plugins/runtime/data/plugin-set.json',
   'plugins/runtime/data/schemas',
 ]);
@@ -306,9 +306,9 @@ function isAncestor(repoRoot, a, b) {
  *
  * `paths` is the protected list to compare through, defaulting to the live
  * one. It exists for the replays of real history: the counterexample this
- * check was built on (`16b1833`) changed only the baseline, so once ADR-0060's
- * recovery drops that entry the live list can no longer see it, and a replay
- * has to name the list of its own time. Every digest and window below uses the
+ * check was built on (`16b1833`) changed only the baseline, and ADR-0060's
+ * recovery dropped that entry, so the live list can no longer see it and a
+ * replay has to name the list of its own time. Every digest and window below uses the
  * SAME list — HEAD, the tag, the pending release, the epoch — because a verdict
  * that compares two sets drawn through two lists compares nothing.
  */
