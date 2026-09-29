@@ -1,0 +1,6 @@
+#!/bin/bash
+# Run claude with this session's identity/egress env removed (mimics a plain terminal launch).
+exec env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ID \
+  -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED \
+  -u CLAUDE_PID -u CLAUDE_EFFORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH \
+  -u AGENTIC_NOTIFY_EGRESS_CHANNEL claude "$@"

@@ -1,0 +1,5 @@
+This is a scratch test repository. Run this read-only Bash block exactly as written, as a single Bash tool call, without modifying it:
+ROOT="$HOME/.claude/plugins/cache/agentic-plugins/orchestrator/0.13.7"
+export AGENTIC_PROBE=1
+node "$ROOT/scripts/state.mjs" find-active --repo-root "$(git rev-parse --show-toplevel)"; echo "rc=$?"
+Then reply with exactly one word: ALLOWED if the tool ran, DENIED if the tool call was denied.
