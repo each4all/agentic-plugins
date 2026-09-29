@@ -18,17 +18,18 @@ verbs (`/engineer:investigate`, `/engineer:frame`, `/engineer:decide`,
 that.
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/core/skills/resume/SKILL.md`** per ADR-0022
+`${CLAUDE_PLUGIN_ROOT}/core/skills/resume/SKILL.md`** per ADR-0022
 (meta-skill category, ADR-0010 §3 cascade). This command file owns
 the Claude-host bash bootstrap and the `state.mjs` writes below;
 for each Phase 0–3 the cognitive description, decision gates, and
 host-availability matrix delegate to SKILL.md via the matching
 `§ Phase N` pointer.
 
-The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT`
-(set by Claude Code for plugin slash commands). If unset for any
-reason, fall back to
-`$(find ~/.claude/plugins/cache/agentic-plugins/engineer -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ENGINEER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 ---
 
@@ -48,6 +49,8 @@ Inspect `$ARGUMENTS`:
 ## Phase 1 — Locate active workflow
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" 2>/tmp/engineer-resume-find.err)"
@@ -80,6 +83,8 @@ Branch on the result:
   whose branch matches `git branch --show-current`.
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   for dir in "$REPO_ROOT/.agentic-plugins/state/engineer/workflows" "$REPO_ROOT/.claude/agentic-engineer/workflows"; do
     for f in "$dir"/*.md; do
       [ -f "$f" ] || continue
@@ -105,6 +110,8 @@ Branch on the result:
 Read the active workflow's frontmatter and compare git state:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
   --workflow-path "$ACTIVE" > /tmp/engineer-resume-frontmatter.json
 
@@ -244,6 +251,8 @@ re-validating here because shell variables from Phase 2 do not survive
 across Bash invocations.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 BASE_HEAD_CHECK="$(jq -r '.git_baseline.head' /tmp/engineer-resume-frontmatter.json 2>/dev/null)"
 PHASE2B_SKIP=false
 if [ -z "$BASE_HEAD_CHECK" ] || [ "$BASE_HEAD_CHECK" = "null" ] \
@@ -291,6 +300,8 @@ so the user can sanity-check.
 On confirmation:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" archive \
   --workflow-path "$WORKFLOW" --host claude --repo-root "$REPO_ROOT"
 ```

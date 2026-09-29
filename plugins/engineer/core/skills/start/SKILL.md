@@ -51,12 +51,12 @@ hosts (ADR-0059 Decision 7). The feature description, with any
 line, where an apostrophe aborts the line and `;` or `$(…)` cuts or runs it.
 Write `{"agentic_args": 1, "text": "…"}` with the file-editing tool into a
 directory from `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`, then run
-the extractor with the cleanup installed first, in the same shell as the
-steps that read `BASE_BRANCH` and `FEATURE`:
+the extractor in the same shell as the steps that read `BASE_BRANCH` and
+`FEATURE`. It removes the args file and its directory once it has read them,
+so running it again needs a new args file:
 
 ```bash
 ARGS_DIR='<directory mktemp printed>'
-trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 START_ARGS="$(node "<engineer-plugin-root>/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
 printf '%s\n' "$START_ARGS"
 BASE_BRANCH="$(printf '%s' "$START_ARGS" | jq -r .base_branch)"

@@ -14,14 +14,19 @@ type) — never ask the user whether to invoke the peer. When the
 companions plugin or peer CLI is unavailable, the ensemble degrades
 silently to local-only.
 
-Plugin root: `$CLAUDE_PLUGIN_ROOT` (fallback as in
-commands/investigate.md).
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ENGINEER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 ---
 
 ## Phase 0 — Workflow continuity (per ADR-0011 §5)
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
 # ADR-0018 §sub-2 — engineer workflows are anchored to a branch;
@@ -31,22 +36,20 @@ if [ -z "$GIT_BRANCH" ]; then
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
-FIND_ERR="${TMPDIR:-/tmp}/engineer-find-active-$$.err"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+  find-active --repo-root "$REPO_ROOT")"
 FIND_RC=$?
 if [ "$FIND_RC" -ne 0 ]; then
-  echo "✗ find-active failed (exit $FIND_RC):" >&2
-  cat "$FIND_ERR" >&2
-  rm -f "$FIND_ERR"
+  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
-rm -f "$FIND_ERR"
 ```
 
 - Empty → bootstrap with verb=decide:
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   GIT_BRANCH="$(git branch --show-current)"
   GIT_HEAD="$(git rev-parse HEAD)"
   STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
@@ -76,6 +79,8 @@ rm -f "$FIND_ERR"
 - Non-empty → append-on-resume:
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb decide \
     --phase-label "Phase 0: Resume into decide" \
@@ -89,9 +94,11 @@ rm -f "$FIND_ERR"
 ## Phase 0.5 — Resolve decision axes from the registry (ADR-0027 §5.6)
 
 Parse the arguments into flags + body and resolve the preset from
-`core/skills/decide/references/decision-axes.yml`. The resulting
-`ResolvedDecisionContext` JSON is stashed at
-`$AGENTIC_DECIDE_CONTEXT_FILE` for the skill body to consume.
+`core/skills/decide/references/decision-axes.yml`. The block prints the
+resulting `ResolvedDecisionContext` JSON on stdout, and the skill body reads
+it from that output. Nothing is written to disk: the context stays in the
+session for the duration of the command (ADR-0027 §4.3), and no later Bash
+call has to find a file whose path lived only in an earlier call's shell.
 
 The CLI reuses `scripts/lib/decide-args.mjs` internally so the same
 §2.3 flag grammar applies: unknown flags, invalid `--size=<tier>`
@@ -125,30 +132,23 @@ zero. Before the block below:
 Then run the block with `ARGS_DIR` set to that directory. The resolver reads
 leading `--key=value` flags and takes the rest, byte for byte, as the
 decision body — a lone `--` ends the flags, and nothing in the body is
-quoted, expanded or split. The block's `trap` removes the directory on every
-exit and keeps the command's exit status.
+quoted, expanded or split. The command removes the args file and its
+directory once it has read them.
 
 ```bash
 ARGS_DIR='<directory from step 1>'
-trap '{ rm -f -- "$ARGS_DIR/args.json" && rmdir -- "$ARGS_DIR"; } || echo "⚠ could not remove $ARGS_DIR" >&2' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
-AGENTIC_DECIDE_CONTEXT_FILE="$(mktemp -t engineer-decide-context.XXXXXX).json"
-DECIDE_RESOLVE_ERR="$(mktemp -t engineer-decide-resolve.XXXXXX).err"
-export AGENTIC_DECIDE_CONTEXT_FILE
-
-node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json" \
-  > "$AGENTIC_DECIDE_CONTEXT_FILE" 2>"$DECIDE_RESOLVE_ERR"
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# stdout: the ResolvedDecisionContext JSON. stderr: the resolver's warnings
+# and diagnostics, shown as they are written.
+node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"
 RESOLVE_RC=$?
-
-# Surface warnings + diagnostics on stderr for the LLM and user.
-[ -s "$DECIDE_RESOLVE_ERR" ] && cat "$DECIDE_RESOLVE_ERR" >&2
-rm -f "$DECIDE_RESOLVE_ERR"
 
 if [ "$RESOLVE_RC" -eq 2 ]; then
   # Parser error per §2.3(3-4) — halt before the skill body runs so
   # the user can fix the invocation. The diagnostic lines above
   # already identified the offending flag.
   echo "✗ decide-registry rejected the argument list — fix the invocation and rerun." >&2
-  rm -f "$AGENTIC_DECIDE_CONTEXT_FILE"
   exit 1
 elif [ "$RESOLVE_RC" -ne 0 ]; then
   echo "✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above." >&2
@@ -156,7 +156,7 @@ elif [ "$RESOLVE_RC" -ne 0 ]; then
 fi
 ```
 
-The skill body reads `$AGENTIC_DECIDE_CONTEXT_FILE` to obtain:
+The skill body reads the `ResolvedDecisionContext` Phase 0.5 printed to obtain:
 
 - `axes[]` — ordered axis descriptors (id, en/ko labels, question, role) for the resolved preset
 - `preset_id` — the active preset id (default | nine-axis | compact | …)
@@ -189,9 +189,9 @@ artifact per ADR-0027 §1.6.
 ## Phase 1 — Execute decide
 
 Follow the decide skill's command-invoked mode at
-`$CLAUDE_PLUGIN_ROOT/core/skills/decide/SKILL.md`. The skill performs
+`${CLAUDE_PLUGIN_ROOT}/core/skills/decide/SKILL.md`. The skill performs
 2+ option generation, evidence-based comparison across **the axes
-resolved from `$AGENTIC_DECIDE_CONTEXT_FILE`** (tradeoffs, risks,
+resolved in Phase 0.5** (tradeoffs, risks,
 scope, fit-with-frame), and recommends a direction with explicit
 rationale. The user makes the final call.
 
@@ -205,6 +205,8 @@ Build the Brainstorm prompt per
 dispatch in background:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 PROMPT_FILE="$(mktemp -t engineer-decide-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
@@ -213,8 +215,8 @@ RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM &
 # template at core/skills/_shared/references/ensemble-protocol.md § Brainstorm.
 #
 # ADR-0027 §4 axis-awareness contract — the prompt-builder MUST read
-# $AGENTIC_DECIDE_CONTEXT_FILE (the ResolvedDecisionContext JSON written by
-# Phase 0.5) and decide whether to emit the `<axis_awareness>` block:
+# the ResolvedDecisionContext JSON Phase 0.5 printed and decide whether to
+# emit the `<axis_awareness>` block:
 #
 #   - When `context.registry_fallback === false` AND this dispatch runs
 #     in command mode (always true on this code path; auto-activated
@@ -236,7 +238,7 @@ RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM &
 #     alternative 1 rejection — fallback-default-axes confuse the peer
 #     when the user's actual registry was broken).
 #
-#   - When $AGENTIC_DECIDE_CONTEXT_FILE is missing or unparseable (the
+#   - When the Phase 0.5 output is missing or unparseable (the
 #     Phase 0.5 graceful-degradation path per ADR-0027 §1.6 cascade —
 #     the skill body itself falls back to the in-code default preset
 #     per commands/decide.md Phase 0.5 prose), proceed with the
@@ -272,6 +274,8 @@ present both with evidence and ask the user.
 ## Phase 2 — State finalize
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: decide at <iso-utc>
 
 ### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>
@@ -337,14 +341,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --terminal-marker true \
   --next-action "Compose the artifact for the chosen direction" \
   --event updated
-
-# ADR-0027 §4.3 snapshot rule — honor the in-memory boundary by removing
-# the temp context file once the skill body has consumed it. Phase 0.5
-# also rm's on parser error; the dual review (run_ids
-# parallel-review-20260526T015850Z-1c906f44 / codex-scope-branch-...
-# MAJOR-3) caught that the normal-completion path lacked symmetric
-# cleanup, leaving the resolved decision JSON on /tmp.
-rm -f "$AGENTIC_DECIDE_CONTEXT_FILE"
 ```
 
 ---

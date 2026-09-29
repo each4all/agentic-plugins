@@ -29,7 +29,7 @@ flags even though it now has an operational `run_id`. See
 (why peer-now is a raw cross-host probe, not a synthesis).
 
 **Cognitive runbook lives in
-`$CLAUDE_PLUGIN_ROOT/core/skills/peer-now/SKILL.md`** per ADR-0022
+`${CLAUDE_PLUGIN_ROOT}/core/skills/peer-now/SKILL.md`** per ADR-0022
 (meta-skill category, ADR-0010 §3 cascade). This command file owns
 the Claude-host bash bootstrap and the `peer-runner.mjs` /
 `state.mjs` invocations below; for each Phase 0–2 the cognitive
@@ -37,10 +37,11 @@ description, peer-prompt phrasing guidance, host-availability matrix,
 and status/cancel controls delegate to SKILL.md via the matching
 `§ Phase N` pointer.
 
-The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT`
-(set by Claude Code for plugin slash commands). If unset for any
-reason, fall back to
-`$(find ~/.claude/plugins/cache/agentic-plugins/engineer -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
+Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
+from `AGENTIC_ENGINEER_ROOT` when that is set, else from the plugin path
+Claude Code writes into this command when it loads it, else from the newest
+version in the plugin cache. Keep that opening line when you run a block: a
+shell variable does not outlive a Bash call.
 
 ---
 
@@ -74,6 +75,8 @@ surfaces the response path. Use `--output-format text` so the raw
 companion stdout remains verbatim in `stdout.log`.
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 RUN_JSON="$(mktemp -t engineer-peer-now.XXXXXX).json"
@@ -111,6 +114,8 @@ While the run is active, another local host/session can inspect or
 cancel it:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" status \
   --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --json
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" cancel \
@@ -129,6 +134,8 @@ command too.
 Locate the active workflow:
 
 ```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
   find-active --repo-root "$REPO_ROOT" 2>/tmp/engineer-peer-now-find.err)"
@@ -145,6 +152,8 @@ Branch on the result:
   `--next-action` — peer-now does not advance phase.
 
   ```bash
+  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   RESPONSE="$(head -c 4000 "$STDOUT_PATH")"
   NOTE="peer: $PEER
   run_id: $RUN_ID

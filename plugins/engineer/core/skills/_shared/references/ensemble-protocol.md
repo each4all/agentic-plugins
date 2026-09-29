@@ -381,8 +381,7 @@ per the Bidirectional invocation pattern above.
 
   1. The orchestrator successfully resolved a preset — i.e.,
      `context.registry_fallback === false` on the resolved
-     ResolvedDecisionContext written to `$AGENTIC_DECIDE_CONTEXT_FILE`
-     by `decide-registry.mjs resolve` (per ADR-0027 §5.6 PR5
+     ResolvedDecisionContext printed by `decide-registry.mjs resolve` (per ADR-0027 §5.6 PR5
      amendment; the field disambiguates `preset_id: "default"` because
      no flag was passed from `preset_id: "default"` because a §1.6
      fallback path fired).
@@ -410,9 +409,9 @@ per the Bidirectional invocation pattern above.
   changes between dispatch and synthesis, the snapshot
   authoritatively describes the axis frame both sides shared. The
   snapshot is **in-memory for the duration of the command**; it
-  does NOT need to persist to disk across sessions (the
-  `$AGENTIC_DECIDE_CONTEXT_FILE` temp file acts as the natural
-  in-process carrier, and is cleaned up at command completion).
+  does NOT need to persist to disk across sessions (the resolver
+  prints the context in Phase 0.5, and the session holds it for the
+  rest of the command; nothing is written to disk).
   Cross-session resume after host exit cannot reconstruct the
   exact original snapshot — that case re-runs preset resolution
   against the current registry, and any drift surfaces through

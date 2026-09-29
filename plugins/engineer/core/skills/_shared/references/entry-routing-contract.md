@@ -169,8 +169,8 @@ onboarding slice) — reads its **own** workflow state (its own
 `state.mjs read` / `find-active`; orchestrator macros resolve via `find-macro`,
 never `find-active` on a subtask branch) and emits a bounded projection. The
 seam consumes it as a single `--workflow-projection-file` JSON object
-(mirroring the existing `--subtasks-json-file` and `$AGENTIC_DECIDE_CONTEXT_FILE`
-file-passing patterns), never as per-field flags. The exact CLI flag and the
+(mirroring the existing `--subtasks-json-file` file-passing pattern), never as
+per-field flags. The exact CLI flag and the
 footer rendering are the `runtime-seam` subtask's to define against this
 schema; this contract fixes the **fields, their semantics, and the fail-closed
 rule**. The projection carries **only** these fields, and only **generic

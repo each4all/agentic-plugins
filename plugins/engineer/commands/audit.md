@@ -40,7 +40,7 @@ is `full` when none is provided.
 ## Execution — follow commands/critique.md
 
 This alias does not duplicate the Phase 0/1/2 logic. Read and execute
-`$CLAUDE_PLUGIN_ROOT/commands/critique.md` with `--profile=full-codebase[:<sub>]`
+`${CLAUDE_PLUGIN_ROOT}/commands/critique.md` with `--profile=full-codebase[:<sub>]`
 as the active profile. State writes use `verb=critique` (not "audit")
 in the workflow file's `verb` field — the workflow_id and frontmatter
 record the canonical verb, since the file name is immutable per
