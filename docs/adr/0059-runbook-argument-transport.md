@@ -395,3 +395,30 @@ decision, but it reaches a double-quoted shell string the same way. The
 Phase 0.5 reads the args file, so a malformed file fails after that write;
 parser errors already failed at the same point before this change. Both are
 left for a follow-up.
+
+## Observation 2026-09-29 — after the release
+
+Not a decision. The post-release check ran one `engineer:decide` on each host
+with a 132-byte topic holding an apostrophe, double quotes, semicolons,
+parentheses, `$(…)`, `>` and a newline, in a scratch worktree outside the
+repository, and stopped each run after the resolver. On both hosts the body
+reached the resolver byte for byte, and a search for the three files the
+topic names found none of them.
+That is evidence for those two runs and that topic; it does not bound
+transcription, and the Negative consequence above stands.
+
+The Codex run found a gap in (g). On codex-cli 0.158.0, run as `codex exec`
+with `approval_policy` `on-request`, the `workspace-write` sandbox and the
+`guardian_approval` feature on, the
+model wrote the file with `apply_patch` as (g) measured, then submitted the
+skill's resolver block as written, and Codex rejected it before it ran: "rm -f
+style commands are not permitted. Use a safer approach", a string the Codex
+binary carries next to references to its exec-policy source file. The model
+reran the block with `rm` in place of `rm -f`, and that run removed the
+directory. That run completed this path only because its model departed from
+the skill's text. Which of those settings produced the refusal, whether every
+run under them is refused the same way, and whether an interactive session
+asks for approval instead were not measured. The fix changes the
+packages' instructions and needs its own release, so it is left for a
+follow-up; the evidence-loop record `the-arguments-the-shell-never-sees`
+carries the run.
