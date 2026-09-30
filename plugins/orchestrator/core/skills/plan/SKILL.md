@@ -140,9 +140,10 @@ canonical six-field template (runtime completion-output contract):
 ```
 
 For a freshly written macro plan the typical `selected_next` is the owner's
-approval, `/orchestrator:approve` or `$orchestrator:approve` on Codex. ADR-0063's
-autopilot is to dispatch only an approved plan (D6; the dispatch gate is slice
-S6), while an interactive dispatch does not require it. For an approved plan it is `/orchestrator:next`
+approval, `/orchestrator:approve` or `$orchestrator:approve` on Codex. Under
+ADR-0063's autopilot `orchestrator:next` dispatches only an approved plan (D6),
+while an interactive dispatch does not require it and only warns about a plan
+pending approval. For an approved plan it is `/orchestrator:next`
 (dispatch the first unblocked subtask) or
 `$orchestrator:next` on Codex — but a zero-subtask plan or a surfaced CONFLICT
 routes to the honest next step (closing the plan, or an owner decision), never a

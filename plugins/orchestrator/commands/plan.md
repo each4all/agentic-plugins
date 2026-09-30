@@ -164,9 +164,9 @@ when the verdict is `conflict` and `plan-approval` otherwise, pointing at the
 macro file. Setting the gate in the write that stores the plan means a disputed
 plan is never approvable, not even for a moment. Any plan write revokes an
 earlier approval. The owner approves the plan with `/orchestrator:approve`,
-which binds the approval to the plan's hash; ADR-0063's autopilot is to
-dispatch only an approved plan whose hash still matches (the
-`/orchestrator:next` gate is slice S6).
+which binds the approval to the plan's hash. Under ADR-0063's autopilot,
+`/orchestrator:next` dispatches only an approved plan whose hash still
+matches (`plan-unapproved` otherwise).
 
 Then record the phase note + ensemble result:
 
@@ -250,9 +250,10 @@ completion-output contract):
 ```
 
 For a freshly written plan the typical `selected_next` is the owner's approval,
-`/orchestrator:approve` — ADR-0063's autopilot is to dispatch only an approved
-plan (D6; the dispatch gate is slice S6), while an interactive
-`/orchestrator:next` does not require it —
+`/orchestrator:approve` — under ADR-0063's autopilot `/orchestrator:next`
+dispatches only an approved plan (D6), while an interactive
+`/orchestrator:next` does not require it and only warns about a plan pending
+approval —
 and for an approved plan it is
 `/orchestrator:next` to dispatch the first unblocked subtask (lowest-id entry with
 `status=pending` and empty `blocked_by`; a subtask unblocks when all its

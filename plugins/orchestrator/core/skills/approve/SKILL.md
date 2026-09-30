@@ -15,10 +15,11 @@ refused. It does not mutate `current_phase`, `next_action`, or
 
 Any later `plan-set` returns the plan to pending approval
 (`awaiting_owner_gate=plan-conflict` when its Plan-verify verdict is
-`conflict`, `plan-approval` otherwise). ADR-0063's Claude autopilot is to
-dispatch only an approved plan whose hash still matches the plan (the
-`orchestrator:next` gate that enforces it is slice S6); an interactive
-`orchestrator:next` does not require an approval.
+`conflict`, `plan-approval` otherwise). Under ADR-0063's Claude autopilot,
+`orchestrator:next` dispatches only an approved plan whose hash still matches
+the plan and refuses anything else (`plan-unapproved`); an interactive
+`orchestrator:next` does not require an approval, and prints one warning line
+for a plan pending approval or changed since it was approved.
 
 ---
 

@@ -950,6 +950,54 @@ that part of §4 before this ADR was adopted.
   `scripts/mutation-specs/orchestrator-schema-12.mjs` shows each check fails
   on the defect it guards, the lock included.
 
+## Implementation note 2026-09-30 — S6 (`/orchestrator:next` approval gate)
+
+S6 closes the gap the S2 note leaves open: `/orchestrator:next` now refuses,
+under an autopilot run, a plan the owner has not approved at its current hash.
+
+- **One decision point.** `state.mjs approval-gate --workflow-path <macro>
+  --host claude|codex --subtask-json <subtask>` decides; `planApprovalGate`
+  is its function. It reads
+  the approval from `planApprovalState`, the facts `next-ready` reports, and
+  `isAutopilotRun` for the mode. The runbooks neither compare hashes nor match
+  `AGENTIC_AUTOPILOT` themselves, so the run-id pattern keeps the one copy per
+  plugin that `tests/plugin-shape/test-autopilot-enum-parity.mjs` holds equal,
+  and both hosts get the same decision and the same text.
+- **Where it runs.** `commands/next.md` Phase 1, after the dispatch-ready
+  validation and before Phase 2, for an explicit id as well as for the
+  automatic pick (`subtask-readiness` reports no approval). The Codex mirror
+  runs the same command with `--host codex`.
+- **Autopilot.** Only an approved plan whose hash matches proceeds. A plan
+  pending approval, one changed since it was approved, and one with no
+  approval recorded are refused: `✗ plan-unapproved — …`, then
+  `Pointer: <path#anchor>` and the owner's action, exit 1. The pointer is the
+  macro's `awaiting_owner_pointer` when a gate is set (`#ensemble-synthesis`
+  under `plan-conflict`), and `<macro file>#macro-plan` otherwise.
+- **Bound to the selection.** The runbook dispatches the subtask as its
+  selection step read it, which is an earlier read than the gate's. The gate
+  therefore takes that subtask (`--subtask-json`) and, under autopilot,
+  refuses it unless it equals the approved plan's entry for its id in every
+  field the hash covers. Without this, a plan rewritten and approved between
+  the two reads passed the gate while the old subtask went on to dispatch (the
+  Codex review reproduced it in bash and zsh, by explicit id and automatic
+  pick). The refusal tells the worker to run `/orchestrator:next` again.
+  Interactive dispatch is not refused over it.
+- **Interactive (D3 = a).** Never refused. One warning line for a plan pending
+  approval, and also for one whose approved hash no longer matches: the
+  specification names only pending, but D4 treats a mismatch as unapproved,
+  and staying silent would present a stale approval as valid. A macro with no
+  approval keys (planned before 1.2) and an approved plan get no line.
+- **Not a lock.** The gate checks at dispatch. A `plan-set` that lands between
+  the gate and Phase 5's `subtask-update` revokes the approval after the
+  check, and the dispatch goes on with the subtask as it was approved; the
+  driver's own policy (D4 rule 3, S8) halts before the next step.
+- Tests: `tests/orchestrator/test-next-approval-gate.mjs` covers the function
+  over every approval state in both modes, the binding, the CLI, the runbook
+  block and Phase 1 end to end in bash and zsh (explicit id and automatic
+  pick, and a plan replaced and approved between selection and gate), and the
+  Codex mirror's snippet, run as written. `scripts/mutation-specs/orchestrator-next-approval-gate.mjs`
+  shows each check fails on the defect it guards.
+
 ## References
 
 - ADR-0001 (honest scope)
