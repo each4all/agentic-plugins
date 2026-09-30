@@ -54,7 +54,7 @@ const ALIAS_VERBS = ['audit'];
 // they are NOT 6-verb persona commands (those live in engineer).
 const DISPATCH_COMMANDS = ['next', 'done'];
 const LIFECYCLE_COMMANDS = ['finalize', 'abort'];
-const META_COMMANDS = ['resume', 'checkpoint', 'peer-now'];
+const META_COMMANDS = ['resume', 'checkpoint', 'peer-now', 'approve'];
 const DISPATCH_AND_LIFECYCLE_SKILLS = [...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS];
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS, ...META_COMMANDS];
 const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md', 'session-handoff.md'];
@@ -132,7 +132,7 @@ describe('plugins/orchestrator manifest pair', () => {
     ok(Array.isArray(manifest.interface.defaultPrompt));
     ok(manifest.interface.defaultPrompt.length > 0);
     ok(
-      manifest.interface.longDescription.includes('Codex skills mirror plan, next, done, finalize, abort, resume, checkpoint, and peer-now'),
+      manifest.interface.longDescription.includes('Codex skills mirror plan, next, done, finalize, abort, approve, resume, checkpoint, and peer-now'),
       'longDescription documents the Codex skill mirror surface',
     );
     ok(
@@ -235,7 +235,7 @@ describe('plugins/orchestrator README + CHANGELOG', () => {
     ok(/macro.*(auto.?archive|A1.?A4)/i.test(readme),
       'README documents macro auto-archive A1-A4 gates');
     // PR-B schema 1.1.
-    ok(/schema:?\s*['"]?1\.1['"]?/.test(readme), 'README documents schema 1.1');
+    ok(/schema:?\s*['"]?1\.2['"]?/.test(readme), 'README documents schema 1.2');
     ok(readme.includes('macro-<verb>-<iso>-<rand>') || readme.includes('macro-&lt;verb&gt;'), 'README documents workflow_id format');
     // PR-E Stop hook now auto-archives — snapshot-only language must be retired.
     ok(!/snapshot.?only/i.test(readme),

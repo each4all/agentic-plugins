@@ -47,7 +47,7 @@ Identify the dependency graph. If a subtask depends on others, mark its initial 
 
 ### Step 3: Present and confirm
 
-Follow the Presentation Mode Protocol (`../_shared/references/presentation-protocol.md`) before presenting. The full subtask list IS one decision item — present it as a macro plan, ask the user to confirm the decomposition + dependency graph before any work proceeds.
+Follow the Presentation Mode Protocol (`../_shared/references/presentation-protocol.md`) before presenting. The full subtask list IS one decision item — present it as a macro plan, ask the user to confirm the decomposition + dependency graph before any work proceeds. Once a plan is written to a macro workflow, that confirmation is recorded with `orchestrator:approve` (`/orchestrator:approve` on Claude, `$orchestrator:approve` on Codex), which binds the approval to the plan's hash (ADR-0063 D6).
 
 ---
 
@@ -86,7 +86,7 @@ Incorporate valid PEER-ONLY additions. Adjust ordering for valid sequencing issu
 
 ### Step 5: Persist via setPlan
 
-Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host <current-host> --subtasks-json-file <tmp.json> [--decision <text>] [--architecture <text>]`, where `<current-host>` is `claude` for `/orchestrator:plan` and `codex` for `$orchestrator:plan`. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 + ADR-0019 §2 schema 1.1) and atomically writes the `plan` block under the per-file lock.
+Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host <current-host> --subtasks-json-file <tmp.json> --verdict <pass|concerns|conflict> [--decision <text>] [--architecture <text>]`, where `<current-host>` is `claude` for `/orchestrator:plan` and `codex` for `$orchestrator:plan`. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 + ADR-0019 §2 schema 1.1) and atomically writes the `plan` block under the per-file lock. The same write returns the plan to pending approval (`plan_approval_status=pending`, ADR-0063 D6): any plan write revokes an earlier approval. `--verdict` is the synthesized Plan-verify verdict, the value Step 6 records. With `conflict` the write opens `awaiting_owner_gate=plan-conflict` (pointer `<macro file>#ensemble-synthesis`), otherwise `plan-approval`, so a disputed plan is never approvable, not even between two writes.
 
 Subtask validation runs at the write boundary (schema 1.1):
 - `id` non-empty + unique within the plan
@@ -103,6 +103,8 @@ Invoke `state.mjs ensemble-commit --workflow-path <path> --run-id <macro-plan-�
 ### Step 7: Present and confirm
 
 Follow the Presentation Mode Protocol before presenting. Present the synthesized plan as one macro decision item. Wait for user approval before reporting completion.
+
+When the verdict was `conflict`, Step 5's write left the plan at `awaiting_owner_gate=plan-conflict` (ADR-0063 D6). `plan-approve` refuses while `plan-conflict` is set. The owner either revises the plan (a new `plan-set`), or decides the conflict, clears the gate with `state.mjs awaiting-owner-clear --gate plan-conflict` (which returns the plan to `plan-approval`), and approves. The owner's approval is recorded with `orchestrator:approve`; do not approve on the owner's behalf.
 
 ### Step 8: Session-level handoff preflight
 
@@ -137,8 +139,11 @@ canonical six-field template (runtime completion-output contract):
 - next_command:          <exact next step: $orchestrator:<command> … — or the wait / owner-decision action>
 ```
 
-For a freshly approved macro plan the typical
-`selected_next` is `/orchestrator:next` (dispatch the first unblocked subtask) or
+For a freshly written macro plan the typical `selected_next` is the owner's
+approval, `/orchestrator:approve` or `$orchestrator:approve` on Codex. ADR-0063's
+autopilot is to dispatch only an approved plan (D6; the dispatch gate is slice
+S6), while an interactive dispatch does not require it. For an approved plan it is `/orchestrator:next`
+(dispatch the first unblocked subtask) or
 `$orchestrator:next` on Codex — but a zero-subtask plan or a surfaced CONFLICT
 routes to the honest next step (closing the plan, or an owner decision), never a
 hardcoded literal.

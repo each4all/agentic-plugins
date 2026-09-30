@@ -1,0 +1,7 @@
+interface:
+  display_name: "Orchestrator — Approve"
+  short_description: "Record the owner's approval of the macro plan, bound to the plan's hash"
+  default_prompt: "Use $orchestrator:approve only when the owner asks to approve the macro plan: show the plan-hash table, then run plan-approve --expect-hash with the hash shown and --host codex when invoked from Codex; never approve on the owner's behalf"
+
+policy:
+  allow_implicit_invocation: false

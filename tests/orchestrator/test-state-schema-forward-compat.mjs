@@ -20,6 +20,12 @@
 //   - Mutation helpers (setCheckpoint, snapshot, appendPhase) preserve
 //     the carrier across the read-mutate-write boundary.
 //   - CLI `state.mjs read` exposes carrier under `_forward_compat_unknowns`.
+//   - ADR-0063 D6: a 1.1-era reader (this build minus the six 1.2 keys and
+//     plan-set's approval reset) carries plan_approval_* / awaiting_owner_*
+//     through read and mutation byte for byte, in place at the tail; when it
+//     rewrites the plan, the carried hash no longer matches and a 1.2 reader
+//     reports hash_ok false. The same checks run against the released 1.1
+//     code (tag plugin-orchestrator-v0.14.1) when the tag is in the clone.
 //
 // Difference from engineer PR5 test: orchestrator's predicate is string-
 // only (no legacy number `1` form — orchestrator has emitted strings
@@ -29,11 +35,11 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, throws, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const STATE_PATH = resolve(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs');
@@ -48,6 +54,12 @@ const {
   createWorkflow,
   setCheckpoint,
   findActiveWorkflow,
+  setPlan,
+  approvePlan,
+  setAwaitingOwner,
+  setMacroTerminal,
+  readWorkflow,
+  planApprovalState,
 } = await import(STATE_PATH);
 
 function gitInit(dir, branch) {
@@ -149,7 +161,8 @@ describe('isSupportedSchema — ADR-0028 §Forward-compat predicate (orchestrato
     // documents which minors this build was authored knowing about.
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.0'));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.1'));
-    strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.2'), false);
+    ok(SUPPORTED_SCHEMA_VERSIONS.has('1.2'));
+    strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.3'), false);
     strictEqual(SUPPORTED_SCHEMA_VERSIONS.has(2), false);
   });
 });
@@ -478,5 +491,256 @@ describe('state.mjs CLI `read` — Forward-compat carrier surface (orchestrator)
       const parsed = JSON.parse(stdout);
       strictEqual(parsed._forward_compat_unknowns, undefined);
     });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// ADR-0063 D6 — a 1.1-era reader meets a 1.2 file
+// -----------------------------------------------------------------------------
+
+const SCHEMA_12_KEYS = [
+  'plan_approval_status',
+  'plan_approval_approved_at',
+  'plan_approval_plan_hash',
+  'awaiting_owner_gate',
+  'awaiting_owner_since',
+  'awaiting_owner_pointer',
+];
+
+// A 1.1-era reader is this build without the six 1.2 entries in
+// FRONTMATTER_KEY_ORDER (the only thing that makes a key known to the
+// parser) and without plan-set's approval reset (a 1.1 writer never touched
+// approval). The copy lives outside the repo and is imported fresh, so it has
+// its own module state (including its own carrier Symbol).
+async function importSchema11Reader(dir) {
+  const src = await readFile(STATE_PATH, 'utf8');
+  const keyOrderLine = new RegExp(`^  '(${SCHEMA_12_KEYS.join('|')})',\\n`, 'gm');
+  const removed = (src.match(keyOrderLine) ?? []).map((l) => l.trim());
+  deepStrictEqual(removed, SCHEMA_12_KEYS.map((k) => `'${k}',`),
+    'the six keys must each appear once, one per line, in FRONTMATTER_KEY_ORDER');
+  const emit = "export const SCHEMA_VERSION = '1.2';";
+  ok(src.includes(emit), 'the build must emit 1.2');
+  const reset = '    resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict });\n    validateSchema12Fields(frontmatter);\n';
+  strictEqual(src.split(reset).length, 2, 'plan-set resets approval in exactly one place');
+  const reader = src
+    .replace(keyOrderLine, '')
+    .replace(emit, "export const SCHEMA_VERSION = '1.1';")
+    .replace(reset, '');
+  await writeFile(join(dir, 'state.mjs'), reader);
+  await copyFile(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/landing.mjs'), join(dir, 'landing.mjs'));
+  return import(pathToFileURL(join(dir, 'state.mjs')).href);
+}
+
+const newKeyLines = (text) => text.match(/^(plan_approval_|awaiting_owner_)\w+: .*$/gm) ?? [];
+const frontmatterBlock = (text) => text.slice(0, text.indexOf('\n---\n') + 5);
+const frontmatterLines = (text) => text.slice(4, text.indexOf('\n---\n')).split('\n');
+const st = (id, extra = {}) => ({
+  id, verb: 'compose', branch: `feat/${id.toLowerCase()}`, blocked_by: [], status: 'pending', ...extra,
+});
+
+describe('ADR-0063 D6 — a 1.1-era reader carries the 1.2 keys', () => {
+  it('round-trips the six scalars byte for byte, through read and through mutation', async () => {
+    const readerDir = await mkdtemp(join(tmpdir(), 'orchestrator-reader11-'));
+    try {
+      const r11 = await importSchema11Reader(readerDir);
+      strictEqual(r11.SCHEMA_VERSION, '1.1');
+      await withTmpRepo(async (repoRoot) => {
+        // Written by this (1.2) build: a planned, approved macro.
+        await createWorkflow({
+          repoRoot, verb: 'plan', host: 'claude',
+          gitBaseline: MIN_BASELINE, originalRequest: 'reader 1.1 meets 1.2',
+        });
+        const filePath = await findActiveWorkflow(repoRoot);
+        await setPlan({ workflowPath: filePath, host: 'claude', subtasks: [st('A'), st('B')] });
+        // terminal_marker is the last key a 1.1 reader knows; with it present,
+        // a 1.2 key placed before it would come back reordered.
+        await setMacroTerminal({ workflowPath: filePath, host: 'claude', terminalPhase: 'finalized', terminalMarker: false });
+        const ownerEnv = { ...process.env };
+        delete ownerEnv.AGENTIC_AUTOPILOT;
+        await approvePlan({ workflowPath: filePath, host: 'claude', env: ownerEnv });
+        const original = await readFile(filePath, 'utf8');
+        deepStrictEqual(frontmatterLines(original).slice(-4), ['terminal_marker: false', ...newKeyLines(original)]);
+        const lines = newKeyLines(original);
+        strictEqual(lines.length, 3, 'approved: status, approved_at, plan_hash');
+
+        // Read: the keys are unknown to the 1.1 reader and land in its carrier.
+        const parsed = r11.parseWorkflowFile(original);
+        for (const k of SCHEMA_12_KEYS) ok(!(k in parsed.frontmatter), `${k} is not a known key`);
+        deepStrictEqual(parsed.frontmatter[r11.FORWARD_COMPAT_UNKNOWNS].map((e) => e.key),
+          ['plan_approval_status', 'plan_approval_approved_at', 'plan_approval_plan_hash']);
+        // The frontmatter only: parse + assemble grows the body by one blank
+        // line in every state copy (docket C79), which is not what this checks.
+        strictEqual(frontmatterBlock(r11.assembleWorkflowFile(parsed.frontmatter, parsed.body)), frontmatterBlock(original));
+
+        // Mutations a 1.1 reader performs keep them, in place at the tail.
+        await r11.appendPhase({ workflowPath: filePath, host: 'codex', phaseLabel: 'n', phaseNote: 'x', event: 'updated' });
+        await r11.snapshot({ workflowPath: filePath, host: 'codex', trigger: 'stop', statusDigest: '' });
+        await r11.setCheckpoint({ workflowPath: filePath, host: 'codex', summary: 'checkpoint' });
+        await r11.updateSubtask({ workflowPath: filePath, host: 'codex', subtaskId: 'A', status: 'in_progress', engineerWorkflowId: 'compose-20260930T000000Z-dddddd' });
+        await r11.setMacroTerminal({ workflowPath: filePath, host: 'codex', terminalPhase: 'finalized', terminalMarker: false });
+        const after = await readFile(filePath, 'utf8');
+        deepStrictEqual(newKeyLines(after), lines);
+        deepStrictEqual(frontmatterLines(after).slice(-4), ['terminal_marker: false', ...lines]);
+        deepStrictEqual(planApprovalState((await readWorkflow(filePath)).frontmatter), { status: 'approved', hash_ok: true });
+      });
+    } finally {
+      await rm(readerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a 1.1 plan rewrite carries the approval, and the 1.2 reader sees the hash no longer matches', async () => {
+    const readerDir = await mkdtemp(join(tmpdir(), 'orchestrator-reader11-'));
+    try {
+      const r11 = await importSchema11Reader(readerDir);
+      await withTmpRepo(async (repoRoot) => {
+        await createWorkflow({
+          repoRoot, verb: 'plan', host: 'claude',
+          gitBaseline: MIN_BASELINE, originalRequest: 'stale approval',
+        });
+        const filePath = await findActiveWorkflow(repoRoot);
+        await setPlan({ workflowPath: filePath, host: 'claude', subtasks: [st('A')] });
+        const ownerEnv = { ...process.env };
+        delete ownerEnv.AGENTIC_AUTOPILOT;
+        await approvePlan({ workflowPath: filePath, host: 'claude', env: ownerEnv });
+        const approvedLines = newKeyLines(await readFile(filePath, 'utf8'));
+
+        await r11.setPlan({ workflowPath: filePath, host: 'codex', subtasks: [st('A', { topic: 'changed by a 1.1 writer' })] });
+        deepStrictEqual(newKeyLines(await readFile(filePath, 'utf8')), approvedLines, 'the 1.1 writer carried the approval');
+        deepStrictEqual(planApprovalState((await readWorkflow(filePath)).frontmatter), { status: 'approved', hash_ok: false });
+        const nr = JSON.parse(execFileSync('node', [STATE_PATH, 'next-ready', '--workflow-path', filePath], { encoding: 'utf8' }));
+        deepStrictEqual(nr.approval, { status: 'approved', hash_ok: false });
+      });
+    } finally {
+      await rm(readerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('carries a pending plan-conflict gate the same way', async () => {
+    const readerDir = await mkdtemp(join(tmpdir(), 'orchestrator-reader11-'));
+    try {
+      const r11 = await importSchema11Reader(readerDir);
+      await withTmpRepo(async (repoRoot) => {
+        await createWorkflow({
+          repoRoot, verb: 'plan', host: 'claude',
+          gitBaseline: MIN_BASELINE, originalRequest: 'pending gate',
+        });
+        const filePath = await findActiveWorkflow(repoRoot);
+        await setPlan({ workflowPath: filePath, host: 'claude', subtasks: [st('A')] });
+        await setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'plan-conflict', pointer: 'x/m.md#ensemble-synthesis' });
+        const lines = newKeyLines(await readFile(filePath, 'utf8'));
+        strictEqual(lines.length, 4, 'pending: status + three awaiting_owner keys');
+        await r11.appendPhase({ workflowPath: filePath, host: 'codex', phaseLabel: 'n', phaseNote: 'x', event: 'updated' });
+        await r11.setPlan({ workflowPath: filePath, host: 'codex', subtasks: [st('A'), st('B')] });
+        const after = await readFile(filePath, 'utf8');
+        deepStrictEqual(newKeyLines(after), lines);
+        deepStrictEqual(frontmatterLines(after).slice(-4), lines);
+      });
+    } finally {
+      await rm(readerDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// ADR-0063 D6 — the released 1.1 orchestrator meets a 1.2 file
+// -----------------------------------------------------------------------------
+
+// The surrogate above is derived from the current code, so a parser change
+// made on both sides would pass it. This block runs the code installed today:
+// the last 1.1 release, read from its tag. CI clones with full history and
+// tags; a clone without the tag skips, and the surrogate still runs.
+const RELEASED_11_TAG = 'plugin-orchestrator-v0.14.1';
+
+function gitShow(ref) {
+  try {
+    return execFileSync('git', ['-C', REPO_ROOT, 'show', ref], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {
+    return null;
+  }
+}
+
+async function importReleased11(dir) {
+  const state = gitShow(`${RELEASED_11_TAG}:plugins/orchestrator/scripts/state.mjs`);
+  const landing = gitShow(`${RELEASED_11_TAG}:plugins/orchestrator/scripts/landing.mjs`);
+  if (state === null || landing === null) return null;
+  await writeFile(join(dir, 'state.mjs'), state);
+  await writeFile(join(dir, 'landing.mjs'), landing);
+  return import(pathToFileURL(join(dir, 'state.mjs')).href);
+}
+
+describe('ADR-0063 D6 — the released 1.1 orchestrator carries the 1.2 keys', () => {
+  it('reads, mutates and rewrites a 1.2 file, keeping the six keys in place', async (t) => {
+    const readerDir = await mkdtemp(join(tmpdir(), 'orchestrator-released11-'));
+    try {
+      const r11 = await importReleased11(readerDir);
+      if (r11 === null) {
+        t.skip(`${RELEASED_11_TAG} is not in this clone`);
+        return;
+      }
+      strictEqual(r11.SCHEMA_VERSION, '1.1');
+      await withTmpRepo(async (repoRoot) => {
+        await createWorkflow({
+          repoRoot, verb: 'plan', host: 'claude',
+          gitBaseline: MIN_BASELINE, originalRequest: 'released 1.1 meets 1.2',
+        });
+        const filePath = await findActiveWorkflow(repoRoot);
+        await setPlan({ workflowPath: filePath, host: 'claude', subtasks: [st('A'), st('B')] });
+        await setMacroTerminal({ workflowPath: filePath, host: 'claude', terminalPhase: 'finalized', terminalMarker: false });
+        const ownerEnv = { ...process.env };
+        delete ownerEnv.AGENTIC_AUTOPILOT;
+        await approvePlan({ workflowPath: filePath, host: 'claude', env: ownerEnv });
+        const original = await readFile(filePath, 'utf8');
+        const lines = newKeyLines(original);
+        strictEqual(lines.length, 3);
+
+        const parsed = r11.parseWorkflowFile(original);
+        strictEqual(frontmatterBlock(r11.assembleWorkflowFile(parsed.frontmatter, parsed.body)), frontmatterBlock(original));
+        await r11.appendPhase({ workflowPath: filePath, host: 'codex', phaseLabel: 'n', phaseNote: 'x', event: 'updated' });
+        await r11.setCheckpoint({ workflowPath: filePath, host: 'codex', summary: 'checkpoint' });
+        await r11.updateSubtask({ workflowPath: filePath, host: 'codex', subtaskId: 'A', status: 'in_progress', engineerWorkflowId: 'compose-20260930T000000Z-ffffff' });
+        deepStrictEqual(newKeyLines(await readFile(filePath, 'utf8')), lines);
+        deepStrictEqual(planApprovalState((await readWorkflow(filePath)).frontmatter), { status: 'approved', hash_ok: true });
+
+        // The released plan-set knows nothing of approval: it carries it, and
+        // the 1.2 reader sees that the hash no longer matches.
+        await r11.setPlan({ workflowPath: filePath, host: 'codex', subtasks: [st('A', { status: 'in_progress', engineer_workflow_id: 'compose-20260930T000000Z-ffffff' }), st('B', { topic: 'changed by 0.14.1' })] });
+        const after = await readFile(filePath, 'utf8');
+        deepStrictEqual(newKeyLines(after), lines);
+        deepStrictEqual(frontmatterLines(after).slice(-4), ['terminal_marker: false', ...lines]);
+        deepStrictEqual(planApprovalState((await readWorkflow(filePath)).frontmatter), { status: 'approved', hash_ok: false });
+      });
+    } finally {
+      await rm(readerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('carries a pending plan-conflict gate through its writes', async (t) => {
+    const readerDir = await mkdtemp(join(tmpdir(), 'orchestrator-released11-'));
+    try {
+      const r11 = await importReleased11(readerDir);
+      if (r11 === null) {
+        t.skip(`${RELEASED_11_TAG} is not in this clone`);
+        return;
+      }
+      await withTmpRepo(async (repoRoot) => {
+        await createWorkflow({
+          repoRoot, verb: 'plan', host: 'claude',
+          gitBaseline: MIN_BASELINE, originalRequest: 'released 1.1 meets a pending gate',
+        });
+        const filePath = await findActiveWorkflow(repoRoot);
+        await setPlan({ workflowPath: filePath, host: 'claude', subtasks: [st('A')], verdict: 'conflict' });
+        const lines = newKeyLines(await readFile(filePath, 'utf8'));
+        strictEqual(lines.length, 4, 'pending: status + three awaiting_owner keys');
+        await r11.appendPhase({ workflowPath: filePath, host: 'codex', phaseLabel: 'n', phaseNote: 'x', event: 'updated' });
+        await r11.snapshot({ workflowPath: filePath, host: 'codex', trigger: 'stop', statusDigest: '' });
+        await r11.setPlan({ workflowPath: filePath, host: 'codex', subtasks: [st('A'), st('B')] });
+        const after = await readFile(filePath, 'utf8');
+        deepStrictEqual(newKeyLines(after), lines);
+        deepStrictEqual(frontmatterLines(after).slice(-4), lines);
+        strictEqual((await readWorkflow(filePath)).frontmatter.awaiting_owner_gate, 'plan-conflict');
+      });
+    } finally {
+      await rm(readerDir, { recursive: true, force: true });
+    }
   });
 });

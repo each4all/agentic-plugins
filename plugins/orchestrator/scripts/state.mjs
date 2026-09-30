@@ -23,12 +23,12 @@
 //   directories: 0o700
 //   files:       0o600 (workflows + locks)
 //
-// File format: YAML frontmatter (emit schema='1.1', current) + Markdown body.
+// File format: YAML frontmatter (emit schema='1.2', current) + Markdown body.
 //
 // Schema acceptance per ADR-0028 §Forward-compat (PR5 ported from engineer
 // #356): the validateFrontmatter gate is `isSupportedSchema(s)`, a string-
 // only `1.x` predicate (orchestrator never had a legacy number form; every
-// orchestrator workflow since ADR-0018 has been '1.0' or '1.1'). Explicit
+// orchestrator workflow since ADR-0018 has been a '1.y' string). Explicit
 // known minors are documented in `SUPPORTED_SCHEMA_VERSIONS` for telemetry.
 // Unknown scalar additive top-level keys are silent-skipped on read and
 // surfaced via the `FORWARD_COMPAT_UNKNOWNS` Symbol carrier so round-trip
@@ -52,7 +52,7 @@ import {
   open,
 } from 'node:fs/promises';
 import { join, dirname, basename, isAbsolute } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
@@ -67,12 +67,16 @@ import { resolveLanding, dispatchTimeFromWorkflowId } from './landing.mjs';
 // archive + re-plan required). Engineer schema 1 / '1.1' / 2 still
 // rejected — orchestrator and engineer namespaces stay separate.
 //
+// ADR-0063 D6 bumps the emit to '1.2' for the flat `plan_approval_*` and
+// `awaiting_owner_*` scalars. Mutation helpers keep the disk-recorded schema:
+// a '1.1' file that gains the new keys stays '1.1' (validation is per key).
+//
 // This Set documents the minors this build explicitly knows about. It is no
 // longer the validateFrontmatter accept gate — that uses `isSupportedSchema`
 // below (ADR-0028 §Forward-compat) so a 1.x reader meeting a 1.y file with
 // y > x can still parse via the predicate's open-ended 1.x match.
-export const SCHEMA_VERSION = '1.1';
-export const SUPPORTED_SCHEMA_VERSIONS = new Set(['1.0', '1.1']);
+export const SCHEMA_VERSION = '1.2';
+export const SUPPORTED_SCHEMA_VERSIONS = new Set(['1.0', '1.1', '1.2']);
 
 // ADR-0028 §Forward-compat (PR5 #356 ported from engineer) read-tolerance
 // predicate. Accepts any `1.y` minor as a string (y ≥ 0, no leading
@@ -179,6 +183,8 @@ const SUBTASK_KEYS_SET = new Set(SUBTASK_KEYS);
 const SUBTASK_REQUIRED_KEYS_BY_SCHEMA = Object.freeze({
   '1.0': new Set(['id', 'blocked_by', 'status']),
   '1.1': new Set(['id', 'blocked_by', 'status', 'verb', 'branch']),
+  // ADR-0063 D6 — 1.2 adds top-level scalars only; the subtask shape is 1.1's.
+  '1.2': new Set(['id', 'blocked_by', 'status', 'verb', 'branch']),
 });
 
 // Optional string-or-null subtask keys. Each is permitted to be absent
@@ -257,6 +263,95 @@ const VALID_SUBTASK_VERBS = new Set([
   'critique',
   'refine',
 ]);
+
+// ADR-0063 D6 schema 1.2 — the flat `plan_approval_*` and `awaiting_owner_*`
+// scalars. The owner gates here are the macro's subset of ADR-0063 D4; the
+// engineer workflow stores the others. Both macro gates are about the plan's
+// approval, so either one exists only while the plan is pending approval.
+export const VALID_PLAN_APPROVAL_STATUSES = new Set(['pending', 'approved']);
+export const VALID_MACRO_OWNER_GATES = new Set(['plan-approval', 'plan-conflict']);
+// A pointer is a repo-relative `path#anchor`, never free text: this fixes the
+// charset (no whitespace) and the shape. validateAwaitingOwnerPointer also
+// refuses a leading `/` and any `..`. Same form as the engineer's pointer.
+const AWAITING_OWNER_POINTER_RE = /^[A-Za-z0-9._/-]+#[A-Za-z0-9._/-]+$/;
+const AWAITING_OWNER_KEYS = ['awaiting_owner_gate', 'awaiting_owner_since', 'awaiting_owner_pointer'];
+// sha256, lowercase hex — what computePlanHash returns.
+const PLAN_HASH_RE = /^[0-9a-f]{64}$/;
+// The subtask fields the plan hash covers: SUBTASK_KEYS minus the ones that
+// change while the plan executes (status, engineer_workflow_id, commit,
+// pr_url, closed_at). Approving a plan approves these.
+const PLAN_HASH_SUBTASK_KEYS = ['id', 'label', 'branch', 'blocked_by', 'verb', 'profile', 'topic'];
+// Anchors of the pointers this script writes into its own macro file.
+const MACRO_PLAN_ANCHOR = 'macro-plan';
+const ENSEMBLE_SYNTHESIS_ANCHOR = 'ensemble-synthesis';
+// The Plan-verify verdicts /orchestrator:plan records (commands/plan.md).
+const PLAN_VERIFY_VERDICTS = new Set(['pass', 'concerns', 'conflict']);
+
+// ADR-0063 §0.2 env contract — autopilot mode is on only when
+// AGENTIC_AUTOPILOT holds a well-formed run id, so an empty or accidental
+// global export cannot flip a gate. Each plugin carries its own copy of this
+// predicate (no cross-plugin import, ADR-0010 §5);
+// tests/plugin-shape/test-autopilot-enum-parity.mjs keeps the copies equal.
+export function isAutopilotRun(env = process.env) {
+  return /^autopilot-\d{8}T\d{6}Z-[0-9a-f]{6}$/.test(env?.AGENTIC_AUTOPILOT ?? '');
+}
+
+// JSON with object keys sorted at every level and no whitespace, so the text
+// of a value does not depend on the order its keys were written in.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * ADR-0063 D6 — the hash an approval binds to: sha256 over the canonical JSON
+ * of `plan.subtasks[]` in array order, each subtask projected to the fields
+ * the plan decides (PLAN_HASH_SUBTASK_KEYS). A field that is absent or null
+ * is left out, because the serializer drops a null optional field, so the
+ * hash of a plan is the same before and after it is written. Reordering the
+ * subtasks changes the hash; progress (status and the recorded provenance)
+ * does not. The orchestrator is the only implementation; other plugins ask
+ * this CLI (`plan-hash`, `next-ready`) rather than recompute it.
+ */
+export function computePlanHash(subtasks) {
+  return createHash('sha256').update(canonicalJson(planHashProjection(subtasks)), 'utf8').digest('hex');
+}
+
+// What computePlanHash hashes, in the order it hashes it. `plan-hash` prints
+// it, so the owner approves the fields the hash covers.
+function planHashProjection(subtasks) {
+  if (!Array.isArray(subtasks)) {
+    throw new Error('computePlanHash: subtasks must be an array');
+  }
+  return subtasks.map((s, idx) => {
+    if (typeof s !== 'object' || s === null || Array.isArray(s)) {
+      throw new Error(`computePlanHash: subtasks[${idx}] must be an object`);
+    }
+    const out = {};
+    for (const k of PLAN_HASH_SUBTASK_KEYS) {
+      if (s[k] !== undefined && s[k] !== null) out[k] = s[k];
+    }
+    return out;
+  });
+}
+
+/**
+ * ADR-0063 D6 — the approval facts a dispatcher needs, without recomputing
+ * the hash itself: `status` is `approved`, `pending`, or `absent` (a macro no
+ * 1.2 writer has planned or approved), and `hash_ok` says whether the approved
+ * hash still matches the plan (null unless approved).
+ */
+export function planApprovalState(frontmatter) {
+  const status = frontmatter?.plan_approval_status;
+  if (status !== 'approved' && status !== 'pending') return { status: 'absent', hash_ok: null };
+  if (status === 'pending') return { status, hash_ok: null };
+  const subtasks = Array.isArray(frontmatter?.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+  return { status, hash_ok: frontmatter.plan_approval_plan_hash === computePlanHash(subtasks) };
+}
 
 // -----------------------------------------------------------------------------
 // Path helpers
@@ -1055,6 +1150,16 @@ const FRONTMATTER_KEY_ORDER = [
   // auto-terminal pass per ADR-0019 §4 step 7). Required by §5 A1
   // gate for orchestrator stop-archive.
   'terminal_marker',
+  // ADR-0063 D6 (1.2) — optional flat scalars, absent = null. They sit at
+  // the tail, after terminal_marker, which is where a 1.1 reader's
+  // forward-compat carrier writes keys it does not know, so a 1.1 reader's
+  // write leaves them in place.
+  'plan_approval_status',
+  'plan_approval_approved_at',
+  'plan_approval_plan_hash',
+  'awaiting_owner_gate',
+  'awaiting_owner_since',
+  'awaiting_owner_pointer',
 ];
 
 // ADR-0028 §Forward-compat (PR5 #356 ported from engineer) — invisible
@@ -1291,7 +1396,7 @@ function serializeFrontmatter(fm) {
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. orchestrator schema '1.0'/'1.1' is closed; ADR-0028 §Forward-compat (PR5 ported) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
+        `Unknown frontmatter key: ${key}. orchestrator schema '1.y' is closed; ADR-0028 §Forward-compat (PR5 ported) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
       );
     }
   }
@@ -1544,7 +1649,7 @@ export function parseWorkflowFile(text) {
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. orchestrator schema '1.0'/'1.1' is closed; ADR-0028 §Forward-compat (PR5 ported) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
+        `Unknown frontmatter key: ${key}. orchestrator schema '1.y' is closed; ADR-0028 §Forward-compat (PR5 ported) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
       );
     }
   }
@@ -1741,6 +1846,110 @@ function validateFrontmatter(fm) {
     if (typeof fm.terminal_marker !== 'boolean') {
       throw new Error('terminal_marker must be a boolean');
     }
+  }
+
+  validateSchema12Fields(fm);
+}
+
+/**
+ * ADR-0063 D6 schema 1.2 — the flat `plan_approval_*` and `awaiting_owner_*`
+ * scalars. Validation is per key, so a file on disk schema 1.1 may carry them
+ * (mutation helpers never promote the schema). Beyond each value's enum or
+ * format, the keys hold together:
+ * - `plan_approval_approved_at` and `plan_approval_plan_hash` are present
+ *   exactly when `plan_approval_status` is `approved`;
+ * - the three `awaiting_owner_*` keys appear all or none;
+ * - a pending plan waits on a macro gate, and a macro gate is set only on a
+ *   pending plan (both gates are about its approval).
+ * Mutation helpers run this on the frontmatter they are about to write, so an
+ * inconsistent combination never reaches disk.
+ */
+function validateSchema12Fields(fm) {
+  if ('plan_approval_status' in fm) {
+    validateEnumScalar('plan_approval_status', fm.plan_approval_status, VALID_PLAN_APPROVAL_STATUSES);
+  }
+  if ('plan_approval_approved_at' in fm) {
+    validateIsoUtc('plan_approval_approved_at', fm.plan_approval_approved_at);
+  }
+  if ('plan_approval_plan_hash' in fm) {
+    validatePlanHash('plan_approval_plan_hash', fm.plan_approval_plan_hash);
+  }
+  const approved = fm.plan_approval_status === 'approved';
+  for (const key of ['plan_approval_approved_at', 'plan_approval_plan_hash']) {
+    if ((key in fm) !== approved) {
+      throw new Error(
+        `${key} must be present exactly when plan_approval_status is approved ` +
+          `(got plan_approval_status=${JSON.stringify(fm.plan_approval_status ?? null)}, ` +
+          `${key}=${JSON.stringify(fm[key] ?? null)}) (ADR-0063 D6)`,
+      );
+    }
+  }
+
+  const present = AWAITING_OWNER_KEYS.filter((k) => k in fm);
+  if (present.length > 0 && present.length < AWAITING_OWNER_KEYS.length) {
+    throw new Error(
+      `awaiting_owner_gate, awaiting_owner_since and awaiting_owner_pointer must be present all or none (got ${present.join(', ')}) (ADR-0063 D6)`,
+    );
+  }
+  if (present.length === AWAITING_OWNER_KEYS.length) {
+    validateEnumScalar('awaiting_owner_gate', fm.awaiting_owner_gate, VALID_MACRO_OWNER_GATES);
+    validateIsoUtc('awaiting_owner_since', fm.awaiting_owner_since);
+    validateAwaitingOwnerPointer(fm.awaiting_owner_pointer);
+  }
+
+  const pending = fm.plan_approval_status === 'pending';
+  const gated = VALID_MACRO_OWNER_GATES.has(fm.awaiting_owner_gate);
+  if (pending !== gated) {
+    throw new Error(
+      'a pending plan waits on awaiting_owner_gate plan-approval or plan-conflict, and those gates ' +
+        'are set only while the plan is pending approval ' +
+        `(got plan_approval_status=${JSON.stringify(fm.plan_approval_status ?? null)}, ` +
+        `awaiting_owner_gate=${JSON.stringify(fm.awaiting_owner_gate ?? null)}) (ADR-0063 D6)`,
+    );
+  }
+}
+
+function validateEnumScalar(key, value, allowed) {
+  if (typeof value !== 'string' || !allowed.has(value)) {
+    throw new Error(
+      `${key} must be one of ${[...allowed].join(', ')} (got ${JSON.stringify(value)})`,
+    );
+  }
+}
+
+// The canonical form `isoUtc` writes: whole seconds, `Z`. The round trip
+// rejects a well-shaped but impossible date, which Date.parse would otherwise
+// roll forward (2026-02-30 → 2026-03-02).
+function validateIsoUtc(key, value) {
+  const ok =
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value)) &&
+    isoUtc(Date.parse(value)) === value;
+  if (!ok) {
+    throw new Error(
+      `${key} must be an ISO-8601 UTC timestamp of the form YYYY-MM-DDTHH:MM:SSZ (got ${JSON.stringify(value)})`,
+    );
+  }
+}
+
+function validatePlanHash(key, value) {
+  if (typeof value !== 'string' || !PLAN_HASH_RE.test(value)) {
+    throw new Error(`${key} must be a sha256 digest in 64 lowercase hex characters (got ${JSON.stringify(value)})`);
+  }
+}
+
+function validateAwaitingOwnerPointer(value) {
+  const ok =
+    typeof value === 'string' &&
+    AWAITING_OWNER_POINTER_RE.test(value) &&
+    !value.startsWith('/') &&
+    !value.includes('..');
+  if (!ok) {
+    throw new Error(
+      'awaiting_owner_pointer must be a repo-relative path#anchor using only ' +
+        `[A-Za-z0-9._/#-], not absolute and without '..' (got ${JSON.stringify(value)})`,
+    );
   }
 }
 
@@ -2749,11 +2958,21 @@ export async function setPlan({
   now = new Date(),
   correct = false,
   reason,
+  // ADR-0063 D6 — the Plan-verify verdict of the plan being written. A
+  // conflict opens the plan-conflict gate in this same write, so there is no
+  // moment at which a disputed plan is approvable. Optional: a plan written
+  // without a verdict opens plan-approval.
+  verdict,
 }) {
   validateHost(host);
   validateHookEvent(event);
   if (!Array.isArray(subtasks)) {
     throw new Error('setPlan: subtasks must be an array');
+  }
+  if (verdict !== undefined && !PLAN_VERIFY_VERDICTS.has(verdict)) {
+    throw new Error(
+      `setPlan: verdict must be one of ${[...PLAN_VERIFY_VERDICTS].join(', ')} (got ${JSON.stringify(verdict)})`,
+    );
   }
   if (typeof correct !== 'boolean') {
     throw new Error('setPlan: correct must be a boolean');
@@ -2828,6 +3047,15 @@ export async function setPlan({
       { host, at: nowIso, event },
     ];
 
+    // ADR-0063 D6 — any plan write revokes an approval: the plan goes back to
+    // pending and waits on the owner's approval of what was just written. A
+    // plan-conflict gate on the previous plan goes with it; the revision was
+    // verified again, and its own verdict decides which gate it opens.
+    const conflict = verdict === 'conflict';
+    const approvalNote = describeApprovalReset(frontmatter, { conflict });
+    resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict });
+    validateSchema12Fields(frontmatter);
+
     const noteHeading = `### plan-set @ ${nowIso}\n\n`;
     const noteSummary =
       `${merged.length} subtask${merged.length === 1 ? '' : 's'}` +
@@ -2838,7 +3066,7 @@ export async function setPlan({
       ? `Correction (--correct): ${changes.join('; ')}.\n\n`
       : '';
     const reasonNote = reasonText.length > 0 ? `Reason: ${reasonText}\n\n` : '';
-    const newBody = `${body}${noteHeading}${noteSummary}${correctionNote}${reasonNote}`;
+    const newBody = `${body}${noteHeading}${noteSummary}${approvalNote}${correctionNote}${reasonNote}`;
 
     await atomicWrite(
       workflowPath,
@@ -2846,6 +3074,290 @@ export async function setPlan({
       { lockPath, token },
     );
     return { frontmatter, workflowPath, promoted, allTerminal };
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Public API: plan approval and the macro owner gates (ADR-0063 D6)
+//
+// The macro's approval moves through four states, each change one write under
+// the macro's lock that leaves the §0.1 invariants holding:
+//
+//   (any)  ──plan-set──►  pending, gate plan-approval
+//   (any)  ──plan-set --verdict conflict──►  pending, gate plan-conflict
+//   pending, gate plan-approval  ──awaiting-owner-set plan-conflict──►  pending, gate plan-conflict
+//   pending, gate plan-conflict  ──awaiting-owner-clear plan-conflict──►  pending, gate plan-approval
+//   pending, gate plan-approval | absent | approved  ──plan-approve──►  approved (no gate)
+//
+// plan-approve refuses while plan-conflict is set, and plan-approval is never
+// cleared except by approving: a pending plan always has a gate to halt on.
+// Only the owner leaves a gate — clearing and approving are refused under an
+// autopilot run.
+
+// Repo-relative path of a macro file, from the state home it lives in rather
+// than from repo_root (which records where the repository was when the macro
+// was created).
+function macroPointer(workflowPath, anchor) {
+  const home = inferStorageFromWorkflowPath(workflowPath)?.home ?? 'canonical';
+  return `${STATE_HOMES[home].workflowDirRel}/${basename(workflowPath)}#${anchor}`;
+}
+
+function setMacroGate(frontmatter, gate, { since, pointer }) {
+  frontmatter.awaiting_owner_gate = gate;
+  frontmatter.awaiting_owner_since = since;
+  frontmatter.awaiting_owner_pointer = pointer;
+}
+
+function clearMacroGate(frontmatter) {
+  for (const k of AWAITING_OWNER_KEYS) delete frontmatter[k];
+}
+
+function resetPlanApproval(frontmatter, workflowPath, nowIso, { conflict = false } = {}) {
+  frontmatter.plan_approval_status = 'pending';
+  delete frontmatter.plan_approval_approved_at;
+  delete frontmatter.plan_approval_plan_hash;
+  setMacroGate(frontmatter, conflict ? 'plan-conflict' : 'plan-approval', {
+    since: nowIso,
+    pointer: macroPointer(workflowPath, conflict ? ENSEMBLE_SYNTHESIS_ANCHOR : MACRO_PLAN_ANCHOR),
+  });
+}
+
+// The plan-set note's approval line, from the state before the reset.
+function describeApprovalReset(frontmatter, { conflict = false } = {}) {
+  const gate = conflict
+    ? 'plan-conflict: the Plan-verify ensemble reported a conflict'
+    : 'plan-approval';
+  let was = '';
+  if (frontmatter.plan_approval_status === 'approved') {
+    was = ` Revoked the approval of ${frontmatter.plan_approval_approved_at} ` +
+      `(hash ${frontmatter.plan_approval_plan_hash.slice(0, 12)}).`;
+  } else if (frontmatter.awaiting_owner_gate === 'plan-conflict') {
+    was = ` Replaced the plan-conflict gate set at ${frontmatter.awaiting_owner_since}.`;
+  }
+  return `Plan approval: pending (awaiting_owner_gate=${gate}).${was}\n\n`;
+}
+
+function refuseUnderAutopilot(env, what) {
+  if (isAutopilotRun(env)) {
+    throw new Error(
+      `${what} refused under autopilot (AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}): ` +
+        'only the owner resolves an owner gate or approves a plan (ADR-0063 Q2)',
+    );
+  }
+}
+
+/**
+ * ADR-0063 D6 — record that the macro waits on an owner judgment, with the
+ * same contract as the engineer's awaiting-owner-set, on the macro gates.
+ * Both gates concern a plan pending approval, so this is refused unless
+ * plan-set has put the plan there. Setting the gate that is already set
+ * replaces its pointer and since; a different gate is refused, except the one
+ * transition the conflict path needs: plan-approval → plan-conflict.
+ */
+export async function setAwaitingOwner({
+  workflowPath,
+  host,
+  gate,
+  pointer,
+  since,
+  now = new Date(),
+}) {
+  validateHost(host);
+  const fields = {
+    awaiting_owner_gate: gate,
+    awaiting_owner_since: since ?? isoUtc(now),
+    awaiting_owner_pointer: pointer,
+  };
+  validateEnumScalar('awaiting_owner_gate', fields.awaiting_owner_gate, VALID_MACRO_OWNER_GATES);
+  validateIsoUtc('awaiting_owner_since', fields.awaiting_owner_since);
+  validateAwaitingOwnerPointer(fields.awaiting_owner_pointer);
+  ensureNotArchived(workflowPath, 'awaiting-owner-set');
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
+    if (frontmatter.plan_approval_status !== 'pending') {
+      throw new Error(
+        `awaiting-owner-set: ${gate} is set only on a plan pending approval, and this macro's ` +
+          `plan_approval_status is ${frontmatter.plan_approval_status ?? 'absent'}. ` +
+          'plan-set puts a written plan there (ADR-0063 D6).',
+      );
+    }
+    const current = frontmatter.awaiting_owner_gate;
+    if (current !== gate && !(current === 'plan-approval' && gate === 'plan-conflict')) {
+      throw new Error(
+        `awaiting-owner-set: owner gate ${current} is set on this macro; ${gate} is not set over it. ` +
+          'Clearing plan-conflict (awaiting-owner-clear --gate plan-conflict) returns the plan to plan-approval.',
+      );
+    }
+    const nowIso = isoUtc(now);
+    setMacroGate(frontmatter, gate, {
+      since: fields.awaiting_owner_since,
+      pointer: fields.awaiting_owner_pointer,
+    });
+    validateSchema12Fields(frontmatter);
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0063 D6 / Q2 — the owner resolves a macro gate. The gate named must be
+ * the one set. Clearing plan-conflict returns the plan to plan-approval (it
+ * is still pending approval); plan-approval itself is resolved only by
+ * approving the plan. Refused under an autopilot run. The resolution is
+ * recorded as a phase note, with the since and pointer it replaced.
+ */
+export async function clearAwaitingOwner({
+  workflowPath,
+  host,
+  gate,
+  env = process.env,
+  now = new Date(),
+}) {
+  validateHost(host);
+  refuseUnderAutopilot(env, 'awaiting-owner-clear');
+  validateEnumScalar('awaiting_owner_gate', gate, VALID_MACRO_OWNER_GATES);
+  ensureNotArchived(workflowPath, 'awaiting-owner-clear');
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
+    const current = frontmatter.awaiting_owner_gate;
+    if (current === undefined) {
+      throw new Error(`awaiting-owner-clear: no owner gate is set on this macro (asked to clear ${gate})`);
+    }
+    if (current !== gate) {
+      throw new Error(`awaiting-owner-clear: the owner gate set on this macro is ${current}, not ${gate}`);
+    }
+    if (gate === 'plan-approval') {
+      throw new Error(
+        'awaiting-owner-clear: plan-approval is resolved by approving the plan ' +
+          '(plan-approve, /orchestrator:approve), not cleared (ADR-0063 D6)',
+      );
+    }
+    const nowIso = isoUtc(now);
+    const note =
+      `### Owner gate resolved: ${gate} at ${nowIso}\n\n` +
+      `Cleared awaiting_owner (since ${frontmatter.awaiting_owner_since}, ` +
+      `pointer ${frontmatter.awaiting_owner_pointer}). ` +
+      'The plan is still pending approval (awaiting_owner_gate=plan-approval).\n\n';
+    setMacroGate(frontmatter, 'plan-approval', {
+      since: nowIso,
+      pointer: macroPointer(workflowPath, MACRO_PLAN_ANCHOR),
+    });
+    validateSchema12Fields(frontmatter);
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, `${body}${note}`),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0063 D6 — the owner approves the macro plan as it stands. Records
+ * `approved`, the time, and computePlanHash of the plan read under the lock,
+ * and removes the plan-approval gate. `expectHash` binds the approval to the
+ * plan the owner was shown: a different current hash is refused. Refused
+ * under an autopilot run, while plan-conflict is set, on an empty plan, and on
+ * a terminal macro. Approving a plan already approved at the same hash writes
+ * nothing. A macro no 1.2 writer planned (no approval keys) can be approved.
+ */
+export async function approvePlan({
+  workflowPath,
+  host,
+  expectHash,
+  env = process.env,
+  now = new Date(),
+}) {
+  validateHost(host);
+  refuseUnderAutopilot(env, 'plan-approve');
+  if (expectHash !== undefined) validatePlanHash('--expect-hash', expectHash);
+  ensureNotArchived(workflowPath, 'plan-approve');
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
+    if (frontmatter.terminal_marker === true) {
+      throw new Error(
+        `plan-approve: this macro is terminal (current_phase ${JSON.stringify(frontmatter.current_phase)}); ` +
+          'there is nothing left to approve (ADR-0062 §Decision 4).',
+      );
+    }
+    const subtasks = Array.isArray(frontmatter.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+    if (subtasks.length === 0) {
+      throw new Error('plan-approve: the macro plan has no subtasks to approve; write a plan first (/orchestrator:plan)');
+    }
+    if (frontmatter.awaiting_owner_gate === 'plan-conflict') {
+      throw new Error(
+        `plan-approve: the plan's Plan-verify ensemble reported a conflict (${frontmatter.awaiting_owner_pointer}). ` +
+          'Revise the plan (/orchestrator:plan), or, having decided the conflict, clear it with ' +
+          'awaiting-owner-clear --gate plan-conflict and approve again (ADR-0063 D6).',
+      );
+    }
+    const planHash = computePlanHash(subtasks);
+    if (expectHash !== undefined && expectHash !== planHash) {
+      throw new Error(
+        `plan-approve: the plan changed since it was shown (shown ${expectHash.slice(0, 12)}, ` +
+          `now ${planHash.slice(0, 12)}); review it again before approving`,
+      );
+    }
+    if (
+      frontmatter.plan_approval_status === 'approved'
+      && frontmatter.plan_approval_plan_hash === planHash
+    ) {
+      return {
+        frontmatter,
+        workflowPath,
+        planHash,
+        approvedAt: frontmatter.plan_approval_approved_at,
+        noop: true,
+      };
+    }
+    const nowIso = isoUtc(now);
+    let replaced = '';
+    if (frontmatter.plan_approval_status === 'approved') {
+      replaced = ` Replaces the approval of ${frontmatter.plan_approval_approved_at} ` +
+        `(hash ${frontmatter.plan_approval_plan_hash.slice(0, 12)}), which no longer matched the plan.`;
+    } else if (frontmatter.awaiting_owner_gate === 'plan-approval') {
+      replaced = ` Cleared awaiting_owner plan-approval (since ${frontmatter.awaiting_owner_since}).`;
+    }
+    const note =
+      `### Plan approved at ${nowIso} (hash ${planHash.slice(0, 12)})\n\n` +
+      `${subtasks.length} subtask${subtasks.length === 1 ? '' : 's'}: ` +
+      `${subtasks.map((s) => s.id).join(', ')}.${replaced}\n\n`;
+    frontmatter.plan_approval_status = 'approved';
+    frontmatter.plan_approval_approved_at = nowIso;
+    frontmatter.plan_approval_plan_hash = planHash;
+    if (frontmatter.awaiting_owner_gate === 'plan-approval') clearMacroGate(frontmatter);
+    validateSchema12Fields(frontmatter);
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, `${body}${note}`),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath, planHash, approvedAt: nowIso, noop: false };
   });
 }
 
@@ -3921,7 +4433,7 @@ async function readStandardInput() {
 function cliPrintHelp() {
   process.stdout.write(
     [
-      'plugins/orchestrator/scripts/state.mjs — orchestrator schema 1.1 state CLI (1.0 read-only)',
+      'plugins/orchestrator/scripts/state.mjs — orchestrator schema 1.2 state CLI (1.0 read-only)',
       '',
       'Usage:',
       '',
@@ -3950,6 +4462,35 @@ function cliPrintHelp() {
       '     summary?: {...}, readiness?: [...]} when no candidate is ready.',
       '    readiness lists each open subtask as {id, status, blocked_by,',
       '    waiting_on, stale_blocked, ready} (ADR-0062 §Decision 5).',
+      '    Every shape also carries approval: {status: approved|pending|absent,',
+      '    hash_ok: true|false|null} (ADR-0063 D6; hash_ok is null unless approved).',
+      '',
+      '  plan-hash --workflow-path <path>',
+      '    ADR-0063 D6 — print {plan_hash, subtasks, approval, approved_at,',
+      '    awaiting_owner_gate, awaiting_owner_pointer}. plan_hash is sha256 over the',
+      '    canonical JSON of subtasks, the plan projected to id, label, branch,',
+      '    blocked_by, verb, profile and topic (progress fields are not covered).',
+      '',
+      '  plan-approve --workflow-path <path> --host claude|codex [--expect-hash <hex>]',
+      '    ADR-0063 D6 — record the owner\'s approval of the plan as it stands:',
+      '    plan_approval_status=approved, approved_at, plan_hash; removes the',
+      '    plan-approval gate. Exit 1 when --expect-hash differs from the current',
+      '    hash, while plan-conflict is set, on an empty plan, on a terminal macro,',
+      '    and when AGENTIC_AUTOPILOT names an autopilot run. The same hash approved',
+      '    again writes nothing ({noop: true}). JSON {workflowPath, plan_hash, approved_at}.',
+      '',
+      '  awaiting-owner-set --workflow-path <path> --host claude|codex',
+      '                     --gate plan-approval|plan-conflict',
+      '                     --pointer <repo-relative path#anchor> [--since <YYYY-MM-DDTHH:MM:SSZ>]',
+      '    ADR-0063 D6 — set a macro owner gate on a plan pending approval. --since',
+      '    defaults to now. The same gate again replaces pointer and since;',
+      '    plan-approval may be raised to plan-conflict; anything else is exit 1.',
+      '',
+      '  awaiting-owner-clear --workflow-path <path> --host claude|codex --gate plan-conflict',
+      '    ADR-0063 D6 — the owner resolves plan-conflict; the plan returns to the',
+      '    plan-approval gate and a phase note records the resolution. Exit 1 when',
+      '    the gate named is not the one set, for plan-approval (approve instead),',
+      '    and when AGENTIC_AUTOPILOT names an autopilot run.',
       '',
       '  subtask-engineer-terminal --workflow-path <path> --host claude|codex --subtask-id <id>',
       '                            --engineer-workflow-id <id> --branch-commit <sha>',
@@ -4013,13 +4554,17 @@ function cliPrintHelp() {
       '  plan-set --workflow-path <path> --host claude|codex',
       '           --subtasks-json-file <path>',
       '           [--decision <text>] [--architecture <text>]',
-      '           [--event updated|resumed]',
+      '           [--event updated|resumed] [--verdict pass|concerns|conflict]',
       '           [--correct (--reason-file <path> | --reason <text>)]',
       '    ADR-0018 §sub-1 + ADR-0019 §2 — atomic write of plan.{decision?, architecture?, subtasks[]}.',
       '    ADR-0062: refused on a terminal macro; runs the unblock pass; never',
       '    auto-terminals (an all-terminal revision prints a /orchestrator:finalize',
       '    hint on stderr); a completed subtask is carried unchanged (omitted',
       '    provenance carried forward) unless --correct with a reason.',
+      '    ADR-0063 D6: every plan-set returns the plan to pending approval,',
+      '    revoking an earlier approval. --verdict pass|concerns|conflict is the',
+      '    plan\'s Plan-verify verdict: conflict opens awaiting_owner_gate=plan-conflict',
+      '    in the same write; otherwise (or without --verdict) plan-approval.',
       '    --subtasks-json-file points at a UTF-8 JSON file whose top-level value',
       '    is the subtasks array. Schema 1.1 subtask shape:',
       '      {id, verb, branch, blocked_by[], status,                      (REQUIRED)',
@@ -4184,14 +4729,17 @@ async function cliMain(argv) {
         const subtasks = Array.isArray(frontmatter?.plan?.subtasks)
           ? frontmatter.plan.subtasks
           : [];
+        // ADR-0063 D6 — additive on every shape, so a dispatcher gets
+        // readiness and approval from one call and never recomputes the hash.
+        const approval = planApprovalState(frontmatter);
         if (subtasks.length === 0) {
-          process.stdout.write(`${JSON.stringify({ ready: null, reason: 'empty_plan' })}\n`);
+          process.stdout.write(`${JSON.stringify({ ready: null, reason: 'empty_plan', approval })}\n`);
           return 0;
         }
         const readiness = subtaskReadiness(subtasks);
         const readyIdx = readiness.findIndex((r) => r.ready);
         if (readyIdx !== -1) {
-          process.stdout.write(`${JSON.stringify({ ready: subtasks[readyIdx] })}\n`);
+          process.stdout.write(`${JSON.stringify({ ready: subtasks[readyIdx], approval })}\n`);
           return 0;
         }
         const allTerminal = subtasks.every((s) => TERMINAL_SUBTASK_STATUSES.has(s?.status));
@@ -4212,8 +4760,72 @@ async function cliMain(argv) {
             // ADR-0062 §Decision 5 — the facts behind the diagnosis, for the
             // subtasks that are still open.
             readiness: readiness.filter((r) => !TERMINAL_SUBTASK_STATUSES.has(r.status)),
+            approval,
           })}\n`,
         );
+        return 0;
+      }
+
+      case 'plan-hash': {
+        // ADR-0063 D6 — what an approval would bind to, for
+        // /orchestrator:approve to show before it approves. Read-only.
+        cliRequire(flags, ['workflow-path']);
+        const { frontmatter } = await readWorkflow(flags['workflow-path']);
+        const subtasks = Array.isArray(frontmatter?.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+        process.stdout.write(`${JSON.stringify({
+          plan_hash: computePlanHash(subtasks),
+          subtasks: planHashProjection(subtasks),
+          approval: planApprovalState(frontmatter),
+          approved_at: frontmatter.plan_approval_approved_at ?? null,
+          awaiting_owner_gate: frontmatter.awaiting_owner_gate ?? null,
+          awaiting_owner_pointer: frontmatter.awaiting_owner_pointer ?? null,
+        })}\n`);
+        return 0;
+      }
+
+      case 'plan-approve': {
+        cliRequire(flags, ['workflow-path', 'host']);
+        if ('expect-hash' in flags && flags['expect-hash'].length === 0) {
+          throw new Error('--expect-hash needs a value');
+        }
+        const result = await approvePlan({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          expectHash: flags['expect-hash'],
+        });
+        const envelope = {
+          workflowPath: result.workflowPath,
+          plan_hash: result.planHash,
+          approved_at: result.approvedAt,
+        };
+        if (result.noop) envelope.noop = true;
+        process.stdout.write(`${JSON.stringify(envelope)}\n`);
+        return 0;
+      }
+
+      // ADR-0063 D6 — the macro owner gates. Both refuse with exit 1; see
+      // setAwaitingOwner / clearAwaitingOwner for the transitions allowed.
+      case 'awaiting-owner-set': {
+        cliRequire(flags, ['workflow-path', 'host', 'gate', 'pointer']);
+        await setAwaitingOwner({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          gate: flags.gate,
+          pointer: flags.pointer,
+          since: flags.since,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'awaiting-owner-clear': {
+        cliRequire(flags, ['workflow-path', 'host', 'gate']);
+        await clearAwaitingOwner({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          gate: flags.gate,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
       }
 
@@ -4425,6 +5037,7 @@ async function cliMain(argv) {
           event: flags.event ?? 'updated',
           correct: cliPresenceFlag(flags, 'correct'),
           reason: await cliReasonFlag(flags),
+          verdict: flags.verdict,
         });
         // stdout stays the workflow path (the runbooks read it); the
         // advisory goes to stderr.

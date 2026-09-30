@@ -412,6 +412,11 @@ optional keys.
 > `awaiting_owner_*`, and keeps the required-key set. They sit at the
 > tail of the key order, after `parent_writeback_at`, so the carrier
 > described below keeps them in place when a 1.3 reader writes the file.
+>
+> **Note (2026-09-30, ADR-0063 D6, orchestrator):** the orchestrator port
+> (#357) follows the same rule. Its schema `1.2` adds `plan_approval_*` and
+> `awaiting_owner_*` after `terminal_marker`, where a 1.1 reader's carrier
+> writes them back.
 
 **Context (the cache vs. main divergence window).** The
 agentic-plugins marketplace cache lags `main` between releases

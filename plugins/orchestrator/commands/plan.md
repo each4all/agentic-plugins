@@ -150,8 +150,23 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-set \
   --subtasks-json-file "$SUBTASKS_JSON" \
   --decision "<one-line decision rationale>" \
   --architecture "<one-line architecture summary>" \
+  --verdict "$VERDICT" \
   --event updated
 ```
+
+`$VERDICT` is the synthesized Plan-verify verdict (`pass`, `concerns` or
+`conflict`), the same value the ensemble commit below records. A LOCAL-ONLY
+plan (no peer) still has one: the local synthesis's own `pass` or
+`concerns`. `plan-set` refuses an empty or unknown verdict. `plan-set`
+also returns the plan to **pending approval** under the same lock (ADR-0063
+D6): `plan_approval_status=pending`, with `awaiting_owner_gate=plan-conflict`
+when the verdict is `conflict` and `plan-approval` otherwise, pointing at the
+macro file. Setting the gate in the write that stores the plan means a disputed
+plan is never approvable, not even for a moment. Any plan write revokes an
+earlier approval. The owner approves the plan with `/orchestrator:approve`,
+which binds the approval to the plan's hash; ADR-0063's autopilot is to
+dispatch only an approved plan whose hash still matches (the
+`/orchestrator:next` gate is slice S6).
 
 Then record the phase note + ensemble result:
 
@@ -186,8 +201,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --phase-label "Phase 1: Plan (synthesized)" \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
-  --next-action "Await user approval of macro plan; then selected_next=/orchestrator:next dispatches the first ready subtask" \
-  --event updated --require-open
+  --next-action "Await the owner's approval of the macro plan (/orchestrator:approve); then /orchestrator:next dispatches the first ready subtask" \
+  --event updated --require-open || exit 1
 
 # Atomic three-step ensemble-results commit (pop pending → append result
 # → prune). $VERDICT is one of pass | concerns | conflict; $SUMMARY is a
@@ -213,7 +228,9 @@ After user approval of the synthesized plan, output the macro plan and one of:
 
 - `✓ Plan complete.` + path to the workflow file.
 - `✓ Plan complete (LOCAL-ONLY).` + note that Codex peer was unavailable; recommend re-running once `/codex:setup` is configured.
-- `✓ Plan paused (CONFLICT items surfaced).` — when synthesizer flagged disagreements that warrant user input before subtasks land.
+- `✓ Plan paused (CONFLICT items surfaced).` — when synthesizer flagged disagreements that warrant user input before subtasks land. The macro is at `awaiting_owner_gate=plan-conflict`: the owner revises the plan (`/orchestrator:plan`), or decides the conflict, clears the gate with `state.mjs awaiting-owner-clear --gate plan-conflict`, and approves.
+
+Every completed plan is **pending approval** until the owner runs `/orchestrator:approve`.
 
 Always include the workflow path.
 
@@ -232,7 +249,11 @@ completion-output contract):
 - next_command:          <exact next step: /orchestrator:<command> … — or the wait / owner-decision action>
 ```
 
-For a freshly approved plan the typical `selected_next` is
+For a freshly written plan the typical `selected_next` is the owner's approval,
+`/orchestrator:approve` — ADR-0063's autopilot is to dispatch only an approved
+plan (D6; the dispatch gate is slice S6), while an interactive
+`/orchestrator:next` does not require it —
+and for an approved plan it is
 `/orchestrator:next` to dispatch the first unblocked subtask (lowest-id entry with
 `status=pending` and empty `blocked_by`; a subtask unblocks when all its
 `blocked_by` predecessors reach `status=completed` — drive in dependency order) —

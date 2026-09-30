@@ -860,6 +860,96 @@ that part of §4 before this ADR was adopted.
   `scripts/mutation-specs/engineer-schema-14.mjs` shows each check fails on
   the defect it guards.
 
+## Implementation note 2026-09-30 — S2 (orchestrator schema 1.2 + plan approval)
+
+- **Schema 1.2** adds the D6 macro fields as six optional flat scalars:
+  `plan_approval_status`, `plan_approval_approved_at`,
+  `plan_approval_plan_hash`, `awaiting_owner_gate`, `awaiting_owner_since`
+  and `awaiting_owner_pointer`. They come after `terminal_marker`, where a 1.1
+  reader's forward-compat carrier writes keys it does not know, so a 1.1
+  reader's write leaves them byte for byte. The macro gates are
+  `plan-approval` and `plan-conflict`; the since and pointer formats are S1's.
+- **Invariants.** `approved_at` and `plan_hash` are present exactly when the
+  status is `approved`, and the three `awaiting_owner_*` keys appear all or
+  none. The specification required a pending plan to carry a macro gate. The
+  converse holds too, because both macro gates concern the approval: a macro
+  gate is set only while the plan is pending.
+- **`plan_hash`** is sha256 over JSON with sorted keys and no whitespace. The
+  input is `plan.subtasks[]` in order, each projected to `id`, `label`,
+  `branch`, `blocked_by`, `verb`, `profile` and `topic`. An absent or null
+  field is left out, because the serializer drops a null optional field, so
+  a plan hashes the same before and after it is written. The order of
+  `blocked_by` counts. `state.mjs plan-hash` prints the hash and the
+  projection it covers, so no other plugin recomputes it.
+- **Transitions.** Each is one write under the macro's lock:
+  - `plan-set`, from any state, gives `pending`. The gate is
+    `plan-conflict` when `--verdict conflict` is passed, and `plan-approval`
+    otherwise.
+  - `awaiting-owner-set --gate plan-conflict` raises `plan-approval` to
+    `plan-conflict`.
+  - `awaiting-owner-clear --gate plan-conflict` returns it to
+    `plan-approval`.
+  - `plan-approve` gives `approved` with no gate.
+
+  The specification contradicted itself here. `plan-set` sets
+  `plan-approval`, and the conflict path's later `awaiting-owner-set` would
+  then refuse a different gate under the engineer contract. A later write would
+  also leave a window in which another session could approve the disputed plan
+  (the Codex review reproduced it). `/orchestrator:plan` knows its verdict
+  before it writes the plan, so `plan-set` takes it and sets the conflict gate
+  in the same write. Raising `plan-approval` to `plan-conflict` is still the
+  one change of gate that `awaiting-owner-set` allows. Clearing
+  `plan-conflict` does not leave the plan without a gate, because it is still
+  pending. `plan-approval` is never cleared, only resolved by approving. This
+  is the method of owner decision D7, which is still open.
+- **`plan-set` revokes on every write.** That includes a write that leaves
+  the hash unchanged: the specification says any plan edit revokes, and a
+  re-plan is what the owner re-approves. Progress writes do not revoke an
+  approval: `subtask-update`, the engineer terminal note and
+  `bulk-subtask-status`.
+- **`plan-approve`** takes `--expect-hash`. It is refused when that hash
+  differs from the current one, while `plan-conflict` is set, on an empty
+  plan, on a terminal macro, and under an autopilot run. Approving the same
+  hash again writes nothing. Two cases are allowed, because each is the
+  owner acting on a plan they were shown:
+  - a macro planned before 1.2, which has no approval keys;
+  - a stale approval, one whose hash a 1.1 writer's plan change no longer
+    matches.
+- **`next-ready`** adds `approval: {status: approved|pending|absent,
+  hash_ok: true|false|null}` on every output shape.
+- **`/orchestrator:approve`** and its Codex mirror show every field the hash
+  covers, the topic included, then approve with `--expect-hash` set to the
+  hash shown. `/orchestrator:plan` passes its verdict to `plan-set`; the
+  state script computes the pointer from the macro's state home.
+- **Pointer anchors are labels.** `#macro-plan` names the frontmatter
+  `plan` block, and `#ensemble-synthesis` names the plan's Plan-verify
+  synthesis: its `plan-verify` entry in `ensemble_results`, and the
+  `### Ensemble synthesis` phase note that `/orchestrator:plan` appends.
+  Neither is an HTML id: a macro collects one synthesis per revision, so a
+  fixed id would be ambiguous, and the owner finds the section by name.
+- **Not in S2:** the `/orchestrator:next` gate (S6) and the entry-brief rows
+  (S7). Until S6 lands, nothing refuses to dispatch an unapproved plan: the
+  documentation says the autopilot "is to" dispatch only an approved plan.
+  - For S7: a plan hash is 64 hex characters, which the state scripts'
+    secret scrubber (`[a-fA-F0-9]{32,}`) redacts. A reader that scrubs the
+    frontmatter text before it reads the hash loses it.
+  - A macro that `/orchestrator:finalize` or `/orchestrator:abort` closes
+    keeps its approval keys as they were.
+- Tests:
+  - `tests/orchestrator/test-state-schema-12.mjs`;
+  - `tests/orchestrator/test-approve-runbook.mjs`, which runs the approve block
+    and `/orchestrator:plan`'s note + ensemble block in bash and zsh;
+  - the last two blocks of `tests/orchestrator/test-state-schema-forward-compat.mjs`,
+    one with a 1.1 reader derived from this build and one with the released
+    1.1 code, read from the tag `plugin-orchestrator-v0.14.1` (skipped in a
+    clone without it);
+  - `tests/plugin-shape/test-autopilot-enum-parity.mjs`, which holds the
+    engineer and orchestrator copies of `isAutopilotRun` and the pointer
+    shape equal.
+
+  `scripts/mutation-specs/orchestrator-schema-12.mjs` shows each check fails
+  on the defect it guards, the lock included.
+
 ## References
 
 - ADR-0001 (honest scope)

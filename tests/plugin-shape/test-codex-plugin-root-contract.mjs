@@ -18,7 +18,8 @@
 // the same cell without the start-macro clause, since orchestrator has no
 // start macro. The same change reworded the cell's last sentence: the
 // checkout "tracks the repository's main branch" rather than being what Codex
-// "installs from", which ADR-0061's pinned catalog makes untrue.
+// "installs from", which ADR-0061's pinned catalog makes untrue. An eighth,
+// approve's, joined with ADR-0063 S2 (2026-09-30), carrying the same cell.
 //
 // Traps this closes:
 //   - A table that loses its row, or a new command-resolution section, would
@@ -73,7 +74,7 @@ const TABLES = {
   engineer: ['checkpoint', 'peer-now', 'resume'],
   designer: ['checkpoint', 'peer-now', 'resume', 'start'],
   founder: ['checkpoint', 'peer-now', 'resume', 'start'],
-  orchestrator: ['abort', 'checkpoint', 'done', 'finalize', 'next', 'peer-now', 'resume'],
+  orchestrator: ['abort', 'approve', 'checkpoint', 'done', 'finalize', 'next', 'peer-now', 'resume'],
 };
 const PERSONAS = Object.keys(TABLES);
 // The plugins whose start macro runs the six verb skills in place, so their
