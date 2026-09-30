@@ -17,16 +17,19 @@
 //   - Mutation helpers (setCheckpoint, etc.) preserve the carrier across
 //     the read-mutate-write boundary — the Symbol is invisible to
 //     Object.keys() and `key in fm` so mutation code is untouched.
+//   - ADR-0063 D6: a 1.3-era reader (this build minus the six 1.4 keys)
+//     carries next_step_* / awaiting_owner_* through read and mutation
+//     byte for byte, in place at the tail.
 //
 // Run via `node --test tests/engineer/test-state-schema-forward-compat.mjs`.
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, throws, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
@@ -41,6 +44,10 @@ const {
   createWorkflow,
   listWorkflowFiles,
   setCheckpoint,
+  appendPhase,
+  setAwaitingOwner,
+  setParentWritebackMarker,
+  readWorkflow,
 } = await import(STATE_PATH);
 
 function gitInit(dir, branch) {
@@ -141,7 +148,8 @@ describe('isSupportedSchema — ADR-0028 §Forward-compat predicate', () => {
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.1'));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.2'));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.3'));
-    strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.4'), false);
+    ok(SUPPORTED_SCHEMA_VERSIONS.has('1.4'));
+    strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.5'), false);
     strictEqual(SUPPORTED_SCHEMA_VERSIONS.has(2), false);
   });
 });
@@ -509,5 +517,112 @@ describe('isSupportedSchema — Unicode digit hardening', () => {
     strictEqual(isSupportedSchema('1.٠'), false);  // Arabic-Indic 0
     strictEqual(isSupportedSchema('1.१'), false);  // Devanagari 1
     strictEqual(isSupportedSchema('1.５'), false);  // Fullwidth 5
+  });
+});
+
+// -----------------------------------------------------------------------------
+// ADR-0063 D6 — a 1.3-era reader meets a 1.4 file
+// -----------------------------------------------------------------------------
+
+const SCHEMA_14_KEYS = [
+  'next_step_kind',
+  'next_step_verb',
+  'next_step_confidence',
+  'awaiting_owner_gate',
+  'awaiting_owner_since',
+  'awaiting_owner_pointer',
+];
+
+// A 1.3-era reader is this build without the six 1.4 entries in
+// FRONTMATTER_KEY_ORDER, which is the only thing that makes a key known to
+// the parser. The copy lives outside the repo and is imported fresh, so it
+// has its own module state (including its own carrier Symbol).
+async function importSchema13Reader(dir) {
+  const src = await readFile(STATE_PATH, 'utf8');
+  const keyOrderLine = new RegExp(`^  '(${SCHEMA_14_KEYS.join('|')})',\\n`, 'gm');
+  const removed = (src.match(keyOrderLine) ?? []).map((l) => l.trim());
+  deepStrictEqual(removed, SCHEMA_14_KEYS.map((k) => `'${k}',`),
+    'the six keys must each appear once, one per line, in FRONTMATTER_KEY_ORDER');
+  const emit = "export const SCHEMA_VERSION = '1.4';";
+  ok(src.includes(emit), 'the build must emit 1.4');
+  const reader = src.replace(keyOrderLine, '').replace(emit, "export const SCHEMA_VERSION = '1.3';");
+  await writeFile(join(dir, 'state.mjs'), reader);
+  await copyFile(resolve(REPO_ROOT, 'plugins/engineer/scripts/validate-commit.mjs'), join(dir, 'validate-commit.mjs'));
+  return import(pathToFileURL(join(dir, 'state.mjs')).href);
+}
+
+const newKeyLines = (text) => text.match(/^(next_step_|awaiting_owner_)\w+: .*$/gm) ?? [];
+const frontmatterBlock = (text) => text.slice(0, text.indexOf('\n---\n') + 5);
+
+describe('ADR-0063 D6 — a 1.3-era reader carries the 1.4 keys', () => {
+  it('round-trips the six scalars byte for byte, through read and through mutation', async () => {
+    const readerDir = await mkdtemp(join(tmpdir(), 'engineer-reader13-'));
+    try {
+      const r13 = await importSchema13Reader(readerDir);
+      strictEqual(r13.SCHEMA_VERSION, '1.3');
+      await withTmpRepo(async (repoRoot) => {
+        // Written by this (1.4) build.
+        await createWorkflow({
+          repoRoot, verb: 'decide', host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'reader 1.3 meets 1.4',
+        });
+        const [filePath] = await listWorkflowFiles(repoRoot);
+        // parent_writeback_at is the last key a 1.3 reader knows; with it
+        // present, a 1.4 key placed before it would come back reordered.
+        await setParentWritebackMarker({
+          workflowPath: filePath, host: 'claude', at: '2026-09-30T01:00:00Z',
+        });
+        await appendPhase({
+          workflowPath: filePath, host: 'claude', event: 'updated',
+          nextStep: { kind: 'verb', verb: 'compose', confidence: 'MEDIUM' },
+        });
+        await setAwaitingOwner({
+          workflowPath: filePath, host: 'claude', gate: 'decide-conflict',
+          pointer: '.agentic-plugins/state/engineer/workflows/x.md#decision-pending',
+          since: '2026-09-30T01:02:03Z',
+        });
+        const written = await readFile(filePath, 'utf8');
+        const lines = newKeyLines(written);
+        strictEqual(lines.length, 6, written);
+
+        // The simulated reader does not know the keys: all six go to its carrier.
+        const parsed = r13.parseWorkflowFile(written);
+        deepStrictEqual(
+          (parsed.frontmatter[r13.FORWARD_COMPAT_UNKNOWNS] ?? []).map((e) => e.key),
+          SCHEMA_14_KEYS,
+        );
+        for (const k of SCHEMA_14_KEYS) strictEqual(k in parsed.frontmatter, false, k);
+
+        // Read → write with no mutation: the frontmatter is byte-identical.
+        strictEqual(
+          frontmatterBlock(r13.assembleWorkflowFile(parsed.frontmatter, parsed.body)),
+          frontmatterBlock(written),
+        );
+
+        // A 1.3 mutation keeps the six lines, in place at the tail.
+        await r13.setCheckpoint({ workflowPath: filePath, host: 'codex', summary: 'from a 1.3 reader' });
+        await r13.appendPhase({
+          workflowPath: filePath, host: 'codex', event: 'updated',
+          phaseLabel: '1.3 append', phaseNote: 'untouched keys',
+        });
+        const after = await readFile(filePath, 'utf8');
+        deepStrictEqual(newKeyLines(after), lines);
+        const tail = frontmatterBlock(after).trimEnd().split('\n').slice(-7, -1);
+        deepStrictEqual(tail, lines, 'the six keys must stay at the tail of the frontmatter');
+
+        // And this build reads the same values back.
+        const { frontmatter } = await readWorkflow(filePath);
+        strictEqual(frontmatter.next_step_kind, 'verb');
+        strictEqual(frontmatter.next_step_verb, 'compose');
+        strictEqual(frontmatter.next_step_confidence, 'MEDIUM');
+        strictEqual(frontmatter.awaiting_owner_gate, 'decide-conflict');
+        strictEqual(frontmatter.latest_checkpoint.summary, 'from a 1.3 reader');
+        strictEqual(frontmatter.parent_writeback_at, '2026-09-30T01:00:00Z');
+        strictEqual(frontmatter.schema, '1.4');
+      });
+    } finally {
+      await rm(readerDir, { recursive: true, force: true });
+    }
   });
 });

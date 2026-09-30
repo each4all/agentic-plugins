@@ -56,7 +56,7 @@ const MIN_BASELINE = {
 // parent_writeback_at — SCALAR (ISO timestamp) round-trip
 
 describe('state.mjs — schema 1.3 parent_writeback_at (M3 write-ahead marker)', () => {
-  it('absent parent_writeback_at on a fresh 1.3 file reads OK (additive optional)', async () => {
+  it('absent parent_writeback_at on a freshly created file reads OK (additive optional)', async () => {
     await withTmpRepo(async (repoRoot) => {
       await createWorkflow({
         repoRoot, verb: 'compose', host: 'claude',

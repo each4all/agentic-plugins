@@ -407,6 +407,12 @@ schema versions: `1` (ADR-0011 §2), `1.1` (ADR-0017), `1.2`
 versions share the same required-key set; minor bumps add purely
 optional keys.
 
+> **Note (2026-09-30, [ADR-0063](0063-autopilot-fresh-session-driver.md)
+> D6):** schema `1.4` adds six optional flat scalars, `next_step_*` and
+> `awaiting_owner_*`, and keeps the required-key set. They sit at the
+> tail of the key order, after `parent_writeback_at`, so the carrier
+> described below keeps them in place when a 1.3 reader writes the file.
+
 **Context (the cache vs. main divergence window).** The
 agentic-plugins marketplace cache lags `main` between releases
 (e.g. cached `engineer@0.12.1` emits/reads schema 1.2 while `main`

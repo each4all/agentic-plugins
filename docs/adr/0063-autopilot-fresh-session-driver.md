@@ -815,6 +815,51 @@ that part of §4 before this ADR was adopted.
 - **The plugin-root hint (D5)** is no longer needed by an installed version
   that carries S0.
 
+## Implementation note 2026-09-30 — S1 (engineer schema 1.4)
+
+- **Schema 1.4** adds the D6 engineer fields as six optional flat scalars:
+  `next_step_kind`, `next_step_verb`, `next_step_confidence`,
+  `awaiting_owner_gate`, `awaiting_owner_since` and `awaiting_owner_pointer`.
+  - An absent key means null.
+  - Validation is per key, so a file on disk schema 1.3 may carry them, and a
+    write never changes a file's schema.
+  - The engineer gates are `scope-routing`, `decide-conflict`,
+    `recurring-finding`, `staging-set` and `pr-handling`. `plan-approval` and
+    `plan-conflict` live on the macro, and `duplicate-workflow` is not stored.
+- **Their position matters.** A 1.3 reader keeps keys it does not know in its
+  forward-compat carrier and writes them after every key it knows. The six
+  keys come after `parent_writeback_at`, which is where that puts them, so a
+  1.3 reader's write leaves them byte for byte. A test builds such a reader
+  from this build minus the six keys.
+- **Formats the plugin change specification left open:**
+  - `awaiting_owner_since` has the form the state script writes for its own
+    timestamps, `YYYY-MM-DDTHH:MM:SSZ`, and must be a real instant.
+    `Date.parse` alone would turn 2026-02-30 into 2026-03-02.
+  - `awaiting_owner_pointer` is `path#anchor`. Both parts are non-empty, use
+    only `[A-Za-z0-9._/-]`, and the pointer has no leading `/` and no `..`.
+- **CLI:**
+  - `append` and `set-terminal` take `--next-step-kind`, `--next-step-verb`
+    and `--next-step-confidence`, which replace all three keys at once. The
+    verb is required exactly when the kind is `verb`.
+  - Every flag in this CLI takes a value, so clearing is
+    `append --clear-next-step true`, parsed strictly. It cannot be combined
+    with the `--next-step-*` flags; `--clear-next-step false` is the default
+    and changes nothing.
+  - `awaiting-owner-set` defaults `--since` to now. Setting the gate that is
+    already set replaces its pointer and since; a different gate is refused.
+  - `awaiting-owner-clear` is refused when no gate is set, when the gate named
+    is not the one set, and when `AGENTIC_AUTOPILOT` names an autopilot run.
+    The keys are deleted, so it appends
+    `### Owner gate resolved: <gate> at <iso>` with the since and pointer it
+    cleared (Q2).
+  - Input is checked before the file lock is taken, and the frontmatter is
+    checked again before it is written, so an inconsistent set never reaches
+    disk.
+- `tests/engineer/test-state-schema-14.mjs` and the last block of
+  `tests/engineer/test-state-schema-forward-compat.mjs` cover this.
+  `scripts/mutation-specs/engineer-schema-14.mjs` shows each check fails on
+  the defect it guards.
+
 ## References
 
 - ADR-0001 (honest scope)
