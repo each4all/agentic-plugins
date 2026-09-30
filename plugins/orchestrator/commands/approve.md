@@ -14,9 +14,10 @@ subtasks as they stand (ADR-0063 D6). It prints the plan it approves and binds
 the approval to that plan: the hash it shows is the hash it approves, and a
 plan that changes in between is refused. Any later `plan-set` returns the plan
 to pending approval, so an approval never outlives the plan it was given for.
-ADR-0063's autopilot is to dispatch only an approved plan whose hash still
-matches (the `/orchestrator:next` gate that enforces it is slice S6); an
-interactive `/orchestrator:next` does not require an approval.
+Under ADR-0063's autopilot, `/orchestrator:next` dispatches only an approved
+plan whose hash still matches and refuses anything else (`plan-unapproved`);
+an interactive `/orchestrator:next` does not require an approval, and prints
+one warning line for a plan pending approval or changed since it was approved.
 
 It does not mutate `current_phase`, `next_action`, or `plan.subtasks[]`. The
 workflow namespace is `.agentic-plugins/state/orchestrator/` for new repos;

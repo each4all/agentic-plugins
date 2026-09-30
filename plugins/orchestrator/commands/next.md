@@ -190,6 +190,35 @@ case "$SUBTASK_STATUS" in
 esac
 ```
 
+Then apply the plan-approval gate (ADR-0063 D4 rule 3, owner decision D3).
+`state.mjs approval-gate` decides from the approval facts `next-ready` reports
+(`{status, hash_ok}`), so this runbook never compares plan hashes itself. It
+runs for an explicit id as well as for the automatic pick, because
+`subtask-readiness` reports no approval. It is given the subtask as selected
+above, because that — not the plan the gate reads — is what Phases 4 and 5
+dispatch.
+
+- **Autopilot** (`AGENTIC_AUTOPILOT` names a run): a plan that is not approved
+  at its current hash — pending approval, changed since it was approved, or
+  never approved — is refused with `✗ plan-unapproved` and a pointer to where
+  the owner acts, exit 1. Stop there: only the owner approves
+  (`/orchestrator:approve`). So is a selected subtask that differs from the
+  approved plan's entry (the plan changed after the selection); rerun
+  `/orchestrator:next`.
+- **Interactive:** never refused. A plan pending approval or changed since it
+  was approved gets one warning line, and dispatch continues. A macro planned
+  before schema 1.2 has no approval keys and dispatches as before, with no line.
+
+```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ORCHESTRATOR_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/orchestrator -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# The gate prints its warning or refusal on stderr; the JSON verdict it
+# prints on stdout is for scripts, not for this runbook.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" approval-gate \
+  --workflow-path "$MACRO_PATH" --host claude \
+  --subtask-json "$SUBTASK_JSON" >/dev/null || exit 1
+```
+
 ---
 
 ## Phase 2 — Branch precondition (ADR-0019 §1 lines 122-185, fixed order)
@@ -393,6 +422,10 @@ Report one of:
 - `✓ Subtask <id> dispatched. engineer_workflow_id=<id> on branch <branch>.` (happy path, status=in_progress recorded.)
 - `✓ Subtask <id> already in_progress — re-attached to existing engineer workflow <id>.` (idempotent re-attach.)
 - `✓ Subtask <id> auto-promoted: engineer Stop hook had already completed it; macro now terminal_marker=true.` (rare race; PR-C0 auto-terminal pass fired.)
+
+When the Phase 1 approval gate printed its warning line, repeat that line
+under the report. A refused dispatch (`✗ plan-unapproved`) reports the gate's
+two lines and nothing was dispatched.
 
 ARCHIVE TIMING — in that auto-promoted case the macro is terminal without any
 `set-terminal` call of its own: the Phase 5 `subtask-update` auto-terminal pass

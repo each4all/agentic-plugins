@@ -353,6 +353,87 @@ export function planApprovalState(frontmatter) {
   return { status, hash_ok: frontmatter.plan_approval_plan_hash === computePlanHash(subtasks) };
 }
 
+/**
+ * ADR-0063 D4 rule 3 — the approval gate of /orchestrator:next, decided from
+ * planApprovalState so no dispatcher compares hashes itself. Under an
+ * autopilot run (isAutopilotRun) only a plan approved at its current hash is
+ * dispatched; any other plan, one with no approval recorded included, is
+ * refused with the halt reason `plan-unapproved`. An interactive dispatch is
+ * never refused (owner decision D3): it warns, in one line, when the plan is
+ * pending approval or has changed since it was approved, and says nothing for
+ * an approved plan or for a macro no 1.2 writer has planned, which dispatches
+ * as it did before approvals existed. `lines` are for the caller's stderr;
+ * `pointer` is where the owner acts.
+ *
+ * `selected` is the subtask the caller is about to dispatch, as it read it
+ * before this check. The approval covers the plan read here, so under
+ * autopilot the selected subtask must also match this plan's entry for its id
+ * in every field the hash covers: a plan rewritten and approved between the
+ * selection and this check would otherwise pass, and the caller would
+ * dispatch fields the owner never approved.
+ */
+export function planApprovalGate({ frontmatter, workflowPath, host, selected, env = process.env }) {
+  validateHost(host);
+  if (typeof selected !== 'object' || selected === null || Array.isArray(selected) || typeof selected.id !== 'string') {
+    throw new Error('approval-gate: the selected subtask must be a JSON object with a string id');
+  }
+  const approval = planApprovalState(frontmatter);
+  const autopilot = isAutopilotRun(env);
+  const pointer = frontmatter?.awaiting_owner_pointer ?? macroPointer(workflowPath, MACRO_PLAN_ANCHOR);
+  const approved = approval.status === 'approved' && approval.hash_ok === true;
+  const subtasks = Array.isArray(frontmatter?.plan?.subtasks) ? frontmatter.plan.subtasks : [];
+  const current = subtasks.find((s) => s?.id === selected.id);
+  const selectedInPlan = current !== undefined
+    && canonicalJson(planHashProjection([current])) === canonicalJson(planHashProjection([selected]));
+  if ((approved && (selectedInPlan || !autopilot)) || (!autopilot && approval.status === 'absent')) {
+    return { verdict: 'proceed', reason: null, autopilot, approval, pointer, lines: [] };
+  }
+  const sigil = host === 'codex' ? '$' : '/';
+  if (approved) {
+    // Only an autopilot run gets here: the plan is approved, but not with the
+    // subtask as it was selected.
+    return {
+      verdict: 'refuse', reason: 'plan-unapproved', autopilot, approval, pointer,
+      lines: [
+        `✗ plan-unapproved — an autopilot run (AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}) dispatches only ` +
+          `a subtask of the plan the owner approved, and subtask ${selected.id} as selected is not in it: ` +
+          'the plan changed after the subtask was selected (ADR-0063 D4).',
+        `  Pointer: ${pointer}. Run ${sigil}orchestrator:next again; it selects from the plan as approved.`,
+      ],
+    };
+  }
+  const approve = `${sigil}orchestrator:approve --workflow=${basename(workflowPath, '.md')}`;
+  let state;
+  if (approval.status === 'pending') {
+    state = `is pending approval (awaiting_owner_gate=${frontmatter.awaiting_owner_gate})`;
+  } else if (approval.status === 'approved') {
+    state = `has changed since it was approved at ${frontmatter.plan_approval_approved_at}`;
+  } else {
+    state = 'has no approval recorded';
+  }
+  const owner = frontmatter?.awaiting_owner_gate === 'plan-conflict'
+    ? `settles the Plan-verify conflict (revises the plan with ${sigil}orchestrator:plan, or clears ` +
+      `the conflict with state.mjs awaiting-owner-clear --gate plan-conflict), then approves the plan with ${approve}`
+    : `reviews the plan and approves it with ${approve}`;
+  if (autopilot) {
+    return {
+      verdict: 'refuse', reason: 'plan-unapproved', autopilot, approval, pointer,
+      lines: [
+        `✗ plan-unapproved — an autopilot run (AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}) dispatches only ` +
+          `a plan the owner approved at its current hash, and this plan ${state} (ADR-0063 D4).`,
+        `  Pointer: ${pointer}. The owner ${owner}; the run can then resume.`,
+      ],
+    };
+  }
+  return {
+    verdict: 'warn', reason: 'plan-unapproved', autopilot, approval, pointer,
+    lines: [
+      `⚠ This plan ${state}; dispatching anyway, which an autopilot run would refuse (${pointer}). ` +
+        `The owner ${owner}.`,
+    ],
+  };
+}
+
 // -----------------------------------------------------------------------------
 // Path helpers
 
@@ -4471,6 +4552,18 @@ function cliPrintHelp() {
       '    canonical JSON of subtasks, the plan projected to id, label, branch,',
       '    blocked_by, verb, profile and topic (progress fields are not covered).',
       '',
+      '  approval-gate --workflow-path <path> --host claude|codex --subtask-json <json>',
+      '    ADR-0063 D4 rule 3 — the approval gate of /orchestrator:next, for the',
+      '    subtask it selected (--subtask-json, as read-subtask or next-ready gave it).',
+      '    When AGENTIC_AUTOPILOT names an autopilot run, a plan not approved at its',
+      '    current hash (pending, changed since approval, or never approved), or a',
+      '    selected subtask that differs from that plan\'s entry in a hashed field, is',
+      '    refused: "✗ plan-unapproved" and a pointer on stderr, exit 1. Otherwise',
+      '    exit 0; an interactive dispatch of a plan pending approval or changed',
+      '    since approval gets one warning line on stderr (owner decision D3), and',
+      '    a macro with no approval keys none. JSON {verdict: proceed|warn|refuse,',
+      '    reason, autopilot, approval, pointer}.',
+      '',
       '  plan-approve --workflow-path <path> --host claude|codex [--expect-hash <hex>]',
       '    ADR-0063 D6 — record the owner\'s approval of the plan as it stands:',
       '    plan_approval_status=approved, approved_at, plan_hash; removes the',
@@ -4781,6 +4874,26 @@ async function cliMain(argv) {
           awaiting_owner_pointer: frontmatter.awaiting_owner_pointer ?? null,
         })}\n`);
         return 0;
+      }
+
+      case 'approval-gate': {
+        // ADR-0063 D4 rule 3, owner decision D3 — the approval gate of
+        // /orchestrator:next. Read-only: the verdict as JSON on stdout, the
+        // warning or refusal on stderr, and exit 1 on a refusal.
+        cliRequire(flags, ['workflow-path', 'host', 'subtask-json']);
+        let selected;
+        try {
+          selected = JSON.parse(flags['subtask-json']);
+        } catch (err) {
+          throw new Error(`approval-gate: --subtask-json is not JSON (${err.message})`);
+        }
+        const { frontmatter } = await readWorkflow(flags['workflow-path']);
+        const { lines, ...gate } = planApprovalGate({
+          frontmatter, workflowPath: flags['workflow-path'], host: flags.host, selected,
+        });
+        for (const line of lines) process.stderr.write(`${line}\n`);
+        process.stdout.write(`${JSON.stringify(gate)}\n`);
+        return gate.verdict === 'refuse' ? 1 : 0;
       }
 
       case 'plan-approve': {

@@ -26,6 +26,7 @@ spells out the same operational boundary for `$orchestrator:next`.
 |-----------|--------|-------|
 | Resolve macro via `state.mjs find-active` / `find-macro` | Yes | Yes |
 | Select ready subtask via `read-subtask` / `next-ready` | Yes | Yes |
+| Plan-approval gate via `state.mjs approval-gate` | Yes | Yes |
 | Switch/create subtask branch | Yes, explicit git action | Yes, explicit git action |
 | Discover and preflight `engineer` | Yes | Yes |
 | Same-host engineer dispatch with AGENTIC parent-linkage | Yes | Yes |
@@ -93,6 +94,32 @@ for every open subtask; report them per subtask. An `in_progress` subtask
 whose engineer workflow has committed stays `in_progress` until its work
 lands: once its pull request has merged, record it with
 `$orchestrator:done <id>`.
+
+Then apply the plan-approval gate (ADR-0063 D4 rule 3, owner decision D3),
+for an explicit id as well as for the automatic pick, because
+`subtask-readiness` reports no approval:
+
+```bash
+node "<orchestrator-plugin-root>/scripts/state.mjs" approval-gate \
+  --workflow-path "$MACRO_PATH" --host codex \
+  --subtask-json "$SUBTASK_JSON" >/dev/null || exit 1
+```
+
+`$SUBTASK_JSON` is the subtask exactly as `read-subtask` or `next-ready`
+returned it, the one you dispatch. The gate decides from the approval facts
+`next-ready` reports (`{status, hash_ok}`); never compare plan hashes
+yourself. When `AGENTIC_AUTOPILOT` names an autopilot run, a plan that is not
+approved at its current hash (pending approval, changed since it was approved,
+or never approved) is refused with `✗ plan-unapproved` and a pointer on
+stderr, exit 1: stop and surface both lines, because only the owner approves
+(`$orchestrator:approve`). A selected subtask that differs from the approved
+plan's entry (the plan changed after the selection) is refused the same way;
+rerun `$orchestrator:next`.
+Interactive dispatch is never refused: surface the one warning line printed
+for a plan pending approval or changed since it was approved, and continue. A
+macro planned before schema 1.2 has no approval keys and dispatches as before,
+with no line. The autopilot driver is Claude-only (ADR-0063 D9); the gate
+behaves the same on both hosts.
 
 ---
 
@@ -184,7 +211,8 @@ waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 
 ## Completion
 
-Report the macro id, subtask id, engineer workflow id, and branch, then emit an
+Report the macro id, subtask id, engineer workflow id, and branch, with the
+approval gate's warning line when it printed one, then emit an
 **Active Next-Action Proposal** (not a fixed next command) per
 `core/skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
@@ -223,5 +251,6 @@ non-interactively). On detached HEAD, report "no active branch context".
 - Do not bypass engineer command Phase 0.
 - Do not split AGENTIC_* exports into a separate shell call.
 - Do not dispatch a blocked subtask.
+- Do not approve a plan on the owner's behalf to get past `plan-unapproved`.
 - Do not treat `--peer` as implemented.
 - Do not relax git cleanliness or ownership checks.
