@@ -59,10 +59,11 @@ import { fileURLToPath } from 'node:url';
 // PR3 (`/engineer:checkpoint` — first sub-decision-2 frontmatter write)
 // flipped emit to the string '1.1' per ADR-0017 §"Schema versioning policy";
 // ADR-0028 §Layer-2 bumps the emit to '1.2' for the additive `commit_manifest`
-// field. String form is required because the YAML parser (`parseScalar`) does
-// not emit a JS Number for `1.1` / `1.2` — bare `1.2` round-trips through
-// Number, which loses precision and changes type.
-export const SCHEMA_VERSION = '1.3';
+// field. ADR-0063 D6 bumps it to '1.4' for the flat `next_step_*` and
+// `awaiting_owner_*` scalars. String form is required because the YAML parser
+// (`parseScalar`) does not emit a JS Number for `1.1` / `1.2` — bare `1.2`
+// round-trips through Number, which loses precision and changes type.
+export const SCHEMA_VERSION = '1.4';
 
 // Versions accepted on read. ADR-0017 §"Schema versioning policy" mandates
 // schema-1.0 readers tolerantly accept 1.1 frontmatter; 1.1 readers must
@@ -76,7 +77,7 @@ export const SCHEMA_VERSION = '1.3';
 // longer the validateFrontmatter accept gate — that uses `isSupportedSchema`
 // below (ADR-0028 §Forward-compat) so a 1.x reader meeting a 1.y file with
 // y > x can still parse via the predicate's open-ended 1.x match.
-export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1', '1.2', '1.3']);
+export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1', '1.2', '1.3', '1.4']);
 
 // ADR-0028 §Forward-compat read-tolerance predicate. Accepts legacy schema=1
 // (number form per ADR-0017 backward-compat) and any future-minor `1.y`
@@ -143,6 +144,35 @@ const VALID_HOOK_EVENTS = new Set([
   'checkpointed',
 ]);
 const VALID_SNAPSHOT_TRIGGERS = new Set(['pre-compact', 'stop']);
+
+// ADR-0063 D6 schema 1.4 — closed enums for the flat `next_step_*` and
+// `awaiting_owner_*` scalars. `next_step_*` is the closed-enum durable
+// projection of the end-of-verb Active Next-Action Proposal (`next_action`
+// stays the free-text form for humans). The owner gates here are the
+// engineer-owned subset of ADR-0063 D4: `plan-approval` and `plan-conflict`
+// live on the orchestrator macro, and `duplicate-workflow` has no single
+// workflow file to live in, so none of the three is stored here.
+export const VALID_NEXT_STEP_KINDS = new Set(['verb', 'commit', 'owner-decision', 'done']);
+export const VALID_CONFIDENCE = new Set(['HIGH', 'MEDIUM', 'LOW']);
+export const VALID_ENGINEER_OWNER_GATES = new Set([
+  'scope-routing',
+  'decide-conflict',
+  'recurring-finding',
+  'staging-set',
+  'pr-handling',
+]);
+// A pointer is a repo-relative `path#anchor`, never free text: this fixes the
+// charset (no whitespace) and the shape. validateAwaitingOwnerPointer also
+// refuses a leading `/` and any `..`.
+const AWAITING_OWNER_POINTER_RE = /^[A-Za-z0-9._/-]+#[A-Za-z0-9._/-]+$/;
+
+// ADR-0063 §0.2 env contract — autopilot mode is on only when
+// AGENTIC_AUTOPILOT holds a well-formed run id, so an empty or accidental
+// global export cannot flip a gate. Each plugin carries its own copy of this
+// predicate (no cross-plugin import, ADR-0010 §5).
+export function isAutopilotRun(env = process.env) {
+  return /^autopilot-\d{8}T\d{6}Z-[0-9a-f]{6}$/.test(env?.AGENTIC_AUTOPILOT ?? '');
+}
 
 // -----------------------------------------------------------------------------
 // Path helpers
@@ -981,6 +1011,16 @@ const FRONTMATTER_KEY_ORDER = [
   // nothing; the orchestrator's engineer-terminal note is idempotent, so
   // P10 reruns and the Stop hook call again regardless (ADR-0062). PR3 M3.
   'parent_writeback_at',
+  // ADR-0063 D6 schema 1.4 (additive optional). Flat top-level scalars, not a
+  // nested block, so that a 1.3 reader carries them through its forward-compat
+  // carrier instead of rejecting the file. An absent key means null. They stay
+  // at the tail so that carrier re-emits them in place, byte for byte.
+  'next_step_kind',
+  'next_step_verb',
+  'next_step_confidence',
+  'awaiting_owner_gate',
+  'awaiting_owner_since',
+  'awaiting_owner_pointer',
 ];
 
 // ADR-0028 §Forward-compat (PR5) — invisible carrier for unknown additive
@@ -1236,14 +1276,14 @@ function serializeFrontmatter(fm) {
     }
   }
 
-  // Drop frontmatter keys not in canonical order — schemas 1, 1.1, 1.2, and
-  // 1.3 are all closed (ADR-0011 §2 + ADR-0017 + ADR-0028). Unknown keys
+  // Drop frontmatter keys not in canonical order — schemas 1, 1.1, 1.2, 1.3
+  // and 1.4 are all closed (ADR-0011 §2 + ADR-0017 + ADR-0028 + ADR-0063). Unknown keys
   // that arrived through the structured carrier above are already emitted;
   // any remaining string-keyed unknowns indicate a hand-rolled caller error.
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 / ADR-0028 PR3 schema=1.3 are closed; ADR-0028 §Forward-compat (PR5) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
+        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 / ADR-0028 PR3 schema=1.3 / ADR-0063 schema=1.4 are closed; ADR-0028 §Forward-compat (PR5) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
       );
     }
   }
@@ -1430,7 +1470,7 @@ export function parseWorkflowFile(text) {
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 / ADR-0028 PR3 schema=1.3 are closed; ADR-0028 §Forward-compat (PR5) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
+        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 / ADR-0028 PR3 schema=1.3 / ADR-0063 schema=1.4 are closed; ADR-0028 §Forward-compat (PR5) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
       );
     }
   }
@@ -1599,6 +1639,94 @@ function validateSchema11Fields(fm) {
         `workflow_type must be one of ${[...VALID_WORKFLOW_TYPES].join(', ')} (got ${JSON.stringify(fm.workflow_type)})`,
       );
     }
+  }
+
+  validateSchema14Fields(fm);
+}
+
+/**
+ * ADR-0063 D6 schema 1.4 — the flat `next_step_*` and `awaiting_owner_*`
+ * scalars. Validation is per key, so a file on an older disk schema may carry
+ * them (mutation helpers never promote the schema). Beyond each value's enum
+ * or format, the keys hold together:
+ * - `next_step_kind` and `next_step_confidence` appear together or not at all;
+ * - `next_step_verb` appears iff `next_step_kind` is `verb`;
+ * - the three `awaiting_owner_*` keys appear all or none.
+ * Mutation helpers run this on the frontmatter they are about to write, so an
+ * inconsistent combination never reaches disk.
+ */
+function validateSchema14Fields(fm) {
+  if ('next_step_kind' in fm) {
+    validateEnumScalar('next_step_kind', fm.next_step_kind, VALID_NEXT_STEP_KINDS);
+  }
+  if ('next_step_confidence' in fm) {
+    validateEnumScalar('next_step_confidence', fm.next_step_confidence, VALID_CONFIDENCE);
+  }
+  if ('next_step_verb' in fm) {
+    validateEnumScalar('next_step_verb', fm.next_step_verb, VALID_VERBS);
+  }
+  if (('next_step_kind' in fm) !== ('next_step_confidence' in fm)) {
+    throw new Error(
+      'next_step_kind and next_step_confidence must be present together or both absent (ADR-0063 D6)',
+    );
+  }
+  if (('next_step_verb' in fm) !== (fm.next_step_kind === 'verb')) {
+    throw new Error(
+      'next_step_verb must be present exactly when next_step_kind is verb ' +
+        `(got next_step_kind=${JSON.stringify(fm.next_step_kind ?? null)}, ` +
+        `next_step_verb=${JSON.stringify(fm.next_step_verb ?? null)}) (ADR-0063 D6)`,
+    );
+  }
+
+  const awaiting = ['awaiting_owner_gate', 'awaiting_owner_since', 'awaiting_owner_pointer'];
+  const present = awaiting.filter((k) => k in fm);
+  if (present.length > 0 && present.length < awaiting.length) {
+    throw new Error(
+      `awaiting_owner_gate, awaiting_owner_since and awaiting_owner_pointer must be present all or none (got ${present.join(', ')}) (ADR-0063 D6)`,
+    );
+  }
+  if (present.length === awaiting.length) {
+    validateEnumScalar('awaiting_owner_gate', fm.awaiting_owner_gate, VALID_ENGINEER_OWNER_GATES);
+    validateIsoUtc('awaiting_owner_since', fm.awaiting_owner_since);
+    validateAwaitingOwnerPointer(fm.awaiting_owner_pointer);
+  }
+}
+
+function validateEnumScalar(key, value, allowed) {
+  if (typeof value !== 'string' || !allowed.has(value)) {
+    throw new Error(
+      `${key} must be one of ${[...allowed].join(', ')} (got ${JSON.stringify(value)})`,
+    );
+  }
+}
+
+// The canonical form `isoUtc` writes: whole seconds, `Z`. The round trip
+// rejects a well-shaped but impossible date, which Date.parse would otherwise
+// roll forward (2026-02-30 → 2026-03-02).
+function validateIsoUtc(key, value) {
+  const ok =
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value)) &&
+    isoUtc(Date.parse(value)) === value;
+  if (!ok) {
+    throw new Error(
+      `${key} must be an ISO-8601 UTC timestamp of the form YYYY-MM-DDTHH:MM:SSZ (got ${JSON.stringify(value)})`,
+    );
+  }
+}
+
+function validateAwaitingOwnerPointer(value) {
+  const ok =
+    typeof value === 'string' &&
+    AWAITING_OWNER_POINTER_RE.test(value) &&
+    !value.startsWith('/') &&
+    !value.includes('..');
+  if (!ok) {
+    throw new Error(
+      'awaiting_owner_pointer must be a repo-relative path#anchor using only ' +
+        `[A-Za-z0-9._/#-], not absolute and without '..' (got ${JSON.stringify(value)})`,
+    );
   }
 }
 
@@ -1936,11 +2064,70 @@ export async function createWorkflow(args) {
 }
 
 // -----------------------------------------------------------------------------
+// ADR-0063 D6 — next_step write support
+//
+// A write replaces all three `next_step_*` keys at once, so a stale
+// `next_step_verb` never outlives a change of kind. The input is checked with
+// the same validator the parser runs, before the file lock is taken.
+
+const NEXT_STEP_KEYS = ['next_step_kind', 'next_step_verb', 'next_step_confidence'];
+
+function normalizeNextStep(nextStep) {
+  if (typeof nextStep !== 'object' || nextStep === null || Array.isArray(nextStep)) {
+    throw new Error('nextStep must be an object { kind, verb?, confidence }');
+  }
+  // null is the logical shape's "no value" (a non-verb kind has verb null),
+  // and on disk that is an absent key.
+  const fields = {};
+  if (nextStep.kind != null) fields.next_step_kind = nextStep.kind;
+  if (nextStep.verb != null) fields.next_step_verb = nextStep.verb;
+  if (nextStep.confidence != null) fields.next_step_confidence = nextStep.confidence;
+  if (!('next_step_kind' in fields)) {
+    throw new Error('next step kind is required when writing a next step (ADR-0063 D6)');
+  }
+  validateSchema14Fields(fields);
+  return fields;
+}
+
+// Resolve the `nextStep` / `clearNextStep` pair a mutation helper received
+// into the key set to write: `null` leaves next_step untouched, `{}` clears
+// it, otherwise the replacement keys.
+function resolveNextStepWrite(nextStep, clearNextStep) {
+  if (typeof clearNextStep !== 'boolean') {
+    throw new Error(
+      `clearNextStep must be a boolean (got ${typeof clearNextStep} ${JSON.stringify(clearNextStep)})`,
+    );
+  }
+  if (clearNextStep && nextStep !== undefined) {
+    throw new Error('clearing the next step and writing one are mutually exclusive');
+  }
+  if (clearNextStep) return {};
+  if (nextStep === undefined) return null;
+  return normalizeNextStep(nextStep);
+}
+
+function applyNextStepWrite(frontmatter, write) {
+  if (write === null) return;
+  for (const k of NEXT_STEP_KEYS) delete frontmatter[k];
+  Object.assign(frontmatter, write);
+  validateSchema14Fields(frontmatter);
+}
+
+// A phase note must start on its own line. A body parsed from a hand-edited
+// file can end without a newline; every body this script writes ends with one,
+// so for those this adds nothing.
+function appendToBody(body, text) {
+  const sep = body.length === 0 || body.endsWith('\n') ? '' : '\n';
+  return `${body}${sep}${text}`;
+}
+
+// -----------------------------------------------------------------------------
 // Public API: appendPhase
 //
 // Append a new phase note to an existing workflow's body. Updates
 // frontmatter `verb`, `current_phase`, `next_action`, `updated_at`,
-// optionally `profile`, and appends a `host_history` entry.
+// optionally `profile` and the ADR-0063 `next_step_*` keys, and appends a
+// `host_history` entry.
 
 export async function appendPhase({
   workflowPath,
@@ -1951,12 +2138,19 @@ export async function appendPhase({
   phaseNote,
   currentPhase,
   nextAction,
+  // ADR-0063 D6 — `{ kind, verb?, confidence }` replaces all three
+  // next_step_* keys; `clearNextStep: true` deletes them (Phase 0
+  // append-on-resume, so a verb that dies after Phase 0 leaves no stale
+  // next step behind). Omitting both leaves next_step as it is.
+  nextStep,
+  clearNextStep = false,
   event = 'resumed',
   now = new Date(),
 }) {
   validateHost(host);
   validateHookEvent(event);
   if (verb !== undefined) validateVerb(verb);
+  const nextStepWrite = resolveNextStepWrite(nextStep, clearNextStep);
 
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
@@ -1967,6 +2161,7 @@ export async function appendPhase({
     if (profile !== undefined) frontmatter.profile = profile;
     if (currentPhase !== undefined) frontmatter.current_phase = currentPhase;
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
+    applyNextStepWrite(frontmatter, nextStepWrite);
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
@@ -1975,7 +2170,7 @@ export async function appendPhase({
 
     const heading = phaseLabel ? `### ${phaseLabel}\n\n` : '';
     const note = phaseNote ? `${phaseNote}\n\n` : '';
-    const newBody = `${body}${heading}${note}`;
+    const newBody = appendToBody(body, `${heading}${note}`);
 
     await atomicWrite(
       workflowPath,
@@ -2509,6 +2704,10 @@ export async function setTerminal({
   terminalPhase,
   terminalMarker = true,
   nextAction,
+  // ADR-0063 D6 — the interactive verb's final write stays set-terminal, so
+  // it records the closed-enum next step too: `{ kind, verb?, confidence }`
+  // replaces all three next_step_* keys; omitted leaves them as they are.
+  nextStep,
   event = 'updated',
   now = new Date(),
   // ADR-0031 amendment (decision 1) — fire the session-handoff sidecar from
@@ -2533,12 +2732,14 @@ export async function setTerminal({
       `setTerminal: terminalMarker must be a boolean (got ${typeof terminalMarker} ${JSON.stringify(terminalMarker)})`,
     );
   }
+  const nextStepWrite = resolveNextStepWrite(nextStep, false);
   const result = await withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
     frontmatter.current_phase = terminalPhase;
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
+    applyNextStepWrite(frontmatter, nextStepWrite);
     frontmatter.terminal_marker = terminalMarker;
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
@@ -2589,6 +2790,108 @@ export async function setTerminal({
     }
   }
   return result;
+}
+
+const AWAITING_OWNER_KEYS = ['awaiting_owner_gate', 'awaiting_owner_since', 'awaiting_owner_pointer'];
+
+/**
+ * ADR-0063 D6 — record that this workflow waits on an owner judgment. The
+ * surface that pauses sets the gate; the autopilot driver halts on it.
+ *
+ * Only one gate is modelled at a time: setting a gate while a different one
+ * is set is refused. Setting the gate that is already set replaces its
+ * pointer and since.
+ */
+export async function setAwaitingOwner({
+  workflowPath,
+  host,
+  gate,
+  pointer,
+  since,
+  now = new Date(),
+}) {
+  validateHost(host);
+  const fields = {
+    awaiting_owner_gate: gate,
+    awaiting_owner_since: since ?? isoUtc(now),
+    awaiting_owner_pointer: pointer,
+  };
+  validateSchema14Fields(fields);
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const current = frontmatter.awaiting_owner_gate;
+    if (current !== undefined && current !== gate) {
+      throw new Error(
+        `owner gate ${current} is already set on this workflow; it must be cleared before ${gate} can be set`,
+      );
+    }
+    const nowIso = isoUtc(now);
+    Object.assign(frontmatter, fields);
+    validateSchema14Fields(frontmatter);
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0063 D6 / Q2 — the resolving surface clears the owner gate once the
+ * owner has decided. The gate named must be the one that is set. An autopilot
+ * run is refused: only the owner resolves an owner gate. The keys are
+ * deleted, so the phase note appended here is where `resolved_at`, and the
+ * pointer and since that were cleared, remain on record.
+ */
+export async function clearAwaitingOwner({
+  workflowPath,
+  host,
+  gate,
+  env = process.env,
+  now = new Date(),
+}) {
+  validateHost(host);
+  if (isAutopilotRun(env)) {
+    throw new Error(
+      `refused under autopilot (AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}): only the owner resolves an owner gate (ADR-0063 Q2)`,
+    );
+  }
+  validateEnumScalar('awaiting_owner_gate', gate, VALID_ENGINEER_OWNER_GATES);
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const current = frontmatter.awaiting_owner_gate;
+    if (current === undefined) {
+      throw new Error(`no owner gate is set on this workflow (asked to clear ${gate})`);
+    }
+    if (current !== gate) {
+      throw new Error(`the owner gate set on this workflow is ${current}, not ${gate}`);
+    }
+    const nowIso = isoUtc(now);
+    const note =
+      `### Owner gate resolved: ${gate} at ${nowIso}\n\n` +
+      `Cleared awaiting_owner (since ${frontmatter.awaiting_owner_since}, ` +
+      `pointer ${frontmatter.awaiting_owner_pointer}).\n\n`;
+    for (const k of AWAITING_OWNER_KEYS) delete frontmatter[k];
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, appendToBody(body, note)),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
 }
 
 /**
@@ -3291,6 +3594,29 @@ function cliRequire(flags, names) {
   }
 }
 
+// ADR-0063 D6 — `--next-step-kind/-verb/-confidence` become one nextStep
+// object when any of them is given; the helper rejects a partial set.
+function cliNextStep(flags) {
+  const present = ['next-step-kind', 'next-step-verb', 'next-step-confidence']
+    .some((n) => n in flags);
+  if (!present) return undefined;
+  return {
+    kind: flags['next-step-kind'],
+    verb: flags['next-step-verb'],
+    confidence: flags['next-step-confidence'],
+  };
+}
+
+// Every flag takes a value in this CLI, so a boolean flag is spelled
+// `--name true|false`, parsed strictly (a typo must not read as false).
+function cliBoolean(flags, name, fallback) {
+  const v = flags[name];
+  if (v === undefined) return fallback;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  throw new Error(`--${name} must be 'true' or 'false' (got '${v}')`);
+}
+
 function cliPrintHelp() {
   process.stdout.write(
     [
@@ -3326,8 +3652,15 @@ function cliPrintHelp() {
       '         [--verb <verb>] [--profile <name>]',
       '         [--phase-label <text>] [--phase-note <text>]',
       '         [--current-phase <label>] [--next-action <text>]',
+      '         [--next-step-kind verb|commit|owner-decision|done',
+      '          --next-step-confidence HIGH|MEDIUM|LOW [--next-step-verb <verb>]]',
+      '         [--clear-next-step true|false]',
       '         [--event created|updated|snapshot|resumed]',
       '    Append a phase note to an existing workflow. Default event=resumed.',
+      '    ADR-0063 D6 — the --next-step-* flags replace all three next_step_*',
+      '    keys at once (--next-step-verb exactly when the kind is verb);',
+      '    --clear-next-step true deletes them and cannot be combined with them.',
+      '    --clear-next-step false is the default and changes nothing.',
       '',
       '  snapshot --workflow-path <path> --host <host> --trigger pre-compact|stop',
       '           [--status-digest <hex>]',
@@ -3365,9 +3698,22 @@ function cliPrintHelp() {
       '  set-terminal --workflow-path <path> --host <host>',
       '               --terminal-phase commit-complete|summary-complete|fix-complete',
       '               [--terminal-marker true|false] [--next-action <text>]',
+      '               [--next-step-kind <kind> --next-step-confidence <c>',
+      '                [--next-step-verb <verb>]]',
       '               [--event updated|resumed]',
       '    ADR-0017 sub-5 — atomic terminal-phase write (current_phase + terminal_marker).',
-      '    Default --terminal-marker=true.',
+      '    Default --terminal-marker=true. The --next-step-* flags are as for append.',
+      '',
+      '  awaiting-owner-set --workflow-path <path> --host <host>',
+      '                     --gate scope-routing|decide-conflict|recurring-finding|staging-set|pr-handling',
+      '                     --pointer <repo-relative path#anchor> [--since <YYYY-MM-DDTHH:MM:SSZ>]',
+      '    ADR-0063 D6 — record the owner gate this workflow waits on. Default',
+      '    --since is now. Exit 1 when a different gate is already set.',
+      '',
+      '  awaiting-owner-clear --workflow-path <path> --host <host> --gate <gate>',
+      '    ADR-0063 D6 — clear the owner gate once the owner has decided, and',
+      '    append an "Owner gate resolved" phase note. Exit 1 when the gate is',
+      '    not the one set, or when AGENTIC_AUTOPILOT names an autopilot run.',
       '',
       '  archive --workflow-path <path> --host <host> --repo-root <path>',
       '    ADR-0017 sub-5 — move workflow file from workflows/ to archive/.',
@@ -3500,6 +3846,8 @@ async function cliMain(argv) {
           phaseNote: flags['phase-note'],
           currentPhase: flags['current-phase'],
           nextAction: flags['next-action'],
+          nextStep: cliNextStep(flags),
+          clearNextStep: cliBoolean(flags, 'clear-next-step', false),
           event: flags.event ?? 'resumed',
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
@@ -3667,10 +4015,38 @@ async function cliMain(argv) {
           terminalPhase: flags['terminal-phase'],
           terminalMarker,
           nextAction: flags['next-action'],
+          nextStep: cliNextStep(flags),
           event: flags.event ?? 'updated',
           // ADR-0031 amendment — this CLI case is a production completion
           // entry point (standalone-verb Phase 2 finalize); fire the sidecar.
           emitHandoff: true,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      // ADR-0063 D6 — owner gates. Both refuse with exit 1: set when a
+      // different gate is already set; clear when the gate named is not the
+      // one set, or when AGENTIC_AUTOPILOT names an autopilot run.
+      case 'awaiting-owner-set': {
+        cliRequire(flags, ['workflow-path', 'host', 'gate', 'pointer']);
+        await setAwaitingOwner({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          gate: flags.gate,
+          pointer: flags.pointer,
+          since: flags.since,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'awaiting-owner-clear': {
+        cliRequire(flags, ['workflow-path', 'host', 'gate']);
+        await clearAwaitingOwner({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          gate: flags.gate,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;

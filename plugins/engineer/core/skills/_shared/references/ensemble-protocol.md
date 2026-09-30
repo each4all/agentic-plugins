@@ -168,8 +168,8 @@ locations**:
    keys per
    [ADR-0017 §sub-decision 4](../../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)).
    The reader in `plugins/engineer/scripts/state.mjs` accepts legacy
-   `schema: 1` (no 1.1 fields), `schema: '1.1'`, `schema: '1.2'`, and
-   `schema: '1.3'` (with any subset of the additive optional keys
+   `schema: 1` (no 1.1 fields), `schema: '1.1'`, `schema: '1.2'`,
+   `schema: '1.3'`, and `schema: '1.4'` (with any subset of the additive optional keys
    populated) — `SUPPORTED_SCHEMA_VERSIONS` documents the explicitly
    known minors. ADR-0028 §Forward-compat (PR5) extends the gate to
    open-ended `1.x` minors via the `isSupportedSchema()` predicate, so a

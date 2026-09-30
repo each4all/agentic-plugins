@@ -68,36 +68,38 @@ const MIN_BASELINE = {
 // -----------------------------------------------------------------------------
 
 describe('state.mjs — ADR-0028 §Layer-2 schema 1.2 constants', () => {
-  it('SCHEMA_VERSION is the latest schema (bumped to "1.3" by ADR-0028 PR3 M3 parent_writeback_at)', () => {
-    // PR1 (#349) emitted "1.2" with commit_manifest; PR3 M3 bumps to
-    // "1.3" with parent_writeback_at write-ahead marker. Older schema
-    // 1.2 files still parse via SUPPORTED_SCHEMA_VERSIONS.
-    strictEqual(SCHEMA_VERSION, '1.3');
+  it('SCHEMA_VERSION is the latest schema (bumped to "1.4" by ADR-0063 D6 next_step/awaiting_owner)', () => {
+    // PR1 (#349) emitted "1.2" with commit_manifest; PR3 M3 bumped to
+    // "1.3" with parent_writeback_at write-ahead marker; ADR-0063 D6 bumps
+    // to "1.4" with the next_step_* / awaiting_owner_* scalars. Older
+    // schema 1.2 files still parse via SUPPORTED_SCHEMA_VERSIONS.
+    strictEqual(SCHEMA_VERSION, '1.4');
   });
 
-  it('SUPPORTED_SCHEMA_VERSIONS accepts 1, "1.1", "1.2", "1.3" (additive read backward compat)', () => {
+  it('SUPPORTED_SCHEMA_VERSIONS accepts 1, "1.1", "1.2", "1.3", "1.4" (additive read backward compat)', () => {
     ok(SUPPORTED_SCHEMA_VERSIONS.has(1));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.1'));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.2'));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.3'));
+    ok(SUPPORTED_SCHEMA_VERSIONS.has('1.4'));
     strictEqual(SUPPORTED_SCHEMA_VERSIONS.has(2), false);
-    strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.4'), false);
+    strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.5'), false);
   });
 });
 
 describe('state.mjs — ADR-0028 schema 1.2 file emit + round-trip', () => {
-  it('createWorkflow writes schema: "1.3" on disk (PR3 M3 bump from 1.2)', async () => {
+  it('createWorkflow writes schema: "1.4" on disk (ADR-0063 D6 bump from 1.3)', async () => {
     await withTmpRepo(async (repoRoot) => {
       await createWorkflow({
         repoRoot,
         verb: 'compose',
         host: 'claude',
         gitBaseline: MIN_BASELINE,
-        originalRequest: 'schema 1.3 emit test',
+        originalRequest: 'schema 1.4 emit test',
       });
       const [filePath] = await listWorkflowFiles(repoRoot);
       const raw = await readFile(filePath, 'utf8');
-      ok(/^schema: "1\.3"$/m.test(raw), `expected schema: "1.3" on disk, got:\n${raw.split('\n').slice(0, 5).join('\n')}`);
+      ok(/^schema: "1\.4"$/m.test(raw), `expected schema: "1.4" on disk, got:\n${raw.split('\n').slice(0, 5).join('\n')}`);
     });
   });
 
