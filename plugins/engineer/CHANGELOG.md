@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.22.3...plugin-engineer-v0.23.0) (2026-09-30)
+
+
+### Features
+
+* **plugin/engineer:** add schema 1.4 next_step and awaiting_owner fields (ADR-0063 S1) ([#841](https://github.com/each4all/agentic-plugins/issues/841)) ([1d4cd80](https://github.com/each4all/agentic-plugins/commit/1d4cd80a868d52a1d7b2498fe026e41b73356649))
+
 ## [0.22.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.22.2...plugin-engineer-v0.22.3) (2026-09-29)
 
 
