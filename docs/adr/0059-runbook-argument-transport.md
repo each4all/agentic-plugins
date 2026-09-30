@@ -278,6 +278,10 @@ Not part of the decision, but required when it lands:
   status must survive that removal — a naive `cmd; rm -f "$F"` returns the
   status of `rm`.
 
+  *Narrowed on 2026-09-29: the reader now removes the file once it has read
+  it, so a block that exits before the reader runs leaves the directory
+  behind. See the amendment of that date at the end of this record.*
+
 ## Amendment 2026-09-29 — what the implementation measured
 
 The implementation re-measured the sites before changing any, and spelled out
@@ -494,3 +498,23 @@ the reader removes both instead.
     case it differs from.
   - The K group of `scripts/mutation-specs/args-file-transport.mjs` was
     rewritten for this cleanup.
+
+## Observation 2026-09-29 — after the amendment's release
+
+Not a decision. The amendment above shipped in runtime 0.99.2, engineer
+0.22.3, designer 0.3.12 and founder 0.4.12 (release PR
+[#839](https://github.com/each4all/agentic-plugins/pull/839)). Its
+post-release check ran on codex-cli 0.159.1 as `codex exec`, with the three
+settings the first Observation of this date recorded still in place
+(`approval_policy` `on-request`, the `workspace-write` sandbox and the
+`guardian_approval` feature on), in a scratch worktree outside the repository. It ran one
+`$engineer:decide` with a 126-byte topic of the same kind as that one, stopped
+after the resolver, and one `$runtime:dashboard --recent 2`. In both runs the
+model wrote the args file with its file tool and ran the skill's block with
+its placeholders filled. Codex refused neither block, and neither run
+executed `rm` or `rmdir`. The decide body reached the resolver byte for byte,
+and both args directories were gone afterwards. The dashboard run added one
+line assigning `REPO_ROOT`, which the runtime Codex skills use and do not
+define; that predates this ADR and is not about argument transport. This is
+evidence for those two runs. An interactive Codex session was not run. The
+evidence-loop record `the-runbooks-that-run-as-written` carries both runs.
