@@ -374,6 +374,12 @@ schema's `FRONTMATTER_KEY_ORDER` + parser + serializer +
 validator, `/finalize` / `/abort` / stop-archive cannot persist
 the field, and the A1 gate can never pass.
 
+> **Note (2026-09-30, [ADR-0063](0063-autopilot-fresh-session-driver.md)
+> D6):** schema `1.2` adds six optional flat scalars, `plan_approval_*`
+> and `awaiting_owner_*`, after `terminal_marker`. The subtask shape and
+> the required keys stay 1.1's, and a 1.1 file keeps its schema when
+> written.
+
 The 1.0 → 1.1 reader semantics:
 
 - 1.0 reader path: legacy validator (no `verb` requirement); read-

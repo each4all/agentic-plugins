@@ -139,12 +139,13 @@ async function writeWorkflowFixture(path, branch) {
 // Constants + path helpers
 
 describe('orchestrator state.mjs constants', () => {
-  it('schema is 1.1 (orchestrator emits 1.1 post ADR-0019 PR-B; 1.0 still readable)', () => {
-    strictEqual(SCHEMA_VERSION, '1.1');
+  it('schema is 1.2 (orchestrator emits 1.2 since ADR-0063 D6; 1.0 still readable)', () => {
+    strictEqual(SCHEMA_VERSION, '1.2');
   });
-  it('SUPPORTED_SCHEMA_VERSIONS accepts both 1.0 and 1.1; rejects engineer schema-1 / 2', () => {
+  it('SUPPORTED_SCHEMA_VERSIONS accepts 1.0, 1.1 and 1.2; rejects engineer schema-1 / 2', () => {
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.0'));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.1'));
+    ok(SUPPORTED_SCHEMA_VERSIONS.has('1.2'));
     ok(!SUPPORTED_SCHEMA_VERSIONS.has(1));
     ok(!SUPPORTED_SCHEMA_VERSIONS.has(2));
   });
@@ -889,8 +890,8 @@ describe('createWorkflow + branch-keyed lookup', () => {
       strictEqual(storage.canonicalHasState, true);
       strictEqual(storage.legacyHasState, false);
       const { frontmatter } = await readWorkflow(filePath);
-      // ADR-0019 PR-B — orchestrator emits schema 1.1 for new workflows
-      strictEqual(frontmatter.schema, '1.1');
+      // ADR-0063 D6 — orchestrator emits schema 1.2 for new workflows
+      strictEqual(frontmatter.schema, '1.2');
       strictEqual(frontmatter.workflow_type, 'macro');
       deepStrictEqual(frontmatter.plan, { subtasks: [] });
       strictEqual(frontmatter.git_baseline.branch, 'main');
@@ -1382,8 +1383,8 @@ describe('CLI subcommands', () => {
         { encoding: 'utf8' },
       );
       const fm = JSON.parse(readOut);
-      // ADR-0019 PR-B — orchestrator emits schema 1.1 for new workflows
-      strictEqual(fm.schema, '1.1');
+      // ADR-0063 D6 — orchestrator emits schema 1.2 for new workflows
+      strictEqual(fm.schema, '1.2');
       strictEqual(fm.workflow_type, 'macro');
     });
   });
@@ -1796,7 +1797,8 @@ describe('state.mjs — ADR-0019 PR-B 1.0 legacy read-only (ensureMutable)', () 
       // Hand-downgrade the on-disk schema to 1.0 to simulate a
       // pre-PR-B file. The reader still parses; mutations refuse.
       const raw = await readFile(filePath, 'utf8');
-      const downgraded = raw.replace(/^schema: "1\.1"\s*$/m, 'schema: "1.0"');
+      const downgraded = raw.replace(/^schema: "1\.[1-9]\d*"\s*$/m, 'schema: "1.0"');
+      ok(downgraded !== raw, 'the fixture must actually downgrade the schema line');
       await writeFile(filePath, downgraded, { mode: 0o600 });
 
       await rejects(() => setPlan({
@@ -1816,7 +1818,8 @@ describe('state.mjs — ADR-0019 PR-B 1.0 legacy read-only (ensureMutable)', () 
         gitBaseline: MIN_BASELINE(), originalRequest: 'starts 1.1',
       });
       const raw = await readFile(filePath, 'utf8');
-      const downgraded = raw.replace(/^schema: "1\.1"\s*$/m, 'schema: "1.0"');
+      const downgraded = raw.replace(/^schema: "1\.[1-9]\d*"\s*$/m, 'schema: "1.0"');
+      ok(downgraded !== raw, 'the fixture must actually downgrade the schema line');
       await writeFile(filePath, downgraded, { mode: 0o600 });
 
       // snapshot takes mutation lock; ensureMutable should reject.
@@ -2026,7 +2029,8 @@ describe('state.mjs — ADR-0019 PR-C0 updateSubtask atomic single-subtask mutat
         { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
       ]);
       const raw = await readFile(filePath, 'utf8');
-      const downgraded = raw.replace(/^schema: "1\.1"\s*$/m, 'schema: "1.0"');
+      const downgraded = raw.replace(/^schema: "1\.[1-9]\d*"\s*$/m, 'schema: "1.0"');
+      ok(downgraded !== raw, 'the fixture must actually downgrade the schema line');
       await writeFile(filePath, downgraded, { mode: 0o600 });
       await rejects(() => updateSubtask({
         workflowPath: filePath, subtaskId: 'A', host: 'claude', status: 'completed',
