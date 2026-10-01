@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.23.0...plugin-engineer-v0.24.0) (2026-10-01)
+
+
+### Features
+
+* **plugin/engineer:** add autopilot verb deltas and /engineer:commit (ADR-0063 S3+S4) ([#847](https://github.com/each4all/agentic-plugins/issues/847)) ([4d28e2a](https://github.com/each4all/agentic-plugins/commit/4d28e2a0c3eee1568c4cc46a7b98a257e2d48caf))
+
 ## [0.23.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.22.3...plugin-engineer-v0.23.0) (2026-09-30)
 
 
