@@ -24,6 +24,19 @@
 //     non-zero exit code; the workflow stays active (terminal_marker
 //     unset) for the user to address via /engineer:refine.
 //
+//   --mode close  (ADR-0063, /engineer:commit)
+//     The no-changes close: the last verb recorded next_step_kind done
+//     and nothing was committed, so write close-complete + the terminal
+//     marker and archive the workflow without a commit.
+//
+//   --mode autopilot  (ADR-0063, only under an autopilot run)
+//     /engineer:commit's whole step, decided in code: plan, then recover,
+//     close, stop at the staging-set owner gate, or commit with plan
+//     mode's suggested subjects.
+//
+// /engineer:commit (ADR-0063) drives these modes for verb-chain
+// workflows; /engineer:start keeps its own Phase 7.
+//
 // Never throws past main(); every error path returns an exit code +
 // stderr message. P14 — PR2 itself is hand-landed; the first observed
 // invocation of this driver is the next /engineer:start after PR2
@@ -50,6 +63,10 @@ import {
   setTerminal,
   setParentWritebackMarker,
   clearParentWritebackMarker,
+  archiveWorkflow,
+  isAutopilotRun,
+  appendPhase,
+  beginCommit,
 } from './state.mjs';
 import { writebackParent } from './parent-writeback.mjs';
 
@@ -106,6 +123,9 @@ const BOOLEAN_FLAGS = new Set([
   'confirm-non-interactive',
   'strict-cc',
   'lenient-cc',
+  // ADR-0063 — take each commit's subject from inferSubject, the function
+  // plan mode suggests with, so no subject text passes through a shell.
+  'suggested-subjects',
   'help',
 ]);
 
@@ -163,6 +183,37 @@ function gitSync(repoRoot, args, { allowFailure = false } = {}) {
 
 function notWorkflowStorage(p) {
   return !p.startsWith(WORKFLOW_STORAGE_PREFIX);
+}
+
+// sha256 of empty input: the status digest a verb's Phase 0 records when the
+// workflow began on a clean tree (git status printed nothing).
+const EMPTY_STATUS_DIGEST = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+/**
+ * ADR-0063 — every path `git status` reports (index against HEAD, working
+ * tree against the index, untracked files), outside workflow storage. Unlike
+ * computeGitChanges it sees a staged change the working tree has reverted,
+ * and it throws when git fails: a clean tree has to be proven, not inferred
+ * from empty output. `--untracked-files=normal` as everywhere else (the
+ * drift-digest rule): an untracked directory is one entry, so a state home
+ * that is not gitignored reads as not clean, which is the safe side.
+ */
+function listStatusPaths(repoRoot) {
+  const raw = gitSync(repoRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=normal']);
+  const parts = raw.split('\0');
+  const paths = [];
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i];
+    if (entry.length < 4) continue;
+    paths.push(entry.slice(3));
+    // A rename or copy entry is followed by its source path, which counts
+    // too: a rename into workflow storage is a deletion outside it.
+    if (entry[0] === 'R' || entry[0] === 'C') {
+      i += 1;
+      if (typeof parts[i] === 'string' && parts[i].length > 0) paths.push(parts[i]);
+    }
+  }
+  return paths.filter(notWorkflowStorage);
 }
 
 // =============================================================================
@@ -654,11 +705,17 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
     }),
   }));
   const phase7Config = await readPhase7Config(repoRoot);
+  // ADR-0063 — on a clean tree, say which of recovery / close / blocked
+  // execute and close will find, from the same classifier they run.
+  const noChanges = branchDecision.branch === 'no-changes'
+    ? classifyNoChanges({ repoRoot, frontmatter, manifestPaths })
+    : null;
   return {
     mode: 'plan',
     workflow_path: workflowPath,
     branch: branchDecision.branch,
     ask_user: branchDecision.askUser,
+    no_changes: noChanges,
     extras: branchDecision.extras ?? [],
     git_changes: gitChanges,
     manifest_paths: manifestPaths,
@@ -675,6 +732,12 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
       branchDecision.askUser
         ? 'ask_user=true — confirm the staging set with the user before --mode execute.'
         : 'ask_user=false — staging set fully implied by manifest or accept-current-tree.',
+      ...(noChanges
+        ? [`no_changes.path=${noChanges.path}${noChanges.reason ? ` (${noChanges.reason})` : ''} — ` +
+            (noChanges.path === 'recovery'
+              ? 'commits for this workflow already landed; --mode execute finishes its post-commit gates.'
+              : describeNoChanges(noChanges))]
+        : []),
     ],
   };
 }
@@ -895,6 +958,121 @@ function probeLandedRecovery({ repoRoot, baselineHead, workflowId, manifestPaths
 }
 
 /**
+ * ADR-0063 — what a clean working tree means for this workflow. Evaluated
+ * only when the staging branch is `no-changes`; plan, execute and close all
+ * call it, so plan's report is what execute and close then do.
+ *
+ *   recovery  — the ADR-0028 A2 case, on exactly its old condition: commits
+ *               carrying this workflow's `Workflow-ID:` trailer landed in
+ *               baseline..HEAD and cover the manifest, but the run that made
+ *               them stopped before its terminal write. Execute finishes it.
+ *   close     — nothing was committed since the workflow began (HEAD is the
+ *               baseline head) and the last verb recorded `next_step_kind:
+ *               done`: the no-changes close.
+ *   blocked   — anything else, with a reason:
+ *               git-probe-failed     `git status` failed: clean is unproven;
+ *               status-not-clean     `git status` reports a change the change
+ *                                    list does not (a staged change the
+ *                                    working tree reverted);
+ *               no-baseline          no baseline head or HEAD to compare;
+ *               partial-commit       marked commits that do not cover the
+ *                                    manifest (or an empty manifest);
+ *               unmarked-commits     HEAD moved with no marked commit;
+ *               start-workflow       an /engineer:start workflow, which its
+ *                                    own Phase 7 commits;
+ *               next-step-not-done   nothing moved, but the last verb did not
+ *                                    say the work needs no commit.
+ *
+ * A close therefore never follows a commit of this workflow's, and a recovery
+ * never follows an empty history: the two stay distinguishable.
+ */
+export function classifyNoChanges({ repoRoot, frontmatter, manifestPaths }) {
+  const baselineHead = frontmatter.git_baseline && frontmatter.git_baseline.head;
+  const workflowId = frontmatter.workflow_id;
+  const base = {
+    head_moved: null,
+    marked_commits: [],
+    missing_manifest: manifestPaths,
+  };
+  let statusPaths;
+  try {
+    statusPaths = listStatusPaths(repoRoot);
+  } catch {
+    return { path: 'blocked', reason: 'git-probe-failed', ...base };
+  }
+  if (statusPaths.length > 0) {
+    return { path: 'blocked', reason: 'status-not-clean', ...base, status_paths: statusPaths };
+  }
+  const headSha = gitSync(repoRoot, ['rev-parse', 'HEAD'], { allowFailure: true });
+  const hasBaseline = typeof baselineHead === 'string' && baselineHead.length > 0;
+  if (!hasBaseline || typeof headSha !== 'string' || headSha.length === 0) {
+    return { path: 'blocked', reason: 'no-baseline', ...base };
+  }
+  const headMoved = headSha !== baselineHead;
+  const probe = typeof workflowId === 'string' && workflowId.length > 0
+    ? probeLandedRecovery({ repoRoot, baselineHead, workflowId, manifestPaths })
+    : { landed: false, coveredBy: [], missingManifest: manifestPaths };
+  const facts = {
+    head_moved: headMoved,
+    marked_commits: probe.coveredBy,
+    missing_manifest: probe.missingManifest,
+  };
+  if (manifestPaths.length > 0 && probe.landed) {
+    return { path: 'recovery', reason: null, ...facts };
+  }
+  if (probe.coveredBy.length > 0) {
+    return { path: 'blocked', reason: 'partial-commit', ...facts };
+  }
+  if (headMoved) {
+    return { path: 'blocked', reason: 'unmarked-commits', ...facts };
+  }
+  // /engineer:start keeps its own Phase 7; a verb run inside it can write a
+  // next step, so the close is refused by type, not by a missing field.
+  if (frontmatter.workflow_type === 'start') {
+    return { path: 'blocked', reason: 'start-workflow', ...facts };
+  }
+  if (frontmatter.next_step_kind === 'done') {
+    return { path: 'close', reason: null, ...facts };
+  }
+  return { path: 'blocked', reason: 'next-step-not-done', ...facts };
+}
+
+const NO_CHANGES_REASONS = {
+  'partial-commit':
+    'commits carrying this workflow\'s Workflow-ID landed, but they do not cover every commit_manifest path; ' +
+    'the rest of the change is gone from the working tree',
+  'unmarked-commits':
+    'HEAD moved since the workflow began, but no commit carries this workflow\'s Workflow-ID; ' +
+    'those commits still need to land',
+  'next-step-not-done':
+    'nothing was committed, and the last verb did not record next_step_kind done ' +
+    '(it asked for a commit, or recorded no next step)',
+  'no-baseline': 'the workflow has no baseline head, or HEAD could not be read',
+  'git-probe-failed': 'git status failed, so a clean tree cannot be proven',
+  'status-not-clean':
+    'git status still reports changes (for example a staged change the working tree reverted) ' +
+    'that the change list does not show',
+  'start-workflow': 'an /engineer:start workflow is committed by its own Phase 7, never closed here',
+};
+
+function refuseOwnerGate(frontmatter) {
+  if (frontmatter.awaiting_owner_gate === undefined) return;
+  throw new Error(
+    `owner-gate: ${frontmatter.awaiting_owner_gate} is set (${frontmatter.awaiting_owner_pointer}); ` +
+    'resolve it first (ADR-0063 Q2). For staging-set the owner confirms the staging set in an ' +
+    'interactive /engineer:commit, which clears the gate before it commits.',
+  );
+}
+
+function describeNoChanges(noChanges) {
+  if (noChanges.path === 'close') {
+    return 'the last verb recorded next_step_kind done and nothing was committed: ' +
+      'close the workflow without a commit with --mode close (/engineer:commit does).';
+  }
+  return NO_CHANGES_REASONS[noChanges.reason] ?? noChanges.reason;
+}
+
+/**
  * ADR-0028 PR4 A2 — post-commit gate block extracted from executeMode
  * so the idempotent-recovery fast-path can invoke it after deciding
  * that this run's "commit" work is provably done (commits already
@@ -1069,6 +1247,9 @@ async function executeMode({
   flags,
   stderr,
 }) {
+  // ADR-0063 Q2 — a commit never crosses an owner gate. For staging-set the
+  // owner confirms the set and /engineer:commit clears the gate first.
+  refuseOwnerGate(frontmatter);
   // Re-derive everything (do NOT trust caller-supplied plan; planMode
   // is informational, executeMode is authoritative).
   const acceptCurrentTree =
@@ -1123,44 +1304,40 @@ async function executeMode({
     // Pre-PR4 workflows lack the Workflow-ID trailer, so the fast-path
     // does not fire for them — they keep the original throw and
     // require /engineer:resume archive (the documented manual path).
-    const baselineHead = frontmatter.git_baseline && frontmatter.git_baseline.head;
-    const workflowId = frontmatter.workflow_id;
-    if (
-      typeof baselineHead === 'string' && baselineHead.length > 0 &&
-      typeof workflowId === 'string' && workflowId.length > 0 &&
-      manifestPaths.length > 0
-    ) {
-      const recovery = probeLandedRecovery({
+    //
+    // ADR-0063 — classifyNoChanges holds that condition unchanged (its
+    // `recovery` path); every other clean tree still throws here, and
+    // the no-changes close is a separate mode (`--mode close`).
+    const noChanges = classifyNoChanges({ repoRoot, frontmatter, manifestPaths });
+    if (noChanges.path === 'recovery') {
+      const workflowId = frontmatter.workflow_id;
+      stderr.write(
+        `ℹ A2 fast-path: commits for workflow_id=${workflowId} already landed ` +
+        `(${noChanges.marked_commits.length} commit${noChanges.marked_commits.length === 1 ? '' : 's'}: ` +
+        `${noChanges.marked_commits.map((s) => s.slice(0, 7)).join(', ')}). ` +
+        `Skipping commit loop; running post-commit gates + set-terminal.\n`,
+      );
+      // Fall through to the post-commit gate block below WITHOUT
+      // entering the commit loop. `landed` is intentionally empty
+      // here — the gates only check workflow state, not what landed
+      // this invocation, so an empty list is safe and accurate
+      // (nothing landed THIS run).
+      //
+      // ADR-0063 — non-terminal until the gates pass, as in the loop below.
+      await beginCommit({ workflowPath, host: flags.host });
+      return await runPostCommitGatesOnly({
+        workflowPath,
         repoRoot,
-        baselineHead,
-        workflowId,
-        manifestPaths,
+        frontmatter,
+        flags,
+        stderr,
+        landedSummary: noChanges.marked_commits.map((s) => `${s} (prior run)`),
       });
-      if (recovery.landed) {
-        stderr.write(
-          `ℹ A2 fast-path: commits for workflow_id=${workflowId} already landed ` +
-          `(${recovery.coveredBy.length} commit${recovery.coveredBy.length === 1 ? '' : 's'}: ` +
-          `${recovery.coveredBy.map((s) => s.slice(0, 7)).join(', ')}). ` +
-          `Skipping commit loop; running post-commit gates + set-terminal.\n`,
-        );
-        // Fall through to the post-commit gate block below WITHOUT
-        // entering the commit loop. `landed` is intentionally empty
-        // here — the gates only check workflow state, not what landed
-        // this invocation, so an empty list is safe and accurate
-        // (nothing landed THIS run).
-        return await runPostCommitGatesOnly({
-          workflowPath,
-          repoRoot,
-          frontmatter,
-          flags,
-          stderr,
-          landedSummary: recovery.coveredBy.map((s) => `${s} (prior run)`),
-        });
-      }
     }
     throw new Error(
       'no-changes: working tree is clean and there is nothing to commit. ' +
-      'Phase 7 cannot fire on an empty diff. /engineer:resume archive may be the right action.',
+      'Phase 7 cannot fire on an empty diff. /engineer:resume archive may be the right action. ' +
+      `(${noChanges.path}${noChanges.reason ? `/${noChanges.reason}` : ''}: ${describeNoChanges(noChanges)})`,
     );
   }
   if (branchDecision.askUser && !(flags['confirm-non-interactive'] === true || flags['non-interactive'] === true)) {
@@ -1213,14 +1390,34 @@ async function executeMode({
   //      compose this commit's body
   //   4. commit
   const landed = [];
+  const suggested = flags['suggested-subjects'] === true;
+  if (suggested && (typeof flags.subject === 'string' || flags['subject-pkg'].length > 0)) {
+    throw new Error('--suggested-subjects excludes --subject and --subject-pkg.');
+  }
+  // Every subject is chosen and checked before anything is written, so a bad
+  // subject flag leaves the workflow as it was.
+  const subjects = shape.commits.map((commit) => {
+    // ADR-0063 — --suggested-subjects takes plan mode's own suggestion for
+    // each commit, single or split, so the subject never passes a shell.
+    const subject = suggested
+      ? inferSubject({ packageKey: commit.package, frontmatter, packageMap })
+      : pickSubjectForCommit({
+        commit,
+        flags,
+        requiresSplit: shape.requiresSplit,
+      });
+    assertSingleLineSubject(subject, '--suggested-subjects');
+    checkSubjectAgainstCC({ subject, strictCC, stderr });
+    return subject;
+  });
+  // ADR-0063 — the workflow is not terminal while it is being committed: an
+  // inherited terminal marker (an interactive verb's) with HEAD moved by a
+  // first split commit would let the Stop hook archive a half-committed
+  // workflow. Phase 7's terminal write after the gates turns it back on.
+  await beginCommit({ workflowPath, host: flags.host });
   for (let i = 0; i < shape.commits.length; i++) {
     const commit = shape.commits[i];
-    const subject = pickSubjectForCommit({
-      commit,
-      flags,
-      requiresSplit: shape.requiresSplit,
-    });
-    checkSubjectAgainstCC({ subject, strictCC, stderr });
+    const subject = subjects[i];
 
     const failHere = (result) => {
       // P2 + P4 refine fallback. Surface what landed and what failed.
@@ -1283,6 +1480,209 @@ async function executeMode({
   return runPostCommitGates({ workflowPath, repoRoot, flags, stderr, landed });
 }
 
+/**
+ * ADR-0063 — the no-changes close. The last verb recorded
+ * `next_step_kind: done`, nothing was committed since the workflow began, and
+ * the working tree has nothing to commit, so the workflow closes without a
+ * commit: `close-complete` with the terminal marker, then the archive. The
+ * archive is done here because the Stop hook's HEAD-moved gate never passes
+ * for a workflow whose HEAD did not move. For a macro subtask, completion is
+ * then `/orchestrator:done <subtask> --no-commit` with a reason (ADR-0062
+ * §Decision 2); that command refuses while this workflow is still active.
+ *
+ * Everything is re-derived here (plan is informational). The P11 and
+ * no-active-children gates apply as they do after a commit; no parent note is
+ * sent, because there is no commit to note.
+ */
+async function closeMode({ workflowPath, repoRoot, frontmatter, flags, stderr }) {
+  refuseOwnerGate(frontmatter);
+  const gitChanges = computeGitChanges(repoRoot);
+  const manifest = Array.isArray(frontmatter.commit_manifest)
+    ? frontmatter.commit_manifest
+    : [];
+  for (const entry of manifest) {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`commit_manifest entry is not an object: ${JSON.stringify(entry)}`);
+    }
+    assertSafePath(entry.path);
+  }
+  const manifestPaths = manifest.map((e) => e.path);
+  if (gitChanges.length > 0) {
+    throw new Error(
+      `close-refused: the working tree has ${gitChanges.length} path(s) to commit ` +
+      `(${gitChanges.slice(0, 5).join(', ')}${gitChanges.length > 5 ? ', …' : ''}); ` +
+      'commit them with --mode execute instead.',
+    );
+  }
+  const noChanges = classifyNoChanges({ repoRoot, frontmatter, manifestPaths });
+  if (noChanges.path !== 'close') {
+    throw new Error(
+      `close-refused: ${noChanges.path}${noChanges.reason ? `/${noChanges.reason}` : ''} — ` +
+      (noChanges.path === 'recovery'
+        ? 'commits for this workflow already landed; --mode execute finishes them.'
+        : describeNoChanges(noChanges)),
+    );
+  }
+  const freshText = await readFile(workflowPath, 'utf8');
+  const { frontmatter: fresh } = parseWorkflowFile(freshText);
+  if (!noPendingEnsembleCheck(fresh)) {
+    stderr.write(
+      `✗ pending_ensemble is non-empty; refusing to close (ADR-0028 §P11).\n` +
+      `  Pending entries: ${fresh.pending_ensemble.map((e) => e.run_id).join(', ')}\n` +
+      `  Collect or settle the peer ensemble first.\n`,
+    );
+    return { ok: false, reason: 'pending_ensemble:non_empty' };
+  }
+  if (!noActiveChildrenCheck(fresh)) {
+    stderr.write(
+      `✗ child_completions contains an entry without commit/closed_at; refusing to close.\n`,
+    );
+    return { ok: false, reason: 'active-children' };
+  }
+  const parentLinked =
+    typeof fresh.parent_workflow === 'string' &&
+    fresh.parent_workflow.length > 0 &&
+    typeof fresh.originating_subtask === 'string' &&
+    fresh.originating_subtask.length > 0;
+  const doneCommand =
+    `${flags.host === 'codex' ? '$' : '/'}orchestrator:done ${fresh.originating_subtask} --no-commit`;
+  await setTerminal({
+    workflowPath,
+    host: flags.host,
+    terminalPhase: 'close-complete',
+    terminalMarker: true,
+    nextAction: parentLinked
+      ? `Closed without a commit; record completion with ${doneCommand} and a reason`
+      : 'archive',
+    event: 'updated',
+    // No session-handoff sidecar: its projection reads a HEAD that never
+    // moved as a blocked archive and would tell the owner to commit. The
+    // command's completion names the next step instead.
+    emitHandoff: false,
+  });
+  // A run stopped between the terminal write and this archive is retried by
+  // running close again (it re-derives everything); the Stop hook never notes
+  // a close-complete workflow on its parent, because it made no commit.
+  const archived = await archiveWorkflow({ workflowPath, host: flags.host, repoRoot });
+  if (!archived.archived) {
+    stderr.write(
+      `✗ the workflow was written close-complete but not archived (${archived.reason ?? 'no-op'}); ` +
+      'run the close again.\n',
+    );
+    return { ok: false, reason: 'archive-failed' };
+  }
+  return {
+    ok: true,
+    closed: true,
+    archived_to: archived.to,
+    parent_linked: parentLinked,
+    next: parentLinked ? doneCommand : null,
+  };
+}
+
+/**
+ * ADR-0063 — `/engineer:commit` under an autopilot run, decided here rather
+ * than in runbook shell, so the step does the same thing every time:
+ *
+ *   clean tree   → recovery: execute (the A2 fast path); close: close mode;
+ *                  blocked: refuse with the reason, writing nothing.
+ *   the owner's  → ask_user, a workflow that did not begin on a clean tree,
+ *                  or a pre-staged index: a `Phase 7 plan` note, the next
+ *                  step `owner-decision` and the `staging-set` gate, in one
+ *                  write. Nothing is committed.
+ *   otherwise    → execute with plan mode's suggested subjects and strict
+ *                  conventional-commit checks; never a confirm or bypass flag.
+ *
+ * It refuses outright over an owner gate, on an /engineer:start workflow,
+ * and outside an autopilot run (main checks the last).
+ *
+ * A pending peer ensemble refuses before anything is committed, so a commit
+ * never lands only to fail the post-commit P11 gate. Routine waiting to land
+ * sets no gate: the driver reads it from state (ADR-0063 D3a).
+ */
+async function autopilotMode({ workflowPath, repoRoot, frontmatter, flags, stderr }) {
+  // Only the owner resolves an owner gate (ADR-0063 Q2); the command's
+  // preflight refuses first, and this holds when the mode is run directly.
+  if (frontmatter.awaiting_owner_gate !== undefined) {
+    stderr.write(
+      `✗ owner gate ${frontmatter.awaiting_owner_gate} is set (${frontmatter.awaiting_owner_pointer}); ` +
+      'an autopilot step never resolves an owner gate (ADR-0063 Q2).\n',
+    );
+    return { ok: false, reason: 'owner-gate-set' };
+  }
+  if (frontmatter.workflow_type === 'start') {
+    stderr.write(
+      '✗ an /engineer:start workflow is committed by its own Phase 7; autopilot runs verb-chain workflows (ADR-0063 D3).\n',
+    );
+    return { ok: false, reason: 'start-workflow' };
+  }
+  if (!noPendingEnsembleCheck(frontmatter)) {
+    stderr.write(
+      `✗ pending_ensemble is non-empty; nothing is committed (ADR-0028 §P11).\n` +
+      `  Pending entries: ${frontmatter.pending_ensemble.map((e) => e.run_id).join(', ')}\n` +
+      `  The verb that launched it has to collect it first.\n`,
+    );
+    return { ok: false, reason: 'pending_ensemble:non_empty' };
+  }
+  const plan = await planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree: false });
+  const autoFlags = { ...flags, 'suggested-subjects': true, 'strict-cc': true };
+  if (plan.branch === 'no-changes') {
+    const { path, reason } = plan.no_changes;
+    if (path === 'close') {
+      return { action: 'closed', ...(await closeMode({ workflowPath, repoRoot, frontmatter, flags, stderr })) };
+    }
+    if (path === 'recovery') {
+      return {
+        action: 'recovered',
+        ...(await executeMode({ workflowPath, repoRoot, frontmatter, flags: autoFlags, stderr })),
+      };
+    }
+    stderr.write(
+      `✗ nothing to commit, and the workflow cannot close (blocked/${reason}): ` +
+      `${describeNoChanges(plan.no_changes)}\n`,
+    );
+    return { ok: false, reason: 'no-changes-blocked' };
+  }
+  // Staging whole manifest paths is safe only when the workflow began on a
+  // clean tree and nothing is pre-staged: otherwise a manifest path can hold
+  // hunks that are not this workflow's, which only the owner can tell apart
+  // (the clean baseline /engineer:start Phase 7 relies on).
+  const cleanBaseline = frontmatter.git_baseline?.status_digest === EMPTY_STATUS_DIGEST;
+  const preStaged = (gitSync(repoRoot, ['diff', '--cached', '--name-only'], { allowFailure: true }) ?? '')
+    .split('\n').filter((l) => l.length > 0);
+  const whyOwner = [];
+  if (plan.ask_user) whyOwner.push(`the staging branch is ${plan.branch}`);
+  if (!cleanBaseline) whyOwner.push('the workflow did not begin on a clean working tree, so pre-existing changes in manifest paths cannot be told apart from its own');
+  if (preStaged.length > 0) whyOwner.push(`the index already holds staged changes (${preStaged.join(', ')})`);
+  if (whyOwner.length > 0) {
+    const list = (paths) => (paths.length > 0 ? paths.map((p) => `- ${p}`).join('\n') : '- (none)');
+    const note =
+      `The staging set needs the owner: ${whyOwner.join('; ')}. Nothing was committed.\n\n` +
+      `Staging set (manifest ∩ changes):\n${list(plan.staging_set)}\n\n` +
+      `Changes outside the manifest:\n${list(plan.extras)}\n\n` +
+      `All changes:\n${list(plan.git_changes)}\n\n` +
+      `Resolve it in an interactive /engineer:commit, which clears the staging-set gate once the owner confirms the set.`;
+    // The note, the next step and the gate go in one write, so the gate's
+    // pointer never names a section that is not there.
+    await appendPhase({
+      workflowPath,
+      host: flags.host,
+      phaseLabel: 'Phase 7 plan',
+      phaseNote: note,
+      nextAction: 'Owner: confirm the staging set with /engineer:commit',
+      nextStep: { kind: 'owner-decision', confidence: 'HIGH' },
+      ownerGate: { gate: 'staging-set', anchor: 'phase7-plan' },
+      event: 'updated',
+    });
+    stderr.write('⏸ the staging set needs the owner: recorded the staging-set gate; nothing was committed.\n');
+    return { ok: true, action: 'staging-set', gate: 'staging-set', staging_set: plan.staging_set, extras: plan.extras };
+  }
+  return {
+    action: 'committed',
+    ...(await executeMode({ workflowPath, repoRoot, frontmatter, flags: autoFlags, stderr })),
+  };
+}
+
 function pickLatestEnsembleSummary(frontmatter) {
   const list = Array.isArray(frontmatter.ensemble_results)
     ? frontmatter.ensemble_results
@@ -1296,12 +1696,12 @@ function pickLatestEnsembleSummary(frontmatter) {
 // CLI main + help
 // =============================================================================
 
-const HELP = `Usage: phase7-commit.mjs --mode <plan|execute> --workflow-path <p> --repo-root <p> --host <h> [flags]
+const HELP = `Usage: phase7-commit.mjs --mode <plan|execute|close|autopilot> --workflow-path <p> --repo-root <p> --host <h> [flags]
 
 ADR-0028 §Layer-3 — engineer /engineer:start Phase 7 commit driver.
 
 Required:
-  --mode plan | execute
+  --mode plan | execute | close | autopilot
   --workflow-path <path>
   --repo-root <path>
   --host claude | codex
@@ -1314,8 +1714,24 @@ Plan mode:
 Execute mode requires the user-confirmed subject:
   --subject <text>                  Single-commit subject (rejected when shouldSplit).
   --subject-pkg <pkg>=<subj>        Per-package subject (repeatable; required when shouldSplit).
+  --suggested-subjects              Use plan mode's suggested subject for every commit,
+                                    single or split (ADR-0063 autopilot). Excludes the two above.
   --confirm-non-interactive         Skip the staging-intent confirm gate.
   --non-interactive                 Alias for --confirm-non-interactive.
+
+Plan mode reports no_changes {path: recovery|close|blocked, reason} on a clean tree.
+Autopilot mode (ADR-0063, only under an autopilot run) is /engineer:commit's whole
+step: plan, then recover / close / stop at the staging-set gate / commit with the
+suggested subjects and --strict-cc. It refuses outside an autopilot run (exit 2).
+
+Close mode (ADR-0063) closes a workflow whose last verb recorded next_step_kind done
+and that committed nothing: close-complete + terminal marker, then archive. For a
+macro subtask the next step is /orchestrator:done <subtask> --no-commit <reason>.
+
+Under an autopilot run (AGENTIC_AUTOPILOT) the staging-set confirmation cannot be
+bypassed: --confirm-non-interactive, --non-interactive, --accept-current-tree,
+--include-extra and ACCEPT_CURRENT_TREE=1 are refused (exit 2), and so are
+--mode execute and --mode close: the step is --mode autopilot.
 
 CC enforcement (P13, default from .agentic-plugins/config.toml [phase7] strictCC):
   --strict-cc                       Block on non-conventional subject.
@@ -1335,7 +1751,8 @@ Per-path opt-in extras (ADR-0028 PR4 A4 — manifest-subset-of-git):
                                     same pathspec-safety checks as a manifest entry.
 
 Exit codes:
-  0   — plan emitted (plan mode) OR commit landed + set-terminal fired (execute mode).
+  0   — plan emitted (plan mode) OR commit landed + set-terminal fired (execute mode)
+        OR closed + archived (close mode).
   ≠ 0 — refine fallback emitted to stderr; workflow remains active.
 `;
 
@@ -1357,8 +1774,44 @@ export async function main(argv) {
       return 2;
     }
   }
-  if (flags.mode !== 'plan' && flags.mode !== 'execute') {
-    process.stderr.write(`✗ --mode must be 'plan' or 'execute' (got '${flags.mode}')\n`);
+  if (!['plan', 'execute', 'close', 'autopilot'].includes(flags.mode)) {
+    process.stderr.write(`✗ --mode must be 'plan', 'execute', 'close' or 'autopilot' (got '${flags.mode}')\n`);
+    return 2;
+  }
+  if (flags.mode === 'autopilot' && !isAutopilotRun(process.env)) {
+    process.stderr.write(
+      '✗ --mode autopilot runs only under an autopilot run (AGENTIC_AUTOPILOT); ' +
+      'interactively, use --mode plan, then execute or close with the user (/engineer:commit).\n',
+    );
+    return 2;
+  }
+  // ADR-0063 — under an autopilot run nothing bypasses the staging-set
+  // confirmation: a set that needs the owner stops at the staging-set gate.
+  if (isAutopilotRun(process.env)) {
+    const bypass = [
+      flags['confirm-non-interactive'] === true && '--confirm-non-interactive',
+      flags['non-interactive'] === true && '--non-interactive',
+      flags['accept-current-tree'] === true && '--accept-current-tree',
+      flags['include-extra'].length > 0 && '--include-extra',
+      process.env.ACCEPT_CURRENT_TREE === '1' && 'ACCEPT_CURRENT_TREE=1',
+    ].filter(Boolean);
+    if (bypass.length > 0) {
+      process.stderr.write(
+        `✗ refused under autopilot (AGENTIC_AUTOPILOT=${process.env.AGENTIC_AUTOPILOT}): ` +
+        `${bypass.join(', ')} would bypass the staging-set confirmation; ` +
+        'a staging set that needs the owner stops at the staging-set gate (ADR-0063 D4).\n',
+      );
+      return 2;
+    }
+  }
+  // ADR-0063 — under an autopilot run the step is --mode autopilot, which
+  // holds the clean-baseline, pre-staged and staging-set rules; execute and
+  // close run only from inside it, so no direct call can step around them.
+  if ((flags.mode === 'execute' || flags.mode === 'close') && isAutopilotRun(process.env)) {
+    process.stderr.write(
+      `✗ --mode ${flags.mode} is refused under an autopilot run (AGENTIC_AUTOPILOT=${process.env.AGENTIC_AUTOPILOT}): ` +
+      'run --mode autopilot, which decides between commit, close and the staging-set gate (ADR-0063).\n',
+    );
     return 2;
   }
   // Read + parse workflow file
@@ -1392,6 +1845,53 @@ export async function main(argv) {
       return 0;
     } catch (err) {
       process.stderr.write(`✗ plan-mode failed: ${err.message}\n`);
+      return 1;
+    }
+  }
+  if (flags.mode === 'autopilot') {
+    try {
+      const result = await autopilotMode({
+        workflowPath: flags['workflow-path'],
+        repoRoot: flags['repo-root'],
+        frontmatter,
+        flags,
+        stderr: process.stderr,
+      });
+      if (!result.ok) {
+        const codeMap = {
+          'stage-failed': 8,
+          'mixed-hunk': 3,
+          'commit-failed': 4,
+          'pending_ensemble:non_empty': 5,
+          'active-children': 6,
+          'unclean-after-commit': 7,
+        };
+        return codeMap[result.reason] ?? 1;
+      }
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return 0;
+    } catch (err) {
+      process.stderr.write(`✗ autopilot-mode failed: ${err.message}\n`);
+      return 1;
+    }
+  }
+  if (flags.mode === 'close') {
+    try {
+      const result = await closeMode({
+        workflowPath: flags['workflow-path'],
+        repoRoot: flags['repo-root'],
+        frontmatter,
+        flags,
+        stderr: process.stderr,
+      });
+      if (!result.ok) {
+        const codeMap = { 'pending_ensemble:non_empty': 5, 'active-children': 6 };
+        return codeMap[result.reason] ?? 1;
+      }
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return 0;
+    } catch (err) {
+      process.stderr.write(`✗ close-mode failed: ${err.message}\n`);
       return 1;
     }
   }

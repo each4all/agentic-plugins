@@ -36,7 +36,7 @@ import {
   mkdir,
   open,
 } from 'node:fs/promises';
-import { join, dirname, basename, isAbsolute } from 'node:path';
+import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
 // ADR-0018 §sub-2 — `currentGitBranch` shells out to `git branch
@@ -105,10 +105,15 @@ export const LEGACY_ARCHIVE_DIR_REL = `${LEGACY_STATE_DIR_REL}/archive`;
 // ADR-0017 §sub-decision 5 — terminal phase whitelist that gates Stop
 // auto-archive. The whitelist is intentionally small + explicit so an
 // intermediate phase write cannot trip auto-archive.
+// ADR-0063 — `close-complete` records a workflow that `/engineer:commit`
+// closed without a commit (the no-changes close), so the archived record
+// stays distinct from `commit-complete`. That close archives the file itself:
+// HEAD never moved, so the Stop hook's HEAD-moved gate would not.
 export const TERMINAL_PHASES = new Set([
   'commit-complete',
   'summary-complete',
   'fix-complete',
+  'close-complete',
 ]);
 
 // ADR-0017 §sub-decision 4 — global retention cap on `ensemble_results`.
@@ -2144,13 +2149,25 @@ export async function appendPhase({
   // next step behind). Omitting both leaves next_step as it is.
   nextStep,
   clearNextStep = false,
+  // ADR-0063 — `{ gate, pointer? | anchor? }` records an owner gate in the
+  // same write, so a step that stops for the owner never leaves its note,
+  // next step and gate half-written. The different-gate refusal of
+  // setAwaitingOwner applies.
+  ownerGate,
+  // ADR-0063 — `true` turns an inherited terminal marker off: the workflow is
+  // not complete (an autopilot verb continues it, or it waits on its owner).
+  clearTerminalMarker = false,
   event = 'resumed',
   now = new Date(),
 }) {
   validateHost(host);
   validateHookEvent(event);
   if (verb !== undefined) validateVerb(verb);
+  if (typeof clearTerminalMarker !== 'boolean') {
+    throw new Error(`clearTerminalMarker must be a boolean (got ${typeof clearTerminalMarker})`);
+  }
   const nextStepWrite = resolveNextStepWrite(nextStep, clearNextStep);
+  const gateFields = ownerGate === undefined ? null : resolveOwnerGateFields({ workflowPath, ownerGate, now });
 
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
@@ -2162,6 +2179,8 @@ export async function appendPhase({
     if (currentPhase !== undefined) frontmatter.current_phase = currentPhase;
     if (nextAction !== undefined) frontmatter.next_action = nextAction;
     applyNextStepWrite(frontmatter, nextStepWrite);
+    if (gateFields) applyOwnerGate(frontmatter, gateFields);
+    if (clearTerminalMarker && frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
@@ -2794,6 +2813,60 @@ export async function setTerminal({
 
 const AWAITING_OWNER_KEYS = ['awaiting_owner_gate', 'awaiting_owner_since', 'awaiting_owner_pointer'];
 
+// ADR-0063 — the pointer of an owner gate a runbook sets names a section of
+// the workflow file itself, so the script derives it from the file's path
+// rather than having the runbook spell a repo-relative path. The result is
+// checked by the same validator as a pointer given outright.
+function resolveAwaitingOwnerPointer({ workflowPath, pointer, anchor }) {
+  if (anchor === undefined) return pointer;
+  if (pointer !== undefined) {
+    throw new Error('pass either a pointer or an anchor, not both');
+  }
+  const absolute = resolvePath(String(workflowPath));
+  const inferred = inferStorageFromWorkflowPath(absolute);
+  if (!inferred || inferred.repoRoot.length === 0) {
+    throw new Error(
+      `cannot derive a pointer: ${JSON.stringify(workflowPath)} is not under an engineer state home; pass --pointer instead`,
+    );
+  }
+  return `${absolute.slice(inferred.repoRoot.length + 1)}#${anchor}`;
+}
+
+// The three awaiting_owner_* keys for a gate, checked before any lock is taken.
+function resolveOwnerGateFields({ workflowPath, ownerGate, now }) {
+  if (typeof ownerGate !== 'object' || ownerGate === null || Array.isArray(ownerGate)) {
+    throw new Error('ownerGate must be an object { gate, pointer | anchor, since? }');
+  }
+  const fields = {
+    awaiting_owner_gate: ownerGate.gate,
+    awaiting_owner_since: ownerGate.since ?? isoUtc(now),
+    awaiting_owner_pointer: resolveAwaitingOwnerPointer({
+      workflowPath, pointer: ownerGate.pointer, anchor: ownerGate.anchor,
+    }),
+  };
+  validateSchema14Fields(fields);
+  return fields;
+}
+
+// Under the file lock: one gate at a time. Setting the gate that is already
+// set replaces its pointer and since; a different gate is refused. A
+// workflow waiting on its owner is not complete, so an inherited terminal
+// marker is turned off in the same write: otherwise a later failure between
+// the owner's resolution and the next terminal write (a subject refused
+// before the commit starts) leaves the old marker in front of a Stop hook
+// that sees HEAD moved.
+function applyOwnerGate(frontmatter, fields) {
+  const current = frontmatter.awaiting_owner_gate;
+  if (current !== undefined && current !== fields.awaiting_owner_gate) {
+    throw new Error(
+      `owner gate ${current} is already set on this workflow; it must be cleared before ${fields.awaiting_owner_gate} can be set`,
+    );
+  }
+  Object.assign(frontmatter, fields);
+  if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
+  validateSchema14Fields(frontmatter);
+}
+
 /**
  * ADR-0063 D6 — record that this workflow waits on an owner judgment. The
  * surface that pauses sets the gate; the autopilot driver halts on it.
@@ -2807,28 +2880,19 @@ export async function setAwaitingOwner({
   host,
   gate,
   pointer,
+  // ADR-0063 — `anchor` (exclusive with `pointer`) derives the pointer from
+  // the workflow's own path: `<path relative to its repo root>#<anchor>`.
+  anchor,
   since,
   now = new Date(),
 }) {
   validateHost(host);
-  const fields = {
-    awaiting_owner_gate: gate,
-    awaiting_owner_since: since ?? isoUtc(now),
-    awaiting_owner_pointer: pointer,
-  };
-  validateSchema14Fields(fields);
+  const fields = resolveOwnerGateFields({ workflowPath, ownerGate: { gate, pointer, anchor, since }, now });
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
-    const current = frontmatter.awaiting_owner_gate;
-    if (current !== undefined && current !== gate) {
-      throw new Error(
-        `owner gate ${current} is already set on this workflow; it must be cleared before ${gate} can be set`,
-      );
-    }
     const nowIso = isoUtc(now);
-    Object.assign(frontmatter, fields);
-    validateSchema14Fields(frontmatter);
+    applyOwnerGate(frontmatter, fields);
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
@@ -2854,10 +2918,22 @@ export async function clearAwaitingOwner({
   workflowPath,
   host,
   gate,
+  // ADR-0063 — the owner's resolution usually names what comes next; passing
+  // it here writes it with the clear, so the `owner-decision` next step the
+  // gate left behind does not stop the driver again.
+  nextStep,
+  // The owner's decision in words (the direction chosen, a deferral and its
+  // reason). It lands in the resolved note of the same write, so the next
+  // step never becomes runnable without the decision that justifies it.
+  resolution,
   env = process.env,
   now = new Date(),
 }) {
   validateHost(host);
+  const nextStepWrite = resolveNextStepWrite(nextStep, false);
+  if (resolution !== undefined && (typeof resolution !== 'string' || resolution.trim().length === 0)) {
+    throw new Error('resolution must be non-empty text when given');
+  }
   if (isAutopilotRun(env)) {
     throw new Error(
       `refused under autopilot (AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}): only the owner resolves an owner gate (ADR-0063 Q2)`,
@@ -2877,9 +2953,11 @@ export async function clearAwaitingOwner({
     const nowIso = isoUtc(now);
     const note =
       `### Owner gate resolved: ${gate} at ${nowIso}\n\n` +
+      (resolution !== undefined ? `${resolution.trim()}\n\n` : '') +
       `Cleared awaiting_owner (since ${frontmatter.awaiting_owner_since}, ` +
       `pointer ${frontmatter.awaiting_owner_pointer}).\n\n`;
     for (const k of AWAITING_OWNER_KEYS) delete frontmatter[k];
+    applyNextStepWrite(frontmatter, nextStepWrite);
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
@@ -2890,6 +2968,212 @@ export async function clearAwaitingOwner({
       assembleWorkflowFile(frontmatter, appendToBody(body, note)),
       { lockPath, token },
     );
+    return { frontmatter, workflowPath };
+  });
+}
+
+// -----------------------------------------------------------------------------
+// ADR-0063 D4 — autopilot mode in the verb runbooks
+//
+// A runbook never matches AGENTIC_AUTOPILOT itself. It asks this script, which
+// holds engineer's one copy of the predicate (`isAutopilotRun`, held equal to
+// the other plugins' copies by tests/plugin-shape/test-autopilot-enum-parity.mjs).
+
+// How each owner gate is resolved: owner decision D7's method. The resolving
+// surface clears the gate; an autopilot step never does (Q2).
+const OWNER_GATE_RESOLUTION = Object.freeze({
+  'decide-conflict': (c) => `the owner selects a direction in ${c}engineer:decide, whose Owner selection step clears the gate`,
+  'recurring-finding': (c) => `the owner decides to fix the finding now or defer it in ${c}engineer:refine, whose Owner decision step clears the gate`,
+  'staging-set': (c) => `the owner confirms the staging set in ${c}engineer:commit, which clears the gate and then commits`,
+  'pr-handling': () => 'the owner takes or declines the outward action (push, pull request), then clears the gate',
+  'scope-routing': () => 'the owner chooses the route, then clears the gate',
+});
+
+const AUTOPILOT_COMMIT_RULES =
+  'this command is the one step that commits or closes the workflow. Run its ' +
+  'Autopilot block — phase7-commit.mjs --mode autopilot — and nothing else: it ' +
+  'commits with the suggested subjects, closes a done workflow without a commit, ' +
+  'or stops at the staging-set owner gate. Never pass a confirm or bypass flag, ' +
+  'push, or open a pull request: landing is the owner\'s. ' +
+  'Rules: core/skills/_shared/references/autopilot-mode.md.';
+
+const AUTOPILOT_RULES =
+  'ceremony gates auto-pass. Do not offer a presentation mode (present in batch); ' +
+  'proceed with the recommended option instead of asking; carry only CRITICAL and ' +
+  'MAJOR findings into refine; end the verb with finish-verb, which records ' +
+  'next_step and leaves the terminal marker unset; never run git commit, push, or ' +
+  'open a pull request; when a genuine owner judgment is needed, record the owner ' +
+  'gate and stop. Rules: core/skills/_shared/references/autopilot-mode.md.';
+
+/**
+ * Report the run mode and any owner gate set on the workflow, for a verb's or
+ * `/engineer:commit`'s Phase 0. Pure apart from reading the workflow file.
+ *
+ * - interactive, no gate: nothing to say (interactive output is unchanged);
+ * - autopilot, no gate: the rules banner;
+ * - autopilot, a gate: refuse — an autopilot step never resolves an owner gate;
+ * - interactive, a gate: a notice naming the gate, its pointer and how it is
+ *   resolved, for the command to put to the owner before it continues.
+ */
+export async function autopilotPreflight({
+  workflowPath,
+  host = 'claude',
+  // `verb` for the six verbs, `commit` for /engineer:commit, whose rules
+  // differ: it is the one surface that commits and closes a workflow.
+  surface = 'verb',
+  env = process.env,
+  scriptPath = fileURLToPath(import.meta.url),
+}) {
+  validateHost(host);
+  if (surface !== 'verb' && surface !== 'commit') {
+    throw new Error(`surface must be verb or commit (got ${JSON.stringify(surface)})`);
+  }
+  const autopilot = isAutopilotRun(env);
+  let gate = null;
+  if (typeof workflowPath === 'string' && workflowPath.length > 0) {
+    const { frontmatter } = await readWorkflow(workflowPath);
+    if (frontmatter.awaiting_owner_gate !== undefined) {
+      gate = {
+        gate: frontmatter.awaiting_owner_gate,
+        since: frontmatter.awaiting_owner_since,
+        pointer: frontmatter.awaiting_owner_pointer,
+      };
+    }
+  }
+  if (autopilot && gate) {
+    return {
+      mode: 'autopilot',
+      gate,
+      refuse: true,
+      stdout: '',
+      stderr:
+        `✗ owner gate ${gate.gate} is set on this workflow since ${gate.since} ` +
+        `(${gate.pointer}); an autopilot step never resolves an owner gate ` +
+        '(ADR-0063 Q2). Stop here: the owner resolves it.\n',
+    };
+  }
+  if (autopilot) {
+    return {
+      mode: 'autopilot',
+      gate: null,
+      refuse: false,
+      stdout: `Autopilot run ${env.AGENTIC_AUTOPILOT} (ADR-0063 D4): ${surface === 'commit' ? AUTOPILOT_COMMIT_RULES : AUTOPILOT_RULES}\n`,
+      stderr: '',
+    };
+  }
+  if (gate) {
+    const sigil = host === 'codex' ? '$' : '/';
+    const how = OWNER_GATE_RESOLUTION[gate.gate]?.(sigil) ?? 'the owner resolves it, then clears the gate';
+    return {
+      mode: 'interactive',
+      gate,
+      refuse: false,
+      stdout:
+        `Owner gate ${gate.gate} is pending since ${gate.since}: ${gate.pointer}.\n` +
+        `Put it to the user before this command continues: ${how}.\n` +
+        `Clearing it by hand once it is resolved, with the next step the owner chose: ` +
+        `node "${scriptPath}" awaiting-owner-clear --workflow-path "${workflowPath}" ` +
+        `--host ${host} --gate ${gate.gate} --next-step-kind <verb|commit|done> ` +
+        `--next-step-confidence HIGH [--next-step-verb <verb>] --resolution "<the owner's decision>"\n`,
+      stderr: '',
+    };
+  }
+  return { mode: 'interactive', gate: null, refuse: false, stdout: '', stderr: '' };
+}
+
+/**
+ * ADR-0063 D3 — a verb's final state write, in one place for both modes.
+ *
+ * Interactive: today's terminal write, `summary-complete` with the terminal
+ * marker, plus the next step. Autopilot: the next step and next action only;
+ * the terminal marker is turned off (an inherited one included), because only
+ * `/engineer:commit` closes a workflow under autopilot, and the handoff sidecar
+ * is skipped, because the driver is the handoff. Under autopilot a pending peer
+ * ensemble is refused: its collection completes within the step.
+ *
+ * With an owner gate (ADR-0063 D4, D6) the verb stopped on a judgment only the
+ * owner makes. The gate is recorded with the next step `owner-decision` in one
+ * write, in both modes, and the workflow is not terminal: it completes once the
+ * owner has resolved the gate. (`staging-set` and `pr-handling` are autopilot
+ * set points and are not recorded here.)
+ *
+ * The write stays the verb's last one, so a verb that stops earlier leaves no
+ * next step (Phase 0 cleared it).
+ */
+export async function finishVerb({
+  workflowPath,
+  host,
+  nextAction,
+  nextStep,
+  // `{ gate, anchor | pointer }`: the owner judgment this verb stops on.
+  ownerGate,
+  env = process.env,
+  now = new Date(),
+  emitHandoff = false,
+}) {
+  if (nextStep === undefined || nextStep === null) {
+    throw new Error('finish-verb records the next step: the kind and the confidence are required (ADR-0063 D6)');
+  }
+  if (ownerGate !== undefined && nextStep.kind !== 'owner-decision') {
+    throw new Error(
+      `an owner gate goes with the next step owner-decision (got ${JSON.stringify(nextStep.kind)}) (ADR-0063 D4)`,
+    );
+  }
+  const autopilot = isAutopilotRun(env);
+  if (autopilot) {
+    const { frontmatter } = await readWorkflow(workflowPath);
+    if (!noPendingEnsembleCheck(frontmatter)) {
+      throw new Error(
+        'refused under autopilot: a peer ensemble is still pending ' +
+          `(${frontmatter.pending_ensemble.map((e) => e.run_id).join(', ')}); collect it and ` +
+          'run ensemble-commit first — the next step is published only once the step is settled (ADR-0063 D5)',
+      );
+    }
+  }
+  if (autopilot || ownerGate !== undefined) {
+    const result = await appendPhase({
+      workflowPath, host, nextAction, nextStep, ownerGate,
+      clearTerminalMarker: true, event: 'updated', now,
+    });
+    return { ...result, mode: autopilot ? 'autopilot' : 'interactive', terminal: false };
+  }
+  const result = await setTerminal({
+    workflowPath,
+    host,
+    terminalPhase: 'summary-complete',
+    terminalMarker: true,
+    nextAction,
+    nextStep,
+    event: 'updated',
+    now,
+    emitHandoff,
+  });
+  return { ...result, mode: 'interactive', terminal: true };
+}
+
+/**
+ * ADR-0063 G1 — enter the commit: the workflow is not terminal while
+ * `/engineer:commit` (or /engineer:start Phase 7) is committing it. A verb
+ * chain run interactively ends each verb terminal (`summary-complete` + the
+ * marker), and a split whose second commit fails would otherwise leave that
+ * inherited marker in front of the Stop hook with HEAD moved, which archives
+ * the half-committed workflow and notes its commit on the parent. Phase 7's
+ * own terminal write, after every post-commit gate, turns it back on.
+ */
+export async function beginCommit({ workflowPath, host, now = new Date() }) {
+  validateHost(host);
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    frontmatter.current_phase = 'phase-7-commit';
+    if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(workflowPath, assembleWorkflowFile(frontmatter, body), { lockPath, token });
     return { frontmatter, workflowPath };
   });
 }
@@ -3696,24 +3980,50 @@ function cliPrintHelp() {
       '    no-ops and exits 0 (standalone invocation does not mutate).',
       '',
       '  set-terminal --workflow-path <path> --host <host>',
-      '               --terminal-phase commit-complete|summary-complete|fix-complete',
+      '               --terminal-phase commit-complete|summary-complete|fix-complete|close-complete',
       '               [--terminal-marker true|false] [--next-action <text>]',
       '               [--next-step-kind <kind> --next-step-confidence <c>',
       '                [--next-step-verb <verb>]]',
       '               [--event updated|resumed]',
       '    ADR-0017 sub-5 — atomic terminal-phase write (current_phase + terminal_marker).',
       '    Default --terminal-marker=true. The --next-step-* flags are as for append.',
+      '    ADR-0063 D3 — --terminal-marker true exits 1 when AGENTIC_AUTOPILOT names',
+      '    an autopilot run: a verb ends with finish-verb instead.',
+      '',
+      '  finish-verb --workflow-path <path> --host <host> --next-action <text>',
+      '              --next-step-kind verb|commit|owner-decision|done',
+      '              --next-step-confidence HIGH|MEDIUM|LOW [--next-step-verb <verb>]',
+      '              [--owner-gate <gate> --owner-gate-anchor <label>]',
+      '    ADR-0063 D3 — a verb\'s final write. Interactive: set-terminal',
+      '    summary-complete with the terminal marker, plus the next step. Under an',
+      '    autopilot run: the next action and next step only, terminal marker unset.',
+      '    --owner-gate needs --next-step-kind owner-decision; it is recorded with',
+      '    the next step in one write, in both modes, and the workflow is left',
+      '    non-terminal until the owner resolves it. Under autopilot a pending peer',
+      '    ensemble is refused.',
+      '',
+      '  autopilot-preflight [--workflow-path <path>] [--host <host>] [--surface verb|commit]',
+      '    ADR-0063 D4 — print the autopilot rules when AGENTIC_AUTOPILOT names an',
+      '    autopilot run, and nothing otherwise. With an owner gate set on the',
+      '    workflow: exit 1 under autopilot; otherwise print the gate and how the',
+      '    owner resolves it.',
       '',
       '  awaiting-owner-set --workflow-path <path> --host <host>',
       '                     --gate scope-routing|decide-conflict|recurring-finding|staging-set|pr-handling',
-      '                     --pointer <repo-relative path#anchor> [--since <YYYY-MM-DDTHH:MM:SSZ>]',
+      '                     (--pointer <repo-relative path#anchor> | --anchor <label>)',
+      '                     [--since <YYYY-MM-DDTHH:MM:SSZ>]',
       '    ADR-0063 D6 — record the owner gate this workflow waits on. Default',
-      '    --since is now. Exit 1 when a different gate is already set.',
+      '    --since is now. --anchor derives the pointer from the workflow\'s own',
+      '    path. Exit 1 when a different gate is already set.',
       '',
       '  awaiting-owner-clear --workflow-path <path> --host <host> --gate <gate>',
+      '                       [--next-step-kind <kind> --next-step-confidence <c>',
+      '                        [--next-step-verb <verb>]] [--resolution <text>]',
       '    ADR-0063 D6 — clear the owner gate once the owner has decided, and',
-      '    append an "Owner gate resolved" phase note. Exit 1 when the gate is',
-      '    not the one set, or when AGENTIC_AUTOPILOT names an autopilot run.',
+      '    append an "Owner gate resolved" phase note. The --next-step-* flags',
+      '    record the next step the owner chose, and --resolution the decision in',
+      '    words, in the same write. Exit 1 when the',
+      '    gate is not the one set, or when AGENTIC_AUTOPILOT names an autopilot run.',
       '',
       '  archive --workflow-path <path> --host <host> --repo-root <path>',
       '    ADR-0017 sub-5 — move workflow file from workflows/ to archive/.',
@@ -4009,6 +4319,15 @@ async function cliMain(argv) {
             `--terminal-marker must be 'true' or 'false' (got '${tm}')`,
           );
         }
+        // ADR-0063 D3 — under autopilot only /engineer:commit closes a
+        // workflow (phase7-commit calls setTerminal directly); a verb records
+        // its next step with finish-verb. Holding the marker open stays allowed.
+        if (terminalMarker && isAutopilotRun(process.env)) {
+          throw new Error(
+            `refused under autopilot (AGENTIC_AUTOPILOT=${process.env.AGENTIC_AUTOPILOT}): ` +
+              'a verb ends with finish-verb, and only /engineer:commit sets the terminal marker (ADR-0063 D3)',
+          );
+        }
         await setTerminal({
           workflowPath: flags['workflow-path'],
           host: flags.host,
@@ -4029,12 +4348,16 @@ async function cliMain(argv) {
       // different gate is already set; clear when the gate named is not the
       // one set, or when AGENTIC_AUTOPILOT names an autopilot run.
       case 'awaiting-owner-set': {
-        cliRequire(flags, ['workflow-path', 'host', 'gate', 'pointer']);
+        cliRequire(flags, ['workflow-path', 'host', 'gate']);
+        if (!('pointer' in flags) && !('anchor' in flags)) {
+          throw new Error('Missing required flags: --pointer or --anchor');
+        }
         await setAwaitingOwner({
           workflowPath: flags['workflow-path'],
           host: flags.host,
           gate: flags.gate,
           pointer: flags.pointer,
+          anchor: flags.anchor,
           since: flags.since,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
@@ -4047,7 +4370,55 @@ async function cliMain(argv) {
           workflowPath: flags['workflow-path'],
           host: flags.host,
           gate: flags.gate,
+          nextStep: cliNextStep(flags),
+          resolution: flags.resolution,
         });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      // ADR-0063 D4 — the mode a runbook is in, and the owner gate it meets.
+      case 'autopilot-preflight': {
+        const result = await autopilotPreflight({
+          workflowPath: flags['workflow-path'],
+          host: flags.host ?? 'claude',
+          surface: flags.surface ?? 'verb',
+        });
+        process.stdout.write(result.stdout);
+        process.stderr.write(result.stderr);
+        return result.refuse ? 1 : 0;
+      }
+
+      // ADR-0063 D3 — a verb's final write: terminal in interactive mode, the
+      // next step only under autopilot.
+      case 'finish-verb': {
+        cliRequire(flags, [
+          'workflow-path', 'host', 'next-action', 'next-step-kind', 'next-step-confidence',
+        ]);
+        if (('owner-gate' in flags) !== ('owner-gate-anchor' in flags)) {
+          throw new Error('--owner-gate and --owner-gate-anchor go together');
+        }
+        const result = await finishVerb({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          nextAction: flags['next-action'],
+          nextStep: cliNextStep(flags),
+          ownerGate: 'owner-gate' in flags
+            ? { gate: flags['owner-gate'], anchor: flags['owner-gate-anchor'] }
+            : undefined,
+          // As for set-terminal: an interactive verb completion fires the
+          // ADR-0031 session-handoff sidecar.
+          emitHandoff: true,
+        });
+        if (result.mode === 'autopilot') {
+          process.stderr.write(
+            'autopilot: next step recorded; the terminal marker is left for /engineer:commit (ADR-0063 D3)\n',
+          );
+        } else if (result.terminal === false) {
+          process.stderr.write(
+            `owner gate ${flags['owner-gate']} recorded; the workflow stays open until the owner resolves it (ADR-0063 D6)\n`,
+          );
+        }
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
       }

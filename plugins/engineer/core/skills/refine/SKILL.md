@@ -144,7 +144,12 @@ After both sides return:
    - Straightforward → apply inline (return to Step 2).
    - 2+ viable approaches → route through `/engineer:decide`.
    - Re-occurring → report as a design-level issue and discuss with
-     the user whether to address now or defer.
+     the user whether to address now or defer. A finding an earlier
+     refine pass on this workflow already addressed that survives
+     verification again is the owner's call (ADR-0063 D4): leave the
+     loop, record the `recurring-finding` owner gate with the command's
+     Phase 2 owner-decision variant, and stop. Under autopilot (Claude
+     only) do not wait for an answer.
 
 Loop Steps 2-4 until no new findings emerge.
 
@@ -169,6 +174,14 @@ per `continuity-protocol.md` Phase-boundary Write Rules
 it hands the result to the invoking command, which owns the write.
 
 When invoked standalone, no workflow file write occurs.
+
+The invoking command's last write, `state.mjs finish-verb`, also records
+the closed-enum form of this skill's Active Next-Action Proposal —
+`next_step_kind`, `next_step_verb` and `next_step_confidence` (ADR-0063 D6;
+`../_shared/references/entry-routing-contract.md` § Active Next-Action
+Proposal). The fields are host-shared. Autopilot mode, which changes the
+ceremonies and leaves the terminal marker unset, is Claude-only (ADR-0063);
+ignore it on Codex.
 
 ### Layer 2 commit-manifest recording (command-mode only — ADR-0028 §Layer-2)
 
@@ -230,7 +243,8 @@ regression) pauses for user direction before any forward proposal.
 
 The completion footer — including the ADR-0031 continue-vs-fresh
 session-handoff — is **code-emitted** on this verb's terminal path (ADR-0039):
-`state.mjs set-terminal` fires the session-handoff sidecar, which renders the
+the terminal write `state.mjs finish-verb` makes (set-terminal
+`summary-complete`) fires the session-handoff sidecar, which renders the
 runtime `footer.mjs` on the terminal command's stderr. Do not hand-compose the
 footer or hand-pass the projection here; surface the emitted one. On detached
 HEAD the sidecar reports "no active branch context" and does not auto-recommend

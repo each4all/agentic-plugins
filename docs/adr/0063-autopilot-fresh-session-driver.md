@@ -998,6 +998,177 @@ under an autopilot run, a plan the owner has not approved at its current hash.
   Codex mirror's snippet, run as written. `scripts/mutation-specs/orchestrator-next-approval-gate.mjs`
   shows each check fails on the defect it guards.
 
+## Implementation note 2026-10-01 — S3+S4 (verb runbook deltas and `/engineer:commit`)
+
+S3 and S4 land together: once autopilot verbs stop writing the terminal
+marker, only the commit surface can close a workflow. The rules the runbooks
+follow live in one file, `plugins/engineer/core/skills/_shared/references/autopilot-mode.md`.
+
+- **Every mode decision is made in code.** A runbook never matches
+  `AGENTIC_AUTOPILOT`:
+  - `state.mjs autopilot-preflight [--surface verb|commit]` runs in Phase 0
+    before any write. Interactively it prints nothing. Under an autopilot run
+    it prints the rules for that surface. With an owner gate set it refuses
+    under autopilot; interactively it prints the gate, its pointer, how it is
+    resolved and the clear command.
+  - `state.mjs finish-verb` is each verb's last write, in both modes.
+    - Interactive: the old `set-terminal summary-complete` plus the next step,
+      so the footer prints as before.
+    - Autopilot: the next action and next step only. The terminal marker is
+      turned off, an inherited one included, and the handoff sidecar is
+      skipped. A pending peer ensemble is refused.
+    - `set-terminal` with the marker on (the default) is refused under
+      autopilot.
+  - `phase7-commit.mjs --mode autopilot` is `/engineer:commit`'s whole step.
+- **`next_step`.**
+  - The six verbs pass kind, verb and confidence to `finish-verb`.
+  - Phase 0's resume clears the next step.
+  - Phase 0's resume write, Phase 2's note and Phase 2's `ensemble-commit`
+    stop the block when they fail. Before, the final write ran anyway, so a
+    failed write could still publish a next step.
+  - The entry-routing contract states the projection, including `done`, and
+    amends its "confidence has no durable home" paragraph (item 5 above).
+- **Owner gates.** Specification §1.4 and D6 have the pausing surface set
+  the gate, in either mode:
+  - `decide-conflict`, `recurring-finding` and `scope-routing` are recorded in
+    both modes. `finish-verb --owner-gate <gate> --owner-gate-anchor <label>`
+    writes the gate and the next step `owner-decision` in one write, at the
+    proposal's own confidence. The workflow stays non-terminal until the owner
+    resolves the gate.
+  - `staging-set` and `pr-handling` are autopilot set points, where the
+    specification places them. Interactively the owner answers in the dialog.
+  - Recording a gate turns an inherited terminal marker off in the same
+    write, whichever path records it. A workflow waiting on its owner is not
+    complete, and a refusal after the owner's resolution would otherwise leave
+    the old marker in front of a Stop hook that sees HEAD moved.
+  - They are resolved by D7's specification method, D7 still being open:
+    decide's Owner selection step, refine's Owner decision step, interactive
+    `/engineer:commit` for `staging-set`, and `awaiting-owner-clear` for the
+    rest.
+    - `awaiting-owner-clear` now takes `--next-step-*` and `--resolution`.
+      The owner's decision in words, the clear and the next step it implies
+      are one write. The next step therefore never becomes runnable without
+      the decision behind it, and a failure cannot leave the `owner-decision`
+      the gate recorded. Every resolving block uses it, resolves the workflow
+      itself rather than relying on an earlier Bash call, and stops when a
+      write fails.
+  - The Stop hook's gate 5 means a workflow with a gate pending is not
+    archived. The same holds in the branch-agnostic sweep, including for a
+    workflow whose branch was deleted.
+  - Anchors are labels, as in S2. `autopilot-mode.md`'s table is the source,
+    and a shape test holds the anchors the runbooks and `phase7-commit.mjs`
+    use to it.
+- **Ceremonies.** The rules are stated where each ceremony lives:
+  - the presentation-mode offer and "Recommended: X. Proceed?";
+  - critique's MINOR pick;
+  - each verb's Autopilot section;
+  - the approval points inside the decide, compose and refine skills. Their
+    own "wait for the user" instructions would otherwise stall an unattended
+    step, since Claude commands run those skills too.
+
+  compose and refine never commit.
+- **Peer collection.** The six verb launch blocks ran the runner behind a
+  shell `&`. That detaches it from the host's background-task tracking: under
+  stream-json hosting the step can end before the peer does, and a model left
+  waiting has nothing to wait on. Probe E saw workers sleep-poll for a peer;
+  that the detached runner is why is an inference. The blocks now run the runner
+  in the foreground of a host background task (Claude: `run_in_background`),
+  and `ensemble-protocol.md` states the rule. The designer and founder
+  runbooks keep the `&`; they are outside this slice.
+- **`/engineer:commit`** is a new meta command with a Codex skill, over the
+  ADR-0028 driver. Its changes to the driver:
+  - **`classifyNoChanges`** decides what a clean tree means. Plan reports it,
+    and execute and close act on it:
+    - `recovery` is the A2 fast path, on its old condition;
+    - `close` needs a clean `git status`, HEAD at the baseline, no marked
+      commit, `next_step_kind: done`, and a workflow that is not an
+      `/engineer:start` one;
+    - `blocked` carries one of `partial-commit`, `unmarked-commits`,
+      `next-step-not-done`, `no-baseline`, `git-probe-failed`,
+      `status-not-clean` or `start-workflow`.
+
+    `git diff --name-only HEAD` alone cannot prove a clean tree: it does not
+    show a staged change the working tree reverted. Both endpoints of a
+    rename count, so a rename into workflow storage is a deletion outside
+    it.
+  - **`--mode close`** writes `close-complete` with the marker, then archives
+    the workflow: its HEAD never moved, so the Stop hook would not. It prints
+    no handoff, whose projection would read the unmoved HEAD as blocked and
+    advise a commit.
+    - A close stopped between its two writes is finished by running it
+      again.
+    - The handoff a Stop hook renders for such a workflow names that rerun,
+      not a commit.
+    - The Stop hook never notes a `close-complete` workflow on its parent.
+  - **Execute** takes the workflow out of its terminal state (`beginCommit`:
+    `phase-7-commit`, marker off) once every subject is checked, before the
+    first commit, and before the A2 fast path's gates.
+    - Before this, a split failing at its second commit left an interactive
+      verb's inherited marker in front of a Stop that saw HEAD moved. That
+      Stop archived the half-committed workflow and noted its first commit on
+      the macro.
+    - `/engineer:start` gains only the phase name on a failed Phase 7 (ADR-0028
+      §P5 note).
+    - Execute and close refuse while an owner gate is set, in both modes.
+  - **`--suggested-subjects`** uses plan mode's `inferSubject` for every
+    commit, single or split, so no subject passes through a shell.
+  - **`--mode autopilot`** refuses:
+    - outside an autopilot run;
+    - on an `/engineer:start` workflow;
+    - over an owner gate;
+    - with a pending peer ensemble, before anything is committed.
+
+    On a clean tree it recovers, closes or refuses. It stops at `staging-set`
+    when `ask_user` is true, when the workflow did not begin on a clean tree
+    (its recorded status digest is not the digest of an empty status), or when
+    the index is pre-staged: only the owner can tell pre-existing hunks from
+    the workflow's own. Otherwise it commits with the suggested subjects and
+    `--strict-cc`.
+  - **Under autopilot** every staging bypass is refused with exit 2:
+    `--confirm-non-interactive`, `--non-interactive`, `--accept-current-tree`,
+    `--include-extra` and `ACCEPT_CURRENT_TREE=1`. So are `--mode execute` and
+    `--mode close`: they run only from inside `--mode autopilot`, so no direct
+    call steps around its clean-baseline and pre-staged rules.
+  - **The next step is left as it was on a commit.** `done` means the
+    no-commit close (D6), so writing it after a commit would send the driver
+    to `--no-commit`. A routine commit sets no `pr-handling` gate: waiting to
+    land is read from state (D3a).
+- **Outcomes S8 reads.** This refines D3a's "archived with its terminal marker
+  set". Once a workflow is terminal its phase is the outcome, and `next_step`
+  is history:
+
+  | durable state | meaning |
+  |---|---|
+  | active, not terminal (commits may exist) | in progress, or an interrupted commit: `/engineer:commit` recovers it |
+  | archived, terminal, `commit-complete` | committed: check the landing (D3a) |
+  | archived, terminal, `close-complete` | closed without a commit: `/orchestrator:done <id> --no-commit` |
+  | active, terminal | the archive has not run (a Stop gate failed, or a close stopped before its archive): `/engineer:commit` again |
+
+- **Capability floor for S8.** The S0 note explains how runbook text and
+  scripts can come from different versions. The released engineer 0.23.0
+  scripts have no `autopilot-preflight`, `finish-verb`, `--mode close` or
+  `--mode autopilot`. With them, a verb's Phase 0 fails before any write,
+  which a test checks against the tagged scripts. The driver has to require
+  the engineer release that carries S3+S4 before it starts a run.
+- **Known limits.**
+  - The suggested subject's type follows the workflow's last verb, so a
+    compose → critique → commit chain suggests `chore`. The squash title the
+    owner lands is what reaches `main`.
+  - The model-judged set points (`recurring-finding`, `scope-routing`,
+    `pr-handling`) are pinned by shape tests, not by code; the driver's halts
+    are the backstop.
+- Tests:
+  - `tests/engineer/test-autopilot-verbs.mjs` (state);
+  - `tests/engineer/test-engineer-commit.mjs` (the driver against sandbox
+    repositories, including the half-commit Stop case and the spec §1.9 chain);
+  - `tests/engineer/test-verb-runbook-autopilot.mjs` (the blocks as written in
+    bash and zsh, including the released 0.23.0 scripts);
+  - `tests/plugin-shape/test-engineer-autopilot-runbooks.mjs` (placement and
+    anchors).
+
+  `scripts/mutation-specs/engineer-autopilot-verbs.mjs` shows each check fails
+  on the defect it guards.
+
 ## References
 
 - ADR-0001 (honest scope)

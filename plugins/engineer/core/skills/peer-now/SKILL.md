@@ -45,7 +45,7 @@ mirroring the structural exclusion that verb-skill ensembles record in
 | `state.mjs append --phase-label "[Peer] <peer> consultation"` (when active workflow exists) | `--host claude` | `--host codex` |
 | Standalone mode (no active workflow → stdout only) | Yes | Yes |
 
-`peer-now` is the most symmetric of the three meta skills:
+`peer-now` is the most symmetric of the engineer meta skills:
 `companions/` ships `codex-companion.mjs` (Claude → Codex bridge)
 and `claude-companion.mjs` (Codex → Claude bridge) as first-party
 peer-host invocation primitives (ADR-0001 §COMPANION, ADR-0008,

@@ -144,6 +144,17 @@ this table if subsequent commits drift any touchpoint.)
 
 #### Layer 3 — Phase 7 staging
 
+> **Note (2026-10-01, [ADR-0063](0063-autopilot-fresh-session-driver.md)
+> S3+S4):** `/engineer:commit` applies this layer to verb-chain workflows
+> through the same driver, with two modes added: `close`, which closes a
+> workflow whose last verb recorded `next_step_kind: done` and which committed
+> nothing, and `autopilot`, which decides the whole step in code. A close
+> needs `git status` clean, not only an empty `git_changes`: a staged change
+> the working tree reverted is invisible to `git diff --name-only HEAD`.
+> Under autopilot the staging set is committed without the owner only when
+> it is fully implied, the workflow began on a clean tree and nothing is
+> pre-staged; the ADR-0063 implementation note has the rest.
+
 Phase 7 computes the candidate staging set from native git, intersects
 it with the recorded manifest, and ASKs the user when the two disagree.
 Concretely:
@@ -246,6 +257,17 @@ Any failure between steps 1 and 7 leaves `terminal_marker` unset and the
 workflow remains resumable. `set-terminal` must not be followed by any
 other `state.mjs` write in the same Phase 7 invocation — otherwise the
 Stop hook may auto-archive before the trailing write lands.
+
+> **Note (2026-10-01, [ADR-0063](0063-autopilot-fresh-session-driver.md)
+> S3+S4):** "leaves `terminal_marker` unset" held because an
+> `/engineer:start` workflow has no marker before Phase 7. A verb-chain
+> workflow committed through `/engineer:commit` arrives with an interactive
+> verb's `summary-complete` marker set, and a split failing at its second
+> commit then left that marker in front of a Stop that saw HEAD moved: the
+> half-committed workflow was archived and its first commit noted on the
+> macro. Execute therefore writes `current_phase: phase-7-commit` with the
+> marker off (`beginCommit`) after step 2 and before step 3, and before the
+> A2 fast path's gates, so the sentence holds for every workflow.
 
 #### P6 — Subject inference and user confirmation
 

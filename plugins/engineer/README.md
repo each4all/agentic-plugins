@@ -43,23 +43,26 @@ This plugin is in Stage 2 of agentic-plugins development (per
 current release ships:
 
 - 4 manifest + marketplace entries (Claude Code + Codex CLI)
-- 10 SKILL.md bodies — 6 cognitive verb skills + 1 macro skill
-  (`start` per ADR-0021) + 3 meta skills
-  (`resume` / `checkpoint` / `peer-now` per ADR-0022)
-- 5 shared protocol references (presentation / ensemble /
-  orchestration / agent-taxonomy / entry-routing)
-- 10 Codex agent definitions (`agents/openai.yaml` per skill — one
+- 11 SKILL.md bodies — 6 cognitive verb skills + 1 macro skill
+  (`start` per ADR-0021) + 4 meta skills
+  (`resume` / `checkpoint` / `peer-now` per ADR-0022, `commit` per
+  ADR-0063)
+- 7 shared protocol references (presentation / ensemble /
+  orchestration / agent-taxonomy / entry-routing / session-handoff /
+  autopilot-mode)
+- 11 Codex agent definitions (`agents/openai.yaml` per skill — one
   per verb / macro / meta skill, with
   `policy.allow_implicit_invocation: false` on each)
-- **Claude slash command surface** — 11 commands total:
+- **Claude slash command surface** — 12 commands total:
   6 canonical verbs
   (`/engineer:investigate|frame|decide|compose|critique|refine`)
   + 1 sugar alias (`/engineer:audit` ≡
   `/engineer:critique --profile=full-codebase` per ADR-0010 §3)
   + 1 lifecycle macro command (`/engineer:start`,
   ADR-0020 §Sub-decision 1)
-  + 3 meta commands (`/engineer:resume` / `:checkpoint` /
-  `:peer-now`, ADR-0017 §sub-decisions 1/2/3)
+  + 4 meta commands (`/engineer:resume` / `:checkpoint` /
+  `:peer-now`, ADR-0017 §sub-decisions 1/2/3; `/engineer:commit`,
+  ADR-0063 D3)
 - **Host-shared canonical scripts** — `scripts/state.mjs`
   (workflow I/O per ADR-0011) + `scripts/dispatch-peer.mjs`
   (blocking companion task wrapper per `companions/contract.md`
@@ -167,6 +170,8 @@ enabled = true
 /engineer:checkpoint <one-line summary>      # Record a progress checkpoint
 /engineer:peer-now --peer <claude|codex> --prompt-text "..."  # Ad-hoc side-channel peer consultation
                                           # (or --prompt-file <path>; not an ensemble — no synthesis label)
+/engineer:commit                             # Commit a verb-chain workflow (Phase 7 driver), or close it
+                                          # without a commit when the last verb recorded done (ADR-0063)
 
 # Lifecycle macro (ADR-0020 §Sub-decision 1):
 /engineer:start <feature> [--base-branch <ref>]
@@ -236,12 +241,13 @@ $engineer:start <feature description>
 $engineer:resume [archive [<workflow-id>]]
 $engineer:checkpoint <one-line progress summary>
 $engineer:peer-now --peer <claude|codex> --prompt-text "..."   # or --prompt-file <path>
+$engineer:commit                                                # commit or close a verb-chain workflow
 ```
 
 **Codex-side parity** (per ADR-0021 + ADR-0022): the Codex manifest
 exposes the six verb skills, the `start` macro skill (ADR-0021), and
-three meta skills (`resume` / `checkpoint` / `peer-now` per
-ADR-0022). Each skill's canonical cognitive runbook lives in
+four meta skills (`resume` / `checkpoint` / `peer-now` per ADR-0022,
+`commit` per ADR-0063). Each skill's canonical cognitive runbook lives in
 `core/skills/<name>/SKILL.md` and is loaded directly when the skill is
 mentioned. Codex CLI's plugin-commands integration is still
 unfinalized (ADR-0013 reserved), so Codex side does not yet have

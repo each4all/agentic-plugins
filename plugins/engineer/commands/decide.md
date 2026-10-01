@@ -43,6 +43,13 @@ if [ "$FIND_RC" -ne 0 ]; then
   echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
+# ADR-0063 D4 — prints nothing in interactive mode. Under an autopilot run it
+# prints the rules this command then follows
+# (core/skills/_shared/references/autopilot-mode.md), and refuses when an owner
+# gate is set on the workflow; interactively it prints a pending gate for the
+# user. It runs before any write, so a refusal leaves the workflow as it was.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" autopilot-preflight \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" || exit $?
 ```
 
 - Empty → bootstrap with verb=decide:
@@ -86,7 +93,8 @@ fi
     --phase-label "Phase 0: Resume into decide" \
     --phase-note "Resumed from prior verb." \
     --current-phase phase-0-resume \
-    --next-action "Run decide skill" --event resumed
+    --clear-next-step true \
+    --next-action "Run decide skill" --event resumed || exit $?
   ```
 
 ---
@@ -204,6 +212,11 @@ Build the Brainstorm prompt per
 `core/skills/_shared/references/ensemble-protocol.md` § Brainstorm and
 dispatch in background:
 
+Run this block **as a host background task** — on Claude, the Bash tool's
+`run_in_background` — never with a trailing `&`: the host then tracks the
+task and notifies you when the runner exits (ADR-0063 D5; a shell `&` would
+detach the runner where neither you nor an autopilot host can wait for it).
+
 ```bash
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -258,7 +271,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --workflow-path "$ACTIVE" --phase decide \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   --ensemble-type brainstorm --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"
 ```
 
 The peer-runner records the matching `pending_ensemble` row before
@@ -294,12 +307,12 @@ NOTE="### Ensemble launched: decide at <iso-utc>
 
 (per core/skills/_shared/references/entry-routing-contract.md
  § Active Next-Action Proposal — derived from this decision, not a fixed table)
-- selected_next:         <verb | commit | owner decision>
+- selected_next:         <verb | commit | owner decision | done>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
 - evidence_pointers:     <phase notes / files / artifacts — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /engineer:<verb> … or \$engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+- next_command:          <exact next step: /engineer:<verb> … or \$engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>
 "
 
 # ADR-0029 §1 — set --next-action (both writes below) to the compact form
@@ -313,19 +326,25 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
   --next-action "Compose the artifact for the chosen direction" \
-  --event updated
+  --event updated || exit $?
 
 # ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase decide --ensemble-type brainstorm --run-id "$RUN_ID" \
   --verdict "$VERDICT" --summary "$SUMMARY" \
-  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit $?
 
-# ADR-0017 §sub-decision 5 — atomic terminal write. Bumps current_phase
-# into the auto-archive whitelist + sets terminal_marker=true so the
-# Stop hook can archive (the HEAD-moved gate still enforces real
-# progress before the archive triggers).
+# ADR-0063 D3 — the verb's last write, `finish-verb`. Interactive: the
+# ADR-0017 §sub-decision 5 atomic terminal write — current_phase
+# summary-complete (in the auto-archive whitelist) + terminal_marker=true, so
+# the Stop hook can archive once HEAD has moved — plus the next step. Under an
+# autopilot run: the next step only; the terminal marker is left for
+# /engineer:commit. The --next-step-* flags are the closed-enum form of the
+# proposal's selected_next and confidence
+# (core/skills/_shared/references/autopilot-mode.md § next_step): kind
+# verb|commit|owner-decision|done, and --next-step-verb only with kind verb.
+# The values shown are the typical case; set them from the proposal above.
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # archive gates are evaluated at the end of THIS turn, not at session close;
 # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
@@ -335,13 +354,102 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
 # core/skills/_shared/references/session-handoff.md § Archive timing.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --terminal-phase summary-complete \
-  --terminal-marker true \
   --next-action "Compose the artifact for the chosen direction" \
-  --event updated
+  --next-step-kind verb --next-step-verb compose \
+  --next-step-confidence "<HIGH|MEDIUM|LOW>"
+# When the synthesis verdict is conflict, end instead with the owner's
+# decision (ADR-0063 D4, D6). This records the decide-conflict gate with the
+# next step in one write, in either mode, and leaves the workflow open (not
+# terminal) until the owner selects — the Owner selection step below. The
+# confidence is the synthesis's, as for any proposal:
+# node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+#   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+#   --next-action "Owner: select a direction (decide conflict)" \
+#   --next-step-kind owner-decision --next-step-confidence "<HIGH|MEDIUM|LOW>" \
+#   --owner-gate decide-conflict --owner-gate-anchor ensemble-synthesis
 ```
+
+---
+
+## Autopilot mode (ADR-0063, Claude only)
+
+When Phase 0's preflight printed the autopilot banner, this command follows
+`${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/autopilot-mode.md`
+(the preflight prints nothing interactively, and none of this applies then):
+
+- **Ceremony gates auto-pass.** No presentation-mode prompt (present in
+  batch); proceed with the recommended option instead of asking
+  "Recommended: X. Proceed?".
+- **A CONFLICT is the owner's.** When the synthesis verdict is `conflict`, do
+  not pick a side: end with the owner-decision variant of `finish-verb` shown
+  in Phase 2, which records the `decide-conflict` gate with the next step (it
+  does so interactively too; there the user selects at once, through the Owner
+  selection step).
+- **The last write is Phase 2's `finish-verb`**, which records the next step
+  and leaves the terminal marker unset: under autopilot only
+  `/engineer:commit` closes a workflow, and `set-terminal --terminal-marker
+  true` is refused.
+- **Owner judgments.** Stop with the gate that names the judgment and do not
+  decide it yourself: `scope-routing` when the request does not belong in this
+  verb or workflow (recorded in either mode), `pr-handling` when the task
+  itself needs a push, a pull request or another outward action (autopilot
+  only; interactively the user acts). Record the gate with Phase 2's
+  `finish-verb --next-step-kind owner-decision --owner-gate <gate>
+  --owner-gate-anchor <anchor>` after a phase note under the heading the gate
+  table names (`autopilot-mode.md` § Owner gates).
+- **Peers.** Collect the ensemble as `ensemble-protocol.md` § Step 2 says:
+  wait for the background notification; never sleep-poll.
+
+---
+
+## Owner selection (decide-conflict)
+
+The `decide-conflict` gate is resolved by the owner's selection (ADR-0063
+Q2), in either of two ways:
+
+- **In this session**, right after `✓ Decision pending user input`: the user
+  picks one of the options just shown.
+- **Later**, when Phase 0's preflight reports a pending `decide-conflict`
+  gate (an autopilot run, or an earlier session, stopped on it): present the
+  options recorded at the gate's pointer — the latest `Ensemble synthesis:
+  decide verdict=conflict` note — and ask the user to choose, instead of
+  running a new comparison. If they want a fresh comparison, clear the gate
+  first and run the phases above as usual.
+
+Once they choose:
+
+```bash
+CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch." >&2; exit 1; }
+# One write records the owner's decision, clears the gate and names the next
+# step, so the next step never becomes runnable without the decision behind
+# it; the block stops if it fails.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate decide-conflict \
+  --resolution "Owner selection: <the direction the owner chose, and why>" \
+  --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH || exit $?
+# ARCHIVE TIMING — this finish-verb is a terminal write interactively: on
+# Claude the Stop hook fires at EVERY turn end, so the archive gates are
+# evaluated at the end of THIS turn (they pass once HEAD has moved). Clearing
+# the marker with `--terminal-marker false` works only before that Stop fires
+# and needs set-terminal's full flag set. On Codex the Stop hook runs only
+# once the operator has trusted the plugin hooks (`/hooks`). Full contract:
+# core/skills/_shared/references/session-handoff.md § Archive timing.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  --next-action "Compose the artifact for the chosen direction" \
+  --next-step-kind verb --next-step-verb compose \
+  --next-step-confidence HIGH
+```
+
+`awaiting-owner-clear` records `### Owner gate resolved: decide-conflict at
+<iso>` with the pointer it cleared, and refuses under an autopilot run: only
+the owner resolves an owner gate.
 
 ---
 
@@ -352,7 +460,9 @@ Output the comparison and one of:
 - `✓ Decision recommended.` + chosen direction.
 - `✓ Decision pending user input.` — when CONFLICT remained in the
   recommendation. Surface both options with evidence; pause until
-  the user selects.
+  the user selects. Phase 2's owner-decision variant has recorded the
+  `decide-conflict` gate, so record the selection with the Owner selection
+  step below.
 
 Then emit an **Active Next-Action Proposal** instead of a fixed next
 verb, per `core/skills/_shared/references/entry-routing-contract.md`
@@ -360,12 +470,12 @@ verb, per `core/skills/_shared/references/entry-routing-contract.md`
 (runtime completion-output contract):
 
 ```
-- selected_next:         <verb | commit | owner decision>
+- selected_next:         <verb | commit | owner decision | done>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
 - evidence_pointers:     <phase notes / files / artifacts — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>
 ```
 
 Typical `selected_next` candidates for decide:
@@ -379,7 +489,8 @@ the decision size (`--size=minor|standard|major`) per the contract.
 Always include the workflow path.
 
 The runtime completion footer is **code-emitted** on this verb's terminal path
-(ADR-0039): `state.mjs set-terminal` fires the ADR-0031 session-handoff sidecar,
+(ADR-0039): the terminal write `state.mjs finish-verb` makes in interactive
+mode fires the ADR-0031 session-handoff sidecar,
 which shells out to the runtime `footer.mjs` and prints the rendered footer —
 context state, completion state + state-derived next action, workflow id/path,
 artifact pointers, recommended next work, and the continue-vs-fresh
@@ -388,4 +499,6 @@ footer here; surface the one the terminal command already emitted. The footer is
 advisory + pointer-only and fail-closed (a missing/too-old runtime emits
 nothing, and the SessionStart backstop still re-surfaces the handoff); it never
 mutates host session context. On detached HEAD the sidecar reports "no active
-branch context" and does not auto-recommend a fresh session.
+branch context" and does not auto-recommend a fresh session. Under an
+autopilot run `finish-verb` makes no terminal write, so no footer is printed:
+the driver is the handoff.

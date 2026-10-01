@@ -95,6 +95,10 @@ const IMPLICIT_TERMINAL_PATHS = [
   { plugin: 'orchestrator', area: 'commands', rel: 'done.md' },
   { plugin: 'orchestrator', area: 'skills', rel: 'next/SKILL.md' },
   { plugin: 'orchestrator', area: 'skills', rel: 'done/SKILL.md' },
+  // ADR-0063 D3 — /engineer:commit terminalizes inside phase7-commit.mjs
+  // (execute: commit-complete; close: close-complete).
+  { plugin: 'engineer', area: 'commands', rel: 'commit.md' },
+  { plugin: 'engineer', area: 'skills', rel: 'commit/SKILL.md' },
 ];
 
 // Pinned by identity, not by length. A duplicated entry keeps the count and the
@@ -106,6 +110,8 @@ const EXPECTED_IMPLICIT_IDENTITIES = [
   'orchestrator/commands/done.md',
   'orchestrator/skills/next/SKILL.md',
   'orchestrator/skills/done/SKILL.md',
+  'engineer/commands/commit.md',
+  'engineer/skills/commit/SKILL.md',
 ];
 const implicitIdentity = (e) => `${e.plugin}/${e.area}/${e.rel}`;
 
@@ -195,7 +201,9 @@ function findInvocations(lines) {
       end++;
       joined += ' ' + lines[end].trim();
     }
-    if (/\bset-terminal\b/.test(joined)) sites.push({ line: i, joined });
+    // ADR-0063 D3 — `finish-verb` is a verb's terminal write in interactive
+    // mode (set-terminal summary-complete), so it is a site too.
+    if (/\b(?:set-terminal|finish-verb)\b/.test(joined)) sites.push({ line: i, joined });
   }
   return sites;
 }
