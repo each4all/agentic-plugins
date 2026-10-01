@@ -111,7 +111,9 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
    slash command (Claude) or skill agent (Codex) is responsible for
    arranging background execution per its own host primitives (Bash
    `run_in_background` on Claude; Codex `task` subcommand on Codex
-   side).
+   side). The runner itself runs in the foreground of that background
+   task — never behind a shell `&`, which detaches it where the host
+   cannot track it or notify on its exit (ADR-0063 D5).
 5. The orchestrator proceeds immediately to its own parallel
    analysis.
 
@@ -123,7 +125,11 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
    read `envelope_path` for the parsed companion envelope (or
    `stdout_path` / `stderr_path` when diagnosing degraded runs).
 3. If the peer has not finished yet, wait for the background
-   notification — do not poll or sleep.
+   notification — do not poll or sleep. **Autopilot (ADR-0063, Claude
+   only):** the driver's stream-json host keeps the session alive while a
+   background task is pending and re-invokes the model when it completes, so
+   wait for the notification exactly as written; never sleep-poll a file
+   (`autopilot-mode.md` § Peer ensembles).
 4. If the peer failed or returned empty output, record the failure
    and proceed to Synthesize with orchestrator-only results
    (graceful degradation, see *Failure Handling*).

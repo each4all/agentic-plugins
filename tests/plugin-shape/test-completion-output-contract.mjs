@@ -46,7 +46,7 @@ const FIELD_KEYS = [
 // Raising is free; a drop below the floor means a completion surface lost its
 // template and must be deliberate (update the contract doc + this floor).
 const PERSONA_FLOORS = {
-  engineer: 18,
+  engineer: 20, // 18 + /engineer:commit's command and skill (ADR-0063 D3)
   founder: 12,
   designer: 12,
   orchestrator: 7,
@@ -56,7 +56,9 @@ const PERSONA_FLOORS = {
 // least one conformant six-field block. Aggregate floors alone would let one
 // required surface silently drop once counts rise elsewhere (peer finding).
 const PERSONA_REQUIRED_SURFACES = {
-  engineer: ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'],
+  // ADR-0063 D3 — `commit`, the verb-chain commit surface, completes a
+  // workflow too.
+  engineer: ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine', 'commit'],
   founder: ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'],
   designer: ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'],
   orchestrator: ['plan', 'next', 'done'],

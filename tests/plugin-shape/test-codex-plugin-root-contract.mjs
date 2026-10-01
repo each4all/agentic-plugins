@@ -71,7 +71,7 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 // The command-resolution tables that document a Codex plugin root in these
 // plugins. engineer's start macro has none; designer's and founder's do.
 const TABLES = {
-  engineer: ['checkpoint', 'peer-now', 'resume'],
+  engineer: ['checkpoint', 'commit', 'peer-now', 'resume'],
   designer: ['checkpoint', 'peer-now', 'resume', 'start'],
   founder: ['checkpoint', 'peer-now', 'resume', 'start'],
   orchestrator: ['abort', 'approve', 'checkpoint', 'done', 'finalize', 'next', 'peer-now', 'resume'],

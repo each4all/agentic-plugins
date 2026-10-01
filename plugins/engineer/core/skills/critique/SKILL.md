@@ -193,6 +193,14 @@ it hands findings to the invoking command, which owns the write.
 
 When invoked standalone, no workflow file write occurs.
 
+The invoking command's last write, `state.mjs finish-verb`, also records
+the closed-enum form of this skill's Active Next-Action Proposal —
+`next_step_kind`, `next_step_verb` and `next_step_confidence` (ADR-0063 D6;
+`../_shared/references/entry-routing-contract.md` § Active Next-Action
+Proposal). The fields are host-shared. Autopilot mode, which changes the
+ceremonies and leaves the terminal marker unset, is Claude-only (ADR-0063);
+ignore it on Codex.
+
 ---
 
 ## Completion — Active Next-Action Proposal
@@ -229,7 +237,8 @@ reasoning without dispatching a peer.
 
 The completion footer — including the ADR-0031 continue-vs-fresh
 session-handoff — is **code-emitted** on this verb's terminal path (ADR-0039):
-`state.mjs set-terminal` fires the session-handoff sidecar, which renders the
+the terminal write `state.mjs finish-verb` makes (set-terminal
+`summary-complete`) fires the session-handoff sidecar, which renders the
 runtime `footer.mjs` on the terminal command's stderr. Do not hand-compose the
 footer or hand-pass the projection here; surface the emitted one. On detached
 HEAD the sidecar reports "no active branch context" and does not auto-recommend

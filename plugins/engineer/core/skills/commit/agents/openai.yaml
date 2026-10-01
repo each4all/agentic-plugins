@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Commit"
+  short_description: "Commit a verb-chain engineer workflow's change through the Phase 7 driver, or close it without a commit when the last verb recorded done"
+  default_prompt: "Use $engineer:commit after a verb recorded next_step commit or done: it plans the staging set, commits per release-please package with conventional subjects, or closes the workflow without a commit when there is nothing to commit"
+
+policy:
+  allow_implicit_invocation: false

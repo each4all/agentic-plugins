@@ -33,6 +33,10 @@ Does NOT apply to:
 
 ## Offering the Choice
 
+**Autopilot mode (ADR-0063, Claude only):** when the command's Phase 0
+preflight printed the autopilot banner, do not offer the choice: present in
+batch (`autopilot-mode.md`). Everything below is the interactive rule.
+
 At the first major presentation point in a command or skill workflow, ask:
 
 > How would you like to review this?
@@ -239,6 +243,11 @@ Reserve it for genuinely complex design decisions where all three hold:
 For trivial confirmations, yes/no follow-ups, or self-evident next steps,
 do **not** use `AskUserQuestion`. Use a plain text question instead, framed
 as: *"Recommended: X. Proceed?"*
+
+**Autopilot mode (ADR-0063, Claude only):** there is no one to answer, so
+proceed with X instead of asking (`autopilot-mode.md`). A choice that is a
+genuine owner judgment is not a ceremony: it stops the step with its owner
+gate.
 
 If the user replies with "what's the difference?" / "compare them
 specifically" after a multiple-choice prompt, drop the tool, present the

@@ -10,16 +10,18 @@
 //   - 1 macro skill `start` (<skills-root>/start/ × {SKILL.md, agents/openai.yaml})
 //     per ADR-0021 (ADR-0010 §3 cascade — verb skills + macro skills
 //     two-category split)
-//   - 3 meta skills `resume` / `checkpoint` / `peer-now`
+//   - 4 meta skills `resume` / `checkpoint` / `peer-now` / `commit`
 //     (<skills-root>/<meta>/ × {SKILL.md, agents/openai.yaml}) per ADR-0022
+//     (`commit` is the ADR-0063 verb-chain commit surface)
 //     (ADR-0010 §3 cascade — closes ADR-0021 §6; formalizes the
 //     `skills/<plugin>/` three-category split: verb / macro / meta)
-//   - 5 shared references (presentation / ensemble / orchestration /
-//     agent-taxonomy / entry-routing)
+//   - 6 shared references (presentation / ensemble / orchestration /
+//     agent-taxonomy / entry-routing / autopilot-mode)
 //   - 4 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
 //     peer-runner.mjs, stop-archive.mjs)
-//   - 11 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
+//   - 12 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
 //     + 3 meta commands `resume` / `checkpoint` / `peer-now` per ADR-0017
+//     + 1 meta command `commit` per ADR-0063 D3
 //     + 1 lifecycle macro `start` per ADR-0020 §Sub-decision 1
 //     §sub-decisions 1+2+3)
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
@@ -87,7 +89,8 @@ const ALIAS_VERBS = ['audit'];
 // description on the command side, frontmatter+description on the
 // skill side), but their argument-hint and body shape differ from
 // verbs, so verb-name consistency assertions below skip them.
-const META_COMMANDS = ['resume', 'checkpoint', 'peer-now'];
+// ADR-0063 D3 adds `commit`, the verb-chain commit surface.
+const META_COMMANDS = ['resume', 'checkpoint', 'peer-now', 'commit'];
 // ADR-0022 — meta commands mirror as Codex meta skills. META_SKILLS ==
 // META_COMMANDS for now; the alias preserves intent (the same string is
 // the command name AND the skill folder name) and mirrors the
@@ -116,6 +119,7 @@ const SHARED_REFS = [
   'orchestration.md',
   'agent-taxonomy.md',
   'entry-routing-contract.md',
+  'autopilot-mode.md',
 ];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', '_shared.mjs'];
@@ -734,7 +738,7 @@ describe('plugins/engineer — 5 shared references (<skills-root>/_shared/refere
   }
 });
 
-describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + audit alias + resume/checkpoint/peer-now meta + start lifecycle macro)', () => {
+describe('plugins/engineer — 12 commands (commands/<verb>.md — 6 verbs + audit alias + resume/checkpoint/peer-now/commit meta + start lifecycle macro)', () => {
   for (const verb of ALL_COMMANDS) {
     describe(verb, () => {
       const path = resolve(PLUGIN_ROOT, 'commands', `${verb}.md`);
@@ -833,7 +837,8 @@ describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + aud
   });
 
   it('workflow completion commands defer to the code-emitted runtime completion footer (ADR-0039)', async () => {
-    for (const cmd of [...VERBS, ...LIFECYCLE_MACROS]) {
+    // ADR-0063 D3 — /engineer:commit is a completion surface as well.
+    for (const cmd of [...VERBS, ...LIFECYCLE_MACROS, 'commit']) {
       const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf8');
       ok(/runtime completion footer/i.test(text), `commands/${cmd}.md missing runtime footer guidance`);
       // ADR-0039 §9 — the footer is CODE-EMITTED on the terminal path, not

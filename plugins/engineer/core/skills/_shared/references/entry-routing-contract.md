@@ -47,8 +47,10 @@ end with a fixed lifecycle-table literal (e.g. always "next:
 `/engineer:decide`"). It MUST instead emit an evidence-based proposal
 derived from the verb's actual result and the current workflow state:
 
-- **selected_next**: the recommended next step — a verb, `commit`, or
-  `owner decision`. Chosen from the verb's result, not from a fixed
+- **selected_next**: the recommended next step — a verb, `commit`,
+  `owner decision`, or `done` (the deliverable is complete and produced
+  nothing to commit, e.g. an investigation or decision whose output is the
+  phase note itself). Chosen from the verb's result, not from a fixed
   table.
 - **rejected_alternatives**: 1-2 plausible next steps that were
   considered, each with a one-line why-not.
@@ -62,8 +64,10 @@ derived from the verb's actual result and the current workflow state:
 - **next_command**: the exact next step, matching `selected_next` — for
   a verb, the `/engineer:<verb> …` (Claude) or `$engineer:<verb>` (Codex)
   mention; for `commit`, committing the verified change (the
-  `/engineer:start` lifecycle reaches this at Phase 7; otherwise a
-  direct user-approved commit); for `owner decision`, surfacing the
+  `/engineer:start` lifecycle reaches this at Phase 7; a verb-chain
+  workflow through `/engineer:commit` / `$engineer:commit`); for `done`,
+  `/engineer:commit` as well, which closes the workflow without a commit
+  when there is nothing to commit; for `owner decision`, surfacing the
   decision to the owner rather than a command to run.
 
 The default verb sequence (Routing Recommendation table above) remains
@@ -82,16 +86,38 @@ form (selected_next + one-line rationale + next_command); the fuller
 proposal (alternatives + evidence + confidence) belongs in the
 completion output and the phase note.
 
+**Closed-enum projection: `next_step` (ADR-0063 D6, amending ADR-0029
+§3).** A forward-decision verb (investigate, frame, decide, compose,
+critique, refine) also records `selected_next` and `confidence` as three
+flat keys on its last write, `state.mjs finish-verb`. `next_action` stays
+the free-text form for humans and is unchanged; machine consumers (the
+autopilot driver, entry-brief rows) read only the closed-enum keys and
+never parse `next_action`.
+
+| `selected_next` | `next_step_kind` | `next_step_verb` |
+|---|---|---|
+| a verb | `verb` | that verb |
+| `commit` | `commit` | absent |
+| `owner decision` | `owner-decision` | absent |
+| done — the deliverable is complete and needs no commit | `done` | absent |
+
+`next_step_confidence` is the proposal's confidence. `done` is new with
+ADR-0063: `/engineer:commit` then closes the workflow without a commit
+when there is nothing to commit. Each verb's Phase 0 clears the three keys,
+so a verb that stops before its last write leaves no next step behind.
+
 **Code-backed floor vs prose-only fields (honest limits).** Of the six
 fields, only the compact core survives into durable state (the
 `next_action` string) and is therefore **code-emitted** at terminal
 completions — the runtime footer renders it as `recommended next work`,
 alongside the pointer-shaped evidence it also code-emits (the workflow
-path artifact and the `workflow checkpoint` line). `rejected_alternatives`,
-`confidence`, and the full `rationale` have **no durable home** (ADR-0029
-§3 freezes the `next_action` schema) and thus **zero active triggers**
-(the ADR-0031 lesson): they render only because the completing surface
-follows this contract, and are pinned by shape tests, not by execution.
+path artifact and the `workflow checkpoint` line). `rejected_alternatives`
+and the full `rationale` have **no durable home** (ADR-0029 §3 freezes
+the `next_action` schema) and thus **zero active triggers** (the ADR-0031
+lesson): they render only because the completing surface follows this
+contract, and are pinned by shape tests, not by execution. `confidence`
+had none either until ADR-0063 D6: it now persists as
+`next_step_confidence` beside `selected_next`'s closed-enum form (above).
 The canonical six-field template, the completion-flag minimum-content
 criteria, and the footer's generic-fallback visibility rules live in the
 runtime plugin's `docs/completion-output-contract.md`; every persona

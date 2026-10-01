@@ -46,6 +46,13 @@ if [ "$FIND_RC" -ne 0 ]; then
   echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
+# ADR-0063 D4 — prints nothing in interactive mode. Under an autopilot run it
+# prints the rules this command then follows
+# (core/skills/_shared/references/autopilot-mode.md), and refuses when an owner
+# gate is set on the workflow; interactively it prints a pending gate for the
+# user. It runs before any write, so a refusal leaves the workflow as it was.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" autopilot-preflight \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" || exit $?
 ```
 
 - Empty → bootstrap with verb=critique:
@@ -91,7 +98,8 @@ fi
     --phase-label "Phase 0: Resume into critique" \
     --phase-note "Resumed from prior verb. Profile=<...>." \
     --current-phase phase-0-resume \
-    --next-action "Run critique skill" --event resumed
+    --clear-next-step true \
+    --next-action "Run critique skill" --event resumed || exit $?
   ```
 
 ---
@@ -118,6 +126,11 @@ Build the prompt per the matching ensemble-protocol section:
   § Review
 - `full-codebase` → § Adversarial-scan (with the sub-focus narrowing)
 
+Run this block **as a host background task** — on Claude, the Bash tool's
+`run_in_background` — never with a trailing `&`: the host then tracks the
+task and notifies you when the runner exits (ADR-0063 D5; a shell `&` would
+detach the runner where neither you nor an autopilot host can wait for it).
+
 ```bash
 CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
@@ -133,7 +146,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --workflow-path "$ACTIVE" --phase critique \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   --ensemble-type "${ENSEMBLE_TYPE:-review}" --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"
 ```
 
 Local agents (orchestrator side): default profile spawns review-style
@@ -170,12 +183,12 @@ NOTE="### Ensemble launched: critique (profile=<...>) at <iso-utc>
 
 (per core/skills/_shared/references/entry-routing-contract.md
  § Active Next-Action Proposal — derived from these findings, not a fixed table)
-- selected_next:         <verb | commit | owner decision>
+- selected_next:         <verb | commit | owner decision | done>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
 - evidence_pointers:     <phase notes / files / artifacts — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /engineer:<verb> … or \$engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+- next_command:          <exact next step: /engineer:<verb> … or \$engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>
 "
 
 # ADR-0029 §1 — set --next-action (both writes below) to the compact form
@@ -189,19 +202,25 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
   --next-action "Refine to address findings" \
-  --event updated
+  --event updated || exit $?
 
 # ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase critique --ensemble-type "${ENSEMBLE_TYPE:-review}" --run-id "$RUN_ID" \
   --verdict "$VERDICT" --summary "$SUMMARY" \
-  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit $?
 
-# ADR-0017 §sub-decision 5 — atomic terminal write. Bumps current_phase
-# into the auto-archive whitelist + sets terminal_marker=true so the
-# Stop hook can archive (the HEAD-moved gate still enforces real
-# progress before the archive triggers).
+# ADR-0063 D3 — the verb's last write, `finish-verb`. Interactive: the
+# ADR-0017 §sub-decision 5 atomic terminal write — current_phase
+# summary-complete (in the auto-archive whitelist) + terminal_marker=true, so
+# the Stop hook can archive once HEAD has moved — plus the next step. Under an
+# autopilot run: the next step only; the terminal marker is left for
+# /engineer:commit. The --next-step-* flags are the closed-enum form of the
+# proposal's selected_next and confidence
+# (core/skills/_shared/references/autopilot-mode.md § next_step): kind
+# verb|commit|owner-decision|done, and --next-step-verb only with kind verb.
+# The values shown are the typical case; set them from the proposal above.
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # archive gates are evaluated at the end of THIS turn, not at session close;
 # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
@@ -211,13 +230,40 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
 # core/skills/_shared/references/session-handoff.md § Archive timing.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --terminal-phase summary-complete \
-  --terminal-marker true \
   --next-action "Refine to address findings" \
-  --event updated
+  --next-step-kind verb --next-step-verb refine \
+  --next-step-confidence "<HIGH|MEDIUM|LOW>"
 ```
+
+---
+
+## Autopilot mode (ADR-0063, Claude only)
+
+When Phase 0's preflight printed the autopilot banner, this command follows
+`${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/autopilot-mode.md`
+(the preflight prints nothing interactively, and none of this applies then):
+
+- **Ceremony gates auto-pass.** No presentation-mode prompt (present in
+  batch); proceed with the recommended option instead of asking
+  "Recommended: X. Proceed?".
+- **Refine carries CRITICAL and MAJOR findings only** — the default rule; the
+  MINOR / SUGGESTION pick the user makes interactively is skipped.
+- **The last write is Phase 2's `finish-verb`**, which records the next step
+  and leaves the terminal marker unset: under autopilot only
+  `/engineer:commit` closes a workflow, and `set-terminal --terminal-marker
+  true` is refused.
+- **Owner judgments.** Stop with the gate that names the judgment and do not
+  decide it yourself: `scope-routing` when the request does not belong in this
+  verb or workflow (recorded in either mode), `pr-handling` when the task
+  itself needs a push, a pull request or another outward action (autopilot
+  only; interactively the user acts). Record the gate with Phase 2's
+  `finish-verb --next-step-kind owner-decision --owner-gate <gate>
+  --owner-gate-anchor <anchor>` after a phase note under the heading the gate
+  table names (`autopilot-mode.md` § Owner gates).
+- **Peers.** Collect the ensemble as `ensemble-protocol.md` § Step 2 says:
+  wait for the background notification; never sleep-poll.
 
 ---
 
@@ -257,17 +303,18 @@ verb, per `core/skills/_shared/references/entry-routing-contract.md`
 (runtime completion-output contract):
 
 ```
-- selected_next:         <verb | commit | owner decision>
+- selected_next:         <verb | commit | owner decision | done>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
 - evidence_pointers:     <phase notes / files / artifacts — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>
 ```
 
 Typical `selected_next` candidates for critique:
 `/engineer:refine` to address selected findings (typically CRITICAL +
-MAJOR; the user picks which MINOR / SUGGESTION items to include) — or
+MAJOR; the user picks which MINOR / SUGGESTION items to include — under
+autopilot, CRITICAL + MAJOR only, with no pick) — or
 `commit` when no significant findings surfaced and the artifact is in good
 shape. The routing table is the fallback only when evidence is genuinely
 neutral — do not end with a hardcoded "next: X". When `selected_next` is
@@ -277,7 +324,8 @@ neutral — do not end with a hardcoded "next: X". When `selected_next` is
 Always include the workflow path.
 
 The runtime completion footer is **code-emitted** on this verb's terminal path
-(ADR-0039): `state.mjs set-terminal` fires the ADR-0031 session-handoff sidecar,
+(ADR-0039): the terminal write `state.mjs finish-verb` makes in interactive
+mode fires the ADR-0031 session-handoff sidecar,
 which shells out to the runtime `footer.mjs` and prints the rendered footer —
 context state, completion state + state-derived next action, workflow id/path,
 artifact pointers, recommended next work, and the continue-vs-fresh
@@ -286,4 +334,6 @@ footer here; surface the one the terminal command already emitted. The footer is
 advisory + pointer-only and fail-closed (a missing/too-old runtime emits
 nothing, and the SessionStart backstop still re-surfaces the handoff); it never
 mutates host session context. On detached HEAD the sidecar reports "no active
-branch context" and does not auto-recommend a fresh session.
+branch context" and does not auto-recommend a fresh session. Under an
+autopilot run `finish-verb` makes no terminal write, so no footer is printed:
+the driver is the handoff.

@@ -425,6 +425,12 @@ ownership)**:
 user says "just do it" or "your call", present only the
 recommendation and confirm before proceeding.
 
+**Autopilot mode (Claude only, ADR-0063 D4 / R4):** there is no one to
+choose, so do not wait. Without a CONFLICT the recommendation is the
+direction: record it as the next step with the synthesis's confidence (the
+driver continues only on HIGH and halts otherwise). A CONFLICT stops at the
+`decide-conflict` owner gate (the command's Phase 2 owner-decision variant).
+
 ### Edge cases
 
 - **Only one viable option**: still follow the protocol. Present the
@@ -525,6 +531,12 @@ Synthesize per `../_shared/references/ensemble-protocol.md`:
 **Wait for user to choose a direction** — do not proceed without
 explicit approval.
 
+**Autopilot mode (Claude only, ADR-0063 D4 / R4):** there is no one to
+choose, so do not wait. Without a CONFLICT the recommendation is the
+direction: record it as the next step with the synthesis's confidence (the
+driver continues only on HIGH and halts otherwise). A CONFLICT stops at the
+`decide-conflict` owner gate (the command's Phase 2 owner-decision variant).
+
 ### State write (when invoked from a workflow command)
 
 When `/engineer:decide` is invoked as a sub-step of a workflow
@@ -533,6 +545,14 @@ command, the invoking command writes the decision (`chosen`,
 `continuity-protocol.md` Phase-boundary Write Rules (Deliverable D).
 
 When invoked standalone, no workflow file write occurs.
+
+The invoking command's last write, `state.mjs finish-verb`, also records
+the closed-enum form of this skill's Active Next-Action Proposal —
+`next_step_kind`, `next_step_verb` and `next_step_confidence` (ADR-0063 D6;
+`../_shared/references/entry-routing-contract.md` § Active Next-Action
+Proposal). The fields are host-shared. Autopilot mode, which changes the
+ceremonies and leaves the terminal marker unset, is Claude-only (ADR-0063);
+ignore it on Codex.
 
 ---
 
@@ -569,7 +589,8 @@ reasoning without dispatching a peer.
 
 The completion footer — including the ADR-0031 continue-vs-fresh
 session-handoff — is **code-emitted** on this verb's terminal path (ADR-0039):
-`state.mjs set-terminal` fires the session-handoff sidecar, which renders the
+the terminal write `state.mjs finish-verb` makes (set-terminal
+`summary-complete`) fires the session-handoff sidecar, which renders the
 runtime `footer.mjs` on the terminal command's stderr. Do not hand-compose the
 footer or hand-pass the projection here; surface the emitted one. On detached
 HEAD the sidecar reports "no active branch context" and does not auto-recommend

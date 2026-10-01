@@ -13,8 +13,8 @@
 //     non-fatal: every error path returns `{archived: false, reason: ...}`
 //     instead of throwing past the caller.
 //
-// The four hard gates (terminal_marker, terminal phase whitelist,
-// HEAD-moved, no active children) are AND-combined. The conventional
+// The five hard gates (terminal_marker, terminal phase whitelist,
+// HEAD-moved, no active children, no pending owner gate) are AND-combined. The conventional
 // commit subject is a soft gate — failing it produces a stderr warning
 // but does NOT block the archive (ADR-0017 §sub-5: "still allow archive
 // but emit a warning to stderr").
@@ -37,7 +37,7 @@ import { CONVENTIONAL_COMMIT_RE } from './validate-commit.mjs';
 import { readFile } from 'node:fs/promises';
 
 /**
- * Evaluate the four hard gates + the conventional-commit warning gate.
+ * Evaluate the five hard gates + the conventional-commit warning gate.
  * Pure: takes everything as input, returns a verdict object.
  *
  * @param {object}  args
@@ -80,6 +80,13 @@ export function evaluateStopArchive({ frontmatter, headSha, headSubject }) {
   // Gate 4 — no active children (omcc-dev A4 transitive).
   if (!noActiveChildrenCheck(frontmatter)) {
     gateFailures.push('no_active_children');
+  }
+
+  // Gate 5 (ADR-0063 D6) — no owner gate pending. A workflow waiting on its
+  // owner is not done, whatever its marker says; archiving it would bury the
+  // gate where no resolving surface looks.
+  if (frontmatter?.awaiting_owner_gate !== undefined) {
+    gateFailures.push('awaiting_owner');
   }
 
   // Soft gate — Conventional commit subject. Always evaluated, never
@@ -203,6 +210,9 @@ export async function runStopArchive({
  * after the merge either way.
  */
 async function noteTerminalOnParent({ frontmatter, commit, host, repoRoot, stderr }) {
+  // ADR-0063 — a no-changes close made no commit: HEAD is not its commit, and
+  // /orchestrator:done --no-commit records it instead.
+  if (frontmatter.current_phase === 'close-complete') return;
   if (typeof frontmatter.parent_workflow !== 'string'
       || typeof frontmatter.originating_subtask !== 'string'
       || typeof frontmatter.workflow_id !== 'string'
@@ -257,13 +267,14 @@ async function noteTerminalOnParent({ frontmatter, commit, host, repoRoot, stder
  *
  * Criterion, per `branchRefState` of the workflow's baseline branch:
  *   - every case requires `terminal_marker === true` AND `current_phase` ∈
- *     TERMINAL_PHASES — the work is done (set-terminal ran);
+ *     TERMINAL_PHASES — the work is done (set-terminal ran) — and no owner
+ *     gate pending (ADR-0063 D6);
  *   - the checked-out branch is skipped: the per-branch path owns it, and
  *     snapshots it and fires the handoff backstop first. When git cannot say
  *     which branch is checked out (`checkedOutBranch` → `'unknown'`), every
  *     kept branch is left alone, since any of them could be that one; a
  *     confirmed detached HEAD owns no branch;
- *   - `'present'` (kept, not checked out): the four Stop gates are evaluated
+ *   - `'present'` (kept, not checked out): the Stop gates are evaluated
  *     against that branch's own tip (`branchTip`), as a Stop on that branch
  *     would, and the parent note carries that tip. HEAD belongs to another
  *     branch and is never used. Because nobody is on the branch to see it, the
@@ -309,6 +320,9 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     }
     if (!terminalMarkerCheck(frontmatter)) continue;
     if (!terminalPhaseCheck(frontmatter?.current_phase)) continue;
+    // ADR-0063 D6 — gate 5 holds on every path: a workflow waiting on its
+    // owner is not archived, not even once its branch is gone.
+    if (frontmatter?.awaiting_owner_gate !== undefined) continue;
     const branch = frontmatter?.git_baseline?.branch;
     if (typeof branch !== 'string' || branch.length === 0) continue;
     if (checkout.state === 'branch' && branch === checkout.branch) continue; // the per-branch path owns it

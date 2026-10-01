@@ -27,6 +27,12 @@ the user has confirmed is speculation; code with a plan can be
 verified task-by-task. When the user wants both, run plan first,
 get approval, then run code.
 
+**Autopilot mode (Claude only, ADR-0063 D4):** the approval is the
+driver's. A `plan` step ends by recording the next step `compose` at the
+plan's confidence, and the driver runs the `code` step only on HIGH; the
+macro plan the owner approved is the scope. Never commit: record
+`commit` as the next step when the code is ready.
+
 ---
 
 ## When auto-activated (without command)
@@ -104,7 +110,10 @@ For `plan`: present the full task list as a single decision item
 (the plan), with a recommendation on first task to start.
 
 For `code`: present the diff per task as you go; ask for confirmation
-before moving to the next task when the diff is non-trivial.
+before moving to the next task when the diff is non-trivial. Under
+autopilot (Claude only) there is no per-task confirmation: implement the
+plan's tasks in order, and a task that invalidates the decision stops the
+step with the next step `owner-decision`.
 
 ---
 
@@ -153,6 +162,14 @@ implementation progress to its workflow file per
 `continuity-protocol.md` Phase-boundary Write Rules (Deliverable D).
 
 When invoked standalone, no workflow file write occurs.
+
+The invoking command's last write, `state.mjs finish-verb`, also records
+the closed-enum form of this skill's Active Next-Action Proposal —
+`next_step_kind`, `next_step_verb` and `next_step_confidence` (ADR-0063 D6;
+`../_shared/references/entry-routing-contract.md` § Active Next-Action
+Proposal). The fields are host-shared. Autopilot mode, which changes the
+ceremonies and leaves the terminal marker unset, is Claude-only (ADR-0063);
+ignore it on Codex.
 
 ### Layer 2 commit-manifest recording (`code` profile only, command-mode only — ADR-0028 §Layer-2)
 
@@ -215,7 +232,8 @@ proposal shape and routing reasoning without dispatching a peer.
 
 The completion footer — including the ADR-0031 continue-vs-fresh
 session-handoff — is **code-emitted** on this verb's terminal path (ADR-0039):
-`state.mjs set-terminal` fires the session-handoff sidecar, which renders the
+the terminal write `state.mjs finish-verb` makes (set-terminal
+`summary-complete`) fires the session-handoff sidecar, which renders the
 runtime `footer.mjs` on the terminal command's stderr. Do not hand-compose the
 footer or hand-pass the projection here; surface the emitted one. On detached
 HEAD the sidecar reports "no active branch context" and does not auto-recommend

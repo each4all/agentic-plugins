@@ -339,8 +339,15 @@ const BLOCKED_GATE_NEXT_ACTIONS = {
   // (evaluateStopArchive treats a null probe as "HEAD did not move").
   head_moved: 'Commit the completed work so HEAD moves past the workflow baseline (the Stop-hook archive gate requires a real commit; a failed git probe also reports this gate).',
   no_active_children: 'Settle or archive the active child workflows dispatched from this workflow before archiving it.',
-  terminal_phase: 'Advance current_phase to an archive-whitelisted terminal phase (commit-complete, summary-complete, or fix-complete).',
+  awaiting_owner: 'Resolve the pending owner gate (awaiting_owner_gate) through its resolving surface; a workflow waiting on its owner is not archived.',
+  terminal_phase: 'Advance current_phase to an archive-whitelisted terminal phase (commit-complete, summary-complete, fix-complete, or close-complete).',
 };
+
+// ADR-0063 — a no-changes close makes no commit, so HEAD is not meant to
+// move: a `close-complete` workflow still active only lacks its archive, which
+// the close writes itself. Advising a commit there would be wrong.
+const CLOSE_INCOMPLETE_ACTION =
+  'Finish the no-changes close: run /engineer:commit ($engineer:commit on Codex) again; it archives the workflow itself, since a close makes no commit and HEAD is not meant to move.';
 
 export function mapCompletionFlags(projection, gateFailures = []) {
   const gate = projection.archive_gate;
@@ -354,7 +361,9 @@ export function mapCompletionFlags(projection, gateFailures = []) {
   const flags = { state, reason, recommendedNextWork: projection.next_action };
   if (gate === 'blocked') {
     const actions = blockedGates
-      .map((g) => BLOCKED_GATE_NEXT_ACTIONS[g])
+      .map((g) => (g === 'head_moved' && projection.phase === 'close-complete'
+        ? CLOSE_INCOMPLETE_ACTION
+        : BLOCKED_GATE_NEXT_ACTIONS[g]))
       .filter(Boolean);
     // Always pass an explicit unblocking action on blocked terminals — an
     // unknown/future gate token falls back to a sidecar-authored generic
