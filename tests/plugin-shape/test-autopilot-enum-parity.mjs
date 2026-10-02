@@ -89,3 +89,35 @@ describe('owner gates are split between engineer and macro', () => {
     for (const gate of [...engineer, ...macro]) ok(d4.includes(gate), `${gate} is a D4 gate`);
   });
 });
+
+// The autopilot driver (ADR-0063 S8) lives in orchestrator and reads the
+// engineer workflow's closed enums, so it carries copies of them
+// (plugins/orchestrator/adapters/claude/autopilot/policy.mjs). A copy that
+// drifts from engineer's would read a valid next step as outside the enum and
+// halt every run — or accept a value engineer never writes.
+describe('the autopilot driver reads the engineer enums it was given', () => {
+  const policyPath = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot/policy.mjs');
+
+  it('verbs, next-step kinds, confidences, engineer gates and terminal phases match engineer', async () => {
+    const policy = await import(policyPath);
+    const verbs = sources.engineer.match(/^const VALID_VERBS = new Set\(\[([\s\S]*?)\]\);$/m);
+    ok(verbs, 'engineer state.mjs declares VALID_VERBS');
+    const engineerVerbs = [...verbs[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]);
+    deepStrictEqual([...policy.VERBS], engineerVerbs);
+    deepStrictEqual([...policy.NEXT_STEP_KINDS], [...modules.engineer.VALID_NEXT_STEP_KINDS]);
+    deepStrictEqual([...policy.CONFIDENCES], [...modules.engineer.VALID_CONFIDENCE]);
+    deepStrictEqual([...policy.ENGINEER_OWNER_GATES], [...modules.engineer.VALID_ENGINEER_OWNER_GATES]);
+    deepStrictEqual([...policy.ENGINEER_TERMINAL_PHASES], [...modules.engineer.TERMINAL_PHASES]);
+    deepStrictEqual([...policy.MACRO_OWNER_GATES], [...modules.orchestrator.VALID_MACRO_OWNER_GATES]);
+  });
+
+  it('its halt reasons are ADR-0063 D4\'s closed set', async () => {
+    const policy = await import(policyPath);
+    const adr = await readFile(resolve(REPO_ROOT, 'docs/adr/0063-autopilot-fresh-session-driver.md'), 'utf8');
+    const start = adr.indexOf('**Halt** reason codes (closed set):');
+    ok(start >= 0, 'ADR-0063 D4 states the halt reasons');
+    const table = adr.slice(start, adr.indexOf('\n\n**', start + 10));
+    const d4 = [...table.matchAll(/^\| `([a-z-]+)(?::<gate>)?` \|/gm)].map((m) => m[1]);
+    deepStrictEqual([...policy.HALT_REASONS].sort(), d4.sort());
+  });
+});

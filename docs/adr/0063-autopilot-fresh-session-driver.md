@@ -1169,6 +1169,215 @@ follow live in one file, `plugins/engineer/core/skills/_shared/references/autopi
   `scripts/mutation-specs/engineer-autopilot-verbs.mjs` shows each check fails
   on the defect it guards.
 
+## Implementation note 2026-10-01 — S8 (the driver and `/orchestrator:autopilot`)
+
+S8 ports the handoff prototype into `plugins/orchestrator/adapters/claude/autopilot/`
+and replaces its four shims with the state the earlier slices added. The
+driver is one loop — observe, decide, act, verify — over seven modules:
+`observe.mjs` assembles the view through the owning plugins' CLIs and git,
+`policy.mjs` decides from it (pure), `worker.mjs` hosts each step, `ledger.mjs`
+keeps the run's record and locks, `roots.mjs` resolves and checks the plugin
+roots, `driver.mjs` runs the loop, and `cli.mjs` is the entry of
+`commands/autopilot.md` and of the optional launcher.
+
+- **The shims are gone.**
+  - SHIM-1: the next step and owner gates are read from the engineer workflow
+    (`next_step_*`, `awaiting_owner_*`) and the macro. The worker's structured
+    report stays as a cross-check (owner decision D11, 2026-10-01): it names the
+    engineer workflow it echoes, and a report that disagrees with the state halts
+    `owner-choice`. It never allows a step.
+  - SHIM-2: `plan_approval_*` through `next-ready`'s `approval`.
+  - SHIM-3: the plugin-root hint is removed. S0 is released, and the capability
+    floor below requires releases that carry it; the appended system prompt keeps
+    only the step rules.
+  - SHIM-4: `/engineer:commit`.
+- **Owner decisions taken for S8 (2026-10-01).**
+  - D5: the model plan is asked before each start — `owner-default`, `mixed`
+    (judgment verbs on the owner's default, compose and refine on sonnet/medium,
+    the mechanical steps on sonnet/low) or `sonnet`. `/orchestrator:autopilot
+    start` asks; a terminal start asks on its TTY; anything else must pass
+    `--models` (or `--model`/`--effort`).
+  - D10: budgets stay finite, as D1 requires, but out of the way: 60 steps, $250
+    a run, $25 and 60 minutes a step, 24 hours a run. The run's caps bound each
+    step too (a step may spend only what is left, and run only until the run's
+    deadline), a killed worker that reported no cost is charged its whole step
+    budget, and a time bound under 60 seconds is refused rather than raised.
+    The state is read before the budgets, so completion on the last step the cap
+    allowed is completion.
+  - D11: the report is kept as a cross-check (above).
+  - D13: the launcher ships (`launcher.template.mjs`); `preview` prints the
+    command that installs it, and nothing installs it for the owner.
+- **The step table** (D3) is the closed set the policy renders from; only
+  identifiers checked against a closed alphabet enter a prompt:
+  `/orchestrator:next <id> --workflow=<macro>`, `/engineer:<verb>`,
+  `/engineer:commit`, `/orchestrator:done <id> --workflow=<macro>`,
+  `/orchestrator:done <id> --no-commit --workflow=<macro> <fixed reason>` and
+  `/orchestrator:finalize --workflow=<macro>`. The macro is pinned on the first
+  look, so a later step finds it whatever branch is checked out.
+- **D3a, landing.** A subtask whose engineer workflow is archived terminal is
+  checked with `git fetch origin <integration>` and `state.mjs resolve-landing`:
+  merged → `/orchestrator:done`; `no_pr` or `not_merged` → it waits; any other
+  answer → `owner-choice`. `close-complete` → `/orchestrator:done --no-commit`.
+  When nothing else is dispatchable and a subtask waits, the run halts
+  `awaiting-landing` with each branch's push and pull-request commands (none
+  for a branch outside `[A-Za-z0-9._/-]`). Several subtasks may be in progress
+  at once; the prototype's "more than one in progress halts" rule is gone.
+  Success is the archived macro — and only for the plan the owner approved:
+  an archived macro whose plan changed during the last step halts
+  `plan-unapproved`. `gh` is found through PATH, the seam the tests use.
+- **Rules the review added (Codex Plan-verify, round 1).**
+  - Every live engineer workflow that claims the macro must be the active child
+    of an in-progress subtask; a dispatch interrupted before it recorded the
+    subtask in progress halts instead of dispatching beside it.
+  - An archived child is held to the same linkage as an active one (parent,
+    subtask, branch, id): a plan revision that moves an in-progress subtask to
+    another branch keeps its old engineer id.
+  - A live workflow in `phase-7-commit` (an interrupted commit) or in a terminal
+    commit phase routes to `/engineer:commit`, never to its stale next step; an
+    `/engineer:start` workflow, a detached child and a pending peer ensemble halt.
+  - `--next` replaces only the judgment halts of the active engineer child
+    (low confidence, an owner decision, no next step) and goes through its
+    step's prerequisites. Its grammar is `/engineer:<verb>`,
+    `/engineer:commit` and `/orchestrator:next [<subtask>]`:
+    `/orchestrator:done` and `/orchestrator:finalize` run exactly when their
+    prerequisites hold, so forcing one could only skip a prerequisite (round 2
+    reproduced a forced `--no-commit` completing unlanded work).
+  - Each step has a postcondition beyond "something changed": a dispatch leaves
+    the subtask in progress with an active child; a commit archives, commits or
+    sets a gate; a done completes the subtask; a finalize archives the macro.
+    A commit recovery the Stop hook keeps refusing therefore halts once instead
+    of repeating.
+- **The worker's loaded plugins are checked at init.** The `system/init` event
+  lists the plugins the worker loaded, with their paths and versions. Measured
+  on the owner's machine (2.1.286): on a directory marketplace they are the
+  marketplace checkout, so commands, skills and hooks come from that checkout's
+  branch while the runbooks' scripts come from the pinned roots. The step is
+  aborted before its first turn when a loaded orchestrator, engineer or runtime
+  lies inside the repository the run drives (`owner-choice`: drive a separate
+  worktree), or differs from the pinned version, or from what earlier steps
+  loaded (`version-drift`). Roots inside the repository are refused at start for
+  the same reason.
+- **Pushes are blocked at the git level too.** Measured on 2.1.286: Claude
+  Code's Bash rules match a command's leading words, so `git -C <dir> push`
+  passes `Bash(git push:*)`, with or without a wildcard rule. Each worker's
+  environment therefore carries `GIT_CONFIG_*` entries that rewrite a push to any
+  https, http, ssh or git URL, and to each remote's own URL, to a scheme no
+  remote helper serves (`pushInsteadOf`; `insteadOf` for an explicit pushurl,
+  which git exempts from `pushInsteadOf`). Every push form fails at once; local
+  pushes and fetches are untouched. `git@` covers the scp-style form of
+  common hosts. A remote whose explicit pushurl equals a fetch URL cannot be
+  covered without breaking the fetch, so the driver refuses to start on such a
+  repository and says how to remove the redundant pushurl. Left open: an
+  scp-style URL with another user that is no remote's URL.
+- **The environment.** Beyond D5's list, the worker loses the launching
+  session's `CLAUDE_CODE_SESSION_*`, `CLAUDE_BG_*` and `CLAUDE_RELAUNCH_*`
+  variables (a background session's permission rules travel there), and the
+  dispatch contract variables an outer session may have exported
+  (`AGENTIC_PARENT_WORKFLOW`, `AGENTIC_ORIGINATING_SUBTASK`, `AGENTIC_PROFILE`,
+  `AGENTIC_TOPIC`, `AGENTIC_HOST`, `CLAUDE_PLUGIN_ROOT`).
+- **What a killed step leaves.** A peer runs detached from the worker's process
+  group, so after a step that was aborted or failed, the driver cancels the peer
+  runs that step left pending — on any engineer workflow of the macro, so a
+  dispatch killed before it recorded its subtask in progress is covered —
+  through engineer's own `peer-runner cancel`, which verifies the process
+  fingerprint. A step that ended normally with a peer still pending halts for the
+  owner instead.
+- **Starting and stopping a worker.** Everything that can fail is set up before
+  the worker is spawned, and the worker is recorded in the run's locks before it
+  receives its prompt: a driver that dies in between leaves a worker with nothing
+  to do, which exits when its stdin closes. An abort sends SIGTERM to the
+  worker's process group, and SIGKILL five seconds later to a worker that has
+  not exited. Once the worker has exited, output a descendant still holds is
+  abandoned after three seconds rather than waited on.
+- **Nothing a step started outlives it in its process group.** A step is over
+  only once its worker's process group is empty. After every step, aborted or
+  not, the group is sent SIGTERM (unless an abort already sent it) and is
+  polled; five seconds after the signal, what is left gets SIGKILL. The driver
+  releases its locks and exits only after that. Round 3 reproduced a driver that
+  exited before an unreferenced SIGKILL timer fired, leaving a member that
+  ignores SIGTERM running with no lock to show it. The ledger records
+  `group_teardown` for each step: `empty`, `terminated`, `killed`, or
+  `lingering` when a process outlives SIGKILL. A `lingering` step halts
+  `worker-failed` whatever else it did, and the run keeps its lock entries,
+  which name the worker's process group. Such an entry stays live while the
+  group has members, so no run starts beside them; round 4 reproduced a run
+  that went on to its next step. A process group under that id whose leader
+  is provably another process does not count. POSIX reuses neither a pid nor
+  a process group id while a group of that id exists, so a reused worker pid
+  means the worker's group had ended. Round 5 reproduced a dead run's lock
+  held by such an unrelated group. Only a different start time proves a
+  reused pid. On macOS the fingerprint also holds the command line, which a
+  wrapper that execs `claude` in place changes without becoming another
+  process; round 6 reproduced a live worker's lock taken that way.
+- **Locks.** There are two:
+  - one per macro under the main worktree (D8);
+  - one per worktree, because two runs of different macros must not switch one
+    checkout's branch.
+
+  A lock is a directory. Each run that wants it adds an entry of its own,
+  `h-<pid>-<random>.json`, written whole. An entry records the driver and,
+  while a step runs, its worker. It is stale only when both are gone, and a
+  fingerprint that cannot be read counts as live. A run holds the lock when,
+  after adding its entry, it finds no other live entry. Otherwise it removes
+  its own entry and retries after a random pause. It is refused when another
+  run already holds the lock, or on its last attempt.
+
+  Only entries whose runs are gone are removed, and no participant reuses
+  another's name, so no run removes a live participant's entry. "Gone" holds
+  only for the record it was judged on. An entry is read, then its processes
+  are checked, so a gone entry is read once more after the check. Only an
+  unchanged one is removed: only its owner writes it, and the check found that
+  owner dead. Round 4 reproduced the failure this prevents. An owner recorded
+  its worker and died between another run's read and its check, and that run
+  removed the entry and started beside the worker. Two runs
+  cannot both hold the lock: whichever added its entry second sees the first
+  one's. This replaces the takeover protocol of rounds 1 and 2. Rounds 2 and 3
+  each reproduced two holders in it: a paused contender lost an age-expired
+  takeover, and then three contenders reclaimed one dead owner's takeover at
+  the same time.
+
+  The run takes its locks after its first look at the state. It looks again
+  once it holds them and decides its first step from that second look.
+  Round 6 reproduced the race this closes: a run that finished in between
+  left a halt, and the new run stepped past it.
+- **`stop`** signals only a pid it can prove is the run's process: alive, with
+  a readable fingerprint that matches the lock's record. Liveness alone, which
+  errs toward "held" for the lock, is not enough to signal. The pid it signals
+  is one of:
+  - the driver, which then empties its worker's group and records the halt;
+  - when the driver died, the worker's process group, which `stop` empties
+    itself the same way. It reports success only once the group is empty.
+- **The ledger** writes a step's `started` record before the worker is spawned
+  and its `finished` record after; `status` pairs them and names a driver that
+  died mid-step.
+- **Entry-brief.** Entry-brief 1.0 has no next-step rows (S7 has not shipped), so
+  the driver composes the view itself (D8 = a) and uses the brief as a guard:
+  `indeterminate`, `no-branch-context`, two live workflows competing on the
+  branch, or a lead outside the step table halt `owner-choice`. The entry-capture
+  lead and a leaderless `owner-choice-required` are normal between steps.
+- **Not in S8:** the V1 harness (`e2e-macro.sh` still drives the prototype's
+  interface), S7's entry-brief rows, worktree lanes, a dashboard row, and
+  cross-run retention of the autopilot ledger (each raw worker stream is capped
+  at 64 MiB).
+- **Known limits.**
+  - The denylist and the git-level block are guardrails, not a sandbox: a
+    worker with `Bash` can reach the network another way (`curl` stays allowed,
+    owner decision D17), and `gh` subcommands with global flags first pass the
+    `Bash(gh pr:*)`-style rules.
+  - The ADR-0059 args-file library's header still names four packages; the
+    orchestrator copy is byte-identical, and the header is corrected in all five
+    copies by a later change (one that touches those packages anyway).
+- Tests: `tests/orchestrator/test-autopilot-policy.mjs` (every step and reason),
+  `-worker.mjs` (a fake `claude`), `-ledger.mjs`, `-observe.mjs` (real state, a
+  bare origin, a fake `gh`), `-driver.mjs` (the loop end to end with a scripted
+  worker that runs `phase7-commit --mode autopilot` and the real Stop hooks,
+  including the landing round trip), `-cli.mjs` (the runbook blocks in bash and
+  zsh, the launcher); `tests/plugin-shape/test-orchestrator-plugin.mjs` (Claude
+  only, no Codex skill) and `test-autopilot-enum-parity.mjs` (the driver's copies
+  of the engineer enums and the D4 reason set).
+  `scripts/mutation-specs/orchestrator-autopilot-driver.mjs` shows each check
+  fails on the defect it guards.
+
 ## References
 
 - ADR-0001 (honest scope)

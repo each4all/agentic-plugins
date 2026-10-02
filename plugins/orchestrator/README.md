@@ -4,7 +4,7 @@ Cross-host macro orchestration capability for Claude Code and Codex CLI. **L2 ca
 
 ## Status
 
-Ships `/orchestrator:plan` (macro plan + Plan-verify opposite-host peer ensemble through the ADR-0023 peer-runner supervisor), `/orchestrator:next` (same-host dispatch into engineer), `/orchestrator:done` (records a subtask completed once its pull request has merged, with the merge commit — [ADR-0062](../../docs/adr/0062-subtask-completion-recorded-at-landing.md)), `/orchestrator:finalize` + `/orchestrator:abort` (macro completion lifecycle), `/orchestrator:approve` (the owner's approval of a macro plan, bound to the plan's hash — [ADR-0063](../../docs/adr/0063-autopilot-fresh-session-driver.md) D6), meta commands `/orchestrator:resume` / `/orchestrator:checkpoint` / `/orchestrator:peer-now`, `/orchestrator:audit` as a follow-up planning alias, and macro auto-archive A1–A4 on the host Stop event (branch-agnostic per ADR-0019 §5). Schema `'1.2'` (ADR-0063 D6; `'1.1'` files are read and written at `'1.1'`). The cross-plugin invocation contract is [ADR-0019](../../docs/adr/0019-cross-plugin-invocation-contract.md). The cross-host `--peer` dispatch path for `/orchestrator:next` remains trigger-deferred PR-F scope.
+Ships `/orchestrator:plan` (macro plan + Plan-verify opposite-host peer ensemble through the ADR-0023 peer-runner supervisor), `/orchestrator:next` (same-host dispatch into engineer), `/orchestrator:done` (records a subtask completed once its pull request has merged, with the merge commit — [ADR-0062](../../docs/adr/0062-subtask-completion-recorded-at-landing.md)), `/orchestrator:finalize` + `/orchestrator:abort` (macro completion lifecycle), `/orchestrator:approve` (the owner's approval of a macro plan, bound to the plan's hash — [ADR-0063](../../docs/adr/0063-autopilot-fresh-session-driver.md) D6), meta commands `/orchestrator:resume` / `/orchestrator:checkpoint` / `/orchestrator:peer-now`, `/orchestrator:audit` as a follow-up planning alias, `/orchestrator:autopilot` (Claude Code only: drives an approved macro one fresh worker per step and halts at owner judgment — [ADR-0063](../../docs/adr/0063-autopilot-fresh-session-driver.md)), and macro auto-archive A1–A4 on the host Stop event (branch-agnostic per ADR-0019 §5). Schema `'1.2'` (ADR-0063 D6; `'1.1'` files are read and written at `'1.1'`). The cross-plugin invocation contract is [ADR-0019](../../docs/adr/0019-cross-plugin-invocation-contract.md). The cross-host `--peer` dispatch path for `/orchestrator:next` remains trigger-deferred PR-F scope.
 
 ## What it is
 
@@ -31,6 +31,42 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify opposite-host peer ensemble
 | `/orchestrator:checkpoint <summary>` | ✅ shipping | Write `latest_checkpoint: {at, summary}` on the active macro workflow. Claude SessionStart re-injects it after compact (`matcher: "compact"`, so not on an arbitrary new session and not on `claude --continue`); Codex does the same once the bundled hooks load (generic `[features].hooks`) and are reviewed/trusted in `/hooks`. |
 | `/orchestrator:peer-now --peer <claude\|codex> (...)` | ✅ shipping | Raw side-channel peer consultation through `peer-runner.mjs --kind peer-now`; optionally appends a `[Peer]` note and stays out of `ensemble_results`. |
 | `/orchestrator:audit <findings>` | ✅ shipping | Audit follow-up alias that canonicalizes to `/orchestrator:plan Audit follow-up: ...`; state remains `verb=plan`, `workflow_id=macro-plan-...`. |
+| `/orchestrator:autopilot [preview\|start [--execute]\|status\|stop] [options]` | ✅ shipping (Claude Code only) | Drive an approved macro without relaying commands between sessions (ADR-0063): each step runs as one command in a fresh `claude -p` worker, decided from closed-enum state only, and the run halts at owner judgment (an unapproved plan, an owner gate, a next step below HIGH confidence, a subtask waiting for its pull request to merge, a step that changed nothing). Dry-run by default; `start --execute` runs it and asks for the model plan first. See [Autopilot](#autopilot-claude-code-only). |
+
+## Autopilot (Claude Code only)
+
+`/orchestrator:autopilot` is the owner-launched driver of ADR-0063. It lives in
+`adapters/claude/autopilot/` because everything it relies on is Claude Code host
+truth — stream-json session hosting, `--permission-prompts none`, hook events and
+per-message usage in the stream (D9). **There is no Codex skill for it: on Codex
+the steps stay manual**, and the host-neutral state it reads (`next_step_*`,
+`awaiting_owner_*`, `plan_approval_*`) serves a person driving Codex just the same.
+
+- **One step, one fresh worker.** `/orchestrator:next`, `/engineer:<verb>`,
+  `/engineer:commit`, `/orchestrator:done` (or `--no-commit` after a close
+  without a commit) and `/orchestrator:finalize`, each in its own `claude -p`
+  process with `AGENTIC_AUTOPILOT` set. The driver is stateless: a relaunch
+  continues from the state a halt left.
+- **Landing stays the owner's** (ADR-0062, owner decision D23). Workers never push or
+  open a pull request — the denylist forbids it, and network pushes fail at the git
+  level in every worker. At an `awaiting-landing` halt the run lists each branch
+  with its push and pull-request commands; after the merge, a relaunch records the
+  landing and goes on.
+- **Halts** print the reason and its pointer, write
+  `.agentic-plugins/runs/autopilot/<run-id>/halt.json` and exit 2;
+  `--notify-local` adds one local macOS notification. There is no plugin notification.
+- **Bounds.** Steps, total cost, a run wall clock, and each step's budget and wall
+  clock (`--max-steps`, `--max-cost`, `--max-time`, `--step-budget`,
+  `--step-timeout`). A step started inside a Claude session runs as a background task,
+  which the host stops after two hours; longer runs belong in a terminal through the
+  optional launcher — `preview` prints the command that installs
+  `adapters/claude/autopilot/launcher.template.mjs` as
+  `~/.agentic-plugins/bin/agentic-autopilot`.
+- **Requirements.** The repository ignores `.agentic-plugins/{runs,state,tmp,cache}/`;
+  engineer carries ADR-0063 S3+S4 (0.24.0) and orchestrator S6 (0.16.0); the plugin
+  code a worker loads must not live inside the repository the run drives (on a
+  directory marketplace, drive a separate worktree), and it must be the version the
+  run pinned. A dedicated worktree is recommended.
 
 ## Workflow file shape
 

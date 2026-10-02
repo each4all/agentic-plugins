@@ -50,7 +50,10 @@ const rel = (p) => relative(REPO_ROOT, p).split('\\').join('/');
 // The packages whose runbooks pass typed text by --args-file. ADR-0059 landed
 // one package per commit (ADR-0016), runtime first, and each commit added its
 // package here; every check below that concerns a package reads this list.
-const CONVERTED = ['designer', 'engineer', 'founder', 'runtime'];
+// orchestrator joined with /orchestrator:autopilot (ADR-0063 S8); its older
+// runbooks take typed text otherwise (/orchestrator:next a subtask id token,
+// /orchestrator:done an agent-written reason file).
+const CONVERTED = ['designer', 'engineer', 'founder', 'orchestrator', 'runtime'];
 const LIB_PACKAGES = CONVERTED;
 const PERSONAS = ['designer', 'engineer', 'founder'];
 const CONVERTED_PERSONAS = PERSONAS.filter((p) => CONVERTED.includes(p));
@@ -685,6 +688,8 @@ const ARGS_FILE_RUNBOOKS = ([
   'plugins/engineer/commands/decide.md',
   'plugins/engineer/commands/start.md',
   'plugins/founder/commands/decide.md',
+  // Claude only (ADR-0063 D9): no Codex skill below.
+  'plugins/orchestrator/commands/autopilot.md',
   ...['bootstrap', 'consensus', 'context', 'cutover', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree']
     .map((c) => `plugins/runtime/commands/${c}.md`),
 ]).filter(inConverted);
