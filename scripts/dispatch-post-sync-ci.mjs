@@ -38,9 +38,9 @@
 // obligation assertion after this step its chance to run. Runs are not
 // awaited; each reports on its own.
 //
-// marketplace-validate.yml compares no baseline on a dispatch (it has no
-// before-sha). The monotonic-pin check against the pre-sync catalog is done
-// by scripts/sync-marketplace-versions.mjs before the push.
+// validate.yml compares no baseline on a dispatch (it has no before-sha).
+// The monotonic-pin check against the pre-sync catalog is done by
+// scripts/sync-marketplace-versions.mjs before the push.
 //
 // Usage:
 //   node scripts/dispatch-post-sync-ci.mjs --repo <owner/name> --expect-sha <40-hex>
@@ -62,11 +62,8 @@ import { parseArgs } from 'node:util';
 // tests/scripts/test-dispatch-post-sync-ci.mjs derives that set from the
 // workflow files and fails when this list drifts from it.
 export const POST_SYNC_WORKFLOWS = [
-  'claude-tests.yml',
-  'codex-tests.yml',
-  'cross-host-tests.yml',
   'full-tests.yml',
-  'marketplace-validate.yml',
+  'validate.yml',
 ];
 
 const SHA = /^[0-9a-f]{40}$/;

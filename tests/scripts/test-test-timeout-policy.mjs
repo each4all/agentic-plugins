@@ -29,16 +29,18 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 const TIMEOUT_FLAG = /--test-timeout=(\d+)/;
 
-// The CI-gated suites that must stay bounded. test:smoke is deliberately
-// absent: it is opt-in and host-CLI-bound, not a CI hang surface.
-const BOUNDED_SCRIPTS = ['test', 'test:plugin-shape', 'test:cross-host'];
+// Every node --test script must stay bounded, read from package.json rather
+// than listed here, so a script added later is covered too. test:smoke is
+// deliberately exempt: it is opt-in and host-CLI-bound, not a CI hang surface.
+const UNBOUNDED_EXEMPT = new Set(['test:smoke']);
 
-test('every CI-gated node --test script pins --test-timeout before its first test path', () => {
+test('every node --test script pins --test-timeout before its first test path', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
-  for (const name of BOUNDED_SCRIPTS) {
+  const bounded = Object.keys(pkg.scripts)
+    .filter((name) => !UNBOUNDED_EXEMPT.has(name) && pkg.scripts[name].includes('node --test'));
+  assert.ok(bounded.includes('test'), 'scripts.test must invoke node --test (the suite full-tests.yml runs)');
+  for (const name of bounded) {
     const cmd = pkg.scripts[name];
-    assert.ok(typeof cmd === 'string' && cmd.includes('node --test'),
-      `scripts.${name} must exist and invoke node --test (it is a named CI hang surface)`);
     const match = cmd.match(TIMEOUT_FLAG);
     assert.ok(match, `scripts.${name} must carry --test-timeout (F1 hang defense)`);
     const value = Number(match[1]);

@@ -6,7 +6,7 @@ Plugin authoring toolkit — utilities for agentic-plugins plugin developers
 ## Status
 
 **Active.** `lint/` ships the plugin-shape conformance check that runs
-in CI on every push (per-host `claude-tests.yml` and `codex-tests.yml`).
+in CI on every push (`validate.yml`, over every plugin).
 The other sub-directories listed under "Planned" below are not built —
 they are trigger-driven futures.
 

@@ -838,21 +838,6 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
       }
     }
   });
-
-  it('package.json wires the designer decide unit suite into test:plugin-shape (PR4)', async () => {
-    const pkg = await readJSON(resolve(REPO_ROOT, 'package.json'));
-    const suite = pkg.scripts['test:plugin-shape'];
-    for (const t of [
-      'tests/designer/test-decide-registry.mjs',
-      'tests/designer/test-decide-args.mjs',
-      'tests/designer/test-decide-weights.mjs',
-      'tests/designer/test-decide-scores.mjs',
-      'tests/designer/test-decide-sensitivity.mjs',
-      'tests/designer/test-yaml-mini.mjs',
-    ]) {
-      ok(suite.includes(t), `test:plugin-shape must run ${t} (PR4 decide unit suite)`);
-    }
-  });
 });
 
 describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-0042 SD4)', () => {
@@ -1812,28 +1797,6 @@ describe('plugins/designer — release-please + test-suite wiring', () => {
     const releasePleaseManifest = await readJSON(resolve(REPO_ROOT, '.release-please-manifest.json'));
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(releasePleaseManifest['plugins/designer'], manifest.version);
-  });
-
-  it('package.json wires the designer shape test into test:plugin-shape', async () => {
-    const pkg = await readJSON(resolve(REPO_ROOT, 'package.json'));
-    ok(/tests\/plugin-shape\/test-designer-plugin\.mjs/.test(pkg.scripts['test:plugin-shape']),
-      'test:plugin-shape must run tests/plugin-shape/test-designer-plugin.mjs');
-  });
-
-  it('package.json wires the designer machinery unit suite into test:plugin-shape (PR2)', async () => {
-    const pkg = await readJSON(resolve(REPO_ROOT, 'package.json'));
-    const suite = pkg.scripts['test:plugin-shape'];
-    const REQUIRED_UNIT_TESTS = [
-      'tests/designer/test-state.mjs',
-      'tests/designer/test-dispatch-peer.mjs',
-      'tests/designer/test-peer-runner.mjs',
-      'tests/designer/test-session-handoff.mjs',
-      'tests/designer/test-stop-archive.mjs',
-      'tests/designer/test-hooks.mjs',
-    ];
-    for (const t of REQUIRED_UNIT_TESTS) {
-      ok(suite.includes(t), `test:plugin-shape must run ${t} (PR2 machinery unit suite)`);
-    }
   });
 });
 

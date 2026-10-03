@@ -3,7 +3,7 @@
 // `npm test` is `node --test` (no-arg) — Node 24 discovers test files repo-wide
 // by its default conventions, and `.github/workflows/full-tests.yml` runs that
 // suite unfiltered as the repo-level coverage authority. That design only stays
-// drift-proof if three invariants hold; this test fails loudly when any breaks,
+// drift-proof if these invariants hold; this test fails loudly when any breaks,
 // so a future change cannot silently re-open the coverage gap this ADR closed.
 //
 // Invariants:
@@ -13,8 +13,12 @@
 //   (ii)  Smoke tests stay OUT of the default-discovery namespace (`*.smoke.mjs`,
 //         never `*.smoke.test.mjs`). CI runners have no host CLI, so smoke tests
 //         must be explicitly opt-in via `npm run test:smoke`, not silently present.
-//   (iii) `full-tests.yml` actually gates pull_request with no path filter, runs
-//         exactly `npm test`, and replicates the release-please env the suite needs.
+//   (iii) `full-tests.yml` runs exactly one `npm test`, with no matrix, and sets the
+//         release-please env the suite needs from the push event.
+//   (iv)  Every CI workflow (all but release-please.yml) triggers on a push to any
+//         branch and on dispatch, with no path filter and no pull_request trigger.
+//   (v)   Exactly one run step, full-tests.yml's `npm test`, runs tests in any
+//         workflow, so no test file runs twice per push.
 //
 // This file matches `test-*.mjs`, so it is itself discovered by `npm test`.
 
@@ -129,32 +133,95 @@ test('(ii) smoke tests stay out of the default-discovery namespace', () => {
   );
 });
 
-test('(iii) full-tests.yml gates pull_request unfiltered, runs npm test, wires release-please env', () => {
+test('(iii) full-tests.yml runs npm test once, on every branch push, unfiltered, with the release-please env', () => {
   const p = path.join(REPO_ROOT, FULL_TESTS_WORKFLOW);
   assert.ok(fs.existsSync(p), `${FULL_TESTS_WORKFLOW} must exist (the repo-level coverage authority)`);
   const content = fs.readFileSync(p, 'utf8');
 
-  assert.match(content, /^\s*pull_request:/m, `${FULL_TESTS_WORKFLOW} must trigger on pull_request`);
-  assert.doesNotMatch(
-    content,
-    /^\s*paths(?:-ignore)?:/m,
-    `${FULL_TESTS_WORKFLOW} must NOT use a paths/paths-ignore filter — it is the full-suite authority`,
+  assert.equal(
+    (content.match(/^\s*run:\s*npm test\s*$/gm) ?? []).length,
+    1,
+    `${FULL_TESTS_WORKFLOW} must run exactly \`npm test\` (the discovery-based full suite), once`,
   );
+  assert.doesNotMatch(content, /^\s*matrix:/m, `${FULL_TESTS_WORKFLOW} must not fan the suite out over a matrix`);
+  // The env-key line itself must carry the push-event detection. A bare mention
+  // in a comment, or the pull_request-era head_ref form (which a push event
+  // leaves empty), would not set the flag on the release-please branch.
   assert.match(
     content,
-    /^\s*run:\s*npm test\s*$/m,
-    `${FULL_TESTS_WORKFLOW} must run exactly \`npm test\` (the discovery-based full suite)`,
+    /^\s*"?AGENTIC_RELEASE_PLEASE_PR"?:\s.*github\.ref == 'refs\/heads\/release-please--branches--main'/m,
+    `${FULL_TESTS_WORKFLOW} must assign AGENTIC_RELEASE_PLEASE_PR from github.ref on the env-key line, `
+      + `so a push to the release-please branch tolerates intentional version/catalog lag`,
   );
-  // Tie the branch-detection expression to the actual env-key assignment ON ONE
-  // LINE: the key (optionally YAML-quoted) immediately assigned a value that
-  // contains the release-please branch ref. This rejects both a bare mention in
-  // a comment (false-pass) and is tolerant of quoted YAML keys (false-fail) —
-  // the host workflows gate on head_ref == release-please--branches--main.
-  assert.match(
-    content,
-    /^\s*"?AGENTIC_RELEASE_PLEASE_PR"?:\s.*release-please--branches--main/m,
-    `${FULL_TESTS_WORKFLOW} must assign AGENTIC_RELEASE_PLEASE_PR from the release-please branch detection `
-      + `(head_ref == release-please--branches--main) on the env-key line — not merely mention it in a comment — `
-      + `so release-please PRs tolerate intentional version/catalog lag`,
-  );
+  assert.doesNotMatch(content, /head_ref/, `${FULL_TESTS_WORKFLOW}: head_ref is empty on a push event`);
+});
+
+// The CI workflows are every workflow but release-please.yml. They run on a
+// push to any branch (tags excluded by the branch filter) and on dispatch, with
+// no pull_request trigger: GitHub starts a pull_request run for a PR that
+// release-please updates with GITHUB_TOKEN in an approval-required state, and
+// that run sits with zero jobs until the PR closes, then fails. A push made
+// with GITHUB_TOKEN starts no run at all. A path filter would let a change
+// escape the suite. ADR-0033, 2026-10-03 amendment.
+const RELEASE_WORKFLOW = 'release-please.yml';
+const CI_TRIGGER = ['  push:', "    branches: ['**']", '  workflow_dispatch:'];
+
+function allWorkflows() {
+  const dir = path.join(REPO_ROOT, '.github', 'workflows');
+  return fs.readdirSync(dir)
+    .filter((f) => /\.ya?ml$/.test(f))
+    .sort()
+    .map((f) => ({ file: f, content: fs.readFileSync(path.join(dir, f), 'utf8') }));
+}
+
+const ciWorkflows = () => allWorkflows().filter((w) => w.file !== RELEASE_WORKFLOW);
+
+/** The shell each `run:` executes: an inline value, or the lines of a block scalar. */
+function runBodies(content) {
+  const lines = content.split('\n');
+  const bodies = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(/^(\s*)(?:- )?run:\s*(.*)$/);
+    if (!m) continue;
+    if (!/^[|>]/.test(m[2])) {
+      bodies.push(m[2]);
+      continue;
+    }
+    const indent = m[1].length;
+    const body = [];
+    while (i + 1 < lines.length && (lines[i + 1].trim() === '' || lines[i + 1].search(/\S/) > indent)) {
+      i += 1;
+      body.push(lines[i]);
+    }
+    bodies.push(body.join('\n'));
+  }
+  return bodies;
+}
+
+test('(iv) every CI workflow triggers on a push to any branch and on dispatch, never on pull_request', () => {
+  const workflows = ciWorkflows();
+  assert.ok(workflows.some((w) => w.file === path.basename(FULL_TESTS_WORKFLOW)), 'the scan read the real workflow directory');
+  for (const { file, content } of workflows) {
+    // A job condition could narrow the trigger back down (e.g. to main) where
+    // the on: block cannot show it. The one condition allowed skips the push
+    // GitHub runs for a branch deletion.
+    const jobIfs = content.split('\n').filter((l) => /^    if:/.test(l));
+    assert.ok(jobIfs.length > 0, `${file}: each job skips branch-deletion pushes`);
+    for (const l of jobIfs) assert.equal(l, '    if: ${{ !github.event.deleted }}', `${file}: unexpected job condition`);
+    const on = content.match(/^on:\n((?:(?:  .*|\s*)\n)+)/m);
+    assert.ok(on, `${file}: no block-form on: trigger`);
+    const trigger = on[1].split('\n').filter((l) => l.trim() !== '' && !l.trim().startsWith('#'));
+    assert.deepEqual(trigger, CI_TRIGGER, `${file}: the on: block must be exactly push to every branch plus workflow_dispatch`);
+  }
+});
+
+test('(v) one run step in one workflow runs tests, so no test file runs twice per push', () => {
+  const runners = [];
+  for (const { file, content } of allWorkflows()) {
+    for (const body of runBodies(content)) {
+      if (/\bnpm (?:run )?test\b|\bnode --test\b/.test(body)) runners.push({ file, body: body.trim() });
+    }
+  }
+  assert.deepEqual(runners, [{ file: path.basename(FULL_TESTS_WORKFLOW), body: 'npm test' }],
+    'only full-tests.yml runs tests, in exactly one step that is exactly `npm test`');
 });

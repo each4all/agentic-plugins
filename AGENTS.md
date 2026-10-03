@@ -255,8 +255,7 @@ load-bearing:
 **Both sync pushes use `GITHUB_TOKEN`, and a push made that way starts no
 workflow**, so the release job starts post-sync `main`'s CI itself. After
 its last sync push it dispatches the workflows that a push of the sync
-paths would have started: `claude-tests`, `codex-tests`,
-`cross-host-tests`, `full-tests` and `marketplace-validate`
+paths would have started: `full-tests` and `validate`
 (`scripts/dispatch-post-sync-ci.mjs`; a test derives that list from the
 workflow files). It records each run's `head_sha` against the commit it
 pushed. Three things follow for anyone reading those runs:
@@ -559,8 +558,7 @@ context lifecycle events, statusline, etc.). See ADR-0001 final note.
 Primary local commands:
 
 - `npm test` — full Node test suite via `node --test` discovery (ADR-0033). New conventionally-named test files are picked up automatically; smoke tests live in the non-discoverable `companions/tests/*.smoke.mjs` namespace and run only via `npm run test:smoke`.
-- `npm run test:plugin-shape` — plugin shape + engineer/orchestrator state tests.
-- `npm run test:cross-host` — cross-host workflow contract tests.
+- `npm test -- <files>` — a subset of the suite, e.g. `npm test -- tests/cross-host/test-*.mjs`.
 - `npm run lint:plugin-shape` — validate all plugin directories with `kit/lint`.
 - `npm run validate:marketplace`, `npm run validate:versions`, and
   `npm run validate:artifacts` — catalog, release-please manifest, and
@@ -570,8 +568,9 @@ Primary local commands:
   Decision 2 phase against the migration floors in
   `scripts/data/codex-pin-floors.json`. It needs full history and tags and
   fails closed without them. `-- --base <rev>` adds the monotonic-pin
-  comparison against the target branch; CI passes it on pull requests and
-  pushes.
+  comparison against a baseline catalog. CI passes main's previous commit
+  on a push to `main`, and the branch's fork point on `main` on a push to
+  any other branch.
 - `npm run sync:companions` and `npm run sync:marketplace` — drift-correction helpers.
 - `npm run mutate -- <spec>` — run a mutation spec from `scripts/mutation-specs/`.
   A green suite is not evidence that the suite tests anything, and this
@@ -584,12 +583,23 @@ Primary local commands:
   never touched. It refuses to score an edit whose anchor drifted, and refuses
   to score at all when the unmutated control is not green.
 
-GitHub Actions run on Node 24. `full-tests.yml` runs the full
-discovery-based `npm test` unfiltered on every push/PR and is the
-repo-level coverage authority (ADR-0033); the host workflows
-(Claude/Codex companion tests, cross-host tests) remain scoped per-host
-diagnostic signals. Other workflows cover marketplace/version
-validation and release-please automation.
+GitHub Actions run on Node 24, in three workflows.
+
+- `full-tests.yml` runs the full discovery-based `npm test` once, with no
+  path filter. It is the only workflow that runs tests, and the repo-level
+  coverage authority (ADR-0033).
+- `validate.yml` runs the checks that are not test files:
+  `lint:plugin-shape` and the catalog, version and artifact validators.
+- `release-please.yml` runs on a push to `main` and on manual dispatch.
+
+The first two run on a push to any branch and on `workflow_dispatch`, and
+never on `pull_request`. release-please updates its PR with
+`GITHUB_TOKEN`, and GitHub starts `pull_request` runs for such a PR in an
+approval-required state, so they used to fail with zero jobs. A pull
+request shows its head commit's push run. Fork pull requests get no CI.
+Branches cut before 2026-10-03 get no automatic run until they are
+rebased onto `main` or merge it; a manual dispatch still works. See the
+ADR-0033 amendment of that date.
 
 ---
 

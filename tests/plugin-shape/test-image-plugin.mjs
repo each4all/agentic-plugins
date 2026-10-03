@@ -320,11 +320,3 @@ describe('plugins/image — release-please wiring', () => {
     }
   });
 });
-
-describe('plugins/image — repo wiring (self-guard)', () => {
-  it('is wired into the explicit package.json test:plugin-shape file list', async () => {
-    const pkg = await readJSON(resolve(REPO_ROOT, 'package.json'));
-    ok(pkg.scripts['test:plugin-shape'].includes('tests/plugin-shape/test-image-plugin.mjs'),
-      'host CI workflows run the explicit test:plugin-shape list — this file must be wired in');
-  });
-});

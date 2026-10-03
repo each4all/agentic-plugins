@@ -30,6 +30,9 @@ const WORKFLOWS_DIR = path.join(REPO_ROOT, '.github/workflows');
 const RELEASE_WORKFLOW = 'release-please.yml';
 
 const REPO = 'owner/name';
+// The in-memory tests dispatch these, not POST_SYNC_WORKFLOWS, so a failure
+// they inject keeps its target when the real workflow set changes.
+const WORKFLOWS = ['alpha.yml', 'beta.yml', 'gamma.yml', 'delta.yml'];
 const SYNC = 'a'.repeat(40);
 const LATER = 'b'.repeat(40);
 const OTHER = 'c'.repeat(40);
@@ -80,7 +83,7 @@ const sleeps = [];
 const run = (api, extra = {}) => {
   sleeps.length = 0;
   return dispatchPostSyncCi({
-    api, repo: REPO, ref: 'main', expectSha: SYNC, workflows: POST_SYNC_WORKFLOWS,
+    api, repo: REPO, ref: 'main', expectSha: SYNC, workflows: WORKFLOWS,
     sleep: (ms) => sleeps.push(ms), ...extra,
   });
 };
@@ -93,7 +96,7 @@ test('dispatches every post-sync workflow on the ref, asking GitHub for the run 
   const { api, calls } = fakeApi();
   const summary = run(api);
   const dispatches = calls.filter((c) => c.route.endsWith('/dispatches'));
-  assert.deepEqual(dispatches.map((c) => c.route.split('/')[5]), POST_SYNC_WORKFLOWS);
+  assert.deepEqual(dispatches.map((c) => c.route.split('/')[5]), WORKFLOWS);
   for (const c of dispatches) {
     assert.equal(c.method, 'POST');
     assert.deepEqual(c.fields, { ref: 'main', return_run_details: true },
@@ -116,9 +119,9 @@ test('a run whose head_sha is the pushed sync commit validates exactly that comm
 });
 
 test('main advanced before the run was created: a descendant head is recorded as such and accepted', () => {
-  const { api, calls } = fakeApi({ runs: { 'full-tests.yml': LATER }, compare: { [LATER]: 'ahead' } });
+  const { api, calls } = fakeApi({ runs: { 'alpha.yml': LATER }, compare: { [LATER]: 'ahead' } });
   const summary = run(api);
-  const full = summary.results.find((r) => r.workflow === 'full-tests.yml');
+  const full = summary.results.find((r) => r.workflow === 'alpha.yml');
   assert.equal(full.outcome, 'advanced');
   assert.equal(full.headSha, LATER);
   assert.equal(full.ok, true, 'a descendant still contains the sync commit');
@@ -126,7 +129,7 @@ test('main advanced before the run was created: a descendant head is recorded as
   const cmp = calls.find((c) => c.route.includes('/compare/'));
   assert.equal(cmp.route, `repos/${REPO}/compare/${SYNC}...${LATER}`, 'base is the intended sha, head is what the run got');
   const report = renderReport(summary);
-  const line = report.lines.find((l) => l.text.startsWith('full-tests.yml'));
+  const line = report.lines.find((l) => l.text.startsWith('alpha.yml'));
   assert.equal(line.level, 'warning');
   assert.match(line.text, /main advanced/);
   assert.ok(line.text.includes(LATER), 'the full head_sha the run validated is recorded, not an abbreviation');
@@ -136,61 +139,61 @@ test('main advanced before the run was created: a descendant head is recorded as
 
 for (const status of ['behind', 'diverged']) {
   test(`a run whose head is ${status} relative to the intended sha fails the step`, () => {
-    const { api } = fakeApi({ runs: { 'codex-tests.yml': OTHER }, compare: { [OTHER]: status } });
+    const { api } = fakeApi({ runs: { 'beta.yml': OTHER }, compare: { [OTHER]: status } });
     const summary = run(api);
-    const r = summary.results.find((x) => x.workflow === 'codex-tests.yml');
+    const r = summary.results.find((x) => x.workflow === 'beta.yml');
     assert.equal(r.outcome, 'not-descendant');
     assert.equal(r.ok, false);
     assert.equal(summary.ok, false);
-    assert.match(renderReport(summary).lines.find((l) => l.text.startsWith('codex-tests.yml')).text, new RegExp(status));
+    assert.match(renderReport(summary).lines.find((l) => l.text.startsWith('beta.yml')).text, new RegExp(status));
   });
 }
 
 test('an ancestry check that cannot be made fails closed', () => {
-  const { api } = fakeApi({ runs: { 'claude-tests.yml': OTHER } });
+  const { api } = fakeApi({ runs: { 'gamma.yml': OTHER } });
   const summary = run(api);
-  const r = summary.results.find((x) => x.workflow === 'claude-tests.yml');
+  const r = summary.results.find((x) => x.workflow === 'gamma.yml');
   assert.equal(r.outcome, 'compare-failed');
   assert.equal(summary.ok, false);
 });
 
 test('one failed dispatch does not stop the others, and fails the step', () => {
-  const { api, calls } = fakeApi({ dispatchError: { 'cross-host-tests.yml': 'HTTP 403: Resource not accessible by integration' } });
+  const { api, calls } = fakeApi({ dispatchError: { 'delta.yml': 'HTTP 403: Resource not accessible by integration' } });
   const summary = run(api);
-  assert.equal(calls.filter((c) => c.route.endsWith('/dispatches')).length, POST_SYNC_WORKFLOWS.length);
-  const r = summary.results.find((x) => x.workflow === 'cross-host-tests.yml');
+  assert.equal(calls.filter((c) => c.route.endsWith('/dispatches')).length, WORKFLOWS.length);
+  const r = summary.results.find((x) => x.workflow === 'delta.yml');
   assert.equal(r.outcome, 'dispatch-failed');
   assert.match(r.detail, /403/);
-  assert.equal(summary.results.filter((x) => x.ok).length, POST_SYNC_WORKFLOWS.length - 1);
+  assert.equal(summary.results.filter((x) => x.ok).length, WORKFLOWS.length - 1);
   assert.equal(summary.ok, false);
 });
 
 test('a dispatch answered without a run id fails: the run exists but what it validates is unrecorded', () => {
-  const { api } = fakeApi({ noRunId: ['marketplace-validate.yml'] });
+  const { api } = fakeApi({ noRunId: ['beta.yml'] });
   const summary = run(api);
-  const r = summary.results.find((x) => x.workflow === 'marketplace-validate.yml');
+  const r = summary.results.find((x) => x.workflow === 'beta.yml');
   assert.equal(r.outcome, 'no-run-id');
   assert.equal(r.ok, false);
-  const text = renderReport(summary).lines.find((l) => l.text.startsWith('marketplace-validate.yml')).text;
+  const text = renderReport(summary).lines.find((l) => l.text.startsWith('beta.yml')).text;
   assert.match(text, /dispatched/);
   assert.match(text, /no run id/);
 });
 
 test('a run that is not readable at once is read again, and the dispatch is not repeated', () => {
-  const { api, calls } = fakeApi({ runFlaky: { 'full-tests.yml': 1 } });
+  const { api, calls } = fakeApi({ runFlaky: { 'alpha.yml': 1 } });
   const summary = run(api);
-  const r = summary.results.find((x) => x.workflow === 'full-tests.yml');
+  const r = summary.results.find((x) => x.workflow === 'alpha.yml');
   assert.equal(r.outcome, 'validated');
   assert.deepEqual(sleeps, [2000], 'one wait, before the second read');
-  assert.equal(calls.filter((c) => c.route.endsWith('/full-tests.yml/dispatches')).length, 1,
+  assert.equal(calls.filter((c) => c.route.endsWith('/alpha.yml/dispatches')).length, 1,
     'a POST that may have created a run is never sent twice');
   assert.equal(summary.ok, true);
 });
 
 test('a run that cannot be read back after the bounded retries fails the step', () => {
-  const { api, calls } = fakeApi({ runError: ['full-tests.yml'] });
+  const { api, calls } = fakeApi({ runError: ['alpha.yml'] });
   const summary = run(api);
-  const r = summary.results.find((x) => x.workflow === 'full-tests.yml');
+  const r = summary.results.find((x) => x.workflow === 'alpha.yml');
   assert.equal(r.outcome, 'run-read-failed');
   assert.match(r.detail, /HTTP 502 \(3 attempts\)/);
   assert.equal(calls.filter((c) => c.route === `repos/${REPO}/actions/runs/${r.runId}`).length, 3);
@@ -205,12 +208,15 @@ test('the report says the runs validate post-sync main, not the release commit',
   assert.match(head, new RegExp(`Intended post-sync sha: ${SYNC}`));
   assert.match(head, /post-sync main, not the release commit/);
   assert.match(report.markdown, /\| Workflow \| Run \| head_sha \| Outcome \|/);
-  for (const wf of POST_SYNC_WORKFLOWS) assert.match(report.markdown, new RegExp(wf.replace('.', '\\.')));
+  for (const wf of WORKFLOWS) assert.match(report.markdown, new RegExp(wf.replace('.', '\\.')));
 });
 
 // ---------------------------------------------------------------------------
 // The CLI, end to end, against a fake `gh` on PATH
 // ---------------------------------------------------------------------------
+
+/** A workflow file name as a literal inside a RegExp. */
+const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function fakeGh(t, { headSha = SYNC, dispatchStderr = null, hangDispatch = false } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'post-sync-gh-'));
@@ -267,7 +273,7 @@ test('CLI — a failing check exits 1 and, on Actions, annotates it as an error'
   const env = { ...process.env, PATH: `${gh.dir}${path.delimiter}${process.env.PATH}`, GITHUB_STEP_SUMMARY: '', GITHUB_ACTIONS: 'true' };
   const out = spawnSync(process.execPath, [SCRIPT, '--repo', REPO, '--expect-sha', SYNC], { env, encoding: 'utf8' });
   assert.equal(out.status, 1);
-  assert.match(out.stdout, /^::error::claude-tests\.yml/m, 'the fake gh has no compare route, so the ancestry check fails closed');
+  assert.match(out.stdout, new RegExp(`^::error::${escaped(POST_SYNC_WORKFLOWS[0])}`, 'm'), 'the fake gh has no compare route, so the ancestry check fails closed');
 });
 
 test('CLI — a refused dispatch reports GitHub\'s reason from gh\'s stderr, not just the command line', (t) => {
@@ -286,7 +292,7 @@ test('CLI — annotation text escapes % so GitHub does not read it as an encoded
   const env = { ...process.env, PATH: `${gh.dir}${path.delimiter}${process.env.PATH}`, GITHUB_STEP_SUMMARY: '', GITHUB_ACTIONS: 'true' };
   const out = spawnSync(process.execPath, [SCRIPT, '--repo', REPO, '--expect-sha', SYNC], { env, encoding: 'utf8' });
   assert.equal(out.status, 1);
-  assert.match(out.stdout, /^::error::claude-tests\.yml: dispatch failed: .*100%25 of inputs refused$/m);
+  assert.match(out.stdout, new RegExp(`^::error::${escaped(POST_SYNC_WORKFLOWS[0])}: dispatch failed: .*100%25 of inputs refused$`, 'm'));
 });
 
 test('CLI — a gh call that never answers is cut off at --gh-timeout-ms, and the other workflows still run', (t) => {
@@ -538,7 +544,8 @@ function derivePostSyncSet(dir, synced) {
   for (const file of readdirSync(dir).filter((f) => /\.ya?ml$/.test(f)).sort()) {
     if (file === RELEASE_WORKFLOW) continue; // the job doing the dispatching
     const trigger = pushTrigger(readFileSync(path.join(dir, file), 'utf8'), file);
-    if (!trigger || !trigger.branches.includes('main')) continue;
+    // A branch filter is a glob: `'**'` starts the workflow on main too.
+    if (!trigger || !trigger.branches.some((b) => globToRegExp(b).test('main'))) continue;
     if (trigger.paths && !synced.some((p) => trigger.paths.some((g) => globToRegExp(g).test(p)))) continue;
     expected.push(file);
   }
@@ -567,7 +574,9 @@ test('the derivation reads .yaml files and every quoting form, and refuses shape
   writeFileSync(path.join(dir, 'c.yml'), wf("  push:\n    branches: ['main', release]\n    paths:\n      - docs/ARCHITECTURE.md\n"));
   writeFileSync(path.join(dir, 'd.yml'), wf('  push:\n    branches: [main]\n    paths:\n      - "src/**"\n'));
   writeFileSync(path.join(dir, 'e.yml'), wf('  pull_request:\n'));
-  assert.deepEqual(derivePostSyncSet(dir, ['.claude-plugin/marketplace.json', 'docs/ARCHITECTURE.md']), ['a.yaml', 'b.yml', 'c.yml']);
+  writeFileSync(path.join(dir, 'f.yml'), wf("  push:\n    branches: ['**']\n"));
+  writeFileSync(path.join(dir, 'g.yml'), wf("  push:\n    branches: ['release/*']\n"));
+  assert.deepEqual(derivePostSyncSet(dir, ['.claude-plugin/marketplace.json', 'docs/ARCHITECTURE.md']), ['a.yaml', 'b.yml', 'c.yml', 'f.yml']);
 
   const refused = [
     ['a column-0 comment inside on:', 'on:\n  pull_request:\n# note\n  push:\n    branches: [main]\n'],
