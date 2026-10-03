@@ -606,8 +606,7 @@ Decisions made 2026-05-02:
 ### CI
 
 - **GitHub Actions**
-- Per-host workflow gates: `claude-tests.yml`, `codex-tests.yml` — each can fail independently without blocking the other host's release
-- Separate marketplace JSON validation workflow (cheap)
+- 2026-10-03 ([ADR-0033](adr/0033-ci-full-test-suite-coverage.md) amendment): the per-host workflow gates are gone. `full-tests.yml` runs `npm test` once and `validate.yml` runs kit/lint and the catalog validators, both on a push to any branch
 
 ### Lint / format
 

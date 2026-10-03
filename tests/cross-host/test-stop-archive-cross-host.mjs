@@ -12,7 +12,7 @@
 // stdin/cwd asymmetry is verified separately by
 // tests/engineer/test-stop-archive.mjs.
 //
-// Run via `npm run test:cross-host`.
+// Discovered by `npm test`; run the cross-host files alone with `npm test -- tests/cross-host/test-*.mjs`.
 
 import { describe, it } from 'node:test';
 import { strictEqual, deepStrictEqual, ok } from 'node:assert/strict';

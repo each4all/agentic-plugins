@@ -7,9 +7,8 @@
 // through two releases. Without the planted half, "0 findings on the real
 // docs" would be indistinguishable from a check that matches nothing.
 //
-// This file is discovered by `npm test` (full-tests.yml) and is
-// deliberately NOT in the `test:plugin-shape` list: two of the three
-// checks need full git history plus tags, which only full-tests.yml
+// This file is discovered by `npm test` (full-tests.yml). Two of the
+// three checks need full git history plus tags, which full-tests.yml
 // fetches (fetch-depth: 0). The availability guard fails closed rather
 // than skipping, so a workflow that forgets the fetch depth turns red
 // instead of silently reporting coverage it does not have.

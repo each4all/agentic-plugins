@@ -1,0 +1,90 @@
+# Repository-state checks that are not test files: kit/lint over every plugin,
+# and the catalog, version and artifact validators. full-tests.yml runs the
+# test files, including the ones that assert these scripts' behavior.
+#
+# Same triggers as full-tests.yml, for the same reason (ADR-0033, 2026-10-03
+# amendment): a push to any branch, and workflow_dispatch for the release
+# job's post-sync dispatch; no pull_request trigger.
+name: validate
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate plugins and catalogs
+    # A branch deletion starts a push run on the default branch's sha.
+    if: ${{ !github.event.deleted }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # ADR-0061 Decision 2: the Codex catalog's floors and pins are claims
+          # about tags and the trees they point at, and the monotonic-pin check
+          # reads the catalog at a baseline commit. validate-marketplace fails
+          # closed on a shallow clone rather than passing on structure.
+          fetch-depth: 0
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Lint every plugin (kit/lint)
+        run: npm run lint:plugin-shape
+
+      - name: Validate both catalogs
+        env:
+          AGENTIC_RELEASE_PLEASE_PR: ${{ github.ref == 'refs/heads/release-please--branches--main' && '1' || '0' }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        # The baseline for the monotonic-pin check (ADR-0061 Decision 2, as
+        # noted 2026-10-03). On main it is the catalog before this push. On any
+        # other branch it is the branch's fork point on main: a push event names
+        # no target branch, and main's tip would make a stale branch's
+        # unchanged catalog read as a regression. The comparison against main's
+        # newer catalog happens on the push that lands the change. A dispatch
+        # has neither, and the validator then says it compared no baseline.
+        run: |
+          ARGS=()
+          if [ "$AGENTIC_RELEASE_PLEASE_PR" = "1" ]; then
+            ARGS+=(--allow-version-lag)
+          fi
+          CATALOG_BASE=""
+          if [ "$EVENT_NAME" = "push" ]; then
+            if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+              if [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+                CATALOG_BASE="$PUSH_BEFORE"
+              fi
+            else
+              git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
+              if ! CATALOG_BASE="$(git merge-base HEAD refs/remotes/origin/main)"; then
+                echo "::error::${GITHUB_REF_NAME} shares no history with main; there is no baseline for the monotonic-pin check"
+                exit 1
+              fi
+            fi
+          fi
+          if [ -n "$CATALOG_BASE" ]; then
+            ARGS+=(--base "$CATALOG_BASE")
+          fi
+          npm run validate:marketplace -- "${ARGS[@]}"
+
+      - name: Cross-check versions (release-please-manifest <-> plugin manifests <-> both marketplace catalogs)
+        env:
+          AGENTIC_RELEASE_PLEASE_PR: ${{ github.ref == 'refs/heads/release-please--branches--main' && '1' || '0' }}
+        run: |
+          if [ "$AGENTIC_RELEASE_PLEASE_PR" = "1" ]; then
+            npm run validate:versions -- --allow-marketplace-lag
+          else
+            npm run validate:versions
+          fi
+
+      - name: Validate artifact ignore policy
+        run: npm run validate:artifacts

@@ -224,7 +224,10 @@ This applies symmetrically to engineer and orchestrator.
   concurrent locking is not yet contracted.
 - **CI**: a `cross-host` job slot in `.github/workflows/` matrix.
   Hooks for both hosts are simulated in-process (no real CLI
-  required for the contract verification itself).
+  required for the contract verification itself). *(2026-10-03: the
+  dedicated `cross-host-tests.yml` is removed; the cross-host files run
+  in `full-tests.yml` as part of `npm test`, per the
+  [ADR-0033](0033-ci-full-test-suite-coverage.md) amendment.)*
 
 This applies to engineer + orchestrator + any future L3 persona
 plugin.

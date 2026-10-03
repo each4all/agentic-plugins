@@ -787,14 +787,6 @@ describe('plugins/founder — release-please wiring', () => {
   });
 });
 
-describe('plugins/founder — repo wiring (self-guard)', () => {
-  it('is wired into the explicit package.json test:plugin-shape file list', async () => {
-    const pkg = await readJSON(resolve(REPO_ROOT, 'package.json'));
-    ok(pkg.scripts['test:plugin-shape'].includes('tests/plugin-shape/test-founder-plugin.mjs'),
-      'host CI workflows run the explicit test:plugin-shape list — this file must be wired in');
-  });
-});
-
 // ADR-0043 S3 — the session-handoff wiring runbook is founder's single source
 // for the code-emitted footer path; its citation discipline and its documented
 // cross-package contracts (marker shape, publish-needed mapping) are pinned so

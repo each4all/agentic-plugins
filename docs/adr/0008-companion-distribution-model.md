@@ -288,6 +288,9 @@ does not yet exist, so there is nothing to drift from.
    drift-detection test on every PR that touches `companions/` or
    `plugins/companions/`. Until B.14 extends them, the named workflows
    run only the existing companion-only unit/syntax tests.
+   *(2026-10-03: both workflows are removed. The drift-detection test
+   runs in `full-tests.yml` as part of `npm test`, on every push, per the
+   [ADR-0033](0033-ci-full-test-suite-coverage.md) amendment.)*
 
 ADR-0008's acceptance establishes the **contract** for drift
 prevention; Deliverable B implements the **mechanism** that fulfills

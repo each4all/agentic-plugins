@@ -62,7 +62,7 @@ jobs:
 
       # The writer plans both catalogs, writes nothing if any part is refused,
       # and validates what it wrote against HEAD (the catalog before this
-      # write) with the same gates marketplace-validate.yml runs, so a failure
+      # write) with the same gates validate.yml runs, so a failure
       # here stops the push below. A GITHUB_TOKEN push triggers no workflow,
       # so this is the only gate before the bot's commit reaches main; the
       # dispatch step below runs the test workflows on it only afterwards.

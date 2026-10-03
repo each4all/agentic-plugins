@@ -4,6 +4,10 @@
 
 Accepted
 
+> Amended 2026-10-03 — see [Amendments](#amendments). Decision 3's
+> triggers and Decision 5 (iii) changed, and Decision 4 is withdrawn: the
+> host workflows are removed and CI no longer triggers on `pull_request`.
+
 ## Context
 
 The repository's canonical test command is `npm test`. Yet **no CI
@@ -81,14 +85,17 @@ structural guard** (the "E′" option):
 
 3. **New `.github/workflows/full-tests.yml`** runs `npm test` with **no
    `paths:` filter** on `pull_request`, `push: main`, and
-   `workflow_dispatch`. This is the repo-level coverage authority. It
-   replicates the host workflows' `AGENTIC_RELEASE_PLEASE_PR` branch
-   detection so release-please PRs tolerate intentional version/catalog
-   lag.
+   `workflow_dispatch` (2026-10-03: on a push to any branch and
+   `workflow_dispatch` instead — see [Amendments](#amendments)). This is
+   the repo-level coverage authority. It replicates the host workflows'
+   `AGENTIC_RELEASE_PLEASE_PR` branch detection so release-please PRs
+   tolerate intentional version/catalog lag.
 
-4. **Host workflows remain scoped diagnostic signals.** `claude-tests`,
-   `codex-tests`, and `cross-host-tests` keep their deliberate
-   host-segregation (each scoped to its own companion's tests); they are
+4. **Host workflows remain scoped diagnostic signals.** *(Withdrawn
+   2026-10-03: the host workflows are removed — see
+   [Amendments](#amendments).)* `claude-tests`, `codex-tests`, and
+   `cross-host-tests` keep their deliberate host-segregation (each
+   scoped to its own companion's tests); they are
    no longer the coverage authority. The redundant `test:plugin-shape`
    they share is retained as a fast per-host signal and is out of scope
    for this ADR.
@@ -102,7 +109,8 @@ structural guard** (the "E′" option):
    non-discoverable `*.smoke.mjs` namespace and no `*.smoke.test.mjs`
    remains; (iii) `full-tests.yml` exists, gates `pull_request` without a
    `paths` filter, runs exactly `npm test`, and wires the release-please
-   env.
+   env. (2026-10-03: (iii) now asserts the push trigger, and the guard
+   gains (iv) and (v) — see [Amendments](#amendments).)
 
 ## Consequences
 
@@ -175,3 +183,84 @@ A 9-axis evaluation (ADR-0027 `nine-axis` preset; decisive axes
 *essence* and *foundation*) placed E′ ahead on 8 of 9 axes, trailing A
 only on diff size (*practical-fit*), which the project's quality values
 (`best-results-over-token-minimization`) treat as non-decisive.
+
+## Amendments
+
+### 2026-10-03 — host workflows removed, CI triggers on push to any branch
+
+**Trigger**: macro subtask A1 (owner request 2026-10-03: CI, test and
+release machinery reduced to what earns its keep). This is the
+de-duplication follow-up the Negative consequences above deferred.
+
+**What changed.**
+
+- `claude-tests.yml`, `codex-tests.yml` and `cross-host-tests.yml` are
+  deleted, so Decision 4 is withdrawn. Every test file they ran was
+  already discovered by `npm test`. Their two non-test steps were also
+  duplicated: the companion-bundle drift check is
+  `tests/plugin-shape/test-companions-plugin.mjs`'s byte-identical check
+  for all three bundled scripts, and `node --check` is subsumed by the
+  companion unit tests, which import the module. Alternative C's
+  objection does not apply: the suite is not run inside both host
+  workflows; it runs once.
+- `marketplace-validate.yml` is replaced by `validate.yml`, which runs
+  the checks that are not test files: `npm run lint:plugin-shape` (kit/lint
+  over every plugin; the kit/lint tests lint only two real plugins) and
+  the catalog, version and artifact validators. It has no path filter.
+- The curated `test:plugin-shape` and `test:cross-host` npm scripts are
+  removed. Only the host workflows ran them, and an unenforced curated
+  list is this ADR's root cause. A local subset runs as
+  `npm test -- <files>`.
+- **Decision 3's triggers.** `full-tests.yml` and `validate.yml` run on
+  `push` to every branch (`branches: ['**']`, which keeps tags out) and
+  on `workflow_dispatch`. Neither has a `pull_request` trigger. The
+  reason is a GitHub rule: when a workflow creates or updates a pull
+  request with `GITHUB_TOKEN`, the resulting `pull_request` runs
+  are created in an approval-required state. release-please uses
+  `GITHUB_TOKEN`, and from 2026-07-20 every release-PR update started
+  five such runs. Unapproved, each sat with zero jobs and concluded
+  `failure` when the PR closed: 244 `failure` and 50
+  `action_required` runs. The last approval was on 2026-08-12, so the
+  release PR's CI had not run since. A push made with `GITHUB_TOKEN`
+  starts no run at all. A pull request shows the checks of its head
+  commit's push run. A branch deletion, which GitHub runs as a push on
+  the default branch's sha, is skipped by a job-level condition.
+- `AGENTIC_RELEASE_PLEASE_PR` is read from `github.ref`, since
+  `github.head_ref` is empty on a push. release-please's own pushes
+  start no run there; a person's push or a manual dispatch on that
+  branch does.
+- **Decision 5 (iii).** The guard asserts that `full-tests.yml` runs one
+  `npm test` with no matrix and the push-event env form. Two
+  invariants are added: (iv) every workflow but `release-please.yml`
+  has exactly the push-to-any-branch and dispatch trigger; (v) no
+  workflow but `full-tests.yml` runs tests.
+
+**Accepted costs** (owner decision 2026-10-03, option A over a GitHub App
+token for release-please):
+
+- Fork pull requests get no CI. None of the repository's first 844 pull
+  requests came from a fork.
+- A run tests the branch head, not the pull request's merge with its
+  base. Main's later changes are tested by the push that lands the
+  branch.
+- The release PR gets no CI before merge. It had none in practice since
+  2026-08-12. The post-sync dispatch still validates `main` after the
+  release.
+- A push event names no target branch, so the pre-merge monotonic-pin
+  baseline is the branch's fork point on `main`. The comparison against
+  `main`'s newer catalog happens on the push that lands the change
+  (ADR-0061 Decision 2, note of the same date).
+- A pull request that targets another branch is still compared against
+  `main`.
+
+**Transition and rollback.** A branch cut before this change keeps the
+old workflow files: its pushes start nothing, and with no
+`pull_request` trigger left, it gets no automatic CI until it is
+rebased onto `main` or merges it. A manual dispatch of `full-tests`
+on that branch still runs, since the old file accepts
+`workflow_dispatch`. Going back to pull-request testing is not a one-line change.
+Adding `pull_request` alongside the push trigger would start two runs
+per update of a same-repository pull request. A rollback has to change
+the triggers of both workflows, the env expression, the baseline
+selection in `validate.yml` and this guard together. It also needs a
+GitHub App token for release-please if the release PR is to get CI.

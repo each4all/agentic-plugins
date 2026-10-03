@@ -325,6 +325,18 @@ runs in one of the states below.
   structural-only pass never reports full validation.
   `marketplace-validate.yml` moves to `fetch-depth: 0`.
 
+> Note 2026-10-03 ([ADR-0033](0033-ci-full-test-suite-coverage.md)
+> amendment): CI no longer triggers on `pull_request`, so no pull request
+> base reaches the check. `validate.yml`, which replaced
+> `marketplace-validate.yml` and keeps `fetch-depth: 0`, takes the
+> baseline from the push. On `main` it is the catalog before the push. On
+> any other branch it is the branch's fork point on `main`
+> (`git merge-base`), which can predate pins that `main` has since
+> advanced. A branch is therefore checked against where it started. The
+> comparison against `main`'s newer catalog happens on the push that lands
+> it. The release job's write is still compared against the catalog before
+> the write.
+
 ### Decision 3 — On Codex, a sibling plugin resolves from the installed cache, and the snapshot is never a candidate
 
 For every cross-plugin locator, whether companion, runtime, engineer or

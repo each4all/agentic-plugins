@@ -4,7 +4,7 @@
 // the same workflow under both hosts. Hooks are simulated in-process.
 //
 // Covers both engineer (schema 1.1) and orchestrator (schema 1.0).
-// Run via `npm run test:cross-host`.
+// Discovered by `npm test`; run the cross-host files alone with `npm test -- tests/cross-host/test-*.mjs`.
 
 import { describe, it } from 'node:test';
 import { strictEqual, deepStrictEqual, ok } from 'node:assert/strict';

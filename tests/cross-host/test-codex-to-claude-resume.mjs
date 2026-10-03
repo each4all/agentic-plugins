@@ -2,7 +2,7 @@
 // resume. Reverse direction of test-claude-to-codex-resume.mjs. Same five
 // invariants per ADR-0018 §sub-decision 5; host parameter swapped.
 //
-// Run via `npm run test:cross-host`.
+// Discovered by `npm test`; run the cross-host files alone with `npm test -- tests/cross-host/test-*.mjs`.
 
 import { describe, it } from 'node:test';
 import { strictEqual, deepStrictEqual, ok } from 'node:assert/strict';

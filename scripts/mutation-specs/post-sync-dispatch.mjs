@@ -159,7 +159,7 @@ export const MUTATIONS = [
   // ---- L: the dispatched set --------------------------------------------------
   {
     id: 'L1', file: SCRIPT,
-    from: "  'cross-host-tests.yml',\n",
+    from: "  'validate.yml',\n",
     to: '',
     why: 'a workflow a normal push would start is left out of the post-sync runs',
   },
