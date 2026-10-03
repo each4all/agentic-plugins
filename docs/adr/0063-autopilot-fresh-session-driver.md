@@ -1317,7 +1317,17 @@ roots, `driver.mjs` runs the loop, and `cli.mjs` is the entry of
   A lock is a directory. Each run that wants it adds an entry of its own,
   `h-<pid>-<random>.json`, written whole. An entry records the driver and,
   while a step runs, its worker. It is stale only when both are gone, and a
-  fingerprint that cannot be read counts as live. A run holds the lock when,
+  fingerprint that cannot be read counts as live. A process that has exited
+  but that its parent has not yet reaped counts as gone, although
+  `kill(pid, 0)` still finds it. The start time is compared first: an exited
+  process that started after the recorded one is a stranger that reused the
+  pid, not the recorded process having exited (round 8). The fingerprints are the driver's own
+  (`processFingerprint`): `/proc` on Linux, and on macOS `ps` run in the C
+  locale. peer-runner's `fingerprintForPid` reads the start time in the
+  caller's locale, and its pattern fits only the C locale. Measured under
+  ko_KR on 2026-10-03: the start time then swallowed the command line. The
+  start alone could not be compared, and two processes in different locales
+  fingerprinted the same process differently. A run holds the lock when,
   after adding its entry, it finds no other live entry. Otherwise it removes
   its own entry and retries after a random pause. It is refused when another
   run already holds the lock, or on its last attempt.

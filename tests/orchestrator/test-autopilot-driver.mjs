@@ -25,7 +25,7 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const AP = resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot');
 const { startRun, DEFAULTS } = await import(resolve(AP, 'driver.mjs'));
 const L = await import(resolve(AP, 'ledger.mjs'));
-const { fingerprintForPid } = await import(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/peer-runner.mjs'));
+const fingerprintForPid = L.processFingerprint;
 const FAKE = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-fake-claude.mjs');
 const SCRIPTED = resolve(REPO_ROOT, 'tests/orchestrator/fixtures/autopilot-scripted-worker.mjs');
 

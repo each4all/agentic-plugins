@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const L = await import(resolve(REPO_ROOT, 'plugins/orchestrator/adapters/claude/autopilot/ledger.mjs'));
 const { isAutopilotRun } = await import(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs'));
-const { fingerprintForPid } = await import(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/peer-runner.mjs'));
+const fingerprintForPid = L.processFingerprint;
 
 const MACRO = 'macro-plan-20261001T000000Z-abcdef';
 const scratch = () => mkdtempSync(join(tmpdir(), 'autopilot-ledger-'));
@@ -214,6 +214,29 @@ describe('locks', () => {
     }
   });
 
+  it('a stranger that reused the worker\'s pid stays a stranger after it exits (round 8)', async () => {
+    const main = scratch();
+    const deadDriver = await deadPid();
+    // A live group under the worker's id, as an unrelated group that reused it.
+    const leader = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    try {
+      const linux = (starttime, extra = {}) => ({ kind: 'linux_proc_starttime', starttime, command: 'x', ...extra });
+      const holder = (fingerprint) => ({ ...record('run-a'), pid: deadDriver, fingerprint: { kind: 'none' }, worker: { pid: leader.pid, pgid: leader.pid, fingerprint } });
+      // Its leader exited unreaped, and it started after the recorded worker.
+      strictEqual(await L.holderAlive(holder(linux('100')), { probe: async () => linux('200', { zombie: true }) }), false, 'another process, exited: its group is not the run\'s');
+      // The recorded worker itself, exited unreaped: its group still counts.
+      strictEqual(await L.holderAlive(holder(linux('100')), { probe: async () => linux('100', { zombie: true }) }), true, 'the worker, exited, with its group still there');
+      const lock = L.macroLockPath(main, MACRO);
+      plant(lock, holder(linux('100')));
+      const b = await L.acquireLock(lock, { record: record('run-b'), probe: async (pid) => (pid === leader.pid ? linux('200', { zombie: true }) : L.processFingerprint(pid)) });
+      deepStrictEqual(holders(lock), ['run-b']);
+      b.release();
+    } finally {
+      try { process.kill(-leader.pid, 'SIGKILL'); } catch { /* gone */ }
+      rmSync(main, { recursive: true, force: true });
+    }
+  });
+
   it('only a different start proves a reused pid: a command line changed by an exec in place does not (round 6)', async () => {
     const main = scratch();
     // A live group leader whose pid the worker record names.
@@ -277,6 +300,36 @@ describe('locks', () => {
     }
   });
 
+  it('fingerprints a process in the C locale whatever the caller\'s, and marks one that exited unreaped (CI, 2026-10-03)', async (t) => {
+    if (process.platform !== 'darwin' && process.platform !== 'linux') { t.skip('no process fingerprint on this platform'); return; }
+    const saved = { LC_ALL: process.env.LC_ALL, LANG: process.env.LANG };
+    try {
+      // A caller in another locale: ps would print its start time in Korean.
+      process.env.LC_ALL = 'ko_KR.UTF-8';
+      process.env.LANG = 'ko_KR.UTF-8';
+      const self = await L.processFingerprint(process.pid);
+      if (process.platform === 'darwin') {
+        ok(/^[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4}$/.test(self.lstart), `start time in the C locale: ${self.lstart}`);
+        ok(self.command.includes(process.execPath.split('/').pop()) || self.command.includes('node'), `the command is its own field: ${self.command}`);
+      } else {
+        ok(/^\d+$/.test(self.starttime), self.starttime);
+      }
+      strictEqual(self.zombie, undefined);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+    // A child that exited while this process's event loop could not reap it.
+    const child = spawn(process.execPath, ['-e', '0']);
+    const until = Date.now() + 1500;
+    while (Date.now() < until) { /* block the loop: no reap */ }
+    const z = await L.processFingerprint(child.pid);
+    strictEqual(z.zombie, true, JSON.stringify(z));
+    const holder = { ...record('run-z'), pid: child.pid, fingerprint: { kind: 'none' }, worker: null };
+    strictEqual(await L.holderAlive(holder), false, 'an exited driver holds nothing, reaped or not');
+    strictEqual(await L.provablySame(child.pid, z), false, 'nothing to signal');
+    await new Promise((r) => { child.on('exit', r); if (child.exitCode !== null) r(); });
+  });
+
   it('provablySame needs a readable fingerprint that matches; liveness alone is not proof', async (t) => {
     const self = await fingerprintForPid(process.pid);
     strictEqual(await L.provablySame(process.pid, { kind: 'none' }), false, 'no recorded fingerprint: not proof');
@@ -297,41 +350,57 @@ describe('locks', () => {
     try {
       const lock = L.macroLockPath(main, MACRO);
       plant(lock, { ...record('stale'), pid: await deadPid(), fingerprint: { kind: 'none' }, worker: null });
-      // Each contender pauses after adding its entry until all three have
-      // added theirs, then looks again in the order given — the interleaving
-      // that gave the takeover protocol two holders.
+      // Two barriers fix the interleaving whatever the platform's timing
+      // (CI, 2026-10-03: on Linux one contender added its entry before
+      // another had looked at all): every contender passes its first look,
+      // then every one adds its entry, then they look again one at a time in
+      // the order given — the interleaving that gave the takeover protocol
+      // two holders.
+      const barrier = (n) => {
+        let count = 0;
+        let open;
+        const opened = new Promise((r) => { open = r; });
+        return async () => { count += 1; if (count === n) open(); await opened; };
+      };
       for (const order of [['A', 'B', 'C'], ['C', 'A', 'B'], ['B', 'C', 'A']]) {
-        let arrived = 0;
-        let allIn;
-        const allArrived = new Promise((r) => { allIn = r; });
+        const looked = barrier(3);
+        const created = barrier(3);
         const gates = {};
+        const gated = {};
         const contender = (name) => {
           let first = true;
+          let firstCreate = true;
           return L.acquireLock(lock, {
             record: record(name),
             attempts: 1,
             hooks: {
+              beforeCreate: async () => {
+                if (!firstCreate) return;
+                firstCreate = false;
+                await looked();
+              },
               afterCreate: async () => {
                 if (!first) return;
                 first = false;
-                arrived += 1;
-                if (arrived === 3) allIn();
-                await allArrived;
-                await new Promise((r) => { gates[name] = r; });
+                await created();
+                await new Promise((r) => { gates[name] = r; gated[name] = true; });
               },
             },
-          });
+          }).then((v) => ({ ok: true, v }), (e) => ({ ok: false, e }));
         };
         const runs = Object.fromEntries(['A', 'B', 'C'].map((n) => [n, contender(n)]));
-        await allArrived;
-        while (Object.keys(gates).length < 3) await new Promise((r) => { setImmediate(r); });
+        for (let i = 0; i < 10_000 && Object.keys(gated).length < 3; i += 1) {
+          const early = await Promise.race([...Object.values(runs), new Promise((r) => { setImmediate(() => r(null)); })]);
+          ok(early === null, `${order.join('')}: a contender finished before all three had added their entries: ${early?.e ?? 'it holds the lock'}`);
+        }
+        strictEqual(Object.keys(gated).length, 3, 'all three added their entries');
         const settled = {};
         for (const n of order) {
           gates[n]();
-          settled[n] = await runs[n].then((v) => ({ ok: true, v }), (e) => ({ ok: false, e }));
+          settled[n] = await runs[n];
         }
         const won = Object.entries(settled).filter(([, s]) => s.ok);
-        ok(won.length <= 1, `${order.join('')}: ${won.map(([n]) => n).join(', ')} all hold the lock`);
+        strictEqual(won.length, 1, `${order.join('')}: ${won.map(([n]) => n).join(', ') || 'no one'} holds the lock`);
         for (const [, s] of Object.entries(settled)) if (!s.ok) ok(s.e instanceof L.LockHeldError, String(s.e));
         for (const [, s] of won) s.v.release();
         deepStrictEqual(holders(lock).filter((h) => h !== 'stale'), [], 'every contender\'s entry is gone after its release or refusal');

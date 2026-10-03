@@ -196,7 +196,7 @@ describe('status and stop', () => {
 describe('stop, when the driver is gone', () => {
   it('empties the orphaned worker\'s whole process group — a member that ignores SIGTERM included — before it reports success (round 3)', { timeout: 60_000 }, async (t) => {
     const { spawn } = await import('node:child_process');
-    const { fingerprintForPid } = await import(resolve(REPO_ROOT, 'plugins/orchestrator/scripts/peer-runner.mjs'));
+    const fingerprintForPid = L.processFingerprint;
     const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
     await withRepo(async (fx, env, work) => {
       const pidfile = join(fx.dir, 'grandchild.pid');

@@ -274,8 +274,8 @@ export const MUTATIONS = [
   },
   {
     id: 'L4', file: LEDGER, tests: [TL],
-    from: "  if (!current || current.kind === 'none') return 'live';",
-    to: "  if (!current || current.kind === 'none') return 'dead';",
+    from: "  if (comparable && startDiffers(recorded, current)) return 'other';",
+    to: "  if (!comparable || startDiffers(recorded, current)) return 'other';",
     why: 'a fingerprint that cannot be read counts as stale, so a live run\'s lock is taken',
   },
   {
@@ -310,15 +310,39 @@ export const MUTATIONS = [
   },
   {
     id: 'L11', file: LEDGER, tests: [TL],
-    from: "  return startDiffers(recorded, current) ? 'other' : 'live';",
-    to: "  return 'other';",
+    from: "  if (comparable && startDiffers(recorded, current)) return 'other';",
+    to: "  if (comparable && !fingerprintsMatch(recorded, current)) return 'other';",
     why: 'a worker whose command line changed with an exec in place counts as a reused pid, and its live run\'s lock is taken (round 6)',
   },
   {
     id: 'L12', file: LEDGER, tests: [TL],
-    from: "  return Boolean(current && current.kind !== 'none' && fingerprintsMatch(recorded, current));",
-    to: "  return Boolean(current && current.kind !== 'none' && !startDiffers(recorded, current));",
+    from: "  return Boolean(current && current.kind !== 'none' && current.zombie !== true && fingerprintsMatch(recorded, current));",
+    to: "  return Boolean(current && current.kind !== 'none' && current.zombie !== true && !startDiffers(recorded, current));",
     why: 'stop signals a pid whose start time matches but whose command does not — proof weakened to what only keeps a lock held (round 7)',
+  },
+  {
+    id: 'L13', file: LEDGER, tests: [TL, TD],
+    from: "  if (current?.zombie === true) return 'dead';\n",
+    to: '',
+    why: 'an exited driver its parent has not reaped yet still holds its lock, and stop waits on it (CI, Linux)',
+  },
+  {
+    id: 'L14', file: LEDGER, tests: [TL],
+    from: "env: { ...process.env, LC_ALL: 'C' },",
+    to: 'env: process.env,',
+    why: 'the start time is read in the caller\'s locale, so outside the C locale it cannot be told from the command line',
+  },
+  {
+    id: 'L15', file: LEDGER, tests: [TL],
+    from: "current.kind !== 'none' && current.zombie !== true && fingerprintsMatch(recorded, current)",
+    to: "current.kind !== 'none' && fingerprintsMatch(recorded, current)",
+    why: 'an exited, unreaped process counts as proof for a signal',
+  },
+  {
+    id: 'L16', file: LEDGER, tests: [TL],
+    from: "  if (comparable && startDiffers(recorded, current)) return 'other';\n  // The recorded process, exited and not yet reaped by its parent (CI,\n  // 2026-10-03: a driver whose parent was blocked in spawnSync held its lock\n  // until the wait ended).\n  if (current?.zombie === true) return 'dead';\n",
+    to: "  if (current?.zombie === true) return 'dead';\n  if (comparable && startDiffers(recorded, current)) return 'other';\n  // The recorded process, exited and not yet reaped by its parent (CI,\n  // 2026-10-03: a driver whose parent was blocked in spawnSync held its lock\n  // until the wait ended).\n",
+    why: 'a stranger that reused the worker\'s pid and then exited is taken for the worker having exited, so its group keeps a dead run\'s lock held (round 8)',
   },
   {
     id: 'L9', file: LEDGER, tests: [TL, TD],
@@ -451,7 +475,7 @@ export const MUTATIONS = [
   },
   {
     id: 'D11', file: DRIVER, tests: [TD],
-    from: "      if (Number.isInteger(current.pid)) setWorker({ pid: current.pid, pgid: process.platform === 'win32' ? null : current.pid, fingerprint: await fingerprintForPid(current.pid), session_id: sessionId });\n      current.begin();",
+    from: "      if (Number.isInteger(current.pid)) setWorker({ pid: current.pid, pgid: process.platform === 'win32' ? null : current.pid, fingerprint: await processFingerprint(current.pid), session_id: sessionId });\n      current.begin();",
     to: '      current.begin();',
     why: 'a driver that dies after the spawn leaves a working worker no lock records',
   },

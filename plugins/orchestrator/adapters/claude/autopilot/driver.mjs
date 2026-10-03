@@ -26,7 +26,7 @@ import {
 } from './policy.mjs';
 import {
   appendStep, acquireLock, createRunDir, LockHeldError, macroLockPath, mainWorktreeRoot, newRunId,
-  workerStreamPath, worktreeLockPath, writeHalt, writeRun,
+  processFingerprint, workerStreamPath, worktreeLockPath, writeHalt, writeRun,
 } from './ledger.mjs';
 import {
   capabilityProblems, driftOf, frozenInputProblems, PLUGINS, resolveRoots,
@@ -34,7 +34,6 @@ import {
 import {
   ALLOWED_TOOLS, COMMIT_DENY, DENIED_TOOLS, claudeBin, startWorker as defaultStartWorker,
 } from './worker.mjs';
-import { fingerprintForPid } from '../../../scripts/peer-runner.mjs';
 
 // Owner decision D10 (2026-10-01): "don't worry about the budget". ADR-0063 D1
 // still requires bounds, so they are finite but out of the way.
@@ -417,7 +416,7 @@ export async function startRun({ repoRoot, options, env = process.env, out = con
       // The worker is on the locks before it has anything to do: a driver
       // that dies here leaves a worker with no prompt, which exits when its
       // stdin closes, and a lock no second run reclaims while it lives.
-      if (Number.isInteger(current.pid)) setWorker({ pid: current.pid, pgid: process.platform === 'win32' ? null : current.pid, fingerprint: await fingerprintForPid(current.pid), session_id: sessionId });
+      if (Number.isInteger(current.pid)) setWorker({ pid: current.pid, pgid: process.platform === 'win32' ? null : current.pid, fingerprint: await processFingerprint(current.pid), session_id: sessionId });
       current.begin();
       const w = await current.done;
       current = null;

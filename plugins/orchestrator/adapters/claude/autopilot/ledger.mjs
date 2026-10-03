@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isAutopilotRun } from '../../../scripts/state.mjs';
-import { fingerprintForPid, fingerprintsMatch, isProcessAlive } from '../../../scripts/peer-runner.mjs';
+import { fingerprintsMatch, isProcessAlive } from '../../../scripts/peer-runner.mjs';
 
 export const AUTOPILOT_DIR_REL = '.agentic-plugins/runs/autopilot';
 
@@ -160,6 +160,52 @@ const FRESH_UNPARSED_MS = 5_000;
 const ENTRY = /^h-(\d+)-[0-9a-f]+\.json$/;
 const TEMP = /^t-(\d+)-[0-9a-f]+\.tmp$/;
 
+/**
+ * A process's fingerprint, in the shape peer-runner's `fingerprintsMatch`
+ * compares — `{kind: 'macos_lstart_command', lstart, command}` or
+ * `{kind: 'linux_proc_starttime', starttime, command}` — plus `zombie: true`
+ * for a process that has exited and waits only for its parent to reap it,
+ * which `kill(pid, 0)` still reports as alive. `{kind: 'none'}` when it
+ * cannot be read.
+ *
+ * Not peer-runner's `fingerprintForPid`: that one parses `ps`'s start time
+ * in whatever locale the caller runs in, and its pattern only fits the C
+ * locale. Under any other, the start time swallows the command line, so the
+ * start alone could not be compared, and two processes in different locales
+ * would fingerprint the same process differently (measured: ko_KR, 2026-10-03).
+ * `ps` runs here with LC_ALL=C.
+ */
+export async function processFingerprint(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return { kind: 'none' };
+  if (process.platform === 'linux') {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      // Fields after the command name, which may itself hold ') '.
+      const rest = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+      let command = '';
+      try { command = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ').trim(); } catch { /* exited meanwhile */ }
+      const fp = { kind: 'linux_proc_starttime', starttime: rest[19], command };
+      return rest[0] === 'Z' || rest[0] === 'X' ? { ...fp, zombie: true } : fp;
+    } catch {
+      return { kind: 'none' };
+    }
+  }
+  if (process.platform === 'darwin') {
+    try {
+      const out = execFileSync('ps', ['-p', String(pid), '-o', 'stat=', '-o', 'lstart=', '-o', 'command='], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, LC_ALL: 'C' },
+      }).trim();
+      const m = /^(\S+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4})\s*([\s\S]*)$/.exec(out);
+      if (!m) return { kind: 'none' };
+      const fp = { kind: 'macos_lstart_command', lstart: m[2], command: m[3] };
+      return m[1].startsWith('Z') ? { ...fp, zombie: true } : fp;
+    } catch {
+      return { kind: 'none' };
+    }
+  }
+  return { kind: 'none' };
+}
+
 // Whether two fingerprints of one pid prove two processes: they started at
 // different times. Only the start proves it — the macOS fingerprint also holds
 // the command line, which an exec in place (a wrapper that execs claude)
@@ -177,13 +223,20 @@ function startDiffers(recorded, current) {
 async function processState(pid, recorded, probe) {
   if (!Number.isInteger(pid) || pid <= 0) return 'dead';
   if (!(await isProcessAlive(pid))) return 'dead';
-  // Unverifiable is not stale: with no recorded fingerprint, or none readable
-  // now, a live pid counts as the holder.
-  if (!recorded || recorded.kind === 'none') return 'live';
   const current = await probe(pid);
-  if (!current || current.kind === 'none') return 'live';
-  if (fingerprintsMatch(recorded, current)) return 'live';
-  return startDiffers(recorded, current) ? 'other' : 'live';
+  const comparable = Boolean(recorded && recorded.kind !== 'none' && current && current.kind !== 'none');
+  // A different start proves another process reused the pid, whether it is
+  // running or has exited — checked first, so that an exited stranger is
+  // not taken for the recorded process having exited (round 8).
+  if (comparable && startDiffers(recorded, current)) return 'other';
+  // The recorded process, exited and not yet reaped by its parent (CI,
+  // 2026-10-03: a driver whose parent was blocked in spawnSync held its lock
+  // until the wait ended).
+  if (current?.zombie === true) return 'dead';
+  // Otherwise the pid counts as the holder: the same start, whatever an exec
+  // in place did to the command line, or nothing to compare — unverifiable
+  // is not stale.
+  return 'live';
 }
 
 // Whether any process is left in a process group. Unverifiable (EPERM: a
@@ -204,7 +257,7 @@ function groupAlive(pgid) {
  * keeps the entry and halts), anything left in that group. `probe` reads a
  * pid's fingerprint (a test seam: the platform probe can fail).
  */
-export async function holderAlive(holder, { probe = fingerprintForPid } = {}) {
+export async function holderAlive(holder, { probe = processFingerprint } = {}) {
   if (!holder) return false;
   if ((await processState(holder.pid, holder.fingerprint, probe)) === 'live') return true;
   const worker = await processState(holder.worker?.pid, holder.worker?.fingerprint, probe);
@@ -222,11 +275,11 @@ export async function holderAlive(holder, { probe = fingerprintForPid } = {}) {
  * fingerprint readable and equal. Liveness above errs toward "held"; a signal
  * needs proof, so an unreadable or missing fingerprint is not enough here.
  */
-export async function provablySame(pid, recorded, { probe = fingerprintForPid } = {}) {
+export async function provablySame(pid, recorded, { probe = processFingerprint } = {}) {
   if (!Number.isInteger(pid) || pid <= 0 || !recorded || recorded.kind === 'none') return false;
   if (!(await isProcessAlive(pid))) return false;
   const current = await probe(pid);
-  return Boolean(current && current.kind !== 'none' && fingerprintsMatch(recorded, current));
+  return Boolean(current && current.kind !== 'none' && current.zombie !== true && fingerprintsMatch(recorded, current));
 }
 
 // One entry as it is now, or null once it is gone.
@@ -335,9 +388,9 @@ async function clearDebris(lock, judged) {
  * `hooks.beforeCreate` and `hooks.afterCreate` are test seams around step 2,
  * and `hooks.afterRead(phase)` one inside each scan ('check', 'recheck').
  */
-export async function acquireLock(lock, { record, now = () => Date.now(), probe = fingerprintForPid, hooks = {}, attempts = 20 }) {
+export async function acquireLock(lock, { record, now = () => Date.now(), probe = processFingerprint, hooks = {}, attempts = 20 }) {
   fs.mkdirSync(lock, { recursive: true });
-  const self = { pid: process.pid, fingerprint: await fingerprintForPid(process.pid) };
+  const self = { pid: process.pid, fingerprint: await processFingerprint(process.pid) };
   const base = { ...record, ...self, worker: null };
   const mine = path.join(lock, `h-${process.pid}-${randomBytes(6).toString('hex')}.json`);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
