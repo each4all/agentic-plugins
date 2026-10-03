@@ -4,6 +4,8 @@
 
 Accepted
 
+**Proposed to be superseded** in full by [ADR-0065](0065-release-ceremony-reduction.md) (proposed 2026-10-04); this line becomes `Superseded by ADR-0065` in the same commit that flips ADR-0065 to Accepted.
+
 <!--
 Amends ADR-0049 (§Decision 6's precondition 1 is ADDED TO, not replaced;
 precondition 2 is recorded met; the Consequences contingency premise and
