@@ -55,8 +55,10 @@ const ALIAS_VERBS = ['audit'];
 const DISPATCH_COMMANDS = ['next', 'done'];
 const LIFECYCLE_COMMANDS = ['finalize', 'abort'];
 const META_COMMANDS = ['resume', 'checkpoint', 'peer-now', 'approve'];
+// ADR-0063 D9 — Claude adapter commands with no Codex skill mirror.
+const CLAUDE_ONLY_COMMANDS = ['autopilot'];
 const DISPATCH_AND_LIFECYCLE_SKILLS = [...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS];
-const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS, ...META_COMMANDS];
+const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS, ...META_COMMANDS, ...CLAUDE_ONLY_COMMANDS];
 const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md', 'session-handoff.md'];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['_shared.mjs', 'session-start.mjs', 'pre-compact.mjs', 'stop.mjs'];
@@ -640,6 +642,49 @@ describe('plugins/orchestrator commands/', () => {
   });
 });
 
+describe('plugins/orchestrator Claude-only commands (ADR-0063 D9)', () => {
+  for (const cmd of CLAUDE_ONLY_COMMANDS) {
+    it(`/orchestrator:${cmd} has no Codex skill, and the README and the Codex manifest say so`, async () => {
+      let mirrored = true;
+      try {
+        await stat(resolve(PLUGIN_ROOT, SKILLS_REL, cmd));
+      } catch {
+        mirrored = false;
+      }
+      strictEqual(mirrored, false, `${SKILLS_REL}/${cmd}/ must not exist: the command is a Claude adapter`);
+      const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf-8');
+      ok(readme.includes(`/orchestrator:${cmd}`) && /There is no Codex skill for it: on Codex\s+the steps stay manual/.test(readme),
+        'the README states the non-parity');
+      const codex = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
+      ok(!codex.interface.longDescription.includes(cmd), 'the Codex manifest does not list it among its skills');
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf-8');
+      ok(/\*\*Claude Code only\*\* \(ADR-0063 D9\)/.test(text), `commands/${cmd}.md states it is Claude-only`);
+    });
+  }
+
+  it('the autopilot adapter ships its entry and launcher executable, and the rest as modules', async () => {
+    const dir = resolve(PLUGIN_ROOT, 'adapters/claude/autopilot');
+    const entries = (await readdir(dir)).sort();
+    deepStrictEqual(entries, ['cli.mjs', 'driver.mjs', 'launcher.template.mjs', 'ledger.mjs', 'observe.mjs', 'policy.mjs', 'roots.mjs', 'worker.mjs']);
+    for (const exe of ['cli.mjs', 'launcher.template.mjs']) {
+      const st = await stat(resolve(dir, exe));
+      ok((st.mode & 0o111) !== 0, `${exe} is executable`);
+      ok((await readFile(resolve(dir, exe), 'utf-8')).startsWith('#!/usr/bin/env node\n'), `${exe} has a node shebang`);
+    }
+  });
+
+  it('the autopilot imports nothing from another plugin (ADR-0010 §5)', async () => {
+    const dir = resolve(PLUGIN_ROOT, 'adapters/claude/autopilot');
+    for (const name of await readdir(dir)) {
+      const text = await readFile(resolve(dir, name), 'utf-8');
+      for (const m of text.matchAll(/^import [^;]*? from '([^']+)';$/gms)) {
+        const spec = m[1];
+        ok(spec.startsWith('node:') || spec.startsWith('./') || spec.startsWith('../../../scripts/'), `${name} imports ${spec}`);
+      }
+    }
+  });
+});
+
 describe('plugins/orchestrator stale-token audit', () => {
   // Stale tokens (CLAUDE-ONLY / CODEX-ONLY / [Claude] / [Codex] /
   // CODEX_HOME / omcc-research) MUST NOT appear in any orchestrator doc.
@@ -663,6 +708,7 @@ describe('plugins/orchestrator stale-token audit', () => {
     'commands/checkpoint.md',
     'commands/peer-now.md',
     'commands/audit.md',
+    'commands/autopilot.md', // ADR-0063 S8
     `${SKILLS_REL}/plan/SKILL.md`,
     `${SKILLS_REL}/next/SKILL.md`,
     `${SKILLS_REL}/done/SKILL.md`,
