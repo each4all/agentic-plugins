@@ -4,6 +4,8 @@
 
 Accepted
 
+**Proposed to be superseded** in full by [ADR-0065](0065-release-ceremony-reduction.md) (proposed 2026-10-04); this line becomes `Superseded by ADR-0065` in the same commit that flips ADR-0065 to Accepted.
+
 > Amended 2026-07-27 — see [Amendments](#amendments). `proofs[].command`
 > is reclassified `operator-attested`; the `derived` manifest check is
 > pinned to the cited tag and bound to the package; membership of every
