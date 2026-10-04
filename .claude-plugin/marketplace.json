@@ -10,7 +10,7 @@
     {
       "name": "attention",
       "source": "./plugins/attention",
-      "version": "0.9.1",
+      "version": "0.10.0",
       "description": "Attention sensors — hook-only L1 plugin whose two Claude lifecycle-hook sensors feed allowlisted runtime-owned executors (ADR-0044 §2 and ADR-0045 §2, as reduced by ADR-0064): the Stop session-capture spawn into context.mjs publish-session, and the SessionStart entry-brief spawn into context.mjs entry-brief (explicit startup matcher + explicit timeout, relaying at most one validated marker-paired line into context — the scoped ADR-0045 §2.2 stdout exception; the Stop sensor stays stdout-silent). Two capability floors that never share a constant: publish-session >= 0.82.0 and entry-brief >= 0.83.0 (both declared in data/runtime-floors.json), each gating the newest runtime resolved by manifest identity. Session capture stays inert until session_capture is opted in (evaluated publisher-side), and the entry line until the user-scope-only entry_brief key is set (evaluated arbiter-side) — each gate independent, both via runtime:settings. Zero plugin-owned Codex hook surface: no Codex manifest hooks key and no root default hooks file — the Claude registration is manifest-scoped at adapters/claude/hooks/hooks.json, outside Codex default-file discovery (ADR-0040 §3 amendment); the capture + entry firing points are Claude-only at v1 (ADR-0044 §8 / ADR-0045 §10 — Codex gets the CLI + dashboard surfaces).",
       "category": "Productivity"
     },
@@ -24,21 +24,21 @@
     {
       "name": "designer",
       "source": "./plugins/designer",
-      "version": "0.3.12",
+      "version": "0.3.13",
       "description": "Designer workbench for code-first design/UX decision & quality assurance across Claude Code & Codex CLI (ADR-0042). The third L3 persona after engineer and founder — the six cognitive verbs re-anchored to UX/UI/CTA/flow, with pre-code design thinking (flows, wireframe specs, CTA copy, IA) and a post-code quality-critique loop over rendered screenshots + frontend code, accessibility the veto gate. All six verbs, the designer:start lifecycle macro, and the resume / checkpoint / peer-now meta skills ship (ADR-0042 Accepted). Composes the image L2 capability rather than re-implementing imagery; Figma excluded in v1.",
       "category": "Development"
     },
     {
       "name": "engineer",
       "source": "./plugins/engineer",
-      "version": "0.24.1",
+      "version": "0.24.2",
       "description": "Engineer workbench for AI-assisted engineering across Claude Code & Codex CLI — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine), /engineer:start lifecycle macro, 3 workflow-continuity meta skills (resume / checkpoint / peer-now), the /engineer:commit verb-chain commit surface, and cited-brief research profile.",
       "category": "Development"
     },
     {
       "name": "founder",
       "source": "./plugins/founder",
-      "version": "0.4.12",
+      "version": "0.4.13",
       "description": "Founder workbench for AI-assisted new-business planning across Claude Code & Codex CLI — business-item discovery, ideation, concretization, and planning composition through the six cognitive verbs (ADR-0036). The second L3 persona after engineer: workflow machinery, hooks, all six verb surfaces (investigate / frame / decide / compose / critique / refine), the business ensemble protocol, the founder:start lifecycle macro, and the resume / checkpoint / peer-now meta skills — all shipped (ADR-0036 Accepted).",
       "category": "Productivity"
     },
@@ -52,7 +52,7 @@
     {
       "name": "orchestrator",
       "source": "./plugins/orchestrator",
-      "version": "0.17.0",
+      "version": "0.17.1",
       "description": "Macro orchestration capability — multi-deliverable plan + Plan-verify ensemble + same-host dispatch into engineer, lifecycle closure, and workflow-continuity meta surfaces for AI-assisted development across Claude Code & Codex CLI. L2 capability plugin per ADR-0010 4-layer composition (ADR-0018 §sub-decision-1, ADR-0019 cross-plugin invocation).",
       "category": "Productivity"
     },
