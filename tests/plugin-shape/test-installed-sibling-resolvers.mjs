@@ -1,6 +1,6 @@
 // The cross-plugin sibling resolvers: every copy of `discover-runtime.mjs`
-// (attention's two resolvers, founder's and designer's two capability
-// ladders), orchestrator's `discover-engineer.mjs`, engineer's
+// (attention's manifest-identity resolver, founder's and designer's two
+// capability ladders), orchestrator's `discover-engineer.mjs`, engineer's
 // `parent-writeback.mjs` orchestrator resolver, and runtime doctor's private
 // engineer resolver.
 //
@@ -88,12 +88,6 @@ const LOCATORS = [
       resolve: (m, a) => m.resolveRuntimePluginRoot({ ...a, capability: m.NOTIFY_CAPABILITY }),
     }),
   ]),
-  runtimeLadder('attention', {
-    id: 'attention discover-runtime (notify)',
-    capability: NOTIFY,
-    locate: (m, a) => m.locateRuntimePluginRoot(a),
-    resolve: (m, a) => m.resolveRuntimePluginRoot(a),
-  }),
   runtimeLadder('attention', {
     id: 'attention discover-runtime (newest by manifest)',
     capability: null,

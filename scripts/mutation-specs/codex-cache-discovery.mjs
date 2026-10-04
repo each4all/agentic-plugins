@@ -352,7 +352,7 @@ export const MUTATIONS = [
     id: 'C8', file: 'plugins/attention/scripts/discover-runtime.mjs', tests: [T_SIBLINGS],
     from: '    capabilityRel: null,\n',
     to: "    capabilityRel: join('scripts', 'notify.mjs'),\n",
-    why: "attention's entry-brief resolver starts filtering by notify.mjs instead of manifest identity",
+    why: "attention's runtime resolver (capture and entry brief) starts filtering by notify.mjs instead of manifest identity",
   },
   {
     id: 'C9', file: 'plugins/founder/scripts/discover-runtime.mjs', tests: [T_SIBLINGS],

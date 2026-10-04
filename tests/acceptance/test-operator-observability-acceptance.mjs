@@ -13,17 +13,12 @@
 //       -- for the two properties that inherently need injection -- the runtime's
 //       own PUBLIC `runEmit` API:
 //         - source-excluded dedupe key (source is display metadata, never the key)
-//         - default-status-token stability + approval content-hash NON-suppression,
-//           proven through the REAL attention sensor -> REAL emitter chain (no unit
-//           test wires the producer to the real emitter: the attention suite stubs
-//           notify.mjs; the notify suite stubs the producer)
 //         - kinds-filter-before-dedupe: a filtered kind must NOT burn a TTL slot
 //         - quiet-hours + urgent bypass; redaction caps; channel none/file-log
 //         - dedupe atomicity + bounded rotation under CONCURRENT racing producers
 //         - osascript argv-only (payload rides as argv, never the -e program)
-//   (b) sensor fail-closed: missing runtime / TOO-OLD runtime (below the
-//       release-gate pin, through the version gate) / malformed payload / dead
-//       channel binary -> exit 0, EMPTY stdout, the calling flow proceeds.
+//   (b) emitter fail-closed: a dead channel binary or a dispatch-stage failure
+//       -> exit 0, EMPTY stdout, the calling flow proceeds.
 //   (c) `runtime:dashboard` aggregate over fixture state -- all three personas
 //       incl. the founder namespace, Tier 2 freshness, notify-state health.
 //   (d) `runtime:settings --notification-plan` M1 no-host-write -- the Codex
@@ -32,6 +27,12 @@
 //       persona self-sensor STATICALLY/DYNAMICALLY/re-export imports the runtime
 //       emit substrate (notify.mjs / notify-schema.mjs) -- it is reached only by
 //       subprocess (the emitter) or copy (the sec.1 contract lib).
+//
+// ADR-0064 Decision 1 removed attention's notification sensors (Notification,
+// SubagentStop, and the Stop notification stage), and with them this suite's
+// attention -> emitter chain cases and the sensor fail-closed cases; the Stop
+// and SessionStart sensors that remain are covered by
+// tests/plugin-shape/test-attention-plugin.mjs.
 //
 // Two properties cannot be observed through the fire-and-forget CLI and use the
 // runtime's OWN public `notify.mjs` API instead (documented, deliberate -- NOT a
@@ -76,12 +77,6 @@ const RUNTIME_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
 const NOTIFY_CLI = resolve(RUNTIME_ROOT, 'scripts/notify.mjs');
 const DASHBOARD_CLI = resolve(RUNTIME_ROOT, 'scripts/dashboard.mjs');
 const SETTINGS_CLI = resolve(RUNTIME_ROOT, 'scripts/settings.mjs');
-const ATTENTION_ROOT = resolve(REPO_ROOT, 'plugins/attention');
-const SENSORS = Object.freeze({
-  notification: resolve(ATTENTION_ROOT, 'adapters/claude/hooks/notification.mjs'),
-  stop: resolve(ATTENTION_ROOT, 'adapters/claude/hooks/stop.mjs'),
-  subagentStop: resolve(ATTENTION_ROOT, 'adapters/claude/hooks/subagent-stop.mjs'),
-});
 
 // The notify state layout (ADR-0040 sec.1; canonical: notify-schema.mjs
 // notifyStateDir). Hardcoded here -- a black-box observer reads the documented
@@ -205,32 +200,6 @@ async function listClaims(root) {
   }
 }
 
-function runSensor(sensorPath, payload, { runtimeRoot, home }) {
-  return runNode([sensorPath], {
-    input: JSON.stringify(payload),
-    env: { HOME: home, AGENTIC_RUNTIME_ROOT: runtimeRoot },
-  });
-}
-
-// A runtime stub the version gate can reject/accept: manifest version + a
-// notify.mjs presence marker are all discover-runtime inspects. Crucially, the
-// stub's notify.mjs writes a `<root>/INVOKED` marker WHEN RUN -- so a too-old
-// test can prove the version gate rejected the runtime BEFORE spawning it
-// (marker absent), not merely that a no-op stub emitted nothing (which would
-// pass even if the gate were removed -- the Codex-caught hollow-test trap).
-async function makeRuntimeStub(version) {
-  const root = tmp(`runtime-stub-${version.replace(/[^0-9a-z]/gi, '')}`);
-  await mkdir(join(root, '.claude-plugin'), { recursive: true });
-  await mkdir(join(root, 'scripts'), { recursive: true });
-  await writeFile(join(root, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'runtime', version }));
-  const marker = join(root, 'INVOKED');
-  await writeFile(
-    join(root, 'scripts/notify.mjs'),
-    `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(marker)}, 'invoked');\n`,
-  );
-  return { root, marker };
-}
-
 // ===========================================================================
 // (a1) Emit pipeline -- dedupe key, kinds filter, channels, redaction, fail-closed
 //      (fully black-box, real `notify.mjs emit`)
@@ -343,70 +312,6 @@ describe('ADR-0040 acceptance (a1) -- emit pipeline through the real notify.mjs 
     strictEqual(noRepo.stdout, '');
 
     strictEqual((await readLog(root)).length, 0, 'no invalid input produced a notification');
-  });
-});
-
-// ===========================================================================
-// (a2) Producer -> emitter END-TO-END (real attention sensor -> real notify.mjs)
-//      The integration proof no unit test provides: the sensor BUILDS the id and
-//      the REAL emitter dedupes it. Covers the default-status-token stability and
-//      the approval content-hash NON-suppression producer contracts, at the system level.
-// ===========================================================================
-
-describe('ADR-0040 acceptance (a2) -- sensor -> real emitter chain (file-log observable)', () => {
-  let root;
-  let home;
-  before(async () => {
-    root = await markerRepo('e2e');
-    home = fixtureHome();
-    await writeConfig(root, { notify_channel: 'file-log' });
-  });
-  after(async () => {
-    await rm(root, { recursive: true, force: true });
-  });
-
-  it('approval content-hash: two DIFFERENT prompts both fire; the SAME prompt dedupes', async () => {
-    // Distinct messages -> distinct content-hash subjects -> both dispatch.
-    const bash = runSensor(SENSORS.notification, {
-      cwd: root, session_id: 's-appr', notification_type: 'permission_prompt', message: 'Allow Bash?',
-    }, { runtimeRoot: RUNTIME_ROOT, home });
-    const edit = runSensor(SENSORS.notification, {
-      cwd: root, session_id: 's-appr', notification_type: 'permission_prompt', message: 'Allow Edit?',
-    }, { runtimeRoot: RUNTIME_ROOT, home });
-    // Re-fire of the FIRST prompt -> same subject -> dedupes (no third line).
-    const bashAgain = runSensor(SENSORS.notification, {
-      cwd: root, session_id: 's-appr', notification_type: 'permission_prompt', message: 'Allow Bash?',
-    }, { runtimeRoot: RUNTIME_ROOT, home });
-    for (const r of [bash, edit, bashAgain]) {
-      strictEqual(r.status, 0);
-      strictEqual(r.stdout, '');
-    }
-    const approvals = (await readLog(root)).filter((rec) => rec.kind === 'approval');
-    strictEqual(approvals.length, 2, 'two distinct prompts fire; the repeat is suppressed');
-    strictEqual(approvals.every((rec) => rec.urgency === 'urgent'), true, 'approval events are urgent');
-    strictEqual(new Set(approvals.map((rec) => rec.event_id)).size, 2, 'the two live approvals carry distinct ids');
-  });
-
-  it('turn-complete default status token is stable: same subject dedupes, distinct prompt fires', async () => {
-    // Same session+prompt observed twice -> same fixed "fired" token -> one line.
-    const a = runSensor(SENSORS.stop, { cwd: root, session_id: 's-turn', prompt_id: 'p1' }, { runtimeRoot: RUNTIME_ROOT, home });
-    const b = runSensor(SENSORS.stop, { cwd: root, session_id: 's-turn', prompt_id: 'p1' }, { runtimeRoot: RUNTIME_ROOT, home });
-    // A different prompt -> different subject -> a second line.
-    const c = runSensor(SENSORS.stop, { cwd: root, session_id: 's-turn', prompt_id: 'p2' }, { runtimeRoot: RUNTIME_ROOT, home });
-    for (const r of [a, b, c]) {
-      strictEqual(r.status, 0);
-      strictEqual(r.stdout, '');
-    }
-    const turns = (await readLog(root)).filter((rec) => rec.kind === 'turn-complete');
-    strictEqual(turns.length, 2, 'the re-observed subject dedupes to one; the distinct prompt adds a second');
-    // The default status token is CONCRETELY the ':fired' suffix (ADR-0040 §1),
-    // and each id carries the turn-complete kind segment -- so stability here is
-    // the fixed token, not an accident of some other status value.
-    strictEqual(
-      turns.every((rec) => rec.event_id.includes(':turn-complete:') && rec.event_id.endsWith(':fired')),
-      true,
-      'turn-complete ids carry the fixed default status token :fired',
-    );
   });
 });
 
@@ -598,81 +503,10 @@ describe('ADR-0040 acceptance (a) -- concurrent racing producers', () => {
 });
 
 // ===========================================================================
-// (b) Sensor fail-closed -- missing / too-old / malformed / dead-channel
+// (b) Emitter fail-closed -- dead channel / dispatch failure
 // ===========================================================================
 
-describe('ADR-0040 acceptance (b) -- sensors fail closed, the calling flow proceeds', () => {
-  const ALL = Object.values(SENSORS);
-  const payload = (root) => ({
-    cwd: root,
-    session_id: 's-b',
-    prompt_id: 'p-b',
-    notification_type: 'permission_prompt',
-    message: 'Allow?',
-    agent_id: 'agent-b',
-  });
-
-  it('MISSING runtime -> every sensor exits 0, EMPTY stdout, emits nothing', async () => {
-    const root = await markerRepo('b-missing');
-    const home = fixtureHome();
-    await writeConfig(root, { notify_channel: 'file-log' });
-    for (const sensor of ALL) {
-      const r = runSensor(sensor, payload(root), { runtimeRoot: join(root, 'no-such-runtime'), home });
-      strictEqual(r.status, 0);
-      strictEqual(r.stdout, '');
-    }
-    strictEqual((await readLog(root)).length, 0, 'an unresolvable runtime emits nothing');
-  });
-
-  it('TOO-OLD runtime (below the release-gate pin) -> version gate rejects; nothing emits', async () => {
-    const root = await markerRepo('b-tooold');
-    const home = fixtureHome();
-    await writeConfig(root, { notify_channel: 'file-log' });
-    // A runtime declaring a version below the release-gate pin (0.71.0). The
-    // sensor's discover-runtime version-gates even the AGENTIC_RUNTIME_ROOT
-    // override, so this exercises the gate against the RELEASED floor -- not
-    // merely the source tree, which passes.
-    const stale = await makeRuntimeStub('0.0.1');
-    for (const sensor of ALL) {
-      const r = runSensor(sensor, payload(root), { runtimeRoot: stale.root, home });
-      strictEqual(r.status, 0, 'a too-old runtime never breaks the hook lifecycle');
-      strictEqual(r.stdout, '');
-    }
-    strictEqual((await readLog(root)).length, 0, 'the version gate suppressed every emit');
-    // The load-bearing assertion (Codex-caught): the stale stub's notify.mjs
-    // writes an INVOKED marker if ever executed. Its ABSENCE proves the gate
-    // rejected the runtime BEFORE spawning -- if the gate were removed, the
-    // no-op-vs-rejected outcomes would be indistinguishable by log count alone.
-    await stat(stale.marker).then(
-      () => { throw new Error('the too-old runtime was SPAWNED -- the version gate did not reject it'); },
-      (err) => strictEqual(err.code, 'ENOENT', `unexpected stat error: ${err.code}`),
-    );
-  });
-
-  it('CONTRAST: a runtime AT the pin resolves and the sensor DOES emit (the gate discriminates)', async () => {
-    const root = await markerRepo('b-ok');
-    const home = fixtureHome();
-    await writeConfig(root, { notify_channel: 'file-log' });
-    // The real runtime (source tree) is >= the pin; a bare Stop dispatches.
-    const r = runSensor(SENSORS.stop, { cwd: root, session_id: 's-ok', prompt_id: 'p-ok' }, { runtimeRoot: RUNTIME_ROOT, home });
-    strictEqual(r.status, 0);
-    strictEqual(r.stdout, '');
-    strictEqual((await readLog(root)).length, 1, 'a pin-satisfying runtime lets the sensor emit -- proving the too-old case was the gate, not a dead path');
-  });
-
-  it('MALFORMED payload -> every sensor exits 0 with EMPTY stdout', async () => {
-    const home = fixtureHome();
-    for (const sensor of ALL) {
-      for (const input of ['', '{not json', 'null', '[]']) {
-        const r = runNode([sensor], {
-          input, env: { HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT },
-        });
-        strictEqual(r.status, 0, `${sensor} on ${JSON.stringify(input)}`);
-        strictEqual(r.stdout, '');
-      }
-    }
-  });
-
+describe('ADR-0040 acceptance (b) -- the emitter fails closed, the calling flow proceeds', () => {
   it('DEAD channel binary -> the emitter catches the dispatch failure (exit 0), never throws', async () => {
     const root = await markerRepo('b-dead');
     const home = fixtureHome();

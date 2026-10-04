@@ -27,10 +27,11 @@
 //       it), observed as DURABLE filesystem state (dedupe claims + throttle
 //       records + mirror rows). The ADR calls this out explicitly for acceptance
 //       "so the two rules do not read as contradictory".
-//   (E) cross-host -- ONE channel serves BOTH hosts: the REAL Claude attention
-//       Notification sensor AND the REAL rendered Codex notify= shuttle each
-//       drive the REAL notify.mjs emitter to a telegram egress attempt (no unit
-//       wires a real producer to egress; each host adapter is exercised).
+//   (E) the REAL rendered Codex notify= shuttle drives the REAL notify.mjs
+//       emitter to a telegram egress attempt (no unit wires a real producer to
+//       egress). The Claude attention Notification sensor that also fed this
+//       channel, and the attention producer cases of (E2) and (L), were removed
+//       with that sensor by ADR-0064 Decision 1.
 //   (G) the ADR-0010 §5 subprocess-only boundary: no attention sensor and no
 //       persona self-sensor STATICALLY/DYNAMICALLY/re-export imports the runtime
 //       emit substrate -- notify.mjs, notify-schema.mjs, OR the new egress-*.mjs
@@ -99,14 +100,6 @@ import { runNode, scrubAmbientEgressEnv } from './_helpers.mjs';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const RUNTIME_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
 const NOTIFY_CLI = resolve(RUNTIME_ROOT, 'scripts/notify.mjs');
-const ATTENTION_ROOT = resolve(REPO_ROOT, 'plugins/attention');
-const NOTIFICATION_SENSOR = resolve(ATTENTION_ROOT, 'adapters/claude/hooks/notification.mjs');
-// The REAL Claude attention Stop sensor — the ONE producer that borns the ADR-0041
-// §3a closed-vocabulary headline (deriveHeadlineToken maps a fresh workflow-terminal
-// projection's archive_gate → a status token). The (L) real-producer gate drives it
-// end-to-end so the headline is proven through an actual sensor, not only synthetic
-// event JSON (Codex PEER-10).
-const STOP_SENSOR = resolve(ATTENTION_ROOT, 'adapters/claude/hooks/stop.mjs');
 const SHUTTLE_TEMPLATE = resolve(RUNTIME_ROOT, 'receivers/codex-notify-shuttle.mjs');
 
 // HERMETICITY (peer CRITICAL): the owner DOGFOODS this channel with a LIVE
@@ -211,46 +204,6 @@ function writeVerifiedLocal(home, kv) {
   const file = join(dir, 'config.local.toml');
   writeFileSync(file, `${body}\n`, { mode: 0o600 });
   return file;
-}
-
-// Stage a FRESH terminal workflow projection + its ADR-0039 footer-rendered marker
-// so the REAL attention Stop sensor's readFreshProjection accepts it and borns a
-// workflow-terminal headline (deriveHeadlineToken maps archive_gate → a status
-// token). Black-box: the on-disk layout is reproduced verbatim (canonical home +
-// per-persona marker filename), never by importing the sensor. Written just before
-// the sensor runs, so the projection mtime is inside HANDOFF_FRESHNESS_MS of the
-// sensor's real Date.now() (no clock injection into a real subprocess). Returns the
-// projection file path. Defaults yield archive_gate='ready_to_archive' → 'complete'.
-function writeFreshProjection(root, persona, {
-  workflowId,
-  archiveGate = 'ready_to_archive',
-  phase = 'phase-7',
-  nextAction = 'Commit the change',
-  workflowKind = persona,
-} = {}) {
-  const dir = join(root, '.agentic-plugins', 'state', persona);
-  mkdirSync(dir, { recursive: true });
-  const projectionFile = join(dir, 'last-session-handoff.json');
-  const projection = {
-    workflow_id: workflowId,
-    workflow_kind: workflowKind,
-    archive_gate: archiveGate,
-    phase,
-    next_action: nextAction,
-    workflow_path: join(dir, 'workflows', `${workflowId}.md`),
-  };
-  writeFileSync(projectionFile, `${JSON.stringify(projection)}\n`);
-  // Per-persona marker filename shape (canonical: attention sensor footerMarkerFileFor
-  // / the personas' session-handoff writers): engineer keys one marker per projection
-  // slot; orchestrator bakes a filesystem-safe workflow id into the name.
-  const markerName = persona === 'orchestrator'
-    ? `last-session-handoff.json.${String(workflowId).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128) || 'unknown'}.footer-rendered`
-    : 'last-session-handoff.json.footer-rendered';
-  // `at` is the render-moment transition anchor the attention sensor gates on
-  // (ADR-0043 §3 four-persona extension) — a dated rendered marker is what the
-  // persona writers actually produce.
-  writeFileSync(join(dir, markerName), `${JSON.stringify({ workflow_id: workflowId, status: 'rendered', at: new Date().toISOString() })}\n`);
-  return projectionFile;
 }
 
 // A §1 event_id: <repoIdent>:<kind>:<subject>:<status>, colon-free repoIdent +
@@ -942,12 +895,11 @@ describe('ADR-0041 acceptance (D) -- attempt-mirror + dedupe-failure taxonomy as
 });
 
 // ===========================================================================
-// (E) cross-host -- ONE channel serves BOTH hosts: the REAL Claude Notification
-//     sensor AND the REAL rendered Codex notify= shuttle each reach a telegram
-//     egress attempt through the REAL emitter. Network-free (no token).
+// (E) the REAL rendered Codex notify= shuttle reaches a telegram egress attempt
+//     through the REAL emitter. Network-free (no token).
 // ===========================================================================
 
-describe('ADR-0041 acceptance (E) -- one channel serves both host producers (real sensor + real shuttle)', () => {
+describe('ADR-0041 acceptance (E) -- the Codex host producer reaches the channel (real shuttle)', () => {
   // Egress env WITHOUT a token: activation engages (channel + recipient) but the
   // real notify.mjs resolves missing-credential BEFORE the pinned request -> no
   // socket. The acceptance signal is the mirrored telegram attempt.
@@ -964,30 +916,6 @@ describe('ADR-0041 acceptance (E) -- one channel serves both host producers (rea
       TELEGRAM_BOT_TOKEN: undefined,
     };
   }
-
-  it('the REAL Claude attention Notification sensor drives a telegram egress attempt (host-woven hostname mirrored)', () => {
-    const root = markerRepo('E-claude');
-    const home = fixtureHome();
-    const payload = {
-      cwd: root,
-      session_id: 'sess-claude-1',
-      notification_type: 'permission_prompt',
-      message: 'Allow write to config?',
-    };
-    const res = runNode([NOTIFICATION_SENSOR], {
-      input: JSON.stringify(payload),
-      env: producerEnv(home),
-    });
-    // The sensor's emitEvent uses spawnSync (synchronous) -> the mirror is
-    // written before the sensor process exits; no polling needed.
-    strictEqual(res.status, 0, `sensor must be fail-closed exit 0; stderr:\n${res.stderr}`);
-    const rows = egressRows(root);
-    ok(rows.length >= 1, `a telegram egress attempt was mirrored; sensor stderr:\n${res.stderr}`);
-    strictEqual(rows[0].egress_channel, 'telegram');
-    strictEqual(rows[0].kind, 'approval', 'the real approval event drove the egress');
-    strictEqual(rows[0].hostname, 'accept-host', 'the §4 host-woven routing field rides the mirror');
-    ok(!dumpNotifyState(root).includes('Allow write to config?'), 'the approval message (local body) never egresses/persists in an egress artifact');
-  });
 
   it('the REAL rendered Codex notify= shuttle drives a telegram egress attempt through the same emitter', async () => {
     const root = markerRepo('E-codex');
@@ -1011,44 +939,6 @@ describe('ADR-0041 acceptance (E) -- one channel serves both host producers (rea
     strictEqual(rows[0].egress_channel, 'telegram', 'the same channel serves the Codex host');
     // ADR-0047 §5: the shuttle remaps agent-turn-complete → response-needed.
     strictEqual(rows[0].kind, 'response-needed', 'the real codex-notify response-needed event drove the egress');
-  });
-});
-
-// ===========================================================================
-// (E2) §4/§8 cross-machine identity -- hostname weaves into the event_id so two
-//      machines converging on ONE chat stay DISTINCT (not deduped into one),
-//      while the same machine/session dedupes. Proven black-box through the REAL
-//      attention sensor. The event_id is channel-agnostic (the sensor builds it
-//      identically for local + egress), so the deterministic file-log channel
-//      proves the SAME dedupe key that egress rides -- a promoted claim the
-//      network-free missing-token egress path cannot exercise (it releases).
-// ===========================================================================
-
-describe('ADR-0041 acceptance (E2) -- hostname weaves into event_id for cross-machine distinctness', () => {
-  it('two machines (same repo/session/message, different hostname) stay DISTINCT; the same machine dedupes', () => {
-    const root = markerRepo('E2-hostid');
-    const home = fixtureHome();
-    writeConfig(root, { notify_channel: 'file-log' });
-    // Identical hook payload on every "machine" -- only AGENTIC_NOTIFY_HOSTNAME
-    // differs, exactly the multi-machine ssh+tmux case (§8).
-    const payload = { cwd: root, session_id: 'sess-shared', notification_type: 'permission_prompt', message: 'identical approval' };
-    const run = (hostname) => runNode([NOTIFICATION_SENSOR], {
-      input: JSON.stringify(payload),
-      env: { HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, AGENTIC_NOTIFY_HOSTNAME: hostname },
-    });
-    strictEqual(run('machine-A').status, 0);
-    strictEqual(run('machine-B').status, 0);
-    let rows = readLog(root);
-    strictEqual(rows.length, 2, 'two machines -> two notifications (hostname prevents cross-machine dedupe, §8)');
-    ok(
-      rows[0].event_id !== rows[1].event_id,
-      'the hostname is woven into the event_id -- if it were removed from buildEventId these would collide',
-    );
-    // Machine A fires AGAIN (identical session/message/hostname): the SAME
-    // event_id -> the ADR-0040 dedupe suppresses it (the key incorporates hostname).
-    strictEqual(run('machine-A').status, 0);
-    rows = readLog(root);
-    strictEqual(rows.length, 2, 'the same machine/session dedupes -- A repeats collapse onto the first A claim');
   });
 });
 
@@ -1209,9 +1099,9 @@ describe('ADR-0041 acceptance (J) -- provider-outcome classification matrix', ()
 
 // ===========================================================================
 // (L) ADR-0041 §3a -- the OPT-IN closed-vocabulary `headline` status token. The
-//     headline is the SINGLE highest-leak-risk egress field (it is the only one the
-//     attention producer borns from workflow STATE), so this gate proves, END-TO-END
-//     through the real runEmit pipeline + one REAL attention producer, that:
+//     headline is the SINGLE highest-leak-risk egress field (the attention producer
+//     born it from workflow STATE until ADR-0064 removed it), so this gate proves,
+//     END-TO-END through the real runEmit pipeline, that:
 //       * a non-vocab value (secret / markup / control / newline / padded / wrong-
 //         case / unknown) is DROPPED, never coerced or truncated-leaked (the vocab
 //         gate sits UPSTREAM of the cap, so a secret never even reaches scrubCap);
@@ -1224,7 +1114,7 @@ describe('ADR-0041 acceptance (J) -- provider-outcome classification matrix', ()
 //         carrying any of them (source isolation);
 //       * the credential still leaks to NOWHERE while a headline is present.
 //     Injection-dependent scans reuse the (A)/(H) transport double (fake token, no
-//     socket); the one real-producer path drives the actual attention Stop sensor.
+//     socket).
 // ===========================================================================
 
 describe('ADR-0041 acceptance (L) -- the opt-in closed-vocabulary headline status token (§3a)', () => {
@@ -1431,75 +1321,6 @@ describe('ADR-0041 acceptance (L) -- the opt-in closed-vocabulary headline statu
     strictEqual(row.headline, 'complete', 'the headline rode the mirror on the network-free CLI path');
     assertNoTokenLeak(dumpNotifyState(root), 'persisted state contents (headline present)');
     assertNoTokenLeak(dumpNotifyPaths(root), 'persisted state filenames (headline present)');
-  });
-
-  // The ONE real-producer path (Codex PEER-10): drive the ACTUAL attention Stop sensor
-  // so the headline is born by the real deriveHeadlineToken from a real fresh
-  // projection, not hand-woven event JSON. Network-free (missing credential, like the
-  // (E) producer gate): the acceptance signal is the mirrored attempt row carrying the
-  // headline. The sensor's emitEvent uses a synchronous spawnSync, so the mirror lands
-  // before the sensor exits (no polling).
-  function stopEnv(home, extra = {}) {
-    return {
-      HOME: home,
-      AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT,
-      AGENTIC_NOTIFY_HOSTNAME: 'accept-host',
-      AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
-      TELEGRAM_CHAT_ID: FAKE_CHAT_ID,
-      ...extra,
-      // network-free: missing-credential resolves before the pinned request. The
-      // deletion MUST stay after `...extra`, or an `extra` token would resurrect.
-      TELEGRAM_BOT_TOKEN: undefined,
-    };
-  }
-  function runStop(root, home, extra) {
-    const workflowId = 'compose-20260115T120000Z-abc123';
-    writeFreshProjection(root, 'engineer', { workflowId, archiveGate: 'ready_to_archive' });
-    const payload = { cwd: root, session_id: 'sess-stop-1', prompt_id: 'prompt-1' };
-    return runNode([STOP_SENSOR], {
-      input: JSON.stringify(payload),
-      env: stopEnv(home, extra),
-    });
-  }
-
-  it('L7 §3a -- the REAL attention Stop sensor borns a headline that rides the egress mirror (opt-in ON, one real producer path)', () => {
-    const root = markerRepo('L-realheadline-on');
-    const home = fixtureHome();
-    const res = runStop(root, home, { AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' });
-    strictEqual(res.status, 0, `the Stop sensor is fail-closed exit 0; stderr:\n${res.stderr}`);
-    const rows = egressRows(root);
-    ok(rows.length >= 1, `a telegram egress attempt was mirrored; sensor stderr:\n${res.stderr}`);
-    // kind='workflow-terminal' proves readFreshProjection ACCEPTED the fixture (a
-    // degraded/stale projection would yield a bare 'turn-complete' with no headline), so
-    // the headline is genuinely deriveHeadlineToken(ready_to_archive)-born, not hand-woven.
-    strictEqual(rows[0].kind, 'workflow-terminal', 'the real fresh terminal projection drove the egress (not a bare turn-complete)');
-    strictEqual(rows[0].headline, 'complete', 'the real deriveHeadlineToken(ready_to_archive) headline rode the mirror');
-    // Pin the SPECIFIC network-free path (coarse 'suppressed' alone also matches other
-    // suppressions): missing-credential resolved missing-token before the pinned request.
-    strictEqual(rows[0].egress_status, 'suppressed', 'the network-free (missing-credential) attempt was mirrored, not sent');
-    strictEqual(rows[0].egress_outcome, 'missing-token', 'the specific missing-token path ran');
-    // SCOPE (Codex): this proves real-producer → MIRROR. real-producer → Telegram BODY
-    // cannot be observed here (the sensor spawns notify.mjs detached; no fetchImpl seam),
-    // so L1/L2 prove event.headline → body with the identical token, and K2 (opt-in real
-    // smoke) exercises the real transport DISPATCH — the composition is the end-to-end proof.
-  });
-
-  it('L7 §3a DEFAULT-OFF through the real producer -- the RUNTIME omits the real producer headline without the opt-in', () => {
-    const root = markerRepo('L-realheadline-off');
-    const home = fixtureHome();
-    // Same real producer + accepted projection as L7-ON (which established the sensor
-    // borns 'complete'); here the opt-in is ABSENT, so the RUNTIME gate drops it from the
-    // mirror. NOTE (Codex): the raw producer event is not observable (emitEvent ignores
-    // the child's stdio), so this test alone cannot distinguish "runtime dropped it" from
-    // a producer that wrongly gated BIRTH on the opt-in — L7-ON (identical fixture, opt-in
-    // ON, headline present) is what pins the producer as opt-in-independent; this pins the
-    // runtime egress gate.
-    const res = runStop(root, home);
-    strictEqual(res.status, 0, `the Stop sensor is fail-closed exit 0; stderr:\n${res.stderr}`);
-    const rows = egressRows(root);
-    ok(rows.length >= 1, `a telegram egress attempt was mirrored; sensor stderr:\n${res.stderr}`);
-    strictEqual(rows[0].kind, 'workflow-terminal', 'the same real terminal projection drove the egress');
-    strictEqual(rows[0].headline, undefined, 'no opt-in → the real producer headline is NOT egressed');
   });
 });
 

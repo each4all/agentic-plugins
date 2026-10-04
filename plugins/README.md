@@ -6,17 +6,21 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
 
 ## Shipped plugins
 
-- **`attention/`** — hook-only L1 attention sensors per
-  [ADR-0040 §3](../docs/adr/0040-operator-observability.md): Claude
-  `Notification` (permission_prompt → approval/urgent, idle_prompt →
-  idle), `Stop` (workflow-terminal behind a freshness-checked
-  session-handoff projection read, else bare turn-complete), and
-  `SubagentStop` (subagent-complete) sensors that resolve the runtime
-  plugin root via a version-gated `discover-runtime.mjs` copy
-  (runtime ≥ 0.71.0) and shell out to `notify.mjs emit`. **Hook-only**
-  — hooks + sensor scripts, no skills/verbs/state machinery, the
-  hook-bearing sibling of the script-only shape; fail-closed silent
-  observers (exit 0 always, never stdout, no decision output); zero
+- **`attention/`** — hook-only L1 Claude lifecycle sensors per
+  [ADR-0040 §3](../docs/adr/0040-operator-observability.md), as amended
+  by ADR-0044 §2, ADR-0045 §2 and
+  [ADR-0064](../docs/adr/0064-runtime-surface-reduction.md) Decision 1:
+  `Stop` spawns the runtime's `context.mjs publish-session` (session
+  capture, relaying fresh workflow evidence from a freshness-checked
+  session-handoff projection read) and `SessionStart` (`startup`
+  matcher) spawns `context.mjs entry-brief` and relays at most one
+  validated entry-brief line. Both resolve the newest runtime by
+  manifest identity through a copied `discover-runtime.mjs` and gate it
+  on their own floor (publish-session ≥ 0.82.0, entry-brief ≥ 0.83.0).
+  **Hook-only** — hooks + sensor scripts, no skills/verbs/state
+  machinery, the hook-bearing sibling of the script-only shape;
+  fail-closed observers (exit 0 always, no decision output, stdout only
+  for the one validated entry-brief line); zero
   Codex hook surface (no Codex manifest `hooks` key AND no root default
   file — the Claude registration is manifest-declared at
   `adapters/claude/hooks/hooks.json`, outside Codex default-file

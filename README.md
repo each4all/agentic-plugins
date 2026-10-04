@@ -26,11 +26,12 @@ bridges implemented and tested:
 
 Eight installable plugins ship in this repository:
 
-- [`plugins/attention/`](plugins/attention/) — hook-only L1 attention
-  sensors per [ADR-0040 §3](docs/adr/0040-operator-observability.md):
-  Claude `Notification` / `Stop` / `SubagentStop` sensors emitting into
-  the runtime notification pipeline via a version-gated runtime
-  discovery ladder; manifest-declared Claude hook registration and zero
+- [`plugins/attention/`](plugins/attention/) — hook-only L1 Claude
+  lifecycle sensors per [ADR-0040 §3](docs/adr/0040-operator-observability.md),
+  as amended by ADR-0044, ADR-0045 and ADR-0064: a `Stop` sensor that
+  spawns the runtime session-capture publisher and a `SessionStart`
+  sensor that relays the runtime entry brief, each gated on its own
+  runtime floor; manifest-declared Claude hook registration and zero
   Codex hook surface
 - [`plugins/companions/`](plugins/companions/) — script-only library
   plugin that bundles the canonical companion CLIs for cache-glob
