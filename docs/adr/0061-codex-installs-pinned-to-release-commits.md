@@ -337,6 +337,18 @@ runs in one of the states below.
 > it. The release job's write is still compared against the catalog before
 > the write.
 
+> **Amended 2026-10-04 by [ADR-0065](0065-release-ceremony-reduction.md).**
+> "Release-PR lag" and the first-release exemption are keyed on content, not
+> on the release-please branch or on any tag in the repository: in the commit
+> that changes a package's `.release-please-manifest.json` version, its pin
+> may stand at the version the manifest held before, and a package with no
+> release tag reachable from that commit's first parent may have no Codex
+> entry. A check that asks whether a package is released counts only tags
+> reachable from the commit under test. Every other state is checked strictly,
+> and the writer always is. The evidence store is withdrawn, so nothing
+> recognizes the sync commit's subject any more; the subject stays as it is.
+> See ADR-0065 Decision 8.
+
 ### Decision 3 — On Codex, a sibling plugin resolves from the installed cache, and the snapshot is never a candidate
 
 For every cross-plugin locator, whether companion, runtime, engineer or
@@ -471,6 +483,13 @@ Machine acceptance (Decision 5 (b)) records a fresh `runtime:doctor` proof
 and the evidence-loop record that `AGENTS.md` §Release process requires. The
 record includes each resolved sibling root, the receivers' state, and an
 eight-package comparison of the Codex cache against the pinned trees.
+
+> **Amended 2026-10-04 by [ADR-0065](0065-release-ceremony-reduction.md).**
+> Machine acceptance runs the same checks — a fresh `runtime:doctor` proof,
+> each resolved sibling root, the receivers' state and the eight-package cache
+> comparison — but records no evidence-loop record; ADR-0065 withdrew the
+> store. The owner's machine's acceptance stays recorded in the frozen
+> `docs/assurance/evidence/records/the-machine-that-took-the-pins.json`.
 
 ## Consequences
 

@@ -264,3 +264,13 @@ per update of a same-repository pull request. A rollback has to change
 the triggers of both workflows, the env expression, the baseline
 selection in `validate.yml` and this guard together. It also needs a
 GitHub App token for release-please if the release PR is to get CI.
+
+> **Amended 2026-10-04 by [ADR-0065](0065-release-ceremony-reduction.md).** The
+> branch-keyed allowance (`AGENTIC_RELEASE_PLEASE_PR`, Decision 3) is replaced
+> by one keyed on content: only a commit that itself changes a package's
+> version in `.release-please-manifest.json` may see the catalogs trail that
+> change (ADR-0065 Decision 8). Decision 5 (iii) no longer asserts the
+> release-please env wiring, which is gone. The accepted cost "The post-sync
+> dispatch still validates `main` after the release" no longer holds. The
+> dispatch is removed; the release commit's own run is green, and the release
+> job validates the catalogs before it pushes the sync.

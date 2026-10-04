@@ -152,6 +152,10 @@ untouched — only the list shrinks, so ADR-0052 is amended rather than supersed
 > §Amendment 2026-09-28 (b). The mechanism and ADR-0052's reasoning are still
 > unchanged.
 
+> **Amended 2026-10-04 by [ADR-0065](0065-release-ceremony-reduction.md).**
+> The release-obligation mechanism this decision kept with a shorter list is
+> removed, with its tests, and ADR-0052 is superseded in full.
+
 ### Decision 6 — Historical artifacts and records are not rewritten
 
 Recorded compat runs under `.agentic-plugins/runs/compat/` are local, gitignored
