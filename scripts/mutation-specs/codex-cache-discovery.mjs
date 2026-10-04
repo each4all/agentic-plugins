@@ -17,7 +17,10 @@
 // home-rendered receivers), Y (ADR-0061 §Decision 4's content identity), H
 // (doctor), M (plan and settings) and Z (bootstrap and cutover, review round 3).
 // ADR-0064 §Decision 5 retired `runtime:cutover`, and Z2, Z8 and Z9, the
-// mutations of `cutover-audit.mjs`, went with it.
+// mutations of `cutover-audit.mjs`, went with it. Its R3 slice removed
+// founder's and designer's notify ladder, and C9, which broke that ladder's
+// capability filter, went with it: on the footer ladder alone it is an
+// equivalent mutation.
 
 const T_LIB = 'tests/companions/test-discover-peer.mjs';
 const T_BOOT = 'tests/companions/test-companion-bootstrap.mjs';
@@ -353,12 +356,6 @@ export const MUTATIONS = [
     from: '    capabilityRel: null,\n',
     to: "    capabilityRel: join('scripts', 'notify.mjs'),\n",
     why: "attention's runtime resolver (capture and entry brief) starts filtering by notify.mjs instead of manifest identity",
-  },
-  {
-    id: 'C9', file: 'plugins/founder/scripts/discover-runtime.mjs', tests: [T_SIBLINGS],
-    from: '      capable: await fileExists(join(versionRoot, capabilityRel)),',
-    to: "      capable: await fileExists(join(versionRoot, 'scripts', 'footer.mjs')),",
-    why: "founder's notify ladder filters on the footer capability",
   },
   {
     id: 'C10', file: 'plugins/orchestrator/scripts/discover-engineer.mjs', tests: [T_SIBLINGS],

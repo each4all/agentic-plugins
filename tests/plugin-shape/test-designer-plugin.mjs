@@ -2047,14 +2047,12 @@ describe('plugins/designer — session-handoff runbook (ADR-0043 S4)', () => {
       'the inherited orphan-sweep no-emit limitation must be documented (ADR-0043 §2 scope honesty)');
   });
 
-  it('documents tombstone survival, the dual floors, the rollback order, and the wildcard cleanup (Codex Plan-verify)', async () => {
+  it('documents tombstone survival, the discovery floor, the rollback order, and the wildcard cleanup (Codex Plan-verify)', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
     ok(/tombstone/i.test(text) && /survives?/i.test(text),
       "the rendered-marker TOMBSTONE surviving SessionStart consumption must be documented — it is what keeps a publish-needed workflow's later Stop from re-rendering");
-    ok(/MIN_RUNTIME_VERSION/.test(text) && /NOTIFY_MIN_RUNTIME_VERSION/.test(text),
-      'both discovery-floor constants must be named (dual-consumer ladder, ADR-0043 §4)');
-    ok(text.includes('scripts/footer.mjs') && text.includes('scripts/notify.mjs'),
-      'each floor must name its own gating capability file (the two ladders never share a gate)');
+    ok(text.includes('`MIN_RUNTIME_VERSION`') && text.includes('scripts/footer.mjs'),
+      'the footer discovery floor must be named with its gating capability file (ADR-0043 §4)');
     ok(/personas first, runtime second/.test(text),
       'the ADR-0043 §5 rollback order must be documented');
     ok(text.includes('last-session-handoff.json*'),

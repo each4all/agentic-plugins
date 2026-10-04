@@ -1446,11 +1446,13 @@ describe('ADR-0041 acceptance (K) -- opt-in real-network smoke (skipped unless A
 //     egress-*.mjs libs) is never imported by attention or the personas.
 // ===========================================================================
 
-describe('ADR-0041 acceptance (G) -- attention + persona self-sensors reach the emit substrate only by subprocess', () => {
+describe('ADR-0041 acceptance (G) -- no plugin outside runtime imports the emit substrate', () => {
   // notify.mjs + notify-schema.mjs + the egress-*.mjs libs are L1 runtime;
   // attention is a separate L1 plugin and the personas are L2/L3 -- none may
-  // import across the seam (ADR-0010 §5). They reach the emitter by SUBPROCESS
-  // and hold the §1/§4 contract by COPY. This extends the ADR-0040 (e) boundary
+  // import across the seam (ADR-0010 §5). A plugin that reaches the emitter
+  // does so by SUBPROCESS and holds the §1/§4 contract by COPY; the persona
+  // peer-run self-sensors that did were removed by ADR-0064. This extends the
+  // ADR-0040 (e) boundary
   // scan to the new egress substrate. STATIC-ANALYSIS LIMIT (same as the footer
   // + ADR-0040 gates): a FULLY-COMPUTED dynamic import (specifier assembled at
   // runtime) cannot be caught; the subprocess-only convention + review +
