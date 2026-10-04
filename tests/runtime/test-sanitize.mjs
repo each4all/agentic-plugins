@@ -14,7 +14,6 @@ import {
   singleLine,
   redactSecrets,
   sanitizeValue,
-  hasCredentialShape,
 } from '../../plugins/runtime/scripts/lib/sanitize.mjs';
 
 describe('sanitize singleLine', () => {
@@ -89,14 +88,5 @@ describe('sanitize sanitizeValue', () => {
   });
   it('applies singleLine then redactSecrets', () => {
     assert.equal(sanitizeValue('token\nsk-ant-0123456789abcdef'), 'token <redacted-token>');
-  });
-});
-
-// hasCredentialShape was previously covered only transitively. It is the export
-// `machine-profile.mjs` uses as its own secret gate, so it gets a direct case.
-describe('sanitize hasCredentialShape', () => {
-  it('is true for a credential-shaped token and false for ordinary prose', () => {
-    assert.equal(hasCredentialShape('sk-ant-0123456789abcdef'), true);
-    assert.equal(hasCredentialShape('a plain sentence with no token'), false);
   });
 });

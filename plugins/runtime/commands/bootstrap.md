@@ -1,6 +1,6 @@
 ---
-description: Machine-scoped, artifact-only bootstrap lifecycle — probe both hosts, plan a bundle install, render Stage 1-8 fragments and presented commands, resume with re-probe + proof recording, verify recorded evidence, and export/seed portable machine profiles
-argument-hint: "plan [--bundle <id>] [--plugins <csv>] [--profile-file <path>] [--answers <path>] [--format text|json] | status [--run-id <id> | --latest | --latest-open] [--format text|json] | resume [--run-id <id> | --latest-open] [--answers <path>] [--format text|json] | verify [--run-id <id> | --latest] [--format text|json] | attest [--run-id <id> | --latest] [--format text|json] | abandon (--run-id <id> | --latest-open) [--reason <text>] | profile export [--name <id>] [--from-run <id>] [--overwrite] [--format text|json] | profile seed --profile-file <path> [--run-id <id> | --latest-open] [--format text|json]"
+description: Machine-scoped, artifact-only bootstrap lifecycle — probe both hosts, plan a bundle install, render Stage 1-8 fragments and presented commands, resume with re-probe + proof recording, and verify recorded evidence
+argument-hint: "plan [--bundle <id>] [--plugins <csv>] [--answers <path>] [--format text|json] | status [--run-id <id> | --latest | --latest-open] [--format text|json] | resume [--run-id <id> | --latest-open] [--answers <path>] [--format text|json] | verify [--run-id <id> | --latest] [--format text|json] | attest [--run-id <id> | --latest] [--format text|json] | abandon (--run-id <id> | --latest-open) [--reason <text>]"
 ---
 
 # Runtime - Bootstrap
@@ -45,19 +45,13 @@ node "$RUNTIME_ROOT/scripts/bootstrap.mjs" --args-file "$ARGS_DIR/args.json"
 
 ## Interview pacing (the only thing this file owns)
 
-Conduct the operator interview in this order — **diagnose →
-profile-seeded-default → ask → render → apply-command → re-probe + confirm**:
+Conduct the operator interview in this order — **diagnose → ask → render →
+apply-command → re-probe + confirm**:
 
 1. **Diagnose first.** Run `plan --format json` (or `status` on an existing
    run) before asking anything. Live probe output is the evidence; never ask
    the operator a question the probe already answers.
-2. **Profile-seeded defaults.** When the operator has a portable machine
-   profile, run `profile seed --profile-file <path>` (or `plan --profile-file`,
-   which is plan immediately followed by seed). Seeded values are **defaults
-   requiring confirmation** — present them as pre-filled answers, never as
-   decisions already made. Safety grading is the script's: an unsafe source
-   value is shown as a labelled note, never presented as a default.
-3. **Ask.** Walk the open steps stage by stage. Ask only about steps the
+2. **Ask.** Walk the open steps stage by stage. Ask only about steps the
    contract makes declinable (notification, statusline — per host, egress,
    optional plugins, proofs), the two Stage-4 **value** steps, plus the bundle
    choice itself. Record the
@@ -71,7 +65,7 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    never `plan` (no provider ack can exist yet, so there is nothing to
    testify about). The standalone `attest` verb records the same testimony
    post-terminally without an answers file.
-3b. **Ask the two VALUE steps by presenting their menus, never from memory.**
+2b. **Ask the two VALUE steps by presenting their menus, never from memory.**
    `config.session` and `config.notify_kinds` (contract §6.1.3) take a VALUE or a
    `decline` — never `accept`, which is refused because it would record a
    go-ahead while leaving every key undecided. `decline` is legal and is the
@@ -92,7 +86,7 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    - **A partial answer is legal.** Naming one key leaves the others undecided and
      the step pending; a later `set:` merges per key. Say which keys remain.
 
-3c. **Opt into the optional proofs at PLAN time, or accept losing them.**
+2c. **Opt into the optional proofs at PLAN time, or accept losing them.**
    `plan` now warns for every opt-in proof this run does not owe — today that is
    `proof.egress-provider-ack`. The warning is not noise: a run terminalizes as
    soon as every proof it DOES owe passes, `resume` refuses a terminal run, and
@@ -115,15 +109,15 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    records receipt testimony about an ALREADY-recorded ack — it cannot add a
    proof that was never run.
 
-4. **Render.** The script renders host-config fragments into the run's
+3. **Render.** The script renders host-config fragments into the run's
    `fragments/` directory and presents apply commands (including the
    plugin-management command carrying the plan hash). Surface them verbatim.
-5. **Apply-command.** The **operator applies** every host-config change and
+4. **Apply-command.** The **operator applies** every host-config change and
    runs the presented `runtime:settings --execute-plugin-management
    --expected-plan-hash <hash>` themselves. This command never applies a
    fragment and never executes plugin management (bootstrap presents; the
    existing settings executor executes — no second executor).
-6. **Re-probe + confirm.** After the operator applies anything, run
+5. **Re-probe + confirm.** After the operator applies anything, run
    `resume --latest-open` — resume re-probes live state, persists step
    transitions, and (only on operator `execute` answers) records Stage-8
    proofs through `runtime:doctor --record`. A step is satisfied only when a

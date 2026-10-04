@@ -525,7 +525,6 @@ function boot({ argv, home, cwd, runner = bareRunner(), env = {} }) {
     runner,
     subprocessRunner: subprocessRunner(),
     pluginRoot: PLUGIN_ROOT,
-    hostname: 'value-grammar-test',
   });
 }
 
@@ -663,60 +662,6 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     strictEqual(stepOf(resume.report, KINDS).status, 'declined', 'the ledger decline is authoritative');
     match(stepOf(resume.report, KINDS).observed, /left unmanaged/);
     deepStrictEqual(resume.report.value_decisions.find((r) => r.step_id === KINDS).decisions, null, 'and it carries no standing value');
-  });
-
-  it('a seeded profile value the grammar would REFUSE is flagged, not offered as a default', async () => {
-    // The profile schema types notify_kinds as a bare scalar, so a valid profile
-    // can carry an all-kinds enumeration. Presenting it as a confirmable default
-    // would walk the operator into a refusal at the answers boundary.
-    //
-    // The profile is EXPORTED rather than hand-authored: a hand-written fixture
-    // is a second copy of the §4 schema that drifts, and the first attempt at
-    // one was rejected for six missing required keys before it tested anything.
-    // HOSTED: on a bare machine the export records an EMPTY custom selection and
-    // `plan --profile-file` then refuses for a reason unrelated to this subject.
-    const { home, cwd } = await makeHome();
-    const runner = hostedRunner();
-    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'notify_kinds = "approval"\n');
-    await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner });
-    const exported = await boot({ argv: ['profile', 'export', '--name', 'm1', '--format', 'json'], home, cwd, runner });
-    strictEqual(exported.exitCode, 0, 'precondition: a real profile was written');
-    await boot({ argv: ['abandon', '--latest-open', '--reason', 'test'], home, cwd, runner });
-
-    // Patch exactly the one field under test, leaving every other byte the
-    // exporter produced.
-    const profilePath = join(home, '.agentic-plugins', 'profiles', 'm1.json');
-    const profile = JSON.parse(await readFile(profilePath, 'utf8'));
-    profile.notify.notify_kinds.value = NOTIFY_KINDS.join(',');
-    await writeFile(profilePath, JSON.stringify(profile, null, 2));
-
-    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--profile-file', profilePath, '--format', 'json'], home, cwd, runner });
-    // `--bundle` is explicit because a profile exported from this fixture records
-    // an empty custom selection; the bundle flag outranks the seeded one
-    // (`resolveSelection`), which is the ordinary operator invocation anyway.
-    // The bridge itself: `plan --profile-file` now carries proposals at all.
-    // Before this change it recorded only the selection and the seeded_from
-    // linkage, so a profile seeded its plugin list and none of its config.
-    ok(plan.report.proposals, '`plan --profile-file` is sugar for plan-then-seed, proposals included');
-    const seeded = plan.report.proposals.proposals.find((p) => p.key === 'notify.notify_kinds');
-    ok(seeded, 'the notify family reaches the proposal list');
-    ok(seeded.refused_by_interview, 'the unanswerable value is marked');
-    ok(plan.report.warnings.some((w) => /not answerable through the interview/.test(w)), 'and the operator is told');
-  });
-
-  it('a seeded profile value the grammar ACCEPTS is proposed cleanly — the control for the test above', async () => {
-    const { home, cwd } = await makeHome();
-    const runner = hostedRunner();
-    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'notify_kinds = "approval,idle"\n');
-    await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner });
-    await boot({ argv: ['profile', 'export', '--name', 'm2', '--format', 'json'], home, cwd, runner });
-    await boot({ argv: ['abandon', '--latest-open', '--reason', 'test'], home, cwd, runner });
-    const profilePath = join(home, '.agentic-plugins', 'profiles', 'm2.json');
-    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--profile-file', profilePath, '--format', 'json'], home, cwd, runner });
-    const seeded = plan.report.proposals.proposals.find((p) => p.key === 'notify.notify_kinds');
-    strictEqual(seeded.value, 'approval,idle');
-    ok(!seeded.refused_by_interview, 'a legal value carries no refusal marker');
-    ok(!plan.report.warnings.some((w) => /not answerable through the interview/.test(w)));
   });
 
   it('`accept` is refused against a value step, naming the grammar that would work', async () => {

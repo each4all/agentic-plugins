@@ -770,7 +770,6 @@ export const CREDENTIAL_KEY_REFERENCING_FILES = {
   'doctor.mjs': { justification: 'activation-fingerprint env-var NAME input for the egress ack proof (deriveActivationFingerprint) — never a value read; the send is delegated to notify.mjs runEmit' },
   'egress-config.mjs': { justification: 'defines EGRESS_ENV_KEYS and EGRESS_CREDENTIAL_ENV_VAR (the key NAME, derived from EGRESS_ENV_KEYS.credential) and performs the §4 activation-checker value read' },
   'egress-launcher-plan.mjs': { justification: 'renders operator-facing placeholder export commands with the key NAME; the plan states the value is never read' },
-  'machine-profile.mjs': { justification: 'enforces EGRESS_CREDENTIAL_ENV_VAR (imported from egress-config.mjs) as the ADR-0048 §4 schema constant in the profile write-gate — never a value read' },
   'notify.mjs': { justification: 'performs the §4 pinned-emitter value read via EGRESS_ENV_KEYS.credential' },
 };
 

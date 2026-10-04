@@ -7,7 +7,7 @@
 //      (§2.1: model-with-reasoning · git-branch · pull-request-number ·
 //      context-used · five-hour-limit · weekly-limit; version items excluded
 //      by owner direction). One frozen table; the Codex fragment, the Claude
-//      shim, the exact probes, and the profile preset all derive from it —
+//      shim, and the exact probes all derive from it —
 //      drift between renderers is §2's NAMED failure mode, so there is one
 //      definition to drift from;
 //   2. the INLINE SUFFICIENCY GATE (§2) — an executable five-condition
@@ -53,11 +53,9 @@ import { resolveContainedSync } from './path-containment.mjs';
 import { RUNTIME_VERSION } from '../version.mjs';
 import { renderCodexTuiTableToml } from './toml.mjs';
 
-// ADR-0048 §2.1 — the owner-adopted six-item statusline set, carried in the
-// machine profile as a SCALAR preset id (1.1-additive). The id names a policy;
-// the canonical ordered item definition is the table below. Moved here from
-// lib/machine-profile.mjs, which only defined it (ADR-0064 Decision 2, item 5).
-export const STATUSLINE_PRESET_AGENTIC_6 = 'agentic-6';
+// `STATUSLINE_PRESET_AGENTIC_6` ('agentic-6'), the preset id that carried this
+// policy in the machine profile, went with the profile (ADR-0064 Decision 3): the
+// profile export was its only reader. The policy itself is the table below.
 
 export const STATUSLINE_SHIM_BASENAME = 'agentic-statusline.mjs';
 export const STATUSLINE_SHIM_INSTALL_DIR_POINTER = '~/.agentic-plugins/bin';

@@ -2,7 +2,7 @@
 // (ADR-0048 §1/§2/§2.1, macro 6/9): the one policy definition, the executable
 // inline-sufficiency gate, both Claude render modes, the Codex fragment via
 // the shared [tui] composer, the shim, the classification, the parser's
-// status_line capture, the exact judges, the preset export rule, and the
+// status_line capture, the exact judges, and the
 // end-to-end plan/fragment wiring.
 
 import { describe, it } from 'node:test';
@@ -15,7 +15,6 @@ import { join } from 'node:path';
 
 import {
   STATUSLINE_POLICY_AGENTIC_6,
-  STATUSLINE_PRESET_AGENTIC_6,
   classifyExistingClaudeStatusline,
   evaluateInlineSufficiency,
   expectedClaudeStatuslineCommand,
@@ -457,7 +456,7 @@ describe('statusline judges — exact canonical-configuration probes (ADR-0048 �
   });
 });
 
-describe('statusline end-to-end — plan renders fragments, desired seats, the non-gating shim artifact, and the preset export rule', () => {
+describe('statusline end-to-end — plan renders fragments, desired seats, and the non-gating shim artifact', () => {
   const NOW = Date.parse('2026-07-18T04:00:00Z');
   const okOut = (stdout) => ({ ok: true, exit_code: 0, error_code: null, stdout, stderr: '' });
   const missing = () => ({ ok: false, exit_code: null, error_code: 'ENOENT', stdout: '', stderr: '' });
@@ -479,7 +478,7 @@ describe('statusline end-to-end — plan renders fragments, desired seats, the n
   }
 
   const boot = ({ argv, home, cwd }) => runBootstrap({
-    argv, env: {}, homeDir: home, cwd, hostname: 't', now: NOW,
+    argv, env: {}, homeDir: home, cwd, now: NOW,
     runner: async () => missing(),
     subprocessRunner: async (p) => (p.endsWith('settings.mjs') ? okOut(JSON.stringify({ plugin_management: { plan_hash: null } })) : missing()),
     pluginRoot: 'plugins/runtime',
@@ -600,26 +599,12 @@ describe('statusline end-to-end — plan renders fragments, desired seats, the n
       'under drift the re-render converges: the combined fragment is the one carrier and the stripped notify artifact carries none');
   });
 
-  it('a canonical home satisfies both steps on plan, and profile export carries the preset (owner rule: applied fragments ARE the declaration)', async () => {
+  it('a canonical home satisfies both statusline steps on plan', async () => {
     const { home, cwd } = await makeHome({ canonical: true });
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
     const byId = new Map(plan.report.steps.map((s) => [s.id, s]));
     strictEqual(byId.get('statusline.claude.configured').status, 'satisfied');
     strictEqual(byId.get('statusline.codex.configured').status, 'satisfied');
-
-    const exported = await boot({ argv: ['profile', 'export', '--name', 'sl-e2e'], home, cwd });
-    const profile = JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'sl-e2e.json'), 'utf8'));
-    strictEqual(profile.statusline_preset, STATUSLINE_PRESET_AGENTIC_6);
-    strictEqual(exported.exitCode, 0);
-  });
-
-  it('a partial home (one host canonical) exports NULL — the preset is both-hosts-or-nothing', async () => {
-    const { home, cwd } = await makeHome();
-    await writeFile(join(home, '.codex', 'config.toml'), `[tui]\nstatus_line = [${NORMATIVE_AGENTIC_6.map((id) => `"${id}"`).join(', ')}]\n`);
-    await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
-    await boot({ argv: ['profile', 'export', '--name', 'sl-partial'], home, cwd });
-    const profile = JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'sl-partial.json'), 'utf8'));
-    strictEqual(profile.statusline_preset, null);
   });
 });
 

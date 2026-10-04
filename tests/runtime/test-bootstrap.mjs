@@ -1,9 +1,10 @@
 // tests/runtime/test-bootstrap.mjs — machine-bootstrap-contract.md §11.2.
 //
 // S8a2 C3 owns the STORAGE obligations of that list: #16 path security (the
-// machine-global half), #28 family-lock race, #29 abandonment, #30 profile
-// overwrite, #32 machine-global inventory + retention. The rest arrive with the
-// schemas (C4) and the profile/reducer engines (C5).
+// machine-global half), #28 family-lock race, #29 abandonment, #32
+// machine-global inventory + retention. The rest arrive with the schemas (C4)
+// and the reducer engine (C5). #30 (profile overwrite) went with the portable
+// machine profile (ADR-0064 Decision 3).
 //
 // Every test runs against an INJECTED temp home. Nothing here may read the
 // developer's real ~/.agentic-plugins — a suite that passed only because the
@@ -28,11 +29,8 @@ import {
   bootstrapRunManifestFile,
   createBootstrapRun,
   isValidProfileName,
-  listMachineProfiles,
   makeBootstrapRunId,
-  profileFile,
   readBootstrapLatest,
-  readMachineProfile,
   repairBootstrapLatest,
   reportBootstrapRetention,
   resolveMachineArtifactHome,
@@ -43,7 +41,6 @@ import {
   withBootstrapFamilyLock,
   writeBootstrapFragment,
   writeBootstrapProof,
-  writeMachineProfile,
 } from '../../plugins/runtime/scripts/lib/bootstrap-artifacts.mjs';
 import { inspectRuntimeArtifactInventory, machinePointer } from '../../plugins/runtime/scripts/lib/state-readers.mjs';
 import { isUnder } from '../../plugins/runtime/scripts/lib/path-containment.mjs';
@@ -92,7 +89,7 @@ describe('runtime bootstrap artifacts — ids and names', () => {
 
   // #16 (name half) — the charset is an allowlist, so an encoding its author never
   // met still lands outside it.
-  it('profile names reject traversal, separators, leading dots, and NUL', () => {
+  it('artifact names (the former profile charset) reject traversal, separators, leading dots, and NUL', () => {
     for (const good of ['work', 'macbook-pro', 'machine_1', 'a.b-c_d', 'A1']) {
       ok(isValidProfileName(good), `accepts '${good}'`);
     }
@@ -193,10 +190,12 @@ describe('runtime bootstrap artifacts — security gates (#16)', () => {
     const homeDir = await tempHome();
     const elsewhere = await mkdtemp(join(tmpdir(), 'agentic-elsewhere-'));
     await mkdir(join(homeDir, '.agentic-plugins'), { recursive: true, mode: 0o700 });
-    await symlink(elsewhere, join(homeDir, '.agentic-plugins', 'profiles'));
+    await symlink(elsewhere, join(homeDir, '.agentic-plugins', 'runs'));
 
-    const result = await writeMachineProfile({ homeDir, repoRoot: null, name: 'work', profile: { a: 1 }, now: NOW });
-    strictEqual(result.written, false);
+    // This case wrote a machine profile until ADR-0064 Decision 3 removed it; the
+    // run writer goes through the same path gate.
+    const result = await createBootstrapRun({ homeDir, repoRoot: null, now: NOW, manifest: baseManifest() });
+    strictEqual(result.created, false);
     ok(!result.diagnostics.join(' ').includes(homeDir), 'the refusal names the path home-relatively');
     match(result.diagnostics[0], /~\/\.agentic-plugins/);
     await rm(homeDir, { recursive: true, force: true });
@@ -960,75 +959,6 @@ describe('runtime bootstrap artifacts — abandonment (#29)', () => {
   });
 });
 
-describe('runtime bootstrap artifacts — profile store (#30)', () => {
-  it('refuses an existing name without --overwrite, and replaces with it', async () => {
-    const homeDir = await tempHome();
-    const profile = { schema: 'agentic-machine-profile-1.0', name: 'work' };
-
-    const first = await writeMachineProfile({ homeDir, repoRoot: null, name: 'work', profile, now: NOW });
-    strictEqual(first.written, true);
-    strictEqual(first.replaced, false);
-
-    const refused = await writeMachineProfile({ homeDir, repoRoot: null, name: 'work', profile: { ...profile, changed: true }, now: NOW });
-    strictEqual(refused.written, false, '#30 — an existing profile is not implicitly replaced');
-    strictEqual(refused.reason, 'exists');
-    match(refused.diagnostics[0], /Re-run with --overwrite/);
-    const untouched = JSON.parse(await readFile(profileFile(homeDir, 'work'), 'utf8'));
-    ok(!('changed' in untouched), 'the refused write left the file alone');
-
-    const replaced = await writeMachineProfile({ homeDir, repoRoot: null, name: 'work', profile: { ...profile, changed: true }, overwrite: true, now: NOW });
-    strictEqual(replaced.written, true);
-    strictEqual(replaced.replaced, true);
-    const after = JSON.parse(await readFile(profileFile(homeDir, 'work'), 'utf8'));
-    strictEqual(after.changed, true);
-    await rm(homeDir, { recursive: true, force: true });
-  });
-
-  it('profiles are 0600 and round-trip by name', async () => {
-    const homeDir = await tempHome();
-    const profile = { schema: 'agentic-machine-profile-1.0', model: 'opus' };
-    await writeMachineProfile({ homeDir, repoRoot: null, name: 'laptop', profile, now: NOW });
-
-    const fileStat = await stat(profileFile(homeDir, 'laptop'));
-    strictEqual(fileStat.mode & 0o777, 0o600);
-    const read = await readMachineProfile({ homeDir, name: 'laptop' });
-    strictEqual(read.status, 'available');
-    deepStrictEqual(read.profile, profile);
-    match(read.pointer, /^~\/\.agentic-plugins\/profiles\/laptop\.json$/);
-    await rm(homeDir, { recursive: true, force: true });
-  });
-
-  it('an injected validator can refuse a write, and nothing lands', async () => {
-    const homeDir = await tempHome();
-    const result = await writeMachineProfile({
-      homeDir,
-      repoRoot: null,
-      name: 'bad',
-      profile: { secret: 'sk-live-nope' },
-      validate: () => ({ ok: false, errors: ['profile carries a token-shaped value'] }),
-      now: NOW,
-    });
-    strictEqual(result.written, false);
-    strictEqual(result.reason, 'invalid-profile');
-    deepStrictEqual(result.diagnostics, ['profile carries a token-shaped value']);
-    const read = await readMachineProfile({ homeDir, name: 'bad' });
-    strictEqual(read.status, 'missing', 'the refused profile was never written');
-    await rm(homeDir, { recursive: true, force: true });
-  });
-
-  it('lists profiles by name only, ignoring foreign files', async () => {
-    const homeDir = await tempHome();
-    for (const name of ['work', 'home']) {
-      await writeMachineProfile({ homeDir, repoRoot: null, name, profile: { schema: 'agentic-machine-profile-1.0' }, now: NOW });
-    }
-    await writeFile(join(homeDir, '.agentic-plugins', 'profiles', 'notes.txt'), 'ignored');
-
-    const listed = await listMachineProfiles({ homeDir });
-    deepStrictEqual(listed.profiles.map((p) => p.name), ['home', 'work']);
-    await rm(homeDir, { recursive: true, force: true });
-  });
-});
-
 describe('runtime bootstrap artifacts — fragment + proof writers', () => {
   it('a fragment write returns metadata (pointer/hash/bytes), and the body stays on disk', async () => {
     const homeDir = await tempHome();
@@ -1228,27 +1158,16 @@ describe('runtime bootstrap artifacts — machine-global inventory + retention (
     await rm(homeDir, { recursive: true, force: true });
   });
 
-  it('profiles are retention-exempt — no pressure at any count', async () => {
-    const homeDir = await tempHome();
-    for (let i = 0; i < 30; i += 1) {
-      await writeMachineProfile({ homeDir, repoRoot: null, name: `machine${i}`, profile: { schema: 'agentic-machine-profile-1.0' }, now: NOW });
-    }
-    const inventory = await inspectRuntimeArtifactInventory({ repoRoot: await tempRepo(), now: NOW, retentionCap: 20, maxBytes: 50 * 1024 * 1024, homeDir });
-
-    strictEqual(inventory.machine.families.profiles.file_count, 30);
-    deepStrictEqual(inventory.machine.families.profiles.attention, [], '30 profiles is not a diagnosis runtime gets to make');
-    deepStrictEqual(inventory.machine.policy.retention_exempt, ['profiles']);
-    await rm(homeDir, { recursive: true, force: true });
-  });
-
   it('the machine scope does not invent families from unknown children', async () => {
     const homeDir = await tempHome();
     await mkdir(join(homeDir, '.agentic-plugins', '.locks'), { recursive: true });
     await mkdir(join(homeDir, '.agentic-plugins', 'something-else'), { recursive: true });
+    await mkdir(join(homeDir, '.agentic-plugins', 'profiles'), { recursive: true });
+    await writeFile(join(homeDir, '.agentic-plugins', 'profiles', 'work.json'), '{}\n');
     await writeFile(join(homeDir, '.agentic-plugins', 'config.toml'), 'model = "opus"\n');
 
     const inventory = await inspectRuntimeArtifactInventory({ repoRoot: await tempRepo(), now: NOW, retentionCap: 20, maxBytes: 1024, homeDir });
-    deepStrictEqual(Object.keys(inventory.machine.families).sort(), ['bootstrap', 'profiles'], 'membership is closed by contract §10');
+    deepStrictEqual(Object.keys(inventory.machine.families).sort(), ['bootstrap'], 'membership is closed by contract §10 — a profiles/ left from before ADR-0064 Decision 3 is not inventoried');
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -1264,38 +1183,17 @@ describe('runtime bootstrap artifacts — machine-global inventory + retention (
     await rm(homeDir, { recursive: true, force: true });
   });
 
-  // Peer finding: profiles were exempted from RUN-COUNT pressure but not from BYTE
-  // pressure, so one large profile still earned "remove obsolete generated
-  // artifacts" — advice to delete the operator input the exemption protects. The
-  // original test passed only because it used the 50MB default.
-  it('profiles are exempt from BYTE pressure too, not only run-count pressure', async () => {
-    const homeDir = await tempHome();
-    await writeMachineProfile({ homeDir, repoRoot: null, name: 'work', profile: { schema: 'agentic-machine-profile-1.0' }, now: NOW });
-
-    const inventory = await inspectRuntimeArtifactInventory({ repoRoot: await tempRepo(), now: NOW, retentionCap: 20, maxBytes: 1, homeDir });
-    deepStrictEqual(inventory.machine.families.profiles.attention, [], 'a profile over the byte cap is still not pressure');
-    strictEqual(inventory.machine.families.profiles.status, 'available');
-    // The bootstrap family, by contrast, is NOT exempt — the same byte cap bites.
-    await seedRun(homeDir, makeBootstrapRunId(NOW));
-    const withRun = await inspectRuntimeArtifactInventory({ repoRoot: await tempRepo(), now: NOW, retentionCap: 20, maxBytes: 1, homeDir });
-    ok(withRun.machine.families.bootstrap.attention.some((a) => a.kind === 'bytes_exceed_cap'), 'bootstrap runs are not exempt');
-    await rm(homeDir, { recursive: true, force: true });
-  });
-
   // The MIRROR of the inventory leak: `machine.root` was fixed, and the same raw
   // absolute root survived on the exported readers next door. Assert over EVERY
   // public reader at once, so the next one added has to answer this too.
   it('no exported reader returns an absolute home path in any field', async () => {
     const homeDir = await tempHome();
-    await writeMachineProfile({ homeDir, repoRoot: null, name: 'work', profile: { schema: 'agentic-machine-profile-1.0' }, now: NOW });
     const created = await createBootstrapRun({ homeDir, repoRoot: null, now: NOW, manifest: baseManifest() });
 
     const readers = {
       scanBootstrapRuns: await scanBootstrapRuns({ homeDir }),
-      listMachineProfiles: await listMachineProfiles({ homeDir }),
       readBootstrapLatest: await readBootstrapLatest({ homeDir }),
       reportBootstrapRetention: await reportBootstrapRetention({ homeDir }),
-      readMachineProfile: await readMachineProfile({ homeDir, name: 'work' }),
       createBootstrapRun: created,
       abandonBootstrapRun: await abandonBootstrapRun({ homeDir, repoRoot: null, runId: created.run_id, now: NOW }),
     };
@@ -1305,14 +1203,12 @@ describe('runtime bootstrap artifacts — machine-global inventory + retention (
     // And the projection is applied ONCE — a double-applied pointer degrades to the
     // refusal token, which would be a silent loss of the path the operator needs.
     strictEqual(readers.scanBootstrapRuns.root, '~/.agentic-plugins/runs/bootstrap');
-    strictEqual(readers.listMachineProfiles.root, '~/.agentic-plugins/profiles');
     await rm(homeDir, { recursive: true, force: true });
   });
 
   it('no absolute home path reaches ANY field of the machine inventory (doctor persists this)', async () => {
     const homeDir = await tempHome();
     await seedRun(homeDir, makeBootstrapRunId(NOW));
-    await writeMachineProfile({ homeDir, repoRoot: null, name: 'work', profile: { schema: 'agentic-machine-profile-1.0' }, now: NOW });
     const inventory = await inspectRuntimeArtifactInventory({ repoRoot: await tempRepo(), now: NOW, retentionCap: 20, maxBytes: 50 * 1024 * 1024, homeDir });
 
     // Serialize the WHOLE scope: sanitizing the field a reader looks at while the

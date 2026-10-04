@@ -172,11 +172,16 @@ established, the step status is **`unknown`** — never `satisfied` — and it i
 surfaced as `manual-follow-up` with the exact registration command. Absence of
 evidence is never evidence of registration.
 
-### 1.3 Planner composition requires purity — four extractions, not two lifts
+### 1.3 Planner composition requires purity — three extractions, not two lifts
 
 > **ADR-0057 (2026-08-28)** removed the permission planner and its host-config
 > reader, so this section is **four** extractions rather than the five it shipped
 > with. The composition rule itself is unchanged and still governs the survivors.
+>
+> **ADR-0064 Decision 3 (2026-10-04)** removed the fourth, the Codex config TOML
+> parse (`parseCodexPermissionConfigToml` and the user-global-only permission
+> readers), with the portable machine profile that was its last consumer. Three
+> extractions remain.
 
 The existing planners **combine computation with unconditional repo-relative
 persistence**, so bootstrap cannot compose them as they stand without writing
@@ -199,7 +204,6 @@ records the pre-extraction state, not the tree. Where each planner lives now:
 |---|---|---|---|
 | notification | `gatherCodexNotificationInputs` | `buildCodexNotificationPlanSection` | `writeNotificationPlanArtifact` |
 | egress launcher | `gatherEgressLauncherInputs` | `buildEgressLauncherPlanSection` | `writeEgressLauncherPlanArtifact` |
-| Codex config TOML parse | `lib/codex-config.mjs` `parseCodexPermissionConfigToml` | — | — (user-global-only reads: `lib/profile-readers.mjs` `readUserGlobalClaudePermission` / `readUserGlobalCodexPermission`, §4.4) |
 | plugin-management plan half | `lib/plugin-management-plan.mjs` | — | — (execute half stays in `scripts/settings.mjs`) |
 
 Two S8a3 findings worth carrying forward, because a consumer that assumes otherwise
@@ -457,17 +461,21 @@ registration, which can be removed after install and MUST still be probed (§1.2
 ## 3. Command grammar
 
 ```
-runtime:bootstrap plan     [--bundle <id>] [--plugins <csv>] [--profile-file <path>]
-                           [--answers <path>] [--format text|json]
+runtime:bootstrap plan     [--bundle <id>] [--plugins <csv>] [--answers <path>]
+                           [--format text|json]
 runtime:bootstrap status   [--run-id <id> | --latest | --latest-open] [--format text|json]
 runtime:bootstrap resume   [--run-id <id> | --latest-open] [--answers <path>]
                            [--format text|json]
 runtime:bootstrap verify   [--run-id <id> | --latest] [--format text|json]
 runtime:bootstrap attest   [--run-id <id> | --latest] [--format text|json]
 runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
-runtime:bootstrap profile export [--name <id>] [--from-run <id>] [--overwrite] [--format text|json]
-runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest-open] [--format text|json]
 ```
+
+> **2026-10-04 — [ADR-0064](../../../docs/adr/0064-runtime-surface-reduction.md)
+> Decision 3** removed the `profile export` and `profile seed` verbs and
+> `plan --profile-file`, with the portable machine profile they wrote and read
+> (§4). `profile` is now an unknown verb and `--profile-file` an unknown flag;
+> both exit `40` like any other grammar error.
 
 - **Run selection** follows the semantics [`footer-contract.md`](footer-contract.md)
   already established: `--run-id` is explicit; `--latest` is the newest run;
@@ -557,7 +565,8 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   `<label>-omitted:` line with a count — so no reason can spend another's budget
   and no omission is silent. It applies to all three reason arrays on
   `completion` (the Stage-8 proofs, the Codex `/hooks` attestation, and the
-  egress receipt attestation) and to the `profile seed` proposal and note rows.
+  egress receipt attestation). It also applied to the `profile seed` proposal
+  and note rows until that verb was removed (ADR-0064 Decision 3, 2026-10-04).
   The omission marker carries a DIFFERENT label from the reasons themselves;
   sharing one let a reason forge a count the renderer never made. Truncation
   cuts on a **grapheme cluster** boundary (UAX #29 via `Intl.Segmenter`), not a
@@ -584,16 +593,8 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   showing no verdict — never two rows the operator must choose between. The
   historical projection (§3.2) applies the same rule at projection time, so the
   de-duplication holds in `--format json` and not only on the rendered line.
-- `profile export` exports the **live probe** unless `--from-run` names a run. With
-  no run, `selection.bundle` is `custom` and `selection.desired` is **the observed
-  installed set** — which is, empirically, exactly what this machine chose;
-  `excluded` is empty. There is **no `--out`**: writes are constrained to the
-  authorized home (§10). Overwriting an existing profile name requires
-  `--overwrite`.
-- `profile seed` seeds the *interview defaults* of a run — the run named by
-  `--run-id` / `--latest-open`, else the newest open run; with no open run it exits
-  `30`. `plan --profile-file` is sugar for `plan` immediately followed by `seed`.
-  Neither applies anything.
+- There is **no `--out`** on any verb: writes are constrained to the authorized
+  home (§10).
 - **Both hosts, always.** There is no `--hosts` flag. See §8.3.
 - The **script** (`scripts/bootstrap.mjs`) owns facts, schemas, state, and the
   completion reducer. The command runbook and skill own conversational pacing only —
@@ -606,10 +607,7 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   Prose-to-flag translation by the skill would be unauditable and untestable.
   `--answers` is accepted on exactly the two **interview** verbs — `plan` and
   `resume` — and on no other. `status`, `verify`, and `abandon` conduct no
-  interview, and `profile seed` takes a *profile* (`--profile-file`, which seeds
-  **defaults**), not *answers* (which record decisions); accepting answers there
-  would let a seed silently decide a step it is only allowed to pre-fill (§4.5.4).
-  An answer whose `step_id` is not an expected step of the run is rejected (exit
+  interview. An answer whose `step_id` is not an expected step of the run is rejected (exit
   `40`) rather than recorded, so a stale answers file cannot smuggle a step into a
   manifest the registry never derived (§6.1). The answer vocabulary is exactly
   four values (S8b errata fixed the shape-without-values gap; ADR-0048 §3 added
@@ -848,10 +846,11 @@ validator that happens to sit on it:
 - **Parser and serializer messages.** A `JSON.parse` `SyntaxError` embeds a
   snippet of its input *and carries no `code`*, so an `err?.code ?? err?.message`
   fallback resolves to the quoting message exactly when the document is the
-  untrusted thing. Only the numeric **position** crosses. This applies to every
-  untrusted-file flag — `--answers` and `--profile-file` alike — and to the run
-  manifest read. A `JSON.stringify` failure likewise names the document-supplied
-  property that closes a circular structure, so its message is withheld entirely.
+  untrusted thing. Only the numeric **position** crosses. This applies to the
+  untrusted-file flag, `--answers` (the only one since ADR-0064 Decision 3 removed
+  `--profile-file` on 2026-10-04), and to the run manifest read. A
+  `JSON.stringify` failure likewise names the document-supplied property that
+  closes a circular structure, so its message is withheld entirely.
 
   The position must be read from the parser's **own trailing phrase**, anchored:
   V8 emits two message families and only one carries a position, so a loose
@@ -877,292 +876,59 @@ validator that happens to sit on it:
 
 ---
 
-## 4. Machine profile schema (`agentic-machine-profile-1`)
+## 4. Schema versioning rules (the machine profile was removed)
 
-A **secrets-free, enumerated snapshot of one machine's choices**, written by
-`profile export`, consumed by `profile seed`.
+> **Removed 2026-10-04 by [ADR-0064](../../../docs/adr/0064-runtime-surface-reduction.md)
+> Decision 3.** This section specified the portable machine profile,
+> `agentic-machine-profile-1` (last minor 1.3): a secrets-free snapshot of one
+> machine's choices that `profile export` wrote under
+> `~/.agentic-plugins/profiles/`, and that `profile seed` and
+> `plan --profile-file` read back on another machine as interview defaults. The
+> verbs, the schema, the profile home and the readers only the export used were
+> removed together. Bootstrap still guides a new machine stage by stage; only the
+> "copy this machine" shortcut went. Profile files already written stay where
+> they are, and nothing reads, lists or retention-manages them any more.
+>
+> The subsections that described the profile were removed with it, and git
+> history holds them: §4.0 (`notify_channel` is not an egress channel), the §4.1
+> schema block and its profile-only rules, §4.2 (categorical exclusions), §4.3
+> (write-side guards), §4.4 (user-global-only export), §4.5 (seed-side rules),
+> and the "Profile 1.1" and "Profile 1.2" notes.
+>
+> Two parts were never the profile's alone. The schema rules in §4.1 and the
+> migration rule in §4.6 govern every packaged schema, and they keep their
+> numbers because code and this document cite them by those numbers. One rule
+> also outlived its section: §4.4 required the export to read **user-global
+> config only**, so that one checkout's policy never became another machine's
+> default. The Stage-4 judges read the user layer for the same reason, and
+> §6.1.3 states it. Where a code comment still cites §4.4 for that rule, §6.1.3
+> is the text that governs.
 
-> **The load-bearing invariant.** The profile is an **untrusted source of interview
-> defaults**. It is never configuration to apply, and it is **never an input to any
-> activation or config loader**. `loadEgressActivation()` MUST NOT read it. A
-> profile that could activate egress would be exactly the vector ADR-0041 §2c
-> closed.
+### 4.1 Schema rules every packaged schema obeys
 
-### 4.0 `notify_channel` is not an egress channel — do not merge them
+These rules are not properties of any one schema. `lib/schema-validate.mjs`
+applies them to every schema the runtime ships under `data/schemas/`; in this
+contract that is the run manifest (§5) and the plugin set (§1.4).
 
-`NOTIFY_CHANNELS` is `none | macos-osascript | file-log`. **`telegram` is not a
-`notify_channel` value and must never become one.** Egress activation lives in a
-*separate* axis (`egress.channel`, sourced only from
-`AGENTIC_NOTIFY_EGRESS_CHANNEL` or the fail-closed-verified
-`~/.agentic-plugins/config.local.toml`), precisely so that tracked configuration
-can never activate egress — ADR-0041 §2c states the rule in exactly these terms.
-
-The profile carries the two as **separate objects**, and `profile seed` MUST NOT
-map one onto the other. Validation rejects a profile whose `notify.notify_channel`
-carries an egress channel.
-
-### 4.1 Schema
-
-```jsonc
-{
-  "schema": "agentic-machine-profile-1.3",
-  "exported_at": "<iso-8601-utc>",
-  "boundary": {
-    "writes_host_config": false,
-    "writes_credential": false,
-    "writes_config_local_toml": false,
-    "performs_network_request": false
-  },
-  "source": {
-    "hostname_hash": "<sha256 prefix — never the raw hostname>",
-    "runtime_version": "<semver>",
-    "claude_cli_version": "<semver|null>",
-    "codex_cli_version": "<semver|null>"
-  },
-  "selection": {
-    "bundle": "base|engineering|business|design|full|custom",
-    "desired": ["<plugin>"],
-    "excluded": ["<plugin>"],
-    "observed": {
-      "claude": [{ "name": "<plugin>", "version": "<semver|null>", "state": "installed|missing|unknown" }],
-      "codex":  [{ "name": "<plugin>", "version": "<semver|null>", "state": "installed|disabled|missing|unknown" }]
-    }
-  },
-  "model_effort": {
-    "model":        { "value": "<id|null>", "scope": "machine", "provenance": "<source>" },
-    "effort":       { "value": "<id|null>", "scope": "machine", "provenance": "<source>" },
-    "claude_model": { "value": "<id|null>", "scope": "machine", "provenance": "<source>" },
-    "claude_effort":{ "value": "<id|null>", "scope": "machine", "provenance": "<source>" },
-    "codex_model":  { "value": "<id|null>", "scope": "machine", "provenance": "<source>" },
-    "codex_effort": { "value": "<id|null>", "scope": "machine", "provenance": "<source>" }
-  },
-  "notify": {
-    "notify_channel":                   { "value": "none|macos-osascript|file-log", "scope": "machine", "provenance": "<source>" },
-    "notify_quiet_hours":               { "value": "<spec|null>", "scope": "machine", "provenance": "<source>" },
-    "notify_quiet_hours_tz":            { "value": "<tz|null>",   "scope": "machine", "provenance": "<source>" },
-    "notify_dedupe_ttl_seconds":        { "value": "300",         "scope": "machine", "provenance": "<source>" },
-    "notify_urgent_bypass_quiet_hours": { "value": "false",       "scope": "machine", "provenance": "<source>" },
-    "notify_kinds":                     { "value": "<csv|null>",  "scope": "machine", "provenance": "<source>" }
-  },
-  "egress": {
-    "declined":            false,
-    "channel":             { "value": "<channel|null>", "scope": "machine", "provenance": "<source>" },
-    "recipient":           { "value": "<chat-id|null>", "scope": "machine", "provenance": "<source>" },
-    "headline_opt_in":     { "value": false,            "scope": "machine", "provenance": "<source>" },
-    "credential_env_var":  "TELEGRAM_BOT_TOKEN",
-    "credential_required": true
-  },
-  "permissions": {
-    "claude": { "allow": ["<sanitized rule>"], "ask": ["<sanitized rule>"], "deny": ["<sanitized rule>"],
-                "defaultMode": "<mode|null>", "scope": "machine", "provenance": "user-global" },
-    "codex":  { "approval_policy": "<policy|null>", "sandbox_mode": "<mode|null>",
-                "scope": "machine", "provenance": "user-global" }
-  },
-
-  // The trailing BARE SCALARS, in canonical order. They carry no
-  // {value, scope, provenance} envelope on purpose: an object here would be
-  // refused by every older reader at every minor (§4.6), and the envelope would
-  // say nothing that varies — this artifact reads user-global only, so
-  // provenance is user-global exactly when a value is present. The three
-  // session keys follow `statusline_preset` ALPHABETICALLY; see "Profile 1.2"
-  // below for why that ordering is load-bearing rather than cosmetic.
-  "statusline_preset":  "<preset-id|null>",
-  "entry_brief":        "<off|startup|null>",
-  "entry_brief_empty":  "<silent|report|null>",
-  "session_capture":    "<off|stop-hook|null>"
-}
-```
-
-Rules:
-
-- `notify_dedupe_ttl_seconds` MUST be a **positive integer** string — the existing
-  validator rejects `0`. Every `notify_*` value uses the validator's own accepted
-  form; the profile does not invent a second encoding.
-- `credential_required` is `true` **only when** `egress.declined === false` **and**
-  `egress.channel.value !== null`. A declined egress carries `channel: null` and
-  `credential_required: false`.
-- `egress.recipient` is validated against the same shape check the launcher uses;
-  a value failing it is exported as `null` with a diagnostic, never as a
-  placeholder that could be mistaken for real.
-- **Closed schema, with one precisely-scoped exception.** Unknown **object** keys
-  fail validation at any depth, always. Unknown **scalar** keys fail too — *unless*
-  the file's `schema` minor is **greater** than the reader's, in which case they are
-  ignored with a warning. A same-or-older minor has no excuse for an unknown key, so
-  it is rejected. This is the forward-compat posture engineer's state reader already
-  uses, and it is why the schema string carries a **minor** (`-1.0`) rather than a
-  bare major.
-- **Canonical order** for serialization is the key order above; values are
-  canonicalized before hashing.
-- **Bounded**: the artifact is capped at **64 KiB**; `permissions.claude.*` rule
-  arrays are capped at **256 entries each** and sanitized through
-  `lib/sanitize.mjs` (renamed from `lib/permission-sanitize.mjs` by ADR-0057
-  §Decision 3). A profile exceeding a cap is refused, not
-  truncated — a silently truncated permission list is a security artifact, not a
-  convenience.
-
-### 4.2 Categorically excluded — never present, at any nesting depth
-
-- credential and token values (only the **environment-variable name** and a
-  `required` boolean)
-- any authentication material, session token, or API key
-- **repository paths** and Codex **project-trust** entries
-- Codex `/hooks` trust attestations — machine- and version-bound, never portable
-- caches, transcripts, workflow state, generated run state
-- the raw hostname (a hash prefix only)
-
-### 4.3 Write-side enforcement — three guards, not one
-
-1. **Fail-closed secret scrub.** A `scrubSecrets` round-trip; **any** secret-shaped
-   value refuses the write. (Pattern: `assertNoSecretInArtifact()` in
-   `lib/egress-launcher-plan.mjs`.)
-2. **Boundary validator.** The write is refused unless **every** `boundary.*` flag
-   is `false` — including `performs_network_request`, not merely the `writes_*`
-   trio. The `boundary` object is therefore **part of the schema**, not an
-   afterthought.
-3. **Static loader test.** No activation or config loader — `lib/egress-config.mjs`
-   in particular — reads the profile path. Assert statically; a runtime assertion
-   passes vacuously.
-
-Secret-pattern matching alone is insufficient: it does not remove repository paths
-or an unsafe permission posture. §4.2 and §4.5 carry those.
-
-### 4.4 Export reads **user-global only** — this is a correctness rule, not a preference
-
-Today's readers would **promote repository policy into a portable machine
-profile**:
-
-- model/effort resolution **prefers repo config over user config**;
-- the settings-side Claude permission reader **unioned** repo, repo-local, and
-  user rules into flat sets, losing per-rule provenance. (That reader,
-  `readClaudePermissionConfig`, was deleted with the permission advisor by
-  ADR-0057 §Decision 4. The decision below is unaffected: it is about which
-  readers `profile export` may use, and the user-global-only readers it
-  mandates are exactly the ones that survive.)
-
-Labelling that result `scope: "machine"` would silently export one project's
-policy as another machine's global default.
-
-**Decision.** `profile export` MUST use **user-global-only readers** (§1.3 adds
-them). Repository-effective values MAY be reported as informational overlays in
-`plan` / `status` output; they are **never** written into the profile and never
-relabelled. Every profile value carries `provenance`, and a value whose provenance
-is not user-global is not exportable. **The trailing SCALARS are the stated exception
-to the carrier, not to the rule**: `statusline_preset` and the 1.2 session family are
-bare strings with no `{value, scope, provenance}` envelope, because an object there
-would be refused by every older reader at every minor (§4.1). Their provenance is not
-lost, it is STRUCTURAL — these readers are user-global-only by construction, so a
-present value is user-global and an absent one is `null`. Nothing exportable acquires
-an unrecorded provenance.
-
-### 4.5 Seed-side rules
-
-On `profile seed`, runtime MUST:
-
-1. validate the schema **exactly**; reject unknown fields, secret-shaped values,
-   and any `boundary.writes_* !== false`;
-2. preserve each value's `scope` label — a machine value never becomes a repo
-   override, and a repo override is never promoted to machine-global. For the
-   envelope-less trailing scalars the seed path SYNTHESIZES `scope: machine` /
-   `provenance: user-global`, which is a statement of how they were read rather than
-   a label lifted from the document. It additionally derives `user_scope_only` from
-   the runtime's own `USER_SCOPE_ONLY_CONFIG_KEYS`, **never** from the incoming
-   artifact: a trust label an untrusted profile can author is worse than none, since
-   a consumer would believe it;
-3. **safety-grade before presenting.** A source machine's `bypassPermissions`,
-   `approval_policy = "never"`, or `danger-full-access` MUST NOT be presented as a
-   default. The target's safe recommendation wins, and the profile's value is shown
-   as a labelled note. This is ADR-0038's safety-graded rule; "present every value
-   as a default" is subordinate to it;
-4. present every remaining value as a **default requiring confirmation** — never
-   apply one;
-5. **re-diagnose the target machine** and treat live state, not the snapshot, as
-   evidence (§7);
-6. write nothing to host config.
-
-The chat-id pre-fills; the token never does — generalizing the egress launcher's
-existing behavior from one value to the whole profile.
-
-#### Profile 1.1 (ADR-0048 §2.1 / §4 realization)
-
-- **`statusline_preset`** — the adopted statusline item set, carried as an
-  OPTIONAL trailing **scalar** preset id (the owner-adopted six-item set is
-  `agentic-6`). A bare string on purpose, twice over: §4.6 lets a 1.0 reader
-  ignore an unknown *scalar* with a warning (an object would refuse the whole
-  document — the nested/custom shape is exactly §2.1's named major-bump case),
-  and canonicalization serializes unknown keys after known ones, so appending it
-  LAST keeps a 1.0 reader's canonical hash aligned with a 1.1 reader's over the
-  same document. The id names a policy; the canonical ordered item definition
-  belongs to the statusline adapter, never inline here. It is a DECLARATION the
-  export carries, never an observation inferred from host config. Validator
-  warnings from the ignored-scalar path SURFACE in the consuming verb's
-  report — an invisible warning is a forward-compat rule nobody exercises.
-- **`credential_env_var` is a WRITE-GATE constant, not a schema `const`
-  (ADR-0048 §4, realization decision D0.4).** The ADR asks for a schema
-  constant; a JSON `const` in a minor would invalidate legal 1.0 documents
-  carrying `null` or another name — a direct §4.6 additive violation — so the
-  schema shape stays `["string","null"]` and the pinning lives in
-  `assertProfileWritable` on every write/seed path: a present name other than
-  `TELEGRAM_BOT_TOKEN` is refused at the gate. The ADR's goal (no arbitrary
-  credential env var can enter the recorded contract) is enforced at the write
-  boundary; the difference from the ADR's literal wording is deliberate and
-  owner-approved (2026-07-23).
-
-#### Profile 1.2 (the session-config family)
-
-- **`entry_brief`, `entry_brief_empty`, `session_capture`** — the third config
-  family (`CONFIG_KEY_FAMILIES.session`), carried as OPTIONAL trailing **scalars**
-  for exactly the `statusline_preset` reason: §4.6 forgives an unknown scalar from
-  a newer minor, while an unknown *object* is refused at every minor, so a
-  `session` block would make every 1.2 profile unreadable to a 1.1 runtime and
-  break the seed path the artifact exists for. They are declared with `enum`
-  rather than a loose string, following `notify_channel`: a closed set in code is
-  a closed set in the schema, so an out-of-domain value is refused at the write
-  gate and again at the seed gate instead of travelling.
-- **The declared order is ALPHABETICAL, and that is load-bearing.**
-  Canonicalization emits schema-named keys in schema order and every unknown key
-  **sorted**, so a 1.1 reader serializes these three lexically after
-  `statusline_preset`. Declaring them in the config family's own order
-  (`session_capture` first) makes a 1.2 reader produce different canonical bytes
-  for the same document — the exact cross-minor divergence the trailing-scalar
-  shape exists to prevent. `PROFILE_SESSION_KEYS` in `lib/machine-profile.mjs`
-  encodes the same order; the two must not drift.
-- **Hash alignment is scoped to 1.1↔1.2, not 1.0↔1.2**, and the limit is
-  inherent rather than an oversight: a 1.0 reader does not know
-  `statusline_preset` either, so it sorts that key in among these three and lands
-  on a fourth ordering. Validation and seeding still work across all three minors
-  — that is what the §4.6 scalar tolerance buys — and only hash identity is
-  scoped. A consumer comparing hashes across a 1.0 boundary must version the
-  expectation rather than assume equality.
-- **The enums have a stated forward limit.** §4.6's tolerance forgives an unknown
-  KEY from a newer minor; it does not forgive an unknown VALUE of a KNOWN key. So a
-  future minor that adds, say, `session_capture = "turn-hook"` is refused outright by
-  the reader before it — the whole document, not just the field. **ADR-0057 §Decision 6
-  is the first real instance**: `agentic-machine-profile-1.3` widens
-  `permissions.claude.defaultMode` with `auto` and `dontAsk`, and a 1.2 reader refuses
-  a document carrying either. The minor still bumps, for IDENTITY rather than
-  tolerance — one `$id` must denote exactly one accepted language, or a historical
-  document can no longer be re-validated against the schema that admitted it. That is a real cost and it is
-  accepted deliberately: `notify_channel` has carried exactly this shape since 1.0,
-  and the alternative (a loose pattern) is worse, because an older runtime would then
-  ACCEPT a mode it cannot support and propose it to the operator as a default. The
-  principled fix is value-level newer-minor tolerance in the validator — warn and
-  ignore an unsupported value the way an unsupported key is warned and ignored — and
-  it is tracked in `plugins/runtime/docs/follow-ups.md` rather than invented here.
-  Until then, adding a mode to any of these enums is a change older readers refuse.
-
-- **What the export deliberately does NOT see.** `session_capture` resolves
-  repo → user → default at runtime and `entry_brief*` resolve env → user →
-  default (ignoring repo activation, ADR-0045 §7). The profile reads the
-  **user-global** layer only, per §4.4: a repo value is this checkout's policy
-  and an env value is this machine's per-session state, and neither is the
-  operator default worth carrying to another machine. A profile therefore
-  records the PERSISTED posture, never the effective value in force right now.
-- **Seed proposals mark scope, and do not flatten it.** `entry_brief` and
-  `entry_brief_empty` are user-scope-only (§7): a repo-tracked value must never
-  be able to enable a session-shaping injected line, so their proposals carry
-  `user_scope_only: true`. `session_capture` is not in that class and carries
-  `false`. The marker is present only where it was asserted — an omitted marker
-  means nobody classified the key, which must not read as "repo-writable".
+- **Closed schema, with one precisely-scoped exception.** Unknown **structural**
+  keys (an object or an array value) fail validation at any depth, always.
+  Unknown **scalar** keys fail too — *unless* the document's `schema` minor is
+  **greater** than the reader's, in which case they are ignored with a warning.
+  A same-or-older minor has no excuse for an unknown key, so it is rejected.
+  This is the forward-compat posture engineer's state reader already uses, and
+  it is why every schema string carries a **minor** (`-1.0`) rather than a bare
+  major. The warnings from the ignored-scalar path surface in the consuming
+  verb's report: an invisible warning is a forward-compat rule nobody exercises.
+- **Canonical order** for serialization is the order in which the schema file
+  declares `properties`; keys the schema does not name follow them, sorted.
+  Values are canonicalized before hashing.
+- **Bounded**: a document is capped at **64 KiB**, and an array longer than its
+  `maxItems` is refused, not truncated — a silently truncated record is a
+  corrupted one, not a convenience.
+- **A closed keyword subset.** The validator implements exactly the keywords
+  the packaged schemas use and rejects a schema that uses any other. It has no
+  `oneOf`, so a rule a schema cannot express — such as the §5 proof-kind
+  discriminator — is enforced in code.
 
 ### 4.6 Schema migration
 
@@ -1172,8 +938,16 @@ partially read.
 
 Minors are forward-compatible in exactly the way §4.1 states, and no other way: a
 reader meeting a **greater** minor ignores unknown *scalar* additions and warns;
-unknown *object* keys still fail; a reader meeting a **same-or-older** minor rejects
-any unknown key at all. Downgrade is never attempted.
+unknown *structural* keys still fail; a reader meeting a **same-or-older** minor
+rejects any unknown key at all. Downgrade is never attempted.
+
+**Stated limit.** The tolerance is for KEYS. It never forgives an unknown VALUE of
+a known key, so a newer minor that widens an enum is refused outright by an older
+reader — the whole document, not just the field. The minor still bumps, for
+identity rather than tolerance: one `$id` must denote exactly one accepted
+language, or a historical document can no longer be re-validated against the
+schema that admitted it. Value-level newer-minor tolerance is tracked in
+[`follow-ups.md`](follow-ups.md).
 
 ---
 
@@ -1187,7 +961,7 @@ any unknown key at all. Downgrade is never attempted.
   "updated_at": "<iso-8601-utc>",
   "status": "open|complete|configured-not-verified|abandoned",
   "selection": { "bundle": "<id>", "desired": ["<plugin>"], "excluded": ["<plugin>"] },
-  "seeded_from": { "profile_id": "<name>", "profile_hash": "<sha256>" },
+  "seeded_from": { "profile_id": "<name>", "profile_hash": "<sha256>" },   // retained runs only; no longer written (ADR-0064 D3)
   "choices": [ { "step_id": "<id>", "answer": "<value>", "at": "<iso-8601-utc>" } ],
   "history": [ { "step_id": "<id>", "from": "<status>", "to": "<status>", "reason": "<why>", "at": "<iso-8601-utc>" } ],
   "probe": {
@@ -1274,8 +1048,12 @@ otherwise. Per-host plugin state is **nested under the host** — a flat map wou
 collapse a Claude/Codex version divergence and could retain a proof bound to the
 wrong one.
 
-`seeded_from` records a **profile id and hash**, never a filesystem path (a path
-can itself reveal operator layout).
+`seeded_from` recorded the **profile id and hash** of the machine profile a run
+was seeded from, never a filesystem path (a path can itself reveal operator
+layout). ADR-0064 Decision 3 removed the machine profile on 2026-10-04, and no
+writer sets `seeded_from` any more. It stays valid in `runtime-bootstrap-run-1.4`,
+so a retained run that carries it still reads, and the removal needed no
+run-schema bump.
 
 Five shapes are load-bearing and agree with §8 / §8.1:
 
@@ -1430,7 +1208,7 @@ quality contract accepts "model/effort defaults stay host-native **or**
 `runtime:settings` configured". The step was asking for a key when the contract
 only ever asked for a decision.
 
-Four properties of the posture key are load-bearing:
+Three properties of the posture key are load-bearing:
 
 - **It is policy metadata, never a model identity.** The peer resolver reads a
   closed key list (`[<peer>_model, model]` / `[<peer>_effort, effort]`), so the
@@ -1445,12 +1223,9 @@ Four properties of the posture key are load-bearing:
   exclusively and the peer resolver never reads the posture at all, so a
   repo-side copy would be configuration nothing consults. Repo-local model/effort
   *coordinates* stay legitimate; it is the declaration that has one home.
-- **It is not exported to a machine profile.** Every profile member is a
-  `scalarField` object and §4.1 refuses an unknown object-valued key at *every*
-  minor, so carrying it would make new profiles unreadable to an older runtime —
-  breaking the seed path the artifact exists for. It is also the kind of choice a
-  new machine's operator should be asked rather than handed: a cheaper machine may
-  want explicit coordinates where this one wants the host's.
+
+(A fourth property, that the posture was never exported to the portable machine
+profile, went with the profile: ADR-0064 Decision 3 removed it on 2026-10-04.)
 
 Three judgement rules follow, and each closes a hole the presence test had:
 
@@ -1703,10 +1478,6 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   Both `v1` shapes are registered in `data/released-receiver-shapes.json`, so an
   installed `v1` reads as `legacy` until the operator re-renders it; a runtime
   release does not rewrite home copies.
-- **`statusline_preset` export rule (owner-approved 2026-07-23)**: `profile
-  export` writes `agentic-6` iff BOTH hosts' statusline configuration is
-  observed canonical — the operator applying the rendered fragments IS the
-  declaration; one host, declined, or foreign wiring exports `null`.
 - **Desired-seat discipline (applies to every fragment-bearing exact probe)**:
   the plan's expectation freezes into `steps[].desired` on FIRST render and is
   never silently re-bound; §7 version invalidation clears it with the
@@ -1725,9 +1496,10 @@ pedantic. `notify_kinds` and `session_capture` resolve repo → user → default
 runtime, and `entry_brief` / `entry_brief_empty` resolve env → user → default
 (ADR-0045 §7). So a satisfied step can coexist with a repo or env layer that
 wins at runtime. That is deliberate: §1.1 keeps bootstrap off the repo-scoped
-reader seam, and §4.4's rule is that a machine artifact carries the **operator's
-default**, not a checkout's policy — the same rule `profile export` follows for
-the same keys. ENV shadowing IS surfaced on the step (env is already in hand);
+reader seam, and a machine bootstrap records the **operator's default**, not a
+checkout's policy. (§4.4 stated the same rule for the machine profile's export
+of these keys until ADR-0064 Decision 3 removed the profile on 2026-10-04; this
+paragraph is now its home.) ENV shadowing IS surfaced on the step (env is already in hand);
 repo shadowing is a named boundary, diagnosed by `runtime:doctor`, not by this
 step.
 
@@ -1858,11 +1630,12 @@ protected. There was no in-run recovery: `abandon` plus a re-plan was the only e
 The rules, stated so a reader can check an implementation against them:
 
 - **`plan` and `resume` persist the narrowing**, in the same atomic write as the steps
-  derived from it. The bundle becomes `custom` and `excluded` is recomputed. The
-  bundle rewrite is load-bearing rather than cosmetic: a named bundle is **re-expanded**
-  from the plugin-set when a selection is seeded into a new run, so a narrowed
-  `desired` left under `design` would be silently re-widened by an export/seed round
-  trip — the decline undone by the artifact meant to reproduce the machine.
+  derived from it. The bundle becomes `custom` and `excluded` is recomputed, so the
+  seat never names a bundle whose members `desired` no longer holds. (While the
+  machine profile existed the rewrite was also load-bearing: a named bundle was
+  **re-expanded** from the plugin-set when a selection was seeded into a new run,
+  so a narrowed `desired` left under `design` would have been re-widened by an
+  export/seed round trip. ADR-0064 Decision 3 removed the profile on 2026-10-04.)
 - **`status` and `verify` derive it in memory** and cannot write (§3, R0). They present
   the stored selection verbatim, carry the retained set beside it, and warn that the
   two diverge. A run recorded before this rule existed is therefore judged correctly
@@ -1872,13 +1645,12 @@ The rules, stated so a reader can check an implementation against them:
   stays selected and its refused host stops binding versions, stops being presented as
   an install candidate, and stops counting toward the Codex-hook-bearing set. The
   declined ROW is the only record of such a refusal, which is why a partial decline
-  keeps its Stage-3 row while a whole-plugin decline does not. **Two limits follow, and
-  both are vocabulary, not defects to fix later**: a host-scoped refusal is never
+  keeps its Stage-3 row while a whole-plugin decline does not. **One limit follows,
+  and it is vocabulary, not a defect to fix later**: a host-scoped refusal is never
   written into the selection seat (so `status`/`verify` say exactly that rather than
-  promising a resume that would repair it), and it does not survive `profile export` —
-  the profile records a flat `desired` too, so seeding it re-creates the obligation on
-  the refused host. A refusal that must survive a profile round trip has to be a
-  whole-plugin decline, or a narrower `--plugins` list at plan time.
+  promising a resume that would repair it). A second limit, that such a refusal did
+  not survive a machine-profile export/seed round trip, went with the profile
+  (ADR-0064 Decision 3, 2026-10-04).
   - The install-candidate exclusion is **presentation**: the plugin-management plan
     the operator is then handed is machine-wide by construction (§1.6), so it may act
     on plugins outside this run's candidates. Bootstrap stops recommending the
@@ -1951,9 +1723,10 @@ registry, so a step the newer minor added is simply absent from its expectation:
 the report is optimistic and the exit code can read `0` while that step is
 unresolved. This is the shipped, accepted behaviour of every step addition — the
 1.1 → 1.2 bump added `notify.codex.configured` in the same commit and has the
-identical property — and it is why the fence lives on the MUTATORS: `resume` and
-`profile seed` refuse a future minor outright, so an older runtime can never
-*close* a run under an expectation it cannot derive. `status` and `verify` are
+identical property — and it is why the fence lives on the MUTATORS: `resume`
+refuses a future minor outright (as `profile seed` did until ADR-0064 Decision 3
+removed it on 2026-10-04), so an older runtime can never *close* a run under an
+expectation it cannot derive. `status` and `verify` are
 R0 and write nothing, so an optimistic read costs a re-run, not a state.
 Stating it rather than implying it: the remedy for a stale reader is to upgrade
 the runtime, not to consult its verdict.
@@ -2019,10 +1792,11 @@ that disagrees with what it persisted.
 **One read per file WITHIN the reader snapshot, projected per consumer.** Two
 judges reading the same file separately can observe an atomic replacement between
 them and then agree about a file that no single version of satisfies. Inside the
-reader gathering, Claude's `settings.json` (permission + statusline),
+reader gathering, Claude's `settings.json` (statusline),
 `~/.agentic-plugins/config.toml` (model/effort + notify) and
-`$CODEX_HOME/config.toml` (Codex permission + notify/statusline) are each read
-ONCE and projected.
+`$CODEX_HOME/config.toml` (notify/statusline) are each read ONCE and projected.
+(The permission projections of the first and last went with the machine profile,
+their only consumer: ADR-0064 Decision 3, 2026-10-04.)
 
 *Scoped to the gathering on purpose, because a broader claim would be false*: the
 machine PROBE reads `$CODEX_HOME/config.toml` again for Codex hook state, so that
@@ -2626,8 +2400,11 @@ Recorded here as a follow-up, not a requirement.
 ~/.agentic-plugins/runs/bootstrap/<run-id>/fragments/     rendered host-config fragments
 ~/.agentic-plugins/runs/bootstrap/<run-id>/proof/         proof metadata (§8.2)
 ~/.agentic-plugins/runs/bootstrap/latest.json             pointer to the newest run
-~/.agentic-plugins/profiles/<name>.json                   portable machine profile (§4)
 ```
+
+`~/.agentic-plugins/profiles/<name>.json`, the portable machine profile's home,
+left this list on 2026-10-04 with the profile (ADR-0064 Decision 3, §4). Nothing
+writes, lists or retention-manages it any more.
 
 **Machine-global, not repo-relative.** Authorized by
 [ADR-0046](../../../docs/adr/0046-machine-bootstrap.md) §4 as an M1 *location*
@@ -2660,9 +2437,12 @@ security, pointer, inventory, and retention.
   resume at a time per machine is the operating assumption, and `abandon` +
   fresh `plan` is the recovery when concurrent resumes were run anyway.
 - **Symlink refusal** and **canonical containment**: resolve the real path and
-  assert it is under `~/.agentic-plugins/`. This is why `profile export --out` does
-  not exist, and why `--name` is validated against a strict charset (no `/`, no
-  `\`, no `..`, no leading `.`, no NUL).
+  assert it is under `~/.agentic-plugins/`. This is why no verb takes `--out`, and
+  why every file stem a writer is handed — a fragment name, a proof kind — is
+  validated against a strict charset: no `/`, no `\`, no `..`, no leading `.`, no
+  NUL. (The validator is `validateProfileName`; its name is left from the profile
+  export's `--name`, which it also checked until ADR-0064 Decision 3 removed the
+  verb on 2026-10-04.)
 - **`$HOME` is the current repository** (some devcontainers): **fail closed** with a
   diagnostic. The egress config's verified-ignored-local reader already establishes
   this fail-closed posture; bootstrap does not invent a softer one.
@@ -2671,8 +2451,7 @@ security, pointer, inventory, and retention.
 - **A family-wide creation/index lock, not a per-run lock.** A per-run lock cannot
   serialize the thing that actually races: two processes each allocating a *different*
   run id and then both writing `latest.json`. The lock is taken on the `bootstrap/`
-  family for run creation, open-run discovery, and `latest.json` writes. Profile
-  writes take it too, so `--overwrite` cannot interleave with a concurrent read.
+  family for run creation, open-run discovery, and `latest.json` writes.
 - **Stale locks are recoverable.** A lock whose owning pid is gone, or whose age
   exceeds a bound, is broken with a reported diagnostic — never silently, and never by
   the operator hand-deleting files.
@@ -2711,8 +2490,7 @@ security, pointer, inventory, and retention.
 - `latest.json` is written atomically; a corrupted or orphaned pointer is recovered by
   scanning run directories, and the recovery is reported.
 - **Retention**: the last N runs (default 10) are kept; older run directories are
-  reported as retention pressure, **never auto-deleted**. **Profiles are never
-  auto-deleted.**
+  reported as retention pressure, **never auto-deleted**.
 - **Concurrency**: a second `plan` while a run is open is rejected, naming the open
   run's id. The operator continues it (`resume --latest-open`) or closes it
   (`abandon`). Because a crashed run leaves an open run behind, `abandon` is not a
@@ -2752,7 +2530,8 @@ Ship the schemas as **data**, and test the data:
 
 - `plugins/runtime/data/plugin-set.json` (§1.4) — bundles, hard/soft edges,
   hook-bearing, floors.
-- JSON Schema for `agentic-machine-profile-1` and `runtime-bootstrap-run-1`.
+- JSON Schema for `runtime-bootstrap-run-1`. (`agentic-machine-profile-1` was
+  the other until ADR-0064 Decision 3 removed it on 2026-10-04.)
 
 Tests MUST validate **real artifacts** against those schemas, and MUST assert the
 prose tables in §9 and §6 agree with `plugin-set.json` and the step registry. Prose
@@ -2763,7 +2542,9 @@ tokens (§11.3) remain as a floor, not as the enforcement.
 **1.2 additions (ADR-0048, realized by the bootstrap-contract-vnext slice).** The
 following obligations join the pins below, spread across
 `test-bootstrap.mjs` / `test-bootstrap-cli.mjs` / `test-completion-reducer.mjs` /
-`test-machine-profile.mjs` / `test-step-registry.mjs`:
+`test-step-registry.mjs`. (The "Profile 1.1" and "Profile 1.2" obligations, pinned
+in `test-machine-profile.mjs`, went with the machine profile: ADR-0064 Decision 3,
+2026-10-04.)
 
 - **False-demotion regression**: a passed proof stays `passed` across repeated
   verify/resume — re-judgement reads the RECORDED proof/ files back, never the
@@ -2836,10 +2617,10 @@ following obligations join the pins below, spread across
   reverting any one piece — the loop skip, the verdict source, the filter, the
   execution join, either sanitizer, the length bound, the surrogate guard, the
   kind labelling, or the join guard — turns a named assertion red.
-- **Profile 1.1**: every legal 1.0 document validates; a 1.1 `statusline_preset`
-  under a 1.0-era reader warns-and-ignores (and the warning SURFACES); the
-  canonical hash keeps the trailing-scalar alignment; the write gate refuses a
-  non-`TELEGRAM_BOT_TOKEN` name while the schema stays additive (D0.4).
+
+Obligations 4–7 and 30 tested the machine profile and went with it (ADR-0064
+Decision 3, 2026-10-04). Their numbers are kept so that tests citing the others
+by number stay correct.
 
 1. **Seam** — bootstrap never calls `inspectCatalogs` / `inspectSourcePluginState`.
    Assert at the **seam** (injected-call spy, or a poisoned catalog whose content
@@ -2852,18 +2633,17 @@ following obligations join the pins below, spread across
 3. **`runSettings` consumer-repo regression** (separate from bootstrap) — the
    sixteen false catalog remediations are gone **and** stale-update detection works
    outside the source tree.
-4. **Profile round-trip** — export → seed reproduces every enumerated field with its
-   `scope` and `provenance` intact.
-5. **User-global-only export** — a repo config supplying model/effort/notify/
-   permission values does **not** appear in the exported profile (§4.4).
-6. **Secret fail-close** — a token-shaped value refuses the write; any
-   `boundary.writes_* === true` refuses the write.
-7. **Loader isolation** — statically, no activation or config loader reads the
-   profile path.
-8. **No host-config write** — after `plan` + `seed` + `verify`,
+4. ~~**Profile round-trip**~~ — removed with the machine profile.
+5. ~~**User-global-only export**~~ — removed with the machine profile.
+6. ~~**Secret fail-close**~~ — removed with the machine profile, whose write gate it
+   tested. The run manifest's `boundary.*` rule (§5) is a `const: false` in its
+   schema.
+7. ~~**Loader isolation**~~ — removed with the machine profile.
+8. **No host-config write** — after `plan` + `verify`,
    `~/.claude/settings.json`, `~/.codex/config.toml`, and
    `~/.agentic-plugins/config.local.toml` are **byte-identical**. (Pattern:
-   `tests/runtime/test-bootstrap-cli.mjs`.)
+   `tests/runtime/test-bootstrap-cli.mjs`. The obligation also ran `profile seed`
+   between the two until ADR-0064 Decision 3 removed it on 2026-10-04.)
 9. **No executor** — `plan` never invokes a plugin-management command.
 10. **Write-ahead** — kill the runner after the first H2 action; the durable record
     already names the action. (Today it would not.)
@@ -2880,12 +2660,14 @@ following obligations join the pins below, spread across
     engineer.
 15. **Per-host divergence** — different plugin versions on Claude and Codex are both
     represented and neither is collapsed.
-16. **Path security** — `--name ../../x`, a symlinked profile target, and `$HOME`
-    equal to the repo root are each rejected.
+16. **Path security** — an artifact file stem outside the §10.2 charset (`../../x`)
+    and `$HOME` equal to the repo root are each rejected. (Until ADR-0064
+    Decision 3 removed the profile on 2026-10-04, the obligation named the profile
+    export's `--name` and a symlinked profile target.)
 17. **Concurrency** — a second `plan` with a run open is rejected; a corrupted
     `latest.json` is recovered.
-18. **Schema migration** — an unknown profile major is rejected with a diagnostic; an
-    additive minor is accepted.
+18. **Schema migration** — an unknown schema major is rejected with a diagnostic; an
+    additive minor is accepted (§4.6).
 19. **Bundle closure** — a `custom` selection omitting a hard dependency is rejected,
     naming the plugin and the host.
 20. **Catalog consistency** (source-tree only) — `plugin-set.json` matches both
@@ -2909,8 +2691,7 @@ following obligations join the pins below, spread across
     and `latest.json` is never orphaned. A stale lock is broken with a diagnostic.
 29. **Abandonment** — a crashed open run is closable with `abandon`, and a new `plan`
     then succeeds.
-30. **Profile overwrite** — writing an existing profile name without `--overwrite` is
-    refused.
+30. ~~**Profile overwrite**~~ — removed with the machine profile.
 31. **Claude has no disabled state** — `plugin.<name>.claude.installed` never expects an
     `enabled` field that Claude does not report; only Codex carries `disabled`.
 32. **Machine-global inventory + retention** — the `bootstrap` family is inventoried at
@@ -2927,17 +2708,19 @@ following obligations join the pins below, spread across
     per #1 — an output-only check cannot distinguish "did not record" from "recorded
     and did not print".
 34. **`--answers` is refused off the interview verbs** (§3 errata) — `--answers` on
-    `status` / `verify` / `abandon` / `profile export` / `profile seed` exits `40`
+    `status` / `verify` / `abandon` exits `40`
     rather than being silently ignored, and an answers file naming a `step_id` that
     is not an expected step of the run exits `40` rather than recording it.
 
 ### 11.3 `tests/plugin-shape/test-runtime-plugin.mjs`
 
 Assert this document contains at minimum: `Machine Bootstrap Contract`,
-`runtime:bootstrap`, `scripts/bootstrap.mjs`, `agentic-machine-profile-1`,
-`runtime-bootstrap-run-1`, `configured-not-verified`,
-`never an input to any activation or config loader`, `Stage 0`, `probeMachineHostState`,
-`/artifact-only/i`, `/machine-scoped/i`, `/write-ahead/i`.
+`runtime:bootstrap`, `scripts/bootstrap.mjs`, `runtime-bootstrap-run-1`,
+`configured-not-verified`, `Stage 0`, `probeMachineHostState`,
+`/artifact-only/i`, `/machine-scoped/i`, `/write-ahead/i`. (Two profile tokens,
+`agentic-machine-profile-1` and the profile's "never an input to any activation
+or config loader" invariant, left the list with the profile: ADR-0064
+Decision 3, 2026-10-04.)
 
 Also assert `README.md`'s Stage 0 block and §2's Stage 0 block carry the same
 commands.
@@ -2946,14 +2729,6 @@ commands.
 
 ## 12. Non-goals
 
-- **Profile 1.2**: every legal 1.1 document validates under the 1.2 reader; a 1.2
-  document under a 1.1-era reader produces exactly three ignored-scalar warnings and
-  no errors; the same document canonicalizes to identical bytes under a 1.1 and a 1.2
-  reader (1.0 is explicitly NOT in that guarantee — it does not know
-  `statusline_preset` either and sorts it in among the three); an out-of-domain enum
-  value is refused at both the write gate and the seed gate; a `session` OBJECT block
-  is refused at every minor; the written file IS the canonical form; and an incoming
-  profile cannot author `user_scope_only`.
 - **Closing Stage 0.** Manual until ADR-0006 is superseded (§2).
 - **Writing host config.** Never, under any flag. ADR-0041 §2c is not negotiable.
 - **A new plugin-management executor.** Bootstrap presents; `runtime:settings
@@ -2964,10 +2739,10 @@ commands.
 - **Single-host mode.** Documented limitation with a named trigger (§8.3).
 - **Declared manifest dependencies.** Recorded as a follow-up (§9.1), not S8 work.
 - **Repo-scoped setup.** Repository overlays are reported, never managed.
-- **A cross-machine sync service.** The profile is a file the operator carries. No
-  daemon, no fetch, no push.
-- **Promoting the profile to config.** A *trusted* machine config would be a
-  different artifact with a different ADR — not this one relaxed.
+- **A cross-machine sync service.** No daemon, no fetch, no push. (The portable
+  machine profile, a file the operator carried between machines, was removed by
+  ADR-0064 Decision 3 on 2026-10-04; so was this list's "promoting the profile to
+  config" entry.)
 
 ---
 
@@ -2980,8 +2755,8 @@ nobody mistakes "the contract did not say" for "the contract left it open".
 
 | Item | Constrained by |
 |---|---|
-| Exact JSON Schema files for `agentic-machine-profile-1.3` (1.2 + the ADR-0057 `defaultMode` enum widening; 1.1 was 1.0 + trailing `statusline_preset`, ADR-0048 §2.1), `runtime-bootstrap-run-1.3` (1.2 + the §3.3 value-answer grammar — a SEMANTIC minor: no JSON shape changed, and the bump exists to arm the future-minor mutator fence; 1.2 was 1.1 + the egress evidence vocabulary, ADR-0048 §3), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
-| ~~Exact permission-mode enums per host~~ | **Resolved (S8a2 C0).** The **stored** enum carries whatever each host accepts, unsafe values included, because §4.5.3 shows a source machine's value as a labelled note — it must have a field to live in. Safety grading is a **present/seed-side** rule, not a second schema field: never *present* Claude `bypassPermissions`, Codex `approval_policy = "never"`, or `sandbox_mode = "danger-full-access"` as a default. Presentable Claude `defaultMode`: `default` / `acceptEdits` / `plan` / `auto` / `dontAsk` (ADR-0057 §Decision 6 widened the stored enum to the host's own canonical list; neither new mode is unsafe — `dontAsk` is strictly more restrictive than `default`, and `auto` keeps a classifier in the loop rather than bypassing the check). Presentable Codex `approval_policy`: `untrusted` / `on-request` / `on-failure`; `sandbox_mode`: `read-only` / `workspace-write`. |
+| Exact JSON Schema files for `agentic-machine-profile-1.3` (1.2 + the ADR-0057 `defaultMode` enum widening; 1.1 was 1.0 + trailing `statusline_preset`, ADR-0048 §2.1; removed with the machine profile by ADR-0064 Decision 3, 2026-10-04), `runtime-bootstrap-run-1.3` (1.2 + the §3.3 value-answer grammar — a SEMANTIC minor: no JSON shape changed, and the bump exists to arm the future-minor mutator fence; 1.2 was 1.1 + the egress evidence vocabulary, ADR-0048 §3), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
+| ~~Exact permission-mode enums per host~~ | **Resolved (S8a2 C0).** The **stored** enum carries whatever each host accepts, unsafe values included, because §4.5.3 shows a source machine's value as a labelled note — it must have a field to live in. Safety grading is a **present/seed-side** rule, not a second schema field: never *present* Claude `bypassPermissions`, Codex `approval_policy = "never"`, or `sandbox_mode = "danger-full-access"` as a default. Presentable Claude `defaultMode`: `default` / `acceptEdits` / `plan` / `auto` / `dontAsk` (ADR-0057 §Decision 6 widened the stored enum to the host's own canonical list; neither new mode is unsafe — `dontAsk` is strictly more restrictive than `default`, and `auto` keeps a classifier in the loop rather than bypassing the check). Presentable Codex `approval_policy`: `untrusted` / `on-request` / `on-failure`; `sandbox_mode`: `read-only` / `workspace-write`. **Moot since 2026-10-04 ([ADR-0064](../../../docs/adr/0064-runtime-surface-reduction.md) Decision 3):** these enums lived only in the machine profile and went with it. The safety policy they encoded survives in ADR-0057 D8 and ADR-0038 §6: no permission-relaxing default or hook is ever shipped. |
 | The complete `minimum_version` floor table | §1.4 — two are known (`companions` 0.3.0, `engineer` 0.7.0); S8a2 C1 verifies the rest against the plugins' own changelogs. Compare **prerelease-aware** with SemVer §11 identifier ranking (numeric identifiers as JS numbers, lossy only above 2^53; beyond the shared `semverCompare`, whose prerelease tie-break ranks a release above its own prereleases but never identifiers against each other); an unknown installed version with a non-null floor stays **unresolved**, never "installed". |
 | ~~The write-ahead journal's exact transition table and the settings-artifact schema minor~~ | **Resolved (S8a1)** — §1.5 "Concrete shape" specifies the fields; artifact schema is `runtime-settings-execution-artifact-1.3` (S8a4 added the `codex_hook_review` canonical `bound_versions`/`attested_plugins`), statuses `planned → in-progress → completed/failed/refused` |
 | ~~The `probeMachineHostState()` return schema~~ | **Resolved (S8a2 C0)** — §5 `probe.hosts.<h>` pins the serialization: `cli_version`, `auth` enum (`available` / `unauthenticated` / `unknown` / `sandbox_limited`), `marketplace`, and the per-host nested `plugins` map. |

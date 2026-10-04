@@ -5,20 +5,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  projectClaudeStatusline,
+  readUserGlobalClaudeSettings,
   readUserGlobalModelEffort,
   readUserGlobalNotify,
   readUserGlobalSession,
-  readUserGlobalClaudePermission,
-  readUserGlobalCodexPermission,
-  readUserGlobalEgress,
 } from '../../plugins/runtime/scripts/lib/profile-readers.mjs';
-import { EGRESS_ENV_KEYS } from '../../plugins/runtime/scripts/lib/egress-config.mjs';
 
-// machine-bootstrap-contract.md §4.4 — a machine profile MUST read user-global
-// config ONLY. These tests pin: no repo/repo-local value can enter the result;
-// absent/malformed/unreadable are reported (not crashed); every value carries
-// user-global provenance; and the egress reader is credential-independent + never
-// exports a malformed or token-shaped routing value.
+// The bootstrap judges read user-global config ONLY (machine-bootstrap-contract.md
+// §1.1). These tests pin: no repo/repo-local value can enter the result;
+// absent/malformed/unreadable are reported (not crashed); and every value carries
+// user-global provenance. The permission and egress reader cases went with the
+// portable machine profile, their only consumer (ADR-0064 Decision 3).
 
 async function makeHome() {
   const home = await mkdtemp(join(tmpdir(), 'profile-readers-'));
@@ -29,7 +27,7 @@ async function writeFileAt(path, content) {
   await writeFile(path, content);
 }
 
-describe('profile-readers §4.4: session family (profile 1.2)', () => {
+describe('profile-readers: session family', () => {
   it('reads the session family from the user-global file, with provenance', async () => {
     const home = await makeHome();
     await writeFileAt(join(home, '.agentic-plugins', 'config.toml'),
@@ -45,7 +43,7 @@ describe('profile-readers §4.4: session family (profile 1.2)', () => {
   });
 
   it('reads the user-global file by construction — it accepts no repo input at all', async () => {
-    // §4.4's repo-isolation guarantee, pinned the only way it is actually decidable
+    // The repo-isolation guarantee, pinned the only way it is actually decidable
     // at this seam. An earlier version of this test created a temp repo, wrote a
     // competing `session_capture` into it, and called itself the control that proves
     // the projection ignores repo config — but `readUserGlobalSession` takes only
@@ -93,7 +91,7 @@ describe('profile-readers §4.4: session family (profile 1.2)', () => {
   });
 });
 
-describe('profile-readers §4.4: model/effort + notify (user-global runtime config)', () => {
+describe('profile-readers: model/effort + notify (user-global runtime config)', () => {
   it('reads ONLY ~/.agentic-plugins/config.toml, carries user-global provenance', async () => {
     const home = await makeHome();
     await writeFileAt(join(home, '.agentic-plugins', 'config.toml'),
@@ -115,7 +113,7 @@ describe('profile-readers §4.4: model/effort + notify (user-global runtime conf
 
   it('a repo .agentic-plugins/config.toml is structurally unreachable (reader takes only homeDir)', async () => {
     // The reader signature has no repoRoot: it CANNOT read repo config. This test
-    // documents the §4.4 guarantee — a different repo value coexisting never leaks.
+    // documents the repo-isolation guarantee — a different repo value coexisting never leaks.
     const home = await makeHome();
     await writeFileAt(join(home, '.agentic-plugins', 'config.toml'), 'model = "user-opus"\n');
     // A repo config with a conflicting value sitting in the cwd is simply never consulted.
@@ -131,117 +129,55 @@ describe('profile-readers §4.4: model/effort + notify (user-global runtime conf
   });
 });
 
-describe('profile-readers §4.4: Claude permission (user settings.json only)', () => {
-  it('reads only ~/.claude/settings.json; unions nothing; user-global provenance', async () => {
+// The statusline judge's source (bootstrap.mjs reads it once per probe). These
+// cases used to ride on the permission reader, which shared the file and went
+// with the machine profile (ADR-0064 Decision 3); they are pinned here against
+// the reader the judge calls. A malformed or unreadable settings.json must stay
+// distinguishable from a missing one, or the judge would report an absent
+// statusline for a file it never managed to read.
+describe('profile-readers: user-global Claude settings (statusline judge source)', () => {
+  it('reads settings.json once and projects its statusLine', async () => {
     const home = await makeHome();
-    await writeFileAt(join(home, '.claude', 'settings.json'), JSON.stringify({
-      permissions: { allow: ['Bash(ls)'], deny: ['Bash(rm)'], ask: ['WebFetch(domain:x)'], defaultMode: 'acceptEdits' },
-    }));
-    const p = await readUserGlobalClaudePermission({ homeDir: home });
-    deepStrictEqual(p.allow, ['Bash(ls)']);
-    deepStrictEqual(p.deny, ['Bash(rm)']);
-    deepStrictEqual(p.ask, ['WebFetch(domain:x)']);
-    strictEqual(p.default_mode, 'acceptEdits');
-    strictEqual(p.provenance, 'user-global');
-    strictEqual(p.source.status, 'readable');
+    await writeFileAt(join(home, '.claude', 'settings.json'),
+      JSON.stringify({ statusLine: { type: 'command', command: 'node s.mjs' } }));
+    const snapshot = await readUserGlobalClaudeSettings({ homeDir: home });
+    deepStrictEqual(snapshot.source, { scope: 'user', status: 'readable' });
+    deepStrictEqual(projectClaudeStatusline(snapshot),
+      { readable: true, present: true, type: 'command', command: 'node s.mjs' });
   });
 
-  it('malformed JSON → status malformed, empty buckets (never throws)', async () => {
+  it('malformed JSON → status malformed, no json, and the projection is not readable', async () => {
     const home = await makeHome();
     await writeFileAt(join(home, '.claude', 'settings.json'), '{ not json');
-    const p = await readUserGlobalClaudePermission({ homeDir: home });
-    strictEqual(p.source.status, 'malformed');
-    deepStrictEqual(p.allow, []);
-    strictEqual(p.default_mode, null);
+    const snapshot = await readUserGlobalClaudeSettings({ homeDir: home });
+    strictEqual(snapshot.source.status, 'malformed');
+    strictEqual(snapshot.json, null);
+    strictEqual(projectClaudeStatusline(snapshot).readable, false);
   });
 
   it('a directory where settings.json should be → status unreadable (not missing)', async () => {
     const home = await makeHome();
     await mkdir(join(home, '.claude', 'settings.json'), { recursive: true });
-    const p = await readUserGlobalClaudePermission({ homeDir: home });
-    strictEqual(p.source.status, 'unreadable');
+    const snapshot = await readUserGlobalClaudeSettings({ homeDir: home });
+    strictEqual(snapshot.source.status, 'unreadable');
+    strictEqual(projectClaudeStatusline(snapshot).readable, false);
   });
 
-  it('absent → missing, empty buckets', async () => {
+  it('absent → missing, which still reads as "no statusline"', async () => {
     const home = await makeHome();
-    const p = await readUserGlobalClaudePermission({ homeDir: home });
-    strictEqual(p.source.status, 'missing');
-    deepStrictEqual(p.ask, []);
-  });
-});
-
-describe('profile-readers §4.4: Codex permission (user config.toml only, NO projectTrusted)', () => {
-  it('surfaces approval_policy/sandbox_mode with user-global provenance; never projectTrusted', async () => {
-    const home = await makeHome();
-    await writeFileAt(join(home, '.codex', 'config.toml'),
-      'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n\n[projects."/some/repo"]\ntrust_level = "trusted"\n');
-    const p = await readUserGlobalCodexPermission({ homeDir: home, env: {} });
-    strictEqual(p.approval_policy, 'on-request');
-    strictEqual(p.sandbox_mode, 'workspace-write');
-    strictEqual(p.provenance, 'user-global');
-    // The repo-keyed trust must NEVER appear in a machine profile.
-    ok(!('project_trusted' in p));
-    ok(!('projectTrusted' in p));
+    const snapshot = await readUserGlobalClaudeSettings({ homeDir: home });
+    strictEqual(snapshot.source.status, 'missing');
+    deepStrictEqual(projectClaudeStatusline(snapshot),
+      { readable: true, present: false, type: null, command: null });
   });
 
-  it('honors $CODEX_HOME override for the source', async () => {
+  it('honors CLAUDE_CONFIG_DIR instead of ~/.claude', async () => {
     const home = await makeHome();
-    const codexHome = await mkdtemp(join(tmpdir(), 'codex-home-'));
-    await writeFileAt(join(codexHome, 'config.toml'), 'approval_policy = "untrusted"\n');
-    const p = await readUserGlobalCodexPermission({ homeDir: home, env: { CODEX_HOME: codexHome } });
-    strictEqual(p.approval_policy, 'untrusted');
-    strictEqual(p.source.codex_home_source, 'CODEX_HOME env override');
-  });
-
-  it('absent → nulls, status missing', async () => {
-    const home = await makeHome();
-    const p = await readUserGlobalCodexPermission({ homeDir: home, env: {} });
-    strictEqual(p.approval_policy, null);
-    strictEqual(p.source.status, 'missing');
-  });
-});
-
-describe('profile-readers §4.4: egress (credential-independent, secrets-free)', () => {
-  it('surfaces channel+recipient from env EVEN WITHOUT the credential (unlike activation)', async () => {
-    const home = await makeHome();
-    const env = { [EGRESS_ENV_KEYS.channel]: 'telegram', [EGRESS_ENV_KEYS.recipient]: '123456789' };
-    const e = readUserGlobalEgress({ homeDir: home, env });
-    strictEqual(e.channel, 'telegram');
-    strictEqual(e.recipient, '123456789', 'recipient exported even though TELEGRAM_BOT_TOKEN is absent');
-    strictEqual(e.credential_present, false);
-    strictEqual(e.provenance.channel, 'env');
-    strictEqual(e.provenance.recipient, 'env');
-  });
-
-  it('invalid recipient → null (never exports a malformed chat-id)', async () => {
-    const home = await makeHome();
-    const env = { [EGRESS_ENV_KEYS.channel]: 'telegram', [EGRESS_ENV_KEYS.recipient]: 'not a chat id!!' };
-    const e = readUserGlobalEgress({ homeDir: home, env });
-    strictEqual(e.recipient, null);
-    strictEqual(e.provenance.recipient, null);
-    strictEqual(e.channel, 'telegram');
-  });
-
-  it('non-enum channel → null (never exports a token-shaped channel)', async () => {
-    const home = await makeHome();
-    const e = readUserGlobalEgress({ homeDir: home, env: { [EGRESS_ENV_KEYS.channel]: 'slack' } });
-    strictEqual(e.channel, null);
-  });
-
-  it('collision with a present credential drops that field (secrets-free guard)', async () => {
-    const home = await makeHome();
-    const token = 'SECRET-BOT-TOKEN-123';
-    const env = { [EGRESS_ENV_KEYS.channel]: 'telegram', [EGRESS_ENV_KEYS.recipient]: token, [EGRESS_ENV_KEYS.credential]: token };
-    const e = readUserGlobalEgress({ homeDir: home, env });
-    strictEqual(e.recipient, null, 'a recipient equal to the token is dropped, never exported');
-    strictEqual(e.credential_present, true);
-  });
-
-  it('absent everywhere → nulls, headline false', async () => {
-    const home = await makeHome();
-    const e = readUserGlobalEgress({ homeDir: home, env: {} });
-    strictEqual(e.channel, null);
-    strictEqual(e.recipient, null);
-    strictEqual(e.headline, false);
+    await writeFileAt(join(home, '.claude', 'settings.json'), '{ not json');
+    const relocated = join(home, 'relocated');
+    await writeFileAt(join(relocated, 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'x' } }));
+    const snapshot = await readUserGlobalClaudeSettings({ homeDir: home, env: { CLAUDE_CONFIG_DIR: relocated } });
+    strictEqual(snapshot.source.status, 'readable');
+    strictEqual(projectClaudeStatusline(snapshot).command, 'x');
   });
 });

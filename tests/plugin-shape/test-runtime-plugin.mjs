@@ -206,16 +206,16 @@ describe('plugins/runtime bootstrap surface', () => {
     const argumentHint = command.split('\n').find((line) => line.startsWith('argument-hint:'));
     ok(argumentHint, 'commands/bootstrap.md has an argument-hint');
     // The §3 grammar, advertised: every verb and every flag the parser accepts.
-    for (const verb of ['plan', 'status', 'resume', 'verify', 'abandon', 'profile export', 'profile seed']) {
+    for (const verb of ['plan', 'status', 'resume', 'verify', 'abandon']) {
       ok(argumentHint.includes(verb), `commands/bootstrap.md argument-hint advertises the '${verb}' verb`);
     }
-    for (const flag of ['--bundle', '--plugins', '--profile-file', '--answers', '--format', '--run-id', '--latest', '--latest-open', '--reason', '--name', '--from-run', '--overwrite']) {
+    for (const flag of ['--bundle', '--plugins', '--answers', '--format', '--run-id', '--latest', '--latest-open', '--reason']) {
       ok(argumentHint.includes(flag), `commands/bootstrap.md argument-hint advertises ${flag}`);
     }
     ok(!argumentHint.includes('--out'), 'there is no --out (§3: writes are constrained to the authorized home)');
     // Interview pacing is the command's ONLY ownership — schema decisions live
     // in the packaged contract, and the pacing order is the contract's §Decision-8.
-    ok(/diagnose/i.test(command) && /profile-seeded-default/i.test(command) && /re-probe/i.test(command), 'commands/bootstrap.md carries the interview pacing order');
+    ok(/diagnose/i.test(command) && /re-probe/i.test(command), 'commands/bootstrap.md carries the interview pacing order');
     ok(/--expected-plan-hash/.test(command), 'commands/bootstrap.md presents the §1.6 plan-hash executor handoff');
 
     const skill = await readFile(skillsPath(PLUGIN_ROOT, 'bootstrap/SKILL.md'), 'utf-8');
@@ -240,10 +240,8 @@ describe('plugins/runtime bootstrap surface', () => {
       'Machine Bootstrap Contract',
       'runtime:bootstrap',
       'scripts/bootstrap.mjs',
-      'agentic-machine-profile-1',
       'runtime-bootstrap-run-1',
       'configured-not-verified',
-      'never an input to any activation or config loader',
       'Stage 0',
       'probeMachineHostState',
     ]) {
@@ -340,13 +338,12 @@ describe('plugins/runtime settings surface', () => {
     //   (b) the SAFETY-GRADING CEILING. `bypassPermissions` / `danger-full-access`
     //       are never proposed as a target default. That rule is a property of
     //       PROFILE SEEDING (machine-profile.mjs UNSAFE_CLAUDE_MODES), not of the
-    //       advisory, so it is pinned on bootstrap's surface, which still owns it.
+    //       advisory, so it was pinned on bootstrap's surface. ADR-0064 Decision 3
+    //       removed profile seeding and its pin; the policy stands in ADR-0057 D8
+    //       and ADR-0038 §6, and no runtime surface proposes a posture any more.
     for (const [label, surface] of [['commands/settings.md', command], [`${SKILLS_REL}/settings/SKILL.md`, skill]]) {
       ok(/never writes host config/i.test(surface), `${label} states the no-host-config-write boundary`);
     }
-    const bootstrapSkill = await readFile(skillsPath(PLUGIN_ROOT, 'bootstrap/SKILL.md'), 'utf-8');
-    ok(bootstrapSkill.includes('bypassPermissions') && bootstrapSkill.includes('danger-full-access'),
-      `${SKILLS_REL}/bootstrap/SKILL.md names the seeding safety ceiling the advisory used to carry`);
     // And the removed surface stays removed on every public surface.
     for (const [label, surface] of [['commands/settings.md', command], [`${SKILLS_REL}/settings/SKILL.md`, skill], ['settings agent yaml', agent]]) {
       ok(!surface.includes('--permission-plan'), `${label} no longer advertises the removed --permission-plan`);

@@ -1,15 +1,16 @@
 // plugins/runtime/scripts/lib/bootstrap-artifacts.mjs
 //
 // Machine-global artifact PRIMITIVES for `runtime:bootstrap` — the storage layer
-// underneath the run manifest (machine-bootstrap-contract.md §5), the portable
-// profile (§4), and the completion reducer (§8). Authorized by ADR-0046 §4 as an
+// underneath the run manifest (machine-bootstrap-contract.md §5) and the
+// completion reducer (§8). The portable machine profile this layer also stored
+// was removed by ADR-0064 Decision 3. Authorized by ADR-0046 §4 as an
 // M1 *location* extension: agentic-plugins-owned writes, at a machine-global home
 // instead of a repo-relative one. No new effect class — no host config, no
 // credential, no network, no executor.
 //
 // This module owns WHERE and HOW, never WHAT. It persists whatever object it is
-// handed, behind an injected `validate`; the run/profile SCHEMAS (S8a2 C4) and the
-// profile/reducer engines (C5) supply meaning. Keeping the schema out of the
+// handed, behind an injected `validate`; the run SCHEMA (S8a2 C4) and the reducer
+// engine (C5) supply meaning. Keeping the schema out of the
 // storage layer is deliberate: the security gates below must hold for every future
 // artifact shape, including ones this commit cannot see.
 //
@@ -19,7 +20,6 @@
 //   ~/.agentic-plugins/runs/bootstrap/<run-id>/fragments/
 //   ~/.agentic-plugins/runs/bootstrap/<run-id>/proof/
 //   ~/.agentic-plugins/runs/bootstrap/latest.json
-//   ~/.agentic-plugins/profiles/<name>.json
 //   ~/.agentic-plugins/.locks/bootstrap.lock
 //
 // SECURITY POSTURE (contract §10.2, ADR-0035 §3). Every gate here is fail-closed
@@ -51,12 +51,12 @@
 //     renameat with O_NOFOLLOW), which Node does not expose at all. A check-then-use
 //     window is therefore inherent, not an oversight — and pretending otherwise
 //     would be the dishonest part.
-// Read paths (scanBootstrapRuns / readBootstrapLatest / listMachineProfiles) inherit
+// Read paths (scanBootstrapRuns / readBootstrapLatest) inherit
 // the same model: they can be redirected by a symlinked ancestor, and doctor could
 // then REPORT data from outside the home. It still cannot write there.
 //
 // CONCURRENCY. One family-wide lock covers run creation, open-run discovery,
-// latest.json writes, and profile writes (contract §10.2). A per-run lock cannot
+// and latest.json writes (contract §10.2). A per-run lock cannot
 // serialize the thing that actually races — two processes each allocating a
 // DIFFERENT run id and then both writing latest.json — because they would take two
 // different locks and both win.
@@ -139,9 +139,12 @@ export const BOOTSTRAP_TERMINAL_RUN_STATUSES = Object.freeze(['complete', 'confi
 // escape hatch, not a completed bootstrap anyone can testify about.
 export const BOOTSTRAP_COMPLETION_RUN_STATUSES = Object.freeze(['complete', 'configured-not-verified']);
 
-// Profile --name charset (contract §10.2). No '/', no '\', no '..', no leading
-// '.', no NUL — enforced as an ALLOWLIST, because an allowlist cannot be
-// out-thought by an encoding the denylist author never met.
+// The artifact file-stem charset (contract §10.2): the fragment and proof writers
+// validate the names they turn into path components with it. It was first the
+// charset of the machine profile's `--name`, which is why these helpers carry
+// `Profile` in their names; the profile went with ADR-0064 Decision 3. No '/',
+// no '\', no '..', no leading '.', no NUL — enforced as an ALLOWLIST, because an
+// allowlist cannot be out-thought by an encoding the denylist author never met.
 export const PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 // Stale-lock bound (contract §13): pid gone OR age past ten minutes.
@@ -209,7 +212,7 @@ export function isValidProfileName(name) {
 export function validateProfileName(name) {
   if (!isValidProfileName(name)) {
     throw new Error(
-      `invalid profile name '${name}' (expected 1-64 chars of [A-Za-z0-9._-] starting alphanumeric; no '/', '\\', '..', leading '.', or NUL)`,
+      `invalid artifact name '${name}' (expected 1-64 chars of [A-Za-z0-9._-] starting alphanumeric; no '/', '\\', '..', leading '.', or NUL)`,
     );
   }
   return name;
@@ -252,14 +255,6 @@ export function bootstrapProofDir(homeDir, runId) {
 
 export function bootstrapLatestFile(homeDir) {
   return join(bootstrapFamilyRoot(homeDir), 'latest.json');
-}
-
-export function profilesRoot(homeDir) {
-  return join(machineGlobalRoot(homeDir), 'profiles');
-}
-
-export function profileFile(homeDir, name) {
-  return join(profilesRoot(homeDir), `${validateProfileName(name)}.json`);
 }
 
 // The family-wide lock. Lives under .locks/ — OUTSIDE runs/ — so the inventory
@@ -557,7 +552,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // precisely the "claim it only if unclaimed" the rule is trying to express. It also
 // publishes a fully-populated file (the content exists before the name does), so a
 // reader can never see a created-but-empty lock and mistake a live holder for a
-// corrupt one. Every ARTIFACT write — run.json, latest.json, profiles, fragments,
+// corrupt one. Every ARTIFACT write — run.json, latest.json, fragments,
 // proofs — uses temp+rename exactly as specified; this deviation is scoped to the
 // lock's claim.
 //
@@ -1318,7 +1313,7 @@ export async function repairBootstrapLatest({ homeDir, repoRoot, now, ...lockOpt
     return write.ok ? { repaired: true, ...latest } : { repaired: false, ...latest, diagnostics: [...latest.diagnostics, write.diagnostic] };
   });
 
-  // Unwrapped, like createBootstrapRun / abandonBootstrapRun / writeMachineProfile:
+  // Unwrapped, like createBootstrapRun / abandonBootstrapRun:
   // every mutating entry point in this module returns its own result shape, so a
   // caller never has to know which of them happen to take the lock.
   if (!result.ok) return { repaired: false, status: 'blocked', reason: result.reason, run_id: null, diagnostics: result.diagnostics };
@@ -1580,9 +1575,9 @@ export async function abandonBootstrapRun({ homeDir, repoRoot, runId, reason = '
   return { ...result.value, diagnostics: [...result.diagnostics, ...result.value.diagnostics] };
 }
 
-// Rewrite an OPEN run's manifest under the family lock (contract §3 — `resume` and
-// `profile seed` are the M1 verbs that persist invalidation stamps, step
-// transitions, choices, and seeded defaults). The mutation is a caller-supplied
+// Rewrite an OPEN run's manifest under the family lock (contract §3 — `resume` is
+// the M1 verb that persists invalidation stamps, step transitions and choices).
+// The mutation is a caller-supplied
 // pure function over a deep copy of the previous manifest; `updated_at` is stamped
 // here so no caller can forget it, and a terminal run is refused rather than
 // silently reopened — `abandon` is the only verb that may rewrite a non-open run,
@@ -1711,8 +1706,8 @@ async function requireExistingRun({ homeDir, runId }) {
 // Persist a rendered host-config fragment and return the METADATA the run manifest
 // carries (pointer, hash, bytes) — never the body. The fragment is an artifact
 // DESCRIBING an edit; ADR-0041 §2c is why bootstrap renders it here instead of
-// applying it. `name` is validated on the profile charset for the same reason
-// --name is: it becomes a path component.
+// applying it. `name` is validated on the artifact file-stem charset because it
+// becomes a path component.
 export async function writeBootstrapFragment({ homeDir, repoRoot, runId, name, content }) {
   validateBootstrapRunId(runId);
   validateProfileName(name);
@@ -1837,7 +1832,7 @@ export async function writeBootstrapProof({ homeDir, repoRoot, runId, kind, reco
 // A recorded evidence file may not exceed this. Proof records are hashes, enums
 // and version maps — a proof/ file anywhere near this bound is not a proof
 // record, it is something else wearing the filename (the same 128 KiB bound the
-// CLI applies to operator-supplied answer/profile files).
+// CLI applies to an operator-supplied answers file).
 export const PROOF_FILE_MAX_BYTES = 128 * 1024;
 
 /**
@@ -1965,112 +1960,6 @@ export async function readBootstrapProofRecords({ homeDir, runId }) {
 
   if (errors.length > 0) return { ok: false, errors, records: null };
   return { ok: true, errors: [], records };
-}
-
-// ---------------------------------------------------------------------------
-// Profile store
-// ---------------------------------------------------------------------------
-
-// Write a portable machine profile. Takes the family lock so an --overwrite cannot
-// interleave with a concurrent read (contract §10.2).
-//
-// #30 — an existing name without `overwrite` is REFUSED. The refusal is a
-// check-then-write under the lock, which is what makes it a real guard rather than
-// a suggestion; the lock is the same one run creation takes, so a profile write and
-// a plan cannot interleave either.
-export async function writeMachineProfile({ homeDir, repoRoot, name, profile, overwrite = false, validate = null, now, ...lockOptions }) {
-  validateProfileName(name);
-  const result = await withBootstrapFamilyLock({ homeDir, repoRoot, now, ...lockOptions }, async (handle) => {
-    const home = await resolveMachineArtifactHome({ homeDir, repoRoot });
-    /* c8 ignore next */
-    if (!home.ok) return { written: false, reason: home.reason, name, diagnostics: [home.diagnostic] };
-
-    const path = profileFile(homeDir, name);
-    let existing;
-    try {
-      existing = await lstatOrNull(path);
-    } catch (err) {
-      // Fail CLOSED: an unreadable target must never be mistaken for an absent one,
-      // or the --overwrite guard silently becomes an overwrite.
-      return { written: false, reason: 'stat-failed', name, diagnostics: [`Could not inspect ${machinePointer(homeDir, path)} (${err?.code ?? String(err)}); refusing to write without knowing whether a profile is already there.`] };
-    }
-    if (existing !== null && !overwrite) {
-      return {
-        written: false,
-        reason: 'exists',
-        name,
-        pointer: machinePointer(homeDir, path),
-        diagnostics: [`Profile '${name}' already exists at ${machinePointer(homeDir, path)}. Re-run with --overwrite to replace it; profiles are never replaced implicitly.`],
-      };
-    }
-    if (validate) {
-      const verdict = validate(profile);
-      if (!verdict?.ok) return { written: false, reason: 'invalid-profile', name, diagnostics: verdict?.errors ?? ['The profile failed validation; refusing to write it.'] };
-    }
-
-    // The exists-check above is the check half of a check-then-write; re-prove
-    // ownership before the write so a lock reclaimed in between cannot turn an
-    // `overwrite: false` refusal into an overwrite of a profile another process
-    // created while we were dispossessed.
-    if (!(await handle.assertOwned())) {
-      return { written: false, reason: 'lock-lost', name, diagnostics: ['The family lock was reclaimed mid-write; refusing to write the profile without it. Re-run.'] };
-    }
-
-    const write = await writeJsonAtomic({ root: home.root, path, value: profile });
-    if (!write.ok) return { written: false, reason: write.reason, name, diagnostics: [write.diagnostic] };
-    const text = `${JSON.stringify(profile, null, 2)}\n`;
-    return {
-      written: true,
-      reason: 'ok',
-      name,
-      replaced: existing !== null,
-      pointer: machinePointer(homeDir, path),
-      sha256: sha256(text),
-      bytes: Buffer.byteLength(text, 'utf8'),
-      diagnostics: [],
-    };
-  });
-
-  if (!result.ok) return { written: false, reason: result.reason, name, diagnostics: result.diagnostics };
-  return { ...result.value, diagnostics: [...result.diagnostics, ...result.value.diagnostics] };
-}
-
-// Read a profile by name. Read-only, no lock: a torn read is impossible because
-// every write lands by rename.
-export async function readMachineProfile({ homeDir, name }) {
-  validateProfileName(name);
-  const path = profileFile(homeDir, name);
-  const gate = await assertSecurePath({ root: machineGlobalRoot(homeDir), path });
-  if (!gate.ok) return { status: 'refused', reason: gate.reason, name, profile: null, diagnostics: [gate.diagnostic] };
-  const read = await readJsonSafe(path);
-  return {
-    status: read.status === 'ok' ? 'available' : read.status === 'missing' ? 'missing' : 'malformed',
-    reason: read.status,
-    name,
-    pointer: machinePointer(homeDir, path),
-    profile: read.value,
-    diagnostics: read.status === 'invalid_json' ? [`Profile '${name}' at ${machinePointer(homeDir, path)} is not valid JSON.`] : [],
-  };
-}
-
-// List profiles — metadata only, never bodies. Profiles are retention-EXEMPT
-// (artifact-policy.md §Retention), so this reports no pressure at any count.
-export async function listMachineProfiles({ homeDir }) {
-  const root = profilesRoot(homeDir);
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch (err) {
-    const missing = String(err?.code ?? '') === 'ENOENT';
-    return { status: missing ? 'missing' : 'blocked', root: machinePointer(homeDir, root), pointer: machinePointer(homeDir, root), profiles: [], error: missing ? null : (err?.code ?? String(err)) };
-  }
-  const profiles = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-    .map((entry) => entry.name.slice(0, -'.json'.length))
-    .filter((name) => isValidProfileName(name))
-    .sort()
-    .map((name) => ({ name, pointer: machinePointer(homeDir, join(root, `${name}.json`)) }));
-  return { status: 'available', root: machinePointer(homeDir, root), pointer: machinePointer(homeDir, root), profiles, error: null };
 }
 
 // ---------------------------------------------------------------------------
