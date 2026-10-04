@@ -17,15 +17,20 @@
 //     manifest version post-tag). A `local` entry carries no version, which is
 //     the whole pre-activation catalog, so it is not checked.
 //
-// Release-please PRs are a special intermediate state: package manifests
-// intentionally move ahead first, and both root catalogs are synced after
-// the release merge by .github/workflows/release-please.yml. Use
-// --allow-marketplace-lag only in that release-please PR context. It lets a
-// catalog trail the manifest; it never excuses a malformed pin, and never a
-// pin AHEAD of the manifest, since no release can have tagged that version.
+// The release commit is the one commit whose catalogs trail the manifest:
+// release-please moves the manifests first, and the release job
+// (.github/workflows/release-please.yml) syncs both root catalogs after the
+// merge. The CLI therefore lets a catalog stand at the version the manifest
+// held before, but only for a package whose manifest version the checked-out
+// commit itself changes, and only at exactly that version (ADR-0065 Decision
+// 8, keyed on content). Every other commit is checked strictly, on every
+// branch. The allowance never excuses a malformed pin, and never a pin AHEAD
+// of the manifest, since no release can have tagged that version. The library
+// default is strict, which is what the catalog writer validates with.
 //
 // The pin's history (its tag resolves and peels to its sha) is
-// validate-marketplace.mjs's to check; this script needs no history.
+// validate-marketplace.mjs's to check; this script reads history only to find
+// the commit's first parent.
 // Canonical "companions" (the non-plugin entry) is skipped — it has no
 // plugin.json or marketplace presence.
 
@@ -34,20 +39,25 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { CODEX_CATALOG_PATH, checkPinShape, compareSemver, sourceKind } from './lib/codex-catalog-pins.mjs';
+import {
+  CODEX_CATALOG_PATH, checkPinShape, compareSemver, mayTrail, releaseLag, sourceKind,
+} from './lib/codex-catalog-pins.mjs';
 
 const MANIFEST_PATH = '.release-please-manifest.json';
 const CLAUDE_MARKETPLACE_PATH = '.claude-plugin/marketplace.json';
 
 /**
  * @param {string} repoRoot
- * @param {{allowMarketplaceLag?: boolean}} [options]
+ * @param {{allowReleaseLag?: boolean}} [options]  allowReleaseLag: let a
+ *   catalog trail exactly the versions HEAD's own manifest change moved
+ *   (ADR-0065 Decision 8); off by default, which is strict
  * @returns {{errors: string[], warnings: string[], manifest: object|null, codexPinsChecked: number}}
  */
-export function validateVersions(repoRoot, { allowMarketplaceLag = false } = {}) {
+export function validateVersions(repoRoot, { allowReleaseLag = false } = {}) {
   const errors = [];
   const warnings = [];
   let codexPinsChecked = 0;
+  const lag = allowReleaseLag ? releaseLag(repoRoot) : null;
 
   function loadJSON(relPath, label) {
     let value;
@@ -71,9 +81,12 @@ export function validateVersions(repoRoot, { allowMarketplaceLag = false } = {})
   const claudeEntries = pluginsOf(loadJSON(CLAUDE_MARKETPLACE_PATH, CLAUDE_MARKETPLACE_PATH));
   const codexEntries = pluginsOf(loadJSON(CODEX_CATALOG_PATH, CODEX_CATALOG_PATH));
 
-  function catalogDrift(message) {
-    if (allowMarketplaceLag) warnings.push(`${message} (allowed release-please PR lag)`);
-    else errors.push(message);
+  function catalogDrift(message, name, catalogVersion, packageVersion) {
+    if (mayTrail(lag, name, catalogVersion, packageVersion)) {
+      warnings.push(`${message} (the release commit's own lag, ADR-0065 Decision 8)`);
+    } else {
+      errors.push(message);
+    }
   }
 
   for (const [pkgPath, expectedVersion] of Object.entries(manifest)) {
@@ -103,7 +116,10 @@ export function validateVersions(repoRoot, { allowMarketplaceLag = false } = {})
 
     const entry = claudeEntries.find((p) => p?.name === pluginName);
     if (entry && entry.version !== expectedVersion) {
-      catalogDrift(`${CLAUDE_MARKETPLACE_PATH} entry "${pluginName}": version "${entry.version}" != release-please-manifest "${expectedVersion}"`);
+      catalogDrift(
+        `${CLAUDE_MARKETPLACE_PATH} entry "${pluginName}": version "${entry.version}" != release-please-manifest "${expectedVersion}"`,
+        pluginName, entry.version, expectedVersion,
+      );
     }
 
     const codexEntry = codexEntries.find((p) => p?.name === pluginName);
@@ -117,7 +133,7 @@ export function validateVersions(repoRoot, { allowMarketplaceLag = false } = {})
         if (delta > 0) {
           errors.push(`${at}: pinned version "${version}" is ahead of release-please-manifest "${expectedVersion}"`);
         } else if (delta < 0) {
-          catalogDrift(`${at}: pinned version "${version}" != release-please-manifest "${expectedVersion}"`);
+          catalogDrift(`${at}: pinned version "${version}" != release-please-manifest "${expectedVersion}"`, pluginName, version, expectedVersion);
         }
       }
     }
@@ -137,18 +153,17 @@ function invokedAsCLI() {
 }
 
 if (invokedAsCLI()) {
-  let values;
   try {
-    ({ values } = parseArgs({ options: { 'allow-marketplace-lag': { type: 'boolean' } }, strict: true }));
+    parseArgs({ options: {}, strict: true });
   } catch (err) {
     console.error(`validate-versions: ${err.message}`);
-    console.error('usage: validate-versions.mjs [--allow-marketplace-lag]');
+    console.error('usage: validate-versions.mjs');
     process.exit(2);
   }
   const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
-  const { errors, warnings, manifest, codexPinsChecked } = validateVersions(REPO_ROOT, {
-    allowMarketplaceLag: values['allow-marketplace-lag'] === true,
-  });
+  // The commit under test is HEAD, whatever the branch or the event that ran
+  // this: the allowance is decided by what HEAD itself changes.
+  const { errors, warnings, manifest, codexPinsChecked } = validateVersions(REPO_ROOT, { allowReleaseLag: true });
 
   if (errors.length > 0) {
     console.error(manifest ? 'Version validation failed:' : 'Version validation aborted: cannot load release-please manifest');
@@ -157,7 +172,7 @@ if (invokedAsCLI()) {
   }
 
   console.log(warnings.length > 0
-    ? 'OK — plugin manifests match release-please-manifest; marketplace lag allowed for release-please PR'
+    ? 'OK — plugin manifests match release-please-manifest; the catalogs trail only what this release commit moved'
     : 'OK — versions in sync across release-please-manifest, plugin manifests, and both marketplace catalogs');
   console.log(codexPinsChecked > 0
     ? `  Codex catalog: ${codexPinsChecked} pinned entr${codexPinsChecked === 1 ? 'y' : 'ies'} checked`

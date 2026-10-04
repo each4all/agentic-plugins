@@ -31,11 +31,11 @@ All writing is done by `scripts/sync-marketplace-versions.mjs`, which
   checked against `HEAD`, the catalog as it was before the write, with the
   gates CI runs (`validate-marketplace`, `validate-versions`). A failure
   exits 1, so the job does not push. A run with nothing to write is
-  validated too, so a repair run on a broken catalog does not go green. A
-  `GITHUB_TOKEN` push triggers no workflow, so this is the only check before
-  the bot's commit reaches `main`. The release job then dispatches the test
-  workflows on `main`, but those runs see the commit only once it has
-  landed.
+  validated too, so a repair run on a broken catalog does not go green. The
+  validation is strict: none of the lag CI allows a release commit applies
+  to it (ADR-0065 Decision 8). A `GITHUB_TOKEN` push triggers no workflow,
+  so this is the only check before the bot's commit reaches `main`. The
+  commit gets no run of its own; the next push to `main` checks it.
 
 ## Before dispatching
 
@@ -107,19 +107,19 @@ the job ran. This job published nothing. Another run may have, though: a
 second dispatch, or a release job running at the same time. So before you
 classify the outcome, inspect `main`: its `scripts/data/codex-pin-floors.json`
 and `.agents/plugins/marketplace.json`. If `main` already carries a complete
-activation, you are in case 3. If not, dispatch again. The new run checks
-out the new `main` and plans against it. Never force-push.
-
-**3. A later step failed after the catalog push.** The dispatch of the
-post-sync test workflows failed. **The activation is published.** Confirm that, using steps 1–3 of *After the run: verify*.
-Then fix the later step's cause and dispatch again, with or without the
-input:
+activation, it is published: confirm it with steps 1–3 of *After the run:
+verify*. If not, dispatch again. The new run checks out the new `main` and
+plans against it. Never force-push. A dispatch after a published activation
+is safe, with or without the input:
 
 - On an activated catalog that is already in sync, the writer does nothing.
 - If `main` has moved (a release), it advances only the pins that moved.
 - The input changes nothing once activation is published.
 
-**4. A half state from a hand edit.** This state cannot come from the writer,
+The catalog push is the job's last step, so no later step can fail after
+the activation is published.
+
+**3. A half state from a hand edit.** This state cannot come from the writer,
 which writes the pins and the marker together. It can come from a
 hand-staged commit or a hand-made revert, and the gates flag each form.
 
@@ -141,7 +141,9 @@ cannot pin blocks the whole sync, the Claude catalog included:
 
 Then **dispatch** `release-please.yml`. Do not re-run the failed job:
 release-please reports `releases_created` only once, so a re-run of the push
-run skips the sync.
+run skips the sync. Until the sync lands, the release commit's own run stays
+green, but the next push to `main` is red on the catalog lag (ADR-0065
+Decision 8): that red is the reminder that the dispatch is due.
 
 ## Floors and new packages
 

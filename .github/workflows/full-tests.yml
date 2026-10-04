@@ -8,13 +8,13 @@
 # tests/scripts/test-full-suite-coverage.mjs guards the invariants.
 #
 # Triggers (ADR-0033, 2026-10-03 amendment): a push to any branch, and
-# workflow_dispatch, which the release job's post-sync dispatch uses. There is
-# no pull_request trigger. GitHub starts a pull_request run for a PR that
-# release-please creates or updates with GITHUB_TOKEN in an approval-required
-# state; unapproved, it sits with zero jobs and fails when the PR closes. A
-# push made with GITHUB_TOKEN starts no run at all, so the release-please
-# branch gets none. A pull request shows the run of its head commit's push.
-# The branch filter keeps tag pushes out.
+# workflow_dispatch for a manual run. There is no pull_request trigger. GitHub
+# starts a pull_request run for a PR that release-please creates or updates
+# with GITHUB_TOKEN in an approval-required state; unapproved, it sits with
+# zero jobs and fails when the PR closes. A push made with GITHUB_TOKEN starts
+# no run at all, so the release-please branch gets none, and neither does the
+# release job's catalog sync commit on main. A pull request shows the run of
+# its head commit's push. The branch filter keeps tag pushes out.
 name: full-tests
 
 on:
@@ -37,12 +37,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          # The ADR-0061 catalog tests read release tags and the commits they
-          # peel to; tests/plugin-shape/codex-catalog-source.mjs throws on a
-          # shallow clone rather than skipping, so the default depth-1
-          # checkout would turn this workflow red — which is the intended
-          # trade: a git-backed check that silently no-ops in CI reads as
-          # coverage it does not have.
+          # Some tests run released code read from its release tag (an older
+          # engineer and orchestrator, against today's files). They skip when
+          # the tag is missing, so the default depth-1 checkout would turn them
+          # into skips: coverage CI would report without having it.
           fetch-depth: 0
 
       - name: Setup Node 24
@@ -50,13 +48,10 @@ jobs:
         with:
           node-version: 24
 
-      # The suite includes plugin-shape tests that tolerate manifest/catalog
-      # version lag on the release-please branch (see
-      # tests/plugin-shape/test-*-plugin.mjs). release-please pushes with
-      # GITHUB_TOKEN, which starts no run, so a run there comes from a person's
-      # push or a manual dispatch.
+      # No test reads a catalog's version, ref or sha, or which entries the
+      # Codex catalog lists; validate.yml owns those (ADR-0065 Decision 8
+      # rule 6). So the suite's verdict on a release commit does not depend on
+      # whether the release job has synced the catalogs yet.
       - name: Run full test suite (npm test)
         timeout-minutes: 15
-        env:
-          AGENTIC_RELEASE_PLEASE_PR: ${{ github.ref == 'refs/heads/release-please--branches--main' && '1' || '0' }}
         run: npm test

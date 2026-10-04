@@ -1,7 +1,9 @@
 // Codex catalog pin rules — ADR-0061 Decision 1 (the pinned source shape) and
 // Decision 2 (the states the catalog may be in), shared by
 // scripts/validate-marketplace.mjs and scripts/validate-versions.mjs so the two
-// gates cannot disagree about what a well-formed pin is.
+// gates cannot disagree about what a well-formed pin is. The catalog lag a
+// release commit produces is decided here too, once, for both gates (ADR-0065
+// Decision 8; releaseLag below).
 //
 // A pinned entry's source is
 //   {"source": "git-subdir", "url": "./", "path": "plugins/<p>",
@@ -15,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 
 export const CODEX_CATALOG_PATH = '.agents/plugins/marketplace.json';
 export const FLOORS_PATH = 'scripts/data/codex-pin-floors.json';
+const MANIFEST_PATH = '.release-please-manifest.json';
 export const FLOORS_SCHEMA = 'codex-pin-floors-1.0';
 
 // Plain X.Y.Z — the grammar every release tag in this repository uses. A pin
@@ -124,11 +127,14 @@ export function historyAvailability(repoRoot) {
 }
 
 /**
- * Whether `name` has had any release — the point Decision 2's untagged
- * exemption ends. Any SemVer suffix counts, so a pre-release ends it too.
+ * Whether `name` has had a release by the commit `at` — the point Decision 2's
+ * untagged exemption ends. Any SemVer suffix counts, so a pre-release ends it
+ * too. Only tags reachable from `at` count (ADR-0065 Decision 8 rule 3), so a
+ * commit's verdict does not change when a release is cut later on another line
+ * of history.
  */
-export function hasReleaseTag(repoRoot, name) {
-  const tags = (gitTry(repoRoot, ['tag', '--list', `plugin-${name}-v*`]) ?? '').split('\n');
+export function hasReleaseTag(repoRoot, name, at = 'HEAD') {
+  const tags = (gitTry(repoRoot, ['tag', '--list', `plugin-${name}-v*`, '--merged', at]) ?? '').split('\n');
   return tags.some((t) => {
     const m = t.match(RELEASE_TAG);
     return m !== null && m[1] === name;
@@ -144,6 +150,59 @@ export function resolveCommit(repoRoot, rev) {
 export function readAt(repoRoot, commit, path) {
   if (gitTry(repoRoot, ['cat-file', '-e', `${commit}:${path}`]) === null) return null;
   return git(repoRoot, ['show', `${commit}:${path}`]);
+}
+
+/**
+ * The catalog lag a release commit may carry — ADR-0065 Decision 8, keyed on
+ * content. Call the commit under test C (`rev`) and its first parent P. Every
+ * plugins/* package whose `.release-please-manifest.json` version differs
+ * between P and C is a bump `{ from, to }`, where `from` is P's version, or
+ * null when P's manifest has none.
+ *
+ * C is the commit the working tree was checked out from, so the CLIs pass
+ * HEAD. Whatever cannot be read — no parent, or a manifest missing or
+ * unparsable at C, or unparsable at P — yields no bumps, which is the strict
+ * verdict, never a wider one.
+ *
+ * @returns {{commit: string|null, parent: string|null, bumps: Map<string, {from: string|null, to: string}>}}
+ */
+export function releaseLag(repoRoot, rev = 'HEAD') {
+  const commit = resolveCommit(repoRoot, rev);
+  const parent = commit === null ? null : resolveCommit(repoRoot, `${commit}^1`);
+  const bumps = new Map();
+  if (commit === null || parent === null) return { commit, parent, bumps };
+  const versionsAt = (at) => {
+    const text = readAt(repoRoot, at, MANIFEST_PATH);
+    if (text === null) return at === parent ? {} : null;
+    try {
+      const value = JSON.parse(text);
+      return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    } catch {
+      return null;
+    }
+  };
+  const now = versionsAt(commit);
+  const was = versionsAt(parent);
+  if (now === null || was === null) return { commit, parent, bumps };
+  for (const [key, to] of Object.entries(now)) {
+    if (!key.startsWith('plugins/') || typeof to !== 'string') continue;
+    const from = typeof was[key] === 'string' ? was[key] : null;
+    if (from !== to) bumps.set(key.slice('plugins/'.length), { from, to });
+  }
+  return { commit, parent, bumps };
+}
+
+/**
+ * Rule 1: in the commit that moves a package forward from v₀ to v₁, a catalog
+ * may still stand at v₀ — exactly v₀, and only while the package itself is at
+ * v₁. A move backwards excuses nothing: the catalog would then be ahead of
+ * the manifest. No lag (`lag` null) is the strict verdict.
+ */
+export function mayTrail(lag, name, catalogVersion, packageVersion) {
+  const bump = lag?.bumps.get(name);
+  return bump !== undefined
+    && isSemver(bump.from) && isSemver(bump.to) && compareSemver(bump.from, bump.to) < 0
+    && catalogVersion === bump.from && packageVersion === bump.to;
 }
 
 /**

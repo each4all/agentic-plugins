@@ -13,8 +13,7 @@
 //   (ii)  Smoke tests stay OUT of the default-discovery namespace (`*.smoke.mjs`,
 //         never `*.smoke.test.mjs`). CI runners have no host CLI, so smoke tests
 //         must be explicitly opt-in via `npm run test:smoke`, not silently present.
-//   (iii) `full-tests.yml` runs exactly one `npm test`, with no matrix, and sets the
-//         release-please env the suite needs from the push event.
+//   (iii) `full-tests.yml` runs exactly one `npm test`, with no matrix.
 //   (iv)  Every CI workflow (all but release-please.yml) triggers on a push to any
 //         branch and on dispatch, with no path filter and no pull_request trigger.
 //   (v)   Exactly one run step, full-tests.yml's `npm test`, runs tests in any
@@ -133,7 +132,7 @@ test('(ii) smoke tests stay out of the default-discovery namespace', () => {
   );
 });
 
-test('(iii) full-tests.yml runs npm test once, on every branch push, unfiltered, with the release-please env', () => {
+test('(iii) full-tests.yml runs npm test once, unfiltered', () => {
   const p = path.join(REPO_ROOT, FULL_TESTS_WORKFLOW);
   assert.ok(fs.existsSync(p), `${FULL_TESTS_WORKFLOW} must exist (the repo-level coverage authority)`);
   const content = fs.readFileSync(p, 'utf8');
@@ -144,16 +143,6 @@ test('(iii) full-tests.yml runs npm test once, on every branch push, unfiltered,
     `${FULL_TESTS_WORKFLOW} must run exactly \`npm test\` (the discovery-based full suite), once`,
   );
   assert.doesNotMatch(content, /^\s*matrix:/m, `${FULL_TESTS_WORKFLOW} must not fan the suite out over a matrix`);
-  // The env-key line itself must carry the push-event detection. A bare mention
-  // in a comment, or the pull_request-era head_ref form (which a push event
-  // leaves empty), would not set the flag on the release-please branch.
-  assert.match(
-    content,
-    /^\s*"?AGENTIC_RELEASE_PLEASE_PR"?:\s.*github\.ref == 'refs\/heads\/release-please--branches--main'/m,
-    `${FULL_TESTS_WORKFLOW} must assign AGENTIC_RELEASE_PLEASE_PR from github.ref on the env-key line, `
-      + `so a push to the release-please branch tolerates intentional version/catalog lag`,
-  );
-  assert.doesNotMatch(content, /head_ref/, `${FULL_TESTS_WORKFLOW}: head_ref is empty on a push event`);
 });
 
 // The CI workflows are every workflow but release-please.yml. They run on a

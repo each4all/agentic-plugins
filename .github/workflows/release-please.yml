@@ -21,9 +21,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  # The post-sync dispatch below: creating a workflow_dispatch event needs
-  # Actions write.
-  actions: write
 
 jobs:
   release-please:
@@ -64,24 +61,27 @@ jobs:
       # The writer plans both catalogs, writes nothing if any part is refused,
       # and validates what it wrote against HEAD (the catalog before this
       # write) with the same gates validate.yml runs, so a failure
-      # here stops the push below. A GITHUB_TOKEN push triggers no workflow,
-      # so this is the only gate before the bot's commit reaches main; the
-      # dispatch step below runs the test workflows on it only afterwards.
+      # here stops the push below. It validates strictly, with none of the
+      # lag validate.yml allows the release commit (ADR-0065 Decision 8).
+      # A GITHUB_TOKEN push starts no workflow, so this is the only gate
+      # before the bot's commit reaches main, and that commit gets no run of
+      # its own; the next push to main checks it.
       - name: Sync marketplace catalog versions
         if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
         env:
           ACTIVATE_CODEX_PINS: ${{ github.event_name == 'workflow_dispatch' && inputs.activate_codex_pins && '1' || '' }}
         run: node scripts/sync-marketplace-versions.mjs ${ACTIVATE_CODEX_PINS:+--activate}
 
-      # Every step below also runs on workflow_dispatch. release-please
-      # reports `releases_created` exactly once, so if the push here fails —
-      # a non-fast-forward because main advanced — a plain re-run of the
-      # release job repairs nothing: the release already exists and the flag
-      # is false. Manual dispatch is the retryable drift-repair path (round-3
-      # cross-host review finding); the sync script is idempotent, so a
-      # dispatch with no drift is a no-op.
+      # The push, like the steps above, also runs on workflow_dispatch.
+      # release-please reports `releases_created` exactly once, so if the push
+      # here fails — a non-fast-forward because main advanced — a plain re-run
+      # of the release job repairs nothing: the release already exists and
+      # the flag is false. Manual dispatch is the retryable drift-repair path
+      # (round-3 cross-host review finding); the sync script is idempotent, so
+      # a dispatch with no drift is a no-op. Until it runs, the next push to
+      # main is red on the catalog lag, which is the signal that it is due
+      # (ADR-0065 Decision 8).
       - name: Commit + push marketplace sync (if any drift)
-        id: catalog-push
         if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
         env:
           GIT_AUTHOR_NAME: github-actions[bot]
@@ -102,42 +102,6 @@ jobs:
             git add -- $CATALOGS
             git commit -m "$SUBJECT"
             git push
-            echo "pushed=true" >> "$GITHUB_OUTPUT"
           else
             echo "No marketplace catalog drift; nothing to commit."
           fi
-
-      # Docket C58. The catalog push above uses GITHUB_TOKEN, and such a push
-      # creates no workflow run, so post-sync main would never get CI of its
-      # own; the release commit's run read the catalogs before the sync and is
-      # red on the lag. A workflow_dispatch made with GITHUB_TOKEN is GitHub's
-      # documented exception, hence `actions: write` above.
-      #
-      # These runs validate post-sync main, NOT the release commit. That
-      # commit's tree really does trail the manifest; its red run is left as it
-      # is. workflow_dispatch takes a branch, not a commit, so each run gets
-      # main's head when GitHub creates it. The script records every run's
-      # head_sha against the sha this job last pushed and accepts a
-      # descendant (main advanced) with a warning; its header has the rule.
-      #
-      # When it runs:
-      #   - after the catalog push landed;
-      #   - on a manual dispatch of this workflow, pushed or not, once the
-      #     catalog sync has passed. That is the retry path when this step
-      #     failed: a re-run of the push run skips it along with the syncs,
-      #     since release-please reports `releases_created` only once. It does
-      #     not run on a dispatch whose catalogs failed validation, where the
-      #     runs would only repeat the lag this job already reports;
-      #   - not on a push that released nothing, and not on a release with
-      #     nothing to sync, whose own run already read synced catalogs.
-      #
-      # The expected sha is refs/remotes/origin/main, which only a successful
-      # push moves: the commit this job put on main, or main as checked out
-      # when the job pushed nothing.
-      - name: Dispatch the test workflows on post-sync main
-        if: ${{ steps.catalog-push.outputs.pushed == 'true' || (github.event_name == 'workflow_dispatch' && steps.catalog-push.outcome == 'success') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          EXPECT="$(git rev-parse --verify refs/remotes/origin/main)"
-          node scripts/dispatch-post-sync-ci.mjs --repo "$GITHUB_REPOSITORY" --ref main --expect-sha "$EXPECT"

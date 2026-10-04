@@ -12,17 +12,16 @@
 // by deleting it and watching a named test fail.
 //
 // Groups: P phase, S pin shape, I path identity, R the package registry,
-// H history, L release-PR lag, F migration floors, E the untagged exemption,
-// B the baseline, N malformed input, V validate-versions, G the CLI entry
-// guards, X the plugin-shape helper.
+// H history, L the release commit's lag (ADR-0065 Decision 8), F migration
+// floors, E the untagged exemption, B the baseline, N malformed input,
+// V validate-versions, G the CLI entry guards, C what the CLIs pass.
 
 const T = 'tests/scripts/test-codex-catalog-pins.mjs';
-const T_HELPER = 'tests/plugin-shape/test-codex-catalog-source.mjs';
+const T_STATES = 'tests/scripts/test-release-states.mjs';
 
 const VM = 'scripts/validate-marketplace.mjs';
 const VV = 'scripts/validate-versions.mjs';
 const LIB = 'scripts/lib/codex-catalog-pins.mjs';
-const HELPER = 'tests/plugin-shape/codex-catalog-source.mjs';
 
 export const TESTS = [T];
 
@@ -88,9 +87,21 @@ export const MUTATIONS = [
   },
   {
     id: 'I2', file: VM,
-    from: "if (pluginDir !== resolve(repoRoot, 'plugins', entry.name)) {",
+    from: 'if (sourcePath !== `./plugins/${entry.name}`) {',
     to: 'if (false) {',
     why: "a local Codex entry may point at another package's directory",
+  },
+  {
+    id: 'I4', file: VM,
+    from: 'if (sourcePath !== `./plugins/${entry.name}`) {',
+    to: "if (resolve(repoRoot, sourcePath) !== resolve(repoRoot, 'plugins', entry.name)) {",
+    why: 'a local Codex entry may spell its directory any way that resolves on the publisher\'s machine',
+  },
+  {
+    id: 'I5', file: VM,
+    from: "if (localKeys.join(',') !== 'path,source') {",
+    to: 'if (false) {',
+    why: 'a local Codex source may carry keys beyond {path, source}',
   },
 
   {
@@ -152,31 +163,84 @@ export const MUTATIONS = [
     why: 'a checkout without tags reports pin defects instead of missing evidence',
   },
 
-  // ---- L: release-PR lag ------------------------------------------------------
+  // ---- L: the release commit's lag — ADR-0065 Decision 8 ---------------------
   {
     id: 'L1', file: VM,
     from: 'for (const e of shape.errors) errors.push(`${at}: ${e}`);',
-    to: 'for (const e of shape.errors) (allowVersionLag ? warnings : errors).push(`${at}: ${e}`);',
-    why: 'the release-PR allowance excuses a malformed pin',
+    to: 'for (const e of shape.errors) (lag?.bumps.has(entry.name) ? warnings : errors).push(`${at}: ${e}`);',
+    why: 'the release-commit allowance excuses a malformed pin',
   },
   {
     id: 'L2', file: VM,
     from: 'if (delta > 0) {',
-    to: 'if (delta > 0 && !allowVersionLag) {',
-    why: 'the release-PR allowance excuses a pin ahead of the package',
+    to: 'if (delta > 0 && !lag?.bumps.has(entry.name)) {',
+    why: 'the release-commit allowance excuses a pin ahead of the package',
   },
   {
-    id: 'L3', file: VM,
-    from: 'if (allowVersionLag) warnings.push(`${message} (allowed release-please PR lag)`);',
-    to: 'if (true) warnings.push(`${message} (allowed release-please PR lag)`);',
-    why: 'a trailing pin is allowed outside the release-PR window',
+    id: 'L3', file: LIB,
+    from: 'const bump = lag?.bumps.get(name);\n  return bump !== undefined',
+    to: 'const bump = lag ? { from: catalogVersion, to: packageVersion } : undefined;\n  return bump !== undefined',
+    why: 'a catalog may trail on any commit, not only the one that moved the manifest (rule 1 keyed on nothing)',
   },
-
   {
-    id: 'L4', file: VM,
-    from: "if (history.ok && typeof entry.source.sha === 'string') {",
-    to: "if (history.ok && typeof entry.source.sha === 'string' && !(allowVersionLag && manifest && compareSemver(shape.version, manifest.version) < 0)) {",
-    why: 'the release-PR allowance skips history checks for the pins that trail',
+    id: 'L4', file: LIB,
+    from: '&& catalogVersion === bump.from && packageVersion === bump.to;',
+    to: '&& packageVersion === bump.to;',
+    why: 'a catalog may trail at any version, not exactly the one the manifest held before',
+  },
+  {
+    id: 'L5', file: LIB,
+    from: '&& isSemver(bump.from) && isSemver(bump.to) && compareSemver(bump.from, bump.to) < 0',
+    to: '&& isSemver(bump.from) && isSemver(bump.to)',
+    why: 'a release commit that moves a version backwards excuses a catalog ahead of the manifest',
+  },
+  {
+    id: 'L6', file: LIB,
+    from: '&& catalogVersion === bump.from && packageVersion === bump.to;',
+    to: '&& catalogVersion === bump.from;',
+    why: 'the allowance holds after the working tree has moved the package past the commit',
+  },
+  {
+    id: 'L7', file: LIB,
+    from: 'if (from !== to) bumps.set(',
+    to: 'if (true) bumps.set(',
+    why: 'every package counts as moved by every commit, so a first release that left the manifest unchanged is excused',
+  },
+  {
+    id: 'L8', file: LIB,
+    from: 'resolveCommit(repoRoot, `${commit}^1`);',
+    to: 'resolveCommit(repoRoot, commit);',
+    why: 'the commit is compared with itself, so the release commit is never recognised',
+  },
+  {
+    id: 'L9', file: LIB,
+    from: '      return null;\n    }\n  };',
+    to: '      return {};\n    }\n  };',
+    why: 'an unparsable manifest reads as empty, so every package counts as moved (a wider verdict, not the strict one)',
+  },
+  {
+    id: 'L10', file: VM,
+    from: "!hasReleaseTag(repoRoot, name, bumped ? lag.parent : 'HEAD')",
+    to: "!hasReleaseTag(repoRoot, name, 'HEAD')",
+    why: "a first release's commit is red once the release job cuts its tag (rule 2 lost)",
+  },
+  {
+    id: 'L11', file: VM,
+    from: "!hasReleaseTag(repoRoot, name, bumped ? lag.parent : 'HEAD')",
+    to: "!hasReleaseTag(repoRoot, name, lag ? lag.parent : 'HEAD')",
+    why: 'every package is judged from the first parent, so a first release that left the manifest unchanged is excused',
+  },
+  {
+    id: 'L12', file: LIB,
+    from: "['tag', '--list', `plugin-${name}-v*`, '--merged', at]",
+    to: "['tag', '--list', `plugin-${name}-v*`]",
+    why: 'a release cut later on another line of history changes a commit\'s verdict (rule 3 lost)',
+  },
+  {
+    id: 'L13', file: VM,
+    from: 'const lag = allowReleaseLag ? releaseLag(repoRoot) : null;',
+    to: 'const lag = releaseLag(repoRoot);',
+    why: "validate-marketplace's library default excuses the release commit, so the writer's validation is not strict",
   },
 
   // ---- F: migration floors ------------------------------------------------------
@@ -245,8 +309,8 @@ export const MUTATIONS = [
   },
   {
     id: 'E2', file: VM,
-    from: 'if (activated === true && history.ok && !hasReleaseTag(repoRoot, name)) {',
-    to: 'if (history.ok && !hasReleaseTag(repoRoot, name)) {',
+    from: "if (activated === true && history.ok && !hasReleaseTag(repoRoot, name, bumped ? lag.parent : 'HEAD')) {",
+    to: "if (history.ok && !hasReleaseTag(repoRoot, name, bumped ? lag.parent : 'HEAD')) {",
     why: 'the exemption also applies before activation',
   },
 
@@ -319,14 +383,26 @@ export const MUTATIONS = [
   {
     id: 'V2', file: VV,
     from: 'if (delta > 0) {',
-    to: 'if (delta > 0 && !allowMarketplaceLag) {',
-    why: 'the release-PR allowance excuses a pin ahead of the manifest',
+    to: 'if (delta > 0 && !lag?.bumps.has(pluginName)) {',
+    why: 'the release-commit allowance excuses a pin ahead of the manifest',
   },
   {
     id: 'V3', file: VV,
     from: 'for (const e of shapeErrors) errors.push(`${at}: ${e}`);',
-    to: 'for (const e of shapeErrors) (allowMarketplaceLag ? warnings : errors).push(`${at}: ${e}`);',
-    why: 'the release-PR allowance excuses a malformed pin in validate-versions',
+    to: 'for (const e of shapeErrors) (lag?.bumps.has(pluginName) ? warnings : errors).push(`${at}: ${e}`);',
+    why: 'the release-commit allowance excuses a malformed pin in validate-versions',
+  },
+  {
+    id: 'V4', file: VV,
+    from: 'if (mayTrail(lag, name, catalogVersion, packageVersion)) {',
+    to: 'if (lag !== null) {',
+    why: 'validate-versions excuses any catalog drift on any commit once the allowance is on',
+  },
+  {
+    id: 'V5', file: VV,
+    from: 'const lag = allowReleaseLag ? releaseLag(repoRoot) : null;',
+    to: 'const lag = releaseLag(repoRoot);',
+    why: "validate-versions' library default excuses the release commit, so the writer's validation is not strict",
   },
 
   // ---- G: CLI entry guards ----------------------------------------------------------------
@@ -343,50 +419,17 @@ export const MUTATIONS = [
     why: 'validate-versions does nothing and exits 0 when invoked through a link',
   },
 
-  // ---- X: the plugin-shape helper -----------------------------------------------------------
+  // ---- C: what the CLIs pass — the verdict validate.yml reaches ----------------
   {
-    id: 'X1', file: HELPER, tests: [T_HELPER],
-    from: 'if (!phaseActivated) {',
-    to: 'if (true) {',
-    why: 'the helper asserts the local shape after activation too',
+    id: 'C1', file: VM, tests: [T_STATES],
+    from: '    allowReleaseLag: true,\n',
+    to: '    allowReleaseLag: false,\n',
+    why: 'validate-marketplace is strict on the release commit, which is red by design again',
   },
   {
-    id: 'X2', file: HELPER, tests: [T_HELPER],
-    from: 'deepStrictEqual(entry.source, { source: \'local\', path: `./plugins/${name}` },',
-    to: 'deepStrictEqual({ source: \'local\', path: `./plugins/${name}` }, { source: \'local\', path: `./plugins/${name}` },',
-    why: 'the helper accepts any source before activation',
-  },
-  {
-    id: 'X3', file: HELPER, tests: [T_HELPER],
-    from: "strictEqual(source.url, './', 'a pin materializes from the marketplace snapshot, never the network');",
-    to: 'void 0;',
-    why: 'the helper accepts a network url after activation',
-  },
-  {
-    id: 'X5', file: HELPER, tests: [T_HELPER],
-    from: 'ok(existsSync(resolve(repoRoot, entry.source.path)), `Codex source.path must resolve to plugins/${name}`);',
-    to: 'void 0;',
-    why: 'the helper accepts a local entry whose directory is missing',
-  },
-  {
-    id: 'X6', file: HELPER, tests: [T_HELPER],
-    from: 'if (!phaseActivated) return [...names].sort();',
-    to: 'return [...names].sort();',
-    why: 'the name-set tests ignore the untagged exemption after activation',
-  },
-  {
-    id: 'X7', file: HELPER, tests: [T_HELPER],
-    // The whole predicate, not just its prefix: the version-slice half alone
-    // still rejects plugin-gamma-extra-v*, so narrowing only the prefix is an
-    // equivalent mutation and survives by construction.
-    from: 't.startsWith(`plugin-${name}-v`) && /^\\d+\\.\\d+\\.\\d+/.test(t.slice(`plugin-${name}-v`.length))',
-    to: 't.startsWith(`plugin-${name}`)',
-    why: "another package's release stands in for this one's",
-  },
-  {
-    id: 'X4', file: HELPER, tests: [T_HELPER],
-    from: 'if (allowLag) ok(delta <= 0,',
-    to: 'if (allowLag) ok(true,',
-    why: 'the helper lets a pin lead the package in a release-please PR',
+    id: 'C2', file: VV, tests: [T_STATES],
+    from: 'validateVersions(REPO_ROOT, { allowReleaseLag: true });',
+    to: 'validateVersions(REPO_ROOT);',
+    why: 'validate-versions is strict on the release commit, which is red by design again',
   },
 ];

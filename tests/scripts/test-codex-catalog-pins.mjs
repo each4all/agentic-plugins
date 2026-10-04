@@ -26,11 +26,13 @@ import path from 'node:path';
 import { validateMarketplace } from '../../scripts/validate-marketplace.mjs';
 import { validateVersions } from '../../scripts/validate-versions.mjs';
 
+import { releaseLag } from '../../scripts/lib/codex-catalog-pins.mjs';
+
 import {
   CLAUDE, CODEX, FLOORS, MANIFEST,
-  activate, addPackage, assertError, assertOk, commit, git, localSource, makeRepo, peeled, pinSource,
-  readJSON, release, runCli, setCodexSource, setConfigPackage, setFloor, setFloors, setVersion, tag,
-  tagObject, write, writeJSON,
+  activate, addPackage, assertError, assertOk, bump, commit, git, localSource, makeRepo, peeled, pinSource,
+  readJSON, release, releaseCommit, runCli, setCodexSource, setConfigPackage, setFloor, setFloors, setVersion,
+  tag, tagObject, write, writeJSON,
 } from './fixtures/codex-pins-repo.mjs';
 
 // ---------------------------------------------------------------------------
@@ -163,6 +165,22 @@ test('a local Codex entry must point at its own package directory', (t) => {
   assertError(validateMarketplace(dir), /\(alpha\): source\.path "\.\/plugins\/beta" is not the package directory plugins\/alpha/);
 });
 
+// Another spelling of the right directory resolves on the publisher's machine
+// only. The plugin-shape helper that pinned the exact form is gone (ADR-0065
+// Decision 8 rule 6), so the validator holds it.
+for (const [label, source, pattern] of [
+  ['an absolute path', (dir) => ({ source: 'local', path: path.join(dir, 'plugins', 'alpha') }), /\(alpha\): source\.path ".+" is not the package directory plugins\/alpha \(spelled \.\/plugins\/alpha\)/],
+  ['a path without ./', () => ({ source: 'local', path: 'plugins/alpha' }), /\(alpha\): source\.path "plugins\/alpha" is not the package directory plugins\/alpha/],
+  ['an extra key', () => ({ source: 'local', path: './plugins/alpha', ref: 'main' }), /\(alpha\): a local source is exactly \{path, source\}, got \{path, ref, source\}/],
+]) {
+  test(`a local Codex entry with ${label} is invalid, though it resolves to the package`, (t) => {
+    const dir = makeRepo(t);
+    assertOk(validateMarketplace(dir));
+    setCodexSource(dir, 'alpha', source(dir));
+    assertError(validateMarketplace(dir), pattern);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // With history and tags
 // ---------------------------------------------------------------------------
@@ -238,53 +256,213 @@ test('a sha absent from the repository is invalid', (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// Release-PR lag, and post-tag equality
+// The release commit's lag, and post-tag equality — ADR-0065 Decision 8
 // ---------------------------------------------------------------------------
+//
+// The allowance is keyed on content: only the commit that itself changes a
+// package's .release-please-manifest.json version (from v0 to v1) may show that
+// package's catalogs at v0. The CLIs always pass `allowReleaseLag`; the library
+// default is strict, which is what the writer validates with.
 
-function releasePrState(t) {
-  // The release PR has advanced alpha's manifests to 1.1.0; the tag is not cut.
+const LAG = { allowReleaseLag: true };
+const LAG_NOTE = /\(the release commit's own lag, ADR-0065 Decision 8\)$/;
+
+function releasedAndActivated(t) {
   const dir = makeRepo(t);
   activate(dir);
+  commit(dir, 'chore: activate');
+  return dir;
+}
+
+function releasePrState(t) {
+  // alpha's manifests advanced to 1.1.0 in the working tree only: HEAD is not
+  // a release commit, so nothing excuses the catalogs.
+  const dir = releasedAndActivated(t);
   setVersion(dir, 'alpha', '1.1.0');
   return dir;
 }
 
-test('a valid pin trailing the package version is drift outside the release-PR window', (t) => {
+test('a valid pin trailing the package version is drift outside a release commit', (t) => {
   const dir = releasePrState(t);
-  assertError(validateMarketplace(dir), /\(alpha\): pinned version 1\.0\.0 != package version 1\.1\.0/);
+  assertError(validateMarketplace(dir, LAG), /\(alpha\): pinned version 1\.0\.0 != package version 1\.1\.0$/);
 });
 
-test('CONTROL — the release-PR allowance lets a valid pin trail, as a warning', (t) => {
-  const dir = releasePrState(t);
-  const r = validateMarketplace(dir, { allowVersionLag: true });
-  assertOk(r);
-  assert.ok(r.warnings.some((w) => /\(alpha\): pinned version 1\.0\.0 != package version 1\.1\.0 \(allowed release-please PR lag\)/.test(w)));
+for (const tagged of [false, true]) {
+  test(`CONTROL — in the commit that moves a package from v0 to v1, both catalogs may stand at v0 (tag ${tagged ? 'cut' : 'not cut yet'})`, (t) => {
+    const dir = releasedAndActivated(t);
+    releaseCommit(dir, { alpha: '1.1.0' }, { tagged });
+    const r = validateMarketplace(dir, LAG);
+    assertOk(r);
+    assert.ok(r.warnings.some((w) => /\(alpha\): catalog version "1\.0\.0" != manifest version "1\.1\.0"/.test(w) && LAG_NOTE.test(w)), r.warnings.join('\n'));
+    assert.ok(r.warnings.some((w) => /\(alpha\): pinned version 1\.0\.0 != package version 1\.1\.0/.test(w) && LAG_NOTE.test(w)), r.warnings.join('\n'));
+    const v = validateVersions(dir, LAG);
+    assertOk(v);
+    assert.equal(v.warnings.filter((w) => LAG_NOTE.test(w)).length, 2, 'the Claude version and the Codex pin');
+  });
+}
+
+test('the library default is strict: the same release commit fails without the allowance', (t) => {
+  const dir = releasedAndActivated(t);
+  releaseCommit(dir, { alpha: '1.1.0' }, { tagged: true });
+  assertError(validateMarketplace(dir), /\(alpha\): catalog version "1\.0\.0" != manifest version "1\.1\.0"$/);
+  assertError(validateMarketplace(dir), /\(alpha\): pinned version 1\.0\.0 != package version 1\.1\.0$/);
+  assertError(validateVersions(dir), /entry "alpha": pinned version "1\.0\.0" != release-please-manifest "1\.1\.0"$/);
 });
 
-test('the release-PR allowance never excuses a malformed pin', (t) => {
-  const dir = releasePrState(t);
+test('a commit after the release commit is strict: the lag is the release commit\'s alone', (t) => {
+  // The commit that lands on main while the release job runs, or one pushed
+  // onto the release-PR branch beyond release-please's own.
+  const dir = releasedAndActivated(t);
+  releaseCommit(dir, { alpha: '1.1.0' }, { tagged: true });
+  write(dir, 'docs/note.md', 'unrelated\n');
+  commit(dir, 'docs: an unrelated change');
+  assertError(validateMarketplace(dir, LAG), /\(alpha\): catalog version "1\.0\.0" != manifest version "1\.1\.0"$/);
+  assertError(validateMarketplace(dir, LAG), /\(alpha\): pinned version 1\.0\.0 != package version 1\.1\.0$/);
+  assertError(validateVersions(dir, LAG), /\.claude-plugin\/marketplace\.json entry "alpha": version "1\.0\.0" != release-please-manifest "1\.1\.0"$/);
+});
+
+test('only the release commit\'s own packages are excused', (t) => {
+  // beta trails too, but an earlier commit moved it, not this one.
+  const dir = releasedAndActivated(t);
+  bump(dir, 'beta', '1.1.0');
+  commit(dir, 'chore: beta moved and was never synced');
+  releaseCommit(dir, { alpha: '1.1.0' });
+  const r = validateMarketplace(dir, LAG);
+  assertError(r, /\(beta\): pinned version 1\.0\.0 != package version 1\.1\.0$/);
+  assert.ok(r.warnings.some((w) => /\(alpha\): pinned version 1\.0\.0/.test(w)), 'alpha is excused in the same run');
+});
+
+test('only v0 is excused: a catalog at any other trailing version is drift, even in the release commit', (t) => {
+  const dir = makeRepo(t);
+  release(dir, 'alpha', '1.1.0');
+  activate(dir, { alpha: '1.1.0', beta: '1.0.0' });
+  commit(dir, 'chore: activate at alpha 1.1.0');
+  // The release commit moves alpha 1.1.0 -> 1.2.0 with its catalogs at 1.0.0.
+  const claude = readJSON(dir, CLAUDE);
+  claude.plugins.find((p) => p.name === 'alpha').version = '1.0.0';
+  writeJSON(dir, CLAUDE, claude);
+  setCodexSource(dir, 'alpha', pinSource(dir, 'alpha', '1.0.0'));
+  releaseCommit(dir, { alpha: '1.2.0' });
+  assert.deepEqual([...releaseLag(dir).bumps], [['alpha', { from: '1.1.0', to: '1.2.0' }]]);
+  const r = validateMarketplace(dir, LAG);
+  assertError(r, /\(alpha\): catalog version "1\.0\.0" != manifest version "1\.2\.0"$/);
+  assertError(r, /\(alpha\): pinned version 1\.0\.0 != package version 1\.2\.0$/);
+  assertError(validateVersions(dir, LAG), /entry "alpha": pinned version "1\.0\.0" != release-please-manifest "1\.2\.0"$/);
+});
+
+test('the allowance holds only while the package stands where the commit moved it', (t) => {
+  // HEAD moved alpha to 1.1.0; the working tree has since moved it on to
+  // 1.2.0. The catalogs at 1.0.0 trail that, and nothing excuses it.
+  const dir = releasedAndActivated(t);
+  releaseCommit(dir, { alpha: '1.1.0' });
+  bump(dir, 'alpha', '1.2.0');
+  assertError(validateMarketplace(dir, LAG), /\(alpha\): catalog version "1\.0\.0" != manifest version "1\.2\.0"$/);
+  assertError(validateVersions(dir, LAG), /entry "alpha": pinned version "1\.0\.0" != release-please-manifest "1\.2\.0"$/);
+});
+
+test('a release commit that moves a version backwards excuses nothing', (t) => {
+  // The catalogs would then be ahead of the manifest.
+  const dir = makeRepo(t);
+  release(dir, 'alpha', '1.1.0');
+  commit(dir, 'chore: nothing');
+  releaseCommit(dir, { alpha: '1.0.0' });
+  assertError(validateMarketplace(dir, LAG), /\(alpha\): catalog version "1\.1\.0" != manifest version "1\.0\.0"$/);
+  assertError(validateVersions(dir, LAG), /\.claude-plugin\/marketplace\.json entry "alpha": version "1\.1\.0" != release-please-manifest "1\.0\.0"$/);
+});
+
+test('the release-commit allowance never excuses a malformed pin', (t) => {
+  const dir = releasedAndActivated(t);
   setCodexSource(dir, 'alpha', pinSource(dir, 'alpha', '1.0.0', { sha: peeled(dir, 'plugin-alpha-v1.0.0').toUpperCase() }));
-  assertError(validateMarketplace(dir, { allowVersionLag: true }), /source\.sha must be 40 lowercase hex/);
+  releaseCommit(dir, { alpha: '1.1.0' });
+  assertError(validateMarketplace(dir, LAG), /source\.sha must be 40 lowercase hex/);
 });
 
-test('the release-PR allowance never excuses a mismatched pin', (t) => {
+test('the release-commit allowance never excuses a mismatched pin', (t) => {
   // alpha is the entry the allowance applies to (it trails 1.1.0), so the
   // mismatch goes on alpha: a check skipped for trailing pins would miss it.
-  const dir = releasePrState(t);
+  const dir = releasedAndActivated(t);
   const later = commit(dir, 'docs: an unreleased change');
   setCodexSource(dir, 'alpha', pinSource(dir, 'alpha', '1.0.0', { sha: later }));
-  const r = validateMarketplace(dir, { allowVersionLag: true });
+  releaseCommit(dir, { alpha: '1.1.0' });
+  const r = validateMarketplace(dir, LAG);
   assertError(r, /\(alpha\): sha [0-9a-f]{40} is not the commit plugin-alpha-v1\.0\.0 peels to/);
   assert.ok(r.warnings.some((w) => /\(alpha\): pinned version 1\.0\.0 != package version 1\.1\.0/.test(w)),
     'the allowance did apply to this entry');
 });
 
-test('a pin ahead of the package version is invalid even inside the release-PR window', (t) => {
+test('a pin ahead of the package version is invalid even in its release commit', (t) => {
   const dir = makeRepo(t);
   release(dir, 'alpha', '1.1.0');
   activate(dir, { alpha: '1.1.0', beta: '1.0.0' });
-  setVersion(dir, 'alpha', '1.0.0');
-  assertError(validateMarketplace(dir, { allowVersionLag: true }), /\(alpha\): pinned version 1\.1\.0 is ahead of package version 1\.0\.0/);
+  commit(dir, 'chore: activate at alpha 1.1.0');
+  releaseCommit(dir, { alpha: '1.0.0' });
+  assertError(validateMarketplace(dir, LAG), /\(alpha\): pinned version 1\.1\.0 is ahead of package version 1\.0\.0/);
+});
+
+test('a Claude catalog ahead of the manifest is invalid even in its release commit', (t) => {
+  const dir = releasedAndActivated(t);
+  const claude = readJSON(dir, CLAUDE);
+  claude.plugins.find((p) => p.name === 'alpha').version = '1.2.0';
+  writeJSON(dir, CLAUDE, claude);
+  releaseCommit(dir, { alpha: '1.1.0' });
+  assertError(validateMarketplace(dir, LAG), /\(alpha\): catalog version "1\.2\.0" != manifest version "1\.1\.0"$/);
+  assertError(validateVersions(dir, LAG), /entry "alpha": version "1\.2\.0" != release-please-manifest "1\.1\.0"$/);
+});
+
+// ---------------------------------------------------------------------------
+// releaseLag — what the commit under test changes
+// ---------------------------------------------------------------------------
+
+test('releaseLag reads the bumps of HEAD against its first parent, and nothing from the working tree', (t) => {
+  const dir = makeRepo(t);
+  assert.deepEqual([...releaseLag(dir).bumps], [], 'the scaffold is a root commit: no parent, no bumps');
+  const c = releaseCommit(dir, { alpha: '1.1.0' });
+  const lag = releaseLag(dir);
+  assert.equal(lag.commit, c);
+  assert.equal(lag.parent, git(dir, ['rev-parse', `${c}^1`]).trim());
+  assert.deepEqual([...lag.bumps], [['alpha', { from: '1.0.0', to: '1.1.0' }]]);
+  bump(dir, 'beta', '1.1.0');
+  assert.deepEqual([...releaseLag(dir).bumps], [['alpha', { from: '1.0.0', to: '1.1.0' }]], 'an uncommitted bump is not the commit\'s');
+});
+
+test('releaseLag counts a package new to the manifest, from null', (t) => {
+  const dir = makeRepo(t);
+  addPackage(dir, 'gamma');
+  commit(dir, 'feat: add gamma');
+  assert.deepEqual([...releaseLag(dir).bumps], [['gamma', { from: null, to: '0.1.0' }]]);
+});
+
+test('releaseLag yields no bumps, the strict verdict, when a manifest cannot be read', (t) => {
+  const dir = makeRepo(t);
+  const manifest = readJSON(dir, MANIFEST);
+  write(dir, MANIFEST, '{ not json\n');
+  commit(dir, 'chore: break the manifest');
+  writeJSON(dir, MANIFEST, { ...manifest, 'plugins/alpha': '1.1.0' });
+  commit(dir, 'chore: release alpha over a broken parent');
+  assert.deepEqual([...releaseLag(dir).bumps], [], 'the parent\'s manifest is unparsable');
+  write(dir, MANIFEST, 'null\n');
+  commit(dir, 'chore: a null manifest');
+  assert.deepEqual([...releaseLag(dir).bumps], [], 'HEAD\'s manifest is not an object');
+  rmSync(path.join(dir, MANIFEST));
+  commit(dir, 'chore: no manifest');
+  assert.deepEqual([...releaseLag(dir).bumps], [], 'HEAD has no manifest');
+  writeJSON(dir, MANIFEST, manifest);
+  commit(dir, 'chore: the manifest returns');
+  // A parent without the file has no versions, so every package is new to
+  // HEAD's: a bump from null, which excuses no trailing version (rule 1).
+  assert.deepEqual([...releaseLag(dir).bumps], [['alpha', { from: null, to: '1.0.0' }], ['beta', { from: null, to: '1.0.0' }]]);
+});
+
+test('releaseLag judges a merge commit against its first parent', (t) => {
+  const dir = makeRepo(t);
+  git(dir, ['switch', '-q', '-c', 'topic']);
+  releaseCommit(dir, { alpha: '1.1.0' });
+  git(dir, ['switch', '-q', 'main']);
+  write(dir, 'docs/note.md', 'main moves on\n');
+  commit(dir, 'docs: main moves on');
+  git(dir, ['merge', '-q', '--no-ff', '-m', 'merge topic', 'topic']);
+  assert.deepEqual([...releaseLag(dir).bumps], [['alpha', { from: '1.0.0', to: '1.1.0' }]],
+    'against the second parent (topic) nothing changed');
 });
 
 // ---------------------------------------------------------------------------
@@ -297,7 +475,7 @@ test('after activation a pin below its floor is invalid', (t) => {
   setFloor(dir, 'alpha', '1.1.0');
   setVersion(dir, 'alpha', '1.1.0');
   activate(dir);
-  const r = validateMarketplace(dir, { allowVersionLag: true });
+  const r = validateMarketplace(dir);
   assertError(r, /\(alpha\): pinned version 1\.0\.0 is below its migration floor 1\.1\.0/);
 });
 
@@ -401,6 +579,84 @@ test('before activation there is no exemption: every package has a local entry',
   assertError(validateMarketplace(dir), /plugins only in \.claude-plugin\/marketplace\.json: gamma/);
 });
 
+// ADR-0065 Decision 8 rule 2: the release job cuts a first release's tag on the
+// release commit itself, before its sync adds the first pin, so in that commit
+// the package's release is read from the first parent.
+function firstReleaseState(t, { tagged }) {
+  const dir = makeRepo(t);
+  activate(dir);
+  addPackage(dir, 'gamma');
+  commit(dir, 'feat: add gamma');
+  releaseCommit(dir, { gamma: '0.2.0' }, { tagged });
+  return dir;
+}
+
+for (const tagged of [false, true]) {
+  test(`CONTROL — in the commit of its first release a package may lack its Codex entry (tag ${tagged ? 'cut' : 'not cut yet'})`, (t) => {
+    const dir = firstReleaseState(t, { tagged });
+    const r = validateMarketplace(dir, LAG);
+    assertOk(r);
+    const entry = tagged
+      ? /gamma has no Codex entry in the commit its first release tags; the release job's sync adds its first pin/
+      : /gamma has no Codex entry until its first release is pinned \(no plugin-gamma-v\* tag reachable from HEAD\)/;
+    assert.ok(r.warnings.some((w) => entry.test(w)), r.warnings.join('\n'));
+    assert.ok(r.warnings.some((w) => /\(gamma\): catalog version "0\.1\.0" != manifest version "0\.2\.0"/.test(w) && LAG_NOTE.test(w)),
+      'its Claude version trails by rule 1');
+    assertOk(validateVersions(dir, LAG));
+  });
+}
+
+test('strictly, a first release whose tag is cut needs its Codex entry — the writer\'s verdict', (t) => {
+  const dir = firstReleaseState(t, { tagged: true });
+  assertError(validateMarketplace(dir), /plugins only in \.claude-plugin\/marketplace\.json: gamma/);
+});
+
+test('a commit after a first release\'s tagged commit needs the Codex entry', (t) => {
+  const dir = firstReleaseState(t, { tagged: true });
+  write(dir, 'docs/note.md', 'unrelated\n');
+  commit(dir, 'docs: lands while the release job runs');
+  assertError(validateMarketplace(dir, LAG), /plugins only in \.claude-plugin\/marketplace\.json: gamma/);
+});
+
+test('a package already released by the first parent needs its Codex entry, even in a commit that bumps it again', (t) => {
+  const dir = firstReleaseState(t, { tagged: true });
+  releaseCommit(dir, { gamma: '0.3.0' });
+  assertError(validateMarketplace(dir, LAG), /plugins only in \.claude-plugin\/marketplace\.json: gamma/);
+});
+
+test('a first release that leaves the manifest unchanged is judged strictly', (t) => {
+  const dir = makeRepo(t);
+  activate(dir);
+  addPackage(dir, 'gamma');
+  commit(dir, 'feat: add gamma');
+  commit(dir, 'chore: release gamma 0.1.0 as it stands');
+  tag(dir, 'plugin-gamma-v0.1.0');
+  assertError(validateMarketplace(dir, LAG), /plugins only in \.claude-plugin\/marketplace\.json: gamma/);
+});
+
+// ADR-0065 Decision 8 rule 3.
+test('release history is read from the commit: a release cut later on another line leaves a branch commit\'s verdict alone', (t) => {
+  const dir = makeRepo(t);
+  activate(dir);
+  addPackage(dir, 'gamma');
+  commit(dir, 'feat: add gamma');
+  git(dir, ['switch', '-q', '-c', 'topic']);
+  write(dir, 'docs/note.md', 'branch work\n');
+  commit(dir, 'docs: branch work');
+  git(dir, ['switch', '-q', 'main']);
+  releaseCommit(dir, { gamma: '0.2.0' }, { tagged: true });
+  write(dir, 'docs/other.md', 'main moves on\n');
+  commit(dir, 'docs: main moves on');
+  assertError(validateMarketplace(dir, LAG), /plugins only in \.claude-plugin\/marketplace\.json: gamma/,
+    'CONTROL: on main the release is reachable, and the entry is due');
+  git(dir, ['switch', '-q', 'topic']);
+  for (const opts of [{}, LAG]) {
+    const r = validateMarketplace(dir, opts);
+    assertOk(r);
+    assert.ok(r.warnings.some((w) => /gamma has no Codex entry until its first release is pinned/.test(w)));
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Monotonic pin against the target-branch baseline
 // ---------------------------------------------------------------------------
@@ -411,7 +667,7 @@ test('a pin moving to a lower version than the baseline is invalid', (t) => {
   activate(dir, { alpha: '1.1.0', beta: '1.0.0' });
   const base = commit(dir, 'chore: activate');
   setCodexSource(dir, 'alpha', pinSource(dir, 'alpha', '1.0.0'));
-  const r = validateMarketplace(dir, { base, allowVersionLag: true });
+  const r = validateMarketplace(dir, { base });
   assertError(r, /\(alpha\): pin moves from 1\.1\.0 to 1\.0\.0 — a pin never moves to a lower version/);
 });
 
@@ -604,24 +860,18 @@ test('CONTROL — validate-versions passes pins equal to the manifest', (t) => {
   assert.equal(r.codexPinsChecked, 2);
 });
 
-test('validate-versions reports a trailing pin as Codex catalog drift', (t) => {
+test('validate-versions reports a trailing pin as Codex catalog drift outside a release commit', (t) => {
   const dir = releasePrState(t);
-  assertError(validateVersions(dir), /\.agents\/plugins\/marketplace\.json entry "alpha": pinned version "1\.0\.0" != release-please-manifest "1\.1\.0"/);
+  assertError(validateVersions(dir, LAG), /\.agents\/plugins\/marketplace\.json entry "alpha": pinned version "1\.0\.0" != release-please-manifest "1\.1\.0"$/);
 });
 
-test('CONTROL — validate-versions allows a trailing pin in the release-PR window', (t) => {
-  const dir = releasePrState(t);
-  const r = validateVersions(dir, { allowMarketplaceLag: true });
-  assertOk(r);
-  assert.ok(r.warnings.some((w) => /entry "alpha": pinned version "1\.0\.0" != release-please-manifest "1\.1\.0" \(allowed release-please PR lag\)/.test(w)));
-});
-
-test('validate-versions rejects a pin ahead of the manifest even in the release-PR window', (t) => {
+test('validate-versions rejects a pin ahead of the manifest even in its release commit', (t) => {
   const dir = makeRepo(t);
   release(dir, 'alpha', '1.1.0');
   activate(dir, { alpha: '1.1.0', beta: '1.0.0' });
-  setVersion(dir, 'alpha', '1.0.0');
-  assertError(validateVersions(dir, { allowMarketplaceLag: true }), /entry "alpha": pinned version "1\.1\.0" is ahead of release-please-manifest "1\.0\.0"/);
+  commit(dir, 'chore: activate at alpha 1.1.0');
+  releaseCommit(dir, { alpha: '1.0.0' });
+  assertError(validateVersions(dir, LAG), /entry "alpha": pinned version "1\.1\.0" is ahead of release-please-manifest "1\.0\.0"/);
 });
 
 test('validate-versions reports malformed catalogs instead of crashing', (t) => {
@@ -634,10 +884,11 @@ test('validate-versions reports malformed catalogs instead of crashing', (t) => 
   assertError(validateVersions(dir), /\.release-please-manifest\.json: must be a JSON object/);
 });
 
-test('validate-versions never lets the release-PR window excuse a malformed pin', (t) => {
-  const dir = releasePrState(t);
+test('validate-versions never lets the release commit excuse a malformed pin', (t) => {
+  const dir = releasedAndActivated(t);
   setCodexSource(dir, 'alpha', pinSource(dir, 'alpha', '1.0.0', { ref: 'plugin-alpha-1.0.0' }));
-  assertError(validateVersions(dir, { allowMarketplaceLag: true }), /entry "alpha": source\.ref must be plugin-alpha-v<X\.Y\.Z>/);
+  releaseCommit(dir, { alpha: '1.1.0' });
+  assertError(validateVersions(dir, LAG), /entry "alpha": source\.ref must be plugin-alpha-v<X\.Y\.Z>/);
 });
 
 // ---------------------------------------------------------------------------
@@ -675,6 +926,20 @@ test('validate-marketplace CLI rejects an unknown flag instead of ignoring it', 
   assert.notEqual(out.status, 0);
   assert.equal(out.stdout, '');
 });
+
+// The branch-keyed lag flags are gone (ADR-0065 Decision 8). A workflow still
+// passing one fails loudly instead of being excused or ignored.
+for (const [script, flag] of [
+  ['scripts/validate-marketplace.mjs', '--allow-version-lag'],
+  ['scripts/validate-versions.mjs', '--allow-marketplace-lag'],
+]) {
+  test(`${path.basename(script)} rejects the retired ${flag} as a usage error`, (t) => {
+    const dir = makeRepo(t);
+    const out = runCli(dir, script, [flag]);
+    assert.equal(out.status, 2, out.stderr);
+    assert.equal(out.stdout, '');
+  });
+}
 
 test('both CLIs run when invoked through a symlinked root', (t) => {
   const dir = makeRepo(t);

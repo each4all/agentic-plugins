@@ -10,15 +10,16 @@
 //     marketplace conventions)
 //   - per-entry: each plugin name is unique within its catalog
 //   - per-entry: the same plugin-name set appears in both catalogs, except
-//     that after activation a package with no release tag yet has no Codex
-//     entry (ADR-0061 Decision 2); the exemption ends at its first release
+//     that after activation a package with no release tag reachable from HEAD
+//     has no Codex entry (ADR-0061 Decision 2, read from the commit per
+//     ADR-0065 Decision 8 rule 3); the exemption ends at its first release
 //   - per-entry (Claude): `source` is the package directory
 //     `plugins/<entry.name>`, whose `.claude-plugin/plugin.json` exists and
 //     parses, with `name` matching the marketplace entry's `name` AND with
 //     `version` matching the entry's `version` when both are present
 //   - per-entry (Codex): the package's `.codex-plugin/plugin.json` parses and
-//     its `name` matches the entry. A `local` entry's `source.path` must be
-//     that same directory; a pinned entry must satisfy ADR-0061
+//     its `name` matches the entry. A `local` entry's source must be exactly
+//     {source: "local", path: "./plugins/<name>"}; a pinned entry must satisfy ADR-0061
 //     Decision 1's shape and Decision 2's history checks (its tag resolves and
 //     peels to `sha`, and the tree at `sha` carries the package at the `ref`
 //     version), and its version must equal the package manifest's. A pinned
@@ -44,10 +45,16 @@
 //     with --base HEAD before it commits. A baseline that cannot be read is
 //     reported and not compared, so it cannot block the change that repairs it
 //
-// Release-please PRs may pass --allow-version-lag because package manifests
-// are bumped before either catalog is synced after the release merge. The lag
-// lets a valid pin trail the package version; it never excuses a malformed or
-// mismatched pin, and never a pin ahead of the package.
+// The release commit lags by construction: release-please bumps the package
+// manifests, and the release job syncs both catalogs after the merge. So the
+// CLI lets HEAD's catalogs trail what HEAD itself changes (ADR-0065 Decision
+// 8, keyed on content): a package whose `.release-please-manifest.json`
+// version HEAD moves from v0 to v1 may keep a Claude version and a Codex pin
+// at exactly v0, and a package with no release tag reachable from HEAD's first
+// parent may have no Codex entry yet. Every other commit is checked strictly,
+// on every branch. The lag never excuses a malformed or mismatched pin, and
+// never a pin ahead of the package. The library default is strict, which is
+// what the catalog writer validates with.
 //
 // History is required, not optional. The floors and every pin are claims
 // about tags and trees, so a shallow clone or a checkout without tags fails
@@ -74,8 +81,10 @@ import {
   hasReleaseTag,
   historyAvailability,
   isSemver,
+  mayTrail,
   parseFloors,
   readAt,
+  releaseLag,
   releaseTag,
   resolveCommit,
   sourceKind,
@@ -104,12 +113,14 @@ function dirExists(path) {
  * Validate both catalogs rooted at `repoRoot`.
  *
  * @param {string} repoRoot
- * @param {{allowVersionLag?: boolean, base?: string|null}} [options]
+ * @param {{allowReleaseLag?: boolean, base?: string|null}} [options]
+ *   allowReleaseLag: let the catalogs trail exactly what HEAD's own manifest
+ *   change moved (ADR-0065 Decision 8); off by default, which is strict
  * @returns {{errors: string[], warnings: string[], phase: string|null,
  *   coverage: {structural: boolean, history: boolean, baseline: string|null},
  *   claude: object|null}}
  */
-export function validateMarketplace(repoRoot, { allowVersionLag = false, base = null } = {}) {
+export function validateMarketplace(repoRoot, { allowReleaseLag = false, base = null } = {}) {
   const errors = [];
   const warnings = [];
   const coverage = { structural: true, history: false, baseline: null };
@@ -181,6 +192,8 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
 
   const history = historyAvailability(repoRoot);
   coverage.history = history.ok;
+  const lag = allowReleaseLag ? releaseLag(repoRoot) : null;
+  const releaseLagNote = (message) => `${message} (the release commit's own lag, ADR-0065 Decision 8)`;
   if (!history.ok) {
     errors.push(
       `history checks could not run: ${history.reason} — ADR-0061 Decision 2 fails closed here `
@@ -220,11 +233,8 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
     }
     if (manifest && typeof entry.version === 'string' && typeof manifest.version === 'string' && manifest.version !== entry.version) {
       const message = `${CLAUDE_PATH}.plugins[${i}] (${entry.name}): catalog version "${entry.version}" != manifest version "${manifest.version}"`;
-      if (allowVersionLag) {
-        warnings.push(`${message} (allowed release-please PR lag)`);
-      } else {
-        errors.push(message);
-      }
+      if (mayTrail(lag, entry.name, entry.version, manifest.version)) warnings.push(releaseLagNote(message));
+      else errors.push(message);
     }
   }
 
@@ -275,9 +285,16 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
         continue;
       }
       pluginDir = resolve(repoRoot, sourcePath);
-      if (pluginDir !== resolve(repoRoot, 'plugins', entry.name)) {
-        errors.push(`${at}: source.path "${sourcePath}" is not the package directory plugins/${entry.name}`);
+      // The one spelling this repository publishes. An absolute path, or
+      // another spelling of the same directory, resolves on the publisher's
+      // machine and nowhere else.
+      if (sourcePath !== `./plugins/${entry.name}`) {
+        errors.push(`${at}: source.path "${sourcePath}" is not the package directory plugins/${entry.name} (spelled ./plugins/${entry.name})`);
         continue;
+      }
+      const localKeys = Object.keys(entry.source).sort();
+      if (localKeys.join(',') !== 'path,source') {
+        errors.push(`${at}: a local source is exactly {path, source}, got {${localKeys.join(', ')}}`);
       }
       if (!dirExists(pluginDir)) {
         errors.push(`${at}: source.path "${sourcePath}" not a directory`);
@@ -306,7 +323,7 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
       if (delta > 0) {
         errors.push(`${at}: pinned version ${shape.version} is ahead of package version ${manifest.version}`);
       } else if (delta < 0) {
-        if (allowVersionLag) warnings.push(`${message} (allowed release-please PR lag)`);
+        if (mayTrail(lag, entry.name, shape.version, manifest.version)) warnings.push(releaseLagNote(message));
         else errors.push(message);
       }
     }
@@ -369,13 +386,20 @@ export function validateMarketplace(repoRoot, { allowVersionLag = false, base = 
 
   // Cross-catalog name-set match. After activation a package with no release
   // tag yet has no Codex entry until the post-tag writer adds its first pin;
-  // the exemption needs history to decide, and ends at the first release.
+  // the exemption needs history to decide, and ends at the first release
+  // reachable from HEAD (ADR-0065 Decision 8 rule 3). In the commit that
+  // releases a package for the first time, the release job cuts the tag on
+  // that very commit, so its release is read from the first parent instead
+  // (rule 2): the sync that adds the first pin comes after the commit.
   if (claudeNames.size === claude.plugins.length && codexNames.size === codex.plugins.length) {
     const onlyInClaude = [];
     for (const name of claudeNames) {
       if (codexNames.has(name)) continue;
-      if (activated === true && history.ok && !hasReleaseTag(repoRoot, name)) {
-        warnings.push(`${name} has no Codex entry until its first release is pinned (no plugin-${name}-v* tag yet)`);
+      const bumped = lag?.bumps.has(name) === true;
+      if (activated === true && history.ok && !hasReleaseTag(repoRoot, name, bumped ? lag.parent : 'HEAD')) {
+        warnings.push(bumped && hasReleaseTag(repoRoot, name)
+          ? releaseLagNote(`${name} has no Codex entry in the commit its first release tags; the release job's sync adds its first pin`)
+          : `${name} has no Codex entry until its first release is pinned (no plugin-${name}-v* tag reachable from HEAD)`);
       } else {
         onlyInClaude.push(name);
       }
@@ -517,17 +541,19 @@ if (invokedAsCLI()) {
   let values;
   try {
     ({ values } = parseArgs({
-      options: { 'allow-version-lag': { type: 'boolean' }, base: { type: 'string' } },
+      options: { base: { type: 'string' } },
       strict: true,
     }));
   } catch (err) {
     console.error(`validate-marketplace: ${err.message}`);
-    console.error('usage: validate-marketplace.mjs [--allow-version-lag] [--base <rev>]');
+    console.error('usage: validate-marketplace.mjs [--base <rev>]');
     process.exit(2);
   }
   const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
+  // The commit under test is HEAD, whatever the branch or the event that ran
+  // this: the allowance is decided by what HEAD itself changes.
   const { errors, warnings, phase, coverage, claude } = validateMarketplace(REPO_ROOT, {
-    allowVersionLag: values['allow-version-lag'] === true,
+    allowReleaseLag: true,
     base: values.base ?? null,
   });
 

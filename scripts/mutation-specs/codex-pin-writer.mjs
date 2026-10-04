@@ -11,7 +11,8 @@
 // nothing about them; deleting each rule and watching a named test fail does.
 //
 // Groups: A activation, P post-activation pins, N first publication, C the
-// CLI's write-then-validate, W the release-please.yml wiring.
+// CLI's write-then-validate, W the release-please.yml wiring and the writer's
+// strictness there.
 //
 // Some rules looked mutable but are equivalent by construction and are not
 // listed: planCodexPins returning early on errors (syncCatalogs refuses on
@@ -111,9 +112,15 @@ export const MUTATIONS = [
   // ---- N: first publication of a new package ---------------------------------
   {
     id: 'N1', file: WRITER,
-    from: 'if (!hasReleaseTag(repoRoot, name)) {',
+    from: 'if (!releasing && !hasReleaseTag(repoRoot, name)) {',
     to: 'if (false) {',
     why: 'an untagged package is treated as a failed release instead of exempt',
+  },
+  {
+    id: 'N5', file: WRITER,
+    from: 'if (!releasing && !hasReleaseTag(repoRoot, name)) {',
+    to: 'if (!hasReleaseTag(repoRoot, name)) {',
+    why: 'a first release whose tag is missing passes for a package never released, so the rest of the release syncs alone',
   },
   {
     id: 'N2', file: WRITER,
@@ -178,5 +185,26 @@ export const MUTATIONS = [
     from: 'run: node scripts/sync-marketplace-versions.mjs ${ACTIVATE_CODEX_PINS:+--activate}',
     to: 'run: node scripts/sync-marketplace-versions.mjs --activate',
     why: 'every release job activates',
+  },
+  {
+    id: 'W5', file: WORKFLOW,
+    from: "Commit + push marketplace sync (if any drift)\n        if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}",
+    to: "Commit + push marketplace sync (if any drift)\n        if: ${{ steps.release.outputs.releases_created == 'true' }}",
+    why: 'a retry dispatch syncs the catalogs but never pushes them, so the lag it exists to repair stays',
+  },
+  {
+    id: 'W6', file: WORKFLOW,
+    from: 'permissions:\n  contents: write\n  pull-requests: write\n',
+    to: 'permissions:\n  contents: write\n  pull-requests: write\n  actions: write\n',
+    why: 'the release job regains the permission to start workflows (ADR-0065 Decision 6)',
+  },
+  {
+    // Behaviorally equivalent by construction — the plan moves every lagging
+    // catalog or refuses, so no fixture can tell a strict validation from one
+    // with the allowance — and so pinned on the source.
+    id: 'W7', file: WRITER,
+    from: 'const versions = validateVersions(REPO_ROOT);',
+    to: 'const versions = validateVersions(REPO_ROOT, { allowReleaseLag: true });',
+    why: 'the writer validates with the lag the CLIs allow the release commit (ADR-0065 Decision 8 rule 5)',
   },
 ];

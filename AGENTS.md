@@ -220,37 +220,36 @@ that package's manifest version has moved past its pin. It plans every
 package before writing anything, so one package it cannot pin blocks
 both catalogs. The release-please GitHub Action runs that sync as a
 follow-up step automatically and validates what it wrote before
-pushing. Outside a release-please PR, where a catalog may trail the
-manifest, `validate:versions` fails CI if either catalog drifts from
-it. When the sync refuses, and for how the pins were first activated,
-see
+pushing. When the sync refuses, and for how the pins were first
+activated, see
 [`docs/runbooks/codex-pin-activation.md`](docs/runbooks/codex-pin-activation.md).
 Recovery is a new dispatch or a forward release, never a revert to
 `local`.
 
-**The catalog sync push uses `GITHUB_TOKEN`, and a push made that way
-starts no workflow**, so the release job starts post-sync `main`'s CI
-itself. After the push it dispatches the workflows that a push of the
-catalogs would have started: `full-tests` and `validate`
-(`scripts/dispatch-post-sync-ci.mjs`; a test derives that list from the
-workflow files). It records each run's `head_sha` against the commit it
-pushed. Three things follow for anyone reading those runs:
+**Only the release commit may show its catalogs trailing the
+manifest** ([ADR-0065](docs/adr/0065-release-ceremony-reduction.md)
+Decision 8). The validators decide that from the commit's content, not
+from its branch: in a commit that changes a package's version in
+`.release-please-manifest.json` from v0 to v1, that package's Claude
+catalog version and Codex pin may stand at exactly v0, and a package
+with no release tag reachable from the commit's first parent may have
+no Codex entry yet. Every other commit is checked strictly, and so is
+the sync's own validation. No test reads a catalog's version, ref or
+sha, or which entries the Codex catalog lists, so the release commit's
+run is green. Three things follow:
 
-- **They validate post-sync `main`, not the release commit.** The release
-  commit's own run read the catalogs before the sync and stays red on that
-  lag. Nothing re-runs it, because its tree really does trail the
-  manifest.
-- **A run gets `main`'s head at the moment GitHub creates it**, because
-  `workflow_dispatch` takes a branch, not a commit. If `main` advanced
-  after the sync push, the run validates the newer head and the step
-  reports that as a warning. A head that does not contain the sync commit
-  fails the step.
+- **The catalog sync commit gets no CI run of its own.** It is pushed
+  with `GITHUB_TOKEN`, and a push made that way starts no workflow. The
+  sync validated it before the push, and the next push to `main` checks
+  it strictly.
+- **A commit that lands on `main` while the release job runs is red**
+  until the catalogs are synced, and the bot's push is then rejected as
+  non-fast-forward. That red is the true signal that the retry is due.
 - **The retry path is a manual dispatch** of `release-please.yml`
-  (`gh workflow run release-please.yml --ref main`). Once its catalog sync
-  passes, it dispatches the runs again even when there is nothing new to
-  push. Do not re-run the failed job: release-please reports
-  `releases_created` only once, so a re-run skips the sync and the
-  dispatch with it.
+  (`gh workflow run release-please.yml --ref main`). It checks out
+  current `main`, re-runs the sync and validates strictly, also when
+  there is nothing to write. Do not re-run the failed job: release-please
+  reports `releases_created` only once, so a re-run skips the sync.
 
 **After installing a `plugin-runtime` release on a host, run
 `runtime:doctor` with its proofs there** (`--permission-proof

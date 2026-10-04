@@ -269,11 +269,11 @@ describe('plugins/engineer — Codex manifest (.codex-plugin/plugin.json)', () =
 });
 
 describe('plugins/engineer — manifest cross-checks', () => {
-  it('Claude and Codex manifests agree on name and version', async () => {
+  // Their versions are validate-versions' to check (ADR-0065 Decision 8 rule 6).
+  it('Claude and Codex manifests agree on name', async () => {
     const claude = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     const codex = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
     strictEqual(claude.name, codex.name);
-    strictEqual(claude.version, codex.version);
   });
 });
 

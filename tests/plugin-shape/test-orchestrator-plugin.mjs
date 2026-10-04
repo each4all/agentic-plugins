@@ -33,7 +33,6 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
-import { assertCodexCatalogSource } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
@@ -45,7 +44,6 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 // path below at a directory nothing writes to. A manifest with no `skills` key
 // does fall back, to the README-only `skills/`; the skill checks below fail.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
-const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 
 const VERBS = ['plan'];
 const ALIAS_VERBS = ['audit'];
@@ -81,15 +79,6 @@ const STALE_TOKENS = [
 async function readJSON(path) {
   const text = await readFile(path, 'utf-8');
   return JSON.parse(text);
-}
-
-function compareSemver(a, b) {
-  const left = String(a).split('.').map((part) => Number(part));
-  const right = String(b).split('.').map((part) => Number(part));
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
-  }
-  return 0;
 }
 
 async function exists(path) {
@@ -147,47 +136,45 @@ describe('plugins/orchestrator manifest pair', () => {
     );
   });
 
-  it('Claude and Codex manifests share name + version + description', async () => {
+  // Their versions are validate-versions' to check (ADR-0065 Decision 8 rule 6).
+  it('Claude and Codex manifests share name + description', async () => {
     const claude = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     const codex = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
     strictEqual(claude.name, codex.name);
-    strictEqual(claude.version, codex.version);
     strictEqual(claude.description, codex.description);
     strictEqual(claude.license, codex.license);
     deepStrictEqual(claude.keywords, codex.keywords);
   });
 });
 
+// Whether the Codex catalog lists this package, and at which pin, and the
+// Claude catalog's version are validate-marketplace's and validate-versions'
+// to check (ADR-0065 Decision 8 rule 6). The release job's sync writes them
+// after the release commit, so a test reading them would turn that commit
+// red; a first release has no Codex entry until the sync adds it.
 describe('plugins/orchestrator marketplace registration', () => {
-  it('Claude marketplace catalog has orchestrator entry with matching version', async () => {
+  it('Claude marketplace catalog has an orchestrator entry for the package directory', async () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'orchestrator');
     ok(entry, 'orchestrator entry present in Claude catalog');
     strictEqual(entry.source, './plugins/orchestrator');
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
-    if (RELEASE_PLEASE_PR && entry.version !== manifest.version) {
-      ok(compareSemver(entry.version, manifest.version) <= 0, 'release-please PR may have catalog version lag until post-release sync');
-    } else {
-      strictEqual(entry.version, manifest.version, 'catalog version matches manifest');
-    }
     strictEqual(entry.category, 'Productivity');
   });
 
-  it('Codex marketplace catalog has orchestrator entry with matching policy/source', async () => {
+  it('Codex marketplace catalog entry carries the published policy and category', async (t) => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'orchestrator');
-    ok(entry, 'orchestrator entry present in Codex catalog');
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
-    assertCodexCatalogSource(entry, 'orchestrator', { repoRoot: REPO_ROOT, version: manifest.version, allowLag: RELEASE_PLEASE_PR });
+    if (entry === undefined) return t.skip('no Codex entry yet; validate-marketplace decides whether one is due');
     strictEqual(entry.policy.installation, 'AVAILABLE');
     strictEqual(entry.policy.authentication, 'ON_USE');
     strictEqual(entry.category, 'Productivity');
   });
 
-  it('release-please manifest tracks orchestrator at the same version', async () => {
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
+  it('release-please manifest tracks orchestrator', async () => {
+    // Its version's agreement with the plugin manifests is validate-versions' to
+    // check (ADR-0065 Decision 8 rule 6); this pins that release-please tracks it.
     const releasePleaseManifest = await readJSON(resolve(REPO_ROOT, '.release-please-manifest.json'));
-    strictEqual(releasePleaseManifest['plugins/orchestrator'], manifest.version);
+    strictEqual(typeof releasePleaseManifest['plugins/orchestrator'], 'string');
   });
 
   it('release-please-config tracks orchestrator with extra-files for both manifests', async () => {

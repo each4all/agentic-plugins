@@ -36,7 +36,6 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
-import { assertCodexCatalogSource } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/founder');
@@ -142,11 +141,10 @@ describe('plugins/founder — Claude manifest (.claude-plugin/plugin.json)', () 
 describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () => {
   const path = resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json');
 
-  it('parses as JSON with required scalar fields matching the Claude manifest', async () => {
+  // Its version is validate-versions' to check (ADR-0065 Decision 8 rule 6).
+  it('parses as JSON with the required scalar fields', async () => {
     const json = await readJSON(path);
-    const claude = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(json.name, 'founder');
-    strictEqual(json.version, claude.version, 'host manifests must carry the same version');
     strictEqual(typeof json.description, 'string');
     ok(!INCUBATING_MARKER.test(json.description),
       'Codex manifest description must drop the incubating marker now that ADR-0036 is Accepted');
@@ -737,38 +735,40 @@ describe('plugins/founder — de-incubated surface (PR7 / ADR-0036 Accepted)', (
 describe('plugins/founder — Claude marketplace catalog entry', () => {
   const path = resolve(REPO_ROOT, '.claude-plugin/marketplace.json');
 
-  it('exists with source/version/category/description aligned to the plugin', async () => {
+  it('exists with source/category/description aligned to the plugin', async () => {
     const catalog = await readJSON(path);
     const entry = catalog.plugins.find((p) => p.name === 'founder');
     ok(entry, 'Claude catalog must list founder');
     strictEqual(entry.source, './plugins/founder', 'the Claude entry points at the founder package directory');
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
-    strictEqual(entry.version, manifest.version);
     strictEqual(entry.category, 'Productivity');
     ok(!INCUBATING_MARKER.test(entry.description),
       'Claude catalog description must drop the incubating marker now that ADR-0036 is Accepted');
   });
 });
 
+// Whether the Codex catalog lists this package, and at which pin, and the
+// Claude catalog's version are validate-marketplace's and validate-versions'
+// to check (ADR-0065 Decision 8 rule 6). The release job's sync writes them
+// after the release commit, so a test reading them would turn that commit
+// red; a first release has no Codex entry until the sync adds it.
 describe('plugins/founder — Codex marketplace catalog entry', () => {
   const path = resolve(REPO_ROOT, '.agents/plugins/marketplace.json');
 
-  it('exists with its ADR-0061 phase\'s source shape and the policy/category shape (no per-entry description in the Codex schema)', async () => {
+  it('carries the published policy and category (no per-entry description in the Codex schema)', async (t) => {
     const catalog = await readJSON(path);
     const entry = catalog.plugins.find((p) => p.name === 'founder');
-    ok(entry, 'Codex catalog must list founder');
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
-    assertCodexCatalogSource(entry, 'founder', { repoRoot: REPO_ROOT, version: manifest.version, allowLag: process.env.AGENTIC_RELEASE_PLEASE_PR === '1' });
+    if (entry === undefined) return t.skip('no Codex entry yet; validate-marketplace decides whether one is due');
     deepStrictEqual(entry.policy, { installation: 'AVAILABLE', authentication: 'ON_USE' });
     strictEqual(entry.category, 'Productivity');
   });
 });
 
 describe('plugins/founder — release-please wiring', () => {
-  it('is tracked in .release-please-manifest.json at the manifest version', async () => {
+  it('is tracked in .release-please-manifest.json', async () => {
+    // Its version's agreement with the plugin manifests is validate-versions' to
+    // check (ADR-0065 Decision 8 rule 6); this pins that release-please tracks it.
     const manifest = await readJSON(resolve(REPO_ROOT, '.release-please-manifest.json'));
-    const plugin = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
-    strictEqual(manifest['plugins/founder'], plugin.version);
+    strictEqual(typeof manifest['plugins/founder'], 'string');
   });
 
   it('has a plugin-founder package block with both manifest extra-files', async () => {
