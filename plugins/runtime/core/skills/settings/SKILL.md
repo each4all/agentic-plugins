@@ -232,6 +232,6 @@ Forbidden writes:
 - No dynamic peer consensus loop.
 - No context hygiene mutation.
 - No automatic completion footer mutation. The footer helper is read-only and advisory.
-- No deep peer smoke or sandbox permission proof.
+- No deep peer smoke or permission proof; those are `runtime:doctor`'s.
 - No host-native config apply mode, authentication automation,
   sandbox/permission relaxation, or general plugin uninstall execution.

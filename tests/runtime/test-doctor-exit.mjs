@@ -196,18 +196,14 @@ describe('runtime:doctor exit-code ladder (subprocess)', () => {
       .filter(([, value]) => value && typeof value === 'object' && typeof value.mode === 'string')
       .map(([key]) => key);
     ok(withMode.length > 0, 'the extractor found no mode-bearing section — the guard would be vacuous');
-    // `sandbox_permission_probe` carries a mode and proves nothing: its whole
-    // vocabulary is read_only_preflight / not_requested, asserted here so the
-    // exclusion stays a measurement rather than an assumption.
-    ok(['read_only_preflight', 'not_requested'].includes(parsed.sandbox_permission_probe.mode));
-    deepStrictEqual(
-      withMode.filter((key) => key !== 'sandbox_permission_probe').sort(),
-      [...EXIT_PROOF_SECTIONS].sort(),
-    );
+    // No exclusion any more: `sandbox_permission_probe`, which carried a mode and
+    // proved nothing, left the report with its option (ADR-0064 Decision 4).
+    deepStrictEqual(withMode.sort(), [...EXIT_PROOF_SECTIONS].sort());
     // The three ADR-0064 Decision 4 keeps. `egress_ack_proof` left with the
     // egress executor (Decision 1), from the list and from the live report.
     deepStrictEqual([...EXIT_PROOF_SECTIONS].sort(), ['deep_peer_smoke', 'permission_proof', 'workflow_continuation_proof']);
     strictEqual(Object.hasOwn(parsed, 'egress_ack_proof'), false);
+    strictEqual(Object.hasOwn(parsed, 'sandbox_permission_probe'), false);
     // And every one of them is plan-only here, so nothing above executed.
     for (const key of EXIT_PROOF_SECTIONS) strictEqual(parsed[key].mode, 'plan_only_preflight', key);
     strictEqual(parsed.exit_code, res.code);

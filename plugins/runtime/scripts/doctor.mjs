@@ -123,9 +123,12 @@ const READABLE_DOCTOR_SCHEMA_PAIRS = Object.freeze([
   // 1.4 — ADR-0064 removed notification and egress, and the report lost
   // `egress_ack_proof` and the Codex notify shuttle and chain receiver kinds
   // (slice R4n2). Its Decision 7 makes this ONE bump for one runtime release:
-  // slice R4s then removes `sandbox_permission_probe` and the per-direction
-  // `sandbox_permission` members under the same, still unreleased, pair rather
-  // than moving it again. The same-release warning on 1.3 above applies.
+  // slice R4s removed `sandbox_permission_probe` and the per-direction
+  // `sandbox_permission` members (Decision 4) under the same pair, before that
+  // release, rather than moving it again. The same-release warning on 1.3 above
+  // applies: on a partially upgraded host pair, the host still on an older
+  // runtime counts a 1.4 artifact `malformed`, and its dashboard reports the
+  // doctor row blocked, until that host installs the release too.
   Object.freeze({ artifact: 'runtime-doctor-artifact-1.4', report: 'runtime-doctor-1.4' }),
 ]);
 function isReadableDoctorSchemaPair(artifactSchema, reportSchema) {
@@ -146,7 +149,6 @@ export async function runDoctor({
   deepPeerSmoke = false,
   executeDeepPeerSmoke = false,
   deepPeerSmokeTimeoutMs = DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS,
-  sandboxPermissionProbe = false,
   permissionProof = false,
   executePermissionProof = false,
   permissionProofTimeoutMs = DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
@@ -312,15 +314,10 @@ export async function runDoctor({
     companion,
     deepPeerSmoke,
     executeDeepPeerSmoke,
-    sandboxPermissionProbe,
     permissionProof,
     executePermissionProof,
     workflowContinuationProof,
     executeWorkflowContinuationProof,
-  });
-  const sandboxPermissionProbeSection = buildSandboxPermissionProbeSection({
-    requested: sandboxPermissionProbe,
-    readiness,
   });
   const permissionProofSection = await buildPermissionProofSection({
     requested: permissionProof,
@@ -402,7 +399,6 @@ export async function runDoctor({
       host_config_mutated: false,
       network_request_performed: false,
     },
-    sandbox_permission_probe: sandboxPermissionProbeSection,
     permission_proof: permissionProofSection,
     deep_peer_smoke: deepPeerSmokeSection,
     workflow_continuation_proof: workflowContinuationProofSection,
@@ -441,7 +437,7 @@ export async function runDoctor({
       'Codex bundled plugin hooks require manifest exposure plus an enabled hook gate: [features].plugin_hooks on Codex < ~0.134, or generic [features].hooks once plugin_hooks is removed; doctor reports the stage-appropriate gate separately from packaging.',
       'Codex hook review/trust is an active-session /hooks UI check; /hooks Installed counts are packaging evidence only, and Active=0 output is not enough to attest.',
       'The observed Codex CLI does not expose a non-interactive hook trust query, so doctor requires a current runtime:settings operator attestation to clear that follow-up.',
-      'Readiness sandbox/permission status remains unknown unless --sandbox-permission-probe is requested; --permission-proof records separate preflight/execution evidence.',
+      'Readiness does not judge companion permission state; --permission-proof records a read-only permission preflight, and --execute-permission-proof adds execution evidence.',
       'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
       'Artifact inventory is read-only; runtime:doctor never deletes or compacts generated artifacts.',
       'Installed receivers are classified by reading their bytes; doctor never imports, spawns, or evaluates an installed receiver, and never follows a symlinked install path.',
@@ -2461,7 +2457,6 @@ function buildReadiness({
   companion,
   deepPeerSmoke,
   executeDeepPeerSmoke,
-  sandboxPermissionProbe,
   permissionProof,
   executePermissionProof,
   workflowContinuationProof,
@@ -2474,10 +2469,8 @@ function buildReadiness({
       peer: codex,
       companion: companion.directions.claude_to_codex,
       requiredPeerFeatures: ['exec_command', 'model_flag', 'config_flag', 'cd_flag'],
-      requiredPermissionFeatures: ['sandbox_flag', 'approval_flag'],
       deepPeerSmoke,
       executeDeepPeerSmoke,
-      sandboxPermissionProbe,
       permissionProof,
       executePermissionProof,
       workflowContinuationProof,
@@ -2489,10 +2482,8 @@ function buildReadiness({
       peer: claude,
       companion: companion.directions.codex_to_claude,
       requiredPeerFeatures: ['print_mode', 'no_session_persistence', 'model_flag', 'effort_flag'],
-      requiredPermissionFeatures: ['permission_mode'],
       deepPeerSmoke,
       executeDeepPeerSmoke,
-      sandboxPermissionProbe,
       permissionProof,
       executePermissionProof,
       workflowContinuationProof,
@@ -3153,7 +3144,6 @@ function buildDirectionReadinessRow({ key, caller, peer, readiness, companion, m
       value: modelEffort.effort.value,
       source: modelEffort.effort.source,
     },
-    sandbox_permission: readiness.sandbox_permission.status,
     execution_readiness: buildDirectionExecutionReadiness({ key, permissionProof, deepPeerSmoke, workflowContinuationProof }),
     blocker_count: readiness.blockers.length,
     warning_count: readiness.warnings.length,
@@ -3209,37 +3199,6 @@ function summarizeExecutorEvidenceStatus(entries) {
   return 'failed';
 }
 
-function buildSandboxPermissionProbeSection({ requested, readiness }) {
-  const directions = {
-    claude_to_codex: readiness.claude_to_codex.sandbox_permission,
-    codex_to_claude: readiness.codex_to_claude.sandbox_permission,
-  };
-  return {
-    requested,
-    executed: requested,
-    peer_execution: false,
-    mode: requested ? 'read_only_preflight' : 'not_requested',
-    status: summarizeSandboxPermissionProbeStatus({ requested, directions }),
-    reason: requested
-      ? 'runtime:doctor evaluated read-only CLI, auth, feature-surface, and companion-script preflight evidence without executing peers'
-      : 'not requested',
-    directions,
-    limits: [
-      'Read-only probe; runtime:doctor does not execute peer agents.',
-      'No host-native config, auth, secrets, sandbox, or permission state is mutated.',
-      'A passed probe proves the observed preflight surface only; a future explicit executor is still required to prove live peer execution.',
-    ],
-  };
-}
-
-function summarizeSandboxPermissionProbeStatus({ requested, directions }) {
-  if (!requested) return 'not_requested';
-  const statuses = Object.values(directions).map((direction) => direction.status);
-  if (statuses.every((status) => status === 'read_only_probe_passed')) return 'read_only_probe_passed';
-  if (statuses.some((status) => status === 'read_only_probe_passed')) return 'partially_blocked';
-  return 'blocked';
-}
-
 async function buildPermissionProofSection({
   requested,
   execute,
@@ -3271,7 +3230,7 @@ async function buildPermissionProofSection({
     const companionDirection = companion.directions[key];
     const directionSettings = modelEffort.directions[key];
     const spec = directionSpecs[key];
-    const preflight = buildDirectionSandboxPermissionProbe({
+    const preflight = buildDirectionPermissionPreflight({
       requested,
       direction: directionReadiness.direction,
       caller: spec.caller,
@@ -4479,10 +4438,8 @@ function buildDirectionReadiness({
   peer,
   companion,
   requiredPeerFeatures,
-  requiredPermissionFeatures,
   deepPeerSmoke,
   executeDeepPeerSmoke,
-  sandboxPermissionProbe,
   permissionProof,
   executePermissionProof,
   workflowContinuationProof,
@@ -4519,25 +4476,12 @@ function buildDirectionReadiness({
         ? 'Codex global hooks are available, but bundled plugin hooks require [features].plugin_hooks=true before automatic plugin lifecycle hooks run'
         : 'Codex hooks are not fully enabled in the observed feature surface; bundled plugin lifecycle hooks will not run automatically');
   }
-  const sandboxPermission = buildDirectionSandboxPermissionProbe({
-    requested: sandboxPermissionProbe,
-    direction,
-    caller,
-    peer,
-    companion,
-    requiredPermissionFeatures,
-  });
-  if (sandboxPermission.status !== 'unknown' && sandboxPermission.status !== 'read_only_probe_passed') {
-    blockers.push(`sandbox permission probe ${sandboxPermission.status}`);
-  }
-  if (sandboxPermissionProbe) {
-    warnings.push('sandbox/permission probe is read-only; live peer-agent execution remains unverified');
-  } else if (permissionProof) {
+  if (permissionProof) {
     warnings.push(executePermissionProof
       ? 'permission proof executor requested; sanitized execution evidence appears under permission_proof'
       : 'permission proof requested but not executed by runtime:doctor');
   } else {
-    warnings.push('sandbox/permission readiness is unknown until --sandbox-permission-probe is requested');
+    warnings.push('companion permission readiness is not checked until --permission-proof is requested');
   }
   if (!deepPeerSmoke) {
     warnings.push('read-only inference only; no peer-agent smoke executed');
@@ -4558,11 +4502,16 @@ function buildDirectionReadiness({
     status: blockers.length > 0 ? classifyPrimaryBlocker(blockers) : warnings.length > 0 ? 'available_with_warnings' : 'available',
     blockers,
     warnings,
-    sandbox_permission: sandboxPermission,
   };
 }
 
-function buildDirectionSandboxPermissionProbe({
+// The read-only per-direction preflight `buildPermissionProofSection` runs
+// before every permission proof: CLI spawn, peer auth, companion script, and
+// the peer's permission flags, without executing a peer. It was shared with
+// `--sandbox-permission-probe` until ADR-0064 Decision 4 removed that option.
+// Its status strings, `read_only_probe_passed` among them, stay as they were:
+// recorded artifacts store them under `permission_proof.directions.*.preflight`.
+function buildDirectionPermissionPreflight({
   requested,
   direction,
   caller,
@@ -4578,7 +4527,7 @@ function buildDirectionSandboxPermissionProbe({
       executed: false,
       peer_execution: false,
       status: 'unknown',
-      reason: 'read-only doctor does not inspect sandbox or permission readiness unless --sandbox-permission-probe is requested',
+      reason: 'read-only doctor runs the permission preflight only when --permission-proof is requested',
       probes: [],
     };
   }
@@ -4810,7 +4759,7 @@ export function formatText(report) {
   }
   for (const key of ['claude_to_codex', 'codex_to_claude']) {
     const direction = report.readiness_matrix.directions[key];
-    lines.push(`- ${direction.direction}: readiness=${direction.status}; companion=${direction.companion.status}; execution-readiness=${direction.execution_readiness.status}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}; sandbox-permission=${direction.sandbox_permission}; blockers=${direction.blocker_count}; warnings=${direction.warning_count}`);
+    lines.push(`- ${direction.direction}: readiness=${direction.status}; companion=${direction.companion.status}; execution-readiness=${direction.execution_readiness.status}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}; blockers=${direction.blocker_count}; warnings=${direction.warning_count}`);
   }
   lines.push('');
   lines.push('Experience Parity');
@@ -4935,22 +4884,10 @@ export function formatText(report) {
   for (const key of ['claude_to_codex', 'codex_to_claude']) {
     const readiness = report.readiness[key];
     lines.push(`- ${readiness.direction}: ${readiness.status}`);
-    lines.push(`  sandbox-permission: ${readiness.sandbox_permission.status}`);
     for (const blocker of readiness.blockers) lines.push(`  blocker: ${blocker}`);
     for (const warning of readiness.warnings) lines.push(`  warning: ${warning}`);
   }
   lines.push('');
-  if (report.sandbox_permission_probe.requested) {
-    lines.push('Sandbox Permission Probe');
-    lines.push(`- mode: ${report.sandbox_permission_probe.mode}; requested=${report.sandbox_permission_probe.requested}; executed=${report.sandbox_permission_probe.executed}; peer-execution=${report.sandbox_permission_probe.peer_execution}; status=${report.sandbox_permission_probe.status}`);
-    for (const key of ['claude_to_codex', 'codex_to_claude']) {
-      const direction = report.sandbox_permission_probe.directions[key];
-      lines.push(`- ${direction.direction}: ${direction.status}`);
-      for (const probe of direction.probes) lines.push(`  probe ${probe.name}: ${probe.status}; ${probe.evidence}`);
-    }
-    for (const limit of report.sandbox_permission_probe.limits) lines.push(`- limit: ${limit}`);
-    lines.push('');
-  }
   if (report.permission_proof.requested) {
     lines.push('Permission Proof');
     lines.push(`- mode: ${report.permission_proof.mode}; requested=${report.permission_proof.requested}; executed=${report.permission_proof.executed}; peer-execution=${report.permission_proof.peer_execution}; status=${report.permission_proof.status}`);
@@ -5473,11 +5410,10 @@ function exitCodeName(code) {
 
 // Every report section that can carry an explicit proof executor. Pinned by
 // tests/runtime/test-doctor-exit.mjs against a LIVE report: the set of top-level
-// sections carrying a `mode` field is exactly these three plus
-// `sandbox_permission_probe`, which is excluded because its mode vocabulary is
-// `read_only_preflight` / `not_requested` and it proves nothing. A fourth,
-// `egress_ack_proof`, was removed with the egress executor (ADR-0064
-// Decision 1).
+// sections carrying a `mode` field is exactly these three. Two have left it:
+// `egress_ack_proof` with the egress executor (ADR-0064 Decision 1), and
+// `sandbox_permission_probe`, which carried a mode but proved nothing and was
+// excluded here, with its option (Decision 4).
 export const EXIT_PROOF_SECTIONS = Object.freeze([
   'permission_proof',
   'deep_peer_smoke',
@@ -5578,7 +5514,7 @@ export function doctorExitCode(report, { strict = false } = {}) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--record] [--run-id <doctor-run-id>] [--strict]
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--record] [--run-id <doctor-run-id>] [--strict]
 Exit codes: 0 ok; 1 unexpected (no report); 2 invalid usage (no report); 10 findings (overall=fail, or overall=warning under --strict); 20 a requested proof produced no usable verdict; 30 a requested proof needs operator action outside doctor; 40 --record could not persist the artifact. Codes 10 and above still write the complete report to stdout.
 `;
 }
@@ -5593,7 +5529,6 @@ export function parseArgs(argv) {
     deepPeerSmoke: false,
     executeDeepPeerSmoke: false,
     deepPeerSmokeTimeoutMs: DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS,
-    sandboxPermissionProbe: false,
     permissionProof: false,
     executePermissionProof: false,
     permissionProofTimeoutMs: DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
@@ -5629,8 +5564,6 @@ export function parseArgs(argv) {
       opts.executeDeepPeerSmoke = true;
     } else if (arg === '--deep-peer-smoke-timeout-ms') {
       opts.deepPeerSmokeTimeoutMs = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
-    } else if (arg === '--sandbox-permission-probe') {
-      opts.sandboxPermissionProbe = true;
     } else if (arg === '--permission-proof') {
       opts.permissionProof = true;
     } else if (arg === '--execute-permission-proof') {

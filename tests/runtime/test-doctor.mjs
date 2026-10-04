@@ -2639,7 +2639,11 @@ describe('runtime doctor', () => {
     );
   });
 
-  it('reports sandbox and permission readiness as unknown without an explicit peer smoke', async () => {
+  // ADR-0064 Decision 4 removed `--sandbox-permission-probe`. The report keeps no
+  // `sandbox_permission_probe` section and no per-direction `sandbox_permission`
+  // member; companion permission evidence comes only from the permission proof's
+  // preflight, which reads `unknown` until --permission-proof is requested.
+  it('reports no sandbox probe and leaves permission readiness to the explicit permission proof', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-readiness-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
@@ -2659,49 +2663,18 @@ describe('runtime doctor', () => {
         'codex plugin marketplace --help': okResult(''),
       }),
     });
-    strictEqual(report.readiness.claude_to_codex.sandbox_permission.status, 'unknown');
-    strictEqual(report.readiness.codex_to_claude.sandbox_permission.status, 'unknown');
-    strictEqual(report.sandbox_permission_probe.requested, false);
-    strictEqual(report.sandbox_permission_probe.executed, false);
+    strictEqual(Object.hasOwn(report, 'sandbox_permission_probe'), false);
+    for (const key of ['claude_to_codex', 'codex_to_claude']) {
+      strictEqual(Object.hasOwn(report.readiness[key], 'sandbox_permission'), false, `readiness.${key}`);
+      strictEqual(Object.hasOwn(report.readiness_matrix.directions[key], 'sandbox_permission'), false, `readiness_matrix.directions.${key}`);
+      strictEqual(report.permission_proof.directions[key].preflight.status, 'unknown', key);
+      ok(report.readiness[key].warnings.includes('companion permission readiness is not checked until --permission-proof is requested'), key);
+    }
     strictEqual(report.permission_proof.requested, false);
     strictEqual(report.permission_proof.executed, false);
-  });
-
-  it('runs sandbox permission proof as an explicit read-only probe without peer execution', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-sandbox-probe-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
-    await seedRepo(root);
-    await seedCompanionCaches(home);
-    const report = await runDoctor({
-      repoRoot: root,
-      homeDir: home,
-      sandboxPermissionProbe: true,
-      runner: fakeRunner({
-        'claude --version': okResult('2.1.140 (Claude Code)\n'),
-        'claude --help': okResult('Usage: claude --print --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
-        'claude auth status': okResult(JSON.stringify({ loggedIn: true })),
-        'claude plugin list': okResult(''),
-        'codex --version': okResult('codex-cli 0.130.0\n'),
-        'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
-        'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort=\"high\"\n'),
-        'codex features list': okResult('hooks stable true\nplugin_hooks under development false\n'),
-        'codex login status': okResult('Logged in using ChatGPT\n'),
-        'codex plugin marketplace --help': okResult(''),
-      }),
-    });
-
-    strictEqual(report.sandbox_permission_probe.requested, true);
-    strictEqual(report.sandbox_permission_probe.executed, true);
-    strictEqual(report.sandbox_permission_probe.peer_execution, false);
-    strictEqual(report.sandbox_permission_probe.status, 'read_only_probe_passed');
-    strictEqual(report.sandbox_permission_probe.directions.claude_to_codex.status, 'read_only_probe_passed');
-    strictEqual(report.sandbox_permission_probe.directions.codex_to_claude.status, 'read_only_probe_passed');
-    strictEqual(report.readiness.claude_to_codex.sandbox_permission.status, 'read_only_probe_passed');
-    strictEqual(report.readiness.codex_to_claude.sandbox_permission.peer_execution, false);
-    ok(report.sandbox_permission_probe.directions.codex_to_claude.probes.some((probe) => probe.name === 'peer_permission_surface' && probe.status === 'passed'));
-    ok(report.sandbox_permission_probe.limits.some((limit) => /does not execute peer agents/i.test(limit)));
-    ok(formatText(report).includes('Sandbox Permission Probe'));
-    ok(formatText(report).includes('peer-execution=false'));
+    const text = formatText(report);
+    ok(!text.includes('Sandbox Permission Probe'));
+    ok(!/sandbox-permission/.test(text), 'the text report names no sandbox-permission status');
   });
 
   it('plans permission proof as an explicit preflight without executing peers', async () => {
@@ -3549,7 +3522,7 @@ describe('runtime doctor', () => {
   });
 
   it('parses CLI arguments and rejects unknown or malformed flags', () => {
-    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000', '--workflow-continuation-proof', '--execute-workflow-continuation-proof', '--workflow-continuation-proof-timeout-ms', '60000', '--artifact-inventory', '--artifact-retention-cap', '30', '--artifact-max-bytes', '1024', '--record', '--run-id', 'doctor-20260513T000000Z-abc123']);
+    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000', '--workflow-continuation-proof', '--execute-workflow-continuation-proof', '--workflow-continuation-proof-timeout-ms', '60000', '--artifact-inventory', '--artifact-retention-cap', '30', '--artifact-max-bytes', '1024', '--record', '--run-id', 'doctor-20260513T000000Z-abc123']);
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'codex');
@@ -3558,7 +3531,6 @@ describe('runtime doctor', () => {
     strictEqual(opts.deepPeerSmoke, true);
     strictEqual(opts.executeDeepPeerSmoke, true);
     strictEqual(opts.deepPeerSmokeTimeoutMs, 90000);
-    strictEqual(opts.sandboxPermissionProbe, true);
     strictEqual(opts.permissionProof, true);
     strictEqual(opts.executePermissionProof, true);
     strictEqual(opts.permissionProofTimeoutMs, 45000);
@@ -3583,12 +3555,13 @@ describe('runtime doctor', () => {
     rejects(async () => parseArgs(['--record', '--run-id', 'bad']), /Invalid doctor run id/);
   });
 
-  // ADR-0064 Decision 1 removed the egress ack proof. Its two flags are now unknown
-  // arguments: refused at parse time, before a single probe runs, so an old
-  // invocation cannot pass as a plain diagnosis. The fake host CLIs on PATH record
-  // every call, and the CONTROL run proves they would have seen a doctor that ran.
-  it('refuses the removed egress ack proof flags as unknown arguments, before any probe runs', async () => {
-    for (const flag of ['--egress-ack-proof', '--execute-egress-ack-proof']) {
+  // ADR-0064 Decision 1 removed the egress ack proof, and Decision 4 the sandbox
+  // permission probe. Their three flags are now unknown arguments: refused at parse
+  // time, before a single probe runs, so an old invocation cannot pass as a plain
+  // diagnosis. The fake host CLIs on PATH record every call, and the CONTROL run
+  // proves they would have seen a doctor that ran.
+  it('refuses the removed egress ack proof and sandbox probe flags as unknown arguments, before any probe runs', async () => {
+    for (const flag of ['--egress-ack-proof', '--execute-egress-ack-proof', '--sandbox-permission-probe']) {
       throws(() => parseArgs([flag]), new RegExp(`^Error: Unknown argument: ${flag}$`));
     }
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-removed-flags-'));
@@ -3608,10 +3581,10 @@ describe('runtime doctor', () => {
       encoding: 'utf8',
       timeout: 60000,
     });
-    for (const args of [['--egress-ack-proof'], ['--egress-ack-proof', '--execute-egress-ack-proof']]) {
+    for (const args of [['--egress-ack-proof'], ['--egress-ack-proof', '--execute-egress-ack-proof'], ['--sandbox-permission-probe']]) {
       const result = runCli(args);
       strictEqual(result.status, 2, `${args.join(' ')} exits invalid-usage: ${result.stderr}`);
-      match(result.stderr, /Unknown argument: --egress-ack-proof/);
+      match(result.stderr, new RegExp(`Unknown argument: ${args[0]}`));
       strictEqual(result.stdout, '', 'no report is written');
       strictEqual(existsSync(marker), false, `${args.join(' ')} ran a host-CLI probe`);
     }
