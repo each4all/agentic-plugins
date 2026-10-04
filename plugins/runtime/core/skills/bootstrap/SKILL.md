@@ -1,6 +1,6 @@
 ---
 name: bootstrap
-description: "Machine-scoped, artifact-only bootstrap lifecycle. Use when the user wants to bring a machine from a bare host to a proven install: probe both host CLIs live, plan a bundle (base|engineering|business|design|full|custom) with hard-dependency closure, print Stage 0 commands for a missing peer host or marketplace registration, render the Stage 4-5 model/effort, notification, statusline, and egress launcher fragments per host with backup and revert guidance, present the plugin-management command carrying its plan hash, resume with live re-probe plus proof recording through runtime:doctor --record, verify recorded proof evidence without running a proof to make itself pass, attest the owner's phone receipt, abandon a crashed run, and export/seed a portable secrets-free machine profile. bootstrap never executes; status and verify are read-only; artifacts land only under ~/.agentic-plugins; host config, credentials, and config.local.toml are never written."
+description: "Machine-scoped, artifact-only bootstrap lifecycle. Use when the user wants to bring a machine from a bare host to a proven install: probe both host CLIs live, plan a bundle (base|engineering|business|design|full|custom) with hard-dependency closure, print Stage 0 commands for a missing peer host or marketplace registration, render the Stage 4-5 model/effort, notification, statusline, and egress launcher fragments per host with backup and revert guidance, present the plugin-management command carrying its plan hash, resume with live re-probe plus proof recording through runtime:doctor --record, verify recorded proof evidence without running a proof to make itself pass, attest the owner's phone receipt, and abandon a crashed run. bootstrap never executes; status and verify are read-only; artifacts land only under ~/.agentic-plugins; host config, credentials, and config.local.toml are never written."
 ---
 
 # Bootstrap (runtime framework primitive)
@@ -19,14 +19,12 @@ conversational pacing only. No schema decision lives in this file.
 2. Run the requested verb:
 
 ```bash
-node "<runtime-plugin-root>/scripts/bootstrap.mjs" plan     [--bundle <id>] [--plugins <csv>] [--profile-file <path>] [--answers <path>] [--format text|json]
+node "<runtime-plugin-root>/scripts/bootstrap.mjs" plan     [--bundle <id>] [--plugins <csv>] [--answers <path>] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" status   [--run-id <id> | --latest | --latest-open] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" resume   [--run-id <id> | --latest-open] [--answers <path>] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" verify   [--run-id <id> | --latest] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" attest   [--run-id <id> | --latest] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" abandon  (--run-id <id> | --latest-open) [--reason <text>]
-node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile export [--name <id>] [--from-run <id>] [--overwrite] [--format text|json]
-node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile seed   --profile-file <path> [--run-id <id> | --latest-open] [--format text|json]
 ```
 
 Pass the subcommand and options above through an args file, never on the
@@ -47,21 +45,10 @@ expansion, or a word-initial `#` or `~` — unquoted, each is refused with a
 message. The command removes the args file and its directory once it has
 read them.
 
-3. Pace the interview as **diagnose → profile-seeded-default → ask → render →
-   apply-command → re-probe + confirm**:
+3. Pace the interview as **diagnose → ask → render → apply-command → re-probe +
+   confirm**:
    - **Diagnose**: run `plan` / `status` first; the live probe answers most
      questions. Never ask what the probe already observed.
-   - **Profile-seeded defaults**: with a portable profile, `profile seed`
-     pre-fills interview defaults. Present each as a default **requiring
-     confirmation**; unsafe source values arrive as labelled notes, never
-     defaults (the script safety-grades — this skill never overrides that).
-     The ceiling is named rather than implied: a source machine's Claude
-     `bypassPermissions`, Codex `approval_policy = "never"`, or
-     `sandbox_mode = "danger-full-access"` is **never proposed as a target
-     default** — it is shown as a labelled note so the difference is visible,
-     not so it is copied. Recording what a machine had and recommending it are
-     different acts (ADR-0057 §Decision 6, superseding ADR-0038; the seeding
-     safety rule outlived the advisory it shipped alongside).
    - **Ask**: only about declinable steps (notification, statusline — per
      host, egress, optional plugins, proofs) and the
      bundle. Collect decisions into a JSON answers file
@@ -97,7 +84,7 @@ read them.
 - Machine-scoped: never reasons about the invoking repository's source tree;
   consumer-repo invocations emit no source-tree remediation.
 - Artifact-only: bootstrap's own writes land only under `~/.agentic-plugins/`
-  (runs + profiles), and bootstrap itself never opens the network. Host
+  (runs), and bootstrap itself never opens the network. Host
   config, credentials, and `config.local.toml` are never written. Delegated
   effects are named, never silent: EVERY proof driven by an explicit
   operator `execute` answer runs through `runtime:doctor --record`, which
@@ -108,6 +95,12 @@ read them.
   `runtime:settings --execute-plugin-management`; proofs run only through
   `runtime:doctor --record` under `resume`, and only on an explicit operator
   `execute` answer.
+- No permission-relaxing default: bootstrap proposes no permission posture at
+  all, and no runtime surface ships a default or hook that relaxes one — never
+  Claude `bypassPermissions`, Codex `approval_policy = "never"`, or
+  `sandbox_mode = "danger-full-access"` (ADR-0057 §Decision 8, ADR-0038 §6).
+  The machine-profile seeding that once had to grade such values was removed
+  by ADR-0064 Decision 3 (2026-10-04).
 - Stage 0 (host CLI install + marketplace registration) is manual and
   host-native; bootstrap prints the exact commands and stops there.
 - One-host machines reduce to `incomplete` by design (§8.3 honest scope) —

@@ -11,9 +11,10 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert';
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   SCHEMA_MAX_BYTES,
@@ -31,6 +32,7 @@ import {
 import { loadPluginSet } from '../../plugins/runtime/scripts/lib/plugin-set.mjs';
 import { createBootstrapRun, scanBootstrapRuns, writeBootstrapProof } from '../../plugins/runtime/scripts/lib/bootstrap-artifacts.mjs';
 
+const RUNTIME_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'runtime');
 const READER = 'agentic-machine-profile-1.0';
 
 // A minimal schema in the supported subset, for the validator's own unit tests.
@@ -84,9 +86,27 @@ describe('runtime schema validator — the keyword subset is closed', () => {
     throws(() => validateAgainstSchema(toy(), { type: 'object', anyOf: [] }, { readerVersion: READER }), /not supported by this validator/);
   });
 
+  it('the registry names exactly the packaged families, and every packaged file is registered', async () => {
+    // An exact set, not a count floor: a floor encoded the registry as it was, so
+    // removing a family (ADR-0064 Decision 3 removed agentic-machine-profile) turned
+    // it red while adding a schema nobody registered stayed green. Adding or
+    // removing a family is a deliberate edit to this list.
+    deepStrictEqual(Object.keys(PACKAGED_SCHEMA_FILES).sort(), [
+      'runtime-bootstrap-run',
+      'runtime-entry-brief',
+      'runtime-plugin-set',
+      'runtime-session-capture',
+      'runtime-session-entry',
+      'runtime-session-note',
+    ]);
+    // The directory is the other half: a schema file left behind by a removal, or
+    // shipped without a registry entry, is a packaged asset no loader can reach.
+    const packaged = (await readdir(join(RUNTIME_ROOT, 'data', 'schemas'))).filter((name) => name.endsWith('.json')).sort();
+    deepStrictEqual(Object.values(PACKAGED_SCHEMA_FILES).sort(), packaged);
+  });
+
   it('every packaged schema is inside the subset — iterated from the registry, not a hand copy', async () => {
     const families = Object.keys(PACKAGED_SCHEMA_FILES);
-    ok(families.length >= 7, `registry covers bootstrap + session + entry-brief families (got ${families.length})`);
     for (const family of families) {
       const schema = await loadSchema(family);
       deepStrictEqual(assertSupportedSchema(schema), [], `${family} uses only implemented keywords`);

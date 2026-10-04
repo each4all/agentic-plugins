@@ -57,7 +57,7 @@ through a model classifier instead of matching a list. The advisor never modelle
 `auto`, and run on the machine it was written for it recommended `allow: []` plus 90
 restrictions, including denying `cd`, `cat` and `git status`.
 
-Two things survive the removal deliberately, because measurement showed they were not
+Two things survived the removal deliberately, because measurement showed they were not
 advisor machinery:
 
 - **`runtime:doctor --permission-proof --execute-permission-proof`** takes no advisor
@@ -65,10 +65,12 @@ advisor machinery:
   fact — that runtime injected no sandbox, approval, or permission-mode flags. It used
   to apply only when an operator had applied an advisor fragment; it is now always
   applicable and declinable, like `--deep-peer-smoke`.
-- **The portable machine profile still records `permissions.claude.defaultMode`** —
-  reproducing a machine needs the operator's chosen mode. Its enum was *widened*, not
+- **The portable machine profile kept `permissions.claude.defaultMode`** —
+  reproducing a machine needed the operator's chosen mode. Its enum was *widened*, not
   deleted: it omitted `auto` and `dontAsk`, so it refused this machine's real posture
-  exactly as it refuses a nonsense string.
+  exactly as it refused a nonsense string. The profile itself was removed later, by
+  [ADR-0064](../../docs/adr/0064-runtime-surface-reduction.md) Decision 3
+  (2026-10-04).
 
 A runtime-shipped permission-relaxing Guard Hook remains explicitly out of scope.
 ADR-0038 §6 refused it by **effect** rather than by who flips the switch, and ADR-0057
@@ -500,13 +502,14 @@ re-running the proof — it re-probes and refuses the testimony unless the
 recorded ack still judges as passing at current bound versions. `abandon` closes a crashed or unwanted
 run so a new plan can start; nothing the operator already applied is ever
 reversed.
-`profile export` / `profile seed` carry a secrets-free, enumerated,
-user-global-only machine profile between machines: seeded values are interview
-defaults requiring confirmation, never configuration to apply, and never an
-input to any activation or config loader. Completion has two terminal states —
+Bootstrap guides each machine through the stages on its own; the portable
+machine profile (`profile export` / `profile seed`), which carried one
+machine's choices to another as interview defaults, was removed by
+[ADR-0064](../../docs/adr/0064-runtime-surface-reduction.md) Decision 3
+(2026-10-04). Completion has two terminal states —
 `complete` (config resolved **and** every required proof passed at current
 bound versions) and `configured-not-verified` — because "installed" and
-"proven" are different claims. Run artifacts and profiles live only under the
+"proven" are different claims. Run artifacts live only under the
 machine-global `~/.agentic-plugins/` home (0700/0600, atomic writes,
 family-wide lock, retention reported but never auto-deleted).
 

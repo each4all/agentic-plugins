@@ -32,7 +32,7 @@ import { spawn } from 'node:child_process';
 // fs imports outright (they defeat the import-anchored mutation model), and
 // these two are plain reads with no registration need.
 import { readFile, stat } from 'node:fs/promises';
-import { homedir, hostname as osHostname, tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { comparePrereleaseAware } from './lib/runtime-floor.mjs';
@@ -50,10 +50,8 @@ import {
   scanBootstrapRuns,
   selectBlockingRuns,
   updateBootstrapRun,
-  validateProfileName,
   writeBootstrapFragment,
   writeBootstrapProof,
-  writeMachineProfile,
 } from './lib/bootstrap-artifacts.mjs';
 import { CANONICAL_MARKETPLACE, PLUGIN_NAMES, probeMachineHostState } from './lib/machine-probe.mjs';
 import {
@@ -70,7 +68,6 @@ import {
 import { effectiveSelection, hostPluginsOf, narrowSelectionByDeclines, narrowSelectionToEffective } from './lib/effective-selection.mjs';
 import { PROOF_KINDS, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
 import {
-  STATUSLINE_PRESET_AGENTIC_6,
   classifyExistingClaudeStatusline,
   evaluateInlineSufficiency,
   expectedClaudeStatuslineCommand,
@@ -108,17 +105,13 @@ import {
   recomputeHookAttestation,
   reduceCompletion,
 } from './lib/completion-reducer.mjs';
-import { buildMachineProfile, canonicalProfile, profileHash, profileWriteGate, seedProposals } from './lib/machine-profile.mjs';
 import {
-  projectClaudePermission,
   projectClaudeStatusline,
   readUserGlobalClaudeSettings,
   resolveClaudeConfigDir,
-  projectCodexPermission,
   projectModelEffort,
   projectNotify,
   projectSession,
-  readUserGlobalEgress,
   readUserGlobalRuntimeConfig,
 } from './lib/profile-readers.mjs';
 // The named E1 activation checker (ADR-0048 §4): egress.configured is judged
@@ -132,8 +125,8 @@ import {
 import { EGRESS_CREDENTIAL_ENV_VAR, EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 // §6.1 Stage 4 — the declarable model/effort postures. Imported (not restated)
 // so the judge, the settings validator and the contract cannot drift apart.
-import { CONFIG_KEY_VALIDATORS, ENTRY_BRIEF_ENV_KEYS, MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
-import { FINDINGS_MAX_PER_ARTIFACT, loadSchema, makeValidator } from './lib/schema-validate.mjs';
+import { ENTRY_BRIEF_ENV_KEYS, MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
+import { FINDINGS_MAX_PER_ARTIFACT, makeValidator } from './lib/schema-validate.mjs';
 import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId } from './lib/notification-plan.mjs';
 import { parseCodexConfigToml, readCodexConfigToml } from './lib/codex-config.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
@@ -209,17 +202,11 @@ const RUN_SELECTORS = ['--run-id', '--latest', '--latest-open'];
 // drift below the thing it is predicting.
 const LEDGER_MAX_ITEMS = 256;
 
-// Every config key the value interview owns, flattened — used to decide whether
-// a seeded profile value will have to pass the value grammar. Derived from
-// VALUE_STEPS so a key added to a family joins this set with it.
-const VALUE_KEYS = new Set(Object.values(VALUE_STEPS).flatMap((entry) => entry.keys));
-
 // Per-verb flag whitelists — the grammar block, verbatim. `--answers` is
 // accepted on exactly the two interview verbs and NO other (§3; test #34):
-// `status`/`verify`/`abandon` conduct no interview, and `profile seed` takes a
-// PROFILE (defaults), not ANSWERS (decisions).
+// `status`/`verify`/`abandon` conduct no interview.
 const VERB_FLAGS = Object.freeze({
-  plan: ['--bundle', '--plugins', '--profile-file', '--answers', '--format'],
+  plan: ['--bundle', '--plugins', '--answers', '--format'],
   status: ['--run-id', '--latest', '--latest-open', '--format'],
   resume: ['--run-id', '--latest-open', '--answers', '--format'],
   verify: ['--run-id', '--latest', '--format'],
@@ -230,34 +217,19 @@ const VERB_FLAGS = Object.freeze({
   // of its own). Not an interview verb — no --answers; the testimony IS the
   // action.
   attest: ['--run-id', '--latest', '--format'],
-  // `--format` reaches these two like every other reporting verb in §3. They
-  // were the only ones without it, which made them the only verbs whose output
-  // was strictly LESS than what they computed: `profile export` returns the
-  // pointer and hash of the file it just wrote, `profile seed` returns every
-  // §4.5 proposal and every safety-graded note, and with no JSON door and no
-  // text rendering, a caller had no way to read any of it.
-  'profile export': ['--name', '--from-run', '--overwrite', '--format'],
-  'profile seed': ['--profile-file', '--run-id', '--latest-open', '--format'],
 });
 
-const VALUE_FLAGS = new Set(['--bundle', '--plugins', '--profile-file', '--answers', '--format', '--run-id', '--reason', '--name', '--from-run']);
-const BOOLEAN_FLAGS = new Set(['--latest', '--latest-open', '--overwrite']);
+const VALUE_FLAGS = new Set(['--bundle', '--plugins', '--answers', '--format', '--run-id', '--reason']);
+const BOOLEAN_FLAGS = new Set(['--latest', '--latest-open']);
 
 export function parseBootstrapArgs(argv) {
   const args = [...argv];
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     return { verb: 'help' };
   }
-  let verb = args.shift();
-  if (verb === 'profile') {
-    const sub = args.shift();
-    if (sub !== 'export' && sub !== 'seed') {
-      throw new UsageError(`unknown profile subcommand '${sub ?? ''}' (expected: profile export | profile seed)`);
-    }
-    verb = `profile ${sub}`;
-  }
+  const verb = args.shift();
   if (!(verb in VERB_FLAGS)) {
-    throw new UsageError(`unknown verb '${verb}' (expected: plan | status | resume | verify | attest | abandon | profile export | profile seed)`);
+    throw new UsageError(`unknown verb '${verb}' (expected: plan | status | resume | verify | attest | abandon)`);
   }
 
   const allowed = new Set(VERB_FLAGS[verb]);
@@ -305,9 +277,6 @@ export function parseBootstrapArgs(argv) {
   }
   if (verb === 'abandon' && !opts.run_id && !opts.latest_open) {
     throw new UsageError('abandon requires --run-id <id> or --latest-open (§3)');
-  }
-  if (verb === 'profile seed' && !opts.profile_file) {
-    throw new UsageError('profile seed requires --profile-file <path> (§3)');
   }
   return opts;
 }
@@ -396,7 +365,7 @@ function hookStateFor(raw) {
 
 /**
  * Serialize the raw `probeMachineHostState()` result into the §5 `probe` object
- * the schema, the reducer, and the profile builder all consume. Volatile field:
+ * the schema and the reducer consume. Volatile field:
  * `probed_at` only.
  */
 export function serializeProbe({ raw, runtimeVersion = RUNTIME_VERSION, now }) {
@@ -494,13 +463,10 @@ function boundExpected(previous, broadCandidates) {
  * value that FAILS is unclamped operator-authored text by definition — the exact
  * class §3.2 withholds — and leaves as its type and length only.
  *
- * Two leaks were reproduced before this existed, and both were mine:
- *   * the value-step judge interpolated the raw persisted config value into
- *     `steps[].observed`, which is a maxLength-only field, so a private path or
- *     marker sitting in a config file crossed verbatim into JSON and text;
- *   * `plan --profile-file` put raw `seedProposals` into the report, extending a
- *     leak the code already acknowledged for `profile seed` (the text half was
- *     repaired long ago; `--format json` still serialized `value` raw).
+ * The leak this closes was reproduced before it existed: the value-step judge
+ * interpolated the raw persisted config value into `steps[].observed`, which is
+ * a maxLength-only field, so a private path or marker sitting in a config file
+ * crossed verbatim into JSON and text.
  */
 function discloseConfigValue(key, value) {
   if (value === null || value === undefined) return { disclosed: true, text: '<absent>' };
@@ -509,58 +475,6 @@ function discloseConfigValue(key, value) {
   const verdict = validateValueForKey(key, value);
   if (verdict.ok) return { disclosed: true, text: verdict.normalized };
   return { disclosed: false, text: `<string, ${value.length} chars — not a value this runtime declares; withheld per §3.2>` };
-}
-
-/**
- * §3.2 applied to the SEED PROPOSAL list, at report-BUILD time.
- *
- * Build time and not render time, which is the whole repair: the text half was
- * fixed long ago with `describeWithheld`, but `--format json` serializes the
- * report object, so `proposals[].value` still crossed raw — a leak the code
- * acknowledged for `profile seed` and that adding proposals to `plan
- * --profile-file` would have extended (cross-host review, MAJOR). Sanitizing the
- * object closes both doors with one rule.
- *
- * The rule is per-FIELD, which the old comment noted was missing: a config key
- * with a closed-set validator is grammar-clamped, so its value is disclosable —
- * the 1.2 session scalars and the notify enums included. Everything else (the
- * permission arrays, a free-string recipient) leaves as type and length.
- */
-/**
- * Mark seeded values the value grammar would refuse, and say so.
- *
- * ONE helper because both entry points that present proposals must agree:
- * `plan --profile-file` and `profile seed` run the same `seedProposals`, so a
- * value flagged by one and offered by the other is the same profile giving two
- * different answers depending on which door the operator used.
- */
-function markUnanswerableProposals(result) {
-  const warnings = [];
-  for (const proposal of result?.proposals ?? []) {
-    const key = String(proposal.key).split('.').pop();
-    if (!VALUE_KEYS.has(key)) continue;
-    const verdict = validateValueForKey(key, proposal.value);
-    if (!verdict.ok) {
-      proposal.refused_by_interview = verdict.reason;
-      warnings.push(`the seeded ${proposal.key} value is not answerable through the interview (${verdict.reason}); it is shown as the source machine's posture, not offered as a default.`);
-    }
-  }
-  return warnings;
-}
-
-function sanitizeProposals(result) {
-  for (const proposal of result?.proposals ?? []) {
-    const key = String(proposal.key).split('.').pop();
-    if (Object.hasOwn(CONFIG_KEY_VALIDATORS, key)) {
-      const verdict = discloseConfigValue(key, proposal.value);
-      proposal.value = verdict.text;
-      proposal.value_disclosed = verdict.disclosed;
-    } else {
-      proposal.value = describeWithheld(proposal.value);
-      proposal.value_disclosed = false;
-    }
-  }
-  return result;
 }
 
 /**
@@ -768,10 +682,10 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       // default at runtime and the entry-brief pair resolves env → user →
       // default, so a repo or env layer can shadow a satisfied user posture. That
       // is deliberate and is exactly what `projectSession`'s own contract says
-      // ("a profile records the PERSISTED user-global posture, never the
-      // effective value… this projection is not that loader"): §1.1 keeps
-      // bootstrap off the repo-scoped reader seam, and a machine bootstrap
-      // records the OPERATOR's default rather than a checkout's policy (§4.4).
+      // ("it reads the PERSISTED user-global posture, never the effective
+      // value… this projection is not that loader"): §1.1 keeps bootstrap off
+      // the repo-scoped reader seam, and a machine bootstrap records the
+      // OPERATOR's default rather than a checkout's policy.
       // ENV shadowing IS surfaced below, because env is already in hand; repo
       // shadowing is a named boundary, diagnosed by runtime:doctor.
       const family = id === stepIds.configNotifyKinds() ? readers?.notify : readers?.session;
@@ -1129,8 +1043,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
 
 // Bounded untrusted-file read (Codex Plan-verify finding): stat before read so
 // an oversized file or a FIFO never defeats the post-parse caps. Regular files
-// only; 128 KiB is double the 64 KiB profile cap, comfortably above any honest
-// answers file.
+// only; 128 KiB is comfortably above any honest answers file.
 const UNTRUSTED_FILE_MAX_BYTES = 128 * 1024;
 
 async function readBoundedFile(path, flag) {
@@ -2066,9 +1979,7 @@ async function loadContext(ctx) {
     throw new Error(`packaged plugin-set.json is invalid (a runtime packaging bug): ${setVerdict.errors.join('; ')}`);
   }
   const validateRun = await makeValidator('runtime-bootstrap-run', { pluginRoot: ctx.pluginRoot });
-  const validateProfile = await makeValidator('agentic-machine-profile', { pluginRoot: ctx.pluginRoot });
-  const profileSchema = await loadSchema('agentic-machine-profile', { pluginRoot: ctx.pluginRoot });
-  return { pluginSet, validateRun, validateProfile, profileSchema };
+  return { pluginSet, validateRun };
 }
 
 async function probeNow(ctx) {
@@ -2085,17 +1996,13 @@ async function probeNow(ctx) {
 }
 
 async function readUserGlobalReaders(ctx) {
-  // ONE Claude settings read for BOTH projections (Review peer MAJOR: two
-  // reads could observe an atomic replacement in between and report mutually
-  // inconsistent permission/statusline facts under one probe timestamp).
-  // ONE read per FILE, projected per consumer — the rule the Claude settings
-  // snapshot already followed, now applied to the two files that still broke it
-  // (cross-host Review peer, MAJOR). `model_effort` and `notify` are two families
-  // of ~/.agentic-plugins/config.toml; Codex permission and the Codex
-  // notify/statusline judges are two readers of $CODEX_HOME/config.toml. Read
-  // twice, an atomic replacement between the reads let config rows be satisfied
-  // by two different versions of one file — and a run could terminalize
-  // `complete` on a combination neither version supports.
+  // ONE read per FILE, projected per consumer (cross-host Review peer, MAJOR).
+  // `model_effort`, `notify` and `session` are three families of
+  // ~/.agentic-plugins/config.toml; the Codex notify and statusline judges are
+  // two readers of $CODEX_HOME/config.toml. Read twice, an atomic replacement
+  // between the reads let config rows be satisfied by two different versions of
+  // one file — and a run could terminalize `complete` on a combination neither
+  // version supports.
   //
   // COVERAGE, stated rather than claimed: splitting these back into separate
   // reads is a mutant NO test kills. Observing it needs a replacement landing
@@ -2107,8 +2014,8 @@ async function readUserGlobalReaders(ctx) {
   const [claudeSettingsSnapshot, runtimeConfigSnapshot, codexConfig] = await Promise.all([
     readUserGlobalClaudeSettings({ homeDir: ctx.homeDir, env: ctx.env }),
     readUserGlobalRuntimeConfig({ homeDir: ctx.homeDir }),
-    // The ONE $CODEX_HOME/config.toml read. The Codex permission, notify and
-    // statusline judges below all project it.
+    // The ONE $CODEX_HOME/config.toml read. The Codex notify and statusline
+    // judges below both project it.
     readCodexConfigToml({ homeDir: ctx.homeDir, env: ctx.env }),
   ]);
   // ADR-0048 §1 — the Codex-side notify WIRING for notify.codex.configured,
@@ -2116,7 +2023,7 @@ async function readUserGlobalReaders(ctx) {
   const codexNotifyGathered = await gatherCodexNotificationInputs({ homeDir: ctx.homeDir, env: ctx.env, codexConfig });
   const modelEffort = projectModelEffort(runtimeConfigSnapshot);
   const notify = projectNotify(runtimeConfigSnapshot);
-  // The THIRD family of the same one snapshot (profile 1.2). Projected here rather
+  // The THIRD family of the same one snapshot. Projected here rather
   // than read separately for the reason stated above: `model_effort`, `notify` and
   // `session` are three families of ONE file, and a second read could observe an
   // atomic replacement between them.
@@ -2137,22 +2044,9 @@ async function readUserGlobalReaders(ctx) {
   const sessionEnvShadow = Object.fromEntries(
     Object.entries(ENTRY_BRIEF_ENV_KEYS).map(([key, envName]) => [key, typeof ctx.env?.[envName] === 'string']),
   );
-  // The override flag is derived from the SAME env the read resolved
-  // $CODEX_HOME with, so the reported provenance describes the bytes read.
-  // Provenance comes from the READ that produced the bytes, not from a second
-  // look at `ctx.env`: the env object is caller-supplied on the programmatic
-  // surface, and re-deriving it could label an override-path read as the default
-  // one (Refine-verify peer).
-  const codexPermission = projectCodexPermission(codexConfig.read, {
-    codexHomeSource: codexConfig.codexHomeSource,
-  });
-  const claudePermission = projectClaudePermission(claudeSettingsSnapshot);
-  const egress = readUserGlobalEgress({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
-  // Step judgement needs ACTIVATION semantics (the named E1 checker) alongside
-  // the credential-independent export shape above: `egress` feeds the §4.4
-  // machine profile (channel/recipient survive a missing per-machine token),
-  // while `egressActivation` feeds egress.configured (channel alone must NOT
-  // satisfy — the false-pass this split repairs). Two readers, two questions.
+  // egress.configured is judged from ACTIVATION semantics (the named E1
+  // checker): channel + recipient + credential PRESENCE, so a channel alone
+  // must NOT satisfy it.
   const egressActivation = loadEgressActivation({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
   // The Codex config read above is the same read the notification-plan gather
   // makes for the Stage-5 fragment builder — §1.1 keeps bootstrap off the
@@ -2167,9 +2061,8 @@ async function readUserGlobalReaders(ctx) {
   //               from the TOML scanner — never a guess).
   const codexNotifyRead = codexConfig.read;
   // ADR-0048 statusline slice — both statusline probes, gathered here because
-  // judgeSteps is synchronous. Claude projects the ONE shared settings
-  // snapshot (peer G9: permission and statusline judge the same bytes);
-  // Codex reuses the SAME config read the notify judge projects.
+  // judgeSteps is synchronous. Claude projects the settings snapshot read
+  // above; Codex reuses the SAME config read the notify judge projects.
   const statuslineClaude = {
     ...projectClaudeStatusline(claudeSettingsSnapshot),
     expectedCommand: expectedClaudeStatuslineCommand({ homeDir: ctx.homeDir }),
@@ -2217,7 +2110,7 @@ async function readUserGlobalReaders(ctx) {
   } else {
     codexNotify = { readable: false, present: false, argv: null, expected: codexNotifyExpected, tuiNotifications: { ...NO_TUI_NOTIFICATIONS } };
   }
-  return { modelEffort, notify, session, sessionEnvShadow, claudePermission, codexPermission, egress, egressActivation, codexNotify, statuslineClaude, statuslineCodex };
+  return { modelEffort, notify, session, sessionEnvShadow, egressActivation, codexNotify, statuslineClaude, statuslineCodex };
 }
 
 // ADR-0048 §4 — CONTROL-PLANE child environments are scrubbed at the point of
@@ -2250,13 +2143,13 @@ function currentActivationFingerprintOf(readers) {
   });
 }
 
-function resolveSelection({ opts, pluginSet, seededSelection = null }) {
-  const bundle = opts.bundle ?? seededSelection?.bundle ?? 'base';
+function resolveSelection({ opts, pluginSet }) {
+  const bundle = opts.bundle ?? 'base';
   let desired;
   if (bundle === 'custom') {
     desired = opts.plugins
       ? [...new Set(opts.plugins.split(',').map((s) => s.trim()).filter(Boolean))].sort()
-      : [...(seededSelection?.desired ?? [])].sort();
+      : [];
     if (desired.length === 0) throw new UsageError('--bundle custom REQUIRES --plugins <csv> (§3)');
     const unknown = desired.filter((name) => !(name in pluginSet.plugins));
     if (unknown.length > 0) throw new UsageError(`unknown plugin(s) in --plugins: ${unknown.join(', ')}`);
@@ -2476,13 +2369,15 @@ function valueDecisionRows(standing) {
   return rows;
 }
 
-function buildManifestShape({ selection, probe, steps, choices, history, completion, planHash, seededFrom }) {
+// `seeded_from` is never written: the profile seed that set it was removed by
+// ADR-0064 Decision 3. The run schema keeps it valid because retained runs
+// carry it.
+function buildManifestShape({ selection, probe, steps, choices, history, completion, planHash }) {
   return {
     schema: RUN_SCHEMA_VERSION,
     // run_id / started_at / updated_at / status are stamped by the storage
     // layer (createBootstrapRun); placeholders here keep the validator honest.
     selection,
-    ...(seededFrom ? { seeded_from: seededFrom } : {}),
     choices,
     history,
     probe,
@@ -2504,7 +2399,7 @@ function buildManifestShape({ selection, probe, steps, choices, history, complet
 // ---------------------------------------------------------------------------
 
 async function runPlan(ctx, opts) {
-  const { pluginSet, validateRun, validateProfile } = await loadContext(ctx);
+  const { pluginSet, validateRun } = await loadContext(ctx);
 
   // Concurrency (§10.2): a second plan while a run is open is rejected, naming
   // the open run's id. createBootstrapRun re-checks under the family lock; this
@@ -2526,48 +2421,9 @@ async function runPlan(ctx, opts) {
     }
   }
 
-  let seededSelection = null;
-  let seededFrom = null;
-  let seededProposals = null;
-  const seededWarnings = [];
-  if (opts.profile_file) {
-    const seeded = await readProfileFile(ctx, opts.profile_file);
-    seededSelection = seeded.profile.selection;
-    seededFrom = { profile_id: seeded.profileId, profile_hash: seeded.hash };
-    seededWarnings.push(...seeded.warnings);
-    // §3 says "`plan --profile-file` is sugar for `plan` immediately followed by
-    // `seed`", and only HALF of that was true: this path recorded the
-    // `seeded_from` linkage and dropped every per-key proposal on the floor,
-    // because `seedProposals` was called by the standalone `profile seed` verb
-    // and nowhere else. The plan report had no `proposals` key at all, so a
-    // profile carried to a new machine seeded its plugin SELECTION and none of
-    // its configuration — which is most of what a machine profile is for.
-    //
-    // §4.5.4 is preserved exactly: these are DEFAULTS that pre-fill the
-    // interview, never decisions. Nothing here writes a `choices[]` row; the
-    // operator still answers, and `seedProposals` still does the safety grading
-    // that refuses to propose an unsafe source posture as a default.
-    const proposals = seedProposals({ profile: seeded.profile, validate: validateProfile });
-    if (proposals?.ok === false) {
-      return {
-        exitCode: EXIT.INVALID,
-        report: { verb: 'plan', status: 'refused', reason: 'profile-rejected', diagnostics: proposals.refused ?? ['profile failed seed validation'] },
-      };
-    }
-    // A seeded value is a DEFAULT the operator confirms, and confirming it
-    // produces a `set:` answer — so a profile value the value grammar refuses
-    // (an all-kinds `notify_kinds`, say, which a 1.2 profile can carry because
-    // the profile schema types it as a bare scalar) would be presented as a
-    // sensible default and then rejected at the answers boundary. Marked here,
-    // where both the proposal and the grammar are in scope; `seedProposals`
-    // stays free of the bootstrap-only grammar it has no business importing.
-    seededWarnings.push(...markUnanswerableProposals(proposals));
-    seededProposals = sanitizeProposals(proposals);
-  }
-
   // `selection` is rebindable: an answers file carrying a plugin decline narrows it to
   // the §6.2 effective custom selection before anything is persisted.
-  let { selection, softWarnings } = resolveSelection({ opts, pluginSet, seededSelection });
+  let { selection, softWarnings } = resolveSelection({ opts, pluginSet });
   const { raw, probe } = await probeNow(ctx);
   const readers = await readUserGlobalReaders(ctx);
 
@@ -2626,7 +2482,6 @@ async function runPlan(ctx, opts) {
 
   const warnings = [
     ...softWarnings,
-    ...seededWarnings,
     ...foldWarningsNow,
     // PLAN is where the opt-in decision is still cheap: the answers file is
     // already in the operator's hands and no proof has run yet.
@@ -2656,7 +2511,7 @@ async function runPlan(ctx, opts) {
     : { hash: null, status: 'not-needed', reason: 'no plugin-management actions are needed' };
 
   const completion = reduceCompletion({ pluginSet, selection: effective, steps, choices, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION, currentActivationFingerprint: currentActivationFingerprintOf(readers) });
-  const manifest = buildManifestShape({ selection, probe, steps, choices, history, completion, planHash: planHash.hash, seededFrom });
+  const manifest = buildManifestShape({ selection, probe, steps, choices, history, completion, planHash: planHash.hash });
 
   const created = await createBootstrapRun({
     homeDir: ctx.homeDir,
@@ -2701,8 +2556,6 @@ async function runPlan(ctx, opts) {
     stage0,
     plugin_management: presentPluginManagement({ candidates, planHash, manualRepairs: buildManualPluginRepairs({ effective, probe }) }),
     value_decisions: valueDecisionRows(standingNow),
-    ...(seededFrom ? { seeded_from: seededFrom } : {}),
-    ...(seededProposals ? { proposals: seededProposals } : {}),
     probe,
     warnings,
     diagnostics: created.diagnostics,
@@ -4092,259 +3945,6 @@ async function runAbandon(ctx, opts) {
   return { exitCode: EXIT.OK, report: { verb: 'abandon', run_id: runId, status: 'abandoned', diagnostics: result.diagnostics } };
 }
 
-async function readProfileFile(ctx, path) {
-  const text = await readBoundedFile(path, '--profile-file');
-  let profile;
-  try {
-    profile = JSON.parse(text);
-  } catch (err) {
-    // D1 §3.2 — the mirror of the `--answers` guard above. Both read an
-    // untrusted operator-authored file through JSON.parse, whose message
-    // quotes the input; fixing one and not the other left the identical leak
-    // one flag away.
-    throw new UsageError(`--profile-file is not valid JSON${jsonParsePosition(err)}; the parser's message is withheld because it quotes the file's own bytes (§3.2)`);
-  }
-  const { validateProfile, profileSchema } = await loadContext(ctx);
-  const verdict = validateProfile(profile);
-  if (!verdict.ok) {
-    throw new UsageError(`the profile failed §4 validation: ${verdict.errors.join('; ')}`);
-  }
-  const gate = profileWriteGate({ schemaValidate: validateProfile, original: profile, homeDir: ctx.homeDir })(profile);
-  if (!gate.ok) {
-    throw new UsageError(`the profile failed the §4.3 guards: ${gate.errors.join('; ')}`);
-  }
-  // §4.6 — validator warnings SURFACE (ADR-0048 peer finding): a newer-minor
-  // document's ignored scalar (e.g. a 1.1 statusline_preset under a 1.0-era
-  // reader) must be visible to the operator, not silently discarded — an
-  // invisible warning is how a forward-compat rule stops being exercised.
-  return { profile, hash: profileHash(profile, profileSchema), profileId: basenameNoExt(path), warnings: verdict.warnings ?? [] };
-}
-
-function basenameNoExt(path) {
-  const base = String(path).split(/[\\/]/).pop() ?? '';
-  return base.replace(/\.json$/i, '');
-}
-
-// The builder inputs the artifact CANNOT be checked against — the pre-sanitize source
-// the §4.3 guard-1 scrub exists for, and nothing else.
-//
-// `buildMachineProfile` copies almost everything through verbatim (`field()` is
-// `value ?? null`), so a secret in `modelEffort` or `notify` lands IN the profile and
-// the profile-side half of the same guard catches it. Exactly one input is LOSSY:
-// the Claude permission arrays go through `sanitizeValue`, which rewrites a token to
-// `<redacted-token>`. That is the only place the artifact can be a laundered version
-// of its source, so it is the only place a source-side scan adds anything.
-//
-// Passing the whole `readUserGlobalReaders` bundle instead was measured as a real
-// regression, by both review lanes independently: it carries `statuslineClaude`,
-// `statuslineCodex`, `codexNotify` and `egressActivation`, which are read for
-// JUDGEMENT and never projected — and `projectClaudeStatusline` documents its raw
-// foreign command as possibly carrying secrets. Gating on them refused exports over
-// values the profile provably cannot contain, with no remedy but editing host config.
-// A guard must refuse what could leak, not everything the machine happens to hold.
-function lossyProfileInputs(readers) {
-  const claude = readers?.claudePermission ?? {};
-  return { claudePermission: { allow: claude.allow ?? [], ask: claude.ask ?? [], deny: claude.deny ?? [] } };
-}
-
-async function runProfileExport(ctx, opts) {
-  const { pluginSet, validateProfile, profileSchema, validateRun } = await loadContext(ctx);
-  const name = opts.name ?? 'default';
-  validateProfileName(name);
-
-  let selection;
-  let probe;
-  let fromRunManifest = null;
-  if (opts.from_run) {
-    const picked = await selectRun({ homeDir: ctx.homeDir, opts: { run_id: opts.from_run }, defaultSelector: 'run-id', validateRun });
-    if (picked.error) {
-      return { exitCode: picked.exitCode, report: { verb: 'profile export', status: 'no-such-run', diagnostics: [picked.error] } };
-    }
-    // §6.2 — export the EFFECTIVE selection, for the same reason the statusline
-    // decline is honoured below: a profile is seed material, so exporting a plugin
-    // this run's operator declined would resurrect it on the next `plan
-    // --profile-file` — the decline undone by a round trip through the artifact
-    // meant to reproduce the machine. A run already narrowed by resume is unchanged
-    // by this; a legacy one is corrected on the way out.
-    selection = narrowSelectionByDeclines({ pluginSet, selection: picked.manifest.selection, steps: picked.manifest.steps ?? [] }).selection;
-    fromRunManifest = picked.manifest;
-    ({ probe } = await probeNow(ctx));
-  } else {
-    // §3 — with no run, the profile exports the LIVE probe: bundle `custom`,
-    // desired = the observed installed set (which is, empirically, exactly what
-    // this machine chose), excluded empty.
-    ({ probe } = await probeNow(ctx));
-    const installed = new Set();
-    for (const host of ['claude', 'codex']) {
-      for (const [pluginName, entry] of Object.entries(probe.hosts[host].plugins)) {
-        if (entry.state === 'installed' || entry.state === 'disabled') installed.add(pluginName);
-      }
-    }
-    selection = { bundle: 'custom', desired: [...installed].sort(), excluded: [] };
-  }
-
-  // §4.4 — user-global-only readers; repository-effective values are never
-  // exported and never relabelled.
-  const readers = await readUserGlobalReaders(ctx);
-  // ADR-0048 §2.1 / statusline peer G6 (owner-approved 2026-07-23): the
-  // profile carries the preset when BOTH hosts' statusline configuration is
-  // observed CANONICAL — the operator applying the rendered agentic-6
-  // fragments IS the declaration; anything less (one host, declined, foreign)
-  // exports null. Observation-of-an-applied-fragment is not inference from
-  // arbitrary host config: only the exact canonical forms count.
-  const slC = readers.statuslineClaude;
-  const slX = readers.statuslineCodex;
-  const claudeCanonical = slC?.readable === true && slC.present === true && slC.type === 'command' && slC.command === slC.expectedCommand;
-  const codexCanonical = slX?.readable === true && Array.isArray(slX.items)
-    && slX.items.length === slX.expectedItems.length && slX.expectedItems.every((item, i) => item === slX.items[i]);
-  // --from-run honours that run's DECLINES (Review peer MAJOR / §6.1.1
-  // declined→null): a run whose operator declined the statusline steps must
-  // not later export the preset off live config.
-  const statuslineDeclined = fromRunManifest
-    ? (fromRunManifest.steps ?? []).some((step) => (step?.id === 'statusline.claude.configured' || step?.id === 'statusline.codex.configured') && step?.status === 'declined')
-    : false;
-  readers.statuslinePreset = claudeCanonical && codexCanonical && !statuslineDeclined ? STATUSLINE_PRESET_AGENTIC_6 : null;
-  const profile = buildMachineProfile({
-    readers,
-    probe,
-    selection,
-    runtimeVersion: RUNTIME_VERSION,
-    hostname: ctx.hostname,
-    now: ctx.now,
-  });
-
-  // CANONICALIZE BEFORE WRITING. `profileWriteGate`'s own docstring says "canonical
-  // order applied before the bytes are produced", and it was not: `writeMachineProfile`
-  // serializes whatever object it is handed, so the bytes on disk carried the BUILDER's
-  // insertion order while `profileHash` hashed the canonical form. They agreed only
-  // because the builder happened to emit keys in schema order — a coincidence, and one
-  // this change made fragile by introducing a second order source (PROFILE_SESSION_KEYS)
-  // alongside the schema. Reproduced by the cross-host review: a schema-valid profile
-  // arranged in config-family order wrote `written: true` with disk bytes that differed
-  // from its own canonical form.
-  //
-  // Canonicalizing here makes the schema the SINGLE authority for byte order, so
-  // PROFILE_SESSION_KEYS governs membership only and cannot drift the file.
-  const canonical = canonicalProfile(profile, profileSchema);
-  const written = await writeMachineProfile({
-    homeDir: ctx.homeDir,
-    repoRoot: ctx.cwd,
-    name,
-    profile: canonical,
-    overwrite: opts.overwrite === true,
-    // `original` is the RAW READER BUNDLE, not the built profile.
-    //
-    // It was the built profile, and that made §4.3 guard 1 inert on the ONLY path
-    // that writes. `buildMachineProfile` sanitizes permission rules on the way in,
-    // so handing its output back as `original` had the scrub inspect the sanitizer's
-    // own output — exactly what `assertProfileWritable`'s docstring forbids.
-    // Reproduced: a rule carrying `Authorization: Bearer <token>` is rewritten to
-    // `Bearer <redacted-token>`, the gate returns ok and the profile is WRITTEN;
-    // passing the raw bundle refuses it. A profile the guard exists to refuse was
-    // being laundered past it.
-    //
-    // The READ path (`readProfileFile`) passing the profile itself stays correct and
-    // must not be "fixed" to match: a profile that arrived from another machine has
-    // no pre-sanitize source, and the docstring names that case explicitly.
-    validate: profileWriteGate({ schemaValidate: validateProfile, original: lossyProfileInputs(readers), homeDir: ctx.homeDir }),
-    now: ctx.now,
-  });
-  if (!written?.written) {
-    return {
-      exitCode: EXIT.INVALID,
-      report: {
-        verb: 'profile export',
-        name,
-        status: 'refused',
-        reason: written?.reason ?? 'unknown',
-        diagnostics: written?.diagnostics ?? ['profile write refused'],
-      },
-    };
-  }
-  return {
-    exitCode: EXIT.OK,
-    report: {
-      verb: 'profile export',
-      name,
-      pointer: written.pointer ?? null,
-      hash: profileHash(profile, profileSchema),
-      selection,
-      status: 'written',
-      // Forwarded, not hardcoded empty: writeMachineProfile already merges the
-      // family lock's diagnostics into its success result, and a release that
-      // could not put back a displaced lock reports through exactly that channel.
-      // Dropping it here made that reporting inert — the write succeeded, so the
-      // operator saw a clean `written` while a lock name may have been left free
-      // (peer round-3 MAJOR).
-      //
-      // Coverage, stated because it is absent: mutation-measured, re-hardcoding
-      // `[]` here fails no test. Producing a failed release through the CLI needs
-      // the lock file to change identity DURING the critical section, and `boot()`
-      // exposes no seam that reaches inside it. The rule itself is covered where
-      // it lives (bootstrap-artifacts' release + wrapper regressions); this one
-      // line of wiring is not.
-      diagnostics: written.diagnostics ?? [],
-    },
-  };
-}
-
-async function runProfileSeed(ctx, opts) {
-  const { validateRun, validateProfile } = await loadContext(ctx);
-  const seeded = await readProfileFile(ctx, opts.profile_file);
-
-  const picked = await selectRun({ homeDir: ctx.homeDir, opts, defaultSelector: 'latest-open', validateRun });
-  if (picked.error || picked.manifest.status !== 'open') {
-    // §3 — seed targets the newest OPEN run; with no open run it exits 30.
-    return { exitCode: EXIT.NO_ACTIVE_RUN, report: { verb: 'profile seed', status: 'no-active-run', diagnostics: ['profile seed requires an open run (§3); start one with `runtime:bootstrap plan`.'] } };
-  }
-  // Every run MUTATOR refuses a future minor, not only resume (Codex review
-  // MAJOR — seed slipped past the gate and updated a document this runtime
-  // only half-understands). Recovery verbs (abandon) stay exempt.
-  const seedDocSchema = parseRunSchemaMinor(picked.manifest.schema);
-  if (seedDocSchema && seedDocSchema.minor > READER_RUN_SCHEMA.minor) {
-    return { exitCode: EXIT.INVALID, report: { verb: 'profile seed', status: 'refused', diagnostics: [`Run ${picked.run.run_id} carries schema ${picked.manifest.schema}, newer than this runtime's ${RUN_SCHEMA_VERSION} — seeding would persist a document this runtime only partially understands. Upgrade the runtime plugin (§4.6).`] } };
-  }
-
-  // §4.5 — validate exactly, safety-grade before presenting, present every
-  // value as a DEFAULT requiring confirmation, never apply one. seedProposals
-  // owns the grading; the run records only the seeded_from linkage — defaults
-  // pre-fill the interview, they never decide a step (§4.5.4).
-  const proposals = seedProposals({ profile: seeded.profile, validate: validateProfile });
-  if (proposals?.ok === false) {
-    return { exitCode: EXIT.INVALID, report: { verb: 'profile seed', status: 'refused', diagnostics: proposals.refused ?? ['profile failed seed validation'] } };
-  }
-  // The SAME pass `plan --profile-file` runs. Marking the unanswerable values on
-  // one entry point and not the other meant a valid profile carrying, say, an
-  // all-kinds `notify_kinds` was offered as a sensible default by this verb and
-  // flagged by the other (both review lanes) — the operator confirms it here and
-  // meets exit 40 at the answers boundary.
-  const seedWarnings = markUnanswerableProposals(proposals);
-
-  const updated = await updateBootstrapRun({
-    homeDir: ctx.homeDir,
-    repoRoot: ctx.cwd,
-    runId: picked.run.run_id,
-    now: ctx.now,
-    validate: validateRun,
-    mutate: (m) => ({ ...m, seeded_from: { profile_id: seeded.profileId, profile_hash: seeded.hash } }),
-  });
-  if (!updated.updated) {
-    return { exitCode: EXIT.UNEXPECTED, report: { verb: 'profile seed', status: 'persist-failed', reason: updated.reason, diagnostics: updated.diagnostics } };
-  }
-  return {
-    exitCode: EXIT.OK,
-    report: {
-      verb: 'profile seed',
-      run_id: picked.run.run_id,
-      seeded_from: { profile_id: seeded.profileId, profile_hash: seeded.hash },
-      proposals: sanitizeProposals(proposals),
-      status: 'seeded',
-      warnings: [...seeded.warnings, ...seedWarnings],
-      diagnostics: updated.diagnostics,
-    },
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -4579,20 +4179,6 @@ function jsonParsePosition(err) {
   return at ? ` (at input position ${at[1]}, in JSON-parser coordinates)` : '';
 }
 
-// §3.2's fallback for a value that is not grammar-clamped: its TYPE, its
-// LENGTH, or its ORDINAL — never its content. An array reports its element
-// count AND its total width, because "8 rules" and "8 rules totalling 6 KiB"
-// are different things to confirm.
-function describeWithheld(value) {
-  if (value === null || value === undefined) return '<unset>';
-  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
-  if (Array.isArray(value)) {
-    const width = value.reduce((n, item) => n + String(item ?? '').length, 0);
-    return `<${value.length} entr${value.length === 1 ? 'y' : 'ies'}, ${width} chars — withheld per §3.2>`;
-  }
-  return `<string, ${String(value).length} chars — withheld per §3.2>`;
-}
-
 export function renderText(report) {
   const lines = [];
   lines.push(`runtime:bootstrap ${report.verb}`);
@@ -4602,88 +4188,10 @@ export function renderText(report) {
   }
   if (report.status && !report.completion) lines.push(`- status: ${report.status}`);
   // A refusal's machine-readable `reason` used to reach `--format json` only.
-  // `profile export` and `abandon` both set it, and both pair it with
-  // `diagnostics` that can be empty — leaving a text-mode operator with
-  // "refused" and no cause at all.
+  // `abandon` sets it and pairs it with `diagnostics` that can be empty —
+  // leaving a text-mode operator with "refused" and no cause at all.
   if (report.reason) lines.push(`- reason: ${renderSafe(report.reason)}`);
   if (report.selection) lines.push(`- selection: bundle=${report.selection.bundle}; desired=${report.selection.desired.join(',')}`);
-  // §3 — `profile export` computed a POINTER (where the profile landed, the one
-  // thing the operator needs to use it) and a hash, and rendered neither.
-  if (report.verb === 'profile export' && report.status === 'written') {
-    if (report.name) lines.push(`- profile: ${renderSafe(report.name)}`);
-    if (report.pointer) lines.push(`- pointer: ${renderSafe(report.pointer)}`);
-    if (report.hash) lines.push(`- hash: ${renderSafe(report.hash)}`);
-  }
-  // §4.5 items 3 and 4 are PRESENTATION obligations — "present every remaining
-  // value as a default requiring confirmation" and "the profile's value is shown
-  // as a labelled note". The script graded both correctly and then dropped the
-  // whole result on the floor, so the skill's own statement that unsafe source
-  // values "arrive as labelled notes" was true of the computation and false of
-  // anything the operator could see.
-  if (report.seeded_from) {
-    lines.push(`- seeded from: ${renderSafe(report.seeded_from.profile_id)} (${renderSafe(report.seeded_from.profile_hash)})`);
-  }
-  if (report.proposals) {
-    const { proposals = [], notes = [], refused = [] } = report.proposals;
-    for (const entry of refused) lines.push(`  ! refused: ${renderLine(entry)}`);
-    // §3.2 governs whether a value's CONTENT may cross artifact → report. The
-    // profile's own schema is maxLength-only for `scalarField.value` and
-    // `ruleArray.items`, so the PROFILE cannot answer the question — but this
-    // runtime's config validators can, per key, and that is now the rule.
-    //
-    // BOTH HALVES ARE REPAIRED, at report-BUILD time (`sanitizeProposals`). The
-    // history is worth keeping because each stage misled the next: an early
-    // version printed values verbatim in text AND `--format json`; the text half
-    // was repaired with `describeWithheld`; a comment then claimed the leak was
-    // closed, which it was not, because `--format json` serializes the report
-    // OBJECT and the renderer never touches it. Sanitizing the object is what
-    // finally closes it, and it closes `plan --profile-file` at the same time
-    // (cross-host review, MAJOR — that verb would otherwise have extended the
-    // open door rather than inherited a shut one).
-    //
-    // The rule is PER-FIELD, which is the thing the previous comment correctly
-    // said was missing: a config key with a closed-set validator is
-    // grammar-clamped, so its value is disclosable — the 1.2 session scalars and
-    // the notify enums included. A key with no validator, and every rule array,
-    // still leaves as the §3.2 fallback: TYPE and LENGTH. So the operator now
-    // reads the values that are safe to read and learns the shape of the rest,
-    // rather than the shape of everything.
-    //
-    // `value_disclosed` records which of the two happened, so a machine consumer
-    // does not have to infer it from the string.
-    //
-    // This leaves a REAL tension the owner should settle rather than the
-    // renderer: §4.5 item 4 says to present every remaining value as a default
-    // requiring confirmation, and a withheld value is not presented in the
-    // fullest sense of that sentence. §3.2 wins here only because it is the
-    // conservative side — echoing content that the disclosure rule forbids is
-    // not reversible once it is in a log.
-    for (const proposal of proposals) {
-      // `user-scope-only` rides the line because the marker exists to be acted on:
-      // an operator confirming `session.entry_brief` has to know it may never be
-      // written repo-side (ADR-0045 §7), and until this it reached `--format json`
-      // only — the text operator saw a scope of `machine` and nothing else (code
-      // review, MEDIUM). It is a boolean this runtime derives, so §3.2 does not
-      // withhold it: no content of the profile crosses.
-      const scopeBits = [
-        proposal.scope ? `scope ${renderSafe(proposal.scope)}` : null,
-        proposal.user_scope_only === true ? 'user-scope-only — never write this repo-side' : null,
-      ].filter(Boolean);
-      // `value` was sanitized at BUILD time (sanitizeProposals), so it is
-      // already either a grammar-clamped token or a withheld descriptor —
-      // re-describing it here would turn a legal enum back into
-      // "<string, 13 chars>" and lose the per-field disclosure the object now
-      // carries. `renderSafe` still applies: safe-to-disclose is not the same
-      // question as safe-to-render.
-      lines.push(`  - default (confirm): ${renderSafe(proposal.key)} = ${renderSafe(proposal.value)}${scopeBits.length > 0 ? ` [${scopeBits.join('; ')}]` : ''}`);
-    }
-    for (const note of notes) {
-      lines.push(`  ! ${renderSafe(note.labelled)}: ${renderSafe(note.key)} — ${renderLine(note.note)}`);
-    }
-    if (proposals.length === 0 && notes.length === 0 && refused.length === 0) {
-      lines.push('  - the profile proposed no defaults for this machine');
-    }
-  }
   if (report.completion) {
     // `delivery-attested` is a DERIVED presentation label (ADR-0048 §3):
     // provider ack currently passing + owner receipt currently attested. It
@@ -4862,14 +4370,12 @@ export function renderText(report) {
 
 function usage() {
   return `Usage: bootstrap.mjs <verb> [flags]   (machine-bootstrap-contract.md §3)
-  plan     [--bundle <id>] [--plugins <csv>] [--profile-file <path>] [--answers <path>] [--format text|json]
+  plan     [--bundle <id>] [--plugins <csv>] [--answers <path>] [--format text|json]
   status   [--run-id <id> | --latest | --latest-open] [--format text|json]
   resume   [--run-id <id> | --latest-open] [--answers <path>] [--format text|json]
   verify   [--run-id <id> | --latest] [--format text|json]
   attest   [--run-id <id> | --latest] [--format text|json]   (ADR-0048 §3 — record the owner phone-receipt attestation for a recorded egress-provider-ack; the one post-terminal append)
   abandon  (--run-id <id> | --latest-open) [--reason <text>]
-  profile export [--name <id>] [--from-run <id>] [--overwrite] [--format text|json]
-  profile seed   --profile-file <path> [--run-id <id> | --latest-open] [--format text|json]
 Exit codes (§3.1): 0 complete; 10 configured-not-verified; 20 incomplete; 30 no-active-run; 40 invalid input; 50 legacy-historical (terminal run under an older schema minor — stored record shown, nothing re-certified); 1 unexpected error.
 `;
 }
@@ -4885,8 +4391,6 @@ const VERB_RUNNERS = Object.freeze({
   verify: runVerify,
   attest: runAttest,
   abandon: runAbandon,
-  'profile export': runProfileExport,
-  'profile seed': runProfileSeed,
 });
 
 /**
@@ -4898,7 +4402,6 @@ export async function runBootstrap({
   env = process.env,
   homeDir = homedir(),
   cwd = process.cwd(),
-  hostname = osHostname(),
   now = Date.now(),
   runner = defaultRunner,
   subprocessRunner = defaultSubprocessRunner,
@@ -4930,7 +4433,7 @@ export async function runBootstrap({
     return { exitCode: EXIT.INVALID, report: { error: home.diagnostic }, rendered: `✗ ${renderSafe(home.diagnostic)}\n` };
   }
 
-  const ctx = { env, homeDir, cwd, hostname, now, runner, subprocessRunner, pluginRoot };
+  const ctx = { env, homeDir, cwd, now, runner, subprocessRunner, pluginRoot };
   try {
     const { exitCode, report: raw } = await VERB_RUNNERS[opts.verb](ctx, opts);
     // ONE projection, built BEFORE the format branch. Both renderings consume

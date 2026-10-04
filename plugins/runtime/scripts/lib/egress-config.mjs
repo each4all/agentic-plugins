@@ -56,7 +56,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { validateTelegramChatId } from './egress-channel.mjs';
 import { isUnder } from './path-containment.mjs';
 
 // The E1 egress service enum — deliberately DISTINCT from NOTIFY_CHANNELS
@@ -74,10 +73,10 @@ export const EGRESS_ENV_KEYS = Object.freeze({
 });
 
 // The credential's env-var NAME, for code that names the key without reading
-// its value: bootstrap's control-plane scrub, the activation fingerprint, and
-// the machine profile's write-gate (ADR-0048 §4). Moved here from the profile
-// engine, which spelled the same name a second time (ADR-0064 Decision 2,
-// item 7); the dependency runs from the engine to this loader, never back.
+// its value: bootstrap's control-plane scrub and the activation fingerprint
+// (ADR-0048 §4). Moved here from the machine profile engine, which spelled the
+// same name a second time (ADR-0064 Decision 2, item 7), before the profile was
+// removed (Decision 3).
 export const EGRESS_CREDENTIAL_ENV_VAR = EGRESS_ENV_KEYS.credential;
 
 // Verified-ignored-local file keys (activation + recipient only; NEVER the
@@ -265,12 +264,12 @@ function normalizeScalar(value) {
 // credential value is never included in the result (§2b); the surfaced `channel`
 // is an enum-safe value or null (never an arbitrary/token-shaped string); the
 // recipient is surfaced only when active.
-// SINGLE resolution authority for the env→verified-local egress scalars. Both the
-// activation loader and the §4.4 profile export reader compose this so the
+// SINGLE resolution authority for the env→verified-local egress scalars, so the
 // env-first / verified-local precedence and the credential read live in exactly
-// ONE place — a second copy of these four `??` lines would be a mirror waiting to
-// drift. The credential value is read here only for the callers' presence/collision
-// checks; neither caller returns it.
+// ONE place. The machine profile's export reader composed it too until ADR-0064
+// Decision 3 removed the profile; the activation loader is its caller now. The
+// credential value is read here only for the caller's presence/collision checks
+// and is never returned.
 function resolveEgressScalars({ repoRoot, homeDir, env, getuid, readLocalImpl }) {
   const localPath = egressLocalConfigPath(homeDir);
   const read = readLocalImpl({ filePath: localPath, repoRoot, getuid });
@@ -339,52 +338,6 @@ export function loadEgressActivation({
     source: active ? (channelSource === recipientSource ? channelSource : 'mixed') : null,
     localReason,
     localLayerSupported,
-  };
-}
-
-// §4.4 profile export reader: the user-global egress config surfaced INDEPENDENT
-// of credential presence. A machine profile records channel/recipient/headline;
-// the credential is provisioned separately per machine, so — unlike
-// loadEgressActivation — a present channel+recipient is exported even when
-// TELEGRAM_BOT_TOKEN is absent. Secrets-free: the credential value is never
-// returned; it is read only for a collision guard (an operator who typo'd the
-// token into the channel/recipient field must not get it exported). The channel is
-// enum-clamped and an invalid recipient (not a Telegram chat-id) → null, so the
-// profile never carries a malformed routing value. Every returned value carries its
-// user-global provenance ('env' | 'verified-local'); a value read from no source is
-// null with null provenance.
-export function loadEgressExportConfig({
-  repoRoot = null,
-  homeDir = os.homedir(),
-  env = process.env,
-  getuid,
-  readLocalImpl = readVerifiedIgnoredLocal,
-} = {}) {
-  const { channel, recipient, channelSource, recipientSource, credential, credentialPresent, localReason } =
-    resolveEgressScalars({ repoRoot, homeDir, env, getuid, readLocalImpl });
-
-  // Collision guard (still applies even though we are credential-independent): a
-  // field equal to the present token is dropped rather than exported.
-  const channelClean = credentialPresent && channel !== null && channel === credential ? null : channel;
-  const recipientClean = credentialPresent && recipient !== null && recipient === credential ? null : recipient;
-
-  const exportChannel = channelClean !== null && EGRESS_CHANNELS.includes(channelClean) ? channelClean : null;
-  const exportRecipient = recipientClean !== null && validateTelegramChatId(recipientClean) ? recipientClean : null;
-  const headline = loadEgressHeadlineOptIn({ repoRoot, homeDir, env, getuid });
-
-  return {
-    channel: exportChannel,
-    recipient: exportRecipient,
-    headline,
-    credential_present: credentialPresent,
-    provenance: {
-      channel: exportChannel !== null ? channelSource : null,
-      recipient: exportRecipient !== null ? recipientSource : null,
-      // The headline opt-in is read from the same env-first / verified-local layers;
-      // its provenance is user-global by construction (tracked config is never read).
-      headline: 'user-global',
-    },
-    local_reason: localReason,
   };
 }
 

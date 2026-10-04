@@ -2,7 +2,7 @@
 //
 // machine-bootstrap-contract.md §11.2 — the PUBLIC-SURFACE half of the test
 // obligations, driven through `runBootstrap` with every dependency injected
-// (probe runner, subprocess runner, home, cwd, clock, hostname). The storage
+// (probe runner, subprocess runner, home, cwd, clock). The storage
 // layer's obligations (#16/#28/#29/#30/#32 at the library seam) live in
 // tests/runtime/test-bootstrap.mjs; this file exercises the §3 grammar, the
 // R0/M1 boundary, the no-executor rule, and the CLI lifecycle end to end.
@@ -28,10 +28,8 @@ import {
 } from '../../plugins/runtime/scripts/bootstrap.mjs';
 import { makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 import {
-  projectCodexPermission,
   projectModelEffort,
   projectNotify,
-  readUserGlobalCodexPermission,
   readUserGlobalModelEffort,
   readUserGlobalNotify,
   readUserGlobalRuntimeConfig,
@@ -222,7 +220,6 @@ function boot({ argv, home, cwd, runner, subprocess, now = NOW, env = {} }) {
     env,
     homeDir: home,
     cwd,
-    hostname: 'test-machine',
     now,
     runner,
     subprocessRunner: subprocess,
@@ -244,8 +241,6 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
       // post-terminal door) — so it is a non-interview verb here too.
       ['attest', '--answers', '/dev/null'],
       ['abandon', '--latest-open', '--answers', '/dev/null'],
-      ['profile', 'export', '--answers', '/dev/null'],
-      ['profile', 'seed', '--profile-file', '/dev/null', '--answers', '/dev/null'],
     ]) {
       const { home, cwd } = await makeHome();
       const result = await boot({ argv, home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
@@ -260,9 +255,9 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
       ['status', '--latest', '--latest-open'],
       ['plan', '--bundle', 'custom'],
       ['plan', '--plugins', 'runtime,companions'],
-      ['profile', 'export', '--out', 'x'],
+      ['plan', '--out', 'x'],
       ['abandon'],
-      ['profile', 'seed'],
+      ['profile', 'export'],
       ['nonsense'],
     ]) {
       let threw = null;
@@ -519,7 +514,7 @@ describe('runtime bootstrap CLI — R0 and executor boundaries', () => {
     ok(spy.calls.every((call) => !call.scriptPath.endsWith('doctor.mjs')), 'plan never reaches for doctor');
   });
 
-  it('#8 — plan + profile seed + verify leave every host-config sentinel byte-identical', async () => {
+  it('#8 — plan + verify leave every host-config sentinel byte-identical', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const spy = spySubprocess({ settingsHash: 'b'.repeat(64) });
     const sentinelsBefore = await snapshotSentinels(home);
@@ -527,10 +522,6 @@ describe('runtime bootstrap CLI — R0 and executor boundaries', () => {
 
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answers], home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
     strictEqual(plan.exitCode, EXIT.CONFIGURED_NOT_VERIFIED);
-    const exported = await boot({ argv: ['profile', 'export', '--name', 'roundtrip'], home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
-    strictEqual(exported.exitCode, EXIT.OK);
-    const seeded = await boot({ argv: ['profile', 'seed', '--profile-file', join(home, '.agentic-plugins', 'profiles', 'roundtrip.json')], home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
-    strictEqual(seeded.exitCode, EXIT.OK);
     const verify = await boot({ argv: ['verify', '--latest'], home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
     strictEqual(verify.exitCode, EXIT.CONFIGURED_NOT_VERIFIED);
 
@@ -562,6 +553,46 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     // #29 CLI half: the open run closes via abandon and a new plan succeeds.
     strictEqual((await run(['abandon', '--latest-open', '--reason', 'test'])).exitCode, EXIT.OK);
     strictEqual((await run(['plan', '--bundle', 'base'])).exitCode, EXIT.INCOMPLETE);
+    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
+
+  // ADR-0064 Decision 3 removed `profile seed`, the only writer of `seeded_from`,
+  // without a run-schema bump: a run it seeded before the removal must still read
+  // as a run. The key is injected because nothing can produce it any more.
+  it('a retained run carrying seeded_from still reads, keeps the key through resume, and no new run writes it', async () => {
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
+    ok(!('seeded_from' in JSON.parse(await readFile(runPath, 'utf8'))), 'a fresh plan does not write seeded_from');
+    strictEqual((await run(['resume', '--latest-open', '--format', 'json'])).exitCode, EXIT.INCOMPLETE);
+    const manifest = JSON.parse(await readFile(runPath, 'utf8'));
+    ok(!('seeded_from' in manifest), 'nor does a resume of an unseeded run');
+
+    const seededFrom = { profile_id: 'laptop', profile_hash: 'a'.repeat(64) };
+    await writeFile(runPath, JSON.stringify({ ...manifest, seeded_from: seededFrom }, null, 2));
+    strictEqual((await run(['status', '--format', 'json'])).exitCode, EXIT.INCOMPLETE, 'status reads it as an open run');
+    strictEqual((await run(['verify', '--latest', '--format', 'json'])).exitCode, EXIT.INCOMPLETE, 'and so does verify');
+    // A later clock, so the stamp proves resume wrote the file rather than
+    // reporting success over the injected bytes.
+    const later = NOW + 60_000;
+    const resumed = await boot({ argv: ['resume', '--latest-open', '--format', 'json'], home, cwd, runner: bareRunner(), subprocess: spy.runner, now: later });
+    strictEqual(resumed.exitCode, EXIT.INCOMPLETE, 'resume reads it too');
+    const rewritten = JSON.parse(await readFile(runPath, 'utf8'));
+    strictEqual(rewritten.updated_at, new Date(later).toISOString(), 'and rewrites the manifest');
+    deepStrictEqual(rewritten.seeded_from, seededFrom, 'with the linkage intact');
+
+    // The control: the reader does validate the key, so the reads above passed
+    // because seeded_from is still in the schema, not because nothing checks it.
+    await writeFile(runPath, JSON.stringify({ ...manifest, seeded_from: { profile_id: 'laptop', profile_hash: 'not-a-hash' } }, null, 2));
+    const refused = await run(['status', '--format', 'json']);
+    strictEqual(refused.exitCode, EXIT.UNEXPECTED, 'a malformed seeded_from is refused');
+    match(refused.report.diagnostics.join(' '), /\$\.seeded_from\.profile_hash/, 'and the refusal names it');
+
+    // Restore a readable manifest so the run can be abandoned the normal way.
+    await writeFile(runPath, JSON.stringify(manifest, null, 2));
     strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
   });
 
@@ -905,352 +936,20 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     ok(manifest.steps.every((step) => Array.isArray(step.blocked_by)), 'an empty blocked_by is written explicitly, never omitted');
   });
 
-  it('profile export refuses a secret-bearing permission rule — the RAW readers reach the gate, not the sanitized profile', async () => {
-    // A CLI-LEVEL test on purpose. The defect was in the WIRING, not the guard:
-    // `assertProfileWritable` always refused a secret-shaped source, but the export
-    // handed it `buildMachineProfile`'s OUTPUT as `original`, and the builder
-    // sanitizes permission rules on the way in. So the scrub inspected the
-    // sanitizer's own output and passed. A unit test on the guard passes with the
-    // defect present and pins nothing; only driving the real export can see it.
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner });
-
-    // Plant a bearer token where the builder is known to sanitize.
-    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
-      permissions: {
-        defaultMode: 'acceptEdits',
-        allow: ['Bash(curl -H "Authorization: Bearer sk-live-abcdef0123456789abcdef0123456789")'],
-      },
-    }, null, 2)}\n`);
-
-    const refused = await run(['profile', 'export', '--name', 'leaky']);
-    strictEqual(refused.exitCode, EXIT.INVALID, 'a secret-shaped source refuses the write');
-    ok(
-      JSON.stringify(refused.report).includes('secret-shaped'),
-      `the refusal names the reason: ${JSON.stringify(refused.report).slice(0, 300)}`,
-    );
-    // And nothing landed — a refused profile must not be on disk.
-    await rejects(() => readFile(join(home, '.agentic-plugins', 'profiles', 'leaky.json'), 'utf8'));
-
-    // CONTROL: the same export with clean readers still writes. Without this the
-    // assertion above would also pass if export were broken for every input.
-    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
-      permissions: { defaultMode: 'acceptEdits', allow: ['Read'] },
-    }, null, 2)}\n`);
-    const ok2 = await run(['profile', 'export', '--name', 'clean']);
-    strictEqual(ok2.exitCode, EXIT.OK, 'a clean source still exports');
-    ok(JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'clean.json'), 'utf8')).schema.startsWith('agentic-machine-profile-'));
-  });
-
-  it('export is NOT gated on reader data the profile never carries', async () => {
-    // The over-correction control. `readers` also holds statuslineClaude /
-    // statuslineCodex / codexNotify / egressActivation — read for JUDGEMENT, never
-    // projected — and projectClaudeStatusline documents its raw command as possibly
-    // carrying secrets. Gating on the whole bundle refused exports over values the
-    // profile provably cannot contain (both review lanes, reproduced).
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner });
-
-    const settings = JSON.parse(await readFile(join(home, '.claude', 'settings.json'), 'utf8'));
-    settings.statusLine = { type: 'command', command: 'node /opt/sl.mjs --key sk-ant-abcdefghijklmnopqrstuvwx' };
-    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`);
-
-    const exported = await run(['profile', 'export', '--name', 'statusline-secret']);
-    strictEqual(exported.exitCode, EXIT.OK, `a secret in a NON-exported subtree must not block the write: ${JSON.stringify(exported.report).slice(0, 240)}`);
-    ok(!JSON.stringify(JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'statusline-secret.json'), 'utf8'))).includes('sk-ant-'), 'and the secret is nowhere in the artifact');
-  });
-
-  it('a laundered permission rule is refused, and the diagnostic names THAT field exactly', async () => {
-    // The narrowing must not weaken the guard it exists for. Asserting the exact
-    // locator is the point: a bare "contains secret-shaped" assertion would also be
-    // satisfied by some unrelated reader field failing, which is how a too-wide
-    // source passed review once already.
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner });
-    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
-      permissions: { defaultMode: 'acceptEdits', allow: ['Bash(curl -H "Authorization: Bearer sk-live-abcdef0123456789abcdef0123456789")'] },
-    }, null, 2)}\n`);
-
-    const refused = await run(['profile', 'export', '--name', 'leaky2']);
-    strictEqual(refused.exitCode, EXIT.INVALID);
-    const text = JSON.stringify(refused.report);
-    ok(text.includes('$.claudePermission.allow[0]'), `the refusal names the lossy field exactly: ${text.slice(0, 300)}`);
-    await rejects(() => readFile(join(home, '.agentic-plugins', 'profiles', 'leaky2.json'), 'utf8'));
-  });
-
-  it('a benign PII-shaped rule is SANITIZED into the profile, not refused', async () => {
-    // §4.1 says permission arrays are "sanitized through sanitize.mjs".
-    // Refusing on the sanitizer's own detector made that unreachable and turned an
-    // email or a git sha into a hard refusal.
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner });
-    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
-      permissions: { defaultMode: 'acceptEdits', allow: ['Bash(git commit --author=ada@example.com:*)', 'Bash(git show 1234567890abcdef1234567890abcdef12345678:*)'] },
-    }, null, 2)}\n`);
-
-    const exported = await run(['profile', 'export', '--name', 'benign']);
-    strictEqual(exported.exitCode, EXIT.OK, `benign PII-shaped rules export: ${JSON.stringify(exported.report).slice(0, 240)}`);
-    const rules = JSON.parse(await readFile(join(home, '.agentic-plugins', 'profiles', 'benign.json'), 'utf8')).permissions.claude.allow;
-    ok(rules.some((r) => r.includes('<redacted-email>')), `the email is redacted, not exported: ${JSON.stringify(rules)}`);
-    ok(rules.some((r) => r.includes('<redacted-hex>')), `the sha is redacted: ${JSON.stringify(rules)}`);
-    ok(!JSON.stringify(rules).includes('ada@example.com'), 'and the raw address never reaches the artifact');
-  });
-
-  it('#4 + #30 — profile export → seed round-trips (id + hash recorded); overwrite is refused without --overwrite; path traversal is refused', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const spy = spySubprocess();
-    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
-
-    // Profile 1.2 — give this home a session-family posture so the export path is
-    // exercised end-to-end rather than only in the unit tests. Written here rather
-    // than in the shared fixture so the other 150 cases keep their exact bytes.
-    await writeFile(
-      join(home, '.agentic-plugins', 'config.toml'),
-      'model = "gpt-5.2-codex"\neffort = "high"\nnotify_channel = "file-log"\nsession_capture = "stop-hook"\nentry_brief = "startup"\n',
-    );
-
-    const exported = await run(['profile', 'export', '--name', 'machine-a']);
-    strictEqual(exported.exitCode, EXIT.OK);
-    const profilePath = join(home, '.agentic-plugins', 'profiles', 'machine-a.json');
-    const profile = JSON.parse(await readFile(profilePath, 'utf8'));
-    strictEqual(profile.schema, 'agentic-machine-profile-1.3');
-    ok(Object.values(profile.boundary).every((flag) => flag === false), 'every boundary flag is false');
-    // The session family survives the real CLI read → build → write-gate → disk
-    // path, and an UNSET member lands as null rather than vanishing.
-    strictEqual(profile.session_capture, 'stop-hook');
-    strictEqual(profile.entry_brief, 'startup');
-    strictEqual(profile.entry_brief_empty, null);
-    // The bytes on disk ARE the canonical form — asserted against the canonicalizer
-    // itself, not against a literal key list. A literal list here would be a third
-    // copy of an ordering fact the schema and PROFILE_SESSION_KEYS already state
-    // twice, and a mirror that can drift is what this whole area keeps getting
-    // wrong (cross-host review). This phrasing also pins the real invariant: the
-    // written file is what `profileHash` hashed, rather than merely happening to
-    // share its order.
-    const { canonicalProfile } = await import('../../plugins/runtime/scripts/lib/machine-profile.mjs');
-    const { loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
-    const profileSchema = await loadSchema('agentic-machine-profile');
-    deepStrictEqual(
-      Object.keys(profile),
-      Object.keys(canonicalProfile(profile, profileSchema)),
-      `written bytes are canonical: ${Object.keys(profile).join(',')}`,
-    );
-    // …and the session family really is at the end of it, which is the property the
-    // cross-minor alignment depends on.
-    ok(
-      Object.keys(profile).slice(-3).every((k) => ['entry_brief', 'entry_brief_empty', 'session_capture'].includes(k)),
-      `session scalars trail: ${Object.keys(profile).join(',')}`,
-    );
-
-    // #30 — refuse without --overwrite, succeed with it.
-    strictEqual((await run(['profile', 'export', '--name', 'machine-a'])).exitCode, EXIT.INVALID);
-    strictEqual((await run(['profile', 'export', '--name', 'machine-a', '--overwrite'])).exitCode, EXIT.OK);
-
-    // Path security at the CLI: a traversal-shaped --name is invalid input.
-    let traversal;
-    try {
-      traversal = await run(['profile', 'export', '--name', '../escape']);
-    } catch (err) {
-      traversal = { exitCode: EXIT.INVALID, threw: err };
-    }
-    strictEqual(traversal.exitCode ?? EXIT.INVALID, EXIT.INVALID, 'a traversal --name never writes');
-
-    // #4 — seed records the profile id + hash on the open run.
-    const answers = await writeEgressDecline(home);
-    strictEqual((await run(['plan', '--bundle', 'base', '--answers', answers])).exitCode, EXIT.CONFIGURED_NOT_VERIFIED);
-    const seeded = await run(['profile', 'seed', '--profile-file', profilePath]);
-    strictEqual(seeded.exitCode, EXIT.OK);
-    strictEqual(seeded.report.seeded_from.profile_id, 'machine-a');
-    ok(/^[0-9a-f]{64}$/.test(seeded.report.seeded_from.profile_hash));
-    const manifest = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', seeded.report.run_id, 'run.json'), 'utf8'));
-    deepStrictEqual(manifest.seeded_from, seeded.report.seeded_from, 'the run manifest carries the seeded_from linkage');
-    ok(Array.isArray(seeded.report.proposals.proposals), 'seed presents proposals as defaults requiring confirmation');
-    ok(seeded.report.proposals.proposals.every((proposal) => proposal.requires_confirmation === true && proposal.applied === false));
-
-    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
-  });
-
-  it('profile export / seed RENDER what they computed, in both formats', async () => {
-    // These two were the only verbs whose output was strictly less than what
-    // they computed: no `--format json` door, and a text render that dropped
-    // the export pointer, the export hash, and every §4.5 seed proposal and
-    // safety-graded note. §4.5 items 3 and 4 are PRESENTATION obligations, so
-    // computing them correctly and rendering nothing left the contract unmet
-    // and the skill's own "unsafe source values arrive as labelled notes"
-    // true of the computation and false of anything the operator could see.
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const spy = spySubprocess();
-    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
-
-    const exported = await run(['profile', 'export', '--name', 'machine-r', '--format', 'json']);
-    strictEqual(exported.exitCode, EXIT.OK, '--format is part of the grammar now');
-    const profilePath = join(home, '.agentic-plugins', 'profiles', 'machine-r.json');
-
-    const exportText = renderText(exported.report);
-    ok(exportText.includes(exported.report.pointer), `the pointer reaches the operator:\n${exportText}`);
-    ok(exportText.includes(exported.report.hash), `and so does the hash:\n${exportText}`);
-    ok(/^- profile: machine-r$/m.test(exportText), 'and the name it was written under');
-
-    const answers = await writeEgressDecline(home);
-    strictEqual((await run(['plan', '--bundle', 'base', '--answers', answers])).exitCode, EXIT.CONFIGURED_NOT_VERIFIED);
-    const seeded = await run(['profile', 'seed', '--profile-file', profilePath, '--format', 'json']);
-    strictEqual(seeded.exitCode, EXIT.OK, 'seed accepts --format too');
-
-    const seedText = renderText(seeded.report);
-    ok(/^- seeded from: machine-r \(/m.test(seedText), `the seed linkage renders:\n${seedText}`);
-    // Guard the loop below against passing vacuously on an empty list — the
-    // whole assertion is "every proposal is presented", which says nothing if
-    // there are none (Refine-verify peer, MINOR).
-    ok(seeded.report.proposals.proposals.length > 0, 'the fixture must actually produce proposals for this to assert anything');
-    for (const proposal of seeded.report.proposals.proposals) {
-      ok(seedText.includes(proposal.key), `proposal ${proposal.key} is presented:\n${seedText}`);
-    }
-    ok(/default \(confirm\)/.test(seedText), 'and presented AS a default requiring confirmation (§4.5 item 4)');
-
-    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
-  });
-
-  it('an UNCLAMPED proposal value never crosses artifact -> report — §3.2, in JSON as well as text', async () => {
-    // REWRITTEN. The previous version drove `renderText` with a hand-built
-    // report object, which measured the RENDERER — and the renderer was never
-    // the whole boundary: `--format json` serializes the report OBJECT, so a
-    // raw `proposals[].value` crossed there no matter what the text path did
-    // (cross-host review, MAJOR — "the §3.2 regression test exercises renderText
-    // only, which is why that door stayed open unnoticed"). Disclosure now
-    // happens at report-BUILD time, so the test drives the real verbs and reads
-    // BOTH surfaces.
-    const { home, cwd } = await makeHome({ satisfied: true });
-    // Private markers in keys with NO validator: `model` is a free string and
-    // the Claude permission rules are a free array — exactly the class §3.2's
-    // threat model is about, and the class the old renderer-only test could not
-    // protect in `--format json`.
-    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'model = "PRIVATE-MARKER-ALPHA"\neffort = "high"\n');
-    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({
-      permissions: { defaultMode: 'acceptEdits', allow: ['Bash(PRIVATE-RULE-BRAVO)'] },
-      statusLine: { type: 'command', command: `node '${join(home, '.agentic-plugins', 'bin', 'agentic-statusline.mjs').replace(/\\/g, '/')}'` },
-    }, null, 2)}\n`);
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
-
-    await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const exported = await run(['profile', 'export', '--name', 'leak', '--format', 'json']);
-    strictEqual(exported.exitCode, 0, 'precondition: a profile was exported');
-    const profilePath = join(home, '.agentic-plugins', 'profiles', 'leak.json');
-    const artifact = await readFile(profilePath, 'utf8');
-    for (const marker of ['PRIVATE-MARKER-ALPHA', 'PRIVATE-RULE-BRAVO']) {
-      ok(artifact.includes(marker),
-        `precondition: the ARTIFACT does carry ${marker} — the boundary is artifact -> report, not artifact -> disk`);
-    }
-
-    // Both entry points that present proposals, on both surfaces. `profile seed`
-    // needs the open run; `plan` refuses while one is open, so the run is closed
-    // between them.
-    const seeded = await run(['profile', 'seed', '--profile-file', profilePath, '--format', 'json']);
-    await run(['abandon', '--latest-open', '--reason', 'test']);
-    const planned = await run(['plan', '--bundle', 'base', '--profile-file', profilePath, '--format', 'json']);
-    for (const [label, result] of [['profile seed', seeded], ['plan --profile-file', planned]]) {
-      ok(result.report.proposals, `${label}: presents proposals at all (the plan half is the new door)`);
-      // Scoped to the PROPOSALS boundary, which is what this change owns.
-      // Deliberately NOT asserted over the whole report: `config.model_effort`'s
-      // judge interpolates its raw coordinate values into `steps[].observed`,
-      // which is the same §3.2 class in PRE-EXISTING code this change does not
-      // touch. Widening the assertion here would either fail on that unrelated
-      // leak or quietly pressure this change into redefining an unrelated
-      // judge's disclosure policy — a decision with a real diagnostic cost
-      // (`model=claude-opus-5` would stop being readable), recorded rather than
-      // absorbed. See docs/follow-ups.md.
-      const serialized = JSON.stringify(result.report.proposals);
-      for (const marker of ['PRIVATE-MARKER-ALPHA', 'PRIVATE-RULE-BRAVO']) {
-        ok(!serialized.includes(marker), `${label}: ${marker} must not cross in the proposal list`);
-      }
-      ok(!result.rendered.split('\n').filter((line) => /default \(confirm\)/.test(line)).join('\n').includes('PRIVATE-'),
-        `${label}: nor on the rendered proposal lines`);
-      const model = result.report.proposals.proposals.find((entry) => entry.key === 'model_effort.model');
-      ok(model && model.value_disclosed === false, `${label}: the withholding is recorded, not just performed`);
-      match(model.value, /chars — /, `${label}: and what crosses instead is type + length`);
-    }
-  });
-
-  it('a GRAMMAR-CLAMPED proposal value DOES cross — §3.2 keys on the schema, not on caution', () => {
-    // The control for the test above: withholding is decided per field, so a
-    // value this runtime's own validators accept is named rather than reduced
-    // to a length. A blanket "withhold every string" would pass the test above
-    // and fail this one.
-    const text = renderText({
-      verb: 'profile seed',
-      run_id: 'run-x',
-      status: 'seeded',
-      seeded_from: { profile_id: 'm', profile_hash: 'a'.repeat(64) },
-      proposals: {
-        ok: true,
-        refused: [],
-        proposals: [
-          // Post-sanitize shapes, which is what the renderer now receives.
-          { key: 'session.entry_brief', value: 'startup', value_disclosed: true, scope: 'machine' },
-          { key: 'permissions.claude.allow', value: '<2 entries, 36 chars — withheld per §3.2>', value_disclosed: false, scope: 'machine' },
-        ],
-        notes: [],
-        boundary: {},
-      },
-      warnings: [],
-      diagnostics: [],
-    });
-    ok(/session\.entry_brief = startup/.test(text), `a clamped enum is named:\n${text}`);
-    ok(/permissions\.claude\.allow = <2 entries, /.test(text), 'an unclamped array still reports count and width');
-  });
-
-  it('a safety-graded note is what the operator actually SEES, not just what seed computed', async () => {
-    // §4.5 item 3 with teeth: an unsafe source posture must reach the operator
-    // as a labelled note. The grading was already correct; the render dropped
-    // it, so the one rule the contract says has teeth had none at the boundary
-    // where it matters.
-    const text = renderText({
-      verb: 'profile seed',
-      run_id: 'run-x',
-      seeded_from: { profile_id: 'machine-a', profile_hash: 'a'.repeat(64) },
-      status: 'seeded',
-      proposals: {
-        ok: true,
-        refused: [],
-        proposals: [],
-        notes: [{
-          key: 'permissions.claude.defaultMode',
-          note: "The source machine used 'bypassPermissions'. Not proposed as a default: the target's safe recommendation wins.",
-          labelled: 'unsafe-posture-not-proposed',
-          source_value: 'bypassPermissions',
-          proposed_instead: 'acceptEdits',
-        }],
-        boundary: { writes_host_config: false, applies_nothing: true, re_diagnoses_target: true },
-      },
-      warnings: [],
-      diagnostics: [],
-    });
-    ok(/unsafe-posture-not-proposed/.test(text), `the note is labelled as such:\n${text}`);
-    ok(/permissions\.claude\.defaultMode/.test(text), 'and names the key it is about');
-    ok(/bypassPermissions/.test(text), 'and shows the source value it refused to propose');
-    ok(!/default \(confirm\): permissions\.claude\.defaultMode/.test(text),
-      'and is never rendered as a default — the whole point of grading it');
-  });
-
   it('a refusal renders its reason in text, not only in JSON', async () => {
-    // `reason` is set by `profile export` and by `abandon`, and both pair it
+    // `reason` is set by `abandon` (and was by `profile export`), paired
     // with a `diagnostics` list that can be empty — leaving a text-mode
     // operator holding "refused" and no cause.
-    const text = renderText({ verb: 'profile export', name: 'x', status: 'refused', reason: 'profile-exists', diagnostics: [] });
-    ok(/^- reason: profile-exists$/m.test(text), `the cause reaches text mode:\n${text}`);
+    const text = renderText({ verb: 'abandon', run_id: 'x', status: 'refused', reason: 'lock-lost', diagnostics: [] });
+    ok(/^- reason: lock-lost$/m.test(text), `the cause reaches text mode:\n${text}`);
   });
 
-  it('with no run at all, status / resume / verify / seed answer no-active-run with exit 30', async () => {
+  it('with no run at all, status / resume / verify answer no-active-run with exit 30', async () => {
     const { home, cwd } = await makeHome();
     const spy = spySubprocess();
-    for (const argv of [['status'], ['resume'], ['verify'], ['profile', 'seed', '--profile-file', join(home, 'missing.json')]]) {
+    for (const argv of [['status'], ['resume'], ['verify']]) {
       const result = await boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
-      if (argv[1] === 'seed') {
-        // seed validates the profile file first; a missing file is invalid
-        // input (40) rather than a run-selection miss.
-        ok([EXIT.NO_ACTIVE_RUN, EXIT.INVALID].includes(result.exitCode), `${argv.join(' ')} exits 30 or 40`);
-      } else {
-        strictEqual(result.exitCode, EXIT.NO_ACTIVE_RUN, `${argv.join(' ')} exits 30`);
-      }
+      strictEqual(result.exitCode, EXIT.NO_ACTIVE_RUN, `${argv.join(' ')} exits 30`);
     }
   });
 });
@@ -2804,14 +2503,6 @@ describe('bootstrap user-global readers — one read per file (projection equiva
     // Not vacuous: the fixture really carries both families.
     strictEqual(projectModelEffort(snapshot).keys.model.value, 'gpt-5.2-codex');
     strictEqual(projectNotify(snapshot).keys.notify_channel.value, 'file-log');
-  });
-
-  it('the Codex permission projection equals the reader it replaced, over the notify gather\'s bytes', async () => {
-    const { home } = await makeHome({ satisfied: true });
-    const gathered = await gatherCodexNotificationInputs({ homeDir: home, env: {} });
-    const projected = projectCodexPermission(gathered.read, { usingOverride: false });
-    deepStrictEqual(projected, await readUserGlobalCodexPermission({ homeDir: home, env: {} }));
-    strictEqual(projected.approval_policy, 'on-request', 'not vacuous: the fixture carries a permission policy');
   });
 });
 
@@ -4813,19 +4504,6 @@ describe('runtime bootstrap CLI — proof-directory entry names (§3.2)', () => 
     const result = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answers], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
     match(JSON.stringify(result.report), /for host\.claude\.present/, 'the matched registry step id is still named');
     match(JSON.stringify(result.report), /decline\|accept\|execute\|attest-receipt/, 'the expected vocabulary is still named');
-  });
-
-  it('--profile-file withholds the parser message too — the mirror of the --answers guard', async () => {
-    // The peer found this by symmetry: both flags read an untrusted
-    // operator-authored file through JSON.parse, and fixing one left the
-    // identical leak one flag away.
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const profile = join(cwd, 'bad-profile.json');
-    await writeFile(profile, 'SECRET-sk-live-abc123 not json');
-    const result = await boot({ argv: ['plan', '--bundle', 'base', '--profile-file', profile], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
-    const serialized = JSON.stringify(result.report);
-    ok(!serialized.includes('SECRET'), `the parser message must not ride out: ${serialized}`);
-    match(serialized, /--profile-file is not valid JSON/, 'the failure is still named');
   });
 
   it('the reported parse position comes from the PARSER, and cannot be forged by the input', async () => {

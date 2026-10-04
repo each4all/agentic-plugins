@@ -1,8 +1,9 @@
 // plugins/runtime/scripts/lib/schema-validate.mjs
 //
 // The zero-dependency JSON Schema validator for the packaged runtime schemas:
-// the three bootstrap families (machine-bootstrap-contract.md §4, §5, §1.4;
-// ADR-0046 §4) and the three ADR-0044 session-capture families
+// the bootstrap families (machine-bootstrap-contract.md §5, §1.4; ADR-0046 §4 —
+// a third, the §4 machine profile, was removed by ADR-0064 Decision 3) and the
+// three ADR-0044 session-capture families
 // (session-capture-contract.md §3). Ships as
 // runtime code, so it obeys the same zero-dependency rule as every other runtime
 // script — `ajv` is not available to us, and the ADR-0035 §4 guard deferral
@@ -186,7 +187,7 @@ function isScalar(value) {
 
 const SCHEMA_VERSION_RE = /^([a-z0-9-]+)-(\d+)\.(\d+)$/;
 
-// `agentic-machine-profile-1.0` → { family, major, minor }. Returns null for a
+// `runtime-bootstrap-run-1.4` → { family, major, minor }. Returns null for a
 // string that is not a schema version at all, which callers treat as invalid rather
 // than as version 0.
 export function parseSchemaVersion(value) {
@@ -620,19 +621,9 @@ export function canonicalJson(document, schema) {
 // Packaged schema loading
 // ---------------------------------------------------------------------------
 
+// `agentic-machine-profile` (the portable machine profile, last at 1.3) left this
+// registry with the profile itself (ADR-0064 Decision 3); no reader survives.
 export const PACKAGED_SCHEMA_FILES = Object.freeze({
-  // 1.1 (ADR-0048 §2.1): adds the OPTIONAL trailing `statusline_preset` scalar.
-  // 1.2: adds the OPTIONAL trailing session family — `entry_brief`,
-  // `entry_brief_empty`, `session_capture`, in that (alphabetical) order, which is
-  // the order canonicalization gives them under an older reader. Every valid 1.0
-  // and 1.1 document still validates against this reader — the three keys are not
-  // required — while a 1.2 document read by a 1.1 reader gets three scalar warnings
-  // and the keys ignored (§4.6), which is why the minor bumps at all.
-  // 1.3 (ADR-0057 §Decision 6): widens the `permissions.claude.defaultMode` enum with
-  // the two host modes it was missing (`auto`, `dontAsk`). No key is added, so 1.2↔1.3
-  // hash alignment holds. The minor bumps for IDENTITY, not tolerance — §4.6 never
-  // forgave an unknown VALUE, so a 1.2 reader refuses `auto` under either stamp.
-  'agentic-machine-profile': 'agentic-machine-profile-1.3.json',
   // 1.1 (S8a5): adds the OPTIONAL probe hosts.codex.hook_state per-handler disabled
   // evidence. A 1.0 document (no hook_state) still validates against this reader —
   // the key is not required — while a 1.1 document read by a 1.0-only runtime would
@@ -646,7 +637,8 @@ export const PACKAGED_SCHEMA_FILES = Object.freeze({
   // `set:<key>=<value|unset>` answer rides the existing bounded `answer` string
   // and the two new steps ride the existing `stepId` pattern. The minor bumps
   // for a semantic reason rather than a structural one, and that is exactly the
-  // fence it needs to arm: `resume` and `profile seed` refuse a FUTURE minor, so
+  // fence it needs to arm: `resume` (and, until ADR-0064 Decision 3 removed it,
+  // `profile seed`) refuses a FUTURE minor, so
   // a 1.2 runtime cannot mutate a run whose registry it cannot derive — it would
   // drop the two new CONFIG steps and could close the run under an expectation
   // that never included them. A schema pattern on `answer` was considered and
@@ -711,24 +703,21 @@ export async function loadSchema(family, { pluginRoot } = {}) {
 
 /**
  * Build the `validate` function the bootstrap artifact writers take as an injected
- * seam (lib/bootstrap-artifacts.mjs: createBootstrapRun / writeMachineProfile /
- * writeBootstrapProof). Returns `(document) => { ok, errors, warnings }` — exactly
- * the shape those writers already expect, so the storage layer never grows a second
- * copy of the schema to drift from this one.
+ * seam (lib/bootstrap-artifacts.mjs: createBootstrapRun / updateBootstrapRun).
+ * Returns `(document) => { ok, errors, warnings }` — exactly the shape those
+ * writers already expect, so the storage layer never grows a second copy of the
+ * schema to drift from this one.
  *
  * The schema is loaded ONCE and closed over: a writer called in a loop must not
  * re-read a file per artifact.
  *
  * ⚠ STRUCTURAL ONLY — this is NOT the whole gate, and wiring it alone would ship a
- * profile writer that looks guarded and is not. What the schema cannot express, and
- * who owns it:
+ * writer that looks guarded and is not. What the schema cannot express, and who
+ * owns it:
  *
- *   * §4.3 guard 1 — the fail-closed SECRET SCRUB. A token-shaped `model.value`
- *     satisfies `type: string` perfectly. The profile engine (C5) must scrub before
- *     it writes.
- *   * §4.1 — `credential_required` is true IFF `declined === false` AND
- *     `channel.value !== null`. A cross-field implication is not a JSON Schema
- *     concept; C5 enforces it.
+ *   * the fail-closed SECRET SCRUB. A token-shaped string satisfies `type: string`
+ *     perfectly; the fragment and proof writers run `scrubSecrets` before they
+ *     write.
  *   * §5/§8.1 — `proofs[].status` is the aggregate RECOMPUTED from `directions`, and
  *     `bound_versions.plugins` must cover exactly the SELECTED plugin set. Both need
  *     facts (the directions, the selection) that a schema cannot see. The reducer (C5)
