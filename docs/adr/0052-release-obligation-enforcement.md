@@ -5,7 +5,10 @@
 Accepted (2026-08-13). Implemented by `scripts/check-release-obligation.mjs`
 and gated by `tests/scripts/test-release-obligation.mjs`.
 
-**Proposed to be superseded** in full by [ADR-0065](0065-release-ceremony-reduction.md) (proposed 2026-10-04); this line becomes `Superseded by ADR-0065` in the same commit that flips ADR-0065 to Accepted.
+**Superseded by [ADR-0065](0065-release-ceremony-reduction.md)** (2026-10-04), in
+full. The release-obligation check and its post-tag step are removed. A change
+under `plugins/runtime/data/` carries a release-routing type on its squash
+subject, a review convention stated in AGENTS.md §Release process.
 
 > **Amended 2026-09-24 by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md).**
 > The premise this ADR enforces — a protected change is not in force until a

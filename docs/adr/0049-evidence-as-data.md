@@ -4,7 +4,10 @@
 
 Accepted
 
-**Proposed to be superseded** in full by [ADR-0065](0065-release-ceremony-reduction.md) (proposed 2026-10-04); this line becomes `Superseded by ADR-0065` in the same commit that flips ADR-0065 to Accepted.
+**Superseded by [ADR-0065](0065-release-ceremony-reduction.md)** (2026-10-04), in
+full. No evidence record is authored or validated any more. The records under
+`docs/assurance/evidence/records/` and their schema are frozen history, and the
+renderer and migration that §Decision 6 deferred are cancelled.
 
 > Amended 2026-07-27 — see [Amendments](#amendments). `proofs[].command`
 > is reclassified `operator-attested`; the `derived` manifest check is

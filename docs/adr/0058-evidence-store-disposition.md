@@ -4,7 +4,9 @@
 
 Accepted
 
-**Proposed to be superseded** in full by [ADR-0065](0065-release-ceremony-reduction.md) (proposed 2026-10-04); this line becomes `Superseded by ADR-0065` in the same commit that flips ADR-0065 to Accepted.
+**Superseded by [ADR-0065](0065-release-ceremony-reduction.md)** (2026-10-04), in
+full. The store this ADR retained is withdrawn, its measurement substrate is
+deleted, and the withdrawal trigger of §Decision 5 has no subject left.
 
 <!--
 Amends ADR-0049 (§Decision 6's precondition 1 is ADDED TO, not replaced;

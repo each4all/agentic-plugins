@@ -2,10 +2,11 @@
 
 ## Status
 
-Proposed (2026-10-04). Asked for by the owner on 2026-10-03 (macro
+Accepted (2026-10-04). Asked for by the owner on 2026-10-03 (macro
 `macro-plan-20261003T022443Z-139657`, item B: "reduce CI, test and release
-machinery to what earns its keep"). The owner accepts it, and the commit that
-accepts it applies [§Amendment cascade](#amendment-cascade-apply-verbatim-on-acceptance).
+machinery to what earns its keep") and accepted by the owner on 2026-10-04.
+The commit that accepted it applied
+[§Amendment cascade](#amendment-cascade-apply-verbatim-on-acceptance).
 
 - **On acceptance** it:
   - supersedes [ADR-0049](0049-evidence-as-data.md) **in full**. No evidence
