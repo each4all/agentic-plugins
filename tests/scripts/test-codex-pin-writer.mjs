@@ -482,7 +482,7 @@ test('release-please.yml passes --activate only on a workflow_dispatch that aske
   assert.ok(flagLines.length > 0, 'the sync step can pass --activate');
   for (const l of flagLines) assert.ok(l.includes('${ACTIVATE_CODEX_PINS:+--activate}'), `--activate only behind the guarded variable: ${l.trim()}`);
   assert.equal(code.filter((l) => /ACTIVATE_CODEX_PINS:\s/.test(l)).length, 1, 'the variable is assigned in exactly one place');
-  // Pins and marker are staged in the same commit, whose subject evidence-store recognizes.
+  // Pins and marker are staged in the same commit, under the subject below.
   assert.match(wf, /CATALOGS="\.claude-plugin\/marketplace\.json \.agents\/plugins\/marketplace\.json scripts\/data\/codex-pin-floors\.json"/);
   assert.match(wf, /if \[ -n "\$\(git status --porcelain -- \$CATALOGS\)" \]; then/,
     'the commit gate looks at all three files — a Claude-only gate drops an activation that has no Claude drift');
@@ -577,7 +577,7 @@ test('recovery through a remote — after a later step failed, a fresh dispatch 
   assert.equal(runCli(job, WRITER, ['--activate']).status, 0);
   commit(job, 'chore(marketplace): sync catalog versions to release-please-manifest and activate the Codex catalog pins');
   assert.equal(push(job), true);
-  // ...the stage-doc step fails here. The activation is published.
+  // ...a later step fails here. The activation is published.
   const again = checkout();
   assert.equal(runCli(again, WRITER, ['--activate']).status, 0);
   assert.equal(git(again, ['status', '--porcelain']).trim(), '');

@@ -50,8 +50,9 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
-          # check-doc-evidence.mjs resolves release tags and commits, and
-          # fails closed rather than skipping when they are missing.
+          # The catalog sync pins the Codex catalog to the commits release
+          # tags peel to (ADR-0061), and fails closed on a shallow clone or
+          # one without tags rather than writing a pin it cannot check.
           fetch-depth: 0
 
       - name: Setup Node
@@ -73,20 +74,12 @@ jobs:
         run: node scripts/sync-marketplace-versions.mjs ${ACTIVATE_CODEX_PINS:+--activate}
 
       # Every step below also runs on workflow_dispatch. release-please
-      # reports `releases_created` exactly once, so if a push here fails —
-      # a non-fast-forward because main advanced, or a failed evidence
-      # check — a plain re-run of the release job repairs nothing: the
-      # release already exists and the flag is false. Manual dispatch is
-      # the retryable drift-repair path (round-3 cross-host review
-      # finding); the sync scripts are idempotent, so a dispatch with no
-      # drift is a no-op.
-      #
-      # The catalog push is kept INDEPENDENT of the stage-doc steps below.
-      # Folding both into one commit meant a stage-doc problem — including
-      # a pre-existing one this release did not cause — would also strand
-      # the catalog sync, and because release-please only reports
-      # `releases_created` once, a re-run repairs neither (round-2
-      # cross-host review finding). Two commits, two failure domains.
+      # reports `releases_created` exactly once, so if the push here fails —
+      # a non-fast-forward because main advanced — a plain re-run of the
+      # release job repairs nothing: the release already exists and the flag
+      # is false. Manual dispatch is the retryable drift-repair path (round-3
+      # cross-host review finding); the sync script is idempotent, so a
+      # dispatch with no drift is a no-op.
       - name: Commit + push marketplace sync (if any drift)
         id: catalog-push
         if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
@@ -97,9 +90,8 @@ jobs:
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         # Both catalogs and the floor data file go in ONE commit: ADR-0061
         # activation writes the pins and the `activated` marker together, and
-        # a commit carrying one without the other is invalid. The subject
-        # keeps "sync catalog versions", which scripts/lib/evidence-store.mjs
-        # recognizes as the release's marketplace sync.
+        # a commit carrying one without the other is invalid. The subject is
+        # pinned by tests/scripts/test-codex-pin-writer.mjs.
         run: |
           CATALOGS=".claude-plugin/marketplace.json .agents/plugins/marketplace.json scripts/data/codex-pin-floors.json"
           if [ -n "$(git status --porcelain -- $CATALOGS)" ]; then
@@ -115,55 +107,10 @@ jobs:
             echo "No marketplace catalog drift; nothing to commit."
           fi
 
-      # Same rationale as the catalog: the stage docs restate the shipped
-      # runtime version in places release-please's extra-files cannot own,
-      # and hand-bumping them has produced mis-paired release triples
-      # (#640). --shipped-only is required here, not optional: it writes
-      # ONLY the "as of `plugin-runtime` vX" statements, which release-please
-      # just made true. The proof-coupled claims ("Latest installed proof",
-      # the scorecard's installed-state versions) and the release TAG need a
-      # re-recorded runtime:doctor run and a human-written evidence record,
-      # so they are deliberately left for the post-release recovery PR.
-      - name: Sync stage doc runtime-version tokens
-        if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
-        run: node scripts/sync-doc-versions.mjs --shipped-only
-
-      # A push authenticated with GITHUB_TOKEN does not trigger workflows,
-      # so nothing else checks the commit this job is about to make before
-      # it reaches main. This checks EVIDENCE CONSISTENCY only — release triples,
-      # proof citations, cited shas, and the ADR-0049 record store. It
-      # deliberately does not assert doc
-      # freshness: main is expected to be red on the installed-state
-      # assertion until a human re-records the proof, and that redness is
-      # the intended signal, surfaced by the test runs rather than here: the
-      # release merge commit's own, and the post-sync runs dispatched below.
-      - name: Verify stage doc evidence consistency before pushing
-        if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
-        run: node scripts/check-doc-evidence.mjs
-
-      - name: Commit + push stage doc sync (if any drift)
-        id: docs-push
-        if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
-        env:
-          GIT_AUTHOR_NAME: github-actions[bot]
-          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-          GIT_COMMITTER_NAME: github-actions[bot]
-          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-        run: |
-          DOC_PATHS="docs/ARCHITECTURE.md docs/DEVELOPMENT.md docs/assurance/omcc-cutover-scorecard.md"
-          if [ -n "$(git status --porcelain -- $DOC_PATHS)" ]; then
-            git add -- $DOC_PATHS
-            git commit -m "chore(docs): sync stage doc runtime versions to release-please-manifest"
-            git push
-            echo "pushed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No stage-doc drift; nothing to commit."
-          fi
-
-      # Docket C58. Both pushes above use GITHUB_TOKEN, and such a push creates
-      # no workflow run, so post-sync main would never get CI of its own; the
-      # release commit's run read the catalogs before the sync and is red on
-      # the lag. A workflow_dispatch made with GITHUB_TOKEN is GitHub's
+      # Docket C58. The catalog push above uses GITHUB_TOKEN, and such a push
+      # creates no workflow run, so post-sync main would never get CI of its
+      # own; the release commit's run read the catalogs before the sync and is
+      # red on the lag. A workflow_dispatch made with GITHUB_TOKEN is GitHub's
       # documented exception, hence `actions: write` above.
       #
       # These runs validate post-sync main, NOT the release commit. That
@@ -173,11 +120,8 @@ jobs:
       # head_sha against the sha this job last pushed and accepts a
       # descendant (main advanced) with a warning; its header has the rule.
       #
-      # When it runs, by failure domain:
-      #   - after any sync push that landed, even when a later step failed. A
-      #     failed evidence check or a rejected stage-doc push must not cost
-      #     the catalog commit its run, which is why `!cancelled()` is
-      #     load-bearing here for the same reason as on the step below;
+      # When it runs:
+      #   - after the catalog push landed;
       #   - on a manual dispatch of this workflow, pushed or not, once the
       #     catalog sync has passed. That is the retry path when this step
       #     failed: a re-run of the push run skips it along with the syncs,
@@ -187,50 +131,13 @@ jobs:
       #   - not on a push that released nothing, and not on a release with
       #     nothing to sync, whose own run already read synced catalogs.
       #
-      # A successful push moves refs/remotes/origin/main and a rejected one
-      # does not, so it names the newest commit this job actually put on
-      # main, or main as checked out when the job pushed nothing. Local HEAD
-      # is wrong after a rejected stage-doc push: it names a commit main
-      # never received.
+      # The expected sha is refs/remotes/origin/main, which only a successful
+      # push moves: the commit this job put on main, or main as checked out
+      # when the job pushed nothing.
       - name: Dispatch the test workflows on post-sync main
-        if: ${{ !cancelled() && (steps.catalog-push.outputs.pushed == 'true' || steps.docs-push.outputs.pushed == 'true' || (github.event_name == 'workflow_dispatch' && steps.catalog-push.outcome == 'success')) }}
+        if: ${{ steps.catalog-push.outputs.pushed == 'true' || (github.event_name == 'workflow_dispatch' && steps.catalog-push.outcome == 'success') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           EXPECT="$(git rev-parse --verify refs/remotes/origin/main)"
           node scripts/dispatch-post-sync-ci.mjs --repo "$GITHUB_REPOSITORY" --ref main --expect-sha "$EXPECT"
-
-      # ADR-0052 §Decision 5 — the post-tag assertion. The release commit's own
-      # full-tests run is started by the same push as this job, so nothing
-      # orders it after the tag this job cuts; and a push authenticated with
-      # GITHUB_TOKEN does not trigger workflows, so no later push starts one
-      # either. The release commit is precisely where a protected asset's
-      # obligation is either discharged or left outstanding. The dispatch above
-      # runs full-tests on post-sync main once the tag exists, but only when a
-      # sync push landed or on a manual dispatch, and as a separate run; this
-      # step is the release job's own post-tag verdict on every release.
-      #
-      # Deliberately LAST, and in its own step. An outstanding obligation is a
-      # statement about bytes that were already released; neither sync above can
-      # fix it, so failing before them would strand a catalog or stage-doc sync,
-      # or the post-sync dispatch, on a problem it cannot repair — the same
-      # failure-domain separation the two-commit split above exists for. Red
-      # here is the intended signal.
-      #
-      # It reads git objects rather than the working tree, so the uncommitted
-      # sync edits above cannot affect its verdict.
-      #
-      # `!cancelled()` is load-bearing, not decoration. A step condition that
-      # names only its own predicate still carries an implicit success(), so
-      # ANY earlier failure here — a failed evidence check, a non-fast-forward
-      # push — would SKIP this assertion. That is the one situation in which it
-      # most needs to run, and the skip would be silent: the tag already
-      # exists, and because release-please reports `releases_created` exactly
-      # once, the documented manual re-run above sees `false` and skips every
-      # gated step, so a plain retry goes green having asserted nothing.
-      # Nothing downstream reliably catches it either: a GITHUB_TOKEN push
-      # triggers no workflow, and the post-sync dispatch above runs full-tests
-      # only when a sync push landed.
-      - name: Verify the release discharged its protected-asset obligations
-        if: ${{ !cancelled() && (steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch') }}
-        run: node scripts/check-release-obligation.mjs

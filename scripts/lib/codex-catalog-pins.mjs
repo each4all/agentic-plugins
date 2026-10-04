@@ -17,13 +17,13 @@ export const CODEX_CATALOG_PATH = '.agents/plugins/marketplace.json';
 export const FLOORS_PATH = 'scripts/data/codex-pin-floors.json';
 export const FLOORS_SCHEMA = 'codex-pin-floors-1.0';
 
-// Plain X.Y.Z — the grammar every release tag in this repository uses, and the
-// one check-release-obligation.mjs anchors on. A pin or floor with a
-// pre-release or build suffix is rejected, which fails closed: adopting such
-// releases is a decision about what a release is, and it would have to teach
-// both checkers precedence rules first. The one question that must NOT fail
-// open on that narrowing — "has this package ever been released?", which ends
-// the untagged exemption — accepts any suffix (RELEASE_TAG below).
+// Plain X.Y.Z — the grammar every release tag in this repository uses. A pin
+// or floor with a pre-release or build suffix is rejected, which fails closed:
+// adopting such releases is a decision about what a release is, and it would
+// have to teach this checker precedence rules first. The one question that
+// must NOT fail open on that narrowing — "has this package ever been
+// released?", which ends the untagged exemption — accepts any suffix
+// (RELEASE_TAG below).
 const SEMVER_SRC = '(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)';
 const SEMVER = new RegExp(`^${SEMVER_SRC}$`);
 const REF = new RegExp(`^plugin-(.+)-v(${SEMVER_SRC})$`);

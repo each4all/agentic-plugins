@@ -130,13 +130,14 @@ describe('retention-planner pin 1 — tracked-doc citations', () => {
     assert.ok(res.pinned.get('settings').has(SETTINGS_B));
   });
 
-  // ADR-0049 §Neutral requires this as a regression, not an incidental
-  // property: the evidence store is git-tracked precisely so a record's run-id
-  // citations keep the doctor artifacts they point at pinned through
-  // retention. The scan reads every tracked text file with no extension
-  // filter, so a JSON record already pins — this pins THAT, so a future
-  // "only scan .md" narrowing cannot silently unpin every stored record's
-  // evidence and leave the store citing runs retention has deleted.
+  // ADR-0049 §Neutral required this as a regression, not an incidental
+  // property, and ADR-0065 Decision 4 relies on it: the evidence records are
+  // frozen but still git-tracked, so their run-id citations keep the doctor
+  // artifacts they point at pinned through retention. The scan reads every
+  // tracked text file with no extension filter, so a JSON record already
+  // pins — this pins THAT, so a future "only scan .md" narrowing cannot
+  // silently unpin every record's evidence and leave the records citing runs
+  // retention has deleted.
   it('pins a run-id cited from a JSON evidence record, not only from markdown', async () => {
     const repo = tmpRepo();
     const dir = path.join(repo, 'docs', 'assurance', 'evidence', 'records');
