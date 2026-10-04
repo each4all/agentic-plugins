@@ -1803,6 +1803,41 @@ describe('runtime settings', () => {
     ok(formatText(report).includes('claude command surface: mode=per-plugin-command'));
   });
 
+  // ADR-0064 Decision 4 removed the doctor hint for a permission denial along with
+  // `--sandbox-permission-probe`, the surface it pointed at.
+  it('classifies a permission-denied plugin-management failure with no doctor hint', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-permission-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-permission-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      runId: SETTINGS_RUN_ID,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex plugin marketplace add each4all/agentic-plugins': {
+          ok: false,
+          exit_code: null,
+          stdout: '',
+          stderr: 'EACCES',
+          error_code: 'EACCES',
+          timed_out: false,
+        },
+      }),
+    });
+
+    const failed = report.plugin_management.plans.find((plan) => plan.status === 'failed');
+    strictEqual(failed.result.failure_type, 'permission_denied');
+    strictEqual(failed.result.retryable, false);
+    strictEqual(failed.result.doctor_hint, null);
+    ok(!JSON.stringify(report).includes('sandbox-permission-probe'));
+    ok(!formatText(report).includes('sandbox-permission-probe'));
+  });
+
   it('persists execution artifacts and classifies failed plugin-management retries', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-home-'));

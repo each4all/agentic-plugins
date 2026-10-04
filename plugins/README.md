@@ -101,7 +101,7 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   [ADR-0024](../docs/adr/0024-runtime-operator-control-plane.md):
   read-only `doctor` diagnostics for host CLI/auth readiness,
   marketplace/cache/plugin state, companion contract compatibility,
-  model/effort observation, companion sandbox/permission readiness, and
+  model/effort observation, opt-in companion permission proofs, and
   workflow/peer-run ledger health. `settings`, dynamic consensus,
   context hygiene, and completion footer work are deferred. See
   [`plugins/runtime/README.md`](runtime/README.md).

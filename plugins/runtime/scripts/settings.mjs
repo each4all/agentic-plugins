@@ -1413,7 +1413,9 @@ function classifyPluginManagementFailure(result) {
       type: 'permission_denied',
       retryable: false,
       retry_after: 'retry only after resolving host permission or sandbox policy outside runtime:settings',
-      doctor_hint: 'runtime:doctor --sandbox-permission-probe reports read-only permission surface evidence',
+      // No doctor surface diagnoses a host permission denial: the hint here pointed
+      // at `--sandbox-permission-probe`, removed by ADR-0064 Decision 4.
+      doctor_hint: null,
     });
   }
   if (/\b(not logged in|login required|auth required|authentication required|unauthorized|forbidden|401|403)\b/.test(text)) {
