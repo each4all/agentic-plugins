@@ -2600,7 +2600,7 @@ they are written down.
 | `orchestrator` → `engineer` | **hard** | both | `/orchestrator:next` resolves engineer through `discover-engineer.mjs` and exits `engineer plugin not found` **before any dispatch**. |
 | `image` → `companions` | **hard** | **Claude only** | On **Codex** image generation is **native** (the in-session gpt-image tool). On **Claude** the only path is `codex-companion`. Host-qualified, not universal. |
 | `engineer` / `orchestrator` / `founder` / `designer` → `companions` | **soft** | both | Ensemble dispatch degrades gracefully to local-only with a stderr warning. The persona still works — it loses the peer ensemble, which is its always-max core. |
-| `attention` → `runtime` | **soft** | both | Attention resolves the runtime root through a copied `discover-runtime.mjs` ladder; with no runtime there is no pipeline to emit into, so the sensors are inert. |
+| `attention` → `runtime` | **soft** | both | Attention resolves the runtime root through a copied `discover-runtime.mjs` ladder; with no runtime there is no capture publisher or entry arbiter to spawn, so the sensors are inert. |
 
 Rules:
 
@@ -2608,8 +2608,8 @@ Rules:
   violating `custom` selection is **rejected** (exit 40), naming the missing plugin
   and the host.
 - **Soft** edges are never rejected, but bootstrap MUST **warn**: a persona without
-  `companions` is a materially degraded install; `attention` without `runtime` emits
-  nothing.
+  `companions` is a materially degraded install; `attention` without `runtime` captures
+  and injects nothing.
 - This is why `base` carries `companions`: every bundle above `base` has a persona.
 - Declining a plugin re-runs this closure (§6.2).
 

@@ -394,9 +394,12 @@ warning on blocked (and silence on `off`/`ready`).
 ## 13. Publisher-floor declaration and the readiness diagnosis
 
 ADR-0044 §2 gives the publisher spawn its **own capability floor**,
-separate from the notify floor (`MIN_RUNTIME_VERSION` in
-`plugins/attention/scripts/discover-runtime.mjs`) — "the two gates never
-share a constant" — and the §10 rollout order means the floor can only be
+separate from every other gate in
+`plugins/attention/scripts/discover-runtime.mjs` (at the time, the notify
+floor `MIN_RUNTIME_VERSION`, which
+[ADR-0064](../../../docs/adr/0064-runtime-surface-reduction.md) removed with
+attention's notification stage) — "the two gates never share a constant" —
+and the §10 rollout order means the floor can only be
 pinned **after** the runtime release carrying `publish-session` exists.
 The runtime-side readiness diagnosis therefore never hardcodes an
 attention constant; it reads a **declaration file** the attention plugin
@@ -723,7 +726,7 @@ The complete command vocabulary (neutral form, localized per §17):
   under the §15.3 byte cap. The hook surface is hook-grade: exit 0 always,
   nothing on stdout except that line, at most one stderr line. This is the
   scoped ADR-0040 sensor-output exception (ADR-0045 §2.2) — stdout-into-
-  context is the point of a SessionStart hook; every notify-pipeline sensor
+  context is the point of a SessionStart hook; the Stop capture sensor
   stays stdout-silent.
 - **R0 lifecycle**: no consumed-markers, no claims, no writes. A pending
   handoff keeps listing on subsequent startups until consumed by the persona
@@ -773,8 +776,8 @@ cli/dashboard surfaces always compute regardless.
   `<attention plugin root>/data/runtime-floors.json` file (§13). The
   attention release that ships the SessionStart entry sensor pins it to
   the first **released** runtime version carrying `entry-brief`
-  (ADR-0043 released-floor rule; notify, publisher, and entry-brief
-  floors never share a constant — ADR-0045 §12). Key semantics differ
+  (ADR-0043 released-floor rule; the publisher and entry-brief floors
+  never share a constant — ADR-0045 §12). Key semantics differ
   from the founding key by design: `publish_session` is required by the
   1.x family (its absence in a present file is malformed, §13), while an
   absent `entry_brief` key in a present, well-formed file is the honest
