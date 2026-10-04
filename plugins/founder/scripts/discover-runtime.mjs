@@ -1,30 +1,23 @@
 #!/usr/bin/env node
 // plugins/founder/scripts/discover-runtime.mjs
 //
-// ADR-0039 §5 ladder, founder DUAL-CONSUMER copy (ADR-0043 §2/§4). Two
-// runtime capabilities ride this resolver, each with its OWN floor and its
-// OWN gating capability file:
+// ADR-0039 §5 ladder, founder copy (ADR-0043 §2/§4). One runtime capability
+// rides this resolver:
 //
 //   - FOOTER (ADR-0043 S3): `session-handoff.mjs` `emitTerminalHandoffSidecar`
 //     shells out to the runtime `scripts/footer.mjs render` to code-synthesize
 //     the completion footer. Floor = MIN_RUNTIME_VERSION; every ladder rung
 //     gates on `scripts/footer.mjs`.
-//   - NOTIFY (ADR-0040 §5): `peer-runner.mjs`'s peer-run terminal self-sensor
-//     shells out to the runtime `scripts/notify.mjs emit`. Floor =
-//     NOTIFY_MIN_RUNTIME_VERSION; every ladder rung gates on
-//     `scripts/notify.mjs`.
 //
-// The capability file is a PARAMETER (ADR-0043 §2): copying engineer's
-// footer-gated resolver wholesale would silently change notify discovery from
-// "notify exists" to "footer exists", so each consumer passes its own
-// capability + floor and the two ladders stay independent (independent
-// regression tests pin both).
+// The capability file is a PARAMETER (ADR-0043 §2), defaulting to the footer.
+// A second consumer, the ADR-0040 §5 peer-run notification, was removed by
+// ADR-0064.
 //
-// COPY-NOT-IMPORT (ADR-0010 §5). footer.mjs / notify.mjs are L1 runtime;
-// founder is an L3 persona. A cross-plugin `import` would break SemVer
-// independence, so this module lives INSIDE founder and discovers the runtime
-// plugin root by filesystem inspection only; the eventual footer.mjs /
-// notify.mjs invocation goes through `child_process`.
+// COPY-NOT-IMPORT (ADR-0010 §5). footer.mjs is L1 runtime; founder is an L3
+// persona. A cross-plugin `import` would break SemVer independence, so this
+// module lives INSIDE founder and discovers the runtime plugin root by
+// filesystem inspection only; the eventual footer.mjs invocation goes through
+// `child_process`.
 //
 // The resolver runs IN-PROCESS on terminal hot paths (no CLI boundary), so the
 // version gate is folded into `discoverRuntimePluginRoot` — it returns a root
@@ -75,18 +68,8 @@ const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
 // owns the bump, and the gate below fail-closes on anything older.
 export const MIN_RUNTIME_VERSION = '0.79.0';
 
-// NOTIFY floor (ADR-0040 §5, UNCHANGED by the footer onboarding — ADR-0043 §4
-// explicitly keeps the two floors separate): the first RELEASED runtime
-// version shipping notify.mjs, plugin-runtime-v0.71.0 (macro checkpoint
-// 2026-07-04). Notify emission is a released capability and must not be
-// dragged up by the footer floor.
-export const NOTIFY_MIN_RUNTIME_VERSION = '0.71.0';
-
-// Gating capability files (basenames under `<runtime-root>/scripts/`). Each
-// consumer passes its own so the footer ladder and the notify ladder never
-// share a gate (ADR-0043 §2).
+// Gating capability file (basename under `<runtime-root>/scripts/`).
 export const FOOTER_CAPABILITY = 'footer.mjs';
-export const NOTIFY_CAPABILITY = 'notify.mjs';
 
 async function fileExists(path) {
   try {
@@ -273,7 +256,7 @@ async function newestRuntimeInstall({ base, manifest }, capabilityRel) {
  * @param {string} [args.home=homedir()]
  * @param {string} [args.selfUrl=import.meta.url]
  * @param {string} [args.capability=FOOTER_CAPABILITY] — gating file basename
- *   under `scripts/` (FOOTER_CAPABILITY | NOTIFY_CAPABILITY)
+ *   under `scripts/`
  * @returns {Promise<{root: ?string, source: ?string, host: ?string,
  *   callerHost: string, crossHostFallback: boolean, version?: string,
  *   reason?: string}>} `source` is 'env', 'claude-cache', 'codex-cache',
@@ -394,7 +377,7 @@ async function readRuntimeVersion(root) {
 /**
  * True when the runtime plugin at `root` declares a version >= `min`. A
  * missing/unreadable version is treated as too-old (fail-closed): we will not
- * render or emit against a runtime we cannot vouch for.
+ * render against a runtime we cannot vouch for.
  */
 export async function runtimeVersionAtLeast(root, min = MIN_RUNTIME_VERSION) {
   const version = await readRuntimeVersion(root);
@@ -413,7 +396,7 @@ export async function runtimeVersionAtLeast(root, min = MIN_RUNTIME_VERSION) {
  * @param {string} [args.home=homedir()]
  * @param {string} [args.selfUrl=import.meta.url]
  * @param {string} [args.capability=FOOTER_CAPABILITY] — gating file basename
- *   under `scripts/` (FOOTER_CAPABILITY | NOTIFY_CAPABILITY)
+ *   under `scripts/`
  * @param {{write:(s:string)=>void}} [args.stderr=process.stderr] — receives
  *   the cross-host fallback report
  * @returns {Promise<?string>}
@@ -434,13 +417,10 @@ export async function resolveRuntimePluginRoot({
  * Resolve the runtime plugin root, version-gated. Returns the absolute root
  * ONLY when `scripts/<capability>` exists AND the runtime declares a version
  * >= `minVersion`. A missing OR too-old runtime returns `null` — the calling
- * terminal path then fail-closes silently (no footer / no notification, the
- * completion or peer-run lifecycle proceeds), with NO fall-back to a stale
- * cache (ADR-0039 §5).
+ * terminal path then fail-closes silently (no footer, the completion
+ * proceeds), with NO fall-back to a stale cache (ADR-0039 §5).
  *
- * The defaults are the FOOTER pair; the notify consumer passes
- * `{ minVersion: NOTIFY_MIN_RUNTIME_VERSION, capability: NOTIFY_CAPABILITY }`
- * explicitly (ADR-0043 §2 — the two ladders never share a gate).
+ * The defaults are the FOOTER pair.
  *
  * @param {object} [args]
  * @param {Record<string,string>} [args.env=process.env]
@@ -470,8 +450,7 @@ export async function discoverRuntimePluginRoot({
 // CLI surface — a thin `discover` shim for manual sanity checks + debugging.
 // The founder terminal paths call `discoverRuntimePluginRoot` in-process, so
 // this CLI is not on any hot path; it mirrors the engineer copy's `discover`
-// subcommand shape (empty stdout + exit 0 means "not resolved"). `--notify`
-// switches to the notify pair so both ladders stay debuggable, and `--json`
+// subcommand shape (empty stdout + exit 0 means "not resolved"). `--json`
 // prints the resolution with its provenance, so a diagnostic can report where
 // the root came from.
 
@@ -484,11 +463,10 @@ async function cliMain(argv) {
         '',
         'Usage:',
         '',
-        '  discover [--notify] [--json]',
+        '  discover [--json]',
         '    Resolve the runtime plugin root (env override → this host\'s install',
-        '    cache → the other host\'s cache → sibling checkout). Default gates on',
-        '    the FOOTER capability (scripts/footer.mjs, version >= ' + MIN_RUNTIME_VERSION + ');',
-        '    --notify gates on scripts/notify.mjs, version >= ' + NOTIFY_MIN_RUNTIME_VERSION + '.',
+        '    cache → the other host\'s cache → sibling checkout). Gates on the',
+        '    FOOTER capability (scripts/footer.mjs, version >= ' + MIN_RUNTIME_VERSION + ').',
         '    Prints the absolute path on stdout. Empty stdout + exit 0 if not',
         '    resolved or too old. --json prints one JSON object with the root and',
         '    where it came from.',
@@ -498,14 +476,12 @@ async function cliMain(argv) {
     return 0;
   }
   if (subcommand === 'discover') {
-    const unknown = rest.find((flag) => flag !== '--notify' && flag !== '--json');
+    const unknown = rest.find((flag) => flag !== '--json');
     if (unknown) {
       process.stderr.write(`discover-runtime.mjs: unknown flag ${unknown}\n`);
       return 2;
     }
-    const pair = rest.includes('--notify')
-      ? { minVersion: NOTIFY_MIN_RUNTIME_VERSION, capability: NOTIFY_CAPABILITY }
-      : { minVersion: MIN_RUNTIME_VERSION, capability: FOOTER_CAPABILITY };
+    const pair = { minVersion: MIN_RUNTIME_VERSION, capability: FOOTER_CAPABILITY };
     if (rest.includes('--json')) {
       const located = await locateRuntimePluginRoot({ capability: pair.capability });
       const gated = located.root !== null && !(await runtimeVersionAtLeast(located.root, pair.minVersion));

@@ -222,19 +222,16 @@ case "$STATUS" in
 esac
 ```
 
-## Runtime discovery floors (dual-consumer, ADR-0043 §4)
+## Runtime discovery floor (ADR-0043 §4)
 
-`discover-runtime.mjs` carries **two independent floors**, each gating on
-its own capability file:
+`discover-runtime.mjs` gates on one floor, the **footer floor**
+`MIN_RUNTIME_VERSION` (gates on `scripts/footer.mjs`): the first released
+runtime containing the ADR-0043 S2 enum expansion. A runtime below it would
+reject `workflow_kind: founder` and render the unsupported-kind degradation
+text, so discovery fail-closes instead (silent, no stale-cache fallback).
 
-- **footer floor** `MIN_RUNTIME_VERSION` (gates on `scripts/footer.mjs`) —
-  the first released runtime containing the ADR-0043 S2 enum expansion; a
-  runtime below it would reject `workflow_kind: founder` and render the
-  unsupported-kind degradation text, so discovery fail-closes instead
-  (silent, no stale-cache fallback);
-- **notify floor** `NOTIFY_MIN_RUNTIME_VERSION` (gates on
-  `scripts/notify.mjs`) — unchanged by the footer onboarding; the
-  peer-runner self-sensor passes it explicitly.
+The second floor, `NOTIFY_MIN_RUNTIME_VERSION` on `scripts/notify.mjs`, served
+the peer-runner's ADR-0040 §5 notification, and went with it (ADR-0064).
 
 ## Codex hook parity (diagnose + operator attestation only)
 
