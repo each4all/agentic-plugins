@@ -138,7 +138,7 @@ export function systemAppend({ runId, seq, stepKind }) {
     '3. Ceremony prompts resolve by default: take the recommendation, present in batch, use the suggested conventional subject.',
     '4. Run peer ensembles and other long work as host background tasks, wait for their notifications, and collect them before you finish. Never sleep-poll.',
     `5. ${commit} Never push, open, update or merge pull requests, and take no other outward action.`,
-    '6. End with the structured step report. workflow = the id of the engineer workflow this step worked in (null when it ran no engineer verb). next_step = that workflow\'s next_step_kind / next_step_verb / next_step_confidence exactly as the verb wrote them with finish-verb (null when it ran no verb) — not the macro-level proposal /orchestrator:next prints at its end. awaiting_owner = the owner gate this step recorded, or null. summary = one line.',
+    '6. End with the structured step report. A report the host takes when you end a turn to wait for a background task is provisional: when its notification re-invokes you, carry on with the runbook to its end and file a new report. Only the last report counts. workflow = the id of the engineer workflow this step worked in (null when it ran no engineer verb). next_step = that workflow\'s next_step_kind / next_step_verb / next_step_confidence exactly as the verb wrote them with finish-verb (null when it ran no verb) — not the macro-level proposal /orchestrator:next prints at its end. awaiting_owner = the owner gate this step recorded, or null. summary = one line.',
   ].join('\n');
 }
 
