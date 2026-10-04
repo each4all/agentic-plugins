@@ -208,6 +208,10 @@ Independent of any flag, runtime MUST NOT:
 > network-egress precedent — the enumerated-metadata + fixed-service +
 > verified-local narrowing is the deliberate suppressant (ADR-0041 §1–§2, §10).
 
+> **Retired ([ADR-0064](0064-runtime-surface-reduction.md), 2026-10-04):** tier E1
+> (network egress) no longer has an executor. The ceiling and every other tier
+> are unchanged; a future egress would need a new ADR.
+
 > **Cross-reference — domain S1 (owner-launched fresh-session spawn),
 > [ADR-0063](0063-autopilot-fresh-session-driver.md):** the "hidden host
 > startup" line above continues to bind runtime without exception. ADR-0063
