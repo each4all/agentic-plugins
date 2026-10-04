@@ -1,7 +1,7 @@
 // Tests for lib/operator-text.mjs, moved with safeOperatorText and
 // isDisplayHazard out of test-legacy-egress-discovery.mjs (ADR-0064 Decision 2,
-// item 3). The discovery scanner's use of them is still tested there, and so
-// is the WAL's own record-name policy, safeRecordName.
+// item 3). The discovery scanner and the WAL's own record-name policy,
+// safeRecordName, went with ADR-0064 Decision 1.
 
 import { describe, it } from 'node:test';
 import { match, notStrictEqual, ok, strictEqual } from 'node:assert/strict';

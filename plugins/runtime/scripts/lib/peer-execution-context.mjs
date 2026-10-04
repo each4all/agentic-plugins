@@ -6,8 +6,8 @@
 // to call runDoctor for exactly `companions.directions[k].selected.path` and
 // `model_effort.directions[k].{model,effort}.value`, paying ~3.1s of host-CLI probing
 // it never read — 14 `claude`/`codex` processes, each of which received the ambient
-// egress credential that `settings.mjs` deliberately strips before its own runDoctor
-// call (settings.mjs, ADR-0041 §2b/§2c).
+// egress credential that `settings.mjs` then stripped before its own runDoctor call
+// (ADR-0041 §2b/§2c; the strip went with egress, ADR-0064 Decision 1).
 //
 // This module takes NO `env`, NO `runner` and NO `now`, and its import allowlist is pinned
 // by `tests/runtime/test-peer-execution-context.mjs` (a `child_process` scan alone would

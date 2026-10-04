@@ -89,7 +89,9 @@ would be inside the repo and its "outside every repository" premise is false.
 Bootstrap **fails closed** with a diagnostic rather than writing there; it does
 not fall back to a repo-relative home, and it does not write and hope the path is
 ignored. This is the posture the egress config's verified-ignored-local reader
-already established (`inside-repo` → refuse), not a softer one invented here.
+had already established (`inside-repo` → refuse), not a softer one invented here.
+That reader was removed with egress by ADR-0064 Decision 1 (slice R4n2,
+2026-10-05); the refusal stands on its own.
 
 ### Security
 
@@ -153,8 +155,18 @@ the other's root.
 
 | Scope | Root | Families | Retention cap |
 |---|---|---|---|
-| repo | `<repo>/.agentic-plugins/runs/` | `compat`, `consensus`, `context`, `settings`, `doctor`, `permission` (historical — ADR-0057 §Decision 7 removed the producer, kept the family declared and readable), `notification`, `egress-launcher` | 20 runs |
+| repo | `<repo>/.agentic-plugins/runs/` | `compat`, `consensus`, `context`, `settings`, `doctor`, `permission` (historical — ADR-0057 §Decision 7 removed the producer, kept the family declared and readable) | 20 runs |
 | machine | `~/.agentic-plugins/` | `bootstrap` (under `runs/`) | 10 runs |
+
+The repo scope also declared `notification` (the ADR-0040 §4 notification plan)
+and `egress-launcher` (the ADR-0041 §12 egress launcher plan) until ADR-0064
+Decision 1 removed both producers in slice R4n2 (2026-10-05). Runs already under
+`.agentic-plugins/runs/notification/` and `.agentic-plugins/runs/egress-launcher/`
+are history (ADR-0064 Decision 8): no runtime code writes them or reads their
+contents, and nothing deletes them. The repo-scope inventory still counts, sizes
+and ages them as directories it discovers rather than as declared families, the
+way it treats a retained `cutover` family, and an over-cap set still gets the
+same 20-run cap attention. Removing them is the operator's choice.
 
 The machine scope also listed a `profiles` family, exempt from the cap, until
 ADR-0064 Decision 3 removed the machine profile on 2026-10-04.
@@ -166,15 +178,20 @@ name on every read and never opens, validates or credits them, and the files sta
 on disk until the operator removes them (contract §7). Nothing writes either file
 any more.
 
-The machine scope also holds ONE non-family path that is deliberately not a run
+The machine scope can also hold ONE non-family path that is deliberately not a run
 family and deliberately not inventoried: `~/.agentic-plugins/runs/doctor/egress-intents/`,
-the ADR-0048 §3 egress intent WAL. It is **side-effect state, not an artifact** —
-each record exists to fence a future send against a message that may already be
-on the operator's phone, and it is named by activation fingerprint rather than by
-run id, so it has neither a run's identity nor a run's lifecycle. It must never
-be swept by retention: deleting a fencing record is exactly the act that permits
-a duplicate message, and the ADR-0048 contract makes that an OPERATOR decision
-taken after checking the phone. It predates this note — the taxonomy above simply
+the ADR-0048 §3 egress intent WAL. It was **side-effect state, not an artifact** —
+each record existed to fence a future send against a message that might already be
+on the operator's phone, and it was named by activation fingerprint rather than by
+run id, so it had neither a run's identity nor a run's lifecycle. ADR-0064
+Decision 1 removed doctor's egress ack proof, the WAL's only writer and reader, in
+slice R4n2 (2026-10-05). Records left in the directory are history (ADR-0064
+Decision 8): no runtime code writes or reads them, and the inventory still does
+not list the path. It must still never be swept by retention. An older runtime
+on the other host of a partially upgraded pair still fences on these records, and
+deleting a fencing record is exactly the act that permits a duplicate message;
+the ADR-0048 contract made that an OPERATOR decision taken after checking the
+phone. It predates this note — the taxonomy above simply
 never named it — and naming it here is what keeps a future inventory or retention
 pass from adopting it by default.
 

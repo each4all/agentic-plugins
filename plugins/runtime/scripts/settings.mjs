@@ -26,7 +26,6 @@ import {
   CONFIG_KEYS,
   CONFIG_KEY_FAMILIES,
   ENTRY_BRIEF_ENV_KEYS,
-  NOTIFY_KEY_DEFAULTS,
   SESSION_KEY_DEFAULTS,
   USER_SCOPE_ONLY_CONFIG_KEYS,
   loadEntryBriefConfig,
@@ -36,9 +35,6 @@ import {
   validateConfigValue,
 } from './lib/runtime-config.mjs';
 import { sanitizeValue } from './lib/sanitize.mjs';
-import { buildCodexNotificationPlan } from './lib/notification-plan.mjs';
-import { buildEgressLauncherPlan } from './lib/egress-launcher-plan.mjs';
-import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
 
 import {
   EXECUTABLE_PLUGIN_ACTIONS,
@@ -89,7 +85,11 @@ import { expandArgsFile } from './lib/args-file.mjs';
 // settings-report-contract.md §4 requires the constant and its pinning
 // assertions to move together (cross-host review, MAJOR — the shape changed
 // under the old identifier).
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.26';
+// 1.27 (non-additive, ADR-0064 Decision 7): the notify family and the two
+// plan surfaces left with the notification emitter — `notify_settings`,
+// `notification_plan`, `egress_launcher_plan` and `overall.notify_warnings`
+// are gone (settings-report-contract.md §3).
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.27';
 
 // 1.1 → 1.2 (machine-bootstrap-contract.md §1.5, ADR-0046 §5): the plugin-
 // management and cleanup executors are now write-ahead — the artifact gains the
@@ -99,18 +99,15 @@ export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.26';
 // `bound_versions` + `attested_plugins` the completion reducer re-validates (§8.2),
 // alongside the retained legacy `plugin_versions` for the compat window.
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.3';
-// The config-key contract — key families, notify channel/defaults, per-key
-// validators, and the TOML read parser — lives in lib/runtime-config.mjs so
-// the ADR-0040 §2 notify emitter consumes the OFFICIAL key surface without
-// loading this plan pipeline. Re-exported here to keep the public settings
-// API unchanged.
+// The config-key contract — key families, session defaults, per-key
+// validators, and the TOML read parser — lives in lib/runtime-config.mjs so a
+// consumer reads the OFFICIAL key surface without loading this plan pipeline.
+// Re-exported here to keep the public settings API unchanged.
 export {
   CONFIG_KEY_FAMILIES,
   CONFIG_KEYS,
   ENTRY_BRIEF_EMPTY_MODES,
   ENTRY_BRIEF_MODES,
-  NOTIFY_CHANNELS,
-  NOTIFY_KEY_DEFAULTS,
   SESSION_CAPTURE_MODES,
   SESSION_KEY_DEFAULTS,
   USER_SCOPE_ONLY_CONFIG_KEYS,
@@ -156,8 +153,6 @@ export async function runSettings({
   pluginManagementHost = undefined,
   pluginManagementTimeoutMs = undefined,
   skipHostCliProbes = false,
-  notificationPlan = false,
-  egressLauncherPlan = false,
   runId = null,
   // §1.6 plan/executor drift: an operator-supplied hash the executor revalidates
   // against the freshly recomputed plan, refusing on divergence. Null = no guard.
@@ -212,7 +207,7 @@ export async function runSettings({
   for (const raw of Array.isArray(unset) ? unset : []) {
     const key = normalizeConfigKey(String(raw).trim());
     if (!key) continue;
-    if (!CONFIG_KEYS.includes(key)) throw new Error(`unset names '${key}', which is not a runtime config key`);
+    if (!CONFIG_KEYS.includes(key)) throw new Error(unknownUnsetKeyMessage('unset', key));
     if (!unsetKeys.includes(key)) unsetKeys.push(key);
   }
   const contradictoryKeys = unsetKeys.filter((key) => Object.hasOwn(desiredConfig, key));
@@ -221,14 +216,10 @@ export async function runSettings({
   }
   const commandRunner = runner ?? runCommand;
 
-  // ADR-0041 §2b/§2c (Codex review MAJOR): the egress credential (TELEGRAM_BOT_TOKEN)
-  // must NOT ride into subprocess probes. runDoctor spawns host CLIs with `env`, so a
-  // retained/echoed child output — or an injected runner — could surface the token in
-  // the settings report. Capture the real env for the launcher's in-process, read-only
-  // PRESENCE check (it never spawns, never echoes the value), then strip the credential
-  // from the `env` every subprocess (doctor, plugin management, cleanup) receives.
-  const launcherEnv = env;
-  env = redactEgressCredentialFromEnv(env);
+  // Subprocesses (doctor's host-CLI probes, plugin management, cleanup) receive
+  // `env` as given. The egress-credential scrub left with egress (ADR-0064
+  // Decision 1); Decision 9 states the window that leaves until the owner's
+  // cleanup removes the credential from the shell.
 
   // Evidence-collection axis (settings-report-contract.md §2): probe-free
   // runs resolve model/effort + companion directions from the filesystem-only
@@ -376,11 +367,6 @@ export async function runSettings({
     configTargets: configPlans.targets,
     apply,
   });
-  const notifySettings = buildNotifySettingPlans({
-    desiredConfig,
-    configTargets: configPlans.targets,
-    apply,
-  });
   const sessionSettings = buildSessionSettingPlans({
     desiredConfig,
     configTargets: configPlans.targets,
@@ -405,7 +391,7 @@ export async function runSettings({
   const sessionReadiness = await assessSessionCaptureReadiness({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
-    env: launcherEnv,
+    env,
     runtimeVersion: RUNTIME_VERSION,
     attentionEnablement: skipHostCliProbes
       ? null
@@ -417,7 +403,7 @@ export async function runSettings({
   const entryReadiness = await assessEntryBriefReadiness({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
-    env: launcherEnv,
+    env,
     runtimeVersion: RUNTIME_VERSION,
     attentionEnablement: skipHostCliProbes
       ? null
@@ -446,34 +432,6 @@ export async function runSettings({
     );
   }
 
-  // ADR-0040 §4 Codex notification-channel M1 plan: fragment render + plan
-  // artifact only (its own runs/notification family; never host config).
-  let notificationPlanSection = { requested: false, executed: false, status: 'not_requested' };
-  if (notificationPlan) {
-    notificationPlanSection = await buildCodexNotificationPlan({
-      repoRoot: resolvedRepoRoot,
-      homeDir: resolvedHomeDir,
-      env,
-      now,
-    });
-  }
-
-  // ADR-0041 §12 first-class egress launcher: read-only activation-state +
-  // prototype scan → per-machine activation runbook, recorded as an artifact
-  // only. NEVER writes host config, ~/.agentic-plugins/config.local.toml, the
-  // credential, or ~/.claude/settings.json (§2c: a launcher that wrote
-  // activation would itself be the egress-activation vector §2c closed).
-  let egressLauncherPlanSection = { requested: false, executed: false, status: 'not_requested' };
-  if (egressLauncherPlan) {
-    egressLauncherPlanSection = await buildEgressLauncherPlan({
-      repoRoot: resolvedRepoRoot,
-      homeDir: resolvedHomeDir,
-      env: launcherEnv, // the launcher's read-only presence check needs the real env; subprocesses get the scrubbed one
-      host,
-      now,
-    });
-  }
-
   // ADR-0048 §2 — classify what is installed at the receiver paths and, when it
   // is out of date, offer the re-install as a PLAN. Read-only: nothing here
   // writes into the install directory.
@@ -497,7 +455,7 @@ export async function runSettings({
     host_cli_probes: skipHostCliProbes
       ? { status: 'skipped', flag: '--skip-host-cli-probes' }
       : { status: 'run', flag: null },
-    section_presence: buildSectionPresence({ skipHostCliProbes, notificationPlan, egressLauncherPlan }),
+    section_presence: buildSectionPresence({ skipHostCliProbes }),
     receivers: receiverInventory,
     receiver_reinstall: receiverReinstallStep,
     apply,
@@ -506,7 +464,7 @@ export async function runSettings({
     execute_plugin_cleanup: executePluginCleanup,
     attest_codex_hook_review: attestCodexHookReview,
     mutation_boundary: {
-      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview, notificationPlan, egressLauncherPlan }),
+      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview }),
       // The LOGICAL path plus, when they differ, the path the write actually
       // resolved to. A symlinked config is followed by design (dotfiles), so the
       // boundary has to name where the bytes went, not only where the operator
@@ -550,12 +508,9 @@ export async function runSettings({
       targets: configPlans.targets,
     },
     companion_settings: companionSettings,
-    notify_settings: notifySettings,
     session_settings: sessionSettings,
     session_readiness: sessionReadiness,
     entry_readiness: entryReadiness,
-    notification_plan: notificationPlanSection,
-    egress_launcher_plan: egressLauncherPlanSection,
     artifacts: buildSettingsArtifactReport({
       repoRoot: resolvedRepoRoot,
       runId: settingsRunId,
@@ -565,7 +520,7 @@ export async function runSettings({
       attestCodexHookReview,
     }),
     // In local_plan mode this rebuilds from evaluated inputs only (config
-    // hints + companion/notify warnings) — the probe-derived inputs are
+    // hints + companion/session warnings) — the probe-derived inputs are
     // empty, and section_presence marks the section 'local_only'.
     recommendations: buildTopLevelRecommendations({
       clis: cliPlans ?? {},
@@ -573,7 +528,6 @@ export async function runSettings({
       pluginCleanup,
       desiredConfig,
       companionSettings,
-      notifySettings,
       sessionSettings,
       sessionReadiness,
       entryReadiness,
@@ -588,8 +542,6 @@ export async function runSettings({
       'runtime:settings does not write Codex host config; the former --apply-codex-plugin-hooks [features].plugin_hooks write was removed per ADR-0035 §6. Plugin hooks load via generic [features].hooks (default on) plus /hooks review/trust on current Codex; legacy Codex < ~0.134 requires a manual [features].plugin_hooks edit.',
       'Codex hook review/trust attestation records an operator claim only; runtime cannot mutate or independently prove active-session /hooks trust state.',
       'Claude host-native config, auth, secrets, and sandbox/permission settings are not written.',
-      'The notification plan (--notification-plan) reads the user-layer ~/.codex/config.toml read-only (mandatory notify read-check; wrapper-chaining preserves an existing notifier) and renders notify=/tui.notifications fragments + receiver scripts into an agentic-plugins-owned plan artifact; host config is never written and the receiver install is an explicit user action.',
-      'The egress launcher plan (--egress-launcher-plan) reads the current egress activation state and the personal ~/.claude prototype hooks read-only and records a per-machine activation runbook in an agentic-plugins-owned artifact; it NEVER writes host config, ~/.agentic-plugins/config.local.toml, the credential, or ~/.claude/settings.json, and the credential value is never read (only its presence). Applying the plan is an explicit user action (ADR-0041 §2c/§12).',
       'Companion invocation still uses companions/contract.md --model and --effort.',
       'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and host-native config apply modes are deferred.',
     ],
@@ -641,25 +593,21 @@ function normalizeConfigValue(value, key) {
   return text;
 }
 
-function mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview, notificationPlan = false, egressLauncherPlan = false }) {
+function mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview }) {
   const allowed = [];
   if (apply) allowed.push('agentic-plugins-owned config files');
   if (executePluginManagement) allowed.push('allowlisted host-native plugin install/update commands');
   if (executePluginCleanup) allowed.push('allowlisted retired/unknown agentic-plugins plugin cleanup commands');
   if (attestCodexHookReview) allowed.push('runtime settings execution artifact with Codex hook review attestation');
-  // Plan-artifact honesty (settings-report-contract.md §3, both modes): the
-  // M1 plan flags write their own artifact families while dry_run stays
-  // true — "dry run" must never render as "no writes" while they do.
-  if (notificationPlan) allowed.push('agentic-plugins-owned notification plan artifact (runs/notification)');
-  if (egressLauncherPlan) allowed.push('agentic-plugins-owned egress launcher plan artifact (runs/egress-launcher)');
   return allowed.length > 0 ? allowed.join('; ') : 'none; dry-run only';
 }
 
 // settings-report-contract.md §3 — one authoritative map over every
-// top-level report section (22 entries). Enum: evaluated | not_evaluated |
-// not_requested | local_only. An empty container or zero counter must never
-// stand in for "not evaluated"; this map carries the semantics.
-function buildSectionPresence({ skipHostCliProbes, notificationPlan, egressLauncherPlan }) {
+// top-level report section (19 entries). Enum: evaluated | not_evaluated |
+// local_only (`not_requested` left at 1.27 with the opt-in plan sections that
+// carried it). An empty container or zero counter must never stand in for
+// "not evaluated"; this map carries the semantics.
+function buildSectionPresence({ skipHostCliProbes }) {
   const probeState = skipHostCliProbes ? 'not_evaluated' : 'evaluated';
   return {
     clis: probeState,
@@ -671,7 +619,6 @@ function buildSectionPresence({ skipHostCliProbes, notificationPlan, egressLaunc
     codex_hook_review: probeState,
     config: 'evaluated',
     companion_settings: 'evaluated',
-    notify_settings: 'evaluated',
     session_settings: 'evaluated',
     session_readiness: 'evaluated',
     entry_readiness: 'evaluated',
@@ -684,8 +631,6 @@ function buildSectionPresence({ skipHostCliProbes, notificationPlan, egressLaunc
     limits: 'evaluated',
     overall: 'evaluated',
     recommendations: skipHostCliProbes ? 'local_only' : 'evaluated',
-    notification_plan: notificationPlan ? 'evaluated' : 'not_requested',
-    egress_launcher_plan: egressLauncherPlan ? 'evaluated' : 'not_requested',
   };
 }
 
@@ -802,7 +747,7 @@ async function buildOneConfigPlan({ kind, path, selected, desiredConfig, unsetKe
     message: unreadable
       ? `Config layer unreadable (${currentText.reason}) — planning and apply are refused for this target (fail-closed; the file is preserved byte-for-byte).`
       : Object.keys(desiredConfig).length === 0 && unsetKeys.length === 0
-        ? 'No config values requested; pass --model/--effort, direction-specific flags, --notify-* flags, --session-capture, or --unset <key> to plan config writes.'
+        ? 'No config values requested; pass --model/--effort, direction-specific flags, --session-capture, or --unset <key> to plan config writes.'
         : selected
           ? (actions.length > 0 && actions.every((action) => action.op === 'keep')
             // Distinguishes "nothing to do because it already matches" from
@@ -894,8 +839,8 @@ export function upsertRuntimeConfigToml(text, desired) {
     }
     // Rewrite EVERY line of a desired key, not just the first: the read
     // parser (parseRuntimeConfigToml) is last-value-wins, so leaving a later
-    // duplicate stale would make apply report an update the emitter never
-    // sees (Codex review).
+    // duplicate stale would make apply report an update the consuming executor
+    // never sees (Codex review).
     output.push(`${match[1]}${match[2]}${match[3]}${tomlString(desiredMap.get(normalizedKey))}${match[7]}`);
     replaced.add(normalizedKey);
   }
@@ -920,15 +865,16 @@ export function upsertRuntimeConfigToml(text, desired) {
  * argument, and it is asymmetric: a reader that misses a line mis-reports, while
  * a writer that matches a line the reader ignores DESTROYS data the runtime
  * never owned. Three shapes were reproduced against the private regex this
- * replaces, all of them data loss:
+ * replaces, all of them data loss (the reproductions used the since-retired
+ * `notify_kinds`; any known key behaves the same):
  *
- *   * a `notify_kinds` line inside an unrelated `[foo]` table — the reader stops
+ *   * a known key's line inside an unrelated `[foo]` table — the reader stops
  *     at the first table header by contract (§FLAT-KEY), so that line belongs to
  *     whoever wrote it and is not a runtime key at all;
  *   * CRLF endings and a missing final newline, both rewritten on every apply
  *     because the old implementation re-synthesized every terminator;
  *   * lines the reader skips for any other reason (an unparseable assignment,
- *     a quoted key like `"notify_kinds" = "x"` that the key regex does not
+ *     a quoted key like `"session_capture" = "x"` that the key regex does not
  *     accept) were matched by the looser writer pattern.
  *
  * EVERY matching line, not the first: `parseRuntimeConfigToml` is last-value-wins,
@@ -936,8 +882,8 @@ export function upsertRuntimeConfigToml(text, desired) {
  * the same reasoning `upsertRuntimeConfigToml` gives, in the direction that
  * actually loses data if it is wrong.
  *
- * Note `notify.kinds` and `notify-kinds` ARE removed: `normalizeConfigKey` maps
- * `.` and `-` to `_`, so the reader genuinely takes them as `notify_kinds`. That
+ * Note `session.capture` and `session-capture` ARE removed: `normalizeConfigKey`
+ * maps `.` and `-` to `_`, so the reader genuinely takes them as `session_capture`. That
  * is not conflation by this writer — it is the writer agreeing with the reader,
  * which is the invariant.
  *
@@ -1959,7 +1905,7 @@ function buildConfigFamilyPlans({ familyKeys, defaults, emitterLabel, desiredCon
     // Validate every target's stored value, not just the winning projection:
     // an invalid lower-precedence entry (e.g. user config shadowed by a valid
     // repo value) would otherwise sit silently until the shadowing entry is
-    // removed and the emitter starts fail-closing on it.
+    // removed and the consuming executor starts fail-closing on it.
     for (const targetKind of ['repo', 'user']) {
       const stored = projection[targetKind]?.current_config?.[key];
       if (stored === undefined || stored === null) continue;
@@ -2034,18 +1980,6 @@ function observedUserScopeFields({ key, entryBriefObserved, env }) {
     observed_effective_value: value,
     observed_source: envPresent ? `env ${envName}` : 'user-global config or shipped default',
   };
-}
-
-// ADR-0040 §2 notify family plan — the generic core with notify's keys/defaults.
-function buildNotifySettingPlans({ desiredConfig, configTargets, apply }) {
-  return buildConfigFamilyPlans({
-    familyKeys: CONFIG_KEY_FAMILIES.notify,
-    defaults: NOTIFY_KEY_DEFAULTS,
-    emitterLabel: 'the notify emitter',
-    desiredConfig,
-    configTargets,
-    apply,
-  });
 }
 
 // ADR-0044 §3 session family plan — same core; the consuming executor is the
@@ -2126,7 +2060,7 @@ function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
   return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
 }
 
-function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, notifySettings, sessionSettings, sessionReadiness, entryReadiness, hookSettings }) {
+function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, sessionSettings, sessionReadiness, entryReadiness, hookSettings }) {
   const recommendations = [];
   for (const [name, cli] of Object.entries(clis)) {
     if (cli.status !== 'available') {
@@ -2175,10 +2109,10 @@ function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredCon
     recommendations.push({
       area: 'config',
       executed: false,
-      detail: 'No config writes planned. Use --model/--effort, --claude-model/--codex-model, or --notify-* flags with optional --apply.',
+      detail: 'No config writes planned. Use --model/--effort, --claude-model/--codex-model, or --session-capture with optional --apply.',
     });
   }
-  for (const warning of [...collectCompanionSettingWarnings(companionSettings), ...(notifySettings?.warnings ?? []), ...(sessionSettings?.warnings ?? [])]) {
+  for (const warning of [...collectCompanionSettingWarnings(companionSettings), ...(sessionSettings?.warnings ?? [])]) {
     recommendations.push({
       area: 'config',
       executed: false,
@@ -2220,7 +2154,6 @@ function summarizeSettings(report) {
   const writeCount = report.config.targets.reduce((sum, target) => sum + target.planned_writes.length, 0);
   const appliedCount = report.config.targets.filter((target) => target.applied).length;
   const settingWarnings = collectCompanionSettingWarnings(report.companion_settings).length;
-  const notifyWarnings = report.notify_settings?.warnings?.length ?? 0;
   const sessionWarnings = report.session_settings?.warnings?.length ?? 0;
   // ADR-0044 S4 — evaluated in both scopes. Derived from the readiness
   // STATUS, never from recommendations.length (peer finding: presentation
@@ -2240,21 +2173,15 @@ function summarizeSettings(report) {
     : 0;
   if (report.report_scope === 'local_plan') {
     // settings-report-contract.md §3 — status is computed over evaluated
-    // sections only, which includes requested plan sections: a blocked or
-    // failed requested plan must never yield an unqualified local pass.
-    // Probe-derived counters are null (never 0): a zero would read as
-    // "evaluated and clean".
-    const blockedPlanSections = ['notification_plan', 'egress_launcher_plan']
-      .map((key) => report[key])
-      .filter((section) => section?.requested && ['blocked', 'failed'].includes(section.status)).length;
+    // sections only. Probe-derived counters are null (never 0): a zero would
+    // read as "evaluated and clean".
     return {
       scope: 'local_plan',
-      status: settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || entryReadinessWarnings > 0 || blockedPlanSections > 0 ? 'warning' : 'pass',
+      status: settingWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || entryReadinessWarnings > 0 ? 'warning' : 'pass',
       planned_config_writes: writeCount,
       applied_config_targets: appliedCount,
       plugin_recommendations: null,
       setting_warnings: settingWarnings,
-      notify_warnings: notifyWarnings,
       session_warnings: sessionWarnings,
       session_readiness_warnings: sessionReadinessWarnings,
       entry_readiness_warnings: entryReadinessWarnings,
@@ -2276,12 +2203,11 @@ function summarizeSettings(report) {
   const hookReviewWarnings = report.codex_hook_review?.requested && report.codex_hook_review.status !== 'attested' ? 1 : 0;
   return {
     scope: 'full',
-    status: missingCli > 0 || settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || entryReadinessWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || entryReadinessWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
     setting_warnings: settingWarnings,
-    notify_warnings: notifyWarnings,
     session_warnings: sessionWarnings,
     session_readiness_warnings: sessionReadinessWarnings,
     entry_readiness_warnings: entryReadinessWarnings,
@@ -2302,54 +2228,9 @@ function collectCompanionSettingWarnings(companionSettings) {
   return warnings;
 }
 
-// Text rendering for the egress-launcher-plan section. Exported as its own
-// seam because the layout rendering is KIND-DISPATCHED: a uid-less machine's
-// recommended layout is `env-all` (with POSIX + PowerShell variants and a
-// why-note) while a POSIX machine's is `config-local-toml+env-token` with an
-// env alternative — a formatter branching only on `config_local_toml` silently
-// dropped every env command for uid-less machines (Codex review MAJOR).
-export function formatEgressLauncherPlanLines(el) {
-  const lines = [];
-  const as = el.activation_state || {};
-  const proto = el.prototype || {};
-  lines.push('');
-  lines.push('Egress Launcher Plan (dry-run — ADR-0041 §12; artifact-only, runtime writes no host/activation state)');
-  lines.push(`- mode: ${el.mode}`);
-  lines.push(`- activation: active=${as.active} reason=${as.reason} channel=${as.channel ?? 'none'} source=${as.source ?? 'n/a'} credential-present=${as.credential_present} headline-opt-in=${as.headline_opt_in}`);
-  lines.push(`- prototype (~/.claude personal hook): settings-present=${proto.settings_present} match-count=${proto.match_count} script-present=${proto.script_file_present}`);
-  for (const step of el.steps || []) {
-    if (!step.applicable) continue;
-    lines.push(`- step [${step.id}]: ${step.title}`);
-    if (step.detail) lines.push(`    ${step.detail}`);
-    const rec = step.recommended_layout;
-    if (rec?.kind === 'env-all') {
-      // uid-less machines: env-only is the sole supported layout.
-      if (rec.why_env_only) lines.push(`    ${rec.why_env_only}`);
-      lines.push('    recommended layout — env-only (your shell profile; runtime never writes it):');
-      for (const l of rec.env_block.trimEnd().split('\n')) lines.push(`      ${l}`);
-      if (rec.env_block_powershell) {
-        lines.push('    PowerShell variant (Windows-native shells):');
-        for (const l of rec.env_block_powershell.trimEnd().split('\n')) lines.push(`      ${l}`);
-      }
-    } else if (rec?.config_local_toml) {
-      lines.push('    recommended layout — you create ~/.agentic-plugins/config.local.toml (runtime never writes it):');
-      for (const l of rec.config_local_toml.trimEnd().split('\n')) lines.push(`      ${l}`);
-      lines.push(`    token (env-only): ${rec.token_env_line}`);
-      if (step.alternative_layout?.env_block) {
-        lines.push('    alternative layout — env-all:');
-        for (const l of step.alternative_layout.env_block.trimEnd().split('\n')) lines.push(`      ${l}`);
-      }
-    }
-    for (const h of step.hooks_to_remove ?? []) lines.push(`    remove hook [${h.event}]: ${h.command_pointer}`);
-  }
-  if (el.artifact?.written) lines.push(`- artifact: ${el.artifact.report_pointer} (latest: ${el.artifact.latest_pointer})`);
-  for (const limit of el.limits ?? []) lines.push(`- limit: ${limit}`);
-  return lines;
-}
-
 export function formatText(report) {
-  // settings-report-contract.md §4 — full-mode text stays byte-identical
-  // (scoped to runs without plan flags); a narrowed report renders the scope
+  // settings-report-contract.md §4 — full-mode text stays byte-identical;
+  // a narrowed report renders the scope
   // in the header, explicit probe/scope lines, a qualified overall line, and
   // one explicit "not evaluated" line per skipped section instead of its
   // normal body. An unqualified `pass` is never printed from a narrowed
@@ -2538,20 +2419,6 @@ export function formatText(report) {
     lines.push(`  effective-${direction.effective.mode}: model=${direction.effective.model.value ?? '<host-default>'} (${direction.effective.model.source}); effort=${direction.effective.effort.value ?? '<host-default>'} (${direction.effective.effort.source})`);
     for (const warning of direction.effective.warnings) lines.push(`  warning: ${warning}`);
   }
-  if (report.notify_settings) {
-    lines.push('');
-    lines.push(`Notify (ADR-0040 §2, effective-${report.notify_settings.effective_mode})`);
-    for (const key of report.notify_settings.config_keys) {
-      const entry = report.notify_settings.keys[key];
-      const rendered = entry.value !== null
-        ? `${entry.value} (${entry.source})`
-        : entry.default !== null
-          ? `<shipped default: ${entry.default}>`
-          : '<unset>';
-      lines.push(`- ${key}: ${rendered}`);
-      if (entry.warning) lines.push(`  warning: ${entry.warning}`);
-    }
-  }
   if (report.session_settings) {
     lines.push('');
     lines.push(`Session capture (ADR-0044 §3, effective-${report.session_settings.effective_mode})`);
@@ -2601,37 +2468,6 @@ export function formatText(report) {
       lines.push(`- ${recommendation.state}: ${recommendation.detail}`);
       lines.push(`  next: ${recommendation.next_step}`);
     }
-  }
-  if (report.notification_plan?.requested) {
-    const np = report.notification_plan;
-    lines.push('');
-    lines.push('Notification Plan (Codex, dry-run — ADR-0040 §4)');
-    if (np.status === 'blocked') {
-      lines.push(`- status: blocked; ${np.error}`);
-    } else {
-      lines.push(`- status: ${np.status}; mode=${np.recommended.mode}; codex-home=${np.host_config.codex_home_source}`);
-      // The tui-notifications FORM is reported beside its presence: a raw shown
-      // without its trust classification reads as an observed value even when
-      // the scan refused it (a redefined [tui] table captures a
-      // canonical-LOOKING raw), which is the surface schema 1.1 closes.
-      lines.push(`- read-check: notify present=${np.read_check.notify_present}; parseable=${np.read_check.notify_parseable}; tui-notifications present=${np.read_check.tui_notifications_present} (form=${np.read_check.tui_notifications_form})`);
-      if (np.warning) lines.push(`- warning: ${np.warning}`);
-      if (np.tui_warning) lines.push(`- warning: ${np.tui_warning}`);
-      lines.push(`- receiver shuttle (user-installed, recorded in the artifact): ${np.recommended.shuttle_install_path}`);
-      if (np.recommended.chain_install_path) {
-        lines.push(`- wrapper chain (preserves the existing notifier): ${np.recommended.chain_install_path}`);
-      }
-      lines.push('- fragment (merge into the USER-layer ~/.codex/config.toml, runtime never writes it):');
-      for (const fragmentLine of np.fragments.notify_toml.trimEnd().split('\n')) lines.push(`    ${fragmentLine}`);
-      lines.push('- fragment (tui approval attention, same file):');
-      for (const fragmentLine of np.fragments.tui_notifications_toml.trimEnd().split('\n')) lines.push(`    ${fragmentLine}`);
-      lines.push(`- receiver contract: payload=${np.receiver_contract.payload_position}; format=${np.receiver_contract.payload_format}; node=${np.receiver_contract.node_requirement}`);
-    }
-    if (np.artifact?.written) lines.push(`- artifact: ${np.artifact.report_pointer} (latest: ${np.artifact.latest_pointer})`);
-    for (const limit of np.limits ?? []) lines.push(`- limit: ${limit}`);
-  }
-  if (report.egress_launcher_plan?.requested) {
-    for (const line of formatEgressLauncherPlanLines(report.egress_launcher_plan)) lines.push(line);
   }
   lines.push('');
   lines.push('Limits');
@@ -2723,27 +2559,37 @@ function usage() {
     'Usage: settings.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex]',
     '  [--target repo|user|both] [--model <id>] [--effort <level>]',
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
-    '  [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>]',
-    '  [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>]',
     '  [--session-capture off|stop-hook] [--entry-brief off|startup] [--entry-brief-empty silent|report] [--model-effort-fallback host-native]',
     '    (entry-brief keys are user-scope-only per ADR-0045 §7: the repo target refuses them; effective value resolves env > user-global > default)',
-    '  [--unset <key>[,<key>...]]  (REMOVE a config key from the selected layer(s) — the only way back to an unset posture,',
-    '    e.g. a future-open notify_kinds. Removal is not user-scope-filtered: deleting a key can never activate one.)',
+    '  [--unset <key>[,<key>...]]  (REMOVE a runtime config key from the selected layer(s) — the only way back to an unset posture,',
+    '    e.g. a declared model_effort_fallback. Removal is not user-scope-filtered: deleting a key can never activate one.)',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
-    '  [--notification-plan] [--egress-launcher-plan] [--run-id <settings-run-id>]',
+    '  [--run-id <settings-run-id>]',
     '  [--expected-plan-hash <sha256>]  (§1.6 drift guard: refuse plugin-management/cleanup execution unless the freshly recomputed plan hash matches)',
-    '  [--skip-host-cli-probes]  (probe-free local plan: no runDoctor / host-CLI subprocess probes; rejects --execute-*, --attest-codex-hook-review, --plugin-management-*, --run-id, --expected-plan-hash; --apply and the plan flags stay allowed)',
+    '  [--skip-host-cli-probes]  (probe-free local plan: no runDoctor / host-CLI subprocess probes; rejects --execute-*, --attest-codex-hook-review, --plugin-management-*, --run-id, --expected-plan-hash; --apply stays allowed)',
     '',
   ].join('\n');
 }
 
 // Every config key maps to a CLI flag by the same kebab-case rule
-// (claude_model -> --claude-model, notify_kinds -> --notify-kinds), so the
+// (claude_model -> --claude-model, session_capture -> --session-capture), so the
 // flag surface derives from CONFIG_KEYS instead of re-enumerating one
 // else-if branch per key.
 const CONFIG_FLAG_TO_KEY = Object.fromEntries(
   CONFIG_KEYS.map((key) => [`--${key.replace(/_/g, '-')}`, key]),
 );
+
+// The refusal both `--unset` gates share. ADR-0064 retired the `notify_*`
+// keys, so `--unset notify_kinds` is refused like any unknown key, and a
+// leftover line cannot be removed this way: the remover deletes only lines the
+// reader takes as a known key, the same scan that makes the line inert
+// (Decision 9). The refusal says that instead of reading as a typo, and points
+// at the manual edit the owner's cleanup runbook already owns.
+function unknownUnsetKeyMessage(surface, key) {
+  const refusal = `${surface} names '${key}', which is not a runtime config key (known: ${CONFIG_KEYS.join(', ')})`;
+  if (!key.startsWith('notify_')) return refusal;
+  return `${refusal}. ADR-0064 retired the notify_* keys: a leftover line is inert, and --unset removes only keys the runtime reads, so delete the line from the config file by hand if you want it gone.`;
+}
 
 export function parseArgs(argv) {
   const opts = {
@@ -2761,8 +2607,6 @@ export function parseArgs(argv) {
     pluginManagementHost: undefined,
     pluginManagementTimeoutMs: undefined,
     skipHostCliProbes: false,
-    notificationPlan: false,
-    egressLauncherPlan: false,
     runId: null,
     expectedPlanHash: null,
     desired: {},
@@ -2802,10 +2646,6 @@ export function parseArgs(argv) {
       opts.pluginManagementTimeoutMs = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--skip-host-cli-probes') {
       opts.skipHostCliProbes = true;
-    } else if (arg === '--notification-plan') {
-      opts.notificationPlan = true;
-    } else if (arg === '--egress-launcher-plan') {
-      opts.egressLauncherPlan = true;
     } else if (arg === '--run-id') {
       opts.runId = validateSettingsRunId(requireValue(argv, ++i, arg));
     } else if (arg === '--expected-plan-hash') {
@@ -2814,7 +2654,7 @@ export function parseArgs(argv) {
       for (const raw of requireValue(argv, ++i, arg).split(',')) {
         const key = normalizeConfigKey(raw.trim());
         if (!key) continue;
-        if (!CONFIG_KEYS.includes(key)) throw new Error(`--unset names '${key}', which is not a runtime config key (known: ${CONFIG_KEYS.join(', ')})`);
+        if (!CONFIG_KEYS.includes(key)) throw new Error(unknownUnsetKeyMessage('--unset', key));
         if (!opts.unset.includes(key)) opts.unset.push(key);
       }
       if (opts.unset.length === 0) throw new Error('--unset requires at least one config key');

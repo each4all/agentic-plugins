@@ -139,20 +139,6 @@ presents the remaining plugin installs (`attention`, `companions`, `designer`,
 fragments, and verifies execution proofs. Each
 plugin's README documents its invocation surface and environment variables.
 
-### Cross-machine notification egress (optional)
-
-The Telegram egress channel (ADR-0041) activates only behind an explicit
-per-machine opt-in — default is off. Its operator-environment contract:
-
-- `AGENTIC_NOTIFY_EGRESS_CHANNEL` — explicit activation (`telegram`); a
-  separate key from the `notify_channel` setting by design (ADR-0041 §2c)
-- `TELEGRAM_CHAT_ID` — recipient chat id
-- `TELEGRAM_BOT_TOKEN` — bot credential, env-only: never read from any file
-  and never written to one
-
-`runtime:settings --egress-launcher-plan` renders the state-aware per-machine
-activation runbook (artifact-only; host config is never written).
-
 ## For developers
 
 - [`AGENTS.md`](AGENTS.md) — primary development guidance (cross-tool standard)

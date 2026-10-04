@@ -1,10 +1,11 @@
 // tests/runtime/test-dashboard.mjs
 //
 // ADR-0040 §6 runtime:dashboard tests: R0 read-only Tier 1 + Tier 2
-// aggregation, macro subtask parsing (CRLF-tolerant), notify-state health,
-// recent file-log notifications, text/json rendering, and the bounded
-// --watch CLI path. All fixtures are minted per-test with mkdtemp — no
-// committed fixture state.
+// aggregation, macro subtask parsing (CRLF-tolerant), the doctor-artifact
+// matched-pair gate, text/json rendering, and the bounded --watch CLI path.
+// ADR-0064 removed the notify-state and recent-notification rows; the cases
+// below prove leftover notify state no longer reaches the report. All
+// fixtures are minted per-test with mkdtemp — no committed fixture state.
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,20 +21,12 @@ import {
   buildDashboardReport,
   buildEntryAdvisory,
   inspectLatestDoctorRun,
-  inspectNotifyState,
   inspectSettingsRecency,
   parseDashboardArgs,
   parseMacroSubtasks,
-  readRecentNotifications,
   renderDashboardText,
-  summarizeNotifyConfig,
 } from '../../plugins/runtime/scripts/dashboard.mjs';
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
-import {
-  egressThrottleDir,
-  egressThrottleKey,
-  recordEgressFailure,
-} from '../../plugins/runtime/scripts/lib/egress-semantics.mjs';
 
 const DASHBOARD_CLI = path.resolve(
   fileURLToPath(new URL('.', import.meta.url)),
@@ -176,7 +169,7 @@ describe('runtime dashboard macro subtask parsing', () => {
 });
 
 describe('runtime dashboard report — empty repository', () => {
-  it('degrades every section to missing/empty/off and keeps the three-persona contract', async () => {
+  it('degrades every section to missing/empty and keeps the three-persona contract', async () => {
     const root = makeRepo();
     const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
 
@@ -209,10 +202,8 @@ describe('runtime dashboard report — empty repository', () => {
     // ADR-0060 — host-version tracking is gone, and so are both Tier 2 rows.
     assert.equal(Object.hasOwn(report.tier2, 'baseline'), false);
     assert.equal(Object.hasOwn(report.tier2, 'compat'), false);
-    assert.equal(report.tier2.notify.config.status, 'off');
-    assert.equal(report.tier2.notify.config.channel, 'none');
-    assert.equal(report.tier2.notify.state.status, 'missing');
-    assert.equal(report.tier2.notify.recent.status, 'not_configured');
+    // ADR-0064 — notification and egress are gone, and so is the notify row.
+    assert.equal(Object.hasOwn(report.tier2, 'notify'), false);
 
     const text = renderDashboardText(report);
     assert.match(text, /runtime:dashboard — 2026-07-04T12:00:00\.000Z/);
@@ -360,7 +351,7 @@ describe('runtime dashboard report — populated repository', () => {
 
     assert.equal(Object.hasOwn(report.tier2, 'compat'), false, 'the orphaned compat run reaches no Tier 2 row');
     assert.equal(Object.hasOwn(report.tier2, 'baseline'), false);
-    assert.equal(report.schema_version, 'runtime-dashboard-3.0');
+    assert.equal(report.schema_version, 'runtime-dashboard-4.0');
 
     const text = renderDashboardText(report);
     assert.match(text, /engineer: 1 active workflow/);
@@ -371,105 +362,53 @@ describe('runtime dashboard report — populated repository', () => {
   });
 });
 
-describe('runtime dashboard notify sections', () => {
-  it('reports missing notify state as expected-until-configured', async () => {
-    const root = makeRepo();
-    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime() });
-    assert.equal(state.status, 'missing');
-    assert.deepEqual(state.issues, []);
-  });
-
-  it('flags expired claim buildup, stale reclaim locks, and stale rotation locks', async () => {
-    const root = makeRepo();
+// ADR-0064 §Decision 1 + §Decision 9 — notification and egress were removed,
+// and leftover state under `.agentic-plugins/state/runtime/notify/` is inert:
+// the dashboard reads none of it. Before the removal, each fixture seeded below
+// moved the notify row (expired claims and stale locks to needs_attention, the
+// log to the recent-notification list, the throttle record to the egress
+// rollup, the config key to the channel).
+describe('runtime dashboard without notification (ADR-0064)', () => {
+  function seedLeftoverNotifyState(root) {
     const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
     const dedupeDir = path.join(notifyDir, 'dedupe');
     fs.mkdirSync(dedupeDir, { recursive: true });
-
     const past = new Date(NOW.getTime() - 60 * 60000);
-    const expiredClaim = path.join(dedupeDir, 'claim-expired');
+    const expiredClaim = path.join(dedupeDir, `${'a'.repeat(32)}.claim`);
     fs.writeFileSync(expiredClaim, 'x');
     fs.utimesSync(expiredClaim, past, past);
-    const freshClaim = path.join(dedupeDir, 'claim-fresh');
-    fs.writeFileSync(freshClaim, 'x');
-    fs.utimesSync(freshClaim, NOW, NOW);
-
-    const staleReclaimLock = path.join(dedupeDir, 'claim-expired.reclaim.lock');
+    const staleReclaimLock = path.join(dedupeDir, `${'a'.repeat(32)}.claim.reclaim.lock`);
     fs.mkdirSync(staleReclaimLock);
     fs.utimesSync(staleReclaimLock, past, past);
-
-    fs.writeFileSync(path.join(notifyDir, 'log.ndjson'), '{"ts":"2026-07-04T11:59:00Z"}\n');
+    fs.writeFileSync(
+      path.join(notifyDir, 'log.ndjson'),
+      '{"ts":"2026-07-04T11:01:00Z","kind":"approval","urgency":"urgent","title":"leftover","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout"}\n',
+    );
     const rotateLock = path.join(notifyDir, 'log.ndjson.rotate.lock');
     fs.mkdirSync(rotateLock);
     fs.utimesSync(rotateLock, past, past);
+    writeFileDeep(path.join(notifyDir, 'egress-throttle', 'leftover.json'), '{"failures":3}\n');
+    writeFileDeep(path.join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\n');
+    return notifyDir;
+  }
 
-    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
-    assert.equal(state.status, 'needs_attention');
-    assert.equal(state.dedupe.claims, 2);
-    assert.equal(state.dedupe.expired_claims, 1);
-    assert.equal(state.dedupe.reclaim_locks, 1);
-    assert.equal(state.dedupe.stale_reclaim_locks, 1);
-    assert.equal(state.log.present, true);
-    assert.equal(state.log.rotate_lock_present, true);
-    assert.equal(state.log.rotate_lock_stale, true);
-    assert.equal(state.issues.length, 3);
-    assert.match(state.issues[0], /stale claim buildup: 1 expired/);
+  it('the report carries no tier2.notify member, and its text no notify row', async () => {
+    const report = await buildDashboardReport({ repoRoot: makeRepo(), now: NOW, homeDir: makeHome() });
+    // The watch-shaped Tier 2 (no snapshot retention) is exactly these three rows.
+    assert.deepEqual(Object.keys(report.tier2).sort(), ['artifacts', 'doctor', 'settings']);
+    const text = renderDashboardText(report);
+    assert.doesNotMatch(text.slice(text.indexOf('## Tier 2')), /notif|egress/i);
   });
 
-  it('reads recent notifications across both log generations, newest last', async () => {
-    const root = makeRepo();
-    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
-    fs.mkdirSync(notifyDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(notifyDir, 'log.ndjson.1'),
-      '{"ts":"2026-07-04T10:00:00Z","kind":"approval","urgency":"urgent","title":"old","event_id":"a"}\n',
-    );
-    fs.writeFileSync(
-      path.join(notifyDir, 'log.ndjson'),
-      [
-        '{"ts":"2026-07-04T11:00:00Z","kind":"turn-complete","urgency":"normal","title":"newer","event_id":"b"}',
-        'not-json',
-      ].join('\n'),
-    );
-    const recent = await readRecentNotifications({ repoRoot: root, limit: 5 });
-    assert.equal(recent.status, 'available');
-    assert.equal(recent.malformed, 1);
-    assert.deepEqual(recent.entries.map((entry) => entry.event_id), ['a', 'b']);
-  });
-
-  it('summarizes notify config: off by default, configured for file-log, invalid on bad values', () => {
+  it('leftover notify state changes nothing in the report or its rendering', async () => {
     const root = makeRepo();
     const home = makeHome();
-    assert.equal(summarizeNotifyConfig({ repoRoot: root, homeDir: home }).status, 'off');
-
-    fs.mkdirSync(path.join(root, '.agentic-plugins'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\n');
-    const configured = summarizeNotifyConfig({ repoRoot: root, homeDir: home });
-    assert.equal(configured.status, 'configured');
-    assert.equal(configured.channel, 'file-log');
-
-    fs.writeFileSync(path.join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "bogus"\n');
-    const invalid = summarizeNotifyConfig({ repoRoot: root, homeDir: home });
-    assert.equal(invalid.status, 'invalid');
-    assert.ok(invalid.errors.length > 0);
-  });
-
-  it('includes recent notifications in the report only when file-log is configured', async () => {
-    const root = makeRepo();
-    fs.mkdirSync(path.join(root, '.agentic-plugins'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\n');
-    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
-    fs.mkdirSync(notifyDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(notifyDir, 'log.ndjson'),
-      '{"ts":"2026-07-04T11:00:00Z","kind":"workflow-terminal","urgency":"normal","title":"done","event_id":"w1"}\n',
-    );
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
-    assert.equal(report.tier2.notify.config.channel, 'file-log');
-    assert.equal(report.tier2.notify.recent.status, 'available');
-    assert.equal(report.tier2.notify.recent.entries.length, 1);
-    const text = renderDashboardText(report);
-    assert.match(text, /recent notifications \(1\)/);
-    assert.match(text, /\[workflow-terminal\] done/);
+    const before = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: home });
+    const notifyDir = seedLeftoverNotifyState(root);
+    assert.ok(fs.existsSync(path.join(notifyDir, 'log.ndjson')), 'control: the leftover state is on disk');
+    const after = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: home });
+    assert.deepEqual(after, before);
+    assert.equal(renderDashboardText(after), renderDashboardText(before));
   });
 });
 
@@ -508,78 +447,43 @@ describe('runtime dashboard retention projection (ADR-0047 §7)', () => {
   });
 });
 
-describe('runtime dashboard egress attempt visibility (ADR-0041 §6)', () => {
-  it('projects egress overlay fields on mirror rows and omits them on local rows', async () => {
-    const root = makeRepo();
-    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
-    fs.mkdirSync(notifyDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(notifyDir, 'log.ndjson'),
-      [
-        '{"ts":"2026-07-04T11:00:00Z","kind":"approval","urgency":"urgent","title":"local","event_id":"a"}',
-        '{"ts":"2026-07-04T11:01:00Z","kind":"approval","urgency":"urgent","title":"egressed","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout","hostname":"boxA"}',
-      ].join('\n'),
+// ADR-0064 §Decision 7 — the doctor pair moves to 1.4/1.4 in one release, and
+// this reader extends its matched-pair list alongside doctor's (ADR-0057 D11).
+describe('runtime dashboard doctor artifact pairs (ADR-0064 §Decision 7)', () => {
+  function seedDoctorArtifact(root, { artifact, report }) {
+    writeFileDeep(
+      path.join(root, '.agentic-plugins', 'runs', 'doctor', 'doctor-20260701T000000Z-aaaaaa', 'doctor.json'),
+      JSON.stringify({
+        schema_version: artifact,
+        run_id: 'doctor-20260701T000000Z-aaaaaa',
+        status: 'recorded',
+        runtime_version: RUNTIME_VERSION,
+        created_at: '2026-07-01T00:00:00Z',
+        report: { schema_version: report },
+      }),
     );
-    const recent = await readRecentNotifications({ repoRoot: root, limit: 5 });
-    const [local, mirror] = recent.entries;
-    assert.ok(!('egress_status' in local), 'local row carries no egress keys');
-    assert.equal(mirror.egress_channel, 'telegram');
-    assert.equal(mirror.egress_status, 'failed');
-    assert.equal(mirror.egress_outcome, 'timeout');
+  }
+
+  it('reads a 1.4 doctor artifact carrying a 1.4 report', async () => {
+    const root = makeRepo();
+    seedDoctorArtifact(root, { artifact: 'runtime-doctor-artifact-1.4', report: 'runtime-doctor-1.4' });
+    const doctor = await inspectLatestDoctorRun({ repoRoot: root });
+    assert.equal(doctor.status, 'available');
+    assert.equal(doctor.latest.run_id, 'doctor-20260701T000000Z-aaaaaa');
+    assert.equal(doctor.latest.runtime_version_current, true);
   });
 
-  it('renders the egress overlay inline in the recent-notification rows', async () => {
-    const root = makeRepo();
-    fs.mkdirSync(path.join(root, '.agentic-plugins'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\n');
-    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
-    fs.mkdirSync(notifyDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(notifyDir, 'log.ndjson'),
-      '{"ts":"2026-07-04T11:01:00Z","kind":"approval","urgency":"urgent","title":"egressed","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout"}\n',
-    );
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
-    assert.match(renderDashboardText(report), /egress:telegram=failed\(timeout\)/);
-  });
-
-  it('rolls up active egress throttles without flipping notify status', async () => {
-    const root = makeRepo();
-    const throttleDir = egressThrottleDir(root);
-    const key = egressThrottleKey({ eventId: 'e', service: 'telegram', fingerprint: 'fp' });
-    recordEgressFailure({ throttleDir, key, now: NOW.getTime(), baseMs: 3_600_000 });
-    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
-    assert.equal(state.egress.throttles, 1);
-    assert.equal(state.egress.active_throttles, 1);
-    assert.ok(state.egress.next_retry_at);
-    assert.notEqual(state.status, 'needs_attention');
-  });
-
-  it('folds an active egress-throttle count into the rendered notify state line', async () => {
-    const root = makeRepo();
-    fs.mkdirSync(path.join(root, '.agentic-plugins'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\n');
-    const throttleDir = egressThrottleDir(root);
-    const key = egressThrottleKey({ eventId: 'e', service: 'telegram', fingerprint: 'fp' });
-    recordEgressFailure({ throttleDir, key, now: NOW.getTime(), baseMs: 3_600_000 });
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
-    assert.match(renderDashboardText(report), /egress: 1 throttled/);
-  });
-
-  it('surfaces egress mirror rows even when the local channel is not file-log (§2c separate activation)', async () => {
-    const root = makeRepo();
-    // No notify_channel config → channel defaults to 'none'; an egress mirror
-    // still lands in the log because E1 activation is separate from the local
-    // channel. The dashboard must show it anyway (peer MAJOR).
-    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
-    fs.mkdirSync(notifyDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(notifyDir, 'log.ndjson'),
-      '{"ts":"2026-07-04T11:00:00Z","kind":"approval","urgency":"urgent","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout"}\n',
-    );
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
-    assert.notEqual(report.tier2.notify.config.channel, 'file-log');
-    assert.equal(report.tier2.notify.recent.status, 'available', 'egress mirror visible despite channel != file-log');
-    assert.match(renderDashboardText(report), /egress:telegram=failed\(timeout\)/);
+  it('refuses a mixed 1.3/1.4 tuple in either direction — no producer writes one', async () => {
+    for (const [artifact, report] of [
+      ['runtime-doctor-artifact-1.4', 'runtime-doctor-1.3'],
+      ['runtime-doctor-artifact-1.3', 'runtime-doctor-1.4'],
+    ]) {
+      const root = makeRepo();
+      seedDoctorArtifact(root, { artifact, report });
+      const doctor = await inspectLatestDoctorRun({ repoRoot: root });
+      assert.equal(doctor.status, 'blocked', `${artifact} + ${report} must be refused`);
+      assert.equal(doctor.latest.reason, 'invalid doctor artifact schema');
+    }
   });
 });
 
@@ -634,7 +538,13 @@ describe('runtime dashboard argument parsing', () => {
     assert.equal(parsed.opts.format, 'text');
     assert.equal(parsed.opts.watch, false);
     assert.equal(parsed.opts.intervalSeconds, 2);
-    assert.equal(parsed.opts.recent, 5);
+    assert.equal(Object.hasOwn(parsed.opts, 'recent'), false);
+  });
+
+  it('rejects --recent as unknown — it bounded the removed notification list (ADR-0064)', () => {
+    const parsed = parseDashboardArgs(['--recent', '5']);
+    assert.equal(parsed.ok, false);
+    assert.match(parsed.reason, /unknown argument --recent/);
   });
 
   it('clamps --interval-seconds to the 1s floor instead of rejecting', () => {
@@ -654,7 +564,6 @@ describe('runtime dashboard argument parsing', () => {
   it('rejects partial numeric strings instead of truncating them', () => {
     assert.equal(parseDashboardArgs(['--watch-count', '2abc']).ok, false);
     assert.equal(parseDashboardArgs(['--interval-seconds', '1foo']).ok, false);
-    assert.equal(parseDashboardArgs(['--recent', '5x']).ok, false);
   });
 });
 
@@ -919,73 +828,6 @@ describe('runtime dashboard entry advisory (ADR-0045 §7(ii))', () => {
     for (const line of lines) {
       const report = JSON.parse(line);
       assert.ok(!('entry_advisory' in report.tier1), 'watch report must not carry entry_advisory');
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ADR-0047 §6 — observer semantics unified with the sweep: vanish-between-
-// readdir-and-stat is a concurrent change (skipped), not unreadable/blocked;
-// genuinely unreadable entries keep blocking; the expired boundary is the
-// shared >= predicate.
-// ---------------------------------------------------------------------------
-
-describe('runtime dashboard notify observer semantics (ADR-0047 §6)', () => {
-  it('a path that vanishes between readdir and stat is a concurrent change, not blocked', async () => {
-    const root = makeRepo();
-    const dedupeDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify', 'dedupe');
-    fs.mkdirSync(dedupeDir, { recursive: true });
-    // A dangling symlink is the deterministic vanish simulation: readdir
-    // lists it, the follow-stat probe raises ENOENT.
-    fs.symlinkSync(path.join(dedupeDir, 'nonexistent-target'), path.join(dedupeDir, `${'a'.repeat(32)}.claim`));
-    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
-    assert.equal(state.dedupe.unreadable, 0, 'ENOENT from the stat probe must not count as unreadable');
-    assert.equal(state.status, 'available', 'a concurrent change must not flip the state to blocked');
-  });
-
-  it('counts a claim aged EXACTLY ttl as expired (shared >= boundary with claimDedupe)', async () => {
-    const root = makeRepo();
-    const dedupeDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify', 'dedupe');
-    fs.mkdirSync(dedupeDir, { recursive: true });
-    const claim = path.join(dedupeDir, `${'b'.repeat(32)}.claim`);
-    fs.writeFileSync(claim, 'x');
-    const boundary = new Date(NOW.getTime() - 300 * 1000);
-    fs.utimesSync(claim, boundary, boundary);
-    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
-    assert.equal(state.dedupe.claims, 1);
-    assert.equal(state.dedupe.expired_claims, 1, 'age == ttl is expired — the reclaimable boundary');
-  });
-
-  it('the sweep cursor beside the dedupe dir is invisible to the per-file claim count (M6)', async () => {
-    const root = makeRepo();
-    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
-    const dedupeDir = path.join(notifyDir, 'dedupe');
-    fs.mkdirSync(dedupeDir, { recursive: true });
-    // The cursor at its ADR-0047 §6 home (notify state dir), aged far past
-    // any TTL — it must never surface as a stale claim.
-    const cursor = path.join(notifyDir, 'sweep.cursor');
-    fs.writeFileSync(cursor, '{"last":"x"}\n');
-    const past = new Date(NOW.getTime() - 60 * 60000);
-    fs.utimesSync(cursor, past, past);
-    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
-    assert.equal(state.dedupe.claims, 0);
-    assert.equal(state.dedupe.expired_claims, 0);
-    assert.notEqual(state.status, 'needs_attention');
-  });
-
-  it('genuinely unreadable entries (EACCES) still count and flip the state to blocked', { skip: process.getuid?.() === 0 }, async () => {
-    const root = makeRepo();
-    const dedupeDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify', 'dedupe');
-    fs.mkdirSync(dedupeDir, { recursive: true });
-    fs.writeFileSync(path.join(dedupeDir, `${'c'.repeat(32)}.claim`), 'x');
-    // r-- without x: readdir can list names, the per-entry stat probe is denied.
-    fs.chmodSync(dedupeDir, 0o400);
-    try {
-      const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
-      assert.ok(state.dedupe.unreadable >= 1, 'EACCES must keep counting as unreadable');
-      assert.equal(state.status, 'blocked');
-    } finally {
-      fs.chmodSync(dedupeDir, 0o700);
     }
   });
 });

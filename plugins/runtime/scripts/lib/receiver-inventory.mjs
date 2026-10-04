@@ -34,10 +34,10 @@ export const RECEIVER_STATES = Object.freeze([
   'not-a-regular-file',
 ]);
 
-// The placeholder seats the two planners fill, and the ONLY ones.
+// The placeholder seats the planner fills, and the ONLY ones.
 // `statusline-plan.renderAgenticStatuslineShim` fills the item list and the
-// runtime floor; `notification-plan.renderCodexNotifyShuttleScript` the floor;
-// `renderCodexNotifyChainScript` the prior argv and the shuttle path.
+// runtime floor. (The Codex notify shuttle and chain receivers, with their
+// `PRIOR_NOTIFY` and `SHUTTLE_PATH` seats, went with ADR-0064 Decision 1.)
 //
 // Each entry pairs the rendered statement with the placeholder it came from and
 // the SHAPE the seat must have. The shape matters: normalization identifies a
@@ -64,18 +64,6 @@ const SEATS = Object.freeze([
     placeholder: "const MIN_RUNTIME_VERSION = '__AGENTIC_MIN_RUNTIME_VERSION__';",
     validate: (value) => typeof value === 'string' && /^\d+\.\d+\.\d+(?:[-+].*)?$/.test(value),
   },
-  {
-    name: 'PRIOR_NOTIFY',
-    rendered: new RegExp(String.raw`^const PRIOR_NOTIFY = (${STRING_ARRAY_LITERAL});$`, 'm'),
-    placeholder: 'const PRIOR_NOTIFY = ["__AGENTIC_PRIOR_NOTIFY__"];',
-    validate: (value) => Array.isArray(value) && value.every((item) => typeof item === 'string'),
-  },
-  {
-    name: 'SHUTTLE_PATH',
-    rendered: new RegExp(String.raw`^const SHUTTLE_PATH = (${STRING_LITERAL});$`, 'm'),
-    placeholder: 'const SHUTTLE_PATH = "__AGENTIC_SHUTTLE_PATH__";',
-    validate: (value) => typeof value === 'string' && value.length > 0,
-  },
 ]);
 
 /**
@@ -97,7 +85,7 @@ export function normalizeRenderedReceiver(text) {
   for (const seat of SEATS) {
     const match = out.match(seat.rendered);
     if (!match) {
-      // The seat may legitimately be absent (each receiver carries only its
+      // The seat may legitimately be absent (a receiver carries only its
       // own), or present in a form the renderer never emits. Distinguish them:
       // a bare `const NAME = ` line that did not match the value grammar is a
       // rejection, not an absence.
@@ -235,10 +223,8 @@ export function classifyInstalledReceiver({
  *
  * `missing` counts only for a receiver the operator actually opted into. Every
  * receiver here is opt-in — the statusline shim is installed only if the
- * operator adopted it, and the chain receiver ONLY exists when a prior notifier
- * had to be preserved (direct mode never installs one). Treating any absence as
- * something to fix would tell most machines to install a file they deliberately
- * do not have.
+ * operator adopted it. Treating any absence as something to fix would tell
+ * most machines to install a file they deliberately do not have.
  */
 export function receiverNeedsReinstall(state, { expected = false } = {}) {
   if (state === 'legacy') return true;
@@ -269,13 +255,13 @@ export function rollUpReceiverStates(entries) {
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RELEASED_SHAPES_POINTER = 'data/released-receiver-shapes.json';
 
-// The three installable receivers. Each names the packaged template it is
-// rendered from and the basename it is installed under (they are the same
-// name — the install is a rendered copy, not a rename).
+// The installable receivers. Each names the packaged template it is rendered
+// from and the basename it is installed under (they are the same name — the
+// install is a rendered copy, not a rename). ADR-0064 Decision 1 removed the
+// Codex notify shuttle and chain receivers; a copy still installed is no
+// longer inspected, and its cleanup is the owner's (Decision 9).
 export const RECEIVER_KINDS = Object.freeze([
   'agentic-statusline.mjs',
-  'codex-notify-shuttle.mjs',
-  'codex-notify-chain.mjs',
 ]);
 
 function readPackaged(relativePath) {
@@ -296,7 +282,7 @@ export function loadReleasedReceiverShapes({ read = readPackaged } = {}) {
 }
 
 /**
- * Classify all three receivers under one install directory.
+ * Classify every receiver under one install directory.
  *
  * Read-only and execution-free by construction — it reaches
  * `classifyInstalledReceiver`, which does one lstat and at most one bounded
@@ -367,6 +353,10 @@ export function receiverInventoryLimits() {
  * Deliberately a PLAN, never an action: runtime does not write into the install
  * directory (ADR-0048 §2 — the plan renders, the operator installs). Returns
  * null when nothing is worth offering, so a healthy machine gets no nag.
+ *
+ * The presented command is bootstrap's `plan`: its Stage 5 statusline fragment
+ * is the surface that renders the current shim. It pointed at `runtime:settings
+ * --notification-plan` until ADR-0064 removed that plan.
  */
 export function buildReceiverReinstallStep(inventory, { host = 'neutral' } = {}) {
   const actionable = inventory.receivers.filter((entry) => receiverNeedsReinstall(entry.state, { expected: entry.expected }));
@@ -375,7 +365,7 @@ export function buildReceiverReinstallStep(inventory, { host = 'neutral' } = {})
   );
   if (actionable.length === 0 && blocked.length === 0) return null;
 
-  const command = host === 'codex' ? '$runtime:settings' : '/runtime:settings';
+  const command = host === 'codex' ? '$runtime:bootstrap' : '/runtime:bootstrap';
   const step = {
     state: inventory.state,
     // What the operator should do, and for which files — never a bare "re-install".
@@ -385,7 +375,7 @@ export function buildReceiverReinstallStep(inventory, { host = 'neutral' } = {})
       observed: entry.state,
       shipped_in: entry.shipped_in,
       action: entry.state === 'missing'
-        ? `Render and install ${entry.kind} from the plan artifact.`
+        ? `Render and install ${entry.kind} from the bootstrap Stage 5 statusline fragment.`
         : `Back up ${entry.path_pointer}, then install the newly rendered ${entry.kind} over it.`,
     })),
     // A file runtime did not render is the operator's; naming it is the whole
@@ -397,7 +387,7 @@ export function buildReceiverReinstallStep(inventory, { host = 'neutral' } = {})
       action: 'Inspect this path yourself; runtime does not overwrite a file it did not render.',
     })),
     rollback: buildReceiverRollbackGuidance(actionable),
-    presented_command: `${command} --notification-plan`,
+    presented_command: `${command} plan`,
   };
   return step;
 }

@@ -2,9 +2,9 @@
 //
 // Moved verbatim out of lib/egress-intent-wal.mjs (ADR-0064 Decision 2, item 3):
 // `migrate.mjs` and `migrate-workflow-storage.mjs` render their argument errors
-// through `safeOperatorText` and outlive the egress intent WAL. The WAL's
-// stricter record-name policy, `safeRecordName`, stays with the WAL and shares
-// `discriminator` from here.
+// through `safeOperatorText` and outlived the egress intent WAL. The WAL's
+// stricter record-name policy, `safeRecordName`, shared `discriminator` from
+// here and went with the WAL (ADR-0064 Decision 1).
 //
 // Deliberately zero-syscall: `node:crypto` for the truncation hash and nothing
 // else.

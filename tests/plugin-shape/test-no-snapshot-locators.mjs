@@ -28,10 +28,10 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 
 // The home-rendered receivers S3 moved off the clone. They name it only in
-// comments; `using` below pins that neither needed the host-tree exemption.
+// comments; `using` below pins that none needed the host-tree exemption. The
+// Codex notify shuttle was the other one until ADR-0064 R4n2 deleted it.
 const MOVED_BY_S3 = [
   'plugins/runtime/receivers/agentic-statusline.mjs',
-  'plugins/runtime/receivers/codex-notify-shuttle.mjs',
 ];
 
 // The sibling resolvers S2 moved off the clone. Each still names it in a

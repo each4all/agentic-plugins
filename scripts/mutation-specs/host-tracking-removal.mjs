@@ -13,6 +13,10 @@
 // (no real runtime script is a network importer since compat.mjs went, so its
 // cases run against an injected registry — and must still bite).
 //
+// D1 and B1 drop the LAST readable pair — the era doctor now writes. ADR-0064
+// R4n2 moved that era from 1.3 to 1.4 (Decision 7), so both anchors moved with
+// it; 1.3 is now a retained older era, as 1.2 is for D2.
+//
 // The C group (the cutover audit's "host-pair identity is not verified"
 // statement) and the W group (its withdrawn scorecard row) went with
 // `cutover-audit.mjs` when ADR-0064 §Decision 5 retired `runtime:cutover`:
@@ -32,7 +36,7 @@ export const MUTATIONS = [
   // ---- D: doctor's schema and the recomposed criterion ---------------------
   {
     id: 'D1', file: DOCTOR, tests: [T_DOC],
-    from: "  Object.freeze({ artifact: 'runtime-doctor-artifact-1.3', report: 'runtime-doctor-1.3' }),\n]);\nfunction isReadableDoctorSchemaPair(",
+    from: "  Object.freeze({ artifact: 'runtime-doctor-artifact-1.4', report: 'runtime-doctor-1.4' }),\n]);\nfunction isReadableDoctorSchemaPair(",
     to: ']);\nfunction isReadableDoctorSchemaPair(',
     why: 'doctor stops reading the era it now writes',
   },
@@ -75,7 +79,7 @@ export const MUTATIONS = [
   // ---- B: the dashboard reader pins independently --------------------------
   {
     id: 'B1', file: DASHBOARD, tests: [T_DUAL],
-    from: "  Object.freeze({ artifact: 'runtime-doctor-artifact-1.3', report: 'runtime-doctor-1.3' }),\n]);",
+    from: "  Object.freeze({ artifact: 'runtime-doctor-artifact-1.4', report: 'runtime-doctor-1.4' }),\n]);",
     to: ']);',
     why: 'the dashboard stops reading the era doctor now writes',
   },

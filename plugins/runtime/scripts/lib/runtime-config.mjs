@@ -1,18 +1,19 @@
 // Runtime-internal contract lib for the .agentic-plugins/config.toml flat-key
-// surface: key families, shipped notify/session defaults, per-key semantic
+// surface: key families, shipped session defaults, per-key semantic
 // validators, the line-oriented TOML read parser, and the shared effective
 // config loader (repo → user → shipped default) the per-family loaders build on.
 //
 // Extracted from settings.mjs (which re-exports the public names unchanged) so
-// the ADR-0040 §2 notify emitter can consume the OFFICIAL key contract without
-// loading the settings/doctor plan pipeline — settings.mjs and notify.mjs must
-// agree on keys, defaults, and validity byte-for-byte, and this module is that
-// single source. The ADR-0044 §3 `session` family lives here for the same
-// reason: the future publish-session executor and the settings/doctor
+// a consumer can read the OFFICIAL key contract without loading the
+// settings/doctor plan pipeline. The ADR-0044 §3 `session` family lives here
+// for that reason: the publish-session executor and the settings/doctor
 // diagnosis surfaces must agree on the key, its default, and its validity.
-// Deliberately dependency-light: only the §1 notify-schema contract lib (for
-// the notify_kinds CSV parser) plus node builtins for the config-layer reads —
-// no doctor/plan machinery.
+// Deliberately dependency-light: node builtins for the config-layer reads, no
+// doctor/plan machinery.
+//
+// ADR-0064 removed the `notify` family with the notification emitter. A
+// leftover `notify_*` line is no longer a known key, so the parser drops it and
+// it is inert, not an error (ADR-0064 Decision 9).
 //
 // Known remaining duplicate: lib/peer-execution-context.mjs carries a private line-parser twin
 // (its private inspectModelEffort) with deliberately different semantics — it
@@ -23,8 +24,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-
-import { parseKindsFilter } from './notify-schema.mjs';
 
 // Config keys are grouped into families so the plan/apply pipeline stays a
 // generic key-family differ: the differ, TOML parser/upsert, and CLI flag
@@ -52,16 +51,8 @@ export const CONFIG_KEY_FAMILIES = Object.freeze({
     // `model` — a sentinel would be handed to the companion verbatim.
     'model_effort_fallback',
   ]),
-  notify: Object.freeze([
-    'notify_channel',
-    'notify_quiet_hours',
-    'notify_quiet_hours_tz',
-    'notify_dedupe_ttl_seconds',
-    'notify_urgent_bypass_quiet_hours',
-    'notify_kinds',
-  ]),
   // ADR-0044 §3 — the session-capture opt-in. An enum (not a boolean) so a
-  // future origin can join without a schema break, mirroring notify_channel.
+  // future origin can join without a schema break.
   // The shipped default "off" is what makes the hook-auto-invoked publisher
   // mutate nothing until the operator opts in (the narrow ADR-0035 §3
   // invariant-1 amendment scoped to publish-session).
@@ -78,11 +69,9 @@ export const CONFIG_KEY_FAMILIES = Object.freeze({
 });
 export const CONFIG_KEYS = Object.freeze(Object.values(CONFIG_KEY_FAMILIES).flat());
 
-export const NOTIFY_CHANNELS = Object.freeze(['none', 'macos-osascript', 'file-log']);
-
 // The declarable model/effort postures. An enum rather than a boolean so a
-// future posture can join without a schema break (the notify_channel
-// precedent), and deliberately NOT named "default": `host-native` says which
+// future posture can join without a schema break, and deliberately NOT named
+// "default": `host-native` says which
 // authority chooses, which is the fact being recorded. It governs only the
 // coordinates nothing else set — explicit command flags, a workflow override,
 // repo config and user-global keys all still win for their own coordinate.
@@ -124,63 +113,14 @@ export const ENTRY_BRIEF_ENV_KEYS = Object.freeze({
   entry_brief_empty: 'AGENTIC_ENTRY_BRIEF_EMPTY',
 });
 
-// Shipped defaults the emitter uses when a key is unset (ADR-0040 §2).
-// null = "unset is meaningful": quiet hours off, host-local timezone,
-// no kinds filter (all kinds enabled).
-export const NOTIFY_KEY_DEFAULTS = Object.freeze({
-  notify_channel: 'none',
-  notify_quiet_hours: null,
-  notify_quiet_hours_tz: null,
-  notify_dedupe_ttl_seconds: '300',
-  notify_urgent_bypass_quiet_hours: 'true',
-  notify_kinds: null,
-});
-
-export const QUIET_HOURS_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$/;
-
 // Per-key semantic validators, applied by settings' normalizeDesiredConfig
 // after the generic single-line normalization — every desired-config entry
 // path (CLI parseArgs, programmatic runSettings, upsertRuntimeConfigToml)
-// funnels through that gate, and the notify emitter applies the same
+// funnels through that gate, and loadEffectiveConfig applies the same
 // validators to every effective value it resolves (fail-closed on invalid).
 // Keys without an entry accept any single-line value (model/effort stay
 // free-form host identifiers).
 export const CONFIG_KEY_VALIDATORS = {
-  notify_channel: (value, key) => {
-    if (!NOTIFY_CHANNELS.includes(value)) {
-      throw new Error(`${key} must be one of ${NOTIFY_CHANNELS.join(', ')}`);
-    }
-  },
-  notify_quiet_hours: (value, key) => {
-    if (!QUIET_HOURS_RE.test(value)) {
-      throw new Error(`${key} must match HH:MM-HH:MM (24h, cross-midnight allowed), e.g. 22:00-08:00`);
-    }
-  },
-  notify_quiet_hours_tz: (value, key) => {
-    try {
-      new Intl.DateTimeFormat('en-US', { timeZone: value });
-    } catch {
-      throw new Error(`${key} must be a valid IANA timezone identifier, e.g. Asia/Seoul`);
-    }
-  },
-  notify_dedupe_ttl_seconds: (value, key) => {
-    if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(Number.parseInt(value, 10)) || Number.parseInt(value, 10) <= 0) {
-      throw new Error(`${key} must be a positive integer of seconds`);
-    }
-  },
-  notify_urgent_bypass_quiet_hours: (value, key) => {
-    if (value !== 'true' && value !== 'false') {
-      throw new Error(`${key} must be "true" or "false"`);
-    }
-  },
-  notify_kinds: (value, key) => {
-    // Single source of truth for the kind enum: the ADR-0040 §1 contract
-    // lib's own CSV parser — never re-enumerate kinds here.
-    const parsed = parseKindsFilter(value);
-    if (!parsed.ok) {
-      throw new Error(`${key} is invalid: ${parsed.errors.join('; ')}`);
-    }
-  },
   model_effort_fallback: (value, key) => {
     if (!MODEL_EFFORT_FALLBACK_POSTURES.includes(value)) {
       throw new Error(`${key} must be one of ${MODEL_EFFORT_FALLBACK_POSTURES.join(', ')}`);
@@ -278,8 +218,8 @@ export function parseRuntimeConfigToml(text) {
 
 // ONLY a genuinely absent layer reads as empty (ENOENT; ENOTDIR = a parent
 // path component is a file). Any other failure (EACCES, EISDIR, EIO) is NOT
-// "absent" and fail-closes the whole load (Codex review MAJOR on the notify
-// loader, promoted here as the one shared rule): treating an unreadable
+// "absent" and fail-closes the whole load (Codex review MAJOR on the former
+// notify loader, promoted here as the one shared rule): treating an unreadable
 // HIGHER-precedence layer as missing would let a lower-precedence layer flip
 // a gate on against the operator's recorded intent.
 export function readTomlIfExists(filePath) {
@@ -298,7 +238,7 @@ export function readTomlIfExists(filePath) {
 // ~/.agentic-plugins/config.toml), repo → user → shipped-default precedence
 // per key, each non-null effective value validated by the OFFICIAL per-key
 // validators (fail-closed on invalid). Family loaders add only their own
-// post-processing (e.g. notify's kinds parse / type coercion) — never a
+// post-processing (e.g. a key rename or type coercion) — never a
 // second copy of layering or validation, so a precedence or fail-closed fix
 // lands once here instead of per-family (the mirror-fix rule).
 export function loadEffectiveConfig({ repoRoot, homeDir = os.homedir(), keys, defaults = {} } = {}) {

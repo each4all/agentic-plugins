@@ -186,7 +186,7 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
     await mkdir(join(fake, '.claude-plugin'), { recursive: true });
     await mkdir(join(fake, 'scripts'), { recursive: true });
     await writeFile(join(fake, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '999.0.0' }));
-    await writeFile(join(fake, 'scripts', 'receiver-api.mjs'), 'export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\n');
+    await writeFile(join(fake, 'scripts', 'receiver-api.mjs'), 'export const RECEIVER_API_MAJORS = { statusline: 1 };\n');
     const capShort = join(dir, 'cap.mjs');
     await writeFile(capShort, renderAgenticStatuslineShim().body);
     const capRun = spawnSync(process.execPath, [capShort], {
@@ -202,7 +202,7 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
     // shim's shape.
     for (const major of [0, 2]) {
       await writeFile(join(fake, 'scripts', 'receiver-api.mjs'),
-        `export const RECEIVER_API_MAJORS = { statusline: ${major}, codexNotify: 1 };\nexport function renderStatusline() { return "SHOULD NOT APPEAR"; }\n`);
+        `export const RECEIVER_API_MAJORS = { statusline: ${major} };\nexport function renderStatusline() { return "SHOULD NOT APPEAR"; }\n`);
       const r = spawnSync(process.execPath, [capShort], {
         input: session, encoding: 'utf8', timeout: 5000,
         env: { ...process.env, AGENTIC_RUNTIME_ROOT: fake },
@@ -210,7 +210,7 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
       strictEqual(r.stdout, '', `statusline major ${major} is refused even though the export exists`);
     }
     await writeFile(join(fake, 'scripts', 'receiver-api.mjs'),
-      'export const RECEIVER_API_MAJORS = { statusline: 0, codexNotify: 1 };\nexport function renderStatusline() { return "SHOULD NOT APPEAR"; }\n');
+      'export const RECEIVER_API_MAJORS = { statusline: 0 };\nexport function renderStatusline() { return "SHOULD NOT APPEAR"; }\n');
     const contractRun = spawnSync(process.execPath, [capShort], {
       input: session, encoding: 'utf8', timeout: 5000,
       env: { ...process.env, AGENTIC_RUNTIME_ROOT: fake },
@@ -230,7 +230,7 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
     await writeFile(join(fake, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '99.0.0' }));
     const hostile = `line1\\nSECOND LINE\\u001b[31m${'x'.repeat(900)}`;
     await writeFile(join(fake, 'scripts', 'receiver-api.mjs'),
-      `export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\nexport function renderStatusline() { return "${hostile}"; }\n`);
+      `export const RECEIVER_API_MAJORS = { statusline: 1 };\nexport function renderStatusline() { return "${hostile}"; }\n`);
     const shimPath = join(dir, 'shim.mjs');
     await writeFile(shimPath, renderAgenticStatuslineShim().body);
     const r = spawnSync(process.execPath, [shimPath], {
@@ -257,7 +257,7 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
     await mkdir(join(oldRoot, 'scripts'), { recursive: true });
     await writeFile(join(oldRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '0.1.0' }));
     await writeFile(join(oldRoot, 'scripts', 'receiver-api.mjs'),
-      'export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\nexport function renderStatusline() { return "RESURRECTED"; }\n');
+      'export const RECEIVER_API_MAJORS = { statusline: 1 };\nexport function renderStatusline() { return "RESURRECTED"; }\n');
     // Newer runtime: a valid plugin, but no receiver API at all.
     const newRoot = join(cacheRoot, '0.9.0');
     await mkdir(join(newRoot, '.claude-plugin'), { recursive: true });
@@ -287,7 +287,7 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
       await mkdir(join(root, 'scripts'), { recursive: true });
       await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version }));
       await writeFile(join(root, 'scripts', 'receiver-api.mjs'),
-        `export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\nexport function renderStatusline() { return ${JSON.stringify(marker)}; }\n`);
+        `export const RECEIVER_API_MAJORS = { statusline: 1 };\nexport function renderStatusline() { return ${JSON.stringify(marker)}; }\n`);
     }
     const shimPath = join(dir, 'shim.mjs');
     // Floor 0.1.0 so every candidate clears the gate and only ORDER decides.
@@ -313,7 +313,7 @@ describe('statusline Claude renders — command form, fragment, shim', () => {
       await mkdir(join(root, 'scripts'), { recursive: true });
       await writeFile(join(root, manifestRel), JSON.stringify({ name, version }));
       await writeFile(join(root, 'scripts', 'receiver-api.mjs'),
-        `export const RECEIVER_API_MAJORS = { statusline: 1, codexNotify: 1 };\nexport function renderStatusline() { return ${JSON.stringify(marker)}; }\n`);
+        `export const RECEIVER_API_MAJORS = { statusline: 1 };\nexport function renderStatusline() { return ${JSON.stringify(marker)}; }\n`);
     };
     await build({
       install,
@@ -505,7 +505,7 @@ describe('statusline end-to-end — plan renders fragments, desired seats, and t
     const codexFragment = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'fragments', 'statusline-codex.fragment'), 'utf8'));
     const parsedTable = parseCodexConfigToml(codexFragment.fragment_toml);
     deepStrictEqual(parsedTable.tuiStatusLine.values, NORMATIVE_AGENTIC_6);
-    ok(!parsedTable.tuiNotifications.present, 'the table carries no notifications key');
+    deepStrictEqual(Object.keys(parsedTable), ['tuiStatusLine'], 'the parser reads only status_line');
     ok(!/notifications/.test(codexFragment.fragment_toml), 'and the fragment text never names one');
     strictEqual((codexFragment.fragment_toml.match(/\[tui\]/g) ?? []).length, 1, 'exactly one [tui] header');
 

@@ -14,8 +14,8 @@
 // evidence by artifact timestamps while dashboard sorts by run id, but both
 // are pure functions of the runs/settings directory content — asserting the
 // directory (listing + bytes) unchanged therefore pins BOTH selections
-// without comparing whole reports (whose generic artifact inventory
-// legitimately changes when allowed plan families are written).
+// without comparing whole reports (whose timestamps and generic artifact
+// inventory legitimately differ between runs).
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert/strict';
@@ -40,11 +40,11 @@ const PROBE_SECTIONS = ['clis', 'plugins', 'plugin_command_surface', 'plugin_man
 const NULL_OVERALL_COUNTERS = ['plugin_recommendations', 'hook_warnings', 'hook_review_warnings', 'auth_warnings', 'plugin_cleanup_warnings', 'plugin_management_executed', 'plugin_management_failed'];
 const PRESENCE_KEYS = [
   'clis', 'plugins', 'plugin_command_surface', 'plugin_management', 'plugin_cleanup', 'hook_settings', 'codex_hook_review',
-  'config', 'companion_settings', 'notify_settings', 'session_settings', 'session_readiness', 'entry_readiness', 'mutation_boundary', 'artifacts', 'limits', 'overall',
+  'config', 'companion_settings', 'session_settings', 'session_readiness', 'entry_readiness', 'mutation_boundary', 'artifacts', 'limits', 'overall',
   // Installed-receiver classification: a local filesystem read, so it is
   // evaluated in BOTH modes rather than being a probe section.
   'receivers', 'receiver_reinstall',
-  'recommendations', 'notification_plan', 'egress_launcher_plan',
+  'recommendations',
 ];
 
 function enoent() {
@@ -105,8 +105,8 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.value, 'fixture-model');
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.source, 'repo config codex_model');
     strictEqual(report.config.resolution_order[0], 'explicit command flags');
-    strictEqual(report.schema_version, 'runtime-settings-1.26');
-    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.26');
+    strictEqual(report.schema_version, 'runtime-settings-1.27');
+    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.27');
   });
 
   it('emits the dual-mode discriminator with null (never empty) probe sections', async () => {
@@ -125,11 +125,10 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     deepStrictEqual(Object.keys(narrowed.section_presence).sort(), [...PRESENCE_KEYS].sort());
     for (const key of PROBE_SECTIONS) strictEqual(narrowed.section_presence[key], 'not_evaluated', `presence[${key}]`);
     strictEqual(narrowed.section_presence.recommendations, 'local_only');
-    strictEqual(narrowed.section_presence.notification_plan, 'not_requested');
-    for (const key of PRESENCE_KEYS.filter((k) => !PROBE_SECTIONS.includes(k) && !['recommendations', 'notification_plan', 'egress_launcher_plan'].includes(k))) {
+    for (const key of PRESENCE_KEYS.filter((k) => !PROBE_SECTIONS.includes(k) && k !== 'recommendations')) {
       strictEqual(narrowed.section_presence[key], 'evaluated', `presence[${key}]`);
     }
-    for (const key of PRESENCE_KEYS.filter((k) => !['notification_plan', 'egress_launcher_plan'].includes(k))) {
+    for (const key of PRESENCE_KEYS) {
       strictEqual(full.section_presence[key], 'evaluated', `full presence[${key}]`);
     }
 
@@ -142,7 +141,7 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     strictEqual(full.overall.scope, 'full');
     strictEqual(typeof narrowed.overall.planned_config_writes, 'number');
     strictEqual(typeof narrowed.overall.setting_warnings, 'number');
-    strictEqual(typeof narrowed.overall.notify_warnings, 'number');
+    strictEqual(typeof narrowed.overall.session_warnings, 'number');
 
     // local_only recommendations rebuild from evaluated inputs only — the
     // config-area hint keeps the section non-empty, so a hard-coded [] fails.
@@ -197,8 +196,8 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
       const before = await readFile(join(root, '.agentic-plugins', 'config.toml'), 'utf8');
       const calls = [];
       // Non-vacuous: pair the rejected flag with every ALLOWED effect so the
-      // rejection provably precedes probes, config writes, and plan-artifact
-      // writes — a rejected executor alone would not prove ordering.
+      // rejection provably precedes probes and config writes — a rejected
+      // executor alone would not prove ordering.
       await rejects(
         runSettings({
           repoRoot: root,
@@ -207,8 +206,7 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
           apply: true,
           target: 'repo',
           desired: { codex_model: 'must-never-land' },
-          notificationPlan: true,
-          egressLauncherPlan: true,
+          unset: ['effort'],
           runner: recordingRunner(calls),
           ...opts,
         }),
@@ -221,7 +219,7 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     }
   });
 
-  it('never touches the runs/settings execution-evidence family across all 16 allowed combinations', async () => {
+  it('never touches the runs/settings execution-evidence family across all 8 allowed combinations', async () => {
     for (const seeded of [false, true]) {
       const { root, home } = await makeFixture();
       const settingsRoot = join(root, '.agentic-plugins', 'runs', 'settings');
@@ -242,21 +240,19 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
       const before = await snapshotDir(settingsRoot);
       const codexHome = join(home, '.codex');
       await mkdir(codexHome, { recursive: true });
-      for (let mask = 0; mask < 8; mask++) {
-        const opts = {
-          apply: Boolean(mask & 1),
-          notificationPlan: Boolean(mask & 2),
-          egressLauncherPlan: Boolean(mask & 4),
-        };
+      // The allowed effects are config apply and --unset; ADR-0064 removed the
+      // last plan flags, which were the other two bits.
+      for (let mask = 0; mask < 4; mask++) {
         const report = await runSettings({
           repoRoot: root,
           homeDir: home,
           env: { CODEX_HOME: codexHome },
           skipHostCliProbes: true,
           target: 'repo',
-          desired: opts.apply ? { model: `combo-${mask}` } : {},
+          apply: Boolean(mask & 1),
+          desired: mask & 1 ? { model: `combo-${mask}` } : {},
+          unset: mask & 2 ? ['codex_model'] : [],
           runner: recordingRunner([]),
-          ...opts,
         });
         strictEqual(report.report_scope, 'local_plan');
         strictEqual(report.artifacts.settings_execution.written, false, `mask=${mask}`);
@@ -265,26 +261,30 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     }
   });
 
-  it('enumerates requested plan-artifact families in mutation_boundary.writes_allowed (both modes)', async () => {
+  // The honesty rule (contract §3) was pinned through the plan flags, which
+  // wrote artifacts while dry_run stayed true. ADR-0064 removed the last of
+  // them, so what survives is the other half of the same rule: a dry run that
+  // claims "none; dry-run only" really writes nothing, in both modes.
+  it('a dry run that claims no writes writes nothing (both modes)', async () => {
     const { root, home } = await makeFixture();
     const codexHome = join(home, '.codex');
     await mkdir(codexHome, { recursive: true });
-    const bare = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, runner: recordingRunner([]) });
-    strictEqual(bare.mutation_boundary.writes_allowed, 'none; dry-run only');
+    const before = { repo: await snapshotDir(root), home: await snapshotDir(home) };
     for (const skip of [true, false]) {
       const report = await runSettings({
         repoRoot: root,
         homeDir: home,
         env: { CODEX_HOME: codexHome },
         skipHostCliProbes: skip,
-        notificationPlan: true,
-        egressLauncherPlan: true,
+        desired: { model: 'planned-only' },
+        unset: ['codex_model'],
         runner: recordingRunner([]),
       });
-      strictEqual(report.dry_run, true, 'plan flags never flip dry_run');
-      ok(report.mutation_boundary.writes_allowed.includes('runs/notification'), `skip=${skip}: notification family enumerated`);
-      ok(report.mutation_boundary.writes_allowed.includes('runs/egress-launcher'), `skip=${skip}: egress-launcher family enumerated`);
-      ok(!report.mutation_boundary.writes_allowed.includes('none; dry-run only'), `skip=${skip}: "dry run" must not render as "no writes"`);
+      strictEqual(report.dry_run, true);
+      strictEqual(report.mutation_boundary.writes_allowed, 'none; dry-run only', `skip=${skip}`);
+      ok(report.config.targets.some((target) => target.planned_writes.length > 0), `skip=${skip}: CONTROL — the run planned writes it did not make`);
+      deepStrictEqual(await snapshotDir(root), before.repo, `skip=${skip}: the repo is byte-identical`);
+      deepStrictEqual(await snapshotDir(home), before.home, `skip=${skip}: the home is byte-identical`);
     }
   });
 
@@ -307,25 +307,6 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     ok(!fullText.includes('not evaluated (--skip-host-cli-probes)'));
     ok(!fullText.includes('local plan:'));
     ok(fullText.includes('(dry-run)'));
-  });
-
-  it('downgrades a blocked requested plan section to local plan: warning', async () => {
-    const { root, home } = await makeFixture({ config: null });
-    const codexHome = join(home, '.codex');
-    // config.toml as a DIRECTORY -> EISDIR (neither ENOENT nor ENOTDIR) ->
-    // the notification plan's mandatory read-check blocks fail-closed.
-    await mkdir(join(codexHome, 'config.toml'), { recursive: true });
-    const report = await runSettings({
-      repoRoot: root,
-      homeDir: home,
-      env: { CODEX_HOME: codexHome },
-      skipHostCliProbes: true,
-      notificationPlan: true,
-      runner: recordingRunner([]),
-    });
-    strictEqual(report.notification_plan.status, 'blocked');
-    strictEqual(report.overall.status, 'warning', 'a blocked evaluated plan must never read as a clean local pass');
-    ok(/^local plan: warning$/m.test(formatText(report)));
   });
 
   it('parses the flag and rejects conflicts with a non-zero CLI exit', async () => {
@@ -380,7 +361,6 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     const { stdout } = await execFileAsync(process.execPath, [
       SETTINGS_CLI, '--repo-root', root, '--format', 'json',
       '--skip-host-cli-probes', '--apply', '--target', 'repo', '--model', 'blackbox-model',
-      '--notification-plan', '--egress-launcher-plan',
     ], bounded);
     strictEqual(await readFile(marker, 'utf8'), '', 'probe-free mode must not invoke any host CLI');
     const report = JSON.parse(stdout);

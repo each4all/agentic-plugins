@@ -1,25 +1,23 @@
 // plugins/runtime/scripts/lib/path-containment.mjs
 //
-// The ONE path-containment predicate for runtime. Two security gates ask the same
-// question — "is this path inside that tree?" — and had grown two identical private
-// answers: the egress config's inside-repo refusal (ADR-0041 §3) and the machine-
-// bootstrap home's canonical containment (machine-bootstrap-contract.md §10.2). A
-// second copy of a security predicate is a mirror waiting to happen: the day one
-// copy learns something (case-insensitive filesystems are the obvious candidate —
-// see below), the other keeps the old answer and keeps shipping.
+// The ONE path-containment predicate for runtime. Two security gates asked the
+// same question — "is this path inside that tree?" — and had grown two identical
+// private answers: the egress config's inside-repo refusal (ADR-0041 §3, removed
+// by ADR-0064) and the machine-bootstrap home's canonical containment
+// (machine-bootstrap-contract.md §10.2). A second copy of a security predicate is
+// a mirror waiting to happen: the day one copy learns something (case-insensitive
+// filesystems are the obvious candidate — see below), the other keeps the old
+// answer and keeps shipping.
 //
-// `isUnder` is deliberately ZERO-dependency (node:path only). It is imported by
-// egress-config, which notify.mjs loads on every emit — the notify path must not
-// drag a reader closure in to ask a five-line question. That is the same
-// constraint runtime-config.mjs states for itself.
+// `isUnder` is deliberately ZERO-dependency and syscall-free (node:path only).
+// It was written for the notify emit path, which loaded it through the egress
+// config on every emit and could not afford a reader closure for a five-line
+// question; ADR-0064 removed that path, and the predicate keeps the property.
 //
-// `sameDirectory` below cannot honor that: identity is a question only the
-// filesystem can answer. Measured before adding the import rather than assumed:
-// egress-config.mjs already imports `node:fs` at its line 55, and it is the
-// module that pulls this one onto the notify path, so `node:fs/promises` here
-// adds no capability that path was not already loading. The constraint the
-// original note was protecting — no reader closures, no heavy modules — still
-// holds, and `isUnder` itself stays syscall-free.
+// `sameDirectory` below cannot be syscall-free: identity is a question only the
+// filesystem can answer. Its first caller, doctor's egress ack proof, went with
+// ADR-0064 Decision 1; the predicate and its tests stay as the one answer to that
+// question.
 //
 // NOT unified with plugins/image's private copy: that is a different plugin, and
 // ADR-0010 §5 bans cross-plugin imports. Its duplication is the architecture, not
@@ -47,8 +45,8 @@ import { dirname, resolve, sep } from 'node:path';
 //
 // The trigger that note reserved has since fired for a different question —
 // see `sameDirectory` below, which is where a caller that cannot guarantee its
-// spelling now goes. `isUnder` stays lexical on purpose: it is on the notify
-// emit path and must answer without syscalls.
+// spelling now goes. `isUnder` stays lexical on purpose: it answers without
+// syscalls.
 export function isUnder(child, parent) {
   if (!parent) return false;
   const c = resolve(child);
@@ -241,9 +239,9 @@ export function resolveContainedSync(root, relativePath, { realpathSync = defaul
 // Are these two paths the SAME directory? Asks the filesystem, because spelling
 // cannot answer it.
 //
-// This exists because `doctor.mjs` decided "is the repo-scoped legacy egress WAL
-// a different directory from the machine-global one?" by comparing resolved
-// path strings, and got it wrong in the one direction that harms: when the two
+// This exists because `doctor.mjs` once decided "is the repo-scoped legacy egress
+// WAL a different directory from the machine-global one?" (a check ADR-0064
+// removed) by comparing resolved path strings, and got it wrong in the one direction that harms: when the two
 // spellings reach the same directory, the LIVE fence was re-read as clearable
 // legacy state and the operator was told to delete it. Freeing that fence is the
 // duplicate-send the whole WAL exists to prevent.

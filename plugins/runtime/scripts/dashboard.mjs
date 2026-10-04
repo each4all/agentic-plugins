@@ -11,9 +11,9 @@
 //     contract stays untouched) — peer runs with stale/non-terminal
 //     emphasis, orchestrator macro subtask progress, consensus run states.
 //   Tier 2 (operator health): recorded doctor freshness, settings +
-//     Codex hook-attestation recency, artifact-inventory attention items,
-//     notify-state health, and the file-log channel's recent notifications
-//     when configured.
+//     Codex hook-attestation recency, and artifact-inventory attention items.
+//     The notify-state health and recent-notification rows were removed with
+//     notification and egress (ADR-0064 Decision 1).
 //   Tier 1 also carries the ADR-0045 §7(ii) entry advisory in SNAPSHOT mode
 //     only: the same arbitrated entry brief the `runtime:context entry-brief`
 //     executor computes for the current branch, rendered as one section.
@@ -27,12 +27,8 @@
 // filesystem-only, re-renders with a bounded poll interval (default 2s,
 // floor 1s) and an explicit exit (SIGINT/SIGTERM, or a bounded
 // --watch-count) — never an unattended daemon.
-//
-// Notify state (.agentic-plugins/state/runtime/notify/) is read directly as
-// the dashboard's own source: it lives under state/, not runs/, so the
-// runs/-scanning artifact inventory needs no new family registration.
 
-import { readdir, stat } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -40,16 +36,12 @@ import { RUNTIME_VERSION } from './version.mjs';
 // The entry advisory reuses the ADR-0045 entry-brief EXECUTOR, not a
 // re-implementation: one probe/gate/validation stack, so the dashboard
 // section can never disagree with `runtime:context entry-brief` (§7 "the
-// same arbiter output"). Sibling-script import, same shape as notify.mjs.
+// same arbiter output"). Sibling-script import.
 import { entryBriefContext } from './context.mjs';
 import { projectRecordedAssurance } from './lib/legacy-assurance-reader.mjs';
 import { sanitizeValue } from './lib/sanitize.mjs';
 import { elapsedMsSince } from './lib/clock.mjs';
-import { isClaimExpired, isLockStale, notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
-import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
-import { NOTIFY_KEY_DEFAULTS } from './lib/runtime-config.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
-import { loadNotifyConfig, NOTIFY_LOG_ROTATE_LOCK_STALE_MS } from './notify.mjs';
 import { resolveRepoRoot } from './lib/repo-root.mjs';
 import {
   inspectConsensusRuns,
@@ -97,10 +89,15 @@ import {
 // REMOVED with host-version tracking. MAJOR for the reason 1.3 → 2.0 was: the
 // change is a deletion, and this report is never persisted, so there is no
 // historical corpus for a projection to serve.
-export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-3.0';
+//
+// 3.0 → 4.0 (ADR-0064 §Decision 7): `tier2.notify` — notify config, notify-state
+// health with its egress-throttle rollup, and the recent file-log notifications —
+// is REMOVED with notification and egress (§Decision 1), and the `--recent` flag
+// that bounded it goes too. MAJOR by the same rule: a deletion from a report that
+// is never persisted.
+export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-4.0';
 export const DEFAULT_WATCH_INTERVAL_SECONDS = 2;
 export const MIN_WATCH_INTERVAL_SECONDS = 1;
-export const DEFAULT_RECENT_NOTIFICATIONS = 5;
 export const MAX_LISTED_ROWS = 8;
 
 // Same defaults doctor applies to its ledger scan and artifact inventory —
@@ -135,6 +132,10 @@ const READABLE_DOCTOR_SCHEMA_PAIRS = Object.freeze([
   // 1.3 — ADR-0060 dropped `host_parity_baseline` and `compat_runs`. Shipped in the
   // same release as doctor's producer bump, for the same reason as 1.2.
   Object.freeze({ artifact: 'runtime-doctor-artifact-1.3', report: 'runtime-doctor-1.3' }),
+  // 1.4 — ADR-0064 §Decision 7: one bump for the held runtime release, which drops
+  // `egress_ack_proof`, the sandbox permission probe and the shuttle receiver kinds.
+  // Shipped in the same release as doctor's producer bump, for the same reason as 1.2.
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.4', report: 'runtime-doctor-1.4' }),
 ]);
 // ADR-0040 §6 scopes the dashboard to attestation RECENCY. Doctor's stricter
 // CURRENCY judgment (plugin set/version drift, disabled hook state) needs
@@ -458,195 +459,6 @@ export async function inspectSettingsRecency({ repoRoot }) {
 }
 
 // ---------------------------------------------------------------------------
-// Tier 2 — notify config, notify-state health, recent notifications
-// ---------------------------------------------------------------------------
-
-export function summarizeNotifyConfig({ repoRoot, homeDir }) {
-  const loaded = loadNotifyConfig({ repoRoot, homeDir });
-  if (!loaded.ok) {
-    return { status: 'invalid', channel: null, errors: loaded.errors, config: null };
-  }
-  return {
-    status: loaded.config.channel === 'none' ? 'off' : 'configured',
-    channel: loaded.config.channel,
-    errors: [],
-    config: loaded.config,
-  };
-}
-
-async function statIfExists(targetPath) {
-  try {
-    return { ok: true, stats: await stat(targetPath) };
-  } catch (err) {
-    return { ok: false, code: err.code ?? err.message };
-  }
-}
-
-// Notify-state health (ADR-0040 §6): unreadable notify state, stale dedupe
-// claim buildup (expired claims linger until the SAME event_id re-fires —
-// a claim for a subject that never recurs is never reclaimed), and crashed
-// rotation/reclaim lock leftovers.
-export async function inspectNotifyState({
-  repoRoot,
-  now = Date.now(),
-  ttlSeconds = Number.parseInt(NOTIFY_KEY_DEFAULTS.notify_dedupe_ttl_seconds, 10),
-  lockStaleMs = NOTIFY_LOG_ROTATE_LOCK_STALE_MS,
-} = {}) {
-  const dir = notifyStateDir(repoRoot);
-  const dedupeDir = notifyDedupeDir(repoRoot);
-  const result = {
-    status: 'missing',
-    root: dir,
-    dedupe: { claims: 0, expired_claims: 0, reclaim_locks: 0, stale_reclaim_locks: 0, unreadable: 0 },
-    log: { present: false, bytes: 0, rotated_present: false, rotated_bytes: 0, rotate_lock_present: false, rotate_lock_stale: false },
-    // ADR-0041 §6 egress attempt-visibility: active failure throttles are an
-    // informational rollup (a provider hiccup in cooldown is expected, not a
-    // runtime health fault), so they never flip `status`; only an unreadable
-    // throttle dir raises an issue.
-    egress: { throttles: 0, active_throttles: 0, next_retry_at: null },
-    issues: [],
-  };
-  try {
-    await readdir(dir);
-  } catch (err) {
-    if (String(err.code ?? '') === 'ENOENT') return result; // never notified — expected until a channel is configured
-    result.status = 'blocked';
-    result.issues.push(`notify state unreadable: ${err.code ?? err.message}`);
-    return result;
-  }
-
-  let dedupeEntries = [];
-  try {
-    dedupeEntries = await readdir(dedupeDir, { withFileTypes: true });
-  } catch (err) {
-    if (String(err.code ?? '') !== 'ENOENT') {
-      result.dedupe.unreadable += 1;
-      result.issues.push(`dedupe dir unreadable: ${err.code ?? err.message}`);
-    }
-  }
-  const ttlMs = (Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 300) * 1000;
-  for (const entry of dedupeEntries) {
-    const entryPath = path.join(dedupeDir, entry.name);
-    const info = await statIfExists(entryPath);
-    if (!info.ok) {
-      // ADR-0047 §6 unified observer semantics: a path that vanished between
-      // readdir and stat is a CONCURRENT CHANGE (a sweep or reclaim just
-      // removed it) — skipped, not counted, and never a reason to flip the
-      // notify state to blocked. Genuinely unreadable entries (EACCES, EIO,
-      // …) keep counting toward blocked.
-      if (String(info.code ?? '') !== 'ENOENT') result.dedupe.unreadable += 1;
-      continue;
-    }
-    if (entry.isDirectory() && entry.name.endsWith('.reclaim.lock')) {
-      result.dedupe.reclaim_locks += 1;
-      if (isLockStale({ nowMs: now, mtimeMs: info.stats.mtimeMs, lockStaleMs })) result.dedupe.stale_reclaim_locks += 1;
-      continue;
-    }
-    if (entry.isFile()) {
-      result.dedupe.claims += 1;
-      // Shared boundary predicate (ADR-0047 §6): the advisory expired count
-      // uses the SAME `age >= ttl` boundary as claimDedupe's reclaim, closing
-      // the pre-ADR `>` vs `>=` discrepancy. GC deletion additionally demands
-      // the safety margin (isClaimGcEligible) — this count stays advisory.
-      if (isClaimExpired({ nowMs: now, mtimeMs: info.stats.mtimeMs, ttlMs })) result.dedupe.expired_claims += 1;
-    }
-  }
-
-  const logPath = path.join(dir, 'log.ndjson');
-  const logInfo = await statIfExists(logPath);
-  if (logInfo.ok) {
-    result.log.present = true;
-    result.log.bytes = logInfo.stats.size;
-  }
-  const rotatedInfo = await statIfExists(`${logPath}.1`);
-  if (rotatedInfo.ok) {
-    result.log.rotated_present = true;
-    result.log.rotated_bytes = rotatedInfo.stats.size;
-  }
-  const rotateLockInfo = await statIfExists(`${logPath}.rotate.lock`);
-  if (rotateLockInfo.ok) {
-    result.log.rotate_lock_present = true;
-    result.log.rotate_lock_stale = now - rotateLockInfo.stats.mtimeMs >= lockStaleMs;
-  }
-
-  if (result.dedupe.expired_claims > 0) {
-    result.issues.push(`stale claim buildup: ${result.dedupe.expired_claims} expired dedupe claim file(s) under ${pointer(repoRoot, dedupeDir)}`);
-  }
-  if (result.dedupe.stale_reclaim_locks > 0) {
-    result.issues.push(`stale reclaim lock(s): ${result.dedupe.stale_reclaim_locks} — a dedupe reclaim did not complete (crashed process?)`);
-  }
-  if (result.log.rotate_lock_stale) {
-    result.issues.push('stale log rotation lock — a log.ndjson rotation did not complete (crashed process?)');
-  }
-
-  // ADR-0041 §6 — egress failure-throttle rollup (active cooldowns + earliest
-  // upcoming retry). Informational: an active throttle does not flip status;
-  // only an unreadable throttle record raises an issue.
-  const egress = inspectEgressThrottles({ throttleDir: egressThrottleDir(repoRoot), now });
-  result.egress = {
-    throttles: egress.total,
-    active_throttles: egress.active,
-    next_retry_at: egress.next_retry_at,
-  };
-  if (egress.unreadable > 0) {
-    result.issues.push(`egress throttle state partially unreadable: ${egress.unreadable} record(s)`);
-  }
-
-  result.status = result.dedupe.unreadable > 0 || result.issues.some((issue) => issue.includes('unreadable'))
-    ? 'blocked'
-    : result.issues.length > 0
-      ? 'needs_attention'
-      : 'available';
-  return result;
-}
-
-function tailLines(text, limit) {
-  const lines = String(text ?? '').split('\n').filter((line) => line.trim().length > 0);
-  return lines.slice(Math.max(0, lines.length - limit));
-}
-
-// Recent notification history from the file-log channel: the newest `limit`
-// records across the two bounded generations (log.ndjson.1 then log.ndjson).
-export async function readRecentNotifications({ repoRoot, limit = DEFAULT_RECENT_NOTIFICATIONS } = {}) {
-  const logPath = path.join(notifyStateDir(repoRoot), 'log.ndjson');
-  const current = await readTextIfExists(logPath);
-  const rotated = await readTextIfExists(`${logPath}.1`);
-  if (!current.ok && !rotated.ok) {
-    return { status: 'missing', pointer: pointer(repoRoot, logPath), entries: [], malformed: 0 };
-  }
-  const rawLines = [
-    ...(rotated.ok ? tailLines(rotated.text, limit) : []),
-    ...(current.ok ? tailLines(current.text, limit) : []),
-  ].slice(-limit);
-  const entries = [];
-  let malformed = 0;
-  for (const line of rawLines) {
-    try {
-      const record = JSON.parse(line);
-      const entry = {
-        ts: sanitizeValue(record.ts),
-        kind: sanitizeValue(record.kind),
-        urgency: sanitizeValue(record.urgency),
-        title: sanitizeValue(record.title),
-        event_id: sanitizeValue(record.event_id),
-      };
-      // ADR-0041 §6 — surface the egress overlay ONLY on attempt-mirror rows;
-      // local-channel records stay byte-identical (no new keys) so existing
-      // consumers are unaffected.
-      if (record.egress_status !== undefined) {
-        entry.egress_channel = sanitizeValue(record.egress_channel);
-        entry.egress_status = sanitizeValue(record.egress_status);
-        entry.egress_outcome = sanitizeValue(record.egress_outcome);
-      }
-      entries.push(entry);
-    } catch {
-      malformed += 1;
-    }
-  }
-  return { status: 'available', pointer: pointer(repoRoot, logPath), entries, malformed };
-}
-
-// ---------------------------------------------------------------------------
 // Tier 1 — ADR-0045 §7(ii) entry advisory (snapshot mode only)
 // ---------------------------------------------------------------------------
 
@@ -700,7 +512,6 @@ export async function buildDashboardReport({
   now = new Date(),
   homeDir = os.homedir(),
   staleGraceMs = DEFAULT_STALE_GRACE_MS,
-  recentLimit = DEFAULT_RECENT_NOTIFICATIONS,
   // ADR-0045 §7(ii) — the entry advisory is OPT-IN per report: the snapshot
   // path passes `{ host }`; the --watch loop never passes it, so the
   // exclusion is enforced BEFORE the arbiter (and its bounded git probes)
@@ -776,21 +587,6 @@ export async function buildDashboardReport({
       retention = { status: 'blocked', scan_complete: false, error: err?.message ?? String(err), projection: {}, reconciled: { attention: artifacts.attention, demoted: [] } };
     }
   }
-  const notifyConfig = summarizeNotifyConfig({ repoRoot, homeDir });
-  const notifyState = await inspectNotifyState({
-    repoRoot,
-    now: now.getTime(),
-    ttlSeconds: notifyConfig.config ? notifyConfig.config.dedupeTtlSeconds : undefined,
-  });
-  // ADR-0041 §6 — egress attempt mirrors land in the file-log regardless of the
-  // LOCAL notify_channel (E1 activation is separate, §2c), so surface recent
-  // rows whenever the log EXISTS, not only when the local channel is file-log —
-  // else a telegram-egress mirror written under notify_channel=none/osascript
-  // would be hidden from the dashboard the ADR requires it to appear on.
-  const recentNotifications = (notifyConfig.channel === 'file-log'
-    || notifyState.log.present || notifyState.log.rotated_present)
-    ? await readRecentNotifications({ repoRoot, limit: recentLimit })
-    : { status: 'not_configured', pointer: null, entries: [], malformed: 0 };
 
   return {
     schema_version: DASHBOARD_SCHEMA_VERSION,
@@ -831,11 +627,6 @@ export async function buildDashboardReport({
       // Present ONLY in the snapshot (like tier1.entry_advisory); the --watch
       // loop omits it and never spawns the citation-scan git (contract §17).
       ...(retention ? { retention } : {}),
-      notify: {
-        config: { status: notifyConfig.status, channel: notifyConfig.channel, errors: notifyConfig.errors },
-        state: notifyState,
-        recent: recentNotifications,
-      },
     },
   };
 }
@@ -1000,32 +791,6 @@ export function renderDashboardText(report) {
     // Never silently hide a failed planner in the snapshot (Codex review MINOR).
     lines.push(`- retention: blocked — planner failed${retention.error ? ` (${retention.error})` : ''}`);
   }
-  const notify = report.tier2.notify;
-  if (notify.config.status === 'invalid') {
-    lines.push(`- notify: INVALID config — ${notify.config.errors.join('; ')}`);
-  } else {
-    // ADR-0041 §6 — fold the active egress-throttle count into the state line
-    // (informational; a cooldown is expected during a provider hiccup).
-    const activeThrottles = notify.state.egress?.active_throttles ?? 0;
-    const egressSummary = activeThrottles > 0
-      ? `; egress: ${activeThrottles} throttled${notify.state.egress?.next_retry_at ? ` (next retry ${notify.state.egress.next_retry_at})` : ''}`
-      : '';
-    lines.push(`- notify: channel=${notify.config.channel}${notify.config.status === 'off' ? ' (off)' : ''}; state=${notify.state.status}${egressSummary}`);
-  }
-  for (const issue of notify.state.issues) {
-    lines.push(`    ! ${issue}`);
-  }
-  if (notify.recent.status === 'available') {
-    lines.push(`- recent notifications (${notify.recent.entries.length}${notify.recent.malformed > 0 ? `, ${notify.recent.malformed} malformed` : ''}):`);
-    for (const entry of notify.recent.entries) {
-      // ADR-0041 §6 — attempt-mirror rows carry the egress overlay; render it
-      // inline so dispatched/suppressed/failed egress attempts are visible.
-      const egress = entry.egress_status
-        ? ` egress:${entry.egress_channel ?? '?'}=${entry.egress_status}${entry.egress_outcome && entry.egress_outcome !== entry.egress_status ? `(${entry.egress_outcome})` : ''}`
-        : '';
-      lines.push(`    · ${entry.ts ?? '?'} [${entry.kind ?? '?'}${entry.urgency === 'urgent' ? '/urgent' : ''}] ${entry.title ?? ''}${egress}`);
-    }
-  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -1040,12 +805,11 @@ export function parseDashboardArgs(argv) {
     watch: false,
     intervalSeconds: DEFAULT_WATCH_INTERVAL_SECONDS,
     watchCount: null,
-    recent: DEFAULT_RECENT_NOTIFICATIONS,
     host: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    const needsValue = ['--repo-root', '--format', '--interval-seconds', '--watch-count', '--recent', '--host'].includes(arg);
+    const needsValue = ['--repo-root', '--format', '--interval-seconds', '--watch-count', '--host'].includes(arg);
     if (needsValue) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith('--')) {
@@ -1069,11 +833,6 @@ export function parseDashboardArgs(argv) {
           return { ok: false, reason: '--watch-count must be a positive integer' };
         }
         opts.watchCount = Number.parseInt(value, 10);
-      } else if (arg === '--recent') {
-        if (!/^[0-9]+$/.test(value) || Number.parseInt(value, 10) <= 0) {
-          return { ok: false, reason: '--recent must be a positive integer' };
-        }
-        opts.recent = Number.parseInt(value, 10);
       } else if (arg === '--host') {
         // Explicit trusted render host for the snapshot entry advisory
         // (ADR-0045 §10 — the invoking wrapper's host, never a default).
@@ -1116,7 +875,6 @@ async function renderOnce(opts, repoRoot, { ndjson = false, includeEntryAdvisory
   // filesystem-only.
   const report = await buildDashboardReport({
     repoRoot,
-    recentLimit: opts.recent,
     entryAdvisory: includeEntryAdvisory ? { host: opts.host } : null,
   });
   if (opts.format === 'json') {
@@ -1138,7 +896,7 @@ async function main(rawArgv) {
   }
   if (!parsed.ok) {
     process.stderr.write(`dashboard: ${parsed.reason}\n`);
-    process.stderr.write('usage: dashboard.mjs [--repo-root <path>] [--format text|json] [--host claude|codex] [--watch] [--interval-seconds <n>] [--watch-count <n>] [--recent <n>]\n');
+    process.stderr.write('usage: dashboard.mjs [--repo-root <path>] [--format text|json] [--host claude|codex] [--watch] [--interval-seconds <n>] [--watch-count <n>]\n');
     process.exitCode = 1;
     return;
   }

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // plugins/runtime/scripts/migrate.mjs
 //
-// The `runtime:migrate` dispatcher. Two subcommands:
+// The `runtime:migrate` dispatcher. One subcommand:
 //
 //   workflow-storage        ADR-0025 legacy .claude/agentic-* → .agentic-plugins/state.
 //                           Dry-run by default; mutates only with --apply.
-//   legacy-egress-intents   ADR-0048 residual (d) cross-checkout discovery of
-//                           pre-upgrade, repo-scoped egress intent WALs.
-//                           READ-ONLY, always. There is no --apply.
+//
+// `legacy-egress-intents`, the read-only cross-checkout discovery of
+// pre-upgrade egress intent WALs (ADR-0048 residual (d)), was removed with the
+// egress subsystem (ADR-0064 Decision 1). Its name is still recognised so it is
+// refused by name, never routed to workflow-storage by default.
 //
 // WHY THE SUBCOMMAND IS FOUND BY SEARCH, NOT BY POSITION.
 //
@@ -32,45 +34,41 @@
 // point so the direct path that shipped in earlier versions still works. One
 // help surface, one exit-code rule, one argv contract.
 
-import { parse as parsePath, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { safeOperatorText } from './lib/operator-text.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
 
 // The workflow-storage half — the M1 MUTATOR, which imports node:child_process
-// at module scope — is loaded DYNAMICALLY, inside the branch that routes to it.
-// A static import made every discovery run (and every refusal of `--apply`)
-// evaluate the mutating module; it has no top-level side effect today, so the
-// read-only property held by accident rather than by construction. A literal
-// dynamic specifier keeps the executor-guard's import analysis intact.
-import {
-  DISCOVERY_EXIT_CODES,
-  DEFAULT_DISCOVERY_CAPS,
-  discoverLegacyEgressIntents,
-  renderDiscoveryJson,
-  renderDiscoveryText,
-} from './lib/legacy-egress-discovery.mjs';
+// at module scope — is loaded DYNAMICALLY, inside the branch that routes to it,
+// so a refusal (a retired subcommand, an ambiguous argv) never evaluates the
+// mutating module. A literal dynamic specifier keeps the executor-guard's
+// import analysis intact.
 
-export const MIGRATE_SUBCOMMANDS = Object.freeze(['workflow-storage', 'legacy-egress-intents']);
+export const MIGRATE_SUBCOMMANDS = Object.freeze(['workflow-storage']);
 const DEFAULT_SUBCOMMAND = 'workflow-storage';
 
-// Every flag that consumes the NEXT argv element as its value, across all
-// subcommands. The union is deliberate: the dispatcher must know it before it
-// knows which subcommand it is routing to.
-const VALUE_FLAGS = new Set([
-  '--repo-root', '--format', '--plugin', '--root', '--skip', '--max-depth', '--time-budget-ms',
-]);
+// Subcommands a release removed, with the decision that removed each. They are
+// recognised by the dispatcher so they are refused BY NAME: left unknown, the
+// name would fall through to the default subcommand's parser.
+export const RETIRED_MIGRATE_SUBCOMMANDS = Object.freeze({
+  'legacy-egress-intents': 'ADR-0064',
+});
+
+// Every flag that consumes the NEXT argv element as its value. The dispatcher
+// must know it before it knows which subcommand it is routing to.
+const VALUE_FLAGS = new Set(['--repo-root', '--format', '--plugin']);
 
 // Split argv into { subcommand, rest }. The subcommand is removed; everything
 // else is forwarded untouched, in order.
 export function splitSubcommand(argv) {
-  const known = new Set(MIGRATE_SUBCOMMANDS);
+  const known = new Set([...MIGRATE_SUBCOMMANDS, ...Object.keys(RETIRED_MIGRATE_SUBCOMMANDS)]);
   const rest = [];
   let subcommand = null;
   // A subcommand NAME that was eaten as a flag's value. Legitimate when a
   // directory is really called that; a typo when the operator dropped the flag's
-  // value (`--repo-root legacy-egress-intents --apply` silently becomes a
+  // value (`--repo-root workflow-storage --apply` silently becomes a
   // workflow-storage APPLY against a repo root that does not exist). The two are
   // indistinguishable from argv, so the caller refuses and asks — see below.
   const consumedAsValue = [];
@@ -99,152 +97,24 @@ export function splitSubcommand(argv) {
 
 export function migrateUsage() {
   return [
-    `Usage: migrate.mjs <${MIGRATE_SUBCOMMANDS.join('|')}> [options]`,
+    `Usage: migrate.mjs [${MIGRATE_SUBCOMMANDS.join('|')}] [options]`,
     '',
-    'workflow-storage (default when no subcommand is given)',
+    'workflow-storage (the default)',
     '  [--repo-root <path>] [--format text|json]',
     '  [--plugin all|engineer|orchestrator] [--apply]',
     '  Dry-run by default. --apply moves legacy .claude/agentic-* workflow state.',
     '',
-    'legacy-egress-intents',
-    '  [--repo-root <path>] [--format text|json] [--root <path>]... [--skip <path>]...',
-    `  [--max-depth <n>] [--time-budget-ms <n>]`,
-    '  READ-ONLY machine-scoped discovery of pre-upgrade egress intent WALs.',
-    '  Writes nothing, reads no record body, and never generates a shell command.',
-    '  The scan spawns no subprocess (the /runtime:migrate wrapper resolves the',
-    '  repo root with git rev-parse, like every runtime command).',
-    '  --root REPLACES the default $HOME root; --skip excludes a subtree by identity.',
-    `  Defaults: max-depth=${DEFAULT_DISCOVERY_CAPS.maxDepth}, time-budget-ms=${DEFAULT_DISCOVERY_CAPS.timeBudgetMs}.`,
-    '  Exit: 0 = nothing found in scope, 2 = locations found, 1 = scan incomplete.',
+    'legacy-egress-intents was removed with the egress subsystem (ADR-0064).',
   ].join('\n');
-}
-
-// --- legacy-egress-intents -------------------------------------------------
-
-// Flags this READ-ONLY subcommand refuses by NAME rather than by "unknown
-// argument". An operator who types `--apply` has a mutating intent, and telling
-// them "unknown argument: --apply" invites them to look for the right spelling
-// of a thing that does not exist. The refusal happens during parsing, so no scan
-// and no migration code runs.
-const REFUSED_DISCOVERY_FLAGS = new Map([
-  ['--apply', 'this subcommand is read-only by contract (ADR-0035 R0): it reports locations and never moves or removes anything'],
-  ['--plugin', '--plugin selects a workflow-storage namespace; it means nothing to an egress-intent scan'],
-]);
-
-export function parseDiscoveryArgs(argv) {
-  const opts = {
-    repoRoot: null,
-    format: 'text',
-    roots: [],
-    skips: [],
-    maxDepth: DEFAULT_DISCOVERY_CAPS.maxDepth,
-    timeBudgetMs: DEFAULT_DISCOVERY_CAPS.timeBudgetMs,
-    help: false,
-  };
-  const take = (i, flag) => {
-    const value = argv[i];
-    if (value === undefined || value.startsWith('--')) throw new Error(`${safeOperatorText(flag)} requires a value`);
-    return value;
-  };
-  const readInt = (raw, flag, min, max) => {
-    if (!/^\d+$/.test(raw)) throw new Error(`${flag} must be a non-negative integer (got ${safeOperatorText(raw)})`);
-    const n = Number(raw);
-    // A 20-digit run of ASCII digits passes the regex and lands outside the safe
-    // integer range, where comparisons stop meaning what they read as. Bound it
-    // at both ends (cross-host review).
-    if (!Number.isSafeInteger(n)) throw new Error(`${flag} is too large to be represented exactly (got ${safeOperatorText(raw)})`);
-    if (n < min) throw new Error(`${flag} must be at least ${min}`);
-    if (n > max) throw new Error(`${flag} must be at most ${max}`);
-    return n;
-  };
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    const eq = arg.indexOf('=');
-    const name = arg.startsWith('--') && eq > 0 ? arg.slice(0, eq) : arg;
-    const inlineValue = arg.startsWith('--') && eq > 0 ? arg.slice(eq + 1) : null;
-    const value = () => (inlineValue !== null ? inlineValue : take(++i, name));
-
-    if (REFUSED_DISCOVERY_FLAGS.has(name)) {
-      throw new Error(`${name} is not accepted by legacy-egress-intents — ${REFUSED_DISCOVERY_FLAGS.get(name)}`);
-    }
-    switch (name) {
-      case '--help':
-      case '-h':
-        opts.help = true;
-        break;
-      case '--repo-root':
-        opts.repoRoot = value();
-        break;
-      case '--format':
-        opts.format = value();
-        break;
-      case '--root':
-        opts.roots.push(value());
-        break;
-      case '--skip':
-        opts.skips.push(value());
-        break;
-      case '--max-depth':
-        opts.maxDepth = readInt(value(), '--max-depth', 0, 256);
-        break;
-      case '--time-budget-ms':
-        opts.timeBudgetMs = readInt(value(), '--time-budget-ms', 1, 24 * 60 * 60 * 1000);
-        break;
-      default:
-        // Defused: rejected argv is printed to stderr, which is outside the
-        // report's defuser and just as forgeable.
-        throw new Error(`unknown argument: ${safeOperatorText(arg)}`);
-    }
-  }
-  if (!['text', 'json'].includes(opts.format)) throw new Error('--format must be text or json');
-  // `/` is refused rather than accepted-and-capped. A whole-filesystem walk is
-  // an explicit non-goal, and the caps would turn it into a scan that reports
-  // `incomplete` forever while costing minutes — the worst of both.
-  // An EARLY, friendlier rejection only. The authoritative refusal runs on the
-  // CANONICAL path inside the scanner, because a symlink to `/` passes this one.
-  // `parse().root` rather than a literal `'/'` so `C:\` and `\\server\share\`
-  // are recognised too.
-  for (const root of opts.roots) {
-    const resolved = resolve(root);
-    if (resolved === parsePath(resolved).root) {
-      throw new Error(`--root ${safeOperatorText(root)} is refused — it names a filesystem root, and a whole-filesystem scan is a non-goal; name the directories that hold your checkouts`);
-    }
-  }
-  return opts;
-}
-
-async function runDiscoveryCli(argv) {
-  let opts;
-  try {
-    opts = parseDiscoveryArgs(argv);
-  } catch (err) {
-    return { ok: false, reason: err.message, usage: migrateUsage() };
-  }
-  if (opts.help) return { ok: true, output: migrateUsage(), exitCode: 0 };
-
-  const report = await discoverLegacyEgressIntents({
-    requestedRoots: opts.roots,
-    skipPaths: opts.skips,
-    // Defaults to the working directory, matching what `migrate-workflow-storage`
-    // does with the same flag. Without it, a direct run left `repoRoot` null and
-    // the current checkout could never be annotated `already_fenced_by_current_
-    // doctor` — the one annotation that tells the operator "doctor already
-    // fences this one" (cross-host review).
-    repoRoot: opts.repoRoot ?? process.cwd(),
-    caps: { maxDepth: opts.maxDepth, timeBudgetMs: opts.timeBudgetMs },
-  });
-  const output = opts.format === 'json' ? renderDiscoveryJson(report) : renderDiscoveryText(report).replace(/\n$/, '');
-  return { ok: true, output, report, exitCode: DISCOVERY_EXIT_CODES[report.overall.status] ?? 1 };
 }
 
 // --- dispatch ---------------------------------------------------------------
 
 export async function runMigrateCli(argv) {
   const { subcommand, explicit, consumedAsValue, rest } = splitSubcommand(argv);
-  // `--help` with no subcommand belongs to the DISPATCHER, not to whichever
-  // subcommand happens to be the default — an operator asking what this command
-  // can do was previously shown workflow-storage's help with no mention that a
-  // second subcommand exists (cross-host review).
+  // `--help` with no subcommand belongs to the DISPATCHER, not to the default
+  // subcommand — it is the surface that says what this command can do, and
+  // what it no longer does (cross-host review).
   if (!explicit && (argv.includes('--help') || argv.includes('-h'))) {
     return { ok: true, output: migrateUsage(), exitCode: 0 };
   }
@@ -263,7 +133,13 @@ export async function runMigrateCli(argv) {
       usage: migrateUsage(),
     };
   }
-  if (subcommand === 'legacy-egress-intents') return runDiscoveryCli(rest);
+  if (Object.hasOwn(RETIRED_MIGRATE_SUBCOMMANDS, subcommand)) {
+    return {
+      ok: false,
+      reason: `${subcommand} was removed by ${RETIRED_MIGRATE_SUBCOMMANDS[subcommand]} with the egress subsystem it served: no runtime reads or writes an egress intent WAL any more. Nothing ran.`,
+      usage: migrateUsage(),
+    };
+  }
   const { runWorkflowStorageCli, workflowStorageUsage } = await import('./migrate-workflow-storage.mjs');
   const res = await runWorkflowStorageCli(rest);
   // The workflow-storage runner owns its own usage text; surface that one rather

@@ -1,6 +1,6 @@
 // Gate for the acceptance suite's shared subprocess helper (tests/acceptance/_helpers.mjs).
 //
-// The three acceptance suites drive real CLIs as black boxes. Each used to roll
+// The acceptance suites drive real CLIs as black boxes. Each used to roll
 // its own `spawnSync`, which left three defects that the helper closes and this
 // file locks down:
 //
@@ -31,15 +31,12 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import {
-  AMBIENT_EGRESS_KEYS,
   DEFAULT_TIMEOUT_MS,
   SpawnInfraError,
   hermeticEnv,
   resolveTimeoutMs,
   runNode,
-  runNodeAsync,
   runNodeOk,
-  scrubAmbientEgressEnv,
 } from './_helpers.mjs';
 
 // A child that reports what resolves through ITS OWN PATH and env.
@@ -126,9 +123,9 @@ describe('acceptance shared spawn helper', () => {
     });
 
     it('an `undefined` override means ensure-absent, not the string "undefined"', () => {
-      // producerEnv/stopEnv depend on this: `{ ...base, ...extra, TELEGRAM_BOT_TOKEN: undefined }`
-      // expresses "set these, then guarantee the token is absent" — and the trailing
-      // key must win over anything `extra` carried.
+      // `{ ...base, ...extra, TELEGRAM_BOT_TOKEN: undefined }` expresses "set these,
+      // then guarantee the token is absent" — and the trailing key must win over
+      // anything `extra` carried.
       const env = hermeticEnv({ TELEGRAM_CHAT_ID: 'chat', TELEGRAM_BOT_TOKEN: undefined });
       strictEqual(env.TELEGRAM_CHAT_ID, 'chat');
       ok(!('TELEGRAM_BOT_TOKEN' in env), '`undefined` must delete the key');
@@ -137,19 +134,6 @@ describe('acceptance shared spawn helper', () => {
     it('never leaks the ambient PATH, so a hermetic child cannot inherit host CLIs', () => {
       ok(!hermeticEnv().PATH.includes(fakeBin), 'the ambient PATH must be replaced, not prepended to');
       ok(hermeticEnv().PATH.endsWith(':/usr/bin:/bin'), 'system tools stay reachable');
-    });
-  });
-
-  describe('scrubAmbientEgressEnv', () => {
-    it('deletes exactly the four ambient egress keys from process.env', () => {
-      for (const k of AMBIENT_EGRESS_KEYS) process.env[k] = 'x';
-      scrubAmbientEgressEnv();
-      for (const k of AMBIENT_EGRESS_KEYS) ok(!(k in process.env), `${k} must be deleted`);
-      strictEqual(AMBIENT_EGRESS_KEYS.length, 4);
-      ok(
-        AMBIENT_EGRESS_KEYS.includes('AGENTIC_NOTIFY_EGRESS_HEADLINE'),
-        'the headline opt-in must be scrubbed too (the operator suite used to omit it)',
-      );
     });
   });
 
@@ -183,81 +167,18 @@ describe('acceptance shared spawn helper', () => {
     });
   });
 
-  describe('runNodeAsync', () => {
-    it('resolves on close with stdout, stderr and status, and forwards stdin', async () => {
-      const res = await runNodeAsync([
-        '-e',
-        'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{process.stdout.write(s.toUpperCase());process.stderr.write("e")})',
-      ], { input: 'ok' });
-      strictEqual(res.status, 0);
-      strictEqual(res.stdout, 'OK');
-      strictEqual(res.stderr, 'e');
-    });
-
-    it('rejects with SpawnInfraError on budget overrun, settling exactly once', async () => {
-      let settles = 0;
-      const err = await runNodeAsync(['-e', 'setTimeout(() => {}, 30000)'], { timeoutMs: 500 })
-        .then((v) => { settles += 1; return v; }, (e) => { settles += 1; return e; });
-      ok(err instanceof SpawnInfraError);
-      strictEqual(err.code, 'ETIMEDOUT');
-      strictEqual(settles, 1, 'the promise must settle exactly once');
-      // Give a late `close` the chance to double-settle or raise an unhandled rejection.
-      await new Promise((r) => setTimeout(r, 250));
-      strictEqual(settles, 1);
-    });
-
-    it('does not throw when the child exits before stdin is fully written', async () => {
-      // `child.stdin` EPIPEs here; the helper must swallow it and settle via close.
-      const res = await runNodeAsync(['-e', 'process.exit(0)'], { input: 'x'.repeat(1 << 20) });
-      strictEqual(res.status, 0);
-    });
-
-    it('is hermetic too', async () => {
-      const seen = JSON.parse((await runNodeAsync([probePath])).stdout);
-      strictEqual(seen.claude, 'ENOENT');
-      strictEqual(seen.codex, 'ENOENT');
-    });
-  });
-
-  describe('output is bounded on both paths', () => {
+  describe('output is bounded', () => {
     // A child that hangs by FLOODING stdout is exactly the failure class the guard
-    // exists to report. Unbounded string accumulation would instead throw a
-    // RangeError inside a `data` handler -- outside the Promise executor, so it can
-    // neither reject nor be caught, and it takes the whole `node --test` worker with it.
+    // exists to report, so it must surface as an ENOBUFS infrastructure failure.
     const FLOOD = 'const b = "y".repeat(1 << 16); (function w() { while (process.stdout.write(b)) {} setImmediate(w); })(); setInterval(() => {}, 1000);';
 
-    it('runNodeAsync kills a flooding child and rejects with ENOBUFS, never an uncaught RangeError', async () => {
-      const err = await runNodeAsync(['-e', FLOOD], { timeoutMs: 30_000, maxBuffer: 1 << 20 })
-        .then((v) => v, (e) => e);
-      ok(err instanceof SpawnInfraError, `expected SpawnInfraError, got ${err?.constructor?.name}`);
-      strictEqual(err.code, 'ENOBUFS');
-      ok(err.stdout.length <= (1 << 20) + (1 << 16), 'the retained prefix stays bounded');
-      ok(/buffer cap/.test(err.message), 'the message must name the real reason, not a liveness overrun');
-    });
-
-    it('runNode reports a flooding child as ENOBUFS too, with the process still alive', () => {
+    it('runNode reports a flooding child as ENOBUFS, with the process still alive', () => {
       let caught;
       throws(
         () => runNode(['-e', FLOOD], { timeoutMs: 30_000, maxBuffer: 1 << 20 }),
         (err) => { caught = err; return err instanceof SpawnInfraError; },
       );
       strictEqual(caught.code, 'ENOBUFS');
-    });
-
-    it('the cap counts BYTES on both paths, so non-ASCII output does not diverge', async () => {
-      // 500k CJK characters: 1.5 MB of UTF-8 but only 500k JS code units. A
-      // code-unit cap would let the async path resolve while the sync path (whose
-      // maxBuffer is a byte cap) rejects.
-      const CJK = 'process.stdout.write("\\u4e00".repeat(500000)); setInterval(() => {}, 1000);';
-      const opts = { timeoutMs: 30_000, maxBuffer: 1 << 20 };
-
-      const asyncErr = await runNodeAsync(['-e', CJK], opts).then((v) => v, (e) => e);
-      ok(asyncErr instanceof SpawnInfraError, 'the async path must reject a 1.5 MB payload');
-      strictEqual(asyncErr.code, 'ENOBUFS');
-
-      let syncErr;
-      throws(() => runNode(['-e', CJK], opts), (err) => { syncErr = err; return err instanceof SpawnInfraError; });
-      strictEqual(syncErr.code, asyncErr.code, 'sync and async must agree');
     });
   });
 

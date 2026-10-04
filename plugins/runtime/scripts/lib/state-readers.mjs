@@ -153,17 +153,18 @@ export const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // own ADR-0047 amendment. The registration is documentation rather than
 // behaviour (an unlisted family would be DISCOVERED and given the same cap), and
 // that is the point: declared beats silently discovered.
-// 'notification' is the ADR-0040 §4 notification plan family, owned by
-// scripts/lib/notification-plan.mjs (NOTIFICATION_ARTIFACT_FAMILY).
-// 'egress-launcher' is the ADR-0041 §12 first-class egress launcher plan family,
-// owned by scripts/lib/egress-launcher-plan.mjs (EGRESS_LAUNCHER_ARTIFACT_FAMILY).
 // 'compat' is retired the same way, by ADR-0060 §Decision 6: `runtime:compat`
 // and its reader are gone, and so is compat's place in the retention registry,
 // but the runs it recorded stay on disk as local state. They are declared here
 // so they stay visible and countable rather than being discovered as an
 // unknown family, and an over-cap set keeps its attention — whose remedy is
 // manual review, since nothing in the runtime writes, reads or deletes them.
-const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor', 'permission', 'notification', 'egress-launcher'];
+// 'notification' and 'egress-launcher', the ADR-0040 §4 notification plan and
+// ADR-0041 §12 egress launcher plan families, are NOT declared: ADR-0064
+// Decision 1 removed them with their producers. Their retained runs are
+// history (Decision 8) and are discovered like any other unlisted family, as
+// the retired `cutover` evidence family already is (Decision 5).
+const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor', 'permission'];
 
 // --- low-level fs / frontmatter / timestamp helpers (moved from doctor.mjs) ---
 

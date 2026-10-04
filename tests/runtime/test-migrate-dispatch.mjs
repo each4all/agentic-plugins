@@ -21,8 +21,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { splitSubcommand, parseDiscoveryArgs, MIGRATE_SUBCOMMANDS } from '../../plugins/runtime/scripts/migrate.mjs';
-import { EGRESS_INTENT_DIR_SUFFIX } from '../../plugins/runtime/scripts/lib/egress-intent-wal.mjs';
+import { splitSubcommand, MIGRATE_SUBCOMMANDS, RETIRED_MIGRATE_SUBCOMMANDS } from '../../plugins/runtime/scripts/migrate.mjs';
 
 const run = promisify(execFile);
 const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'runtime', 'scripts');
@@ -118,27 +117,25 @@ describe('runtime:migrate dispatcher — workflow-storage compatibility', () => 
   });
 
   it('an explicit subcommand AFTER the pre-placed flag is honored', async () => {
-    const { subcommand, explicit, rest } = splitSubcommand(['--repo-root', '/r', 'legacy-egress-intents', '--format', 'json']);
+    const { subcommand, explicit, rest } = splitSubcommand(['--repo-root', '/r', 'workflow-storage', '--format', 'json']);
     strictEqual(explicit, true);
-    strictEqual(subcommand, 'legacy-egress-intents');
+    strictEqual(subcommand, 'workflow-storage');
     deepStrictEqual(rest, ['--repo-root', '/r', '--format', 'json']);
   });
 
   it('the inline --flag=value form does not consume the next element', async () => {
-    const { subcommand, rest } = splitSubcommand(['--repo-root=/r', 'legacy-egress-intents']);
-    strictEqual(subcommand, 'legacy-egress-intents');
+    const { subcommand, explicit, rest } = splitSubcommand(['--repo-root=/r', 'workflow-storage']);
+    strictEqual(subcommand, 'workflow-storage');
+    strictEqual(explicit, true);
     deepStrictEqual(rest, ['--repo-root=/r']);
   });
 
-  it('bare --help describes BOTH subcommands, not just the default one', async () => {
-    // The first cut routed a subcommand-less `--help` to workflow-storage, so an
-    // operator asking what this command does was never told the read-only
-    // discovery subcommand exists.
+  it('bare --help belongs to the dispatcher: the subcommand, and the one ADR-0064 removed', async () => {
     const res = await cli(DISPATCHER, ['--help']);
     strictEqual(res.code, 0, res.stderr);
     const flat = res.stdout.replace(/\s+/g, ' ');
     match(flat, /workflow-storage/);
-    match(flat, /legacy-egress-intents/);
+    match(flat, /legacy-egress-intents was removed with the egress subsystem \(ADR-0064\)/);
     match(flat, /--apply moves legacy \.claude\/agentic-\* workflow state/);
   });
 
@@ -157,17 +154,19 @@ describe('runtime:migrate dispatcher — workflow-storage compatibility', () => 
   });
 
   it('a subcommand name eaten as a flag value is REFUSED, not silently defaulted', async () => {
-    // `--repo-root legacy-egress-intents --apply` is indistinguishable from a
-    // dropped flag value, and guessing costs a workflow-storage APPLY against a
-    // repo root that does not exist.
-    const res = await cli(DISPATCHER, ['--repo-root', 'legacy-egress-intents', '--apply']);
-    strictEqual(res.code, 1);
-    match(res.stderr, /ambiguous: 'legacy-egress-intents' is a subcommand name but was read as the value of --repo-root/);
-    match(res.stderr, /write --repo-root=legacy-egress-intents/);
+    // `--repo-root workflow-storage --apply` is indistinguishable from a dropped
+    // flag value, and guessing costs a workflow-storage APPLY against a repo
+    // root that does not exist. A retired name is a subcommand name too.
+    for (const name of ['workflow-storage', 'legacy-egress-intents']) {
+      const res = await cli(DISPATCHER, ['--repo-root', name, '--apply']);
+      strictEqual(res.code, 1);
+      match(res.stderr, new RegExp(`ambiguous: '${name}' is a subcommand name but was read as the value of --repo-root`));
+      match(res.stderr, new RegExp(`write --repo-root=${name}`));
+    }
   });
 
   it('the inline form disambiguates it without ceremony', () => {
-    const { subcommand, explicit, consumedAsValue } = splitSubcommand(['--repo-root=legacy-egress-intents', '--apply']);
+    const { subcommand, explicit, consumedAsValue } = splitSubcommand(['--repo-root=workflow-storage', '--apply']);
     strictEqual(subcommand, 'workflow-storage');
     strictEqual(explicit, false);
     deepStrictEqual(consumedAsValue, [], 'the inline form consumes no following element');
@@ -207,23 +206,19 @@ describe('runtime:migrate dispatcher — workflow-storage compatibility', () => 
   });
 });
 
-describe('runtime:migrate dispatcher — legacy-egress-intents is read-only', () => {
-  for (const flag of ['--apply', '--plugin']) {
-    it(`${flag} exits nonzero BEFORE any workflow migration code runs`, async () => {
+describe('runtime:migrate dispatcher — legacy-egress-intents is refused by name (ADR-0064)', () => {
+  // The subcommand went with the egress subsystem (ADR-0064 Decision 1). Left
+  // unknown, its name would fall through to the default subcommand, so an
+  // operator's `legacy-egress-intents --apply` would reach a workflow-storage
+  // APPLY. It is refused by name instead, before any migration code runs.
+  for (const extra of [[], ['--apply'], ['--root', '/tmp', '--format', 'json']]) {
+    it(`legacy-egress-intents ${extra.join(' ')} exits 1 and runs nothing`.trim(), async () => {
       const root = await seedLegacyOnlyRepo();
       const before = await treeDigest(root);
-      // `--root root` and a tiny budget are scoping, not part of the property:
-      // the refusal must happen during PARSING, so no scan should start at all.
-      // They exist so that when this refusal is mutated away the fallback run is
-      // a millisecond scan of an empty temp dir rather than a 120s walk of the
-      // real `$HOME` — measured at 121s before they were added.
-      const scoping = ['--root', root, '--time-budget-ms', '50'];
-      const args = flag === '--plugin'
-        ? ['--repo-root', root, 'legacy-egress-intents', ...scoping, '--plugin', 'engineer']
-        : ['--repo-root', root, 'legacy-egress-intents', ...scoping, '--apply'];
-      const res = await cli(DISPATCHER, args);
+      const res = await cli(DISPATCHER, ['--repo-root', root, 'legacy-egress-intents', ...extra]);
       strictEqual(res.code, 1);
-      match(res.stderr, new RegExp(`${flag} is not accepted by legacy-egress-intents`));
+      match(res.stderr, /legacy-egress-intents was removed by ADR-0064 with the egress subsystem it served/);
+      strictEqual(res.stdout, '', 'no report was produced');
       // Nothing moved, and no migration manifest was written.
       strictEqual(await treeDigest(root), before, 'the seeded workflow tree changed');
       const entries = await readdir(root);
@@ -242,78 +237,11 @@ describe('runtime:migrate dispatcher — legacy-egress-intents is read-only', ()
     ok(await treeDigest(root) !== before, 'the control fixture must actually be mutable');
   });
 
-  it('a read-only discovery run writes nothing under the repo root', async () => {
-    const repo = await mkdtemp(join(tmpdir(), 'migrate-ro-repo-'));
-    const scanRoot = await mkdtemp(join(tmpdir(), 'migrate-ro-scan-'));
-    await mkdir(join(scanRoot, 'checkout', ...EGRESS_INTENT_DIR_SUFFIX), { recursive: true });
-    await writeFile(join(scanRoot, 'checkout', ...EGRESS_INTENT_DIR_SUFFIX, 'a.json'), '{}');
-    await writeFile(join(repo, 'sentinel'), 'x');
-    const before = await treeDigest(repo);
-    const scanBefore = await treeDigest(scanRoot);
-
-    const res = await cli(DISPATCHER, ['--repo-root', repo, 'legacy-egress-intents', '--root', scanRoot, '--format', 'json']);
-    strictEqual(res.code, 2, 'findings present → exit 2');
-    strictEqual(JSON.parse(res.stdout).findings.length, 1);
-    strictEqual(await treeDigest(repo), before, 'the repo root was written to');
-    strictEqual(await treeDigest(scanRoot), scanBefore, 'the scanned tree was written to');
-  });
-
-  it('exit codes: 0 when nothing is found, 2 with findings, 1 when incomplete', async () => {
-    const empty = await mkdtemp(join(tmpdir(), 'migrate-exit-empty-'));
-    strictEqual((await cli(DISPATCHER, ['legacy-egress-intents', '--root', empty])).code, 0);
-
-    // The directory must hold a RECORD. An empty legacy directory is reported
-    // but is not actionable — there is nothing in flight and directory-level
-    // action is forbidden — so it no longer drives exit 2.
-    const withFinding = await mkdtemp(join(tmpdir(), 'migrate-exit-find-'));
-    await mkdir(join(withFinding, 'c', ...EGRESS_INTENT_DIR_SUFFIX), { recursive: true });
-    await writeFile(join(withFinding, 'c', ...EGRESS_INTENT_DIR_SUFFIX, 'a.json'), '{}');
-    strictEqual((await cli(DISPATCHER, ['legacy-egress-intents', '--root', withFinding])).code, 2);
-
-    const emptyLegacyDir = await mkdtemp(join(tmpdir(), 'migrate-exit-empty-wal-'));
-    await mkdir(join(emptyLegacyDir, 'c', ...EGRESS_INTENT_DIR_SUFFIX), { recursive: true });
-    strictEqual((await cli(DISPATCHER, ['legacy-egress-intents', '--root', emptyLegacyDir])).code, 0,
-      'an emptied legacy directory converges rather than being reported as actionable forever');
-
-    strictEqual((await cli(DISPATCHER, ['legacy-egress-intents', '--root', '/definitely/not/here'])).code, 1);
-  });
-
-  it('--root / is refused rather than capped into a permanently incomplete scan', async () => {
-    const res = await cli(DISPATCHER, ['legacy-egress-intents', '--root', '/']);
-    strictEqual(res.code, 1);
-    match(res.stderr, /--root \/ is refused/);
-  });
-
-  it('numeric flags reject non-integers, unsafe integers, and out-of-range values', () => {
-    const rejected = [
-      [['--max-depth', 'deep'], /must be a non-negative integer/],
-      [['--time-budget-ms', '-5'], /must be a non-negative integer/],
-      [['--time-budget-ms', '1.5'], /must be a non-negative integer/],
-      // A 20-digit run of ASCII digits passes `/^\d+$/` and lands outside the
-      // safe-integer range, where comparisons stop meaning what they read as.
-      [['--time-budget-ms', '99999999999999999999'], /too large to be represented exactly/],
-      [['--max-depth', '99999999999999999999'], /too large to be represented exactly/],
-      // …and inside the safe range there is still an upper bound.
-      [['--max-depth', '9007199254740991'], /must be at most/],
-      [['--time-budget-ms', '9007199254740991'], /must be at most/],
-      [['--time-budget-ms', '0'], /must be at least 1/],
-    ];
-    for (const [argv, expected] of rejected) {
-      let threw = null;
-      try { parseDiscoveryArgs(argv); } catch (err) { threw = err; }
-      ok(threw, `${argv.join(' ')} was accepted`);
-      match(threw.message, expected, `${argv.join(' ')} produced: ${threw.message}`);
-    }
-    // CONTROL — ordinary values still pass.
-    strictEqual(parseDiscoveryArgs(['--max-depth', '3']).maxDepth, 3);
-    strictEqual(parseDiscoveryArgs(['--time-budget-ms', '5000']).timeBudgetMs, 5000);
-  });
-
   it('rejected argv is defused before it reaches stderr', async () => {
-    // stderr is outside the report's defuser and just as forgeable: a flag
+    // stderr is outside any report's defuser and just as forgeable: a flag
     // carrying a newline and an escape forges an operator line there.
     const hostile = `--evil${String.fromCharCode(27)}[31m\n>>> forged instruction`;
-    const res = await cli(DISPATCHER, ['legacy-egress-intents', hostile]);
+    const res = await cli(DISPATCHER, [hostile]);
     strictEqual(res.code, 1);
     strictEqual(res.stderr.includes(String.fromCharCode(27)), false, 'a raw escape reached stderr');
     strictEqual(
@@ -324,8 +252,9 @@ describe('runtime:migrate dispatcher — legacy-egress-intents is read-only', ()
     match(res.stderr, /unknown argument/);
   });
 
-  it('the subcommand list is closed', () => {
-    deepStrictEqual([...MIGRATE_SUBCOMMANDS], ['workflow-storage', 'legacy-egress-intents']);
+  it('the subcommand lists are closed', () => {
+    deepStrictEqual([...MIGRATE_SUBCOMMANDS], ['workflow-storage']);
+    deepStrictEqual(Object.keys(RETIRED_MIGRATE_SUBCOMMANDS), ['legacy-egress-intents']);
     const { subcommand, explicit } = splitSubcommand(['not-a-subcommand']);
     strictEqual(explicit, false);
     strictEqual(subcommand, 'workflow-storage');

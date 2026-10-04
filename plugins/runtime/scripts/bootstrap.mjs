@@ -1407,7 +1407,7 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
   try {
     const shim = renderAgenticStatuslineShim();
     // The statusline shim is opted into by the very act of planning this step,
-    // so its absence IS actionable here (unlike the conditional chain receiver).
+    // so its absence IS actionable here.
     const receiverInventory = inspectInstalledReceivers({
       installDir: `${homeDir}/.agentic-plugins/bin`,
       expected: ['agentic-statusline.mjs'],

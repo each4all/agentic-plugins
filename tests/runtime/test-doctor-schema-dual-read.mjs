@@ -30,9 +30,11 @@ const ERAS = [
   { label: 'post-assurance producer', artifact: 'runtime-doctor-artifact-1.1', report: 'runtime-doctor-1.1' },
   // ADR-0057 dropped `permission_diagnosis`.
   { label: 'post-advisor producer', artifact: 'runtime-doctor-artifact-1.2', report: 'runtime-doctor-1.2' },
-  // The version this runtime writes: ADR-0060 dropped `host_parity_baseline` and
-  // `compat_runs`.
+  // ADR-0060 dropped `host_parity_baseline` and `compat_runs`.
   { label: 'post-host-tracking producer', artifact: 'runtime-doctor-artifact-1.3', report: 'runtime-doctor-1.3' },
+  // The version this runtime writes: ADR-0064 dropped `egress_ack_proof` and the
+  // shuttle receiver kinds, and drops the sandbox probe fields under the same pair.
+  { label: 'post-egress producer', artifact: 'runtime-doctor-artifact-1.4', report: 'runtime-doctor-1.4' },
 ];
 
 async function seed(runs) {
@@ -82,6 +84,8 @@ describe('the dashboard pins the same versions, independently', () => {
       ['runtime-doctor-artifact-1.2', 'runtime-doctor-1.1'],
       ['runtime-doctor-artifact-1.2', 'runtime-doctor-1.3'],
       ['runtime-doctor-artifact-1.3', 'runtime-doctor-1.2'],
+      ['runtime-doctor-artifact-1.3', 'runtime-doctor-1.4'],
+      ['runtime-doctor-artifact-1.4', 'runtime-doctor-1.3'],
     ]) {
       const repoRoot = await seed([{ artifact, report }]);
       const latest = await inspectLatestDoctorRun({ repoRoot });

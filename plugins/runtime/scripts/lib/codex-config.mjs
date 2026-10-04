@@ -3,10 +3,11 @@
 // READ-ONLY Codex host-config TOML reading and parsing (machine-bootstrap-contract.md
 // §1.3 extraction 4). This module never writes host config.
 //
-// `readCodexConfigToml` and `parseCodexConfigToml` moved here from
-// lib/notification-plan.mjs (ADR-0064 Decision 2, item 6): bootstrap's Codex
-// statusline judge reads the same file and the same `[tui]` table the
-// notification plan does, and outlives it.
+// `readCodexConfigToml` and `parseCodexConfigToml` moved here from the
+// notification plan (ADR-0064 Decision 2, item 6): bootstrap's Codex
+// statusline judge reads the same file and the same `[tui]` table, and outlived
+// the plan, which ADR-0064 Decision 1 removed together with the `notify =`
+// read.
 //
 // The module first held the generic half of `lib/permission-config.mjs` (ADR-0057
 // §Decision 4): `parseCodexPermissionConfigToml`, the approval-policy /
@@ -31,12 +32,12 @@ export async function readCodexConfigToml({ homeDir, env = {} }) {
 
 
 // Scan a raw capture for basic ("...") / literal ('...') TOML string elements.
-// Returns null when any non-string, non-separator token appears — a notify
-// value that is not a flat string array cannot be safely chained.
+// Returns null when any non-string, non-separator token appears — a value that
+// is not a flat string array is never trusted.
 //
-// Decode fidelity is a chaining-safety requirement (Plan-verify peer MAJOR):
-// the wrapper chain EXECUTES this parsed argv, so a string form this scanner
-// cannot decode faithfully must return null (→ manual-merge), never a
+// Decode fidelity is a safety requirement (Plan-verify peer MAJOR, raised when
+// the notification plan's wrapper chain EXECUTED a parsed argv): a string form
+// this scanner cannot decode faithfully must return null, never a
 // silently-different value. Basic strings decode the full TOML escape set
 // (\b \t \n \f \r \" \\ \uXXXX \UXXXXXXXX); any other escape and the
 // triple-quoted multi-line forms are rejected as unparseable.
@@ -99,8 +100,8 @@ function extractStringElements(arrayText) {
             i += 2 + width;
             continue;
           }
-          // Unknown escape — decoding it as anything would risk chaining a
-          // DIFFERENT command than the one configured.
+          // Unknown escape — decoding it as anything would risk trusting a
+          // DIFFERENT value than the one configured.
           return null;
         }
         if (c === '"') { closed = true; i += 1; break; }
@@ -123,7 +124,7 @@ function extractStringElements(arrayText) {
       i = end + 1;
       continue;
     }
-    // Any other token (number, bool, nested table…) — not a string argv.
+    // Any other token (number, bool, nested table…) — not a flat string array.
     return null;
   }
   return values;
@@ -176,17 +177,18 @@ function captureTomlArray(lines, startIndex, firstRemainder) {
   }
 }
 
-// Minimal READ-ONLY scan of ~/.codex/config.toml for exactly the keys runtime
-// judges: the top-level `notify` value (present/raw/argv) and the `[tui]`
-// table's `notifications` and `status_line`. Top-level keys are honored only
+// Minimal READ-ONLY scan of ~/.codex/config.toml for exactly the key runtime
+// judges: the `[tui]` table's `status_line`. Top-level keys are honored only
 // before the first section header (TOML ordering). A duplicate assignment is
 // invalid TOML and resolves `invalid`, never last-value-wins.
 //
-// `notify` is read here only until ADR-0064 Decision 1 removes the notify plan
-// and judge. It shares this pass because the scan steps over a multi-line
-// `notify` array as one value; reading the `[tui]` keys in a pass of their own
-// would see that array's lines as headers and keys, and could answer
-// differently.
+// ADR-0064 Decision 1 removed the `notify` read and the `[tui] notifications`
+// read with the notification plan. The scan still STEPS OVER both values as
+// one value each, without reading them: an operator's Codex config keeps its
+// `notify =` line until the owner's cleanup (ADR-0064 Decision 9), and
+// `[tui] notifications` is Codex's own key. Scanning a multi-line array's
+// lines one by one would see them as headers and keys, and the `status_line`
+// answer could change.
 export function parseCodexConfigToml(text) {
   const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
   let inTopLevel = true;
@@ -197,8 +199,8 @@ export function parseCodexConfigToml(text) {
   // scan recognized the dotted form but never recorded that it had created the
   // table, so `tui.notifications = [canonical]` followed by `[tui]` resolved to
   // a trusted canonical value out of a config Codex cannot load. The same hole
-  // applied to `tui.status_line`, whose EXACT probe already ships — one flag
-  // closes both, because `tuiRedefined` gates every [tui] key.
+  // applied to `tui.status_line`, whose EXACT probe ships — `tuiRedefined`
+  // gates the [tui] key.
   let tuiDottedSeen = false;
   let tuiRedefined = false;
   // Per-key capture state: raw text + the strictness facts an EXACT probe
@@ -206,20 +208,17 @@ export function parseCodexConfigToml(text) {
   // unclosed arrays, duplicate keys (invalid TOML, previously last-wins),
   // a redefined [tui] table, and trailing non-comment junk all resolve to
   // values:null (unparseable), never to a confidently wrong argv/item list.
-  const states = { notify: null, tuiNotifications: null, tuiStatusLine: null };
+  const states = { tuiStatusLine: null };
   // Keys whose IDENTITY or table scope this scan cannot pin down: the name was
   // claimed as a sub-table, a deeper dotted path defined it as a table, or the
   // whole [tui] table arrived as an inline assignment. Poisoned keys resolve
   // `invalid` — never `absent`, which would read as "nothing configured" and
   // send the operator a merge instruction that breaks a working config.
   const poisoned = new Set();
+  // A TOML bare/quoted key token → its bare name.
+  const keyName = (token) => String(token ?? '').trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1');
   // A TOML bare/quoted key token → the state name it addresses, or null.
-  const tuiStateKey = (token) => {
-    const name = String(token ?? '').trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1');
-    if (name === 'notifications') return 'tuiNotifications';
-    if (name === 'status_line') return 'tuiStatusLine';
-    return null;
-  };
+  const tuiStateKey = (token) => (keyName(token) === 'status_line' ? 'tuiStatusLine' : null);
   const record = (key, captured) => {
     if (states[key] !== null) {
       states[key] = { ...states[key], duplicate: true };
@@ -315,11 +314,10 @@ export function parseCodexConfigToml(text) {
       continue;
     }
     if (inTopLevel) {
+      // Stepped over, not read (see the header comment).
       const m = raw.match(/^\s*(?:"notify"|'notify'|notify)\s*=\s*(.*)$/);
       if (m) {
-        const captured = captureTomlArray(lines, i, m[1]);
-        record('notify', captured);
-        i = captured.nextIndex;
+        i = captureTomlArray(lines, i, m[1]).nextIndex;
         continue;
       }
       // `tui = …` defines the whole table in one assignment — an inline table
@@ -328,29 +326,34 @@ export function parseCodexConfigToml(text) {
       // operator to merge a `[tui]` block that would redefine a closed inline
       // table and break a config Codex accepts today.
       if (/^\s*(?:"tui"|'tui'|tui)\s*=/.test(raw)) {
-        poisoned.add('tuiNotifications');
         poisoned.add('tuiStatusLine');
         tuiDottedSeen = true;
         i += 1;
         continue;
       }
       // Dotted top-level forms. ANY `tui.<…>` assignment implicitly creates the
-      // table — not just the two keys this scan reads — so the redefinition
-      // flag is set for all of them (the first fix covered only the two read
-      // keys, which left `tui.color = "blue"` + `[tui]` certifying).
+      // table — not just the key this scan reads — so the redefinition flag is
+      // set for all of them (the first fix covered only the keys it read, which
+      // left `tui.color = "blue"` + `[tui]` certifying).
       const dotted = raw.match(/^\s*(?:"tui"|'tui'|tui)\s*\.\s*(.*)$/);
       if (dotted) {
         tuiDottedSeen = true;
         const assign = dotted[1].match(/^(.+?)\s*=\s*(.*)$/);
         const path = assign ? assign[1].split('.').map((seg) => seg.trim()) : [];
         const stateKey = path.length > 0 ? tuiStateKey(path[0]) : null;
+        // Codex's own `tui.notifications`, in the dotted form: stepped over as
+        // one value, not read (see the header comment), like `[tui] notifications`.
+        if (!stateKey && path.length === 1 && keyName(path[0]) === 'notifications') {
+          i = captureTomlArray(lines, i, assign[2]).nextIndex;
+          continue;
+        }
         if (stateKey && path.length === 1) {
           const captured = captureTomlArray(lines, i, assign[2]);
           record(stateKey, captured);
           i = captured.nextIndex;
           continue;
         }
-        // `tui.notifications.enabled = …` defines OUR key as a table.
+        // `tui.status_line.enabled = …` defines OUR key as a table.
         if (stateKey) poisoned.add(stateKey);
         i += 1;
         continue;
@@ -363,16 +366,16 @@ export function parseCodexConfigToml(text) {
         const head = tuiStateKey(dottedInTui[1].split('.')[0]);
         if (head) { poisoned.add(head); i += 1; continue; }
       }
-      // Quoted key forms are the SAME key. Matching only the bare and
-      // double-quoted spellings let `'notifications' = false` slip past the
-      // duplicate check beside a canonical bare assignment.
+      // Codex's own `notifications` key: stepped over, not read (see the
+      // header comment).
       const mN = raw.match(/^\s*(?:"notifications"|'notifications'|notifications)\s*=\s*(.*)$/);
       if (mN) {
-        const captured = captureTomlArray(lines, i, mN[1]);
-        record('tuiNotifications', captured);
-        i = captured.nextIndex;
+        i = captureTomlArray(lines, i, mN[1]).nextIndex;
         continue;
       }
+      // Quoted key forms are the SAME key. Matching only the bare and
+      // double-quoted spellings once let `'notifications' = false` slip past
+      // the duplicate check beside a canonical bare assignment.
       const mS = raw.match(/^\s*(?:"status_line"|'status_line'|status_line)\s*=\s*(.*)$/);
       if (mS) {
         const captured = captureTomlArray(lines, i, mS[1]);
@@ -394,8 +397,8 @@ export function parseCodexConfigToml(text) {
   // `form`.
   //
   //   absent  — the key was not observed at all
-  //   true    — exactly `true`  (all notification kinds enabled)
-  //   false   — exactly `false` (notifications switched off)
+  //   true    — exactly `true`
+  //   false   — exactly `false`
   //   array   — a trusted flat string array; `values` carries it
   //   invalid — everything else: duplicate key, redefined table, unclosed
   //             array, trailing junk, a non-flat-string array, or any scalar
@@ -416,8 +419,6 @@ export function parseCodexConfigToml(text) {
     return { present: true, raw: state.raw, values: null, form: 'invalid' };
   };
   return {
-    notify: resolve('notify', states.notify),
-    tuiNotifications: resolve('tuiNotifications', states.tuiNotifications, { tuiKey: true }),
     tuiStatusLine: resolve('tuiStatusLine', states.tuiStatusLine, { tuiKey: true }),
   };
 }

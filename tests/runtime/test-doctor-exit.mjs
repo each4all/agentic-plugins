@@ -31,7 +31,6 @@ const report = (over = {}) => ({
   doctor_artifact: { written: false, requested: false, status: 'not_requested' },
   permission_proof: { ...notRequested },
   deep_peer_smoke: { ...notRequested },
-  egress_ack_proof: { ...notRequested },
   workflow_continuation_proof: { ...notRequested },
   ...over,
 });
@@ -123,19 +122,20 @@ describe('runtime:doctor exit-code ladder', () => {
         strictEqual(doctorExitCode(report({ [section]: lanes(mode, 'passed', bad) })), EXIT.PROOF_INCOMPLETE, `${section}/${bad}`);
       }
     }
-    // Egress has no directions: the section IS the lane, and its executor can
-    // also refuse BEFORE sending — `executed:false` under an explicit mode. That
-    // pre-send refusal is only a warning in `overall` (correctly: no network
-    // request happened), which is exactly how it escaped as exit 0 before.
+    // A section with no lanes is its own lane, and an executor refused before it
+    // ran (`executed:false` under an explicit mode) is incomplete, even when
+    // `overall` only warns. The egress ack proof, which had no directions, was
+    // the case that once escaped as exit 0 here; ADR-0064 Decision 1 removed it,
+    // and the fallback is pinned on a surviving section with its lanes absent.
     strictEqual(doctorExitCode(report({
       overall: warned,
-      egress_ack_proof: { requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked' },
+      permission_proof: { requested: true, executed: false, mode: 'explicit_permission_executor', status: 'blocked' },
     })), EXIT.PROOF_INCOMPLETE);
     strictEqual(doctorExitCode(report({
-      egress_ack_proof: { requested: true, executed: true, mode: 'explicit_egress_executor', status: 'failed' },
+      permission_proof: { requested: true, executed: true, mode: 'explicit_permission_executor', status: 'failed', directions: {} },
     })), EXIT.PROOF_INCOMPLETE);
     strictEqual(doctorExitCode(report({
-      egress_ack_proof: { requested: true, executed: true, mode: 'explicit_egress_executor', status: 'passed' },
+      permission_proof: { requested: true, executed: true, mode: 'explicit_permission_executor', status: 'passed' },
     })), EXIT.OK);
   });
 
@@ -184,12 +184,12 @@ describe('runtime:doctor exit-code ladder', () => {
 describe('runtime:doctor exit-code ladder (subprocess)', () => {
   it('keeps EXIT_PROOF_SECTIONS equal to the live report sections that carry an executor', async () => {
     // Drift guard measured against a REAL report rather than against a hand
-    // list. A fifth proof section would appear here and fail the equality; a
+    // list. A fourth proof section would appear here and fail the equality; a
     // section listed but no longer emitted would fail it the other way.
     const { root, home } = await scratch('sections');
     const res = await runDoctorCli([
       '--repo-root', root, '--format', 'json',
-      '--permission-proof', '--deep-peer-smoke', '--workflow-continuation-proof', '--egress-ack-proof',
+      '--permission-proof', '--deep-peer-smoke', '--workflow-continuation-proof',
     ], { cwd: root, home });
     const parsed = JSON.parse(res.stdout);
     const withMode = Object.entries(parsed)
@@ -204,6 +204,10 @@ describe('runtime:doctor exit-code ladder (subprocess)', () => {
       withMode.filter((key) => key !== 'sandbox_permission_probe').sort(),
       [...EXIT_PROOF_SECTIONS].sort(),
     );
+    // The three ADR-0064 Decision 4 keeps. `egress_ack_proof` left with the
+    // egress executor (Decision 1), from the list and from the live report.
+    deepStrictEqual([...EXIT_PROOF_SECTIONS].sort(), ['deep_peer_smoke', 'permission_proof', 'workflow_continuation_proof']);
+    strictEqual(Object.hasOwn(parsed, 'egress_ack_proof'), false);
     // And every one of them is plan-only here, so nothing above executed.
     for (const key of EXIT_PROOF_SECTIONS) strictEqual(parsed[key].mode, 'plan_only_preflight', key);
     strictEqual(parsed.exit_code, res.code);

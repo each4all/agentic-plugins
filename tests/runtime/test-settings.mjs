@@ -1,9 +1,11 @@
 import { describe, it } from 'node:test';
+import { execFile } from 'node:child_process';
 import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import {
   formatText,
@@ -72,7 +74,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.26');
+    strictEqual(report.schema_version, 'runtime-settings-1.27');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -1104,7 +1106,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.26');
+    strictEqual(report.schema_version, 'runtime-settings-1.27');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -1957,7 +1959,7 @@ describe('runtime settings', () => {
       deepStrictEqual(missing, [], `${label} does not advertise: ${missing.join(', ')}`);
     }
     // Non-vacuous: the sweep must actually have a population to check.
-    ok(flags.length >= 12, `the flag set is real (${flags.length} flags)`);
+    ok(flags.length >= 11, `the flag set is real (${flags.length} flags)`);
   });
 
   it('removeRuntimeConfigKeys deletes EVERY assignment line and reports the count', () => {
@@ -1965,11 +1967,11 @@ describe('runtime settings', () => {
     // surviving duplicate would resurrect the key the operator just removed —
     // the same reasoning the upsert gives, in the direction that loses data.
     const { text, removed } = removeRuntimeConfigKeys(
-      '# header\nnotify_kinds = "approval"\nmodel = "keep"\nnotify_kinds = "idle"\n',
-      ['notify_kinds'],
+      '# header\nsession_capture = "stop-hook"\nmodel = "keep"\nsession_capture = "off"\n',
+      ['session_capture'],
     );
     strictEqual(removed, 2, 'both duplicates went');
-    ok(!text.includes('notify_kinds'), 'no assignment survives');
+    ok(!text.includes('session_capture'), 'no assignment survives');
     ok(text.includes('model = "keep"'), 'unrelated keys are preserved byte-for-byte');
     ok(text.includes('# header'), 'and so is prose this writer did not author');
   });
@@ -1981,27 +1983,27 @@ describe('runtime settings', () => {
     // shapes below were reproduced as data loss against the private line regex
     // this replaces (both review lanes; the table case was found first).
     const table = removeRuntimeConfigKeys(
-      'notify_kinds = "approval"\nmodel = "keep"\n\n[foo]\nnotify_kinds = "someone-elses"\nother = "keep"\n',
-      ['notify_kinds'],
+      'session_capture = "stop-hook"\nmodel = "keep"\n\n[foo]\nsession_capture = "someone-elses"\nother = "keep"\n',
+      ['session_capture'],
     );
     strictEqual(table.removed, 1, 'the key under [foo] is NOT a runtime key — the reader stops at the first table header');
-    ok(table.text.includes('notify_kinds = "someone-elses"'), 'so the foreign table keeps its line');
+    ok(table.text.includes('session_capture = "someone-elses"'), 'so the foreign table keeps its line');
     ok(table.text.includes('other = "keep"'));
 
-    const crlf = removeRuntimeConfigKeys('notify_kinds = "a"\r\nmodel = "keep"\r\n', ['notify_kinds']);
+    const crlf = removeRuntimeConfigKeys('session_capture = "a"\r\nmodel = "keep"\r\n', ['session_capture']);
     strictEqual(crlf.text, 'model = "keep"\r\n', 'CRLF endings survive — the writer no longer re-synthesizes terminators');
 
-    const noTrailing = removeRuntimeConfigKeys('model = "keep"\nnotify_kinds = "a"', ['notify_kinds']);
+    const noTrailing = removeRuntimeConfigKeys('model = "keep"\nsession_capture = "a"', ['session_capture']);
     strictEqual(noTrailing.text, 'model = "keep"\n', 'and a missing final newline is not invented back');
 
     // `normalizeConfigKey` maps `.` and `-` to `_`, so the READER genuinely takes
-    // these as notify_kinds — removing them is the writer agreeing with it.
-    const aliases = removeRuntimeConfigKeys('notify.kinds = "a"\nnotify-kinds = "b"\nmodel = "keep"\n', ['notify_kinds']);
+    // these as session_capture — removing them is the writer agreeing with it.
+    const aliases = removeRuntimeConfigKeys('session.capture = "a"\nsession-capture = "b"\nmodel = "keep"\n', ['session_capture']);
     strictEqual(aliases.removed, 2, 'dotted and dashed spellings ARE the same key to the reader');
 
     // A quoted key is NOT accepted by the reader's key regex, so it is not a
     // runtime key and must survive.
-    const quoted = removeRuntimeConfigKeys('"notify_kinds" = "x"\nmodel = "keep"\n', ['notify_kinds']);
+    const quoted = removeRuntimeConfigKeys('"session_capture" = "x"\nmodel = "keep"\n', ['session_capture']);
     strictEqual(quoted.removed, 0, 'a quoted key the reader ignores is not the writer\'s to delete');
   });
 
@@ -2016,23 +2018,23 @@ describe('runtime settings', () => {
     await seedRepo(root);
     await mkdir(join(home, '.agentic-plugins'), { recursive: true });
     const realTarget = join(external, 'real.toml');
-    await writeFile(realTarget, 'notify_kinds = "approval"\nmodel = "keep"\n');
+    await writeFile(realTarget, 'session_capture = "stop-hook"\nmodel = "keep"\n');
     await symlink(realTarget, join(home, '.agentic-plugins', 'config.toml'));
 
-    const report = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'], apply: true });
+    const report = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['session_capture'], apply: true });
     const plan = report.config.targets.find((t) => t.kind === 'user');
     strictEqual(plan.applied, true);
     ok(plan.resolved_path, 'the plan records where the bytes actually went');
     ok(report.mutation_boundary.allowed_paths.includes(plan.resolved_path), 'and the boundary names it too');
     ok((await lstat(join(home, '.agentic-plugins', 'config.toml'))).isSymbolicLink(), 'the symlink is followed, never replaced');
-    ok(!(await readFile(realTarget, 'utf8')).includes('notify_kinds'), 'and the write landed through it');
+    ok(!(await readFile(realTarget, 'utf8')).includes('session_capture'), 'and the write landed through it');
     // No staging litter left behind.
     const leftovers = (await readdir(external)).filter((name) => name.includes('agentic-tmp'));
     deepStrictEqual(leftovers, [], 'the temp file is published or removed, never abandoned');
   });
 
   it('removeRuntimeConfigKeys on an absent key is a no-op that says so', () => {
-    const { text, removed } = removeRuntimeConfigKeys('model = "keep"\n', ['notify_kinds']);
+    const { text, removed } = removeRuntimeConfigKeys('model = "keep"\n', ['session_capture']);
     strictEqual(removed, 0, '"removed 0" and "removed 3 duplicates" are different facts');
     strictEqual(text, 'model = "keep"\n');
   });
@@ -2043,24 +2045,24 @@ describe('runtime settings', () => {
     await seedRepo(root);
     await mkdir(join(home, '.agentic-plugins'), { recursive: true });
     const userConfig = join(home, '.agentic-plugins', 'config.toml');
-    await writeFile(userConfig, 'notify_kinds = "approval"\nmodel = "keep"\n');
+    await writeFile(userConfig, 'session_capture = "stop-hook"\nmodel = "keep"\n');
 
-    const planned = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'] });
+    const planned = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['session_capture'] });
     const userPlan = planned.config.targets.find((t) => t.kind === 'user');
-    deepStrictEqual(userPlan.planned_writes, [{ op: 'remove', key: 'notify_kinds', before: 'approval', after: null }]);
+    deepStrictEqual(userPlan.planned_writes, [{ op: 'remove', key: 'session_capture', before: 'stop-hook', after: null }]);
     strictEqual(userPlan.applied, false, 'a dry run applies nothing');
-    strictEqual(await readFile(userConfig, 'utf8'), 'notify_kinds = "approval"\nmodel = "keep"\n', 'and writes nothing');
-    ok(!Object.hasOwn(userPlan.projected_config, 'notify_kinds'), 'the projection shows the key GONE, not blanked');
+    strictEqual(await readFile(userConfig, 'utf8'), 'session_capture = "stop-hook"\nmodel = "keep"\n', 'and writes nothing');
+    ok(!Object.hasOwn(userPlan.projected_config, 'session_capture'), 'the projection shows the key GONE, not blanked');
 
-    const applied = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'], apply: true });
+    const applied = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['session_capture'], apply: true });
     const appliedPlan = applied.config.targets.find((t) => t.kind === 'user');
     strictEqual(appliedPlan.applied, true);
     const after = await readFile(userConfig, 'utf8');
-    ok(!after.includes('notify_kinds'), 'the key is removed from the file');
+    ok(!after.includes('session_capture'), 'the key is removed from the file');
     ok(after.includes('model = "keep"'));
 
     // A second apply is a no-op the plan reports as `keep`, not `remove`.
-    const again = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['notify_kinds'] });
+    const again = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'user', unset: ['session_capture'] });
     deepStrictEqual(again.config.targets.find((t) => t.kind === 'user').planned_writes, [], 'an already-absent key stages no write');
   });
 
@@ -2088,9 +2090,9 @@ describe('runtime settings', () => {
 
   it('a key cannot be written and removed in one invocation, on either surface', async () => {
     // Letting one win would make the outcome depend on which stage ran last.
-    rejects(async () => parseArgs(['--notify-kinds', 'approval', '--unset', 'notify_kinds']), /never both in one invocation/);
+    rejects(async () => parseArgs(['--session-capture', 'stop-hook', '--unset', 'session_capture']), /never both in one invocation/);
     await rejects(
-      runSettings({ repoRoot: '.', homeDir: '.', skipHostCliProbes: true, desired: { notify_kinds: 'approval' }, unset: ['notify_kinds'] }),
+      runSettings({ repoRoot: '.', homeDir: '.', skipHostCliProbes: true, desired: { session_capture: 'stop-hook' }, unset: ['session_capture'] }),
       /never both in one invocation/,
     );
   });
@@ -2105,97 +2107,43 @@ describe('runtime settings', () => {
 
   it('rewrites EVERY duplicate line of a desired key (read parser is last-value-wins)', () => {
     // Leaving a later duplicate stale would make apply report an update the
-    // last-value-wins read parser (and the notify emitter) never sees.
+    // last-value-wins read parser (and the consuming executor) never sees.
     const next = upsertRuntimeConfigToml(
-      'notify_channel = "none"\nother = "keep"\nnotify_channel = "file-log"\n',
-      { notify_channel: 'macos-osascript' },
+      'model = "first"\nother = "keep"\nmodel = "second"\n',
+      { model: 'rewritten' },
     );
-    strictEqual((next.match(/notify_channel = "macos-osascript"/g) ?? []).length, 2);
-    ok(!next.includes('"none"'));
-    ok(!next.includes('"file-log"'));
+    strictEqual((next.match(/model = "rewritten"/g) ?? []).length, 2);
+    ok(!next.includes('"first"'));
+    ok(!next.includes('"second"'));
     ok(next.includes('other = "keep"'));
   });
 
 });
 
-describe('settings: notify config keys (ADR-0040 §2)', () => {
-  it('plans notify_* config writes with effective projection, shipped defaults, and a text section', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-plan-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-plan-home-'));
-    await seedRepo(root);
-
-    const report = await runSettings({
-      repoRoot: root,
-      homeDir: home,
-      desired: {
-        notify_channel: 'macos-osascript',
-        notify_dedupe_ttl_seconds: '600',
-        notify_kinds: 'approval,peer-run-terminal',
-      },
-      runner: fakeRunner(defaultCliMap()),
-    });
-
-    strictEqual(report.dry_run, true);
-    const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
-    ok(repoTarget.planned_writes.some((write) => write.key === 'notify_channel' && write.op === 'add' && write.after === 'macos-osascript'));
-    ok(repoTarget.planned_writes.some((write) => write.key === 'notify_dedupe_ttl_seconds' && write.after === '600'));
-    ok(repoTarget.planned_writes.some((write) => write.key === 'notify_kinds' && write.after === 'approval,peer-run-terminal'));
-
-    const notify = report.notify_settings;
-    strictEqual(notify.effective_mode, 'projected');
-    deepStrictEqual(notify.config_keys, [
-      'notify_channel',
-      'notify_quiet_hours',
-      'notify_quiet_hours_tz',
-      'notify_dedupe_ttl_seconds',
-      'notify_urgent_bypass_quiet_hours',
-      'notify_kinds',
-    ]);
-    strictEqual(notify.keys.notify_channel.value, 'macos-osascript');
-    strictEqual(notify.keys.notify_channel.effective_value, 'macos-osascript');
-    strictEqual(notify.keys.notify_channel.source, 'repo config notify_channel');
-    strictEqual(notify.keys.notify_channel.status, 'effective');
-    strictEqual(notify.keys.notify_channel.default, 'none');
-    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.value, null);
-    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.effective_value, 'true');
-    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.default, 'true');
-    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.status, 'unchanged');
-    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.source, 'shipped default');
-    strictEqual(notify.keys.notify_dedupe_ttl_seconds.effective_value, '600');
-    strictEqual(notify.keys.notify_quiet_hours.default, null);
-    strictEqual(notify.keys.notify_quiet_hours.effective_value, null);
-    deepStrictEqual(notify.warnings, []);
-    strictEqual(report.overall.notify_warnings, 0);
-
-    const text = formatText(report);
-    ok(text.includes('Notify (ADR-0040'));
-    ok(text.includes('notify_channel: macos-osascript (repo config notify_channel)'));
-    ok(text.includes('notify_urgent_bypass_quiet_hours'));
-  });
-
-  it('reads existing notify keys from config.toml as current state and keeps unchanged values', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-current-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-current-home-'));
+describe('settings: config key families (model/effort and session)', () => {
+  it('reads existing keys from config.toml as current state, keeps unchanged values, and drops unknown keys', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-current-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-current-home-'));
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
-    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\nunknown_key = "still-dropped"\n');
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\nunknown_key = "still-dropped"\n');
 
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
-      desired: { notify_channel: 'file-log' },
+      desired: { session_capture: 'stop-hook' },
       runner: fakeRunner(defaultCliMap()),
     });
 
     const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
-    deepStrictEqual(repoTarget.current_keys, ['notify_channel']);
+    deepStrictEqual(repoTarget.current_keys, ['session_capture']);
     strictEqual(repoTarget.planned_writes.length, 0);
-    ok(repoTarget.unchanged.some((action) => action.key === 'notify_channel' && action.op === 'keep'));
-    strictEqual(report.notify_settings.keys.notify_channel.current_value, 'file-log');
+    ok(repoTarget.unchanged.some((action) => action.key === 'session_capture' && action.op === 'keep'));
+    strictEqual(report.session_settings.keys.session_capture.current_value, 'stop-hook');
   });
 
-  // ADR-0044 §3 — the session family rides the same generic family-plan core
-  // as notify: projection, shadow warnings, per-target validation, defaults.
+  // ADR-0044 §3 — the session family rides the generic family-plan core:
+  // projection, shadow warnings, per-target validation, defaults.
   it('plans the session_capture key with the shipped default off and renders the section', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-home-'));
@@ -2563,61 +2511,50 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
     ok(userToml.includes('session_capture = "stop-hook"'), 'the applied user layer carries the key');
   });
 
-  it('rejects invalid notify values at parse/normalize time per key', () => {
+  it('rejects invalid config values at parse/normalize time per key', () => {
     const cases = [
-      [['--notify-channel', 'growl'], /notify_channel/],
-      [['--notify-quiet-hours', '25:00-08:00'], /notify_quiet_hours/],
-      [['--notify-quiet-hours', '2200-0800'], /notify_quiet_hours/],
-      [['--notify-quiet-hours-tz', 'Not/AZone'], /notify_quiet_hours_tz/],
-      [['--notify-dedupe-ttl-seconds', '0'], /notify_dedupe_ttl_seconds/],
-      [['--notify-dedupe-ttl-seconds', 'abc'], /notify_dedupe_ttl_seconds/],
-      [['--notify-urgent-bypass-quiet-hours', 'yes'], /notify_urgent_bypass_quiet_hours/],
-      [['--notify-kinds', 'approval,bogus-kind'], /bogus-kind/],
       [['--session-capture', 'always'], /session_capture must be one of off, stop-hook/],
       [['--session-capture', 'on'], /session_capture/],
       [['--entry-brief', 'always'], /entry_brief must be one of off, startup/],
       [['--entry-brief-empty', 'loud'], /entry_brief_empty must be one of silent, report/],
+      [['--model-effort-fallback', 'default'], /model_effort_fallback must be one of host-native/],
     ];
     for (const [argv, expected] of cases) {
       throws(() => parseArgs(argv), expected, `expected parse rejection for ${argv.join(' ')}`);
     }
   });
 
-  it('rejects invalid notify values on the programmatic path before any planning', async () => {
+  it('rejects invalid config values on the programmatic path before any planning', async () => {
     await rejects(
       () => runSettings({
         repoRoot: '/nonexistent-root-never-read',
-        desired: { notify_channel: 'growl' },
+        desired: { session_capture: 'growl' },
         runner: fakeRunner({}),
       }),
-      /notify_channel must be one of none, macos-osascript, file-log/,
+      /session_capture must be one of off, stop-hook/,
     );
   });
 
-  it('accepts --notify-* flags via the generic config flag mapping alongside model/effort flags', () => {
+  it('maps every config key to its flag by the generic kebab-case rule, alongside model/effort flags', () => {
     const opts = parseArgs([
-      '--notify-channel', 'file-log',
-      '--notify-quiet-hours', '22:00-08:00',
-      '--notify-quiet-hours-tz', 'Asia/Seoul',
-      '--notify-dedupe-ttl-seconds', '300',
-      '--notify-urgent-bypass-quiet-hours', 'false',
-      '--notify-kinds', 'approval',
+      '--session-capture', 'stop-hook',
+      '--entry-brief', 'startup',
+      '--entry-brief-empty', 'report',
+      '--model-effort-fallback', 'host-native',
       '--codex-model', 'still-works',
     ]);
     deepStrictEqual(opts.desired, {
       codex_model: 'still-works',
-      notify_channel: 'file-log',
-      notify_quiet_hours: '22:00-08:00',
-      notify_quiet_hours_tz: 'Asia/Seoul',
-      notify_dedupe_ttl_seconds: '300',
-      notify_urgent_bypass_quiet_hours: 'false',
-      notify_kinds: 'approval',
+      model_effort_fallback: 'host-native',
+      session_capture: 'stop-hook',
+      entry_brief: 'startup',
+      entry_brief_empty: 'report',
     });
   });
 
-  it('applies notify config writes to the selected agentic-plugins-owned target', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-apply-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-apply-home-'));
+  it('applies session config writes to the selected agentic-plugins-owned target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-apply-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-apply-home-'));
     await seedRepo(root);
 
     const report = await runSettings({
@@ -2625,71 +2562,51 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
       homeDir: home,
       target: 'repo',
       apply: true,
-      desired: { notify_channel: 'macos-osascript', notify_quiet_hours: '23:30-07:15' },
+      desired: { session_capture: 'stop-hook', model: 'applied-model' },
       runner: fakeRunner(defaultCliMap()),
     });
 
     strictEqual(report.config.targets.find((target) => target.kind === 'repo').applied, true);
     const repoConfig = await readFile(join(root, '.agentic-plugins', 'config.toml'), 'utf8');
-    ok(repoConfig.includes('notify_channel = "macos-osascript"'));
-    ok(repoConfig.includes('notify_quiet_hours = "23:30-07:15"'));
-    strictEqual(report.notify_settings.effective_mode, 'applied');
-    strictEqual(report.notify_settings.keys.notify_channel.value, 'macos-osascript');
+    ok(repoConfig.includes('session_capture = "stop-hook"'));
+    ok(repoConfig.includes('model = "applied-model"'));
+    strictEqual(report.session_settings.effective_mode, 'applied');
+    strictEqual(report.session_settings.keys.session_capture.value, 'stop-hook');
   });
 
-  it('warns when a requested notify key is shadowed by repo config', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-shadow-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-shadow-home-'));
+  it('warns when a requested session key is shadowed by repo config', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-shadow-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-shadow-home-'));
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
-    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "none"\n');
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "off"\n');
 
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
       target: 'user',
-      desired: { notify_channel: 'file-log' },
+      desired: { session_capture: 'stop-hook' },
       runner: fakeRunner(defaultCliMap()),
     });
 
-    const entry = report.notify_settings.keys.notify_channel;
-    strictEqual(entry.value, 'none');
+    const entry = report.session_settings.keys.session_capture;
+    strictEqual(entry.value, 'off');
     strictEqual(entry.status, 'shadowed');
-    ok(entry.warning.includes('shadowed by repo config notify_channel'));
-    strictEqual(report.overall.notify_warnings, 1);
+    ok(entry.warning.includes('shadowed by repo config session_capture'));
+    strictEqual(report.overall.session_warnings, 1);
     strictEqual(report.overall.status, 'warning');
     ok(report.recommendations.some((rec) => rec.area === 'config' && rec.detail.includes('shadowed')));
-    ok(formatText(report).includes('warning: notify_channel'));
+    ok(formatText(report).includes('warning: session_capture'));
   });
 
-  it('warns when an existing config value for a notify key is invalid without blocking the plan', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-invalid-current-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-invalid-current-home-'));
+  it('warns about an invalid lower-precedence session value shadowed by a valid repo value', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-invalid-lower-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-invalid-lower-home-'));
     await seedRepo(root);
     await mkdir(join(root, '.agentic-plugins'), { recursive: true });
-    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "growl"\n');
-
-    const report = await runSettings({
-      repoRoot: root,
-      homeDir: home,
-      runner: fakeRunner(defaultCliMap()),
-    });
-
-    const entry = report.notify_settings.keys.notify_channel;
-    strictEqual(entry.value, 'growl');
-    ok(entry.warning.includes('invalid'));
-    strictEqual(report.overall.notify_warnings, 1);
-    strictEqual(report.overall.status, 'warning');
-  });
-
-  it('warns about an invalid lower-precedence notify value shadowed by a valid repo value', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-invalid-lower-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-invalid-lower-home-'));
-    await seedRepo(root);
-    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
-    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\n');
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "off"\n');
     await mkdir(join(home, '.agentic-plugins'), { recursive: true });
-    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'notify_channel = "growl"\n');
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'session_capture = "growl"\n');
 
     const report = await runSettings({
       repoRoot: root,
@@ -2697,35 +2614,96 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    const entry = report.notify_settings.keys.notify_channel;
-    strictEqual(entry.value, 'file-log');
-    strictEqual(entry.effective_value, 'file-log');
+    const entry = report.session_settings.keys.session_capture;
+    strictEqual(entry.value, 'off');
+    strictEqual(entry.effective_value, 'off');
     ok(entry.warning.includes('user config value "growl" is invalid'));
-    strictEqual(report.overall.notify_warnings, 1);
+    strictEqual(report.overall.session_warnings, 1);
   });
 
-  it('locks the blank/raw notify_kinds contract: blank is dropped, raw CSV is stored as written', async () => {
-    // Blank means "no filter" to the notify-schema lib; the settings differ
-    // has no key-removal semantics, so a blank desired value is dropped (the
-    // operator clears a filter by deleting the config line).
-    const blank = parseArgs(['--notify-channel', 'none']);
-    deepStrictEqual(blank.desired, { notify_channel: 'none' });
-    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-kinds-raw-repo-'));
-    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-kinds-raw-home-'));
+  it('drops a blank desired value instead of planning it', async () => {
+    // An empty value is not a value: the differ drops it, so removing a key is
+    // `--unset`'s job, never a blank write.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-blank-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-blank-home-'));
     await seedRepo(root);
 
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
-      desired: { notify_kinds: 'idle,,idle,', notify_quiet_hours: '' },
+      desired: { model: 'kept', effort: '' },
       runner: fakeRunner(defaultCliMap()),
     });
 
     const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
-    // Raw CSV is stored as written; the notify-schema lib normalizes at
-    // evaluation time (dupes/empty tokens are its concern, not the differ's).
-    ok(repoTarget.planned_writes.some((write) => write.key === 'notify_kinds' && write.after === 'idle,,idle,'));
-    ok(!repoTarget.planned_writes.some((write) => write.key === 'notify_quiet_hours'), 'blank desired value is dropped, not planned');
+    ok(repoTarget.planned_writes.some((write) => write.key === 'model' && write.after === 'kept'), 'CONTROL: the non-blank value is planned');
+    ok(!repoTarget.planned_writes.some((write) => write.key === 'effort'), 'blank desired value is dropped, not planned');
+  });
+});
+
+// ADR-0064 removed the notify key family and the two plan surfaces with the
+// notification emitter (settings report 1.27). These pin that they stay gone,
+// and that a leftover notify_* line is inert rather than an error (Decision 9).
+describe('settings: the surfaces ADR-0064 removed stay removed', () => {
+  it('refuses the removed flags as unknown arguments, on parse and at the CLI', async () => {
+    for (const argv of [['--notification-plan'], ['--egress-launcher-plan'], ['--notify-channel', 'file-log'], ['--notify-kinds', 'approval']]) {
+      throws(() => parseArgs(argv), new RegExp(`Unknown argument: ${argv[0]}`), `${argv[0]} is refused`);
+    }
+    // CONTROL: a surviving config flag still parses, so the refusal is not a
+    // parser that refuses everything.
+    deepStrictEqual(parseArgs(['--session-capture', 'off']).desired, { session_capture: 'off' });
+    const settingsCli = fileURLToPath(new URL('../../plugins/runtime/scripts/settings.mjs', import.meta.url));
+    await rejects(
+      promisify(execFile)(process.execPath, [settingsCli, '--notification-plan'], { timeout: 60_000, killSignal: 'SIGKILL' }),
+      (err) => {
+        strictEqual(err.code, 2, 'the CLI exits non-zero on the removed flag');
+        ok(String(err.stderr).includes('Unknown argument: --notification-plan'));
+        return true;
+      },
+    );
+  });
+
+  it('a report carries none of the removed sections or counters, in either scope', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-removed-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-removed-home-'));
+    await seedRepo(root);
+    for (const skipHostCliProbes of [true, false]) {
+      const report = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes, runner: fakeRunner(defaultCliMap()) });
+      for (const key of ['notify_settings', 'notification_plan', 'egress_launcher_plan']) {
+        ok(!Object.hasOwn(report, key), `skip=${skipHostCliProbes}: no ${key} section`);
+        ok(!Object.hasOwn(report.section_presence, key), `skip=${skipHostCliProbes}: no ${key} presence row`);
+      }
+      ok(!Object.hasOwn(report.overall, 'notify_warnings'), `skip=${skipHostCliProbes}: no notify_warnings counter`);
+      ok(Object.hasOwn(report.overall, 'session_warnings'), `skip=${skipHostCliProbes}: CONTROL — the surviving family counter is there`);
+      deepStrictEqual(Object.keys(report.config.key_families).sort(), ['model_effort', 'session']);
+      const text = formatText(report);
+      for (const header of ['Notify (ADR-0040', 'Notification Plan', 'Egress Launcher Plan']) {
+        ok(!text.includes(header), `skip=${skipHostCliProbes}: the text has no ${header} section`);
+      }
+    }
+  });
+
+  it('a leftover notify_* line is inert, and --unset says why it will not remove it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-leftover-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-leftover-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    const repoConfig = join(root, '.agentic-plugins', 'config.toml');
+    const leftover = 'notify_channel = "file-log"\nnotify_kinds = "approval"\nmodel = "kept"\n';
+    await writeFile(repoConfig, leftover);
+
+    const report = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true });
+    deepStrictEqual(report.config.targets.find((target) => target.kind === 'repo').current_keys, ['model'], 'the reader drops the leftover lines');
+
+    const retired = /is not a runtime config key[\s\S]*ADR-0064 retired the notify_\* keys: a leftover line is inert[\s\S]*by hand/;
+    throws(() => parseArgs(['--unset', 'notify_kinds']), retired);
+    await rejects(
+      runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, target: 'repo', unset: ['notify_kinds'], apply: true }),
+      retired,
+    );
+    strictEqual(await readFile(repoConfig, 'utf8'), leftover, 'the refused unset wrote nothing');
+    // CONTROL: a key that never existed gets the plain refusal, not the retirement note.
+    throws(() => parseArgs(['--unset', 'not_a_key']), (err) => /is not a runtime config key/.test(err.message) && !/ADR-0064/.test(err.message));
   });
 });
 

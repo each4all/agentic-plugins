@@ -720,7 +720,7 @@ export function findImports(code) {
   // The default-import clause's trailing comma is OPTIONAL so a LONE default import
   // (`import https from 'node:https'`) is parsed, not only `import def, { named }`.
   // Before this, a lone-default import of a capability module (e.g. the removed
-  // compat.mjs's `import https from 'node:https'`, and the node:https E1 transport in notify.mjs,
+  // compat.mjs's `import https from 'node:https'`, and the node:https E1 transport notify.mjs carried,
   // ADR-0041 §2d) was INVISIBLE to the import-gate — a fail-open hole for every
   // watched module. `[\w$]+` never matches a leading `{`/`*`, so a named/namespace
   // import still skips this group.
@@ -1125,7 +1125,7 @@ export function scanFile({ fileName, source, registry }) {
   // a prose mention is not over-flagged) fails closed — an egress that is neither the pinned
   // fetch nor the pinned node:https request is forbidden outright.
   if (/(?<![.\w$])WebSocket\b/.test(blankStrings(code))) {
-    violations.push({ rule: 'global-websocket-gate', file: fileName, detail: 'the global WebSocket is an outbound-network primitive not permitted in any runtime script (only the single pinned notification egress is allowed)' });
+    violations.push({ rule: 'global-websocket-gate', file: fileName, detail: 'the global WebSocket is an outbound-network primitive not permitted in any runtime script (no runtime script reaches the network since ADR-0064 retired tier E1)' });
   }
 
   // --- Pinned-HTTPS-gate (import-anchored node:https egress, ADR-0041 §2d) ----
@@ -1136,7 +1136,10 @@ export function scanFile({ fileName, source, registry }) {
   // token/recipient OR manually follow a redirect — node:https does not auto-follow),
   // reject any OTHER https member method, and validate each request against the pinned
   // spec. INERT until the import + call actually land (scanner-gate-before-use), so this
-  // registers in the guard slice BEFORE the impl slice adds the transport.
+  // registers in the guard slice BEFORE the impl slice adds the transport. PINNED_HTTPS_USERS
+  // is empty since ADR-0064 R4n2 (notify.mjs was its one entry), so on the real registry
+  // this block never runs and the import-gate above rejects every node:https import; the
+  // guard tests exercise it through an injected registry.
   if (httpsPinnedSpec) {
     // Resolve the node:https import(s). The pinned egress uses the DEFAULT (or namespace)
     // binding as `binding.request(url, options)`. Fail closed on:
@@ -1214,7 +1217,7 @@ export function scanFile({ fileName, source, registry }) {
         detail: `at most ${maxCalls} direct pinned node:https request permitted (found ${httpsDirectCalls}) — a second call could egress to a different token/recipient or follow a redirect`,
       });
     }
-    // Cross-transport mutual exclusion: notify.mjs may be registered in BOTH
+    // Cross-transport mutual exclusion: a file (notify.mjs, until ADR-0064) may be registered in BOTH
     // GLOBAL_FETCH_USERS and PINNED_HTTPS_USERS during the guard→impl swap window, but must
     // never ACTIVELY use both — a leftover pinned fetch plus a new pinned https.request is a
     // double-send (Codex plan-verify MAJOR). The impl slice removes the fetch as it adds the

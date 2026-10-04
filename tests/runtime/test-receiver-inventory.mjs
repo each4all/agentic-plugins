@@ -77,7 +77,7 @@ describe('installed receiver inventory — classification without execution', ()
     const registry = releasedShapesRegistry();
     for (const tag of FIXTURE_TAGS) {
       const version = tag.replace('plugin-runtime-', '');
-      for (const basename of [STATUSLINE, 'codex-notify-shuttle.mjs']) {
+      for (const basename of [STATUSLINE]) {
         const fixture = releasedTemplate(tag, basename);
         const entry = registry[basename]?.[sha256(fixture)];
         ok(entry, `${basename} ${version} fixture is not a registered released shape`);
@@ -93,7 +93,7 @@ describe('installed receiver inventory — classification without execution', ()
     // is what lets doctor say "legacy — re-install" about that file instead of
     // "foreign — someone else's". Each v1 shim is classified through the SAME
     // packaged view doctor uses, beside the current template.
-    for (const basename of [STATUSLINE, 'codex-notify-shuttle.mjs']) {
+    for (const basename of [STATUSLINE]) {
       const v1 = releasedTemplate('plugin-runtime-v0.97.4', basename);
       const current = await readFile(join(REPO_ROOT, 'plugins/runtime/receivers', basename), 'utf8');
       ok(v1.includes("'.tmp', 'marketplaces'"), `${basename} v1 is the shape whose ladder read the marketplace clone`);
@@ -310,8 +310,7 @@ describe('installed receiver inventory — classification without execution', ()
   });
 
   it('an absent OPT-IN receiver is a fact, not a defect', async () => {
-    // Every receiver is opt-in, and the chain receiver exists only when a prior
-    // notifier had to be preserved. Treating any absence as something to fix
+    // Every receiver is opt-in. Treating any absence as something to fix
     // would tell most machines to install a file they deliberately do not have.
     const bin = await installDirWith({});
     const notOptedIn = inspectInstalledReceivers({ installDir: bin, expected: [] });
@@ -372,7 +371,7 @@ describe('installed receiver inventory — classification without execution', ()
     const text = formatText(report);
     ok(text.includes('Installed Receivers (stale)'), 'the section is rendered in text');
     ok(text.includes(`${STATUSLINE}: legacy`), 'and names the stale receiver');
-    ok(/next: runtime:settings/.test(text), 'and points at where the re-install plan lives');
+    ok(/next: runtime:bootstrap plan/.test(text), 'and points at where the re-install plan lives');
   });
 
   it('never executes, imports, or spawns an installed receiver', async () => {

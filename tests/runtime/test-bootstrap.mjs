@@ -104,13 +104,24 @@ describe('runtime bootstrap artifacts — ids and names', () => {
 });
 
 describe('runtime path containment — one authority', () => {
-  it('both security gates import the shared predicate; neither keeps a private copy', async () => {
+  it('the security gate imports the shared predicate, and no runtime script keeps a private copy', async () => {
+    // The egress config was the second gate until ADR-0064 removed it; the
+    // mirror guard now sweeps every runtime script instead of a named pair.
     const PRIVATE_COPY = /function isUnder\s*\(/;
-    for (const rel of ['lib/bootstrap-artifacts.mjs', 'lib/egress-config.mjs']) {
-      const src = await readFile(join(RUNTIME_SCRIPTS, rel), 'utf8');
-      ok(/from '\.\/path-containment\.mjs'/.test(src), `${rel} imports the shared containment predicate`);
-      ok(!PRIVATE_COPY.test(src), `${rel} does not define a private isUnder — a second copy is the mirror`);
+    const bootstrapArtifacts = await readFile(join(RUNTIME_SCRIPTS, 'lib/bootstrap-artifacts.mjs'), 'utf8');
+    ok(/from '\.\/path-containment\.mjs'/.test(bootstrapArtifacts), 'lib/bootstrap-artifacts.mjs imports the shared containment predicate');
+    const scanned = [];
+    for (const dir of ['', 'lib/']) {
+      for (const name of await readdir(join(RUNTIME_SCRIPTS, dir))) {
+        if (!name.endsWith('.mjs') || `${dir}${name}` === 'lib/path-containment.mjs') continue;
+        const src = await readFile(join(RUNTIME_SCRIPTS, dir, name), 'utf8');
+        ok(!PRIVATE_COPY.test(src), `${dir}${name} does not define a private isUnder — a second copy is the mirror`);
+        scanned.push(`${dir}${name}`);
+      }
     }
+    ok(scanned.includes('lib/bootstrap-artifacts.mjs') && scanned.length > 20, `the sweep reached the runtime scripts (${scanned.length})`);
+    // Non-vacuity: the pattern does match the one real definition.
+    ok(PRIVATE_COPY.test(await readFile(join(RUNTIME_SCRIPTS, 'lib/path-containment.mjs'), 'utf8')));
   });
 
   it('containment answers what it says', () => {
