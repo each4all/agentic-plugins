@@ -1,5 +1,6 @@
 // Git-backed fixture repositories for the ADR-0061 catalog gates and writer
-// (tests/scripts/test-codex-catalog-pins.mjs, test-codex-pin-writer.mjs).
+// (tests/scripts/test-codex-catalog-pins.mjs, test-codex-pin-writer.mjs,
+// test-release-states.mjs).
 //
 // Each fixture is a real repository with real tags: `alpha` released with a
 // lightweight tag and `beta` with an annotated one, both at 1.0.0, the Codex
@@ -61,13 +62,22 @@ export function tag(dir, name, { annotated = false, at = 'HEAD', force = false }
   git(dir, [...args, name, at]);
 }
 
-/** Set a package's version everywhere release-please and the catalog sync would. */
-export function setVersion(dir, name, version) {
+/**
+ * Set a package's version where release-please does: the manifest and both
+ * plugin manifests, not the root catalogs, which the release job syncs after
+ * the merge.
+ */
+export function bump(dir, name, version) {
   writeJSON(dir, `plugins/${name}/.claude-plugin/plugin.json`, { name, version });
   writeJSON(dir, `plugins/${name}/.codex-plugin/plugin.json`, { name, version, interface: { category: 'Productivity' } });
   const manifest = readJSON(dir, MANIFEST);
   manifest[`plugins/${name}`] = version;
   writeJSON(dir, MANIFEST, manifest);
+}
+
+/** Set a package's version everywhere release-please and the catalog sync would. */
+export function setVersion(dir, name, version) {
+  bump(dir, name, version);
   const claude = readJSON(dir, CLAUDE);
   const entry = claude.plugins.find((p) => p.name === name);
   if (entry) entry.version = version;
@@ -173,6 +183,18 @@ export function release(dir, name, version, { annotated = false } = {}) {
   return sha;
 }
 
+/**
+ * The release commit as release-please merges it (ADR-0065 Decision 8): every
+ * package in `versions` bumped, the catalogs untouched. With `tagged`, the
+ * release job's tags are cut on it too.
+ */
+export function releaseCommit(dir, versions, { tagged = false } = {}) {
+  for (const [name, version] of Object.entries(versions)) bump(dir, name, version);
+  const sha = commit(dir, 'chore: release main');
+  if (tagged) for (const [name, version] of Object.entries(versions)) tag(dir, `plugin-${name}-v${version}`);
+  return sha;
+}
+
 /** Add a third package the way a new plugin lands: both catalogs' Claude side, manifest, dirs. */
 export function addPackage(dir, name) {
   const claude = readJSON(dir, CLAUDE);
@@ -195,4 +217,49 @@ export function assertError(r, pattern) {
 
 export function runCli(root, script, args = []) {
   return spawnSync(process.execPath, [path.join(root, script), ...args], { cwd: root, encoding: 'utf8' });
+}
+
+/**
+ * A bare "origin" seeded from a fresh fixture (or from `seed`), and a way to
+ * take fresh checkouts of it — each one a release job's or a person's clone.
+ */
+export function remote(t, seed = makeRepo(t)) {
+  const root = mkdtempSync(path.join(tmpdir(), 'codex-pins-remote-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const origin = path.join(root, 'origin.git');
+  execFileSync('git', ['clone', '-q', '--bare', seed, origin]);
+  let n = 0;
+  const checkout = () => {
+    const dir = path.join(root, `job-${n += 1}`);
+    execFileSync('git', ['clone', '-q', origin, dir]);
+    for (const [k, v] of [['user.email', 'bot@example.com'], ['user.name', 'bot'], ['commit.gpgsign', 'false'], ['tag.gpgsign', 'false']]) {
+      git(dir, ['config', k, v]);
+    }
+    return dir;
+  };
+  return { origin, checkout };
+}
+
+/** Push HEAD and the tags to origin's main; false when the push is rejected. Never forced. */
+export function push(dir) {
+  try {
+    execFileSync('git', ['-C', dir, 'push', '-q', '--tags', 'origin', 'HEAD:main'], { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Commit at a fixed time. Two jobs that make byte-identical commits in the
+ * same second produce the SAME sha — measured on Linux CI, where both commits
+ * of a rejected-push case landed within one second and the "rejected" push
+ * became a no-op success. So a case that needs distinct commits pins its
+ * dates rather than depending on the clock.
+ */
+export function commitAt(dir, message, date) {
+  git(dir, ['add', '-A']);
+  execFileSync('git', ['-C', dir, 'commit', '-q', '-m', message], {
+    env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+  });
 }

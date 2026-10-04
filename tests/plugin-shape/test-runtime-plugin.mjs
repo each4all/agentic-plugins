@@ -6,7 +6,6 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
-import { assertCodexCatalogSource, expectedCodexCatalogNames } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
@@ -18,7 +17,6 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
 // path below at a directory nothing writes to. A manifest with no `skills` key
 // does fall back, to the README-only `skills/`; the skill checks below fail.
 const SKILLS_REL = relative(PLUGIN_ROOT, resolveSkillsRoot(PLUGIN_ROOT)).split(sep).join('/');
-const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 const RUNTIME_COMMAND_SURFACES = [
   { name: 'bootstrap', script: 'bootstrap.mjs' },
   { name: 'consensus', script: 'consensus.mjs' },
@@ -35,15 +33,6 @@ const RUNTIME_COMMAND_SURFACES = [
 async function readJSON(path) {
   const text = await readFile(path, 'utf-8');
   return JSON.parse(text);
-}
-
-function compareSemver(a, b) {
-  const left = String(a).split('.').map((part) => Number(part));
-  const right = String(b).split('.').map((part) => Number(part));
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
-  }
-  return 0;
 }
 
 describe('plugins/runtime manifest pair', () => {
@@ -82,11 +71,11 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:context')));
   });
 
-  it('Claude and Codex manifests share name + version + description', async () => {
+  // Their versions are validate-versions' to check (ADR-0065 Decision 8 rule 6).
+  it('Claude and Codex manifests share name + description', async () => {
     const claude = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     const codex = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
     strictEqual(claude.name, codex.name);
-    strictEqual(claude.version, codex.version);
     strictEqual(claude.description, codex.description);
     strictEqual(claude.license, codex.license);
     deepStrictEqual(claude.keywords, codex.keywords);
@@ -133,36 +122,34 @@ describe('plugins/runtime command-skill parity', () => {
   });
 });
 
+// Whether the Codex catalog lists this package, and at which pin, and the
+// Claude catalog's version are validate-marketplace's and validate-versions'
+// to check (ADR-0065 Decision 8 rule 6). The release job's sync writes them
+// after the release commit, so a test reading them would turn that commit
+// red; a first release has no Codex entry until the sync adds it.
 describe('plugins/runtime marketplace and release registration', () => {
-  it('Claude marketplace catalog has runtime entry with matching version', async () => {
+  it('Claude marketplace catalog has a runtime entry for the package directory', async () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'runtime');
     ok(entry, 'runtime entry present in Claude catalog');
     strictEqual(entry.source, './plugins/runtime');
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
-    if (RELEASE_PLEASE_PR && entry.version !== manifest.version) {
-      ok(compareSemver(entry.version, manifest.version) <= 0, 'release-please PR may have catalog version lag until post-release sync');
-    } else {
-      strictEqual(entry.version, manifest.version, 'catalog version matches manifest');
-    }
     strictEqual(entry.category, 'Productivity');
   });
 
-  it('Codex marketplace catalog has runtime entry with matching policy/source', async () => {
+  it('Codex marketplace catalog entry carries the published policy and category', async (t) => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'runtime');
-    ok(entry, 'runtime entry present in Codex catalog');
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
-    assertCodexCatalogSource(entry, 'runtime', { repoRoot: REPO_ROOT, version: manifest.version, allowLag: RELEASE_PLEASE_PR });
+    if (entry === undefined) return t.skip('no Codex entry yet; validate-marketplace decides whether one is due');
     strictEqual(entry.policy.installation, 'AVAILABLE');
     strictEqual(entry.policy.authentication, 'ON_USE');
     strictEqual(entry.category, 'Productivity');
   });
 
   it('release-please tracks runtime with extra-files for both manifests', async () => {
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
+    // Its version's agreement with the plugin manifests is validate-versions' to
+    // check (ADR-0065 Decision 8 rule 6); this pins that release-please tracks it.
     const releasePleaseManifest = await readJSON(resolve(REPO_ROOT, '.release-please-manifest.json'));
-    strictEqual(releasePleaseManifest['plugins/runtime'], manifest.version);
+    strictEqual(typeof releasePleaseManifest['plugins/runtime'], 'string');
     const config = await readJSON(resolve(REPO_ROOT, 'release-please-config.json'));
     const pkg = config.packages['plugins/runtime'];
     ok(pkg, 'runtime package configured');
@@ -359,8 +346,8 @@ describe('plugins/runtime settings surface', () => {
   // claimed four, the root README six, and the catalogs eight — with nothing
   // holding them in agreement. `PLUGIN_NAMES` is what settings and doctor
   // actually iterate, so it is the authority; every runtime-owned surface that
-  // enumerates the set is pinned against it, and against both catalogs.
-  it('keeps the runtime-owned plugin lists in agreement with PLUGIN_NAMES and both catalogs', async () => {
+  // enumerates the set is pinned against it, and so is the Claude catalog.
+  it('keeps the runtime-owned plugin lists in agreement with PLUGIN_NAMES and the Claude catalog', async () => {
     // PLUGIN_NAMES's single definition now lives in the machine probe (the machine-
     // bootstrap seam extracted from doctor); doctor re-exports it. Read the authority
     // from its source of truth, and pin that doctor still re-exports it.
@@ -372,12 +359,10 @@ describe('plugins/runtime settings surface', () => {
     const pluginNames = namesMatch[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).sort();
 
     const claudeCatalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));
-    const codexCatalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
     deepStrictEqual(claudeCatalog.plugins.map((p) => p.name).sort(), pluginNames, 'Claude catalog matches PLUGIN_NAMES');
-    // After ADR-0061 activation a package with no release yet has no Codex
-    // entry (Decision 2's untagged exemption), so the expected set is phase-aware.
-    deepStrictEqual(codexCatalog.plugins.map((p) => p.name).sort(), expectedCodexCatalogNames(REPO_ROOT, pluginNames),
-      'Codex catalog matches PLUGIN_NAMES, less any package not yet released after activation');
+    // The Codex catalog is held to the Claude one by validate-marketplace, less
+    // any package whose first release it has not pinned yet (ADR-0065
+    // Decision 8 rules 2, 3 and 6), so PLUGIN_NAMES reaches it through that.
 
     // Every runtime-owned prose surface that enumerates the set must name all of
     // them. A four-name list here is how the drift started.

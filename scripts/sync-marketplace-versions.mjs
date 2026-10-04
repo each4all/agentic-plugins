@@ -33,20 +33,24 @@
 //     version, and never goes back to local; each of those is an error, and
 //     the rollback path is a forward release (Decision 7). A package whose
 //     first release has been tagged gets its first pin; one with no tag yet
-//     gets no entry (Decision 2's untagged exemption). A local entry found
-//     after activation is refused, unless --activate is given, which pins it
-//     forward: the owner's intent covers repairing a hand-made revert.
+//     gets no entry (Decision 2's untagged exemption), unless its Claude
+//     version trails the manifest: that is a first release whose tag is
+//     missing, and it blocks the sync like any release's (ADR-0065 Decision
+//     8). A local entry found after activation is refused, unless --activate
+//     is given, which pins it forward: the owner's intent covers repairing a
+//     hand-made revert.
 //
 // Everything is planned before anything is written. Any error writes nothing,
 // including the Claude catalog, because a half-synced pair would fail the
 // validation below anyway. After writing, both catalogs are validated
 // against HEAD — the catalog as it stood before this write — with the same
 // gates CI runs, and a failure exits 1 so the release job does not push.
-// Nothing else checks the commit before it lands: a GITHUB_TOKEN push triggers
-// no workflow, and the test runs the release job dispatches after its push see
-// the catalog only once it is on main, where validate.yml compares no
-// baseline. Recovery from a partial activation:
-// docs/runbooks/codex-pin-activation.md.
+// The validation is strict (ADR-0065 Decision 8 rule 5): the job runs on a
+// checkout of the release commit, but the lag the CLIs allow that commit is
+// never allowed here. Nothing else checks the commit before it lands: a
+// GITHUB_TOKEN push starts no workflow, so the sync commit gets no run of its
+// own, and the next push to main is the first to check it. Recovery from a
+// partial activation: docs/runbooks/codex-pin-activation.md.
 //
 // Usage:
 //   node scripts/sync-marketplace-versions.mjs                       # apply
@@ -223,7 +227,14 @@ export function planCodexPins(repoRoot, { activate = false } = {}) {
     for (const name of published) {
       const entry = next.plugins.find((p) => p.name === name);
       if (entry === undefined) {
-        if (!hasReleaseTag(repoRoot, name)) {
+        // A Claude version behind the manifest is what only an unsynced
+        // release leaves, since every other commit is validated strictly. So
+        // a package showing it is being released now, and its tag must
+        // resolve like any other release's: a release that tagged only some
+        // packages blocks the whole sync (ADR-0065 Decision 8), a first
+        // release included.
+        const releasing = claude.plugins.find((p) => p.name === name)?.version !== manifest[`plugins/${name}`];
+        if (!releasing && !hasReleaseTag(repoRoot, name)) {
           notes.push(`${name}: no release tag yet, so no Codex entry until its first release`);
           continue;
         }

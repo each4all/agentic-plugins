@@ -3,8 +3,13 @@
 # test files, including the ones that assert these scripts' behavior.
 #
 # Same triggers as full-tests.yml, for the same reason (ADR-0033, 2026-10-03
-# amendment): a push to any branch, and workflow_dispatch for the release
-# job's post-sync dispatch; no pull_request trigger.
+# amendment): a push to any branch, and workflow_dispatch for a manual run; no
+# pull_request trigger.
+#
+# The validators decide catalog lag from the checked-out commit itself, not
+# from the branch or the event: only a commit that changes a package's
+# version in .release-please-manifest.json may show its catalogs at the
+# version before (ADR-0065 Decision 8). So this workflow passes no lag flag.
 name: validate
 
 on:
@@ -28,8 +33,11 @@ jobs:
         with:
           # ADR-0061 Decision 2: the Codex catalog's floors and pins are claims
           # about tags and the trees they point at, and the monotonic-pin check
-          # reads the catalog at a baseline commit. validate-marketplace fails
-          # closed on a shallow clone rather than passing on structure.
+          # reads the catalog at a baseline commit. The release-commit lag
+          # reads the manifest at the commit's first parent, and release tags
+          # count only when reachable from the commit (ADR-0065 Decision 8).
+          # validate-marketplace fails closed on a shallow clone rather than
+          # passing on structure.
           fetch-depth: 0
 
       - name: Setup Node 24
@@ -42,7 +50,6 @@ jobs:
 
       - name: Validate both catalogs
         env:
-          AGENTIC_RELEASE_PLEASE_PR: ${{ github.ref == 'refs/heads/release-please--branches--main' && '1' || '0' }}
           EVENT_NAME: ${{ github.event_name }}
           PUSH_BEFORE: ${{ github.event.before }}
         # The baseline for the monotonic-pin check (ADR-0061 Decision 2, as
@@ -54,9 +61,6 @@ jobs:
         # has neither, and the validator then says it compared no baseline.
         run: |
           ARGS=()
-          if [ "$AGENTIC_RELEASE_PLEASE_PR" = "1" ]; then
-            ARGS+=(--allow-version-lag)
-          fi
           CATALOG_BASE=""
           if [ "$EVENT_NAME" = "push" ]; then
             if [ "$GITHUB_REF" = "refs/heads/main" ]; then
@@ -77,14 +81,7 @@ jobs:
           npm run validate:marketplace -- "${ARGS[@]}"
 
       - name: Cross-check versions (release-please-manifest <-> plugin manifests <-> both marketplace catalogs)
-        env:
-          AGENTIC_RELEASE_PLEASE_PR: ${{ github.ref == 'refs/heads/release-please--branches--main' && '1' || '0' }}
-        run: |
-          if [ "$AGENTIC_RELEASE_PLEASE_PR" = "1" ]; then
-            npm run validate:versions -- --allow-marketplace-lag
-          else
-            npm run validate:versions
-          fi
+        run: npm run validate:versions
 
       - name: Validate artifact ignore policy
         run: npm run validate:artifacts

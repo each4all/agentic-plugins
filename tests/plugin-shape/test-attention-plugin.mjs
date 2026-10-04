@@ -103,11 +103,8 @@ describe('plugins/attention — manifests', () => {
     ok(Array.isArray(i.defaultPrompt) && i.defaultPrompt.length <= 3);
   });
 
-  it('manifest versions agree across hosts', async () => {
-    const claude = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
-    const codex = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
-    strictEqual(claude.version, codex.version);
-  });
+  // The two manifests' versions are validate-versions' to check against
+  // .release-please-manifest.json (ADR-0065 Decision 8 rule 6).
 });
 
 describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {

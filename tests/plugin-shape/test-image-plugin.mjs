@@ -20,7 +20,6 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
-import { assertCodexCatalogSource } from './codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/image');
@@ -82,11 +81,10 @@ describe('plugins/image — Claude manifest (.claude-plugin/plugin.json)', () =>
 describe('plugins/image — Codex manifest (lean L2: skills + interface, NO hooks)', () => {
   const path = resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json');
 
-  it('matches Claude name/version and declares skills + interface', async () => {
+  // Its version is validate-versions' to check (ADR-0065 Decision 8 rule 6).
+  it('names the plugin and declares skills + interface', async () => {
     const json = await readJSON(path);
-    const claude = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(json.name, 'image');
-    strictEqual(json.version, claude.version, 'host manifests must carry the same version');
     strictEqual(json.skills, './core/skills/');
     ok(json.interface && typeof json.interface === 'object');
     strictEqual(json.interface.displayName, 'Image');
@@ -275,34 +273,36 @@ describe('plugins/image — README + CHANGELOG', () => {
 });
 
 describe('plugins/image — Claude marketplace catalog entry', () => {
-  it('exists with source/version/category aligned to the plugin', async () => {
+  it('exists with source/category aligned to the plugin', async () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'image');
     ok(entry, 'Claude catalog must list image');
     strictEqual(entry.source, './plugins/image');
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
-    strictEqual(entry.version, manifest.version);
     strictEqual(entry.category, 'Productivity');
   });
 });
 
+// Whether the Codex catalog lists this package, and at which pin, and the
+// Claude catalog's version are validate-marketplace's and validate-versions'
+// to check (ADR-0065 Decision 8 rule 6). The release job's sync writes them
+// after the release commit, so a test reading them would turn that commit
+// red; a first release has no Codex entry until the sync adds it.
 describe('plugins/image — Codex marketplace catalog entry', () => {
-  it('exists with its ADR-0061 phase\'s source shape and the policy/category shape', async () => {
+  it('carries the published policy and category', async (t) => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'image');
-    ok(entry, 'Codex catalog must list image');
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
-    assertCodexCatalogSource(entry, 'image', { repoRoot: REPO_ROOT, version: manifest.version, allowLag: process.env.AGENTIC_RELEASE_PLEASE_PR === '1' });
+    if (entry === undefined) return t.skip('no Codex entry yet; validate-marketplace decides whether one is due');
     deepStrictEqual(entry.policy, { installation: 'AVAILABLE', authentication: 'ON_USE' });
     strictEqual(entry.category, 'Productivity');
   });
 });
 
 describe('plugins/image — release-please wiring', () => {
-  it('is tracked in .release-please-manifest.json at the manifest version', async () => {
+  it('is tracked in .release-please-manifest.json', async () => {
+    // Its version's agreement with the plugin manifests is validate-versions' to
+    // check (ADR-0065 Decision 8 rule 6); this pins that release-please tracks it.
     const manifest = await readJSON(resolve(REPO_ROOT, '.release-please-manifest.json'));
-    const plugin = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
-    strictEqual(manifest['plugins/image'], plugin.version);
+    strictEqual(typeof manifest['plugins/image'], 'string');
   });
 
   it('has a plugin-image package block with both manifest extra-files', async () => {

@@ -55,11 +55,10 @@ export function scrubAmbientEgressEnv(env = process.env) {
 /**
  * Ambient config no acceptance child needs, scrubbed from every child env.
  *
- * CI exports `AGENTIC_RELEASE_PLEASE_PR` (full-tests.yml) and a developer may export
- * the `AGENTIC_EGRESS_REAL_SMOKE` opt-in, but both are read IN PROCESS -- by the
- * plugin-shape suites and by the (K) real-smoke test respectively -- never by a child
- * spawned here. Scrubbing the whole prefix therefore costs nothing and buys CI parity:
- * a local child sees the same empty ambient surface a CI child sees.
+ * A developer may export the `AGENTIC_EGRESS_REAL_SMOKE` opt-in, but it is read IN
+ * PROCESS -- by the (K) real-smoke test -- never by a child spawned here. Scrubbing
+ * the whole prefix therefore costs nothing and buys CI parity: a local child sees the
+ * same empty ambient surface a CI child sees.
  */
 const AMBIENT_PREFIX = /^(?:AGENTIC_|TELEGRAM_)/;
 

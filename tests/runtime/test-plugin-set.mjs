@@ -3,7 +3,8 @@
 // Executable agreement (machine-bootstrap-contract §11.1): the packaged
 // plugin-set is validated as real data AND asserted against the other
 // authorities it must not silently drift from — PLUGIN_NAMES, the canonical
-// marketplace, both marketplace catalogs, and the plugins' own hook manifests.
+// marketplace, the Claude marketplace catalog (and through validate-marketplace,
+// the Codex one), and the plugins' own hook manifests.
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,7 +23,6 @@ import {
   MANDATORY_PLUGINS,
 } from '../../plugins/runtime/scripts/lib/plugin-set.mjs';
 import { PLUGIN_NAMES, CANONICAL_MARKETPLACE } from '../../plugins/runtime/scripts/lib/machine-probe.mjs';
-import { expectedCodexCatalogNames } from '../plugin-shape/codex-catalog-source.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -102,19 +102,19 @@ describe('plugin-set — bundle membership', () => {
 });
 
 describe('plugin-set — catalog consistency (#20)', () => {
-  it('plugin names match BOTH marketplace catalogs (source membership, not Codex versions)', async () => {
+  it('plugin names match the Claude marketplace catalog and PLUGIN_NAMES', async () => {
     const set = await loadPluginSet();
     const setNames = Object.keys(set.plugins).sort();
 
     const claudeCatalog = await readJson(join(REPO_ROOT, '.claude-plugin', 'marketplace.json'));
-    const codexCatalog = await readJson(join(REPO_ROOT, '.agents', 'plugins', 'marketplace.json'));
     const claudeNames = (claudeCatalog.plugins ?? []).map((p) => p.name).sort();
-    const codexNames = (codexCatalog.plugins ?? []).map((p) => p.name).sort();
 
     assert.deepEqual(setNames, claudeNames, 'plugin-set vs Claude catalog names');
-    // ADR-0061 Decision 2: after activation a package with no release yet has
-    // no Codex entry until its first pin, so the Codex side is phase-aware.
-    assert.deepEqual(expectedCodexCatalogNames(REPO_ROOT, setNames), codexNames, 'plugin-set vs Codex catalog names');
+    // The Codex catalog's names are held to the Claude catalog's by
+    // validate-marketplace, less a package whose first release the release
+    // job has not pinned yet. Which names it lists is written by that sync,
+    // after the release commit, so it is checked there and not here (ADR-0065
+    // Decision 8 rules 2, 3 and 6).
     assert.deepEqual(setNames, [...PLUGIN_NAMES].sort(), 'plugin-set vs PLUGIN_NAMES');
   });
 });

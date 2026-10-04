@@ -21,9 +21,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,8 +31,8 @@ import { validateVersions } from '../../scripts/validate-versions.mjs';
 
 import {
   CLAUDE, CODEX, FLOORS,
-  activate, addPackage, commit, git, makeRepo, peeled, readJSON, release, runCli, setCodexSource,
-  setFloor, setFloors, setVersion, tag, writeJSON,
+  activate, addPackage, commit, commitAt, git, makeRepo, peeled, push, readJSON, release, releaseCommit, remote,
+  runCli, setCodexSource, setFloor, setFloors, setVersion, tag, writeJSON,
 } from './fixtures/codex-pins-repo.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -263,6 +261,28 @@ test('after activation a floor above the released version is an error', (t) => {
 // First publication of a new package: absent -> first tag -> first pin
 // ---------------------------------------------------------------------------
 
+test('after activation a first release whose tag is missing blocks the whole sync too', (t) => {
+  // gamma's first release shows only as its Claude version trailing the
+  // manifest; without that signal it would pass for a package never released,
+  // and alpha would be synced alone.
+  const dir = makeRepo(t);
+  activateAndPublish(dir);
+  addPackage(dir, 'gamma');
+  commit(dir, 'feat: add gamma');
+  releaseCommit(dir, { alpha: '1.1.0', gamma: '0.2.0' });
+  tag(dir, 'plugin-alpha-v1.1.0');
+  const before = snapshot(dir);
+  assertRefused(syncCatalogs(dir), /gamma is at 0\.2\.0 but plugin-gamma-v0\.2\.0 does not resolve/);
+  assert.deepEqual(snapshot(dir), before, 'neither catalog is written');
+  tag(dir, 'plugin-gamma-v0.2.0');
+  const r = syncCatalogs(dir);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.codex.diffs.map((d) => `${d.name}: ${d.from} → ${d.to}`), [
+    'alpha: plugin-alpha-v1.0.0 → plugin-alpha-v1.1.0', 'gamma: absent → plugin-gamma-v0.2.0',
+  ]);
+  assertValid(dir);
+});
+
 test('a new package gets no Codex entry until its first tag, then its first pin', (t) => {
   const dir = makeRepo(t);
   activateAndPublish(dir);
@@ -490,50 +510,112 @@ test('release-please.yml passes --activate only on a workflow_dispatch that aske
   assert.match(wf, /SUBJECT="chore\(marketplace\): sync catalog versions to release-please-manifest"/);
 });
 
+const releaseYml = () => readFileSync(path.join(REPO_ROOT, '.github/workflows/release-please.yml'), 'utf8');
+
+/** The job's steps, in order, as { name, text }. */
+function steps(yml) {
+  const parts = yml.split(/^(?=      - name: )/m).slice(1);
+  return parts.map((part) => ({ name: part.match(/^      - name: (.+)$/m)[1].trim(), text: part }));
+}
+
+/**
+ * Evaluate a GitHub Actions `if:` expression over a closed grammar: the status
+ * functions, steps.<id>.outputs.<name>, github.event_name, single-quoted
+ * literals, == != && || ! and parentheses. Anything else throws, so a construct
+ * this does not model cannot be evaluated as something it is not. An
+ * expression with no status function gets GitHub's implicit success(). (GitHub's
+ * == ignores case for strings; every literal here is lower case.)
+ */
+function evalCondition(expr, ctx) {
+  const token = /\s+|cancelled\(\)|success\(\)|failure\(\)|always\(\)|steps\.([\w-]+)\.outputs\.([\w-]+)|github\.event_name|'([^']*)'|==|!=|&&|\|\||!|\(|\)/y;
+  let js = '';
+  let pos = 0;
+  while (pos < expr.length) {
+    token.lastIndex = pos;
+    const m = token.exec(expr);
+    if (!m) throw new Error(`unmodelled expression at "${expr.slice(pos)}"`);
+    pos = token.lastIndex;
+    const t = m[0];
+    if (/^\s+$/.test(t)) js += ' ';
+    else if (t === 'cancelled()') js += 'ctx.cancelled';
+    else if (t === 'success()') js += '(!ctx.failed && !ctx.cancelled)';
+    else if (t === 'failure()') js += 'ctx.failed';
+    else if (t === 'always()') js += 'true';
+    else if (m[1]) js += `(ctx.steps[${JSON.stringify(m[1])}]?.outputs?.[${JSON.stringify(m[2])}] ?? null)`;
+    else if (t === 'github.event_name') js += 'ctx.event';
+    else if (m[3] !== undefined) js += JSON.stringify(m[3]);
+    else if (t === '==') js += '===';
+    else if (t === '!=') js += '!==';
+    else js += t;
+  }
+  if (!/\b(cancelled|success|failure|always)\(\)/.test(expr)) js = `(!ctx.failed && !ctx.cancelled) && (${js})`;
+  return Boolean(new Function('ctx', `return (${js});`)(ctx));
+}
+
+test('the condition evaluator models GitHub\'s implicit success() and refuses what it does not model', () => {
+  const ctx = { event: 'push', failed: true, cancelled: false, steps: { release: { outputs: { releases_created: 'true' } } } };
+  assert.equal(evalCondition("steps.release.outputs.releases_created == 'true'", ctx), false, 'an earlier failure skips the step');
+  assert.equal(evalCondition("always() && steps.release.outputs.releases_created == 'true'", ctx), true);
+  assert.throws(() => evalCondition("contains(github.ref, 'main')", ctx), /unmodelled/);
+});
+
+// Every path into the release job. The sync is the retry path, so it must run
+// on a manual dispatch that released nothing (ADR-0065 Decision 8); a push that
+// released nothing has nothing to sync. A failure before the push skips it.
+const RELEASED = { release: { outputs: { releases_created: 'true' } } };
+const NOTHING = { release: { outputs: { releases_created: 'false' } } };
+const PATHS = [
+  ['a release', 'push', false, RELEASED, true],
+  ['a push that released nothing, or a re-run of a release run', 'push', false, NOTHING, false],
+  ['a manual dispatch with no new release (the retry path)', 'workflow_dispatch', false, NOTHING, true],
+  ['a release whose sync was refused, at the push', 'push', true, RELEASED, false],
+  ['a manual dispatch whose sync was refused, at the push', 'workflow_dispatch', true, NOTHING, false],
+];
+
+test('release-please.yml runs the catalog sync and its push on a release and on every manual dispatch, and on nothing else', () => {
+  const all = steps(releaseYml());
+  const gated = all.filter((s) => !/^        id: release$/m.test(s.text));
+  assert.deepEqual(gated.map((s) => s.name), [
+    'Checkout main for marketplace sync', 'Setup Node', 'Sync marketplace catalog versions', 'Commit + push marketplace sync (if any drift)',
+  ]);
+  for (const s of gated) {
+    const cond = s.text.match(/^        if: \$\{\{ (.+) \}\}$/m)?.[1];
+    assert.ok(cond, `${s.name} has a single-line if`);
+    for (const [label, event, failed, stepsCtx, expected] of PATHS) {
+      assert.equal(evalCondition(cond, { event, failed, cancelled: false, steps: stepsCtx }), expected, `${s.name} — ${label}`);
+    }
+  }
+});
+
+// ADR-0065 Decision 6: the job starts no workflow. Without `actions: write` its
+// token cannot create a workflow_dispatch event at all, and with the push as
+// the last step no later step can fail after the catalogs landed.
+test('release-please.yml starts no workflow: no actions permission, and the catalog push is its last and only push', () => {
+  const yml = releaseYml();
+  const perms = yml.match(/^permissions:\n((?:  .+\n)+)/m);
+  assert.ok(perms, 'a workflow-level permissions block');
+  assert.deepEqual(perms[1].trim().split('\n').map((l) => l.trim()).sort(), ['contents: write', 'pull-requests: write']);
+  assert.doesNotMatch(yml, /^    permissions:/m, 'no job-level permissions block widens it');
+  const all = steps(yml);
+  const pushes = all.filter((s) => /^\s+git push$/m.test(s.text)).map((s) => s.name);
+  assert.deepEqual(pushes, ['Commit + push marketplace sync (if any drift)']);
+  assert.equal(all.at(-1).name, pushes[0], 'the push is the last step');
+});
+
+// ADR-0065 Decision 8 rule 5. The job checks out the release commit, where the
+// CLIs allow the catalogs to trail; the writer must not. No behavior shows the
+// difference — the writer moves every lagging catalog or refuses — so the
+// guard is on what it passes.
+test('the writer validates what it wrote strictly, never with the release-commit allowance', () => {
+  const src = readFileSync(path.join(REPO_ROOT, WRITER), 'utf8');
+  assert.doesNotMatch(src, /allowReleaseLag/);
+  assert.match(src, /validateMarketplace\(REPO_ROOT, \{ base: 'HEAD' \}\)/);
+  assert.match(src, /validateVersions\(REPO_ROOT\)/);
+});
+
 // ---------------------------------------------------------------------------
 // Recovery through a real remote — the push, not just the plan
 // ---------------------------------------------------------------------------
-
-/** A bare "origin" seeded from a fresh fixture, and a way to take fresh checkouts of it. */
-function remote(t) {
-  const seed = makeRepo(t);
-  const root = mkdtempSync(path.join(tmpdir(), 'codex-pins-remote-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const origin = path.join(root, 'origin.git');
-  execFileSync('git', ['clone', '-q', '--bare', seed, origin]);
-  let n = 0;
-  const checkout = () => {
-    const dir = path.join(root, `job-${n += 1}`);
-    execFileSync('git', ['clone', '-q', origin, dir]);
-    for (const [k, v] of [['user.email', 'bot@example.com'], ['user.name', 'bot'], ['commit.gpgsign', 'false'], ['tag.gpgsign', 'false']]) {
-      git(dir, ['config', k, v]);
-    }
-    return dir;
-  };
-  return { origin, checkout };
-}
-
-const push = (dir) => {
-  try {
-    execFileSync('git', ['-C', dir, 'push', '-q', '--tags', 'origin', 'HEAD:main'], { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-/**
- * Commit at a fixed time. Two jobs that make byte-identical commits in the
- * same second produce the SAME sha — measured on Linux CI, where both commits
- * below landed within one second and the "rejected" push became a no-op
- * success. So each case pins its dates rather than depending on the clock.
- */
-function commitAt(dir, message, date) {
-  git(dir, ['add', '-A']);
-  execFileSync('git', ['-C', dir, 'commit', '-q', '-m', message], {
-    env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
-  });
-}
 
 const ACTIVATION = 'chore(marketplace): sync catalog versions to release-please-manifest and activate the Codex catalog pins';
 
@@ -571,13 +653,13 @@ test('recovery through a remote — two jobs that write the same activation in t
   assert.equal(push(b), true, 'the second push is a no-op, not a conflict');
 });
 
-test('recovery through a remote — after a later step failed, a fresh dispatch converges, and advances once main moves', (t) => {
+test('recovery through a remote — a dispatch after a published activation converges, and advances once main moves', (t) => {
   const { checkout } = remote(t);
   const job = checkout();
   assert.equal(runCli(job, WRITER, ['--activate']).status, 0);
   commit(job, 'chore(marketplace): sync catalog versions to release-please-manifest and activate the Codex catalog pins');
   assert.equal(push(job), true);
-  // ...a later step fails here. The activation is published.
+  // The activation is published; the owner dispatches again anyway.
   const again = checkout();
   assert.equal(runCli(again, WRITER, ['--activate']).status, 0);
   assert.equal(git(again, ['status', '--porcelain']).trim(), '');
