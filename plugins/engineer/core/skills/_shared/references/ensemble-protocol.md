@@ -129,7 +129,10 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
    only):** the driver's stream-json host keeps the session alive while a
    background task is pending and re-invokes the model when it completes, so
    wait for the notification exactly as written; never sleep-poll a file
-   (`autopilot-mode.md` § Peer ensembles).
+   (`autopilot-mode.md` § Peer ensembles). The step report the host takes
+   when you end a turn to wait is provisional: on the notification, finish
+   Synthesize, `ensemble-commit` and the verb's last write, then report
+   again.
 4. If the peer failed or returned empty output, record the failure
    and proceed to Synthesize with orchestrator-only results
    (graceful degradation, see *Failure Handling*).

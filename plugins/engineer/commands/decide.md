@@ -400,7 +400,10 @@ When Phase 0's preflight printed the autopilot banner, this command follows
   --owner-gate-anchor <anchor>` after a phase note under the heading the gate
   table names (`autopilot-mode.md` § Owner gates).
 - **Peers.** Collect the ensemble as `ensemble-protocol.md` § Step 2 says:
-  wait for the background notification; never sleep-poll.
+  wait for the background notification; never sleep-poll. A step report
+  taken while you wait is provisional: when the notification re-invokes you,
+  finish the verb through `finish-verb`, then report again
+  (`autopilot-mode.md` § Peer ensembles).
 
 ---
 
