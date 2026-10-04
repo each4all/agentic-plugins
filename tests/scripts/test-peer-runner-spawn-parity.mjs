@@ -28,7 +28,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const PERSONAS = ['designer', 'engineer', 'founder', 'orchestrator'];
 
 const SECTION_START = '    const detached = process.platform !== \'win32\';';
-const SECTION_END = '    // ADR-0040 §5: live terminal transition (completed / failed / cancelled).';
+const SECTION_END = '    return runResult(paths, final, {';
 
 function spawnSection(persona) {
   const filePath = path.join(REPO_ROOT, 'plugins', persona, 'scripts', 'peer-runner.mjs');

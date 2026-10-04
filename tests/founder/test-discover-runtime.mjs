@@ -1,13 +1,10 @@
-// ADR-0043 §2/§4 — founder dual-consumer discoverRuntimePluginRoot tests.
+// ADR-0043 §2/§4 — founder discoverRuntimePluginRoot tests.
 //
-// founder's resolver serves TWO consumers with independent floors and
-// independent gating capability files (the ADR-0043 §2 requirement — copying
-// engineer's footer-gated resolver wholesale would have silently changed
-// notify discovery from "notify exists" to "footer exists"):
-//   - FOOTER pair (default): MIN_RUNTIME_VERSION, gates on scripts/footer.mjs
-//   - NOTIFY pair (explicit): NOTIFY_MIN_RUNTIME_VERSION, gates on scripts/notify.mjs
+// founder's resolver serves one consumer, the completion footer: the default
+// pair is MIN_RUNTIME_VERSION and scripts/footer.mjs. (The ADR-0040 §5
+// peer-run notification pair was removed by ADR-0064.)
 // Proves each ladder rung, the fail-closed "missing / too-old" contract (no
-// stale-cache fallback), and the capability independence of the two ladders.
+// stale-cache fallback), and that the gate is scripts/footer.mjs.
 // The ADR-0061 §Decision 3 rules every copy shares (custom CODEX_HOME, the
 // clone never a candidate, cross-host fallback reported, no sibling for an
 // installed caller) are pinned across all copies in
@@ -27,26 +24,20 @@ import {
   resolveRuntimePluginRoot,
   runtimeVersionAtLeast,
   FOOTER_CAPABILITY,
-  NOTIFY_CAPABILITY,
   MIN_RUNTIME_VERSION,
-  NOTIFY_MIN_RUNTIME_VERSION,
 } from '../../plugins/founder/scripts/discover-runtime.mjs';
-
-const NOTIFY_PAIR = { minVersion: NOTIFY_MIN_RUNTIME_VERSION, capability: NOTIFY_CAPABILITY };
 
 // Build a runtime plugin root at `root` with a manifest + capability stubs.
 async function mkRuntimeRoot(root, {
   version = '0.80.0',
   name = 'runtime',
   withFooter = true,
-  withNotify = true,
   manifestDir = '.claude-plugin',
 } = {}) {
   await mkdir(join(root, manifestDir), { recursive: true });
   await writeFile(join(root, manifestDir, 'plugin.json'), JSON.stringify({ name, version }));
   await mkdir(join(root, 'scripts'), { recursive: true });
   if (withFooter) await writeFile(join(root, 'scripts', 'footer.mjs'), '// stub footer\n');
-  if (withNotify) await writeFile(join(root, 'scripts', 'notify.mjs'), '// stub notify\n');
   return root;
 }
 
@@ -77,26 +68,19 @@ async function tmp(prefix) {
 const NO_HOME = () => tmp('frt-emptyhome-'); // a home with no caches
 const NEUTRAL_SELF = 'file:///nowhere/scripts/discover-runtime.mjs'; // no /.claude/ or /.codex/, no sibling
 
-describe('founder discoverRuntimePluginRoot — dual-consumer floors (ADR-0043 §2/§4)', () => {
+describe('founder discoverRuntimePluginRoot — footer floor (ADR-0043 §2/§4)', () => {
   it('exports the documented floor + capability constants', () => {
     // The footer floor is the first RELEASED runtime containing the ADR-0043
-    // S2 enum expansion (plugin-runtime-v0.79.0); the notify floor is the
-    // ADR-0040 release-gate pin, unchanged by the footer onboarding.
+    // S2 enum expansion (plugin-runtime-v0.79.0).
     strictEqual(MIN_RUNTIME_VERSION, '0.79.0');
-    strictEqual(NOTIFY_MIN_RUNTIME_VERSION, '0.71.0');
     strictEqual(FOOTER_CAPABILITY, 'footer.mjs');
-    strictEqual(NOTIFY_CAPABILITY, 'notify.mjs');
   });
 
-  it('env override (valid) → returns the root for both pairs', async () => {
+  it('env override (valid) → returns the root', async () => {
     const root = await mkRuntimeRoot(await tmp('frt-env-ok-'));
     const home = await NO_HOME();
     strictEqual(
       await discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: root }, home, selfUrl: NEUTRAL_SELF }),
-      root,
-    );
-    strictEqual(
-      await discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: root }, home, selfUrl: NEUTRAL_SELF, ...NOTIFY_PAIR }),
       root,
     );
   });
@@ -109,15 +93,10 @@ describe('founder discoverRuntimePluginRoot — dual-consumer floors (ADR-0043 �
     );
   });
 
-  it('capability independence: a notify-only runtime serves the notify ladder, never the footer ladder', async () => {
-    const root = await mkRuntimeRoot(await tmp('frt-notifyonly-'), { withFooter: false });
+  it('a runtime without scripts/footer.mjs → null (the gate is footer.mjs)', async () => {
+    const root = await mkRuntimeRoot(await tmp('frt-nofooter-'), { withFooter: false });
     const home = await NO_HOME();
     const env = { AGENTIC_RUNTIME_ROOT: root };
-    strictEqual(
-      await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF, ...NOTIFY_PAIR }),
-      root,
-      'the notify pair gates on notify.mjs only',
-    );
     strictEqual(
       await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }),
       null,
@@ -125,32 +104,16 @@ describe('founder discoverRuntimePluginRoot — dual-consumer floors (ADR-0043 �
     );
   });
 
-  it('capability independence: a footer-only runtime serves the footer ladder, never the notify ladder', async () => {
-    const root = await mkRuntimeRoot(await tmp('frt-footeronly-'), { withNotify: false });
-    const home = await NO_HOME();
-    const env = { AGENTIC_RUNTIME_ROOT: root };
-    strictEqual(await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }), root);
-    strictEqual(
-      await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF, ...NOTIFY_PAIR }),
-      null,
-      'the notify pair must not resolve a runtime without notify.mjs',
-    );
-  });
-
-  it('independent floors: a 0.78.x runtime satisfies the notify floor but NOT the footer floor', async () => {
-    // The exact half-open window the dual floors exist for: notify keeps
-    // emitting against a pre-S2 runtime while the footer fail-closes (a
-    // pre-S2 runtime would render the unsupported-kind degradation text).
+  it('a 0.78.x runtime, just below the footer floor → null', async () => {
+    // A pre-S2 runtime would render the unsupported-kind degradation text.
     const root = await mkRuntimeRoot(await tmp('frt-window-'), { version: '0.78.1' });
     const home = await NO_HOME();
     const env = { AGENTIC_RUNTIME_ROOT: root };
-    strictEqual(await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF, ...NOTIFY_PAIR }), root);
     strictEqual(await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }), null);
-    strictEqual(await runtimeVersionAtLeast(root, NOTIFY_MIN_RUNTIME_VERSION), true);
     strictEqual(await runtimeVersionAtLeast(root, MIN_RUNTIME_VERSION), false);
   });
 
-  it('Claude cache → picks the latest SemVer PER CAPABILITY (a newer footer-less entry is skipped)', async () => {
+  it('Claude cache → picks the latest SemVer carrying footer.mjs (a newer footer-less entry is skipped)', async () => {
     const home = await tmp('frt-claude-semver-');
     const base = await mkClaudeCache(home, [
       { version: '0.80.0', withFooter: false }, // newer but footer-less
@@ -161,11 +124,6 @@ describe('founder discoverRuntimePluginRoot — dual-consumer floors (ADR-0043 �
       await discoverRuntimePluginRoot({ env: {}, home, selfUrl: NEUTRAL_SELF }),
       join(base, '0.79.0'),
       'the footer ladder must skip the newer footer-less entry',
-    );
-    strictEqual(
-      await discoverRuntimePluginRoot({ env: {}, home, selfUrl: NEUTRAL_SELF, ...NOTIFY_PAIR }),
-      join(base, '0.80.0'),
-      'the notify ladder still sees the newer entry (it carries notify.mjs)',
     );
   });
 
@@ -218,7 +176,6 @@ describe('founder discoverRuntimePluginRoot — dual-consumer floors (ADR-0043 �
     const env = { AGENTIC_RUNTIME_ROOT: oldRoot };
     strictEqual(await resolveRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }), oldRoot);
     strictEqual(await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }), null);
-    strictEqual(await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF, ...NOTIFY_PAIR }), null);
   });
 
   it('a prerelease of the footer floor (0.79.0-beta.1) does NOT satisfy the gate', async () => {
@@ -232,17 +189,12 @@ describe('founder discoverRuntimePluginRoot — dual-consumer floors (ADR-0043 �
     strictEqual(await runtimeVersionAtLeast(preAbove, MIN_RUNTIME_VERSION), true);
   });
 
-  it('exactly at each floor passes its own gate', async () => {
+  it('exactly at the footer floor passes the gate', async () => {
     const home = await NO_HOME();
     const atFooterFloor = await mkRuntimeRoot(await tmp('frt-floor-'), { version: MIN_RUNTIME_VERSION });
     strictEqual(
       await discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: atFooterFloor }, home, selfUrl: NEUTRAL_SELF }),
       atFooterFloor,
-    );
-    const atNotifyFloor = await mkRuntimeRoot(await tmp('frt-floor2-'), { version: NOTIFY_MIN_RUNTIME_VERSION });
-    strictEqual(
-      await discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: atNotifyFloor }, home, selfUrl: NEUTRAL_SELF, ...NOTIFY_PAIR }),
-      atNotifyFloor,
     );
   });
 });

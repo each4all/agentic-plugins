@@ -1,6 +1,6 @@
 // The cross-plugin sibling resolvers: every copy of `discover-runtime.mjs`
-// (attention's manifest-identity resolver, founder's and designer's two
-// capability ladders), orchestrator's `discover-engineer.mjs`, engineer's
+// (attention's manifest-identity resolver, founder's and designer's footer
+// ladders), orchestrator's `discover-engineer.mjs`, engineer's
 // `parent-writeback.mjs` orchestrator resolver, and runtime doctor's private
 // engineer resolver.
 //
@@ -45,7 +45,6 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const CLAUDE_MANIFEST = join('.claude-plugin', 'plugin.json');
 const CODEX_MANIFEST = join('.codex-plugin', 'plugin.json');
 const FOOTER = join('scripts', 'footer.mjs');
-const NOTIFY = join('scripts', 'notify.mjs');
 const STATE = join('scripts', 'state.mjs');
 
 const CACHE_SOURCES = { env: 'env', sibling: 'sibling' };
@@ -74,20 +73,12 @@ const LOCATORS = [
     locate: (m, a) => m.locateRuntimePluginRoot(a),
     resolve: (m, a) => m.resolveRuntimePluginRoot(a),
   }),
-  ...['founder', 'designer'].flatMap((plugin) => [
-    runtimeLadder(plugin, {
-      id: `${plugin} discover-runtime (footer)`,
-      capability: FOOTER,
-      locate: (m, a) => m.locateRuntimePluginRoot(a),
-      resolve: (m, a) => m.resolveRuntimePluginRoot(a),
-    }),
-    runtimeLadder(plugin, {
-      id: `${plugin} discover-runtime (notify)`,
-      capability: NOTIFY,
-      locate: (m, a) => m.locateRuntimePluginRoot({ ...a, capability: m.NOTIFY_CAPABILITY }),
-      resolve: (m, a) => m.resolveRuntimePluginRoot({ ...a, capability: m.NOTIFY_CAPABILITY }),
-    }),
-  ]),
+  ...['founder', 'designer'].map((plugin) => runtimeLadder(plugin, {
+    id: `${plugin} discover-runtime (footer)`,
+    capability: FOOTER,
+    locate: (m, a) => m.locateRuntimePluginRoot(a),
+    resolve: (m, a) => m.resolveRuntimePluginRoot(a),
+  })),
   runtimeLadder('attention', {
     id: 'attention discover-runtime (newest by manifest)',
     capability: null,

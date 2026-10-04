@@ -541,49 +541,6 @@ describe('ADR-0040 acceptance (b) -- the emitter fails closed, the calling flow 
 });
 
 // ===========================================================================
-// (a/e) Persona peer-run self-sensor END-TO-END -- the §5 emit point FIRES
-//       through the real emitter (not just proven un-imported by the scan).
-// ===========================================================================
-
-describe('ADR-0040 acceptance (a/e) -- persona peer-run self-sensor fires end-to-end', () => {
-  it('the engineer peer-runner missing-companion path emits peer-run-terminal via the real emitter', async () => {
-    // Codex-caught gap: the (e) source scan proves the self-sensor does not
-    // IMPORT the emitter, but not that its emit point actually FIRES. Drive the
-    // REAL engineer peer-runner into its missing-companion early return (an
-    // ADR-0040 §5 terminal emit point) by pointing companion discovery at a stub
-    // that resolves nothing, and assert a peer-run-terminal notification lands in
-    // the real file-log through the real notify.mjs -- the full producer chain.
-    const repo = await markerRepo('selfsensor');
-    const home = fixtureHome();
-    await writeConfig(repo, { notify_channel: 'file-log' });
-    // A companions root whose discover-peer.mjs resolves NO companion, forcing
-    // the peer_cli_not_found early return that self-sensors (ADR-0040 §5).
-    const fakeCompanions = tmp('fake-companions');
-    await writeFile(
-      join(fakeCompanions, 'discover-peer.mjs'),
-      'export async function discoverPeerCompanion() { return { ok: false }; }\n',
-    );
-    const res = runNode([
-      resolve(REPO_ROOT, 'plugins/engineer/scripts/peer-runner.mjs'), 'run',
-      '--peer', 'codex', '--kind', 'peer-now', '--prompt-text', 'ping',
-      '--repo-root', repo, '--host', 'claude', '--output-format', 'json', '--cwd', repo,
-    ], {
-      env: { HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, AGENTIC_COMPANIONS_ROOT: fakeCompanions },
-    });
-    // The run reports the missing companion (a non-zero exit is expected); the
-    // acceptance criterion is that the self-sensor notification fired, not the
-    // run's own exit status. A liveness overrun would raise SpawnInfraError from
-    // runNode rather than surfacing here as "the notification never fired".
-    const peerRunTerminals = (await readLog(repo)).filter((rec) => rec.kind === 'peer-run-terminal');
-    ok(peerRunTerminals.length >= 1, `a peer-run-terminal notification was emitted; run stderr:\n${res.stderr}`);
-    ok(
-      peerRunTerminals[0].event_id.includes(':peer-run-terminal:'),
-      'the emitted event carries the peer-run-terminal kind segment',
-    );
-  });
-});
-
-// ===========================================================================
 // (c) runtime:dashboard aggregate -- 3 personas incl. founder, Tier 2, notify health
 // ===========================================================================
 
@@ -731,13 +688,13 @@ describe('ADR-0040 acceptance (d) -- --notification-plan is M1 no-host-write', (
 // (e) ADR-0010 sec.5 subprocess-only boundary -- the emit substrate is never imported
 // ===========================================================================
 
-describe('ADR-0040 acceptance (e) -- attention + persona self-sensors reach notify.mjs only by subprocess', () => {
+describe('ADR-0040 acceptance (e) -- no attention or persona module imports notify.mjs', () => {
   // The runtime emit substrate (notify.mjs emitter, notify-schema.mjs contract
   // lib) is L1 runtime; attention is a separate L1 plugin and the personas are
-  // L2/L3 -- none may import across the seam (ADR-0010 sec.5). They reach the
-  // emitter by SUBPROCESS and hold the sec.1 contract by COPY (behavioral parity
-  // is enforced by tests/plugin-shape/test-attention-plugin.mjs). This scan is the
-  // boundary gate, mirroring the ADR-0039 footer.mjs precedent.
+  // L2/L3 -- none may import across the seam (ADR-0010 sec.5). A plugin that
+  // reaches the emitter does so by SUBPROCESS and holds the sec.1 contract by
+  // COPY; the persona peer-run self-sensors that did were removed by ADR-0064.
+  // This scan is the boundary gate, mirroring the ADR-0039 footer.mjs precedent.
   //
   // STATIC-ANALYSIS LIMIT (same as the footer gate): a fully computed dynamic
   // import (specifier assembled at runtime) cannot be caught by a source scan.

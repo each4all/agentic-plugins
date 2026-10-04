@@ -197,7 +197,7 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     'scripts/dispatch-peer.mjs',
     'scripts/peer-runner.mjs',
     'scripts/session-handoff.mjs',
-    // ADR-0043 S3 — dual-consumer runtime resolver (footer + notify floors).
+    // ADR-0043 S3 — runtime resolver (footer floor).
     'scripts/discover-runtime.mjs',
     'hooks/hooks.json',
     'adapters/claude/hooks/_shared.mjs',
