@@ -20,6 +20,23 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.101.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.100.0...plugin-runtime-v0.101.0) (2026-10-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **plugin/runtime:** remove doctor's sandbox permission probe (ADR-0064 R4s) ([#867](https://github.com/each4all/agentic-plugins/issues/867))
+* **plugin/runtime:** remove runtime notification and egress (ADR-0064 R4n2) ([#866](https://github.com/each4all/agentic-plugins/issues/866))
+* **plugin/runtime:** remove bootstrap's notify and egress steps (ADR-0064 R4n1) ([#865](https://github.com/each4all/agentic-plugins/issues/865))
+* **plugin/runtime:** remove the portable machine profile (ADR-0064 R4p) ([#863](https://github.com/each4all/agentic-plugins/issues/863))
+
+### Features
+
+* **plugin/runtime:** remove bootstrap's notify and egress steps (ADR-0064 R4n1) ([#865](https://github.com/each4all/agentic-plugins/issues/865)) ([71d4133](https://github.com/each4all/agentic-plugins/commit/71d4133d0d4cbc0a1181577e4c7a03ee1da85425))
+* **plugin/runtime:** remove doctor's sandbox permission probe (ADR-0064 R4s) ([#867](https://github.com/each4all/agentic-plugins/issues/867)) ([517fe3f](https://github.com/each4all/agentic-plugins/commit/517fe3f7c976ef9b6d0c81fe94d09fcb4dee92cc))
+* **plugin/runtime:** remove runtime notification and egress (ADR-0064 R4n2) ([#866](https://github.com/each4all/agentic-plugins/issues/866)) ([b864f07](https://github.com/each4all/agentic-plugins/commit/b864f072e509d81c8bf056dac7e3449836a751ca))
+* **plugin/runtime:** remove the portable machine profile (ADR-0064 R4p) ([#863](https://github.com/each4all/agentic-plugins/issues/863)) ([fbe9677](https://github.com/each4all/agentic-plugins/commit/fbe9677427349c199c17fdcc98e8ac7e19b7c7b3))
+
 ## [0.100.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.99.2...plugin-runtime-v0.100.0) (2026-10-04)
 
 
