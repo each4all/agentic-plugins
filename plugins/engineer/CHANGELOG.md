@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.24.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.1...plugin-engineer-v0.24.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** stop emitting peer-run notifications (ADR-0064 R3) ([c63408e](https://github.com/each4all/agentic-plugins/commit/c63408e1e52b2e7bde195d8b4114d437a8f403fa))
+* **plugin/engineer:** treat a step report taken while autopilot waits as provisional ([5954320](https://github.com/each4all/agentic-plugins/commit/595432062d3d858c8c9ef61dcfa696eb8dc9126a))
+* **plugin/orchestrator:** tell autopilot workers only their last step report counts ([ef0090a](https://github.com/each4all/agentic-plugins/commit/ef0090af905092d1118a48212e4743e9e75b7a30))
+
 ## [0.24.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.0...plugin-engineer-v0.24.1) (2026-10-04)
 
 

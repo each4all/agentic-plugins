@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.13](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.12...plugin-designer-v0.3.13) (2026-10-04)
+
+
+### Bug Fixes
+
+* **plugin/designer:** stop emitting peer-run notifications (ADR-0064 R3) ([8a47a8c](https://github.com/each4all/agentic-plugins/commit/8a47a8cbccad7939e7a46acb822c2dd89589fc2a))
+
 ## [0.3.12](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.11...plugin-designer-v0.3.12) (2026-09-29)
 
 

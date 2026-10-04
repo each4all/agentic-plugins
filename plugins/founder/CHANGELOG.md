@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.13](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.12...plugin-founder-v0.4.13) (2026-10-04)
+
+
+### Bug Fixes
+
+* **plugin/founder:** stop emitting peer-run notifications (ADR-0064 R3) ([fd78d9b](https://github.com/each4all/agentic-plugins/commit/fd78d9b6e2e5f8d41de3464d5bd2d3739addcead))
+
 ## [0.4.12](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.11...plugin-founder-v0.4.12) (2026-09-29)
 
 
