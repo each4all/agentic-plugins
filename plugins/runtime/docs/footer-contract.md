@@ -32,11 +32,11 @@ PR handling readiness. This is a decision aid for asking the user what to
 do next; it does not commit, push, open, update, merge, or mark any PR
 ready for review.
 
-When a completion surface is part of the omcc cutover dogfood loop, it may
-also include cutover record guidance. This is a pointer-only suggestion for
-the exact `runtime:cutover record` command the operator can run after
-confirming the footer state and omcc-dev activity evidence. The footer does
-not write cutover evidence itself.
+The footer once also rendered cutover record guidance, a suggested
+`runtime:cutover record` command for the omcc cutover dogfood loop.
+[ADR-0064](../../../docs/adr/0064-runtime-surface-reduction.md) §Decision 5
+retired that audit and the footer's `--cutover-*` flags with it; the helper
+now refuses them as unknown arguments.
 
 ## Helper
 
@@ -300,42 +300,12 @@ node <runtime-plugin-root>/scripts/footer.mjs render \
   --pr-branch-state pushable
 ```
 
-### Cutover record guidance
-
-Callers may request cutover record guidance when a completed slice should
-count toward the one-week omcc-dev-free dogfood ledger:
-
-```bash
-node <runtime-plugin-root>/scripts/footer.mjs render \
-  --repo-root "$REPO_ROOT" \
-  --host codex \
-  --completion-state next-work-available \
-  --completion-reason "release/install loop complete; R4 remains open" \
-  --cutover-record \
-  --cutover-omcc-dev-active no \
-  --cutover-omcc-dev-note "runtime-only dogfood" \
-  --cutover-dogfood-date 2026-05-16
-```
-
-If `--cutover-omcc-dev-active yes|no|unknown` is present, the helper emits
-a host-localized `runtime:cutover record` command containing the current
-completion state, completion reason, omcc-dev activity statement, optional
-activity note, and optional dogfood date. If the activity statement is
-missing, the helper reports `needs-operator-evidence` and emits no command.
-
-The generated command is advisory. Operators must only record
-`--omcc-dev-active no` when the current work session actually avoided
-omcc-dev. Recording remains an explicit `runtime:cutover record` action that
-writes sanitized cutover evidence under `.agentic-plugins/runs/cutover/`.
-
 ## Boundaries
 
 - Advisory only: no automatic context mutation, compaction, host switch, or
   workflow start.
 - PR handling readiness is advisory only: no automatic commit, push, PR
   creation, PR metadata update, merge, or ready-for-review transition.
-- Cutover record guidance is advisory only: no automatic dogfood evidence
-  write and no automatic omcc-dev activity declaration.
 - Pointer-only: raw peer output, consensus raw output, prompt bodies, owner
   decision text, cancellation reason text, and large artifacts stay in
   runtime-owned files.

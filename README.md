@@ -83,8 +83,7 @@ Eight installable plugins ship in this repository:
   `runtime:doctor` readiness diagnostics, dry-run/default
   `runtime:settings`, explicit `runtime:consensus` companion execution
   artifacts, read-only `runtime:worktree` planning, `runtime:context` handoff/check artifacts,
-  read-only `runtime:cutover` readiness evidence, workflow-storage migration,
-  and the pointer-only completion footer.
+  workflow-storage migration, and the pointer-only completion footer.
 
 See each plugin's README for install commands, invocation, and
 environment details.
@@ -165,11 +164,12 @@ activation runbook (artifact-only; host config is never written).
 ## Relationship to omcc
 
 agentic-plugins is the dual-host successor to [omcc](https://github.com/e16tae/omcc).
-omcc remains operational (Claude-only) until agentic-plugins reaches feature
-parity. See [`docs/adr/0007-migration-cutover-plan.md`](docs/adr/0007-migration-cutover-plan.md)
-for the cutover plan and
+The owner declared the cutover on 2026-06-03, completing the plan in
+[`docs/adr/0007-migration-cutover-plan.md`](docs/adr/0007-migration-cutover-plan.md):
+agentic-plugins is the sole development environment, and omcc's history stays
+in its own repository.
 [`docs/assurance/omcc-cutover-scorecard.md`](docs/assurance/omcc-cutover-scorecard.md)
-for the current requirement-to-evidence scorecard.
+is the frozen requirement-to-evidence record behind that declaration.
 
 ## License
 

@@ -16,6 +16,8 @@
 // retargeted G2 at a receiver the guard now covers, and added V (the
 // home-rendered receivers), Y (ADR-0061 §Decision 4's content identity), H
 // (doctor), M (plan and settings) and Z (bootstrap and cutover, review round 3).
+// ADR-0064 §Decision 5 retired `runtime:cutover`, and Z2, Z8 and Z9, the
+// mutations of `cutover-audit.mjs`, went with it.
 
 const T_LIB = 'tests/companions/test-discover-peer.mjs';
 const T_BOOT = 'tests/companions/test-companion-bootstrap.mjs';
@@ -33,7 +35,6 @@ const T_INVENTORY = 'tests/runtime/test-receiver-inventory.mjs';
 const T_IDENTITY = 'tests/runtime/test-codex-install-identity.mjs';
 const T_SETTINGS = 'tests/runtime/test-settings.mjs';
 const T_PLAN = 'tests/runtime/test-plugin-management-plan.mjs';
-const T_CUTOVER = 'tests/runtime/test-cutover-audit.mjs';
 const T_BOOTSTRAP = 'tests/runtime/test-bootstrap-cli.mjs';
 
 const LIB = 'companions/discover-peer.mjs';
@@ -54,7 +55,7 @@ const SETTINGS = 'plugins/runtime/scripts/settings.mjs';
 const ORDER = "const order = caller === 'codex' ? ['codex', 'claude'] : ['claude', 'codex'];";
 const ORDER_FIXED = "const order = ['claude', 'codex'];";
 
-export const TESTS = [T_LIB, T_BOOT, T_GUARD, T_SIBLINGS, T_WRITEBACK, T_PEC, T_ROOT_DOCS, T_NOTIFY, T_STATUSLINE, T_INVENTORY, T_IDENTITY, T_DOCTOR, T_SETTINGS, T_PLAN, T_CUTOVER, T_BOOTSTRAP];
+export const TESTS = [T_LIB, T_BOOT, T_GUARD, T_SIBLINGS, T_WRITEBACK, T_PEC, T_ROOT_DOCS, T_NOTIFY, T_STATUSLINE, T_INVENTORY, T_IDENTITY, T_DOCTOR, T_SETTINGS, T_PLAN, T_BOOTSTRAP];
 
 export const MUTATIONS = [
   // ---- L: the canonical library ------------------------------------------
@@ -732,12 +733,6 @@ export const MUTATIONS = [
     to: "      && ['installed', 'disabled'].includes(codexInstall.installed?.status)\n      && codexInstall.installed?.version\n",
     why: 'a pinned install whose list row carries no version keeps an unverified proof reusable',
   },
-  {
-    id: 'Z2', file: 'plugins/runtime/scripts/cutover-audit.mjs', tests: [T_CUTOVER],
-    from: '    codexRepair.length > 0\n',
-    to: '    false\n',
-    why: 'cutover sends a Codex install at another version to an executor that cannot repair it',
-  },
 
   // ---- S3 review round 4 (Codex) -------------------------------------------
   {
@@ -784,12 +779,6 @@ export const MUTATIONS = [
     to: '  if (false) {',
     why: 'a Codex install that failed to materialize a floor-satisfying pin is sent to a refresh that changes nothing',
   },
-  {
-    id: 'Z8', file: 'plugins/runtime/scripts/cutover-audit.mjs', tests: [T_CUTOVER],
-    from: "  if (unreadableHooks.length > 0) {\n    items.push({",
-    to: "  if (false) {\n    items.push({",
-    why: 'cutover asks for a hook review settings will refuse to attest, with no restore step first',
-  },
 
   // ---- S3 review round 6 (Codex) -------------------------------------------
   {
@@ -803,12 +792,6 @@ export const MUTATIONS = [
     from: '  const refVersion = ref !== null && ref.startsWith(refPrefix) ? ref.slice(refPrefix.length) : null;',
     to: "  const refVersion = ref !== null && ref.startsWith(refPrefix) ? ref.slice(ref.lastIndexOf('-v') + 2) : null;",
     why: 'a version containing -v is split at the last -v and the pin reads as malformed',
-  },
-  {
-    id: 'Z9', file: 'plugins/runtime/scripts/cutover-audit.mjs', tests: [T_CUTOVER],
-    from: '  const codexRepair = codexWrongVersion.filter((entry) => entry.codex_catalog_target === entry.expected);',
-    to: '  const codexRepair = codexWrongVersion;',
-    why: 'cutover sends an install behind a pin that also trails the release to a reinstall that lands the older pin',
   },
 
   // ---- S3 review round 7 (Codex) -------------------------------------------

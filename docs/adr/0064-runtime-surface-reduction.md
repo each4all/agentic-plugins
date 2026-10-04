@@ -363,6 +363,14 @@ Two consequences follow:
   `scripts/sync-doc-versions.mjs` and `scripts/check-doc-evidence.mjs`. What
   remained tied to the audit is the two guards listed above.
 
+*Implemented 2026-10-04 by subtask X.* Two changes the list above did not
+name went with it. `scripts/mutation-specs/codex-cache-discovery.mjs` held three
+more `cutover-audit.mjs` mutations (Z2, Z8, Z9), which Decision 1's list of
+known specs missed. And retention's scanner version moved from
+`runtime-retention-scanner-1.0` to `1.1`: without the cutover citation source,
+the same runs can be pinned differently. The plan reports the version and its
+hash covers it, so a plan reviewed before the change is refused.
+
 ### Decision 6 — Bootstrap Stage 5 becomes "statusline"; stage numbers are kept
 
 - Stage 5 keeps its number and loses its notification and egress steps:

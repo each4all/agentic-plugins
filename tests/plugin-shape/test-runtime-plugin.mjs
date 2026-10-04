@@ -21,7 +21,6 @@ const RUNTIME_COMMAND_SURFACES = [
   { name: 'bootstrap', script: 'bootstrap.mjs' },
   { name: 'consensus', script: 'consensus.mjs' },
   { name: 'context', script: 'context.mjs' },
-  { name: 'cutover', script: 'cutover-audit.mjs' },
   { name: 'dashboard', script: 'dashboard.mjs' },
   { name: 'doctor', script: 'doctor.mjs' },
   { name: 'migrate', script: 'migrate.mjs' },
@@ -51,7 +50,8 @@ describe('plugins/runtime manifest pair', () => {
     ok(!manifest.keywords.includes('compat'));
     ok(manifest.keywords.includes('worktree'));
     ok(manifest.keywords.includes('context'));
-    ok(manifest.keywords.includes('cutover'));
+    // ADR-0064 retired `runtime:cutover` for the same reason.
+    ok(!manifest.keywords.includes('cutover'));
     ok(manifest.keywords.includes('footer'));
     ok(manifest.keywords.includes('L1'));
   });
@@ -69,6 +69,17 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:settings')));
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:consensus')));
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:context')));
+  });
+
+  // ADR-0064 §Decision 5 retired `runtime:cutover`. Beyond the keyword, the
+  // shared description, the Codex interface copy and its default prompts are
+  // where a manifest would still advertise it.
+  it('neither manifest advertises the retired runtime:cutover', async () => {
+    for (const rel of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json']) {
+      const raw = await readFile(resolve(PLUGIN_ROOT, rel), 'utf-8');
+      ok(raw.includes('runtime'), `${rel} was not read`);
+      ok(!/cutover/i.test(raw), `${rel} still mentions cutover`);
+    }
   });
 
   // Their versions are validate-versions' to check (ADR-0065 Decision 8 rule 6).
@@ -617,25 +628,6 @@ describe('plugins/runtime context surface', () => {
   });
 });
 
-describe('plugins/runtime cutover surface', () => {
-  it('ships cutover command, skill wrapper, agent yaml, and executable script', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/cutover.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/cutover-audit.mjs'));
-    ok(/read-only/i.test(command));
-    ok(command.includes('cutover-ready-candidate'));
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'cutover/SKILL.md'), 'utf-8');
-    ok(/^name:\s*cutover\s*$/m.test(skill));
-    ok(skill.includes('No automatic final cutover declaration'));
-    ok(skill.includes('No inference that omcc-dev is inactive'));
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'cutover/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:cutover'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/cutover-audit.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'cutover-audit.mjs has executable bit');
-  });
-});
-
 describe('plugins/runtime dashboard surface', () => {
   it('ships dashboard command, skill wrapper, agent yaml, and executable script', async () => {
     const command = await readFile(resolve(PLUGIN_ROOT, 'commands/dashboard.md'), 'utf-8');
@@ -809,7 +801,6 @@ describe('plugins/runtime repo documentation', () => {
       'runtime:consensus',
       'runtime:worktree',
       'runtime:context',
-      'runtime:cutover',
       'workflow-storage migration',
       'completion footer',
     ]) {
@@ -817,27 +808,8 @@ describe('plugins/runtime repo documentation', () => {
     }
 
     ok(!readme.includes('runtime:compat'), 'README.md must not advertise the command ADR-0060 removed');
+    ok(!readme.includes('runtime:cutover'), 'README.md must not advertise the command ADR-0064 retired');
     ok(!readme.includes('### Coming next'), 'README.md should not list shipped runtime surfaces as coming next');
     ok(!readme.includes('Runtime dynamic consensus, context hygiene, and completion footer'), 'README.md must not carry stale ADR-0024 follow-up wording');
-  });
-
-  // cutover-audit.mjs accepts only single-line `| Rn | ... |` rows; a wrapped
-  // requirement row silently drops out of the live audit (R3 spanned 40+
-  // physical lines and the audit reported 11 rows while the scorecard intended
-  // 12 — Plan-verify finding). Pin the exact ID set as single-line rows.
-  it('keeps every scorecard requirement row single-line so the cutover audit sees all twelve', async () => {
-    const scorecard = await readFile(resolve(REPO_ROOT, 'docs/assurance/omcc-cutover-scorecard.md'), 'utf-8');
-    const rows = scorecard.split('\n')
-      .filter((line) => line.startsWith('| R') && line.trim().endsWith('|'))
-      .map((line) => line.split('|'))
-      .filter((parts) => /^R\d+[ab]?$/.test((parts[1] ?? '').trim()));
-    for (const parts of rows) {
-      // 5 table columns → exactly 7 split parts; a wrapped or stub row loses
-      // cells and silently drops out of the live cutover audit.
-      strictEqual(parts.length, 7, `requirement row ${parts[1].trim()} carries all five cells on one line`);
-    }
-    deepStrictEqual([...new Set(rows.map((parts) => parts[1].trim()))].sort(),
-      ['R1', 'R10', 'R11', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7a', 'R7b', 'R8', 'R9'],
-      'all twelve requirement rows are single-line audit-parseable');
   });
 });

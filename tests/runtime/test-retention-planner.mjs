@@ -104,7 +104,7 @@ describe('retention-planner registry + constants', () => {
 
   it('pins scan-bound + version constants', () => {
     assert.equal(RETENTION_PLANNER_VERSION, 'runtime-retention-planner-1.1');
-    assert.equal(RETENTION_SCANNER_VERSION, 'runtime-retention-scanner-1.0');
+    assert.equal(RETENTION_SCANNER_VERSION, 'runtime-retention-scanner-1.1');
     assert.equal(CITATION_SCAN_MAX_FILES, 5000);
     assert.equal(CITATION_SCAN_MAX_FILE_BYTES, 1024 * 1024);
     assert.equal(CITATION_SCAN_MAX_TOTAL_BYTES, 64 * 1024 * 1024);
@@ -397,14 +397,26 @@ describe('retention-planner pin 4 — cross-artifact references', () => {
     assert.ok(res.pinned.get('settings').has(SETTINGS_B));
   });
 
-  it('pins a run cited inside a cutover evidence artifact-pointer list', async () => {
+  // ADR-0064 §Decision 5: cutover evidence is history that no command reads, and
+  // retention stopped reading it too (scanner 1.1). A retained record neither
+  // pins the run it cites nor, when malformed, makes the scan incomplete. The
+  // doctor citation is the control: pin 4 still runs and still pins.
+  it('no longer reads retained cutover evidence (ADR-0064)', async () => {
     const repo = tmpRepo();
-    const cutoverRun = 'cutover-20260101T000000Z-eeeeee';
-    seedRun(repo, 'cutover', cutoverRun, {
-      files: { 'evidence.json': JSON.stringify({ artifacts: [`.agentic-plugins/runs/settings/${SETTINGS_A}/settings.json`] }) },
+    seedRun(repo, 'doctor', DOCTOR_A, {
+      files: { 'doctor.json': JSON.stringify({ ref: SETTINGS_B }) },
+    });
+    seedRun(repo, 'cutover', 'cutover-20260101T000000Z-eeeeee', {
+      files: {
+        'evidence.json': JSON.stringify({ artifacts: [`.agentic-plugins/runs/settings/${SETTINGS_A}/settings.json`] }),
+        'broken.json': '{ not json',
+      },
     });
     const res = await scanCrossArtifactReferences({ repoRoot: repo });
-    assert.ok(res.pinned.get('settings').has(SETTINGS_A));
+    assert.ok(res.pinned.get('settings').has(SETTINGS_B), 'control: the doctor citation must still pin');
+    assert.ok(!res.pinned.get('settings').has(SETTINGS_A), 'a cutover record still pins the run it cites');
+    assert.equal(res.scanComplete, true, 'a malformed cutover record still makes the scan incomplete');
+    assert.equal(res.files_read, 1, 'pin 4 read something besides the doctor artifact');
   });
 
   it('flips scan_complete on a malformed (undecodable) cross-artifact source', async () => {
@@ -662,6 +674,27 @@ describe('retention-planner plan hash', () => {
     fs.writeFileSync(path.join(repo, 'doc.md'), 'settings-20260101T000000Z-000001');
     const after = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: ['doc.md'] });
     assert.notEqual(before.plan_hash, after.plan_hash);
+  });
+
+  // The scanner bump to 1.1 (ADR-0064 §Decision 5) is how a plan reviewed
+  // before pin 4 stopped reading cutover evidence gets refused; that holds only
+  // while the hash covers both versions.
+  it('changes when either version changes, all else equal', () => {
+    const plan = (versions) => ({
+      planner_version: RETENTION_PLANNER_VERSION,
+      scanner_version: RETENTION_SCANNER_VERSION,
+      ...versions,
+      caps: { run_cap: 1, max_bytes: 50 * 1024 * 1024, min_age_ms: RETENTION_MIN_AGE_MS },
+      scan_complete: true,
+      families: {
+        doctor: { pins: {}, actionable_excess: [] },
+        settings: { pins: {}, actionable_excess: [] },
+      },
+    });
+    const current = computeRetentionPlanHash(plan({}));
+    assert.equal(computeRetentionPlanHash(plan({})), current, 'control: the same plan hashes the same');
+    assert.notEqual(computeRetentionPlanHash(plan({ scanner_version: 'runtime-retention-scanner-1.0' })), current);
+    assert.notEqual(computeRetentionPlanHash(plan({ planner_version: 'runtime-retention-planner-1.0' })), current);
   });
 
   it('is invariant to pin-key DISCOVERY ORDER for the same logical pin set (sorted keys)', () => {

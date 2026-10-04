@@ -599,11 +599,6 @@ export const FS_MUTATION_USERS = {
     stateRoots: ['.agentic-plugins/runs/context', '.agentic-plugins/state/runtime/session-capture'],
     justification: 'context run ledger (runs/context) + ADR-0044 slot home: temp+rename writes, wx lock, own-temp sweep and note --clear removals (ADR-0044 §3 deletion grant)',
   },
-  'cutover-audit.mjs': {
-    primitives: ['mkdir', 'writeFile'],
-    stateRoots: ['.agentic-plugins/runs/cutover'],
-    justification: 'cutover audit artifacts under runs/cutover (incl. latest.json)',
-  },
   // doctor run artifacts + ephemeral temp-repo probes (mkdtemp under the OS
   // tmpdir, recursively removed — the pinned recursive-removal site below).
   'doctor.mjs': {
