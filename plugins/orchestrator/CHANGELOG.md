@@ -18,6 +18,14 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.17.1](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.17.0...plugin-orchestrator-v0.17.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **plugin/orchestrator:** stop emitting peer-run notifications (ADR-0064 R3) ([f0b1e11](https://github.com/each4all/agentic-plugins/commit/f0b1e113e385db958f7a19c322f4acf42bb596f4))
+* **plugin/orchestrator:** tell autopilot workers only their last step report counts ([ef0090a](https://github.com/each4all/agentic-plugins/commit/ef0090af905092d1118a48212e4743e9e75b7a30))
+
 ## [0.17.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.16.0...plugin-orchestrator-v0.17.0) (2026-10-03)
 
 

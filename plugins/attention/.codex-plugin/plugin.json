@@ -1,6 +1,6 @@
 {
   "name": "attention",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Attention sensors — hook-only L1 plugin whose two Claude lifecycle-hook sensors feed allowlisted runtime-owned executors (ADR-0044 §2 and ADR-0045 §2, as reduced by ADR-0064): context.mjs publish-session for session capture at Stop, and context.mjs entry-brief for the SessionStart entry line (two capability floors that never share a constant, declared in data/runtime-floors.json). Hooks + sensor scripts only: no skills, no verbs, no state machinery. The plugin contributes zero plugin-owned Codex hook surface: the Codex manifest declares no hooks AND the Claude registration is manifest-scoped at adapters/claude/hooks/hooks.json, deliberately outside Codex's default-file discovery (host truth: Codex 0.144.1 loads a root hooks/hooks.json regardless of command shape — ADR-0040 §3 amendment). The ADR-0044 capture firing point and the ADR-0045 entry hook surface are Claude-only at v1 (ADR-0044 §8 / ADR-0045 §10 — Codex gets the symmetric CLI + dashboard surfaces).",
   "skills": "./skills/",
   "interface": {

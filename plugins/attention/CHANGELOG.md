@@ -2,6 +2,17 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.9.1...plugin-attention-v0.10.0) (2026-10-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **plugin/attention:** remove the notification sensors (ADR-0064 R2)
+
+### Features
+
+* **plugin/attention:** remove the notification sensors (ADR-0064 R2) ([ea8795f](https://github.com/each4all/agentic-plugins/commit/ea8795f57a82c0b6659c9b95f9d229887e43a68c))
+
 ## [0.9.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.9.0...plugin-attention-v0.9.1) (2026-09-25)
 
 

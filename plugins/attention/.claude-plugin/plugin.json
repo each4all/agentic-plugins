@@ -1,6 +1,6 @@
 {
   "name": "attention",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Attention sensors — hook-only L1 plugin whose two Claude lifecycle-hook sensors feed allowlisted runtime-owned executors (ADR-0044 §2 and ADR-0045 §2, as reduced by ADR-0064): Stop spawns context.mjs publish-session for session capture, relaying --workflow-evidence fresh when a persona's freshness-checked session-handoff projection shows a terminal workflow, and SessionStart (explicit startup matcher + explicit 15 s timeout) spawns context.mjs entry-brief and relays at most one validated marker-paired line into context — the scoped ADR-0045 §2.2 stdout exception; the Stop sensor stays stdout-silent. Hooks + sensor scripts only: no skills, no verbs, no state machinery. Sensors are fail-closed observers (exit 0 always, no decision output) that resolve the newest installed runtime by manifest identity through a copied discover-runtime ladder, then gate it on their own capability floor — publish-session >= 0.82.0 and entry-brief >= 0.83.0, each declared in data/runtime-floors.json byte-for-byte with its spawn gate; capture stays off until the operator sets session_capture, and the entry line until the user-scope-only entry_brief key, both via runtime:settings.",
   "hooks": "./adapters/claude/hooks/hooks.json",
   "author": {
