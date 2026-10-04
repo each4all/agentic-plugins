@@ -247,7 +247,6 @@ describe('/engineer:start — entry routing and decision contract', () => {
         '/runtime:doctor',
         '/runtime:settings',
         '/runtime:context',
-        '/runtime:cutover',
         '/engineer:<verb>',
         '$engineer:<verb>',
       ]) {
@@ -256,6 +255,21 @@ describe('/engineer:start — entry routing and decision contract', () => {
       // ADR-0060 removed `runtime:compat`; a routing surface that still offered
       // it would send the agent to a command the installed runtime lacks.
       ok(!text.includes('/runtime:compat'), 'surface still routes to the removed /runtime:compat');
+    }
+  });
+
+  // ADR-0064 §Decision 5 retired `runtime:cutover`. The routing contract's
+  // runtime row is the third surface that offered it, so it is checked here too,
+  // in either host's spelling.
+  it('no routing surface offers the retired runtime:cutover', async () => {
+    const surfaces = {
+      command: await readFile(COMMAND_PATH, 'utf8'),
+      skill: await readFile(SKILL_PATH, 'utf8'),
+      contract: await readFile(ROUTING_CONTRACT_PATH, 'utf8'),
+    };
+    for (const [name, text] of Object.entries(surfaces)) {
+      ok(text.includes('runtime:doctor'), `${name} no longer names the runtime route at all`);
+      ok(!/[/$]runtime:cutover\b/.test(text), `${name} still routes to the retired runtime:cutover`);
     }
   });
 

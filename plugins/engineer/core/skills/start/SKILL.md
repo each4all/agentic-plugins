@@ -99,9 +99,8 @@ Before Phase 1, present an **Entry routing recommendation**:
 - run `/runtime:worktree plan` / `$runtime:worktree` when isolation or
   parallelization is likely because the checkout is dirty, risky,
   long-running, or suitable for parallel branches;
-- run `/runtime:doctor`, `/runtime:settings`, `/runtime:context`, or
-  `/runtime:cutover` when the task is runtime readiness,
-  install/update, handoff, or cutover evidence;
+- run `/runtime:doctor`, `/runtime:settings`, or `/runtime:context`
+  when the task is runtime readiness, install/update, or handoff;
 - use a single `/engineer:<verb>` / `$engineer:<verb>` when the user
   only needs investigate/frame/decide/compose/critique/refine without
   lifecycle state.
