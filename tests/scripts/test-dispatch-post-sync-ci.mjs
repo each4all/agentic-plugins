@@ -1,8 +1,8 @@
 // Tests for scripts/dispatch-post-sync-ci.mjs and its release-please.yml wiring
 // (docket C58).
 //
-// A GITHUB_TOKEN push starts no workflow, so the release job's catalog and
-// stage-doc sync commits never got a CI run of their own, and every release
+// A GITHUB_TOKEN push starts no workflow, so the release job's catalog sync
+// commit never got a CI run of its own, and every release
 // commit since 2026-09-09 carried a red run that read the catalogs before the
 // sync. The release job now dispatches the push-to-main test workflows on main
 // after its sync pushes. These tests pin the three things that make that
@@ -353,30 +353,31 @@ test('release-please.yml grants the job actions: write, which the dispatch endpo
   assert.match(perms[1], /^  contents: write$/m, 'the sync pushes still need contents: write');
 });
 
-test('each sync push step records that it pushed, only after the push succeeded', () => {
-  const all = steps(releaseYml());
-  for (const id of ['catalog-push', 'docs-push']) {
-    const s = stepById(all, id);
-    const lines = s.text.split('\n');
-    const push = lines.findIndex((l) => /^\s+git push$/.test(l));
-    const out = lines.findIndex((l) => /echo "pushed=true" >> "\$GITHUB_OUTPUT"/.test(l));
-    assert.ok(push > 0, `${id} pushes`);
-    assert.ok(out > push, `${id} records the push after it (bash -e stops before the record when the push fails)`);
-    assert.equal(lines.filter((l) => l.includes('pushed=true')).length, 1);
-  }
+test('the catalog push step records that it pushed, only after the push succeeded', () => {
+  const s = stepById(steps(releaseYml()), 'catalog-push');
+  const lines = s.text.split('\n');
+  const push = lines.findIndex((l) => /^\s+git push$/.test(l));
+  const out = lines.findIndex((l) => /echo "pushed=true" >> "\$GITHUB_OUTPUT"/.test(l));
+  assert.ok(push > 0, 'catalog-push pushes');
+  assert.ok(out > push, 'catalog-push records the push after it (bash -e stops before the record when the push fails)');
+  assert.equal(lines.filter((l) => l.includes('pushed=true')).length, 1);
 });
 
-test('the dispatch step runs after both pushes, and the obligation assertion stays last', () => {
+test('the catalog push is the only push, and the dispatch step follows it as the last step', () => {
   const all = steps(releaseYml());
   const names = all.map((s) => s.name);
   const at = (pred) => all.findIndex(pred);
   const catalog = at((s) => /^        id: catalog-push$/m.test(s.text));
-  const docs = at((s) => /^        id: docs-push$/m.test(s.text));
   const dispatch = at((s) => s.text.includes('scripts/dispatch-post-sync-ci.mjs'));
-  const obligation = at((s) => s.text.includes('scripts/check-release-obligation.mjs'));
-  assert.ok(catalog >= 0 && docs > catalog && dispatch > docs, `dispatch follows both pushes: ${names.join(' | ')}`);
-  assert.equal(obligation, all.length - 1, 'the obligation assertion stays last');
-  assert.equal(dispatch, obligation - 1);
+  assert.deepEqual(all.filter((s) => /^\s+git push$/m.test(s.text)).map((s) => s.name), [all[catalog].name], 'one push step');
+  // Immediately after it, not merely later: the dispatch condition carries
+  // GitHub's implicit success(), which skips it after any earlier failure.
+  // That is right only while no step sits between the push and the dispatch;
+  // a step added there could fail after the catalog commit landed and cost it
+  // its run.
+  assert.ok(catalog >= 0, `a catalog push step: ${names.join(' | ')}`);
+  assert.equal(dispatch, catalog + 1, `the dispatch step directly follows the catalog push: ${names.join(' | ')}`);
+  assert.equal(dispatch, all.length - 1, 'the dispatch step is last');
 });
 
 /**
@@ -428,31 +429,24 @@ const skipped = { outcome: 'skipped', outputs: {} };
 const released = { outputs: { releases_created: 'true' } };
 const noRelease = { outputs: { releases_created: 'false' } };
 const PATHS = [
-  ['release; both sync pushes land', 'push', false, { release: released, 'catalog-push': ok(true), 'docs-push': ok(true) }, true],
-  ['release; catalog lands, stage-doc evidence check fails', 'push', true, { release: released, 'catalog-push': ok(true), 'docs-push': skipped }, true],
-  ['release; catalog lands, stage-doc push rejected', 'push', true, { release: released, 'catalog-push': ok(true), 'docs-push': failed }, true],
-  ['release; only the stage-doc push lands', 'push', false, { release: released, 'catalog-push': ok(false), 'docs-push': ok(true) }, true],
-  ['release; nothing to sync', 'push', false, { release: released, 'catalog-push': ok(false), 'docs-push': ok(false) }, false],
-  ['release; catalog sync refused', 'push', true, { release: released, 'catalog-push': skipped, 'docs-push': skipped }, false],
-  ['release; catalog push rejected', 'push', true, { release: released, 'catalog-push': failed, 'docs-push': skipped }, false],
-  ['push that released nothing, or a re-run of a release run', 'push', false, { release: noRelease, 'catalog-push': skipped, 'docs-push': skipped }, false],
-  ['manual dispatch; nothing new to push', 'workflow_dispatch', false, { release: noRelease, 'catalog-push': ok(false), 'docs-push': ok(false) }, true],
-  ['manual dispatch; stage-doc evidence check fails', 'workflow_dispatch', true, { release: noRelease, 'catalog-push': ok(false), 'docs-push': skipped }, true],
-  ['manual dispatch; catalog sync refused', 'workflow_dispatch', true, { release: noRelease, 'catalog-push': skipped, 'docs-push': skipped }, false],
-  ['manual dispatch; catalog push rejected', 'workflow_dispatch', true, { release: noRelease, 'catalog-push': failed, 'docs-push': skipped }, false],
-  ['manual dispatch; release-please itself failed', 'workflow_dispatch', true, { release: { outcome: 'failure', outputs: {} }, 'catalog-push': skipped, 'docs-push': skipped }, false],
+  ['release; the catalog push lands', 'push', false, { release: released, 'catalog-push': ok(true) }, true],
+  ['release; nothing to sync', 'push', false, { release: released, 'catalog-push': ok(false) }, false],
+  ['release; catalog sync refused', 'push', true, { release: released, 'catalog-push': skipped }, false],
+  ['release; catalog push rejected', 'push', true, { release: released, 'catalog-push': failed }, false],
+  ['push that released nothing, or a re-run of a release run', 'push', false, { release: noRelease, 'catalog-push': skipped }, false],
+  ['manual dispatch; nothing new to push', 'workflow_dispatch', false, { release: noRelease, 'catalog-push': ok(false) }, true],
+  ['manual dispatch; the catalog push lands', 'workflow_dispatch', false, { release: noRelease, 'catalog-push': ok(true) }, true],
+  ['manual dispatch; catalog sync refused', 'workflow_dispatch', true, { release: noRelease, 'catalog-push': skipped }, false],
+  ['manual dispatch; catalog push rejected', 'workflow_dispatch', true, { release: noRelease, 'catalog-push': failed }, false],
+  ['manual dispatch; release-please itself failed', 'workflow_dispatch', true, { release: { outcome: 'failure', outputs: {} }, 'catalog-push': skipped }, false],
 ];
 
 test('the dispatch condition, evaluated on every path through the job', () => {
   const all = steps(releaseYml());
   const dispatchCond = condOf(all.find((x) => x.text.includes('scripts/dispatch-post-sync-ci.mjs')));
-  const obligationCond = condOf(all.find((x) => x.text.includes('scripts/check-release-obligation.mjs')));
   for (const [label, event, anyFailed, stepsCtx, expected] of PATHS) {
     const ctx = { event, failed: anyFailed, cancelled: false, steps: stepsCtx };
     assert.equal(evalCondition(dispatchCond, ctx), expected, `dispatch — ${label}`);
-    // The obligation step still runs on every release and dispatch, whatever failed before it.
-    const releaseOrDispatch = event === 'workflow_dispatch' || stepsCtx.release.outputs.releases_created === 'true';
-    assert.equal(evalCondition(obligationCond, ctx), releaseOrDispatch, `obligation — ${label}`);
   }
   // A cancelled job dispatches nothing.
   assert.equal(evalCondition(dispatchCond, { event: 'push', failed: false, cancelled: true, steps: PATHS[0][3] }), false);
@@ -470,9 +464,8 @@ test('the dispatch step expects the sha this job last pushed, and authenticates 
   const s = steps(releaseYml()).find((x) => x.text.includes('scripts/dispatch-post-sync-ci.mjs'));
   assert.match(s.text, /^          GH_TOKEN: \$\{\{ github\.token \}\}$/m);
   // A successful push moves the remote-tracking ref and a rejected one does
-  // not, so this is the newest sha that actually reached main — or main as
-  // checked out when the job pushed nothing. Local HEAD is wrong: after a
-  // rejected stage-doc push it names a commit main never received.
+  // not, so this is the sha that actually reached main — or main as checked
+  // out when the job pushed nothing.
   assert.match(s.text, /EXPECT="\$\(git rev-parse --verify refs\/remotes\/origin\/main\)"/);
   assert.match(s.text, /node scripts\/dispatch-post-sync-ci\.mjs --repo "\$GITHUB_REPOSITORY" --ref main --expect-sha "\$EXPECT"/);
 });
@@ -530,12 +523,11 @@ function globToRegExp(glob) {
   return new RegExp(`^${src}$`);
 }
 
-/** The files the release job's sync commits can touch, read from the job itself. */
+/** The files the release job's sync commit can touch, read from the job itself. */
 function syncPaths(yml) {
   const catalogs = yml.match(/^\s+CATALOGS="([^"]+)"$/m);
-  const docs = yml.match(/^\s+DOC_PATHS="([^"]+)"$/m);
-  assert.ok(catalogs && docs, 'the two sync path lists');
-  return [...catalogs[1].split(' '), ...docs[1].split(' ')];
+  assert.ok(catalogs, 'the sync path list');
+  return catalogs[1].split(' ');
 }
 
 /** The workflows in `dir` that a push of `synced` to main would start. */

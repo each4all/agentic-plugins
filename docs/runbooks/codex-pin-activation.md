@@ -110,9 +110,8 @@ and `.agents/plugins/marketplace.json`. If `main` already carries a complete
 activation, you are in case 3. If not, dispatch again. The new run checks
 out the new `main` and plans against it. Never force-push.
 
-**3. A later step failed after the catalog push.** The stage-doc sync, the
-evidence check, or the release-obligation assertion failed. **The activation
-is published.** Confirm that, using steps 1–3 of *After the run: verify*.
+**3. A later step failed after the catalog push.** The dispatch of the
+post-sync test workflows failed. **The activation is published.** Confirm that, using steps 1–3 of *After the run: verify*.
 Then fix the later step's cause and dispatch again, with or without the
 input:
 

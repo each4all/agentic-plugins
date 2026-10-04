@@ -1,5 +1,14 @@
 # Evidence store
 
+> **Frozen on 2026-10-04**
+> ([ADR-0065](../../adr/0065-release-ceremony-reduction.md) Decision 4).
+> Nothing authors or validates these records any more: the validator and its
+> tooling (`scripts/check-evidence-store.mjs`, `scripts/lib/evidence-store.mjs`,
+> `npm run validate:evidence-store`) were removed, and the measurement
+> substrate that lived beside `records/` was deleted. The 28 records and their
+> schema stay as history, unedited, and `runtime:retention` keeps the runs they
+> cite pinned. Everything below describes the store as it worked until then.
+
 Machine-checkable records of the facts that back this repository's assurance
 claims. Decided by [ADR-0049](../../adr/0049-evidence-as-data.md), as amended
 2026-07-27 and 2026-09-09 — the second amendment withdraws the contingency
@@ -13,7 +22,7 @@ docs/assurance/evidence/
 └── records/<record_id>.json           # one record per EVIDENCE LOOP
 ```
 
-Validate with `npm run validate:evidence-store`.
+Validated with `npm run validate:evidence-store` until 2026-10-04.
 
 ## What a record is
 

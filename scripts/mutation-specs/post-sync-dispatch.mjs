@@ -114,12 +114,6 @@ export const MUTATIONS = [
 
   // ---- W: the release job wiring ----------------------------------------------
   {
-    id: 'W1', file: WORKFLOW,
-    from: "if: ${{ !cancelled() && (steps.catalog-push.outputs.pushed == 'true'",
-    to: "if: ${{ (steps.catalog-push.outputs.pushed == 'true'",
-    why: 'a failed evidence check or rejected stage-doc push skips the dispatch for a catalog commit that landed',
-  },
-  {
     id: 'W2', file: WORKFLOW,
     from: '  actions: write\n',
     to: '',
@@ -129,7 +123,7 @@ export const MUTATIONS = [
     id: 'W3', file: WORKFLOW,
     from: 'EXPECT="$(git rev-parse --verify refs/remotes/origin/main)"',
     to: 'EXPECT="$(git rev-parse HEAD)"',
-    why: 'after a rejected stage-doc push the expected sha names a commit main never received',
+    why: 'the expected sha is read from local HEAD, not from the ref only a successful push moves (equivalent on every path that reaches the step today, since a rejected push skips it; the test pins the source)',
   },
   {
     id: 'W4', file: WORKFLOW,
@@ -139,15 +133,15 @@ export const MUTATIONS = [
   },
   {
     id: 'W5', file: WORKFLOW,
-    from: " || (github.event_name == 'workflow_dispatch' && steps.catalog-push.outcome == 'success'))",
-    to: ')',
+    from: " || (github.event_name == 'workflow_dispatch' && steps.catalog-push.outcome == 'success')",
+    to: '',
     why: 'the manual repair path cannot re-dispatch when there is nothing new to push',
   },
   {
-    id: 'W7', file: WORKFLOW,
-    from: "steps.catalog-push.outcome == 'success')) }}",
-    to: "steps.catalog-push.outcome == 'success')) && success() }}",
-    why: 'a trailing success() brings back the skip !cancelled() exists to prevent (peer-found: substring checks missed it)',
+    id: 'W8', file: WORKFLOW,
+    from: '      # Docket C58. The catalog push above uses GITHUB_TOKEN',
+    to: '      - name: A step between the push and the dispatch\n        run: true\n\n      # Docket C58. The catalog push above uses GITHUB_TOKEN',
+    why: 'a step between the catalog push and the dispatch could fail after the commit landed, and the implicit success() would then cost that commit its run',
   },
   {
     id: 'W6', file: WORKFLOW,

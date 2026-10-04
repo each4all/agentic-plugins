@@ -1,5 +1,16 @@
 # omcc Cutover Assurance Scorecard
 
+> **Frozen on 2026-10-04**
+> ([ADR-0065](../adr/0065-release-ceremony-reduction.md) Decision 7). This
+> scorecard is a record of the omcc cutover, which the owner declared on
+> 2026-06-03. Nothing rewrites it any more: the post-release recovery that
+> restated its installed-state versions, proof citations and release tag
+> ended with ADR-0065, and no gate checks those tokens or citations. Every
+> version, tag and proof below is history, last restated by the
+> `plugin-runtime-v0.99.2` recovery on 2026-09-30, including the note that
+> follows. `runtime:cutover` still parses the requirement rows until the
+> audit is retired, so they are not edited.
+
 > **The compatibility-assurance layer was removed on 2026-08-27**
 > ([ADR-0056](../adr/0056-assurance-matcher-removal.md)). Every `unassured` /
 > `covered` / `host_compatibility_assurance` reading below is **history, and is

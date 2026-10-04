@@ -963,12 +963,12 @@ Accepted (2026-09-18).
 describe('runtime cutover audit against this repository', () => {
   // Every case above builds its own DEVELOPMENT.md, so none of them can see a
   // defect in the real one. docs/DEVELOPMENT.md keeps the ADR-0012 condition-2
-  // row on one physical line, and each post-release recovery rewrites that
-  // line's tail ("Latest installed proof: …"). The recovery in 2c38052 (#736)
-  // dropped the row's closing `|`, which parseMarkdownRows requires, so from
-  // 2026-08-25 the live audit reported condition 2 `missing` while every case
-  // in this file stayed green. Reading the real file through the real audit is
-  // the guard.
+  // row on one physical line, and until ADR-0065 each post-release recovery
+  // rewrote that line's tail ("Latest installed proof: …"). The recovery in
+  // 2c38052 (#736) dropped the row's closing `|`, which parseMarkdownRows
+  // requires, so from 2026-08-25 the live audit reported condition 2 `missing`
+  // while every case in this file stayed green. Reading the real file through
+  // the real audit is the guard.
   it('parses all four ADR-0012 conditions from docs/DEVELOPMENT.md', async () => {
     const report = await runCutoverAudit({ repoRoot: REPO_ROOT, now: NOW, doctorReport: doctorReport() });
     const check = report.checks.find((entry) => entry.id === 'adr0012_conditions');

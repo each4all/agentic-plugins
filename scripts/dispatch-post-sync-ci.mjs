@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Dispatches the push-to-main test workflows on main after the release job's
-// sync pushes, and records which commit each dispatched run validates.
+// catalog sync push, and records which commit each dispatched run validates.
 //
-// Why: the release job's catalog and stage-doc sync commits are pushed with
-// GITHUB_TOKEN, and a push authenticated with GITHUB_TOKEN creates no workflow
-// run. So post-sync main never had a CI run of its own, and the only run near a
+// Why: the release job's catalog sync commit is pushed with GITHUB_TOKEN, and
+// a push authenticated with GITHUB_TOKEN creates no workflow run. So post-sync
+// main never had a CI run of its own, and the only run near a
 // release was the release commit's, which reads the catalogs BEFORE the sync
 // and fails on the lag (11 of 11 release commits from 2026-09-09 to 2026-09-27,
 // docket C58). GitHub documents workflow_dispatch and repository_dispatch as
@@ -34,9 +34,8 @@
 //
 // Every workflow is dispatched even when an earlier one fails, and the exit
 // code reports all of them. Each gh call is bounded (--gh-timeout-ms), so a
-// stalled call cannot use up the release job's time limit and cost the
-// obligation assertion after this step its chance to run. Runs are not
-// awaited; each reports on its own.
+// stalled call cannot hold the step until the release job's time limit. Runs
+// are not awaited; each reports on its own.
 //
 // validate.yml compares no baseline on a dispatch (it has no before-sha).
 // The monotonic-pin check against the pre-sync catalog is done by

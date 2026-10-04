@@ -228,34 +228,10 @@ see
 Recovery is a new dispatch or a forward release, never a revert to
 `local`.
 
-The stage docs (`docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`,
-`docs/assurance/omcc-cutover-scorecard.md`) restate the shipped runtime
-version, and they follow the same pattern: a script syncs them after
-each release. The tokens split into two classes, and the split is
-load-bearing:
-
-- **Derivable** — the `as of \`plugin-runtime\` vX` statements. True the
-  moment release-please cuts the version, so `scripts/sync-doc-versions.mjs`
-  owns them and the release-please Action runs it (`--shipped-only`)
-  alongside the catalog sync. Run `npm run sync:docs` locally rather than
-  hand-editing. The scorecard's `plugin-runtime-vX` release tags are
-  **deliberately not** in this class: a tag never appears alone, only as
-  one member of a release triple whose PR number, squash sha, and
-  marketplace sync sha are not derivable from the manifest, so bumping it
-  alone manufactures exactly the mis-paired triple this tooling exists to
-  prevent. Tags stay human-written and are gated against git by R1.
-- **Proof-coupled** — `Latest installed proof` and the scorecard's
-  installed-state versions. True only once a `runtime:doctor` proof has
-  been re-recorded against the new install, so **no script writes
-  them**; the sync refuses unless `.agentic-plugins/runs/doctor/latest.json`
-  already reports the manifest version. Main stays red on that
-  assertion until the proof exists — that red is the honest signal, not
-  a defect to automate away.
-
-**Both sync pushes use `GITHUB_TOKEN`, and a push made that way starts no
-workflow**, so the release job starts post-sync `main`'s CI itself. After
-its last sync push it dispatches the workflows that a push of the sync
-paths would have started: `full-tests` and `validate`
+**The catalog sync push uses `GITHUB_TOKEN`, and a push made that way
+starts no workflow**, so the release job starts post-sync `main`'s CI
+itself. After the push it dispatches the workflows that a push of the
+catalogs would have started: `full-tests` and `validate`
 (`scripts/dispatch-post-sync-ci.mjs`; a test derives that list from the
 workflow files). It records each run's `head_sha` against the commit it
 pushed. Three things follow for anyone reading those runs:
@@ -263,9 +239,7 @@ pushed. Three things follow for anyone reading those runs:
 - **They validate post-sync `main`, not the release commit.** The release
   commit's own run read the catalogs before the sync and stays red on that
   lag. Nothing re-runs it, because its tree really does trail the
-  manifest. After a runtime release the dispatched `full-tests` run is
-  still red on the proof-coupled assertion above until the recovery PR
-  lands: the dispatch removes the catalog lag, not that red.
+  manifest.
 - **A run gets `main`'s head at the moment GitHub creates it**, because
   `workflow_dispatch` takes a branch, not a commit. If `main` advanced
   after the sync push, the run validates the newer head and the step
@@ -275,41 +249,37 @@ pushed. Three things follow for anyone reading those runs:
   (`gh workflow run release-please.yml --ref main`). Once its catalog sync
   passes, it dispatches the runs again even when there is nothing new to
   push. Do not re-run the failed job: release-please reports
-  `releases_created` only once, so a re-run skips the syncs and the
-  dispatch with them.
+  `releases_created` only once, so a re-run skips the sync and the
+  dispatch with it.
+
+**After installing a `plugin-runtime` release on a host, run
+`runtime:doctor` with its proofs there** (`--permission-proof
+--execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke
+--workflow-continuation-proof --execute-workflow-continuation-proof`), and
+treat a failure as a defect to fix forward. It is the one step that runs
+the released bytes as installed, and it has found defects in released code
+that no test did. It is a habit, not a gate: `main` does not wait on it,
+no document restates its result, and the repository keeps no record of it
+([ADR-0065](docs/adr/0065-release-ceremony-reduction.md) Decision 2). If
+you record the proof (`--record`), install the release on both hosts
+first. Both hosts read the same `.agentic-plugins/runs/doctor/`, and an
+older runtime counts a newer artifact `malformed` (see
+`READABLE_DOCTOR_SCHEMA_PAIRS` in `plugins/runtime/scripts/doctor.mjs`).
 
 **Some `plugins/runtime` assets do not take effect until a release ships
-them**, and that obligation is now mechanically detected. `runtime` commands
-resolve `plugins/runtime/data/plugin-set.json` and
-`plugins/runtime/data/schemas/**` from the *installed* plugin, not from the
-repository, so editing them on `main` changes nothing anyone runs until a
-release is tagged
-([ADR-0051](docs/adr/0051-host-parity-baseline-source.md) §Decision 2,
-enforced by [ADR-0052](docs/adr/0052-release-obligation-enforcement.md)).
-`plugins/runtime/docs/host-parity-baseline.md` was the third such asset until
-[ADR-0060](docs/adr/0060-remove-host-version-tracking.md) deleted it; the
-checker kept its pathspec until plugin-runtime-v0.99.0 shipped the deletion,
-so the deletion itself was seen as a protected change, and that release's
-recovery removed the entry.
-`npm run validate:release-obligation` reconciles the protected tree against
-the newest reachable `plugin-runtime-v*` tag; it runs in `full-tests.yml`
-(which is why that job checks out at `fetch-depth: 0`) and again inside
-`release-please.yml` after the tag is cut, because a `GITHUB_TOKEN` push
-triggers no workflow.
-
-Two consequences for authors:
-
-- **`main` is expected to be red between a protected change and its
-  release**, exactly as it is for the proof-coupled assertion above. The
-  measured median window is 5.3h. Close it by landing a release — which
-  means a bump-inducing conventional type on the **squash subject**, since
-  that is what release-please routes on. The counterexample `16b1833` was
-  typed `docs:`, routed nothing, and left released and accepted bytes
-  disagreeing for 54 hours.
-- **Roll a protected asset back with a forward patch**, never by reusing or
-  lowering a version. A reused version would name two different trees, which
-  is the failure ADR-0051 exists to eliminate. The check fails closed on a
-  version regression rather than trying to interpret it.
+them.** `runtime` commands resolve `plugins/runtime/data/plugin-set.json`
+and `plugins/runtime/data/schemas/**` from the *installed* plugin, not
+from the repository, so editing them on `main` changes nothing anyone
+runs until a release is tagged. **A change under `plugins/runtime/data/`
+therefore carries a release-routing type (`feat` or `fix`) on its squash
+subject**, which is what release-please routes on, so the change is
+released. Like the commit-splitting rule below, this is a convention
+enforced by review: nothing checks that the release happened
+([ADR-0065](docs/adr/0065-release-ceremony-reduction.md) Decision 5). The
+counterexample `16b1833` was typed `docs:`, routed nothing, and left
+released and repository bytes apart for 54 hours. Roll such an asset back
+with a forward patch, never by reusing or lowering a version: a reused
+version would name two different trees.
 
 **On Codex this premise holds machine by machine.** The Codex mechanism
 was measured on 2026-09-24 with codex-cli 0.156.1. When the marketplace is
@@ -335,7 +305,10 @@ only once that machine passes §Decision 5 (b):
 - its home receivers are re-rendered;
 - a fresh Codex session resolves each sibling under the Codex installed
   cache;
-- the §Decision 8 evidence is recorded.
+- the operator has run the §Decision 8 checks on that machine: a fresh
+  `runtime:doctor` proof, each resolved sibling root, the receivers'
+  state, and the eight-package cache comparison. They leave no
+  repository record (ADR-0065 Decision 2).
 
 On a machine past it, every package edit, including a `docs`- or
 `test`-typed one, reaches an installed Codex plugin only through a
@@ -344,88 +317,6 @@ there takes a release or a deliberate local override, which never enters
 the catalog (§Decision 7). On a machine that has not passed it, "editing
 them on `main` changes nothing anyone runs" holds on Claude Code only,
 and on Claude only for a version already materialized and not replaced.
-
-The doc-freshness gate is split along the derivable / proof-coupled line
-above so a token lag and a missing proof report different remedies.
-`npm run validate:doc-evidence`
-(gated by `tests/scripts/test-doc-evidence-consistency.mjs`) additionally
-checks what the freshness gate structurally cannot see: that the
-`(release PR, squash, tag)` triples cited in prose match real tags and
-release commits, that a record presented as current cites the newest
-proof run id whose citation phrase states a matching date, and that every
-cited commit sha resolves and is reachable from the integration branch.
-Checking which changelog version a sha *belongs*
-to was attempted and removed: deciding that requires reading the
-sentence, not matching a pattern, and three attempts across three review
-rounds each failed in a different direction (host versions claiming
-runtime commits, host versions colliding with runtime versions, and a
-marker requirement strict enough to attribute nothing at all). The checks
-that remain compare identifiers, which is why they hold up; the date
-binding likewise uses a closed set of exact citation phrases rather than
-proximity, because measurement showed agreeing and disagreeing id/date
-distances interleave and no threshold separates them.
-
-**Those checks do not share a corpus, and the split is load-bearing.**
-The triple and proof-citation checks read claims about *releases*, which
-only the three stage docs make, so they run on an enumerated list —
-pointing them at `docs/adr/**` was measured to leave both at `checked: 0`,
-a vacuous pass, while degrading the triple check's coverage signal. The
-sha check reads *commit citations*, which any document can carry and which
-are decidable by identifier comparison alone, so it runs on a corpus
-**discovered** rather than enumerated: every markdown file under `docs/`
-plus the repository root, excluding generated changelogs. This is
-ADR-0052 §Decision 2's directory-not-a-file-list rule applied to the very
-array that ADR named as the repository's live instance of the failure.
-Two consequences worth knowing before editing prose:
-
-- **A commit sha anywhere in `docs/` or at the root is gated**, including
-  in ADRs and in superseded records — a citation does not stop needing to
-  resolve because the decision around it was revised. Draft and pre-squash
-  shas therefore still fail; cite the squash commit, not the branch commit
-  it replaced.
-- **Package docs (`plugins/**`, `companions/**`) are deliberately out of
-  scope**, and the reason is a measurement rather than tidiness: they
-  carried three citations across 171 files when measured, two of which are
-  a prose position number (the third sat in the host-parity baseline, which
-  ADR-0060 has since deleted), and admitting them would require an "all-decimal tokens
-  are not shas" rule — unsafe here, since 4 of the corpus's 442 real
-  citations are all-decimal and 35 of the repository's 918 commits have an
-  all-decimal 7-character abbreviation. A future widening has to solve
-  that first.
-Those checks need full git history plus tags and fail closed when it is
-absent, which is why `full-tests.yml` checks out with `fetch-depth: 0`.
-Cited proof run ids and dates are **never** rewritten by any script; see
-the header of `scripts/sync-doc-versions.mjs` for why.
-
-**Each evidence loop also gets a record** under
-`docs/assurance/evidence/records/`, per
-[ADR-0049](docs/adr/0049-evidence-as-data.md) as amended 2026-07-27 and
-2026-09-09. The
-record is keyed by the loop, not the release — a loop may span several
-releases, and a release may appear in several loops — and every field
-declares its provenance so a gate knows whether it may assert the field.
-`npm run validate:evidence-store` checks it, and
-`npm run validate:doc-evidence` runs that check alongside the three prose
-gates, which are unchanged: the store is a sixth copy of these facts on
-the day it lands, and the ADR states that cost plainly rather than
-claiming the prose is now generated.
-
-Two authoring rules are easy to get wrong:
-
-- **The record is written after the release, not in its PR.** Its tag,
-  squash, marketplace-sync sha, proof run id and artifact hash come into
-  existence only once the PR merges, release-please cuts the release, the
-  catalog sync lands, the hosts are updated, and a doctor run is
-  recorded. Authoring belongs with the recovery PR described above, in
-  the same position.
-- **Record what is derivable as derived.** A PR number goes in `pr` /
-  `release_pr` when the commit subject carries `(#N)` and in the
-  `*_attested` sibling only when it does not. When the subject *does*
-  carry the number, using the attested field, setting both, and omitting
-  both are all rejected — attestation is for facts no source can back,
-  not a way past a check. When the subject carries no number, both
-  fields may be left unset: a commit that genuinely has no PR is not an
-  omission.
 
 Release-please changelog hygiene depends on merge shape. For a
 single-package PR, prefer a squash merge whose final message is the one
@@ -619,13 +510,13 @@ ADR-0033 amendment of that date.
 > (or the equivalent Codex command) to remove it — the plugin is no
 > longer in either marketplace catalog (per ADR-0014/0015).
 
-**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024 and actively shipping through `plugins/runtime`. Runtime provides the L1 framework primitive for host readiness and operator control (the shipped version and the stage-by-stage surface live in `docs/ARCHITECTURE.md` and `docs/DEVELOPMENT.md`, whose version tokens are synced): `doctor` (with stage-aware Codex `plugin_hooks` readiness, ADR-0030), `settings`, explicit workflow continuation proof through engineer state and dispatch, explicit consensus execution with role-explicit peer lanes, quality-first consensus policy, explicit consensus round policy (default 2 total rounds, hard cap 3, then `owner-decision-required`), owner-decision artifacts for exhausted or otherwise unresolved consensus, converged-run owner-ratification artifacts (`runtime:consensus ratify`) that record the owner's resolution of a synthesis-flagged residual owner lever without rewriting `consensus.json` or `convergence_state`, artifact-only consensus cancellation for stopped or abandoned runs with a `--confirm-no-active-process` boundary and pointer-only status/footer output, `runtime:consensus status --latest-open` selection for the newest non-terminal consensus run while preserving cancelled, converged, and owner-decided runs as audit artifacts, convergence taxonomy and contradiction-aware rebuttal prompts, context hygiene scaffolding, workflow-storage migration, `runtime:cutover` omcc readiness auditing with explicit gate, unresolved-row details, unresolved scorecard requirement/gate detail, prompt-to-artifact completion audit checklist, ADR-0012 transition advice for condition 3/4 promotion blockers, latest footer reason output, legacy omcc-dev pattern-map checking, explicit forward-looking dogfood evidence recording, host/command-preserving observed-parity follow-up details, and concrete cutover operator-verification actions for Codex hook review, dogfood-window recording, and the blocked final owner declaration, observed experience-parity scoring, read-only Codex plugin hook readiness diagnosis (the former explicit `plugin_hooks` settings apply was removed per ADR-0035 §6), sandbox-limited host auth diagnosis, retired plugin cleanup planning and explicit cleanup execution, semantic plugin-management failure classification including sandboxed peer proof failures, Claude plugin CLI preflight/execution with slash `/plugin` observed only as host asymmetry, manual follow-up checklists for host-native `claude plugin ...` cleanup commands when cleanup is not executed or cannot complete, Codex `/hooks` manual review/trust follow-ups when packaged hooks are ready, per-plugin hook review target checklists, explicit disabled hook-state diagnostics, explicit `Trust: New hook - review required` and `Active=0` blocker guidance, manifest-declared Codex hook command-portability diagnostics including bare `node` hook command detection, settings artifact attestation after the operator completes review/trust, the explicit non-interactive Codex hook trust-query boundary, and an advisory completion footer with conservative completion-state next actions plus cutover record guidance. Host-version tracking — the host-parity baseline, `runtime:compat` and the scheduled drift check — was removed by [ADR-0060](docs/adr/0060-remove-host-version-tracking.md): doctor reports host versions as facts with no verdict, and `runtime:cutover` states that host-pair identity is not verified. `plugins/designer` shipped as the third L3 persona ([ADR-0042](docs/adr/0042-designer-persona-design-ux-workbench.md) Accepted 2026-07-09) under the same 4-layer composition, redesigned from omcc-designer experience rather than ported; it was never the active next-step trigger for ADR-0012 condition 3.
+**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024 and actively shipping through `plugins/runtime`. Runtime provides the L1 framework primitive for host readiness and operator control (the shipped version is read from `.release-please-manifest.json`, the package changelogs and the release tags; the stage-by-stage surface lives in `docs/ARCHITECTURE.md` and `docs/DEVELOPMENT.md`): `doctor` (with stage-aware Codex `plugin_hooks` readiness, ADR-0030), `settings`, explicit workflow continuation proof through engineer state and dispatch, explicit consensus execution with role-explicit peer lanes, quality-first consensus policy, explicit consensus round policy (default 2 total rounds, hard cap 3, then `owner-decision-required`), owner-decision artifacts for exhausted or otherwise unresolved consensus, converged-run owner-ratification artifacts (`runtime:consensus ratify`) that record the owner's resolution of a synthesis-flagged residual owner lever without rewriting `consensus.json` or `convergence_state`, artifact-only consensus cancellation for stopped or abandoned runs with a `--confirm-no-active-process` boundary and pointer-only status/footer output, `runtime:consensus status --latest-open` selection for the newest non-terminal consensus run while preserving cancelled, converged, and owner-decided runs as audit artifacts, convergence taxonomy and contradiction-aware rebuttal prompts, context hygiene scaffolding, workflow-storage migration, `runtime:cutover` omcc readiness auditing with explicit gate, unresolved-row details, unresolved scorecard requirement/gate detail, prompt-to-artifact completion audit checklist, ADR-0012 transition advice for condition 3/4 promotion blockers, latest footer reason output, legacy omcc-dev pattern-map checking, explicit forward-looking dogfood evidence recording, host/command-preserving observed-parity follow-up details, and concrete cutover operator-verification actions for Codex hook review, dogfood-window recording, and the blocked final owner declaration, observed experience-parity scoring, read-only Codex plugin hook readiness diagnosis (the former explicit `plugin_hooks` settings apply was removed per ADR-0035 §6), sandbox-limited host auth diagnosis, retired plugin cleanup planning and explicit cleanup execution, semantic plugin-management failure classification including sandboxed peer proof failures, Claude plugin CLI preflight/execution with slash `/plugin` observed only as host asymmetry, manual follow-up checklists for host-native `claude plugin ...` cleanup commands when cleanup is not executed or cannot complete, Codex `/hooks` manual review/trust follow-ups when packaged hooks are ready, per-plugin hook review target checklists, explicit disabled hook-state diagnostics, explicit `Trust: New hook - review required` and `Active=0` blocker guidance, manifest-declared Codex hook command-portability diagnostics including bare `node` hook command detection, settings artifact attestation after the operator completes review/trust, the explicit non-interactive Codex hook trust-query boundary, and an advisory completion footer with conservative completion-state next actions plus cutover record guidance. Host-version tracking — the host-parity baseline, `runtime:compat` and the scheduled drift check — was removed by [ADR-0060](docs/adr/0060-remove-host-version-tracking.md): doctor reports host versions as facts with no verdict, and `runtime:cutover` states that host-pair identity is not verified. `plugins/designer` shipped as the third L3 persona ([ADR-0042](docs/adr/0042-designer-persona-design-ux-workbench.md) Accepted 2026-07-09) under the same 4-layer composition, redesigned from omcc-designer experience rather than ported; it was never the active next-step trigger for ADR-0012 condition 3.
 
 Next steps:
 
 1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0024 (especially 0010 for plugin boundary policy, 0012 for omcc removal gates, 0016 for release-please routing, 0018/0019 for orchestrator, 0020–0022 for engineer command-surface parity, 0023 for peer-runner supervision, and 0024 for runtime/operator control-plane scope).
 2. Stage 2.5+ continuation: ADR-0013 authoring when its trigger fires (Codex CLI plugin-commands schema lands or an alternative mechanism is designed).
-3. Stage 3+ runtime/operator dogfood: continue ADR-0024 in small PRs from the current shipped surface. The next high-value slice is dogfooding `runtime:consensus plan → execute --execute → synthesize → next-round → decide/cancel` on real conflicts, then tightening bounded rebuttal UX, selection/retention details, and context/footer integration while preserving the explicit no-unbounded-loops, no-host-permission-relaxation, no-host-session-mutation boundaries. ADR-0012 conditions 1–4 are all satisfied and the ADR-0007 owner cutover declaration landed on 2026-06-03; ongoing dogfood now maintains evidence freshness (doctor proof re-records after version bumps, Codex `/hooks` re-attestation after hook-bearing upgrades) rather than feeding condition promotion.
+3. Stage 3+ runtime/operator dogfood: continue ADR-0024 in small PRs from the current shipped surface. The next high-value slice is dogfooding `runtime:consensus plan → execute --execute → synthesize → next-round → decide/cancel` on real conflicts, then tightening bounded rebuttal UX, selection/retention details, and context/footer integration while preserving the explicit no-unbounded-loops, no-host-permission-relaxation, no-host-session-mutation boundaries. ADR-0012 conditions 1–4 are all satisfied and the ADR-0007 owner cutover declaration landed on 2026-06-03; ongoing dogfood now feeds real-use feedback (a `runtime:doctor` run after installing a runtime release, Codex `/hooks` re-attestation after hook-bearing upgrades) rather than condition promotion.
 
 ---
 
