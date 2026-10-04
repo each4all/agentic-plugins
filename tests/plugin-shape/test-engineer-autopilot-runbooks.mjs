@@ -103,6 +103,7 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       ok(ap.includes('No presentation-mode prompt (present in\n  batch)'), ap);
       ok(ap.includes("`set-terminal --terminal-marker\n  true` is refused"), ap);
       ok(ap.includes('wait for the background notification; never sleep-poll'), ap);
+      ok(ap.includes('taken while you wait is provisional: when the notification re-invokes you,\n  finish the verb through `finish-verb`, then report again'), ap);
     });
   }
 
@@ -186,6 +187,10 @@ describe('Codex verb mirrors and shared references', () => {
     const ens = await read('core/skills/_shared/references/ensemble-protocol.md');
     ok(ens.includes('never behind a shell `&`'));
     ok(ens.includes('never sleep-poll a file'));
+    ok(ens.includes('when you end a turn to wait is provisional'));
+    const mode = await read('core/skills/_shared/references/autopilot-mode.md');
+    ok(mode.includes('**A report taken while you wait is provisional.**'));
+    ok(mode.includes('step by the last report only'));
     const contract = await read('core/skills/_shared/references/entry-routing-contract.md');
     ok(contract.includes('**Closed-enum projection: `next_step` (ADR-0063 D6, amending ADR-0029\n§3).**'));
     ok(contract.includes('| done — the deliverable is complete and needs no commit | `done` | absent |'));

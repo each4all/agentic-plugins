@@ -172,3 +172,15 @@ pending, and the model is re-invoked when it completes. A shell `&` detaches
 the runner where the host cannot see it, so the step would end before the
 peer does. Wait for the notification; never sleep-poll a file or loop on
 `sleep`.
+
+**A report taken while you wait is provisional.** Under `claude -p` the host
+takes the structured step report each time your turn ends, including a turn
+you end to wait for a background task. That report does not end the step.
+When the task's notification re-invokes you, carry on where the runbook left
+off: collect the peer, synthesize, write `ensemble-commit` and the verb's
+last write (`finish-verb`), then end with a new report. The driver judges the
+step by the last report only. A report you file while still waiting says
+`failed` and names what it waits for, so a step that never gets past it halts
+rather than passes. On the first two autopilot runs of a real macro
+(2026-10-04), workers took that first report as final and left the ensemble
+unsettled.
