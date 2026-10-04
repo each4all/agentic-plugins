@@ -501,11 +501,12 @@ describe('statusline end-to-end — plan renders fragments, desired seats, and t
     deepStrictEqual(JSON.parse(claudeStep.desired), [expectedClaudeStatuslineCommand({ homeDir: home })]);
     match(claudeStep.apply_command, /verify sha256/);
 
-    // The Codex fragment is ONE [tui] table carrying BOTH planned keys (peer B3).
+    // The Codex fragment is ONE [tui] table carrying the status_line key and no notification key.
     const codexFragment = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'fragments', 'statusline-codex.fragment'), 'utf8'));
     const parsedTable = parseCodexConfigToml(codexFragment.fragment_toml);
     deepStrictEqual(parsedTable.tuiStatusLine.values, NORMATIVE_AGENTIC_6);
-    ok(parsedTable.tuiNotifications.present, 'notifications rides the same single table');
+    ok(!parsedTable.tuiNotifications.present, 'the table carries no notifications key');
+    ok(!/notifications/.test(codexFragment.fragment_toml), 'and the fragment text never names one');
     strictEqual((codexFragment.fragment_toml.match(/\[tui\]/g) ?? []).length, 1, 'exactly one [tui] header');
 
     // Non-gating shim artifact (peer G10): present regardless of step status.
@@ -513,70 +514,39 @@ describe('statusline end-to-end — plan renders fragments, desired seats, and t
     ok(shimBody.includes('agentic-statusline.mjs — Claude Code statusLine shim'));
   });
 
-  it('the combined fragment is the ONE [tui] source across ALL run artifacts — the notification-plan artifact carries no [tui] preview (integration pass)', async () => {
-    // Both Codex steps pending → both keys ride the combined fragment. The
-    // notification-plan artifact must carry the notify= wiring ONLY: its
-    // builder-level [tui] preview is stripped at persist so the run never
-    // hands the operator two [tui] blocks with competing guidance.
+  it('the statusline-codex fragment is the ONE [tui] source across all run artifacts, and no notification artifact is rendered', async () => {
     const { home, cwd } = await makeHome();
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
     const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'fragments');
-
-    const notifyArtifact = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
-    strictEqual(notifyArtifact.fragments.tui_notifications_toml, null,
-      'the notification-plan artifact must not carry its own [tui] preview beside the combined fragment');
-    match(notifyArtifact.tui_note, /statusline-codex combined fragment/,
-      'the strip is explained in-artifact so an operator reading only this file is routed to the one [tui] source');
-    ok(notifyArtifact.fragments.notify_toml && !notifyArtifact.fragments.notify_toml.includes('[tui]'),
-      'the notify= fragment stays and stays [tui]-free');
-
-    // Sweep EVERY fragment artifact: exactly one carries a [tui] header, and
-    // it is the combined statusline-codex fragment.
     const names = (await readdir(fragmentsDir)).filter((n) => n.endsWith('.fragment')).sort();
+    ok(!names.includes('notification-plan.fragment'), 'no notification-plan fragment is rendered');
+    ok(!names.includes('egress-launcher-plan.fragment'), 'no egress-launcher-plan fragment is rendered');
     const carriers = [];
     for (const name of names) {
-      const text = await readFile(join(fragmentsDir, name), 'utf8');
-      if (/\[tui\]/.test(text)) carriers.push(name);
+      if (/\[tui\]/.test(await readFile(join(fragmentsDir, name), 'utf8'))) carriers.push(name);
     }
     deepStrictEqual(carriers, ['statusline-codex.fragment'],
-      `the [tui] header may appear in exactly one artifact (got: ${carriers.join(', ') || 'none'} out of ${names.join(', ')})`);
+      `the [tui] header appears in exactly one artifact (got: ${carriers.join(', ') || 'none'} out of ${names.join(', ')})`);
   });
 
-  it('when the statusline step cannot carry the combined fragment (declined), the notification preview stays the ONE [tui] source', async () => {
-    // The combined fragment is persisted under the statusline step; a
-    // declined step renders no fragment (persist() skips dead steps). An
-    // unconditional strip would then leave ZERO [tui] sources and a routing
-    // note pointing at a fragment that does not exist (Refine-verify peer,
-    // round 2) — so the strip is conditional on the combined carrier.
+  it('a declined statusline.codex step renders no statusline-codex fragment', async () => {
     const { home, cwd } = await makeHome();
     const answersPath = join(home, 'decline-statusline.json');
     await writeFile(answersPath, JSON.stringify([{ step_id: 'statusline.codex.configured', answer: 'decline' }]));
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answersPath, '--format', 'json'], home, cwd });
     const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'fragments');
-
-    const notifyArtifact = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
-    ok(notifyArtifact.fragments.tui_notifications_toml && notifyArtifact.fragments.tui_notifications_toml.includes('[tui]'),
-      'with no combined carrier, the builder preview must remain the tui source');
-    ok(notifyArtifact.tui_note == null,
-      'no routing note may point at a combined fragment that does not exist');
-
     const names = (await readdir(fragmentsDir)).filter((n) => n.endsWith('.fragment')).sort();
-    const carriers = [];
+    ok(!names.includes('statusline-codex.fragment'), `a declined step renders no fragment (got: ${names.join(', ')})`);
+    ok(names.includes('statusline-claude.fragment'), 'the Claude statusline fragment is unaffected');
     for (const name of names) {
-      const text = await readFile(join(fragmentsDir, name), 'utf8');
-      if (/\[tui\]/.test(text)) carriers.push(name);
+      ok(!/\[tui\]/.test(await readFile(join(fragmentsDir, name), 'utf8')), `${name} carries no [tui] table`);
     }
-    deepStrictEqual(carriers, ['notification-plan.fragment'],
-      `exactly one [tui] source, and it is the preview when the combined fragment cannot render (got: ${carriers.join(', ') || 'none'})`);
   });
 
-  it('a satisfied→pending re-transition under VERSION DRIFT re-renders and converges to one carrier (§7 clears the freeze)', async () => {
+  it('a satisfied→pending re-transition under VERSION DRIFT re-renders the statusline-codex fragment (§7 clears the freeze)', async () => {
     // In this bare-runner harness the host versions are unobservable, so §7
     // invalidation fires on every resume and clears pending/blocked steps'
-    // frozen fragment fields — the notify artifact re-renders in its
-    // stripped shape once the combined fragment exists, converging to ONE
-    // carrier. The no-drift twin (frozen preview + warning) lives in
-    // test-bootstrap-cli.mjs, where a hosted runner keeps versions stable.
+    // frozen fragment fields; the fragment re-renders once the step is pending.
     const { home, cwd } = await makeHome();
     const codexConfig = join(home, '.codex', 'config.toml');
     await writeFile(codexConfig, `[tui]\nstatus_line = [${NORMATIVE_AGENTIC_6.map((id) => `"${id}"`).join(', ')}]\n`);
@@ -584,8 +554,6 @@ describe('statusline end-to-end — plan renders fragments, desired seats, and t
     const runId = plan.report.run_id;
     strictEqual(plan.report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'satisfied');
     const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
-    const notifyBefore = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
-    ok(notifyBefore.fragments.tui_notifications_toml, 'the preview is the carrier while the statusline step is satisfied');
 
     // The observation disappears (operator reverted their config).
     await writeFile(codexConfig, '');
@@ -596,7 +564,9 @@ describe('statusline end-to-end — plan renders fragments, desired seats, and t
       if (/\[tui\]/.test(await readFile(join(fragmentsDir, name), 'utf8'))) carriers.push(name);
     }
     deepStrictEqual(carriers, ['statusline-codex.fragment'],
-      'under drift the re-render converges: the combined fragment is the one carrier and the stripped notify artifact carries none');
+      'under drift the re-render converges: the statusline-codex fragment is the one [tui] carrier');
+    const fragment = JSON.parse(await readFile(join(fragmentsDir, 'statusline-codex.fragment'), 'utf8'));
+    deepStrictEqual(parseCodexConfigToml(fragment.fragment_toml).tuiStatusLine.values, NORMATIVE_AGENTIC_6);
   });
 
   it('a canonical home satisfies both statusline steps on plan', async () => {

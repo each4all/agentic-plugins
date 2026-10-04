@@ -4,11 +4,10 @@
 // answer, its per-step key sets, and the fold that turns a run's `choices[]`
 // ledger into the operator's STANDING decision per step.
 //
-// WHY A SEPARATE ANSWER VERB. The four bare answers (`decline`/`accept`/
-// `execute`/`attest-receipt`) all say something ABOUT a step without carrying a
-// value. Two Stage-4 config steps need the operator to CHOOSE one, and the
-// choice has to survive in a form a replay can read back. Three shapes were
-// available and two are unsafe:
+// WHY A SEPARATE ANSWER VERB. The bare answers (`decline`/`accept`/`execute`)
+// all say something ABOUT a step without carrying a value. A Stage-4 config
+// step needs the operator to CHOOSE one, and the choice has to survive in a
+// form a replay can read back. Three shapes were available and two are unsafe:
 //
 //   * a sibling `choices[].value` field — REJECTED. lib/schema-validate.mjs
 //     forgives an unknown SCALAR key when the document declares a newer schema
@@ -33,20 +32,21 @@
 // operator's decision. That function's own comment states the principle this
 // module follows instead: "a `declined` is an operator CHOICE recorded in
 // choices[], not an observation". A drift invalidates observations and rendered
-// plans; it never invalidates a decision. `egressProofOptedIn` already reads the
-// ledger for exactly this class of question.
+// plans; it never invalidates a decision.
+//
+// ADR-0064 removed the second value step, `config.notify_kinds`, with the
+// notification it configured. Its rows stay in a retained run's `choices[]`;
+// the fold below reads only the current value steps, so they are history.
 
 import {
   CONFIG_KEY_FAMILIES,
   CONFIG_KEY_VALIDATORS,
   ENTRY_BRIEF_EMPTY_MODES,
   ENTRY_BRIEF_MODES,
-  NOTIFY_KEY_DEFAULTS,
   SESSION_CAPTURE_MODES,
   SESSION_KEY_DEFAULTS,
   USER_SCOPE_ONLY_CONFIG_KEYS,
 } from './runtime-config.mjs';
-import { NOTIFY_KINDS, parseKindsFilter } from './notify-schema.mjs';
 import { stepIds } from './step-registry.mjs';
 
 // The answer prefix. One place spells it, so a parser and an emitter cannot
@@ -65,23 +65,14 @@ export const SET_ANSWER_PREFIX = 'set:';
 //
 // Its per-key MEANING comes from the key's own contract, never from this module:
 // for the session keys `SESSION_KEY_DEFAULTS` gives a concrete shipped default,
-// so unset resolves to a definite posture; for `notify_kinds` unset means
-// future-open ALL kinds (`parseKindsFilter` returns `kinds: null`), which is why
-// it can never be spelled as an enumeration — see the all-kinds refusal below.
+// so unset resolves to a definite posture.
 export const UNSET = 'unset';
-
-// A future notify kind literally named `unset` would collide with the token
-// above and silently turn "leave the filter open" into "filter to the unset
-// kind". Cheap to assert, impossible to notice otherwise.
-if (NOTIFY_KINDS.includes(UNSET)) {
-  throw new Error(`notify kind "${UNSET}" collides with the value-grammar unset token; rename the kind or the token before shipping`);
-}
 
 /**
  * The VALUE-BEARING steps and the config keys each one owns.
  *
- * Both are Stage 4 (`appliedByFor` maps stage 4 to `agentic-config`) because the
- * thing that writes them is `runtime:settings --apply --target user`, not an
+ * Each is Stage 4 (`appliedByFor` maps stage 4 to `agentic-config`) because the
+ * thing that writes it is `runtime:settings --apply --target user`, not an
  * operator editing a host file — which is what Stage 5 means. `config.model_effort`
  * is the precedent for a Stage-4 step that asks for a recorded decision about
  * agentic-plugins' own config.
@@ -104,11 +95,6 @@ export const VALUE_STEPS = Object.freeze({
     // than only "is this id a value step NOW?".
     introducedInMinor: 3,
   }),
-  [stepIds.configNotifyKinds()]: Object.freeze({
-    keys: Object.freeze(['notify_kinds']),
-    scope: 'user',
-    introducedInMinor: 3,
-  }),
 });
 
 export function isValueStep(stepId) {
@@ -120,12 +106,12 @@ export function valueStepKeys(stepId) {
 }
 
 /**
- * Split a raw answer into its kind. Returns `{ kind: 'bare' }` for the four
+ * Split a raw answer into its kind. Returns `{ kind: 'bare' }` for the
  * closed-set answers and `{ kind: 'set', payload }` for the value form.
  *
  * A PREDICATE, not a list membership — which is why `ANSWER_VALUES` keeps
- * naming exactly the bare four rather than growing an open prefix family that a
- * membership test could never express.
+ * naming exactly the bare answers rather than growing an open prefix family
+ * that a membership test could never express.
  */
 export function classifyAnswer(answer) {
   if (typeof answer !== 'string') return { kind: 'invalid', payload: null };
@@ -144,9 +130,9 @@ export const SET_ANSWER_MAX = 1024;
 // It was written as a flat 1024 and that was an off-by-prefix: the schema caps
 // the stored answer, so a payload at 1024 produced a 1028-character answer that
 // parsed cleanly here and was then rejected by `validateRun` at persist —
-// after `resume` had already run a proof executor (a real subprocess, and for
-// the egress kind a real network send). "Refused late" is not refused
-// (cross-host review, MAJOR; reproduced with a whitespace-padded valid payload).
+// after `resume` had already run a proof executor (a real doctor subprocess).
+// "Refused late" is not refused (cross-host review, MAJOR; reproduced with a
+// whitespace-padded valid payload).
 export const SET_PAYLOAD_MAX = SET_ANSWER_MAX - SET_ANSWER_PREFIX.length;
 
 /**
@@ -161,8 +147,8 @@ export const SET_PAYLOAD_MAX = SET_ANSWER_MAX - SET_ANSWER_PREFIX.length;
  * Grammar: `<key>=<value>[;<key>=<value>]...`
  *
  * `;` separates pairs and `=` separates key from value. The separator is NOT a
- * comma, and that is not cosmetic: `notify_kinds`' own value IS a comma-separated
- * kind list, so a comma-separated pair list could not be parsed unambiguously.
+ * comma, so a key whose value is itself a comma-separated list stays parseable
+ * unambiguously (the retired `notify_kinds` was one).
  *
  * Returns `{ ok, decisions: Map<key, value|UNSET>, errors: string[] }`. Error
  * strings never quote a value that FAILED its check (D1 §3.2 — a failed value is
@@ -238,49 +224,11 @@ export function parseSetPayload(stepId, payload) {
 
 /**
  * Per-key value validation. Every rule delegates to the key's EXISTING validator
- * — `CONFIG_KEY_VALIDATORS` for the session enums, `parseKindsFilter` for the
- * kind set — so no enum is re-enumerated here and a key whose domain changes
- * changes in exactly one place.
- *
- * `notify_kinds` carries two extra refusals that exist only in the interview,
- * because both are shapes the settings CLI legitimately accepts but that an
- * interview must not RECOMMEND:
- *
- *   * the ALL-KINDS enumeration. It is indistinguishable from `unset` today and
- *     diverges only in the future, where it silently drops a kind this runtime
- *     has not shipped yet — and `runtime:settings --unset` is the only way back,
- *     so the divergence is a decision the operator never revisits. The refusal
- *     names `unset` as the thing meant. `runtime:settings --notify-kinds` stays
- *     open for an operator who wants the frozen enumeration deliberately; this
- *     is the interview declining to propose a trap, not a capability removal.
- *   * the BLANK csv. `parseKindsFilter('')` returns `kinds: null`, so it behaves
- *     exactly as unset while writing a byte that LOOKS like a filter. Same
- *     remedy, different disguise.
- *
- * Comparison is by SET semantics after `parseKindsFilter` has trimmed and
- * de-duplicated, so neither ordering nor a repeated token can walk an all-kinds
- * payload past the refusal.
+ * in `CONFIG_KEY_VALIDATORS`, so no enum is re-enumerated here and a key whose
+ * domain changes changes in exactly one place.
  */
 export function validateValueForKey(key, raw) {
   if (typeof raw !== 'string') return { ok: false, reason: 'the value is not a string' };
-  if (key === 'notify_kinds') {
-    const parsed = parseKindsFilter(raw);
-    if (!parsed.ok) {
-      // parseKindsFilter quotes the unknown token; the answers boundary must not
-      // (D1 §3.2). Report the closed set instead and let the operator compare.
-      return { ok: false, reason: `not a valid kind list — the value is withheld because it did not parse; valid kinds are ${NOTIFY_KINDS.join(', ')}` };
-    }
-    if (parsed.kinds === null) {
-      return { ok: false, reason: `an empty kind list means "no filter", which is the same posture as ${UNSET} but written as a byte that looks like a filter; answer ${key}=${UNSET} instead` };
-    }
-    if (parsed.kinds.size === NOTIFY_KINDS.length) {
-      return { ok: false, reason: `enumerating every kind this runtime knows is indistinguishable from ${UNSET} today and permanently narrower tomorrow — a kind added later would be filtered out, and only \`runtime:settings --unset ${key}\` undoes it; answer ${key}=${UNSET} to stay future-open` };
-    }
-    // NORMALIZED to the parser's own set, sorted — so two payloads that differ
-    // only in order or repetition fold to one standing decision and a re-answer
-    // that changes nothing is recognizable as changing nothing.
-    return { ok: true, normalized: [...parsed.kinds].sort().join(',') };
-  }
   const validator = CONFIG_KEY_VALIDATORS[key];
   if (typeof validator !== 'function') {
     return { ok: false, reason: 'this runtime has no validator for the key, so it cannot accept a value for it' };
@@ -292,32 +240,6 @@ export function validateValueForKey(key, raw) {
     return { ok: false, reason: err?.message ?? 'the value failed its validator' };
   }
   return { ok: true, normalized: raw };
-}
-
-/**
- * ADR-0047 §8 — the dual-kind transition window. Returns a warning string when a
- * standing kind filter names exactly ONE of `turn-complete` / `response-needed`,
- * or null otherwise.
- *
- * A WARNING and not a refusal, deliberately. §8 step 2 opens the window with both
- * kinds (or unset) and §8 step 5 explicitly permits narrowing to one AFTER both
- * producers are verified upgraded — so a hard refusal would block a legitimate
- * post-window narrowing. The warning names the verification the narrowing
- * presupposes rather than assuming the operator has not done it.
- *
- * XOR, not "contains one of": naming both is the window being open, which is the
- * state §8 asks for.
- */
-export const DUAL_KIND_PAIR = Object.freeze(['turn-complete', 'response-needed']);
-
-export function dualKindWarning(csv) {
-  if (typeof csv !== 'string' || csv.length === 0) return null;
-  const parsed = parseKindsFilter(csv);
-  if (!parsed.ok || parsed.kinds === null) return null;
-  const present = DUAL_KIND_PAIR.filter((kind) => parsed.kinds.has(kind));
-  if (present.length !== 1) return null;
-  const absent = DUAL_KIND_PAIR.find((kind) => !parsed.kinds.has(kind));
-  return `notify_kinds names ${present[0]} but not ${absent} — ADR-0047 §8's dual-kind window keeps BOTH (or no filter at all) until every producer on this machine is verified upgraded, because a one-sided filter silently drops the other kind during the mixed-producer window. Narrowing is legitimate once both the Codex shuttle and the attention sensor are confirmed on the response-needed contract; if that is not yet verified, answer notify_kinds=${UNSET} or name both kinds.`;
 }
 
 /**
@@ -437,7 +359,7 @@ export function undecidedKeys(stepId, entry) {
  * (present and blank) is preserved by `parseRuntimeConfigToml` on purpose and is
  * load-bearing here: `UNSET` is satisfied ONLY by physical absence, because a
  * present blank is a byte the operator has to remove before the key is really
- * open — even though `parseKindsFilter` happens to treat it as no filter today.
+ * unset.
  */
 export function compareStanding(stepId, entry, observedOf) {
   const keys = valueStepKeys(stepId) ?? [];
@@ -447,31 +369,20 @@ export function compareStanding(stepId, entry, observedOf) {
     if (!entry?.decisions?.has(key)) continue;
     const want = entry.decisions.get(key);
     const got = observedOf(key);
-    const ok = want === UNSET ? got === null : sameConfigValue(key, want, got);
+    const ok = want === UNSET ? got === null : sameConfigValue(want, got);
     (ok ? matched : mismatched).push({ key, want, got });
   }
   return { matched, mismatched };
 }
 
 /**
- * Are two persisted values the SAME configuration for this key?
- *
- * String equality for every key whose value is a single token, and SET equality
- * for `notify_kinds` — because the runtime that consumes it parses a set, and
- * answers are normalized to a sorted one. Comparing raw strings there made
- * `idle,approval` a mismatch against a standing `approval,idle`: the step went
- * to manual-follow-up and an apply command was presented for a rewrite that
- * changes nothing the emitter can observe (cross-host review, MINOR). The
- * comparison now asks the same question the consumer does.
+ * Are two persisted values the SAME configuration? Every current value key
+ * carries a single enum token, so this is string equality against a present
+ * value. One predicate, because the judge and `applyCommandFor` must agree on it.
  */
-export function sameConfigValue(key, want, got) {
+export function sameConfigValue(want, got) {
   if (got === null || got === undefined) return false;
-  if (key !== 'notify_kinds') return got === want;
-  const a = parseKindsFilter(want);
-  const b = parseKindsFilter(got);
-  if (!a.ok || !b.ok) return got === want;
-  if (a.kinds === null || b.kinds === null) return a.kinds === b.kinds;
-  return a.kinds.size === b.kinds.size && [...a.kinds].every((kind) => b.kinds.has(kind));
+  return got === want;
 }
 
 /**
@@ -503,10 +414,9 @@ export function applyCommandFor(stepId, entry, observedOf) {
       if (got !== null) unsets.push(key);
       continue;
     }
-    // Same equivalence the judge uses — otherwise a semantically identical
-    // `notify_kinds` ordering would be "satisfied" and still get a rewrite
-    // command proposed beside it.
-    if (!sameConfigValue(key, want, got)) sets.push([key, want]);
+    // Same equivalence the judge uses — otherwise a value the judge reads as
+    // satisfied could still get a rewrite command proposed beside it.
+    if (!sameConfigValue(want, got)) sets.push([key, want]);
   }
   if (sets.length === 0 && unsets.length === 0) return null;
   const parts = ['runtime:settings --apply --target user'];
@@ -516,10 +426,9 @@ export function applyCommandFor(stepId, entry, observedOf) {
 }
 
 function quoteIfNeeded(value) {
-  // The comma is in the safe set because a kind LIST is the common value here
-  // and the unquoted form is what an operator would type. Every value reaching
-  // this point has passed a closed-set validator, so the character domain is
-  // fully constrained — the quoting is presentation, never a sanitizer.
+  // Every value reaching this point has passed a closed-set validator, so the
+  // character domain is fully constrained — the quoting is presentation, never
+  // a sanitizer.
   return /^[A-Za-z0-9_.,:-]+$/.test(value) ? value : `"${value.replace(/"/g, '\\"')}"`;
 }
 
@@ -527,24 +436,11 @@ function quoteIfNeeded(value) {
  * The decision menu for one config key — every legal value, what leaving it
  * unset means, and the shipped default that unset resolves to.
  *
- * Built from the key's OWN contract (`SESSION_KEY_DEFAULTS`, `NOTIFY_KEY_DEFAULTS`,
- * the enum constants) rather than hand-written prose, so a key whose domain or
- * default changes changes the menu with it. The one thing that IS prose is what
- * unset MEANS, and it differs per key in a way no constant carries: for a session
- * key unset resolves to a definite shipped default, while for `notify_kinds` it
- * means future-open ALL kinds — including kinds this runtime has not shipped yet.
+ * Built from the key's OWN contract (`SESSION_KEY_DEFAULTS`, the enum
+ * constants) rather than hand-written prose, so a key whose domain or default
+ * changes changes the menu with it.
  */
 export function valueKeyMenu(key) {
-  if (key === 'notify_kinds') {
-    return {
-      key,
-      values: [...NOTIFY_KINDS],
-      form: 'a comma-separated SUBSET of the kinds above',
-      unset_resolves_to: 'every kind, including kinds a future runtime adds (parseKindsFilter returns no filter)',
-      unset_is_recommended_over: `enumerating all ${NOTIFY_KINDS.length} kinds, which is identical today and permanently narrower tomorrow`,
-      shipped_default: NOTIFY_KEY_DEFAULTS[key] ?? null,
-    };
-  }
   const domains = {
     session_capture: SESSION_CAPTURE_MODES,
     entry_brief: ENTRY_BRIEF_MODES,

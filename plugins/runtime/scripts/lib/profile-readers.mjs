@@ -9,7 +9,8 @@
 // The module is named for the portable machine profile it first fed
 // (`profile export`). ADR-0064 Decision 3 removed the profile together with its
 // profile-only readers (the Claude/Codex permission projections and the egress
-// export reader); the readers below are the ones the bootstrap judges use.
+// export reader), and Decision 1 the notify projection with the bootstrap
+// notification steps; the readers below are the ones the bootstrap judges use.
 //
 // Every reader here:
 //   * reads exactly one user-global source (never repo, never repo-local);
@@ -19,7 +20,7 @@
 //     judge can explain a null instead of guessing.
 //
 // The repo-preferring resolvers stay in their home modules (peer-execution-context
-// model/effort, notify.loadNotifyConfig); these are the deliberately SEPARATE
+// model/effort, the session loaders); these are the deliberately SEPARATE
 // user-global reads, sharing those modules' parsers so there is no second parser
 // to drift.
 
@@ -39,13 +40,13 @@ function textSourceStatus(read) {
 }
 
 // The shared user-global runtime config path — the SAME file model/effort and
-// notify both read, never the repo `.agentic-plugins/config.toml`.
+// session both read, never the repo `.agentic-plugins/config.toml`.
 function userRuntimeConfigPath(homeDir) {
   return join(homeDir, '.agentic-plugins', 'config.toml');
 }
 
 /**
- * The ONE user-global runtime-config snapshot. `model_effort` and `notify` are
+ * The ONE user-global runtime-config snapshot. `model_effort` and `session` are
  * two FAMILIES of the SAME file, and reading it twice let an atomic replacement
  * land between them — two judges then agree about a file neither version of
  * which satisfies them together (cross-host Review peer, MAJOR). This is the
@@ -78,13 +79,7 @@ export function projectModelEffort(snapshot) {
   return projectRuntimeConfigFamily(snapshot, 'model_effort', CONFIG_KEY_FAMILIES.model_effort);
 }
 
-// notify — the SAME user-global file, notify family only. loadNotifyConfig prefers
-// repo over user (`repoConfig[key] ?? userConfig[key]`); this read is user-only.
-export function projectNotify(snapshot) {
-  return projectRuntimeConfigFamily(snapshot, 'notify', CONFIG_KEY_FAMILIES.notify);
-}
-
-// session — the THIRD family of the same user-global file. What this read
+// session — the second family of the same user-global file. What this read
 // deliberately does NOT see is the point, and the two keys differ in why:
 //
 //   * `session_capture` resolves repo → user → default at runtime, so a repo value
@@ -106,10 +101,6 @@ export function projectSession(snapshot) {
 
 export async function readUserGlobalModelEffort({ homeDir }) {
   return projectModelEffort(await readUserGlobalRuntimeConfig({ homeDir }));
-}
-
-export async function readUserGlobalNotify({ homeDir }) {
-  return projectNotify(await readUserGlobalRuntimeConfig({ homeDir }));
 }
 
 export async function readUserGlobalSession({ homeDir }) {

@@ -66,7 +66,7 @@ import {
 // §6.2 — the retained set every selection-derived expectation is owed against.
 // `selection.desired` is the PLAN; this is what the operator did not refuse.
 import { effectiveSelection, hostPluginsOf, narrowSelectionByDeclines, narrowSelectionToEffective } from './lib/effective-selection.mjs';
-import { PROOF_KINDS, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
+import { PROOF_KINDS } from './lib/evidence-contract.mjs';
 import {
   classifyExistingClaudeStatusline,
   evaluateInlineSufficiency,
@@ -78,14 +78,13 @@ import {
   statuslineShimInstallPath,
 } from './lib/statusline-plan.mjs';
 import { inspectInstalledReceivers } from './lib/receiver-inventory.mjs';
-import { OPT_IN_PROOF_STEPS, PROOF_STAGES, deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
+import { PROOF_STAGES, RETIRED_STEP_IDS, deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
 import {
   SET_ANSWER_PREFIX,
   UNSET,
   applyCommandFor,
   classifyAnswer,
   compareStanding,
-  dualKindWarning,
   foldStandingDecisions,
   isValueStep,
   parseSetPayload,
@@ -97,7 +96,6 @@ import {
 } from './lib/answer-values.mjs';
 import {
   currentBoundVersions,
-  egressProofOptedIn,
   importHookAttestation,
   importProofMetadata,
   invalidateStaleSteps,
@@ -110,27 +108,15 @@ import {
   readUserGlobalClaudeSettings,
   resolveClaudeConfigDir,
   projectModelEffort,
-  projectNotify,
   projectSession,
   readUserGlobalRuntimeConfig,
 } from './lib/profile-readers.mjs';
-// The named E1 activation checker (ADR-0048 §4): egress.configured is judged
-// from ACTIVATION semantics — channel + recipient + credential PRESENCE — not
-// the credential-independent §4.4 export shape. Only loadEgressActivation may
-// inspect the credential (for presence/collision, in-process); the value never
-// reaches this module. EGRESS_ENV_KEYS is imported for the recovery TEXT (the
-// key NAME as a placeholder procedure), and EGRESS_CREDENTIAL_ENV_VAR for the
-// control-plane scrub and the fingerprint's name input — never for an env read
-// here.
-import { EGRESS_CREDENTIAL_ENV_VAR, EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 // §6.1 Stage 4 — the declarable model/effort postures. Imported (not restated)
 // so the judge, the settings validator and the contract cannot drift apart.
 import { ENTRY_BRIEF_ENV_KEYS, MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
 import { FINDINGS_MAX_PER_ARTIFACT, makeValidator } from './lib/schema-validate.mjs';
-import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId } from './lib/notification-plan.mjs';
 import { parseCodexConfigToml, readCodexConfigToml } from './lib/codex-config.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
-import { gatherEgressLauncherInputs, buildEgressLauncherPlanSection, egressFragmentApplyGuidance, makeEgressLauncherRunId } from './lib/egress-launcher-plan.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
 
 export { RUNTIME_VERSION };
@@ -211,12 +197,6 @@ const VERB_FLAGS = Object.freeze({
   resume: ['--run-id', '--latest-open', '--answers', '--format'],
   verify: ['--run-id', '--latest', '--format'],
   abandon: ['--run-id', '--latest-open', '--reason'],
-  // ADR-0048 §3 / D0.1 — the post-terminal receipt verb: records the owner's
-  // phone-receipt testimony against a run whose final proof send already
-  // terminalized it (resume refuses terminal runs, so testimony needed a door
-  // of its own). Not an interview verb — no --answers; the testimony IS the
-  // action.
-  attest: ['--run-id', '--latest', '--format'],
 });
 
 const VALUE_FLAGS = new Set(['--bundle', '--plugins', '--answers', '--format', '--run-id', '--reason']);
@@ -229,7 +209,7 @@ export function parseBootstrapArgs(argv) {
   }
   const verb = args.shift();
   if (!(verb in VERB_FLAGS)) {
-    throw new UsageError(`unknown verb '${verb}' (expected: plan | status | resume | verify | attest | abandon)`);
+    throw new UsageError(`unknown verb '${verb}' (expected: plan | status | resume | verify | abandon)`);
   }
 
   const allowed = new Set(VERB_FLAGS[verb]);
@@ -477,64 +457,6 @@ function discloseConfigValue(key, value) {
   return { disclosed: false, text: `<string, ${value.length} chars — not a value this runtime declares; withheld per §3.2>` };
 }
 
-/**
- * ADR-0047 §8, recomputed from a STANDING ledger.
- *
- * A HELPER because it has to run on every verb that folds one, and it did not:
- * it was inlined in `resume` alone while both the comment beside it and the
- * contract said "on every verb". An operator who answered a one-sided filter at
- * `plan` got no warning there, and `status` showed none either — the hazard was
- * invisible on three of the four verbs that render it (code review, MEDIUM).
- */
-/**
- * The plan-time warning for an OPT-IN proof nobody opted into.
- *
- * The failure it names is silent and unrecoverable. A run terminalizes as soon
- * as the reducer says `complete` — which asks only about APPLICABLE proofs — and
- * an opt-in proof is `not-applicable` until the operator requests it. So a run
- * that never opted in closes cleanly around the missing evidence, `resume`
- * refuses a terminal run, and the proof can never be attached: the only recovery
- * is a fresh plan and a re-run of every proof from scratch.
- *
- * Warned rather than refused, because not opting in is the COMMON and correct
- * choice — most machines never egress. What the operator is owed is that the
- * door closes, and when.
- *
- * `expected` is the derived registry (never the manifest's own rows), so a step
- * this selection genuinely does not apply cannot be confused with one the
- * operator merely has not asked for.
- */
-function optInProofWarnings({ expected }) {
-  const out = [];
-  const byId = new Map((expected ?? []).map((step) => [step.id, step]));
-  for (const id of OPT_IN_PROOF_STEPS) {
-    const step = byId.get(id);
-    // `applicable` IS the whole gate, and deliberately the only one. Both call
-    // sites derive it from a predicate at least as inclusive as
-    // `egressProofOptedIn` — plan from this verb's answers, resume from the
-    // manifest's rows, choices and recorded proofs — so an opt-in of ANY
-    // provenance has already flipped it to true by the time we get here.
-    //
-    // A second `egressProofOptedIn(...)` check was written here first and
-    // removed on measurement: no mutation could kill it, because it is
-    // unreachable. A redundant guard that reads as load-bearing is worse than
-    // no guard, so the reachable condition is the one that stays.
-    if (!step || step.applicable === true) continue;
-    out.push(`${id} is NOT opted in, so this run does not owe it — and once every proof it DOES owe passes, the run terminalizes and resume refuses a terminal run, which means this proof can never be attached to it afterwards (recovery is a fresh plan, re-running every proof). Opt in now with an answers file naming ${id}, or accept that this run will close without that evidence.`);
-  }
-  return out;
-}
-
-function dualKindWarningsFor(standing) {
-  const out = [];
-  for (const [stepId, entry] of standing ?? new Map()) {
-    if (stepId !== stepIds.configNotifyKinds() || entry.mode !== 'set') continue;
-    const warning = dualKindWarning(entry.decisions.get('notify_kinds'));
-    if (warning) out.push(warning);
-  }
-  return out;
-}
-
 function envShadowFor(keys, readers) {
   const shadowed = readers?.sessionEnvShadow ?? null;
   if (!shadowed) return [];
@@ -672,15 +594,15 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       };
     }
     if (isValueStep(id)) {
-      // §6.1.3 — the VALUE-BEARING Stage-4 steps. One judge, two steps: the only
-      // difference is which reader family carries the keys, and hard-coding two
-      // near-copies is how they would drift.
+      // §6.1.3 — the VALUE-BEARING Stage-4 step. The judge reads the keys
+      // through the value grammar's per-step key set, so a future value step
+      // joins it rather than growing a near-copy.
       //
       // What this step certifies is the PERSISTED USER-GLOBAL POSTURE, never the
       // effective value on this machine right now, and the distinction is not a
-      // technicality. `notify_kinds` and `session_capture` resolve repo → user →
-      // default at runtime and the entry-brief pair resolves env → user →
-      // default, so a repo or env layer can shadow a satisfied user posture. That
+      // technicality. `session_capture` resolves repo → user → default at
+      // runtime and the entry-brief pair resolves env → user → default, so a
+      // repo or env layer can shadow a satisfied user posture. That
       // is deliberate and is exactly what `projectSession`'s own contract says
       // ("it reads the PERSISTED user-global posture, never the effective
       // value… this projection is not that loader"): §1.1 keeps bootstrap off
@@ -688,7 +610,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       // OPERATOR's default rather than a checkout's policy.
       // ENV shadowing IS surfaced below, because env is already in hand; repo
       // shadowing is a named boundary, diagnosed by runtime:doctor.
-      const family = id === stepIds.configNotifyKinds() ? readers?.notify : readers?.session;
+      const family = readers?.session;
       // An UNREADABLE config is not an absent one (§6: unknown is never
       // satisfied) — the same rule the posture step above applies to the same
       // file, which is the only file either of them reads.
@@ -756,119 +678,6 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         recovery: `The recorded decision has not been observed on this machine yet. ${applyCommand ? `Run the apply command, then resume so a live re-probe confirms it.` : `Nothing needs writing for this decision — resume to re-observe.`}${shadowNote}`,
       };
     }
-    if (id === stepIds.notifyConfigured()) {
-      const channel = readers?.notify?.keys?.notify_channel?.value ?? null;
-      return channel != null
-        ? { status: 'satisfied', observed: `notify_channel=${channel}` }
-        : { status: 'pending' };
-    }
-    if (id === stepIds.notifyCodexConfigured()) {
-      // ADR-0048 §1 (notify split) — the CODEX-side wiring, judged as an EXACT
-      // probe (notify-axis slice): satisfied means the merged `notify =` argv
-      // EQUALS the canonical argv this machine's rendered fragment carries
-      // (shuttle, or the chain script in wrapper-chain mode) — the same
-      // "canonical configuration observed" semantics ADR-0048 §1 pins for the
-      // statusline steps. A present, parseable, non-empty argv that is NOT the
-      // canonical wiring is `manual-follow-up`: some other notifier is wired,
-      // and §2's no-auto-chaining rule makes reconciling it an operator
-      // decision, not a silent pass or a silent pending. `notify = []` runs
-      // nothing and an unparseable value is a config the host will not run —
-      // both stay pending, named. An unreadable config is `unknown` (§6:
-      // unknown is never satisfied).
-      const wiring = readers?.codexNotify ?? null;
-      if (!wiring || wiring.readable === false) return { status: 'unknown', observed: 'the Codex config could not be read' };
-      if (!wiring.present) return { status: 'pending' };
-      if (!Array.isArray(wiring.argv) || wiring.argv.length === 0) {
-        return { status: 'pending', observed: wiring.argv ? 'notify = [] runs nothing' : 'notify is present but not a parseable argv array' };
-      }
-      // MODE BINDING (Refine-verify peer): once this run rendered a fragment,
-      // the step's `desired` carries exactly the argv that fragment asks the
-      // operator to merge — and ONLY that argv satisfies (the wrapper-chain
-      // plan wrongly merged as the direct shuttle was the reproduced defect).
-      // Before any fragment exists, either canonical form is acceptable. An
-      // UNREADABLE desired fails closed to manual-follow-up (statusline peer
-      // G7 — the broad-set fallback silently widened the match).
-      const candidates = boundExpected(previous, wiring.expected ?? []);
-      if (candidates === null) {
-        return { status: 'manual-follow-up', observed: 'the recorded plan expectation is unreadable', recovery: 'The persisted desired expectation for this step could not be trusted — decline the step, or abandon and re-plan (a version drift also clears it via §7 invalidation).' };
-      }
-      const matches = candidates.some((expected) => Array.isArray(expected)
-        && expected.length === wiring.argv.length
-        && expected.every((item, i) => item === wiring.argv[i]));
-      if (!matches) {
-        return {
-          status: 'manual-follow-up',
-          observed: `notify argv[${wiring.argv.length}] does not match the canonical receiver wiring`,
-          recovery: 'A different notifier is wired in $CODEX_HOME/config.toml. Runtime never auto-chains an existing notifier (ADR-0048 §2 precedent): re-render the notification plan (its read-check offers wrapper-chaining that PRESERVES the existing notifier), review the chain script, and merge that fragment — or decline this step if the current wiring is intentional.',
-        };
-      }
-      // ADR-0040 §4b — SECOND exact predicate. The argv half is canonical, so
-      // agent-turn-complete reaches the receiver; approval-requested rides only
-      // `[tui] notifications`, and until this check existed a machine with
-      // `notifications = false` certified attention that was switched off.
-      //
-      // Precedence: this predicate is asked ONLY here, once the argv half has
-      // already yielded `satisfied`. It may hold that or lower it — it never
-      // raises, and it never reclassifies the argv half's own outcomes, so an
-      // explicit `notify = []` or an unparseable argv stays `pending` exactly as
-      // §6.1's notify rule states.
-      //
-      // Only `form` is interpreted. `raw` is unusable here: the scanner reports
-      // a structurally clean capture for `["a" "b"]` and `true junk` alike, and
-      // a redefined [tui] table can carry a canonical-LOOKING raw.
-      const notifArgv = `notify argv matches the canonical receiver wiring (argv[${wiring.argv.length}])`;
-      const tui = wiring.tuiNotifications ?? { form: 'absent', values: null };
-      // Where the operator actually finds the key: a run PRESENTS one [tui]
-      // table, and which artifact carries it is decided AFTER this judge runs
-      // (the combined statusline-codex fragment when it is the presented
-      // source, the notification plan's preview otherwise). The recovery names
-      // the table rather than a fragment, because the step's own apply_command
-      // points at the notify artifact — which is stripped of this key exactly
-      // when the combined fragment holds it.
-      const tuiRecovery = 'Merge the canonical `[tui] notifications` key from this run\'s [tui] fragment — the combined statusline-codex fragment when it is the presented source, the notification plan\'s preview otherwise (each artifact names which) — or decline this step if the current selection is intentional.';
-      if (tui.form === 'array') {
-        const canonical = [...TUI_NOTIFICATIONS_VALUES];
-        const tuiMatches = tui.values !== null
-          && tui.values.length === canonical.length
-          && canonical.every((item, i) => item === tui.values[i]);
-        if (tuiMatches) {
-          return { status: 'satisfied', observed: `${notifArgv}; canonical [tui] notifications observed` };
-        }
-        const carriesApproval = Array.isArray(tui.values) && tui.values.includes('approval-requested');
-        return {
-          status: 'manual-follow-up',
-          observed: `${notifArgv}, but [tui] notifications[${tui.values?.length ?? 0}] is a non-canonical selection (${carriesApproval ? 'it does carry approval-requested' : 'it does NOT carry approval-requested'})`,
-          recovery: tuiRecovery,
-        };
-      }
-      if (tui.form === 'false') {
-        return {
-          status: 'manual-follow-up',
-          observed: `${notifArgv}, but [tui] notifications = false — approval-requested attention is explicitly disabled`,
-          recovery: tuiRecovery,
-        };
-      }
-      if (tui.form === 'true') {
-        return {
-          status: 'manual-follow-up',
-          observed: `${notifArgv}, but [tui] notifications = true is broader than the canonical two-event selection`,
-          recovery: tuiRecovery,
-        };
-      }
-      if (tui.form === 'invalid') {
-        return {
-          status: 'pending',
-          observed: `${notifArgv}, but the [tui] notifications value cannot be trusted (duplicate key, redefined [tui] table, or a value this scanner cannot classify)`,
-          recovery: 'Normalize `[tui] notifications` to a single, well-formed assignment under exactly one [tui] table, then resume.',
-        };
-      }
-      // form === 'absent'
-      return {
-        status: 'pending',
-        observed: `${notifArgv}, but [tui] notifications is not configured`,
-        recovery: tuiRecovery,
-      };
-    }
     if (id === stepIds.statuslineConfigured('codex')) {
       // ADR-0048 §1 — EXACT probe over the closed [tui].status_line item
       // vocabulary: satisfied means the configured array EQUALS the canonical
@@ -924,38 +733,6 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         status: 'manual-follow-up',
         observed: `existing statusLine is ${classified.observation}`,
         recovery: `${classified.note} Runtime never auto-chains a statusline (ADR-0048 §2).`,
-      };
-    }
-    if (id === stepIds.egressConfigured()) {
-      // ADR-0048 §4 / ADR-0041 §2c — "configured" means ACTIVATABLE: channel +
-      // recipient + credential presence must all resolve via the named E1
-      // checker (token-alone and channel-alone are both inert). Judging this
-      // step from the credential-independent export reader's channel was the
-      // channel-only false-pass: a channel with no recipient/credential
-      // egresses nothing yet reported satisfied.
-      const act = readers?.egressActivation ?? null;
-      if (act?.active === true) {
-        // Presence-only observation: the recipient value and the credential
-        // stay out of run artifacts (§5 sanitize discipline; the surfaced
-        // channel is enum-safe by the loader's contract).
-        return { status: 'satisfied', observed: `channel=${act.channel} recipient=set credential=present` };
-      }
-      const reason = act?.reason ?? 'missing-activation';
-      // On a machine where POSIX uid ownership cannot be proven (e.g.
-      // Windows), the verified-local file is never honored — the fail-closed
-      // reader ignores it by design (egress-portability decision: env-only
-      // over an ACL probe there; the gate itself is unchanged).
-      const envOnlyHint = act && act.localLayerSupported === false
-        ? ' Note: the verified-local file (~/.agentic-plugins/config.local.toml) is never honored on this machine (POSIX uid ownership unverifiable — e.g. Windows); use the env-only layout.'
-        : '';
-      return {
-        status: 'pending',
-        observed: `inactive (${reason})`,
-        // The runbook pointer must stay valid on EVERY lifecycle path: resume
-        // renders no fragments, so name the always-available settings planner
-        // first and this run's fragment only as the when-present alternative
-        // (Codex review).
-        recovery: `Egress activates only when channel + recipient + credential are all present (ADR-0041 §2c; a channel or token alone is inert). Follow the per-machine egress runbook — \`runtime:settings --egress-launcher-plan\` renders it any time (this run's egress fragment, when present, carries the same runbook) — and export ${EGRESS_ENV_KEYS.credential} yourself in your local shell: bootstrap renders placeholder commands only and never asks for or handles the value (ADR-0048 §4).${envOnlyHint}`,
       };
     }
     if (id === stepIds.hooksAttested()) {
@@ -1087,7 +864,7 @@ async function readAnswersFile(path) {
   return list;
 }
 
-export const ANSWER_VALUES = Object.freeze(['decline', 'accept', 'execute', 'attest-receipt']);
+export const ANSWER_VALUES = Object.freeze(['decline', 'accept', 'execute']);
 
 const PROOF_STEP_PREFIX = 'proof.';
 
@@ -1113,13 +890,8 @@ export function proofKindOf(stepId) {
  * invisible — the §11.2 presentation filter (`required || declined`) does not
  * show such a row, correctly, because there is nothing meaningful to show.
  *
- * Applicability is read from the JUDGED status, which is where `applicable:
- * false` lands (§6). That is safe for the one step whose applicability an
- * incoming answer PROMOTES: `proof.egress-provider-ack` derives applicable
- * whenever the answers name it (§8.1), and that derivation runs before
- * judgement, so the grammar never meets it as `not-applicable`. The ordering is
- * load-bearing — a blanket refusal evaluated before the promotion would break
- * the opt-in path outright — and is pinned by test.
+ * Applicability is read from the derived EXPECTATION (below), never from the
+ * judged status.
  */
 export function answerRefusal({ step, answer, verb, applicable }) {
   // Applicability comes from the EXPECTATION, never from the judged status.
@@ -1137,8 +909,7 @@ export function answerRefusal({ step, answer, verb, applicable }) {
   // `decline` against a step this selection does not apply is DELIBERATE and
   // visible: the reducer reports it `required: false, declined: true` and the
   // §11.2 filter (`required || declined`) renders it `not-applicable
-  // (declined)` precisely so the refusal cannot vanish, and a declined row is
-  // one of the three provenances that opt the egress proof in (§8.1). The
+  // (declined)` precisely so the refusal cannot vanish. The
   // defect is the answers that leave `declined: false` — `accept` and
   // `execute` — which no filter shows and no verb acts on. Refusing the whole
   // status would delete a contract-visible path to close an invisible one.
@@ -1154,8 +925,8 @@ export function answerRefusal({ step, answer, verb, applicable }) {
   //     `accept` means "go ahead, without changing step state", and a value step
   //     has nothing to go ahead with — the value IS the decision. Recording it
   //     would leave the step undecided while the ledger says the operator
-  //     answered. `execute`/`attest-receipt` are already refused above by their
-  //     own proof-only rules, so this is the whole of the remaining surface.
+  //     answered. `execute` is refused below by its own proof-only rule, so
+  //     this is the whole of the remaining surface.
   const classified = classifyAnswer(answer);
   if (classified.kind === 'set') {
     if (!isValueStep(step.id)) {
@@ -1180,21 +951,9 @@ export function answerRefusal({ step, answer, verb, applicable }) {
     // A plan-time `execute` is NOT deferred: `resume` builds its execute set
     // from its OWN answers file, so a plan-time approval is recorded and then
     // never consumed — measured, against an earlier draft of this very comment
-    // that claimed the opposite (cross-host Refine-verify, High). One step is
-    // genuinely different: any answer naming `proof.egress-provider-ack`
-    // promotes it to applicable and lands in `choices[]`, which IS the §8.1
-    // opt-in provenance the reducer reads, so a plan-time answer there does
-    // real work and the documented plan → resume egress path depends on it.
-    if (verb === 'plan' && step.id !== stepIds.proofEgressProviderAck()) {
-      return `answer 'execute' is not acted on under plan (§3) — only resume runs a proof executor and it reads its own answers file, so this approval would be stored and never consumed; give it on the resume that should run the proof (proof.egress-provider-ack is the one exception: a plan-time answer there records the §8.1 opt-in)`;
-    }
-  }
-  if (answer === 'attest-receipt') {
-    if (step.id !== stepIds.proofEgressProviderAck()) {
-      return `answer 'attest-receipt' targets ${stepIds.proofEgressProviderAck()} only — receipt testimony about any other step is not a thing this contract records`;
-    }
+    // that claimed the opposite (cross-host Refine-verify, High).
     if (verb === 'plan') {
-      return `answer 'attest-receipt' is not accepted under plan — no provider ack can exist yet, so there is nothing to testify about; use resume or attest`;
+      return `answer 'execute' is not acted on under plan (§3) — only resume runs a proof executor and it reads its own answers file, so this approval would be stored and never consumed; give it on the resume that should run the proof`;
     }
   }
   return null;
@@ -1229,13 +988,6 @@ function sameDecisions(a, b) {
  * every raw `execute` row, so `execute` followed by `decline` still executed
  * the proof the operator had just declined — consumers must read `effective`,
  * never re-filter the raw answers.
- *
- * `attest-receipt` (ADR-0048 §3) records the OWNER's phone-receipt testimony
- * intent. Grammar-level rules here: it targets only the egress ack step, and
- * only on an interview verb that can act on it (resume/attest — `plan` renders
- * fragments before any proof can exist, so testimony there is unanchored).
- * The evidence-side preconditions (a current passed ack, not same-run-executed)
- * belong to the attestation pipeline, not the answers grammar.
  */
 export function applyAnswers({ steps, answers, now, selection = null, pluginSet = null, verb = 'resume', expected = null, priorChoices = [] }) {
   const at = new Date(now).toISOString();
@@ -1269,8 +1021,8 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
     if (!step) {
       throw new UsageError(`answers[${answerOrdinal}] names a step this run does not expect (§6.1); refusing to record it. The id is withheld because an unmatched step id is free text — expected ids: ${[...byId.keys()].sort().join(', ')}`);
     }
-    // §3.3 — the vocabulary is now the four BARE answers PLUS the value form.
-    // `ANSWER_VALUES` deliberately keeps naming exactly the bare four: the value
+    // §3.3 — the vocabulary is the BARE answers PLUS the value form.
+    // `ANSWER_VALUES` deliberately keeps naming exactly the bare ones: the value
     // form is a prefix family, which a list membership cannot express, so the
     // shape question is asked by a predicate and the payload's legality is asked
     // by `answerRefusal` below (one grammar, one enforcement point).
@@ -1538,10 +1290,10 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     // fragment asks the operator to merge — the exact probe then judges
     // against the PLAN'S expectation, not against every canonical form.
     if (desired !== null) step.desired = desired;
-    // COMPOSE with any observation-time recovery instead of replacing it —
-    // judgeSteps' egress recovery carries the activation procedure (which
-    // env keys, placeholder-only, uid-less note) that must survive fragment
-    // persistence alongside the §10.3 backup/verify guidance (Codex review).
+    // COMPOSE with any observation-time recovery instead of replacing it — a
+    // judge's recovery names what the operator still has to do, and it must
+    // survive fragment persistence alongside the §10.3 backup/verify guidance
+    // (Codex review).
     // §10.3 guidance is for an OPERATOR-applied fragment. A Stage-4 step is
     // applied by `runtime:settings`, so "bootstrap never reverses an operator
     // edit" describes the wrong actor there; those steps pass their own sentence.
@@ -1549,19 +1301,19 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     step.recovery = step.recovery ? `${step.recovery} ${sentence}` : sentence;
   };
 
-  // Stage 4 — the two VALUE-BEARING config steps (§6.1.3). SEPARATE fragments,
-  // one per step, and that is structural rather than stylistic: `persist` binds a
-  // fragment to exactly one step id and skips a declined step, so a shared
-  // fragment across two INDEPENDENTLY declinable steps could not be amended when
-  // one was declined and the other answered — the freeze keeps first renders.
+  // Stage 4 — the VALUE-BEARING config steps (§6.1.3), one fragment per step:
+  // `persist` binds a fragment to exactly one step id and skips a declined
+  // step, so a fragment shared across independently declinable steps could not
+  // be amended when one was declined and the other answered — the freeze keeps
+  // first renders.
   //
   // What these fragments carry is INTERVIEW material, not merge material. Unlike
-  // a Stage-5/6 fragment there is nothing for the operator to paste into a host
+  // a Stage-5 fragment there is nothing for the operator to paste into a host
   // file: `runtime:settings` performs the write. The frozen artifact is the menu
   // the operator decides FROM — every legal value, what each does, the shipped
   // default, and what leaving a key unset means — which is exactly the thing that
   // must not be re-rendered underneath them mid-decision.
-  for (const stepId of [stepIds.configSession(), stepIds.configNotifyKinds()]) {
+  for (const stepId of Object.keys(VALUE_STEPS)) {
     try {
       const step = byId.get(stepId);
       if (!step) continue;
@@ -1614,12 +1366,11 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
         note: 'This artifact is the decision menu, not a merge target: nothing here is pasted into a host config. Answer the step through the answers file, then apply the presented runtime:settings command and resume so a live re-probe confirms it.',
       }, stepId,
       // The judge already computed the command that carries THIS decision
-      // (`--notify-kinds approval,idle`, `--unset notify_kinds`). persist's
-      // parameter would otherwise overwrite it with the generic form, handing
-      // the operator a command that does not contain their own answer.
-      // The judge's command carries THIS decision (`--notify-kinds approval,idle`,
-      // `--unset notify_kinds`). When it computed NONE — a partial decision, or
-      // one already observed — persist must not substitute a generic string:
+      // (`--session-capture off`, `--unset entry_brief`). persist's parameter
+      // would otherwise overwrite it with the generic form, handing the
+      // operator a command that does not contain their own answer. When it
+      // computed NONE — a partial decision, or one already observed — persist
+      // must not substitute a generic string:
       // the §6.1.3 matrix gives a partial decision `pending` plus the undecided
       // key names, and a prose-bearing `runtime:settings ... (<explanation>)` is
       // not a command the operator can run (cross-host review, MINOR).
@@ -1631,155 +1382,28 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     }
   }
 
-  // Stage 5 — notification (Codex notify= + tui fragments via the pure builder).
-  // Each builder gets a run id in ITS OWN family's grammar — the sections carry
-  // their family run-id validators, and a bootstrap-shaped id fails them.
-  //
-  // The fragment attaches to notify.CODEX.configured (ADR-0048 §1 split): its
-  // body is exactly the Codex-side wiring, and re-observation happens through
-  // that step's judge. The local-policy step (notify.configured) never carried
-  // a fragment of its own — attaching this one there was the pre-split
-  // imprecision the split repairs.
-  // Stage 5a — the ONE decision-aware Codex [tui] fragment (ADR-0048
-  // §1/§2/§2.1), persisted BEFORE the notification plan so the strip
-  // decision below keys on whether the combined fragment ACTUALLY exists in
-  // this run (Refine-verify peer, round 3 — a status predicate had to mirror
-  // persist()'s skip conditions and drifted; the pointer after this block is
-  // the existence fact itself). Review peer BLOCKER context: a
-  // notifications-only block beside a combined block handed the operator two
-  // competing headers, and an unconditioned combined block would re-impose a
-  // key whose step the operator DECLINED — each planned key rides iff its
-  // step is not declined/not-applicable; unrelated existing [tui] keys are
-  // the operator's and the guidance says to keep them.
+  // Stage 5 — statusline, Codex side: the [tui] fragment (ADR-0048 §1/§2/§2.1).
+  // It carries the `status_line` key alone; ADR-0064 removed the
+  // `notifications` key with the notification step it served. The guidance
+  // names THE one [tui] table, so an operator's unrelated [tui] keys survive the
+  // merge. persist() skips the step when it is satisfied, declined or not
+  // applicable.
   try {
-    const notifyCodexStep = byId.get(stepIds.notifyCodexConfigured());
-    const slCodexStep = byId.get(stepIds.statuslineConfigured('codex'));
-    const includeKey = (step) => step && step.status !== 'declined' && step.status !== 'not-applicable';
-    const tuiKeys = {
-      notifications: includeKey(notifyCodexStep) ? [...TUI_NOTIFICATIONS_VALUES] : null,
-      statusLine: includeKey(slCodexStep) ? expectedCodexStatusLineItems() : null,
-    };
-    if (tuiKeys.notifications || tuiKeys.statusLine) {
-      const codexTuiFragment = renderCodexTuiTableToml(tuiKeys);
-      const tuiGuidance = 'Merge the rendered [tui] table into $CODEX_HOME/config.toml as THE one [tui] table — update exactly these planned keys, keep any unrelated existing [tui] keys of your own — then resume.';
-      await persist('statusline-codex', {
-        requested: true,
-        host: 'codex',
-        fragment_toml: codexTuiFragment,
-        note: 'The ONE decision-aware [tui] table: each planned key (status_line, notifications) rides iff its step is not declined. The notification-plan artifact carries the notify= wiring only (its [tui] preview is stripped when this fragment exists) — merge the [tui] table from THIS block. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
-      }, stepIds.statuslineConfigured('codex'),
-      tuiGuidance,
-      '$CODEX_HOME/config.toml',
-      { desired: JSON.stringify(expectedCodexStatusLineItems()) });
-      // The notify step keeps its OWN fragment pointer (the notify= wiring
-      // artifact — its [tui] preview is stripped at its persist below when
-      // this fragment exists), so this combined fragment is the single [tui]
-      // source for the run whenever it renders.
-    }
+    await persist('statusline-codex', {
+      requested: true,
+      host: 'codex',
+      fragment_toml: renderCodexTuiTableToml({ statusLine: expectedCodexStatusLineItems() }),
+      note: 'Merge status_line into the ONE [tui] table of $CODEX_HOME/config.toml. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
+    }, stepIds.statuslineConfigured('codex'),
+    'Merge the rendered [tui] table into $CODEX_HOME/config.toml as THE one [tui] table — update exactly the planned status_line key, keep any unrelated existing [tui] keys of your own — then resume.',
+    '$CODEX_HOME/config.toml',
+    { desired: JSON.stringify(expectedCodexStatusLineItems()) });
   } catch (err) {
     warnings.push(`codex [tui] fragment could not be built: ${err?.message ?? String(err)}`);
   }
 
-  try {
-    const gathered = await gatherCodexNotificationInputs({ homeDir, env });
-    const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
-    // The [tui] preview is STRIPPED from this artifact exactly when the
-    // combined statusline-codex fragment is the run's PRESENTED [tui]
-    // source: the combined fragment is the ONE decision-aware [tui] table
-    // (Review peer BLOCKER), and persisting the builder's notifications-only
-    // preview beside it would hand the operator two [tui] blocks with
-    // competing guidance. Two facts compose the predicate (Refine-verify
-    // peer, rounds 2-4):
-    //   - fragment_pointer — the Stage-5a block ABOVE persisted (or kept)
-    //     the combined fragment: covers a fresh render, a frozen fragment
-    //     from an earlier resume, and a failed write (pointer absent → the
-    //     preview stays the presented source and the routing note cannot
-    //     dangle). NB the pointer is a PRESENTATION fact, not a
-    //     physical-file fact — after §7 clears it, a previous file can
-    //     linger unpresented until the re-render lands.
-    //   - step-alive — a DECLINED/not-applicable statusline step keeps its
-    //     historical pointer (persist() skips dead steps without clearing
-    //     fields), but its frozen fragment still carries the declined
-    //     status_line key: routing the operator there would make a refused
-    //     key authoritative (round-4 High). A dead step's combined fragment
-    //     is history, never the presented source.
-    const slStepForTui = byId.get(stepIds.statuslineConfigured('codex'));
-    const slStepAliveForTui = Boolean(slStepForTui)
-      && slStepForTui.status !== 'declined' && slStepForTui.status !== 'not-applicable';
-    const combinedCarriesTui = slStepAliveForTui && Boolean(slStepForTui.fragment_pointer);
-    // Captured BEFORE the persist below: a pre-existing pointer means the
-    // notify artifact is FROZEN (persist() keeps first renders) and this
-    // strip cannot reach the on-disk bytes.
-    const notifyPointerFrozen = Boolean(byId.get(stepIds.notifyCodexConfigured())?.fragment_pointer);
-    const notifySection = combinedCarriesTui
-      ? {
-        ...section,
-        fragments: { ...section.fragments, tui_notifications_toml: null },
-        // NB: this note deliberately spells the table dotted (`tui.notifications`)
-        // — a literal `[tui]` header may appear in exactly ONE artifact per run
-        // (the combined statusline-codex fragment), and the sweep test pins that.
-        tui_note: 'The tui.notifications key rides in the statusline-codex combined fragment (the ONE tui table for this run) — merge it from there, not from this artifact.',
-      }
-      : section;
-    await persist('notification-plan', notifySection, stepIds.notifyCodexConfigured(),
-      'Merge the rendered notify fragment into $CODEX_HOME/config.toml (see the fragment body), then resume.',
-      '$CODEX_HOME/config.toml',
-      { desired: Array.isArray(section.expected_notify_argv) ? JSON.stringify(section.expected_notify_argv) : null });
-    // Frozen two-carrier honesty (Refine-verify peer, round 3): when the
-    // combined fragment carries [tui] but the notify artifact was frozen by
-    // an EARLIER plan state that kept its preview (e.g. the statusline step
-    // re-transitioned satisfied→pending across resumes), the on-disk
-    // artifact still shows two [tui] blocks. The freeze is deliberate
-    // (G7 — no silent rewrite under the operator mid-apply; see the
-    // fragment-freeze follow-up), so runtime NAMES the supersession instead
-    // of hiding it.
-    if (combinedCarriesTui && notifyPointerFrozen) {
-      try {
-        // Parse and inspect the PREVIEW FIELD itself — a whole-text regex
-        // false-positives on the builder's `tui_warning` prose, which
-        // legitimately contains the literal `[tui]` while the preview is
-        // stripped (Refine-verify peer, round 4).
-        const frozen = JSON.parse(await readFile(join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment'), 'utf8'));
-        if (frozen?.fragments?.tui_notifications_toml) {
-          warnings.push('the frozen notification-plan artifact still carries a [tui] preview from an earlier plan state, while the combined statusline-codex fragment is now the [tui] source — merge ONLY the combined [tui] table; the frozen preview is superseded (fragment freeze keeps first renders; see the fragment-freeze follow-up).');
-        }
-      } catch {
-        // A frozen artifact that cannot be read/parsed might still carry the
-        // preview — parse failure must not SILENCE the supersession call
-        // (contract: named, non-silent; Refine-verify round 5). Warn
-        // conservatively instead of guessing.
-        warnings.push('the frozen notification-plan artifact could not be parsed while the combined statusline-codex fragment is the presented [tui] source — treat the combined [tui] table as the ONE source and inspect the artifact by hand (conservative supersession warning).');
-      }
-    } else if (!combinedCarriesTui && notifyPointerFrozen) {
-      // The strip is a DERIVED state, valid only while the combined fragment
-      // is the presented source. If that authority lapsed (the statusline
-      // step was declined, or its pointer cleared) while the frozen notify
-      // artifact is still stripped, the run presents NO [tui] source
-      // (Refine-verify round 5). Runtime NAMES that state instead of
-      // rewriting the frozen artifact — a round-5 restore-rewrite attempt
-      // opened a fragment-vs-manifest commit-ordering hole (round-6 High: a
-      // restored file could land while the manifest update carrying the
-      // authority withdrawal failed, yielding two physical sources under a
-      // live combined pointer), and there is no manifest CAS transaction to
-      // close it. Abandon + re-plan is the honest recovery; the underlying
-      // reconciliation is the fragment-freeze follow-up.
-      try {
-        const frozen = JSON.parse(await readFile(join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment'), 'utf8'));
-        if (frozen?.fragments && frozen.fragments.tui_notifications_toml == null) {
-          warnings.push('the combined statusline-codex fragment is no longer the presented [tui] source, and the frozen notification-plan artifact was stripped while it was — this run currently presents NO [tui] source (fragment freeze keeps first renders). Re-plan (abandon + plan) to regain one; see the fragment-freeze follow-up.');
-        }
-      } catch {
-        warnings.push('the frozen notification-plan artifact could not be parsed while no combined [tui] fragment is presented — the run may present no [tui] source; re-plan (abandon + plan) to regain one (fail-closed).');
-      }
-    }
-  } catch (err) {
-    warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);
-  }
-
   // Stage 5 — statusline, Claude side + the unconditional shim artifact
   // (ADR-0048 §1/§2/§2.1 via the one policy in lib/statusline-plan.mjs).
-  // The Codex [tui] fragment moved to Stage 5a ABOVE the notification plan
-  // so the preview-strip decision can key on its actual existence.
   try {
     const shim = renderAgenticStatuslineShim();
     // The statusline shim is opted into by the very act of planning this step,
@@ -1836,21 +1460,6 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
   } catch (err) {
     warnings.push(`statusline plans could not be built: ${err?.message ?? String(err)}`);
   }
-
-  // Stage 5 — egress launcher (ADR-0041 §12 state-aware runbook via the pure builder).
-  try {
-    const gathered = await gatherEgressLauncherInputs({ repoRoot: cwd, homeDir, env });
-    const { section } = buildEgressLauncherPlanSection({ gathered, host: 'claude', now: new Date(now), runId: makeEgressLauncherRunId(now) });
-    // Apply command + §10.3 backup target must name the layout THIS machine
-    // can honor (env-only where the verified-local reader fail-closes — e.g.
-    // Windows); the helper owns the branch so runbook and guidance can't drift.
-    const guidance = egressFragmentApplyGuidance(gathered.activation);
-    await persist('egress-launcher-plan', section, stepIds.egressConfigured(),
-      guidance.apply_command, guidance.target);
-  } catch (err) {
-    warnings.push(`egress launcher plan could not be built: ${err?.message ?? String(err)}`);
-  }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1985,8 +1594,7 @@ async function loadContext(ctx) {
 async function probeNow(ctx) {
   const raw = await probeMachineHostState({
     homeDir: ctx.homeDir,
-    // Scrubbed: the host-CLI probes are control-plane children (ADR-0048 §4).
-    env: scrubbedControlPlaneEnv(ctx.env),
+    env: ctx.env,
     runner: ctx.runner,
     // NEUTRAL cwd — never the caller's repository (§1.1).
     cwd: tmpdir(),
@@ -1997,11 +1605,10 @@ async function probeNow(ctx) {
 
 async function readUserGlobalReaders(ctx) {
   // ONE read per FILE, projected per consumer (cross-host Review peer, MAJOR).
-  // `model_effort`, `notify` and `session` are three families of
-  // ~/.agentic-plugins/config.toml; the Codex notify and statusline judges are
-  // two readers of $CODEX_HOME/config.toml. Read twice, an atomic replacement
-  // between the reads let config rows be satisfied by two different versions of
-  // one file — and a run could terminalize `complete` on a combination neither
+  // `model_effort` and `session` are two families of
+  // ~/.agentic-plugins/config.toml. Read twice, an atomic replacement between
+  // the reads let config rows be satisfied by two different versions of one
+  // file — and a run could terminalize `complete` on a combination neither
   // version supports.
   //
   // COVERAGE, stated rather than claimed: splitting these back into separate
@@ -2014,19 +1621,13 @@ async function readUserGlobalReaders(ctx) {
   const [claudeSettingsSnapshot, runtimeConfigSnapshot, codexConfig] = await Promise.all([
     readUserGlobalClaudeSettings({ homeDir: ctx.homeDir, env: ctx.env }),
     readUserGlobalRuntimeConfig({ homeDir: ctx.homeDir }),
-    // The ONE $CODEX_HOME/config.toml read. The Codex notify and statusline
-    // judges below both project it.
+    // The ONE $CODEX_HOME/config.toml read, which the Codex statusline judge
+    // projects below.
     readCodexConfigToml({ homeDir: ctx.homeDir, env: ctx.env }),
   ]);
-  // ADR-0048 §1 — the Codex-side notify WIRING for notify.codex.configured,
-  // handed the read above rather than reading the file again.
-  const codexNotifyGathered = await gatherCodexNotificationInputs({ homeDir: ctx.homeDir, env: ctx.env, codexConfig });
   const modelEffort = projectModelEffort(runtimeConfigSnapshot);
-  const notify = projectNotify(runtimeConfigSnapshot);
-  // The THIRD family of the same one snapshot. Projected here rather
-  // than read separately for the reason stated above: `model_effort`, `notify` and
-  // `session` are three families of ONE file, and a second read could observe an
-  // atomic replacement between them.
+  // The second family of the same one snapshot, projected rather than read
+  // separately for the reason stated above.
   const session = projectSession(runtimeConfigSnapshot);
   // §6.1.3 — which session keys are currently overridden by env. Read from the
   // SAME env the rest of this reader resolves paths with, so the reported
@@ -2044,25 +1645,10 @@ async function readUserGlobalReaders(ctx) {
   const sessionEnvShadow = Object.fromEntries(
     Object.entries(ENTRY_BRIEF_ENV_KEYS).map(([key, envName]) => [key, typeof ctx.env?.[envName] === 'string']),
   );
-  // egress.configured is judged from ACTIVATION semantics (the named E1
-  // checker): channel + recipient + credential PRESENCE, so a channel alone
-  // must NOT satisfy it.
-  const egressActivation = loadEgressActivation({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
-  // The Codex config read above is the same read the notification-plan gather
-  // makes for the Stage-5 fragment builder — §1.1 keeps bootstrap off the
-  // repo-scoped state-readers seam (test #1) — and it is made once per probe
-  // alongside every other user-global reader because judgeSteps is synchronous.
-  // The notify judge's shape:
-  //   readable  — the config file could be read (missing file reads as an
-  //               empty config: readable, nothing present);
-  //   present   — a top-level `notify =` key exists;
-  //   argv      — the parsed string elements, or null when the value is
-  //               present but not a parseable string array (fail-safe null
-  //               from the TOML scanner — never a guess).
-  const codexNotifyRead = codexConfig.read;
   // ADR-0048 statusline slice — both statusline probes, gathered here because
   // judgeSteps is synchronous. Claude projects the settings snapshot read
-  // above; Codex reuses the SAME config read the notify judge projects.
+  // above; Codex projects the config read above. §1.1 keeps bootstrap off the
+  // repo-scoped state-readers seam (test #1).
   const statuslineClaude = {
     ...projectClaudeStatusline(claudeSettingsSnapshot),
     expectedCommand: expectedClaudeStatuslineCommand({ homeDir: ctx.homeDir }),
@@ -2074,73 +1660,7 @@ async function readUserGlobalReaders(ctx) {
     items: statuslineCodexParsed?.tuiStatusLine?.values ?? null,
     expectedItems: expectedCodexStatusLineItems(),
   };
-  // The EXACT canonical argvs this machine's rendered fragment would carry
-  // (notify-axis slice): direct mode points at the shuttle, wrapper-chain mode
-  // at the chain script — a merged config matching EITHER is the canonical
-  // wiring, observed. expectedCodexNotifyArgv is the same single source the
-  // fragment renderer consumes, so probe and fragment cannot drift.
-  const codexNotifyExpected = [
-    expectedCodexNotifyArgv({ receiverPath: codexNotifyGathered.installPaths.shuttle }),
-    expectedCodexNotifyArgv({ receiverPath: codexNotifyGathered.installPaths.chain }),
-  ];
-  // ADR-0040 §4b — the SECOND half of this step's Codex-side attention wiring.
-  // `notify =` fires only on agent-turn-complete; `[tui] notifications` is the
-  // only channel that carries approval-requested. It is projected here, from
-  // the SAME parse the notify half uses, because the contract already calls it
-  // a runtime-planned key and the fragment builder already binds it to this
-  // step's decision — the judge was the last component that did not observe it.
-  // `form` (never `raw`) is what the judge may interpret.
-  const NO_TUI_NOTIFICATIONS = { present: false, form: 'absent', values: null };
-  let codexNotify;
-  if (codexNotifyRead.ok) {
-    const parsed = parseCodexConfigToml(codexNotifyRead.text);
-    codexNotify = {
-      readable: true,
-      present: parsed.notify.present,
-      argv: parsed.notify.values ?? null,
-      expected: codexNotifyExpected,
-      tuiNotifications: {
-        present: parsed.tuiNotifications.present,
-        form: parsed.tuiNotifications.form,
-        values: parsed.tuiNotifications.values ?? null,
-      },
-    };
-  } else if (codexNotifyRead.reason === 'ENOENT' || codexNotifyRead.reason === 'ENOTDIR') {
-    codexNotify = { readable: true, present: false, argv: null, expected: codexNotifyExpected, tuiNotifications: { ...NO_TUI_NOTIFICATIONS } };
-  } else {
-    codexNotify = { readable: false, present: false, argv: null, expected: codexNotifyExpected, tuiNotifications: { ...NO_TUI_NOTIFICATIONS } };
-  }
-  return { modelEffort, notify, session, sessionEnvShadow, egressActivation, codexNotify, statuslineClaude, statuslineCodex };
-}
-
-// ADR-0048 §4 — CONTROL-PLANE child environments are scrubbed at the point of
-// spawn: the host probes, the settings dry-run, and the read-only doctor fetch
-// have no business holding the egress credential. The ONE exception is the
-// explicitly-executed proof path (executeProofViaDoctor), whose attention
-// hooks must egress — §4 names that inheritance a documented exception, not a
-// loophole. In-process readers (the E1 activation checker, the user-global
-// config reads) keep the raw env: they are the named readers, not children.
-function scrubbedControlPlaneEnv(env) {
-  const out = { ...(env ?? {}) };
-  delete out[EGRESS_CREDENTIAL_ENV_VAR];
-  return out;
-}
-
-// ADR-0048 §3 / D0.3 — the CURRENT sanitized activation identity for the
-// egress-provider-ack freshness equality. Derived from the E1 activation
-// checker's enum-clamped channel + recipient + the credential env var NAME —
-// never the credential value (rotation is invisible here by design; the
-// contract §8.1 documents that limit). Null when no activation is configured,
-// which the reducer reads as "stale: recorded against an activation this
-// machine no longer carries".
-function currentActivationFingerprintOf(readers) {
-  const activation = readers?.egressActivation;
-  if (!activation?.active) return null;
-  return deriveActivationFingerprint({
-    channel: activation.channel,
-    recipient: activation.recipient,
-    credentialEnvVar: EGRESS_CREDENTIAL_ENV_VAR,
-  });
+  return { modelEffort, session, sessionEnvShadow, statuslineClaude, statuslineCodex };
 }
 
 function resolveSelection({ opts, pluginSet }) {
@@ -2195,26 +1715,7 @@ function resolveSelection({ opts, pluginSet }) {
  */
 function priorJudgeMapOf(stepList) {
   return new Map((stepList ?? []).map((s) => {
-    // A LEGACY-MIGRATION strip, and the rationale belongs here rather than at a
-    // call site: a pre-split run carried the Codex notification fragment on
-    // `notify.configured` (the local-policy step); post-split it belongs to
-    // `notify.codex.configured`, and carrying the stale pointer forward would
-    // keep presenting the Codex merge command on the wrong step — and could mark
-    // that unrelated fragment applied when the LOCAL policy satisfies (Codex
-    // review MINOR). composeFragments re-renders it onto the right step on the
-    // same resume.
-    //
-    // The comment was written at the ONE call site this was inlined in and was
-    // left behind when the helper was extracted (`b55ce53`), which left an
-    // unconditional, permanently-firing strip reading as if it had no reason.
-    // It is restored here because the rule is a property of the helper, not of
-    // any caller: it fires on every run forever, so a future fragment attached
-    // to `notify.configured` would vanish on reprobe with nothing to explain it.
-    if (s.id === stepIds.notifyConfigured() && (s.fragment_pointer || s.apply_command)) {
-      const { fragment_pointer, apply_command, fragment_applied, ...rest } = s;
-      return [s.id, rest];
-    }
-    // A DECLINED provenance carries no render state into judgement either
+    // A DECLINED provenance carries no render state into judgement
     // (Refine-verify round 6): a legacy declined step's frozen `desired`
     // would otherwise mode-bind the exact probe and demote a legitimate
     // satisfying observation to manual-follow-up — the refused plan's
@@ -2426,12 +1927,7 @@ async function runPlan(ctx, opts) {
   let { selection, softWarnings } = resolveSelection({ opts, pluginSet });
   const { raw, probe } = await probeNow(ctx);
   const readers = await readUserGlobalReaders(ctx);
-
-  // Answers are read BEFORE the expected-step derivation so a plan-time egress
-  // opt-in (a decline against proof.egress-provider-ack, say) can make the
-  // step expected at all — applyAnswers rejects answers about unexpected steps.
   const answers = opts.answers ? await readAnswersFile(opts.answers) : [];
-  const egressProofRequested = answers.some((a) => a.step_id === stepIds.proofEgressProviderAck());
 
   // §3.3 — the standing decisions this judge sees. `plan` starts a NEW run, so
   // the only ledger is this verb's own answers; it is empty on the first pass
@@ -2439,7 +1935,7 @@ async function runPlan(ctx, opts) {
   // single pass cannot be correct).
   let standingNow = new Map();
   const deriveAndJudge = (effectiveSel, previousSteps = null) => {
-    const derived = deriveExpectedSteps({ pluginSet, selection: effectiveSel, egressProofRequested });
+    const derived = deriveExpectedSteps({ pluginSet, selection: effectiveSel });
     expectedNow = derived;
     const graph = validateStepGraph(derived);
     if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
@@ -2476,17 +1972,11 @@ async function runPlan(ctx, opts) {
   if (choices.some((row) => isValueStep(row.step_id) && classifyAnswer(row.answer).kind === 'set')) {
     const foldedNow = foldStandingDecisions(choices, { documentMinor: READER_RUN_SCHEMA.minor });
     standingNow = foldedNow.standing;
-    foldWarningsNow.push(...foldedNow.malformed, ...foldedNow.preDating, ...dualKindWarningsFor(standingNow));
+    foldWarningsNow.push(...foldedNow.malformed, ...foldedNow.preDating);
     steps = deriveAndJudge(effective, steps);
   }
 
-  const warnings = [
-    ...softWarnings,
-    ...foldWarningsNow,
-    // PLAN is where the opt-in decision is still cheap: the answers file is
-    // already in the operator's hands and no proof has run yet.
-    ...optInProofWarnings({ expected: expectedNow }),
-  ];
+  const warnings = [...softWarnings, ...foldWarningsNow];
 
   // §6.2 — a plugin decline creates a new effective `custom` selection. The retained
   // set is PERSISTED (below, through buildManifestShape) rather than recomputed by
@@ -2507,10 +1997,10 @@ async function runPlan(ctx, opts) {
   const stage0 = buildStage0(probe, raw);
   const candidates = buildPluginActionCandidates({ effective, pluginSet, probe });
   const planHash = candidates.length > 0
-    ? await fetchSettingsPlanHash({ subprocessRunner: ctx.subprocessRunner, cwd: ctx.cwd, env: scrubbedControlPlaneEnv(ctx.env) })
+    ? await fetchSettingsPlanHash({ subprocessRunner: ctx.subprocessRunner, cwd: ctx.cwd, env: ctx.env })
     : { hash: null, status: 'not-needed', reason: 'no plugin-management actions are needed' };
 
-  const completion = reduceCompletion({ pluginSet, selection: effective, steps, choices, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION, currentActivationFingerprint: currentActivationFingerprintOf(readers) });
+  const completion = reduceCompletion({ pluginSet, selection: effective, steps, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION });
   const manifest = buildManifestShape({ selection, probe, steps, choices, history, completion, planHash: planHash.hash });
 
   const created = await createBootstrapRun({
@@ -2563,31 +2053,15 @@ async function runPlan(ctx, opts) {
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
 }
 
-/**
- * `converge` — whether the effective selection is re-derived from the FRESH rows
- * (see the convergence block below). Every verb that speaks about the machine as
- * it is NOW converges. `attest` alone does not (owner decision, 2026-08-02): it
- * is the post-terminal receipt door, its subject is a send that already happened,
- * and the gate it protects asks whether a RECORDED ack may be testified about.
- * §7's drift clause names *bound versions*; refusing testimony because the
- * operator installed an unrelated plugin afterwards is a selection-drift refusal
- * the contract never specified, and it is unrecoverable — resume refuses a
- * terminal run, so the owner who really received the receipt could never record
- * it. So attest judges the run as the run was reduced.
- *
- * The cost is stated rather than hidden: attest's recomputed verdict can then
- * differ from `status`'s for the same run. That is why `selectionRestored` is
- * computed even when `converge` is false — the caller must SAY the selection has
- * lapsed rather than let two verbs disagree in silence.
- */
-async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequested = false, converge = true } = {}) {
+async function reprobeAgainstRun(ctx, manifest, pluginSet) {
   // ADR-0048 §3 — re-judgement consumes the RECORDED evidence (proof/ files,
-  // which keep their per-direction results / provider_ack), never the
-  // manifest's reduced completion.proofs. The reduced shape has no directions
+  // which keep their per-direction results), never the manifest's reduced
+  // completion.proofs. The reduced shape has no directions
   // by design, so reading it back demoted every once-passed proof to `absent`
   // on the second resume/verify — the exact false-demotion this read-back
   // exists to end. Fail-closed: unreadable/invalid evidence stops the verb
   // with the file named, rather than reducing over evidence nobody can trust.
+  // The egress evidence files ADR-0064 retired are skipped by the reader.
   const proofRead = await readBootstrapProofRecords({ homeDir: ctx.homeDir, runId: manifest.run_id });
   if (!proofRead.ok) return { proofReadFailure: proofRead.errors };
   const recordedProofs = proofRead.records.filter((r) => PROOF_KINDS.includes(r.kind)).map((r) => r.record);
@@ -2605,21 +2079,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // REBINDABLE: the judge below re-observes the very rows this derives from, so
   // a decline a satisfying observation clears converges into it further down.
   let effective = effectiveSelection({ pluginSet, selection, steps: manifest.steps ?? [] });
-  // The egress proof opt-in (D0.2) persists once made: a recorded decline, an
-  // answer in the run's ledger, or recorded delivery evidence keeps it expected
-  // across every later verb — the caller ORs in this verb's fresh answers. The
-  // run-side legs go through the reducer's shared predicate rather than id
-  // matches written out again here: a bare `some(s => s.id === …)` was true on
-  // every run ever planned (the registry enumerates the step even when it does
-  // not apply), which is the same defect the reducer carried, in a second copy.
-  // One predicate, so the two readers cannot drift.
-  const egressOptIn = egressProofRequested
-    || egressProofOptedIn({ steps: manifest.steps, choices: manifest.choices, proofs: recordedProofs });
-  let expected = deriveExpectedSteps({
-    pluginSet,
-    selection: effective,
-    egressProofRequested: egressOptIn,
-  });
+  let expected = deriveExpectedSteps({ pluginSet, selection: effective });
   // Rebindable for the same reason: it is scoped to `effective`.
   let hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
 
@@ -2634,13 +2094,6 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     selection: effective,
     at: new Date(ctx.now).toISOString(),
   });
-  // A pre-split run carried the Codex notification fragment on
-  // notify.configured (the local-policy step); post-split it belongs to
-  // notify.codex.configured, and carrying the stale pointer forward would keep
-  // presenting the Codex merge command on the wrong step — and could mark that
-  // unrelated fragment applied when the LOCAL policy satisfies (Codex review
-  // MINOR). Strip the legacy metadata; composeFragments re-renders it onto the
-  // right step on this same resume.
   const priorForJudge = priorJudgeMapOf(invalidation.steps);
 
   // §3.3 — the PERSISTED standing decisions. Every verb that re-probes reads the
@@ -2657,7 +2110,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // hand-edited manifest) reported "No decision is recorded" while `choices[]`
   // visibly held a row for it — the operator was told to answer a step they had
   // answered, with no explanation (code review, MEDIUM).
-  const foldWarnings = [...folded.malformed, ...folded.preDating, ...dualKindWarningsFor(standing)];
+  const foldWarnings = [...folded.malformed, ...folded.preDating];
 
   let steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, standing, now: ctx.now });
 
@@ -2696,39 +2149,29 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
       if (restored.length > 0) selectionRestored.push({ host, plugins: restored });
     }
   }
-  const applySelection = converge && selectionMoved;
-  if (applySelection) {
+  if (selectionMoved) {
     effective = convergedEffective;
     hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
-    expected = deriveExpectedSteps({
-      pluginSet,
-      selection: effective,
-      egressProofRequested: egressOptIn,
-    });
+    expected = deriveExpectedSteps({ pluginSet, selection: effective });
     const graph = validateStepGraph(expected);
     if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
     steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, standing, now: ctx.now });
   }
-  const receiptRow = proofRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
-  const ackRow = proofRead.records.find((r) => r.kind === 'egress-provider-ack') ?? null;
   const completion = reduceCompletion({
     pluginSet,
     selection: effective,
     steps,
-    choices: manifest.choices,
     proofs: recordedProofs,
     hookAttestation: recordedHookAttestation,
     probe,
     runtimeVersion: RUNTIME_VERSION,
-    currentActivationFingerprint: currentActivationFingerprintOf(readers),
-    receiptEvidence: receiptRow ? { record: receiptRow.record, providerAckSha256: ackRow?.sha256 ?? null } : null,
   });
   // `expected` rides out so a caller that changes a judgement INPUT after this
   // pass (resume importing a hook attestation) can re-run judgeSteps instead of
   // leaving the step judged against evidence the same verb has since superseded.
   // The previous-state map is deliberately NOT exported: that caller must build
   // it from ITS OWN current steps, since applyAnswers has mutated them since.
-  return { raw, probe, readers, steps, completion, selection, effective, standing, foldWarnings, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, egressOptIn, selectionRestored };
+  return { raw, probe, readers, steps, completion, selection, effective, standing, foldWarnings, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, selectionRestored };
 }
 
 /**
@@ -2890,18 +2333,12 @@ const PROOF_EXECUTE_FLAGS = Object.freeze({
   'deep-peer-smoke': ['--deep-peer-smoke', '--execute-deep-peer-smoke'],
   'workflow-continuation': ['--workflow-continuation-proof', '--execute-workflow-continuation-proof'],
   permission: ['--permission-proof', '--execute-permission-proof'],
-  // ADR-0048 §3 — the one real-network executor. The flag pair is only two of
-  // the three consents: doctor additionally refuses the send unless
-  // AGENTIC_EGRESS_REAL_SMOKE=1 is present in the (deliberately UNSCRUBBED,
-  // §4 documented exception) environment this subprocess inherits.
-  'egress-provider-ack': ['--egress-ack-proof', '--execute-egress-ack-proof'],
 });
 
 const DOCTOR_SECTION_BY_KIND = Object.freeze({
   'deep-peer-smoke': 'deep_peer_smoke',
   'workflow-continuation': 'workflow_continuation_proof',
   permission: 'permission_proof',
-  'egress-provider-ack': 'egress_ack_proof',
 });
 
 function mapDoctorDirectionStatus(direction) {
@@ -2935,17 +2372,9 @@ async function executeProofViaDoctor(ctx, { kind, probe, effective }) {
     // artifact's exact-byte hash, and there is no artifact. Storing the record
     // anyway would persist an `artifact_hash` of null against a pointer nothing
     // can verify, which is the claim ADR-0048 §3 exists to refuse.
-    // Egress is the ONE side-effecting proof, and a record failure says nothing
-    // about whether the send landed: the provider call happens long before the
-    // artifact is written. Advise reconcile-then-retry there rather than letting
-    // the operator read "not imported" as "not sent" and re-run into a duplicate
-    // message on their phone.
-    const egressCaveat = kind === 'egress-provider-ack'
-      ? ' — the send itself may ALREADY have succeeded, so check the phone and the intent WAL before re-running this proof'
-      : '';
     return {
       ok: false,
-      diagnostic: `runtime:doctor ran the ${kind} proof but could not persist its artifact at the ${read.report.doctor_artifact?.failed_phase ?? 'unknown'} phase (${read.report.doctor_artifact?.error ?? 'write failed'}); the proof cannot be imported without a hash-linkable artifact${egressCaveat}`,
+      diagnostic: `runtime:doctor ran the ${kind} proof but could not persist its artifact at the ${read.report.doctor_artifact?.failed_phase ?? 'unknown'} phase (${read.report.doctor_artifact?.error ?? 'write failed'}); the proof cannot be imported without a hash-linkable artifact`,
       record: null,
       doctorReport: read.report,
     };
@@ -2965,61 +2394,13 @@ async function executeProofViaDoctor(ctx, { kind, probe, effective }) {
     && /^[0-9a-f]{64}$/.test(report.doctor_artifact.artifact_sha256)
     ? report.doctor_artifact.artifact_sha256
     : null;
-  let evidence;
-  if (kind === 'egress-provider-ack') {
-    // Acked-consistency matrix (Plan-verify peer): before the metadata is
-    // imported, the section must be INTERNALLY consistent —
-    //   - an unexecuted section imports nothing (the blockers are the
-    //     diagnostic; the kind stays absent and retryable);
-    //   - every EXECUTED attempt must carry provider_ack (a failed attempt is
-    //     evidence too; executed-without-ack is a doctor contract breach);
-    //   - `passed` requires result=acked AND mirror_correlated AND a linkable
-    //     artifact hash — a pass missing any leg is a claim the evidence does
-    //     not back;
-    //   - result=acked AND mirror_correlated under a non-passed status is the
-    //     inverse contradiction. result=acked WITHOUT the mirror is a
-    //     legitimate failed proof (the provider fact stands; the attempt is
-    //     unverifiable) — provider_ack records the provider fact only, per
-    //     the schema's providerAck $def.
-    // Any mismatch refuses the import (fail-closed) rather than persisting a
-    // record the reducer would have to argue with.
-    if (!section?.executed) {
-      const blockers = (section?.blockers ?? []).join('; ');
-      return { ok: false, diagnostic: `runtime:doctor did not execute the egress ack proof (status=${section?.status ?? 'missing'})${blockers ? `: ${blockers}` : ''}`, record: null, doctorReport: report };
-    }
-    if (!section.provider_ack || typeof section.provider_ack !== 'object') {
-      return { ok: false, diagnostic: 'the executed egress ack proof carries no provider_ack — an executed attempt without its evidence member cannot be imported', record: null, doctorReport: report };
-    }
-    if (section.status === 'passed' && (section.provider_ack.result !== 'acked' || section.mirror_correlated !== true || artifactHash === null)) {
-      return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: status=passed but result=${section.provider_ack.result}, mirror_correlated=${section.mirror_correlated}, artifact_hash=${artifactHash === null ? 'missing' : 'present'}`, record: null, doctorReport: report };
-    }
-    if (section.provider_ack.result === 'acked' && section.mirror_correlated === true && section.status !== 'passed') {
-      return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: result=acked with a correlated mirror but status=${section.status}`, record: null, doctorReport: report };
-    }
-    evidence = {
-      status: section.status === 'passed' ? 'passed' : 'failed',
-      provider_ack: {
-        result: section.provider_ack.result,
-        attempt_hash: section.provider_ack.attempt_hash,
-        activation_fingerprint: section.provider_ack.activation_fingerprint,
-        ran_at: section.provider_ack.ran_at,
-      },
-      // The independent mirror verdict is DURABLE evidence (schema 1.2
-      // sibling seat): the reducer recomputes the aggregate from the
-      // evidence members, never from stored status, so dropping the mirror
-      // here would let an acked-but-unverifiable attempt re-evaluate to
-      // passed on the next read (Refine-verify peer, round 2).
-      mirror_correlated: section.mirror_correlated === true,
-    };
-  } else {
-    evidence = {
-      status: 'passed', // provenance only — the reducer recomputes from directions
-      directions: {
-        'claude->codex': { status: mapDoctorDirectionStatus(section?.directions?.claude_to_codex), ran_at: ranAt },
-        'codex->claude': { status: mapDoctorDirectionStatus(section?.directions?.codex_to_claude), ran_at: ranAt },
-      },
-    };
-  }
+  const evidence = {
+    status: 'passed', // provenance only — the reducer recomputes from directions
+    directions: {
+      'claude->codex': { status: mapDoctorDirectionStatus(section?.directions?.claude_to_codex), ran_at: ranAt },
+      'codex->claude': { status: mapDoctorDirectionStatus(section?.directions?.codex_to_claude), ran_at: ranAt },
+    },
+  };
   const imported = importProofMetadata({
     kind,
     ...evidence,
@@ -3033,42 +2414,31 @@ async function executeProofViaDoctor(ctx, { kind, probe, effective }) {
 }
 
 /**
- * D0.1 — assemble and persist the owner receipt attestation. Shared by the
- * `attest` verb (terminal runs) and resume's `attest-receipt` answer (open
- * runs with a pre-existing ack). The preconditions are evidence-side:
- * a recorded egress-provider-ack that STILL re-judges `passed`, whose stored
- * bytes the testimony links by hash. No free text, no device identifier — the
- * record carries exactly the two hashes and a time.
+ * The history row `resume` writes when it migrates a run of an earlier schema
+ * minor (§7). The registry-new steps get their own injection rows; this row
+ * names the RETIRED rows the migration dropped from `steps[]`, with the
+ * decision that retired each (ADR-0057's Stage 6, ADR-0064's notification and
+ * egress steps). Nothing else of the run is rewritten: `choices[]` and
+ * `history[]` keep every row they had, retired step ids included.
+ *
+ * The ids are named because they are runtime-defined (keys of
+ * RETIRED_STEP_IDS), never because a manifest carried them.
  */
-async function recordReceiptAttestation(ctx, { runId, proofRecords, ackEvaluated }) {
-  const ackRow = (proofRecords ?? []).find((r) => r.kind === 'egress-provider-ack') ?? null;
-  if (!ackRow) {
-    return { ok: false, diagnostic: 'no egress-provider-ack proof is recorded for this run — receipt testimony needs a pre-existing acked attempt to be about', proof: null };
-  }
-  if (ackEvaluated?.status !== 'passed') {
-    return { ok: false, diagnostic: `the recorded egress-provider-ack re-judges ${ackEvaluated?.status ?? 'absent'} — only a currently-passing ack can be attested (${(ackEvaluated?.reasons ?? []).join('; ') || 'no reasons'})`, proof: null };
-  }
-  // Idempotent on identical testimony (Codex review MAJOR): a repeated attest
-  // for the SAME attempt over the SAME stored ack bytes re-reports the existing
-  // record instead of rewriting it (a fresh attested_at over unchanged links
-  // adds no information and destroys the original timestamp). A DIFFERENT
-  // attempt/hash writes through: the earlier testimony was about superseded
-  // evidence, and the newest claim about the current ack is the standing one.
-  const existingReceipt = (proofRecords ?? []).find((r) => r.kind === 'egress-receipt-attestation') ?? null;
-  if (existingReceipt
-    && existingReceipt.record.attempt_hash === ackRow.record.provider_ack.attempt_hash
-    && existingReceipt.record.provider_proof_artifact_hash === ackRow.sha256) {
-    return { ok: true, diagnostic: null, proof: { kind: 'egress-receipt-attestation', pointer: existingReceipt.pointer, sha256: existingReceipt.sha256, bytes: existingReceipt.bytes }, idempotent: true };
-  }
-  const record = {
-    surface: 'owner-phone',
-    attested_at: new Date(ctx.now).toISOString(),
-    attempt_hash: ackRow.record.provider_ack.attempt_hash,
-    provider_proof_artifact_hash: ackRow.sha256,
+function schemaMigrationHistoryRow({ fromSchema, priorSteps, at }) {
+  const dropped = [...new Set((Array.isArray(priorSteps) ? priorSteps : [])
+    .map((step) => step?.id)
+    .filter((id) => typeof id === 'string' && Object.hasOwn(RETIRED_STEP_IDS, id)))]
+    .sort();
+  const retiredClause = dropped.length > 0
+    ? `retired step rows dropped: ${dropped.map((id) => `${id} (${RETIRED_STEP_IDS[id]})`).join(', ')}`
+    : 'no retired step rows to drop';
+  return {
+    step_id: null,
+    from: fromSchema,
+    to: RUN_SCHEMA_VERSION,
+    reason: `schema migrated on resume: registry-new steps injected and fragments re-rendered (ADR-0048 §1), and ${retiredClause}. choices[] and history[] keep every row they had.`,
+    at,
   };
-  const persisted = await writeBootstrapProof({ homeDir: ctx.homeDir, repoRoot: ctx.cwd, runId, kind: 'egress-receipt-attestation', record });
-  if (!persisted.ok) return { ok: false, diagnostic: (persisted.diagnostics ?? ['unknown write failure']).join('; '), proof: null };
-  return { ok: true, diagnostic: null, proof: persisted.proof, idempotent: false };
 }
 
 async function runResume(ctx, opts) {
@@ -3097,14 +2467,9 @@ async function runResume(ctx, opts) {
   }
   const migratingFromSchema = docSchema && docSchema.minor < READER_RUN_SCHEMA.minor ? picked.manifest.schema : null;
 
-  // Answers are read BEFORE the reprobe so a fresh egress-proof opt-in (any
-  // answer against proof.egress-provider-ack) reaches the expected-step
-  // derivation — otherwise applyAnswers would reject the very answer that
-  // requests the step (§6.1 unexpected-step gate).
   const answers = opts.answers ? await readAnswersFile(opts.answers) : [];
-  const egressProofRequested = answers.some((a) => a.step_id === stepIds.proofEgressProviderAck());
 
-  const reprobe = await reprobeAgainstRun(ctx, picked.manifest, pluginSet, { egressProofRequested });
+  const reprobe = await reprobeAgainstRun(ctx, picked.manifest, pluginSet);
   if (reprobe.proofReadFailure) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'resume', status: 'evidence-unreadable', diagnostics: reprobe.proofReadFailure } };
   }
@@ -3161,7 +2526,6 @@ async function runResume(ctx, opts) {
   });
   const standingNow = foldedResume.standing;
   warnings.push(...foldedResume.malformed, ...foldedResume.preDating);
-  warnings.push(...dualKindWarningsFor(standingNow));
 
   // §6.2 — a plugin decline (this resume's, or one a legacy run recorded before the
   // narrowing existed) creates the effective `custom` selection. Re-derive and
@@ -3191,11 +2555,7 @@ async function runResume(ctx, opts) {
   let hookVerdictNow = hookVerdictFor({ recordedAttestation: reprobe.recordedHookAttestation, pluginSet, effective, probe });
   if (!sameEffectiveSelection(effective, narrowedEffective)) {
     effective = narrowedEffective;
-    expected = deriveExpectedSteps({
-      pluginSet,
-      selection: effective,
-      egressProofRequested: reprobe.egressOptIn,
-    });
+    expected = deriveExpectedSteps({ pluginSet, selection: effective });
     const graph = validateStepGraph(expected);
     if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
     hookVerdictNow = hookVerdictFor({ recordedAttestation: reprobe.recordedHookAttestation, pluginSet, effective, probe });
@@ -3225,7 +2585,7 @@ async function runResume(ctx, opts) {
   //
   // The failure this closes is specific and bad: a resume carrying BOTH a value
   // answer and an `execute` would run the proof executor — a real doctor
-  // subprocess, and for the egress kind a real network send — and only then fail
+  // subprocess — and only then fail
   // the manifest write, leaving the effect performed and unrecorded. Refusing
   // first costs an operator one diagnostic; refusing last costs them a proof
   // they cannot see.
@@ -3328,12 +2688,10 @@ async function runResume(ctx, opts) {
   let doctorInvoked = false;
   for (const kind of executeKinds) {
     if (!PROOF_EXECUTE_FLAGS[kind]) {
-      // Every current proof kind has a doctor executor (egress-provider-ack
-      // joined with the egress-proof-executor slice), so this guard is now a
+      // Every current proof kind has a doctor executor, so this guard is a
       // fail-closed backstop for a FUTURE kind whose executor has not landed:
-      // the execute answer records the opt-in (the step is expected) but
-      // nothing can run.
-      warnings.push(`proof kind ${kind} has no doctor executor wired in this runtime; the step stays unexecuted (the opt-in is recorded)`);
+      // the execute answer is recorded but nothing can run.
+      warnings.push(`proof kind ${kind} has no doctor executor wired in this runtime; the step stays unexecuted (the answer is recorded)`);
       continue;
     }
     // Set BEFORE the await, and outside the ok/not-ok branch: the flag records
@@ -3343,36 +2701,16 @@ async function runResume(ctx, opts) {
     const result = await executeProofViaDoctor(ctx, { kind, probe, effective });
     if (!result.ok) {
       warnings.push(result.diagnostic);
-      // A refused import may still carry a complete doctor report (the egress
-      // blocked path records one) — reuse it for the hook attestation below.
+      // A refused import may still carry a complete doctor report (an artifact
+      // write that failed after the proof ran) — reuse it for the hook
+      // attestation below.
       if (result.doctorReport) doctorReport = result.doctorReport;
       continue;
     }
     doctorReport = result.doctorReport ?? doctorReport;
-    // A PASSED proof can still carry a WAL warning: the provider acked and the
-    // mirror correlated (which is what `passed` means), while the intent record
-    // that fences the NEXT attempt was not written durably. Doctor raises that
-    // as an overall warning; the import only forwarded diagnostics when it
-    // FAILED, so on the success path the warning died here and the operator was
-    // never told the fence may not survive a reboot (peer round-3 MAJOR). It is
-    // forwarded, not re-derived, so the two surfaces cannot drift.
-    for (const warning of result.doctorReport?.overall?.warnings ?? []) {
-      if (/intent WAL/i.test(warning)) warnings.push(`${kind}: ${warning}`);
-    }
     const persisted = await writeBootstrapProof({ homeDir: ctx.homeDir, repoRoot: ctx.cwd, runId: picked.run.run_id, kind, record: result.record });
     if (!persisted?.ok) {
-      // Egress is the ONE side-effecting proof: when its send already completed
-      // and only the metadata write failed, the machine-global WAL now fences an
-      // automatic re-send, so a bare resume would be BLOCKED. Advise reconcile-
-      // then-clear rather than a blind retry — otherwise the proof-persist failure
-      // recovery compounds into a duplicate send (follow-ups.md § "Egress-ack
-      // intent WAL", gap 1 — cited by SECTION rather than by line, because the
-      // line number this used to carry had already drifted onto an unrelated
-      // Codex `plugin_hooks` row).
-      const retryAdvice = kind === 'egress-provider-ack'
-        ? 'the egress send may already have reached the phone; reconcile the phone, then re-run the egress proof once to get the blocker that NAMES which WAL records to remove (an attempt leaves a claim and a terminal record, and only the scan knows which are present and whether removing them is safe) before resuming'
-        : 're-run resume to retry';
-      warnings.push(`proof metadata for ${kind} could not be persisted (the run reduces without it; ${retryAdvice}): ${(persisted?.diagnostics ?? ['unknown write failure']).join('; ')}`);
+      warnings.push(`proof metadata for ${kind} could not be persisted (the run reduces without it; re-run resume to retry): ${(persisted?.diagnostics ?? ['unknown write failure']).join('; ')}`);
     }
   }
 
@@ -3430,7 +2768,7 @@ async function runResume(ctx, opts) {
       // Read-only, but a child with a two-minute ceiling all the same, so it
       // triggers the final snapshot on the same "was one spawned" rule.
       doctorInvoked = true;
-      const result = await ctx.subprocessRunner(doctorPath, ['--repo-root', ctx.cwd, '--format', 'json'], { cwd: ctx.cwd, env: scrubbedControlPlaneEnv(ctx.env), timeoutMs: 120_000 });
+      const result = await ctx.subprocessRunner(doctorPath, ['--repo-root', ctx.cwd, '--format', 'json'], { cwd: ctx.cwd, env: ctx.env, timeoutMs: 120_000 });
       // A non-zero exit here is the NORM, not a failure: this read happens on a
       // machine mid-bootstrap, whose hosts routinely still have hard failures.
       // Gating on `result.ok` would have stranded the attestation import on every
@@ -3480,17 +2818,6 @@ async function runResume(ctx, opts) {
     }
   }
 
-  // D0.1 — the owner receipt testimony, resume half. `effective` is last-wins
-  // per step, so `execute` and `attest-receipt` against the ack step in one
-  // file resolve to ONE action — executing and testifying in the same resume
-  // is structurally impossible, which is exactly the after-the-fact property
-  // D0.1 demands (testimony needs a PRE-EXISTING passed ack; the terminal-run
-  // path is the `attest` verb).
-  if (answeredEffective.get(stepIds.proofEgressProviderAck()) === 'attest-receipt') {
-    const attest = await recordReceiptAttestation(ctx, { runId: picked.run.run_id, proofRecords: reprobe.proofRecords, ackEvaluated: reprobe.completion.proofs.find((p) => p.kind === 'egress-provider-ack') ?? null });
-    if (!attest.ok) warnings.push(`attest-receipt was not recorded: ${attest.diagnostic}`);
-  }
-
   // ── THE FINAL SNAPSHOT ─────────────────────────────────────────────────────
   //
   // A proof executor can run for minutes; judging its freshness against the
@@ -3506,11 +2833,9 @@ async function runResume(ctx, opts) {
   // auth from `probe` — and `buildStage0` reads both too, so re-probing while
   // keeping the old `raw` would just move the mismatch one field over.
   //
-  // The READERS re-read is the same rule for the ACTIVATION half (Plan-verify
-  // peer): the egress ack's freshness equality compares its recorded
-  // activation_fingerprint against the CURRENT activation — judged from the
-  // pre-execution readers, a just-recorded ack could be marked stale (or a
-  // stale one current) when the operator changed channel/recipient mid-proof.
+  // The READERS re-read is the same rule for the user-global config the Stage
+  // 4/5 judges read: a config the operator changed mid-proof is judged as it is
+  // now, not as it was before the child ran.
   //
   // ONE `probeNow`, not one per consumer: two probes taken seconds apart under a
   // single run_id would let this verb report two different machines and call
@@ -3535,8 +2860,6 @@ async function runResume(ctx, opts) {
   }
   const proofs = finalRead.records.filter((r) => PROOF_KINDS.includes(r.kind)).map((r) => r.record);
   const hookAttestation = finalRead.records.find((r) => r.kind === 'hook-attestation')?.record ?? null;
-  const finalReceiptRow = finalRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
-  const finalAckRow = finalRead.records.find((r) => r.kind === 'egress-provider-ack') ?? null;
 
   // ── ONE RECONSTRUCTION FROM THE FINAL SNAPSHOT ─────────────────────────────
   //
@@ -3592,7 +2915,8 @@ async function runResume(ctx, opts) {
   // UNCONDITIONAL. The gate this replaces skipped the pass when no doctor child
   // ran and nothing was imported, on the grounds that the inputs would be
   // identical — and they are not: `applyAnswers` mutates step rows in place
-  // between the reprobe's judge and here. Measured on `base` with `accept
+  // between the reprobe's judge and here. Measured on `base`, on two steps
+  // ADR-0064 has since retired, with `accept
   // proof.egress-provider-ack` + `decline egress.configured` and no executor,
   // the skip left resume reporting that proof `blocked` with "resolve
   // egress.configured first" while the SAME report showed that predecessor
@@ -3674,11 +2998,7 @@ async function runResume(ctx, opts) {
       ));
       effective = convergedEffective;
       finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
-      expected = deriveExpectedSteps({
-        pluginSet,
-        selection: effective,
-        egressProofRequested: reprobe.egressOptIn,
-      });
+      expected = deriveExpectedSteps({ pluginSet, selection: effective });
       const graph = validateStepGraph(expected);
       if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
       steps = judgeFinal(expected, finalHookVerdict);
@@ -3698,17 +3018,10 @@ async function runResume(ctx, opts) {
     pluginSet,
     selection: effective,
     steps,
-    // The SAME union the persist below writes (`[...m.choices, ...choices]`):
-    // reducing over the pre-answer ledger would judge this resume's own opt-in
-    // absent, so an `execute` answer would report the proof it just authorized as
-    // not-applicable.
-    choices: [...(Array.isArray(picked.manifest.choices) ? picked.manifest.choices : []), ...choices],
     proofs,
     hookAttestation,
     probe: finalProbe,
     runtimeVersion: RUNTIME_VERSION,
-    currentActivationFingerprint: currentActivationFingerprintOf(finalReaders),
-    receiptEvidence: finalReceiptRow ? { record: finalReceiptRow.record, providerAckSha256: finalAckRow?.sha256 ?? null } : null,
   });
 
   // M1 persist — invalidation stamps, transitions, choices, proofs, and the
@@ -3766,7 +3079,7 @@ async function runResume(ctx, opts) {
       history: [
         ...(Array.isArray(m.history) ? m.history : []),
         ...(m.schema !== RUN_SCHEMA_VERSION
-          ? [{ step_id: null, from: m.schema, to: RUN_SCHEMA_VERSION, reason: 'schema migrated on resume: registry-new steps injected and fragments re-rendered (ADR-0048 §1 additive part), and — from a pre-1.4 run — the removed Stage-6 permission rows dropped (ADR-0057). Not purely additive any more, which is why 1.4 exists.', at: migrationRowAt }]
+          ? [schemaMigrationHistoryRow({ fromSchema: m.schema, priorSteps: m.steps, at: migrationRowAt })]
           : []),
         // SAME-MINOR registry growth (statusline peer B5): a runtime upgrade
         // can widen the expected-step set without a schema bump — §7 treats
@@ -3783,16 +3096,6 @@ async function runResume(ctx, opts) {
   });
   if (!updated.updated) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'resume', status: 'persist-failed', reason: updated.reason, diagnostics: updated.diagnostics } };
-  }
-
-  // The same warning at the LAST moment it is still actionable. Gated on the run
-  // staying OPEN: once `nextStatus` is terminal the door has already shut, and a
-  // warning telling the operator to opt in would be an epitaph rather than an
-  // instruction. This is the resume half of the failure the plan warning names —
-  // and the half that actually bit, because a proof run SPLIT across resumes
-  // terminalizes on the first one whose owed set happens to pass.
-  if (nextStatus === 'open') {
-    warnings.push(...optInProofWarnings({ expected }));
   }
 
   const stage0 = buildStage0(finalProbe, finalRaw);
@@ -3813,102 +3116,6 @@ async function runResume(ctx, opts) {
     diagnostics: updated.diagnostics,
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
-}
-
-/**
- * D0.1 — the post-terminal receipt door. A successful final proof send
- * terminalizes the run (resume then refuses it), so the owner's after-the-fact
- * phone-receipt testimony needs a verb of its own. It is APPEND-ONLY in the
- * narrowest sense: the one artifact it may produce is the receipt attestation
- * file (the writer's postTerminalWritable exception); the manifest — steps,
- * proofs, status, stored completion — is never touched. The verdict the
- * testimony earns is recomputed and REPORTED here, and by every later
- * status/verify, from the recorded evidence (§7: records are choices and
- * history, never truth).
- */
-async function runAttest(ctx, opts) {
-  const { pluginSet, validateRun } = await loadContext(ctx);
-  const picked = await selectRun({ homeDir: ctx.homeDir, opts, defaultSelector: 'latest', validateRun });
-  if (picked.error) {
-    return { exitCode: picked.exitCode, report: { verb: 'attest', status: 'no-active-run', diagnostics: [picked.error === 'no-active-run' ? 'No bootstrap run exists to attest against (§3).' : picked.error] } };
-  }
-  if (picked.manifest.status === 'abandoned') {
-    return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [`Run ${picked.run.run_id} is abandoned — an abandoned run is an escape hatch, not a completed bootstrap anyone can testify about.`] } };
-  }
-  // Open runs testify through `resume --answers` (attest-receipt), whose
-  // choices[] rows are the audit trail; the attest verb exists ONLY for the
-  // post-terminal window where resume refuses the run (D0.1). Accepting open
-  // runs here would open an unaudited side door (Codex review MAJOR).
-  if (picked.manifest.status === 'open') {
-    return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [`Run ${picked.run.run_id} is open — testify through \`resume --answers\` (an attest-receipt answer), which audit-logs the choice in the manifest; attest is the post-terminal door only (D0.1).`] } };
-  }
-  // Receipt testimony is a 1.2-vocabulary artifact: a legacy-schema run has no
-  // receipt verdict seat and is presented as immutable history, so testimony
-  // against it would be unreadable evidence. An OPEN legacy run migrates on
-  // resume first; a terminal one needs a fresh run for 1.2 evidence.
-  if (picked.manifest.schema !== RUN_SCHEMA_VERSION) {
-    return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [`Run ${picked.run.run_id} carries schema ${picked.manifest.schema}, not ${RUN_SCHEMA_VERSION} — attest records CURRENT-schema evidence only. Resume an open legacy run to migrate it first; a terminal legacy run stays immutable history.`] } };
-  }
-
-  // NOT converged (§7, owner decision): the receipt door judges the run as the
-  // run was REDUCED, so a selection that lapsed after the run closed cannot
-  // refuse testimony about a send that already happened. See reprobeAgainstRun's
-  // `converge` parameter for the full reasoning and the cost.
-  const reprobe = await reprobeAgainstRun(ctx, picked.manifest, pluginSet, { converge: false });
-  if (reprobe.proofReadFailure) {
-    return { exitCode: EXIT.UNEXPECTED, report: { verb: 'attest', status: 'evidence-unreadable', diagnostics: reprobe.proofReadFailure } };
-  }
-  // The cost, said out loud on every affected run — the one thing that must not
-  // happen is attest and status disagreeing about a run in silence.
-  const attestWarnings = selectionRestoredWarnings(reprobe.selectionRestored, {
-    window: 'as of this re-probe',
-    // NOT the converged wording: attest deliberately did not re-derive, and a
-    // warning that claimed it had would be one more sentence describing
-    // behaviour the code does not have.
-    consequence: 'attest deliberately does NOT re-derive it — the receipt door judges this run as it was REDUCED (§7: its subject is a send that already happened), so this verdict can differ from what `status` reports for the same run.',
-  });
-
-  const attest = await recordReceiptAttestation(ctx, {
-    runId: picked.run.run_id,
-    proofRecords: reprobe.proofRecords,
-    ackEvaluated: reprobe.completion.proofs.find((p) => p.kind === 'egress-provider-ack') ?? null,
-  });
-  if (!attest.ok) {
-    return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [attest.diagnostic], warnings: attestWarnings } };
-  }
-
-  // Re-read and re-reduce so the reported verdict is computed over the exact
-  // bytes just persisted — the same authoritative-bytes rule resume follows.
-  const finalRead = await readBootstrapProofRecords({ homeDir: ctx.homeDir, runId: picked.run.run_id });
-  if (!finalRead.ok) {
-    return { exitCode: EXIT.UNEXPECTED, report: { verb: 'attest', status: 'evidence-unreadable', diagnostics: finalRead.errors, warnings: attestWarnings } };
-  }
-  const receiptRow = finalRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
-  const ackRow = finalRead.records.find((r) => r.kind === 'egress-provider-ack') ?? null;
-  const completion = reduceCompletion({
-    pluginSet,
-    selection: reprobe.effective,
-    steps: reprobe.steps,
-    choices: picked.manifest.choices,
-    proofs: finalRead.records.filter((r) => PROOF_KINDS.includes(r.kind)).map((r) => r.record),
-    hookAttestation: finalRead.records.find((r) => r.kind === 'hook-attestation')?.record ?? null,
-    probe: reprobe.probe,
-    runtimeVersion: RUNTIME_VERSION,
-    currentActivationFingerprint: currentActivationFingerprintOf(reprobe.readers),
-    receiptEvidence: receiptRow ? { record: receiptRow.record, providerAckSha256: ackRow?.sha256 ?? null } : null,
-  });
-
-  const report = {
-    verb: 'attest',
-    run_id: picked.run.run_id,
-    run_status: picked.manifest.status,
-    receipt: completion.egress_receipt_attestation ?? null,
-    receipt_pointer: attest.proof.pointer,
-    completion,
-    warnings: attestWarnings,
-    diagnostics: [],
-  };
-  return { exitCode: EXIT.OK, report };
 }
 
 async function runAbandon(ctx, opts) {
@@ -3949,6 +3156,13 @@ async function runAbandon(ctx, opts) {
 // Rendering
 // ---------------------------------------------------------------------------
 
+// The `--format json` report schema. 3.0 (ADR-0064 Decision 7): the `attest`
+// verb's report, the live `completion.egress_receipt_attestation` and the
+// `egress-provider-ack` proof rows are gone. A removed key is a major bump, by
+// the 2.0 precedent. The historical projection of a retained run still carries
+// its egress rows.
+export const BOOTSTRAP_REPORT_SCHEMA_VERSION = 'runtime-bootstrap-report-3.0';
+
 // D1 — the report-level display bound. The per-artifact cap in
 // lib/schema-validate.mjs bounds ONE validation; a single report can still
 // aggregate findings from several sources (the manifest's validator warnings,
@@ -3959,7 +3173,6 @@ async function runAbandon(ctx, opts) {
 // outranks a warning they may not have to. The marker text is FIXED — it says
 // that something was dropped without becoming a second place where a count
 // could disagree with `finding_counts`, which is the authority.
-export const BOOTSTRAP_REPORT_SCHEMA_VERSION = 'runtime-bootstrap-report-2.0';
 export const REPORT_FINDINGS_MAX = 32;
 const REPORT_OVERFLOW_MARKER = 'Further findings were omitted from this report; see finding_counts for the totals, and read the run artifact directly for the full set.';
 
@@ -4193,13 +3406,7 @@ export function renderText(report) {
   if (report.reason) lines.push(`- reason: ${renderSafe(report.reason)}`);
   if (report.selection) lines.push(`- selection: bundle=${report.selection.bundle}; desired=${report.selection.desired.join(',')}`);
   if (report.completion) {
-    // `delivery-attested` is a DERIVED presentation label (ADR-0048 §3):
-    // provider ack currently passing + owner receipt currently attested. It
-    // decorates the state line — the generic completion state itself is never
-    // redefined by receipt.
-    const ackPassed = (report.completion.proofs ?? []).some((p) => p.kind === 'egress-provider-ack' && p.status === 'passed');
-    const deliveryAttested = ackPassed && report.completion.egress_receipt_attestation?.status === 'attested';
-    lines.push(`- completion: ${report.completion.state}${deliveryAttested ? ' (delivery-attested)' : ''}${report.completion.unsatisfied.length ? `; unsatisfied=${report.completion.unsatisfied.join(',')}` : ''}${report.completion.missing_steps.length ? `; missing=${report.completion.missing_steps.join(',')}` : ''}`);
+    lines.push(`- completion: ${report.completion.state}${report.completion.unsatisfied.length ? `; unsatisfied=${report.completion.unsatisfied.join(',')}` : ''}${report.completion.missing_steps.length ? `; missing=${report.completion.missing_steps.join(',')}` : ''}`);
     // Stage 8 renders ONCE, here, from the reducer — the sole evidence
     // authority (§8). `steps[]` carries the orthogonal CONTROL axis (is
     // execution reachable; did the operator choose), and the two genuinely
@@ -4232,7 +3439,7 @@ export function renderText(report) {
       // The row is labelled from the KIND, not from the record's own
       // `step_id`. The schema validates the two independently and a historical
       // terminal run is replayed without re-reduction, so a hand-edited record
-      // could otherwise label deep-peer evidence as the egress proof. The kind
+      // could otherwise label deep-peer evidence as a different proof. The kind
       // is what the evidence is ABOUT; a step_id that disagrees with it is not
       // trusted to join either (fail closed to evidence-only).
       const canonicalId = `proof.${proof.kind}`;
@@ -4252,9 +3459,9 @@ export function renderText(report) {
         lines.push(`      execution: ${renderLine(control.recovery)}`);
       }
     }
-    // §8.2's Codex /hooks attestation is the THIRD reason array on this object
+    // §8.2's Codex /hooks attestation is the second reason array on this object
     // and had no row at all — not truncated, absent. The live path rendered
-    // only proof and receipt reasons, so a stale attestation reached the
+    // only proof reasons, so a stale attestation reached the
     // operator as nothing whatsoever while the legacy summary path below has
     // reported its `reason_count` all along (Refine-verify peer, MAJOR).
     //
@@ -4262,29 +3469,15 @@ export function renderText(report) {
     // reason is structural: a grep for readers finds every place a field is
     // truncated and no place a field has no reader. The mirror of a
     // shows-too-little bug is sometimes a shows-nothing one.
+    //
+    // The prefix is a LABEL, not an indent, and that is load-bearing: a bare
+    // `      ` prefix would let a reason reading `evidence: …` render as a
+    // perfect Stage-8 evidence row belonging to a proof. Every line this
+    // renderer emits begins with a label the renderer wrote.
     if (report.completion.hook_attestation) {
       const attestation = report.completion.hook_attestation;
       lines.push(`  - hook attestation: ${attestation.status}`);
       lines.push(...renderReasonLines(attestation.reasons, '      ', 'reason'));
-    }
-    if (report.completion.egress_receipt_attestation) {
-      const receipt = report.completion.egress_receipt_attestation;
-      // The MIRROR of the Stage-8 aggregate, and the reason this row moved with
-      // it. It reached the operator through `reasons[0]` alone — a different
-      // mechanism from the truncated join above, the identical dishonesty: the
-      // row looks complete, and reasons[1..n] are gone with nothing saying so.
-      // Fixing only the site the follow-up named would have left the same
-      // failure shipped one line below it.
-      //
-      // The prefix is a LABEL, not an indent, and that is load-bearing. Giving
-      // these reasons their own line is what makes their leading characters
-      // start a line at all — under the old inline form they never could — so a
-      // bare `      ` prefix would let a reason reading `evidence: …` render as
-      // a perfect Stage-8 evidence row belonging to a proof. Verified by
-      // rendering exactly that string. Every line this renderer emits begins
-      // with a label the renderer wrote.
-      lines.push(`  - receipt attestation: ${receipt.status}`);
-      lines.push(...renderReasonLines(receipt.reasons, '      ', 'reason'));
     }
   }
   // D1 — the historical path renders from the SAME projected object the JSON
@@ -4374,7 +3567,6 @@ function usage() {
   status   [--run-id <id> | --latest | --latest-open] [--format text|json]
   resume   [--run-id <id> | --latest-open] [--answers <path>] [--format text|json]
   verify   [--run-id <id> | --latest] [--format text|json]
-  attest   [--run-id <id> | --latest] [--format text|json]   (ADR-0048 §3 — record the owner phone-receipt attestation for a recorded egress-provider-ack; the one post-terminal append)
   abandon  (--run-id <id> | --latest-open) [--reason <text>]
 Exit codes (§3.1): 0 complete; 10 configured-not-verified; 20 incomplete; 30 no-active-run; 40 invalid input; 50 legacy-historical (terminal run under an older schema minor — stored record shown, nothing re-certified); 1 unexpected error.
 `;
@@ -4389,7 +3581,6 @@ const VERB_RUNNERS = Object.freeze({
   status: runStatus,
   resume: runResume,
   verify: runVerify,
-  attest: runAttest,
   abandon: runAbandon,
 });
 

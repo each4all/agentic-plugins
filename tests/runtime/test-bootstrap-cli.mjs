@@ -29,13 +29,9 @@ import {
 import { makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 import {
   projectModelEffort,
-  projectNotify,
   readUserGlobalModelEffort,
-  readUserGlobalNotify,
   readUserGlobalRuntimeConfig,
 } from '../../plugins/runtime/scripts/lib/profile-readers.mjs';
-import { gatherCodexNotificationInputs } from '../../plugins/runtime/scripts/lib/notification-plan.mjs';
-import { deriveActivationFingerprint } from '../../plugins/runtime/scripts/lib/evidence-contract.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
 const PLUGIN_ROOT = join(REPO_ROOT, 'plugins', 'runtime');
@@ -62,14 +58,10 @@ async function makeHome({ satisfied = false } = {}) {
     ? `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] }, statusLine: { type: 'command', command: `node '${join(home, '.agentic-plugins', 'bin', 'agentic-statusline.mjs').replace(/\\/g, '/')}'` } }, null, 2)}\n`
     : '{}\n');
   await writeFile(join(home, '.codex', 'config.toml'), satisfied
-    // notify wiring + the canonical agentic-6 status_line + the canonical
-    // notifications selection: all three Codex-side exact predicates must
-    // observe their canonical configuration in a "satisfied" fixture
-    // (notify-axis + statusline slices, and the ADR-0040 §4b approval half —
-    // `notify =` carries only agent-turn-complete, so without the
-    // notifications key the notify step is pending, not satisfied). ONE [tui]
-    // table, matching the ONE table the combined fragment renders.
-    ? `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\nnotifications = ["approval-requested", "agent-turn-complete"]\n`
+    // The canonical agentic-6 status_line: the Codex statusline step is an
+    // EXACT probe, so a "satisfied" fixture carries exactly that array in ONE
+    // [tui] table, matching the one table the statusline-codex fragment renders.
+    ? `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n`
     : '# empty\n');
   await writeFile(join(home, '.agentic-plugins', 'config.local.toml'), '# local sentinel\n');
   // The Codex install caches the runners' `codex plugin list --json` describes: Codex
@@ -82,7 +74,7 @@ async function makeHome({ satisfied = false } = {}) {
     await writeFile(join(installed, 'plugin.json'), JSON.stringify({ name, version: '9.9.9' }));
   }
   if (satisfied) {
-    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'model = "gpt-5.2-codex"\neffort = "high"\nnotify_channel = "file-log"\n');
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'model = "gpt-5.2-codex"\neffort = "high"\n');
   }
   return { root, home, cwd };
 }
@@ -183,21 +175,17 @@ function mutableRunner(state) {
 
 const satisfiedRunner = () => hostedRunner();
 
-// The declinable steps this fixture never satisfies from config, resolved the
-// contract-shaped way — an explicit operator answer through --answers.
-//
-// `egress.configured` is opt-in (ADR-0041 §3a default OFF). The two Stage-4
-// VALUE steps (§6.1.3) are the same shape for a different reason: a value step
-// is satisfied only by a DECISION plus an observation confirming it, and a
-// fixture that records no decision leaves them pending forever — which is the
-// interview working, not a defect. Declining is the terse fixture answer; the
-// value paths get their own tests rather than riding in every unrelated one.
-async function writeEgressDecline(home) {
-  const path = join(home, 'egress-decline.json');
+// The one declinable CONFIG step this fixture never satisfies from config,
+// resolved the contract-shaped way — an explicit operator answer through
+// --answers. `config.session` is a Stage-4 VALUE step (§6.1.3): it is satisfied
+// only by a DECISION plus an observation confirming it, and a fixture that
+// records no decision leaves it pending forever — which is the interview
+// working, not a defect. Declining is the terse fixture answer; the value paths
+// get their own tests rather than riding in every unrelated one.
+async function writeSessionDecline(home) {
+  const path = join(home, 'session-decline.json');
   await writeFile(path, JSON.stringify([
-    { step_id: 'egress.configured', answer: 'decline' },
     { step_id: 'config.session', answer: 'decline' },
-    { step_id: 'config.notify_kinds', answer: 'decline' },
   ]));
   return path;
 }
@@ -236,10 +224,6 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
     for (const argv of [
       ['status', '--answers', '/dev/null'],
       ['verify', '--answers', '/dev/null'],
-      // attest records receipt testimony WITHOUT an answers file (the
-      // attest-receipt ANSWER is resume-only; the attest VERB is the
-      // post-terminal door) — so it is a non-interview verb here too.
-      ['attest', '--answers', '/dev/null'],
       ['abandon', '--latest-open', '--answers', '/dev/null'],
     ]) {
       const { home, cwd } = await makeHome();
@@ -314,10 +298,9 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
   it('C1 — a decline against that SAME non-applicable step stays legal, because it is visible', async () => {
     // The counter-case, pinned so the applicability rule can never be widened
     // back over it. A decline sets `declined: true`, which the §11.2 filter
-    // renders as `not-applicable (declined)`, and a declined row is one of the
-    // three provenances that opt the egress proof in (§8.1). The first cut of
-    // this fix refused the whole status and deleted that path; four existing
-    // presentation/opt-in cases caught it.
+    // renders as `not-applicable (declined)`, so the refusal stays visible. The
+    // first cut of this fix refused the whole status and deleted that path;
+    // existing presentation cases caught it.
     const { home, cwd } = await makeHome();
     const file = join(home, 'decline-na.json');
     await writeFile(file, JSON.stringify([{ step_id: 'proof.workflow-continuation', answer: 'decline' }]));
@@ -337,25 +320,6 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
     const res = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file], home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
     strictEqual(res.exitCode, EXIT.INVALID);
     ok(/targets proof\.\* steps only/.test(res.report.error), res.report.error);
-  });
-
-  it('C1 — a plan-time execute on the egress proof survives: the promotion runs BEFORE the grammar', async () => {
-    // The critical constraint, pinned explicitly. Any answer naming
-    // proof.egress-provider-ack promotes it to applicable (§8.1) and that
-    // derivation happens before judgement, so the grammar never meets the step
-    // as `not-applicable`. This also refutes the follow-up's premise that a
-    // plan-mode `execute` is inert: for THIS step it is the opt-in itself, and
-    // a verb restriction on `execute` would have deleted the plan → resume
-    // egress path.
-    const { home, cwd } = await makeHome();
-    const file = join(home, 'egress-opt-in.json');
-    await writeFile(file, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-    const res = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
-    notStrictEqual(res.exitCode, EXIT.INVALID, 'the opt-in must not be refused as inert');
-    const row = res.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
-    notStrictEqual(row.status, 'not-applicable', 'the answer promoted it before the grammar saw it');
-    const egress = res.report.completion.proofs.find((pr) => pr.kind === 'egress-provider-ack');
-    strictEqual(egress.required, true, 'and the opt-in is what makes it owed');
   });
 
   it('C1 — the executor re-asks the grammar: a proof this resume declined into non-applicability does not run', async () => {
@@ -387,27 +351,64 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
     );
   });
 
-  it('C1 — a plan-time execute nothing will consume is refused, and the egress opt-in is the one exception', async () => {
+  it('C1 — a plan-time execute nothing will consume is refused, on EVERY proof step', async () => {
     // Measured, and it corrected this fix's own first draft: `resume` builds its
-    // execute set from its OWN answers file, so a plan-time `execute` on an
-    // ordinary proof is recorded and then never acted on (the bare resume left
-    // deep-peer-smoke `absent` with no warning and no doctor call). The egress
-    // ack is different in kind: any answer naming it promotes it and lands in
-    // choices[], which IS the §8.1 opt-in the reducer reads.
+    // execute set from its OWN answers file, so a plan-time `execute` is recorded
+    // and then never acted on (the bare resume left deep-peer-smoke `absent` with
+    // no warning and no doctor call). ADR-0064 removed the one proof that was an
+    // exception, so the refusal holds for every proof step — each asked alone, so
+    // one step's refusal cannot stand in for another's. `engineering` makes all
+    // three applicable, which keeps this the plan-time rule and not the
+    // applicability one.
     const { home, cwd } = await makeHome();
     const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
-    const inert = join(home, 'plan-exec-inert.json');
-    await writeFile(inert, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }, { step_id: 'proof.permission', answer: 'execute' }]));
-    const refused = await run(['plan', '--bundle', 'base', '--answers', inert]);
-    strictEqual(refused.exitCode, EXIT.INVALID);
-    ok(/not acted on under plan/.test(refused.report.error), refused.report.error);
-
-    const optIn = join(home, 'plan-exec-egress.json');
-    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-    const allowed = await run(['plan', '--bundle', 'base', '--answers', optIn, '--format', 'json']);
-    notStrictEqual(allowed.exitCode, EXIT.INVALID, 'the egress opt-in must survive');
+    for (const stepId of ['proof.deep-peer-smoke', 'proof.permission', 'proof.workflow-continuation']) {
+      const file = join(home, `plan-exec-${stepId}.json`);
+      await writeFile(file, JSON.stringify([{ step_id: stepId, answer: 'execute' }]));
+      const refused = await run(['plan', '--bundle', 'engineering', '--answers', file]);
+      strictEqual(refused.exitCode, EXIT.INVALID, `${stepId}: a plan-time execute is refused`);
+      ok(/not acted on under plan/.test(refused.report.error), `${stepId}: ${refused.report.error}`);
+    }
+    // CONTROL: the same answers are legal on resume, so the refusal above is the
+    // plan-time rule rather than a refusal of the step.
+    const plan = await run(['plan', '--bundle', 'engineering', '--format', 'json']);
+    notStrictEqual(plan.exitCode, EXIT.INVALID);
+    const decline = join(home, 'resume-decline-permission.json');
+    await writeFile(decline, JSON.stringify([{ step_id: 'proof.permission', answer: 'decline' }]));
+    notStrictEqual((await run(['resume', '--latest-open', '--answers', decline])).exitCode, EXIT.INVALID);
   });
 
+  it('ADR-0064 — the attest verb is unknown, the attest-receipt answer is refused, and a retired step id is not an expected step', async () => {
+    const { home, cwd } = await makeHome();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
+
+    const attest = await run(['attest', '--latest']);
+    strictEqual(attest.exitCode, EXIT.INVALID, 'attest is no longer a verb');
+    match(attest.report.error, /unknown verb/);
+    match(attest.report.error, /expected: plan \| status \| resume \| verify \| abandon\)/, 'the verb list no longer offers attest');
+
+    // CONTROL: a run exists and the same resume with a legal answer is accepted,
+    // so each refusal below is about the answer, not about the run.
+    strictEqual((await run(['plan', '--bundle', 'base'])).exitCode, EXIT.INCOMPLETE);
+    const legal = join(home, 'legal.json');
+    await writeFile(legal, JSON.stringify([{ step_id: 'proof.permission', answer: 'accept' }]));
+    notStrictEqual((await run(['resume', '--latest-open', '--answers', legal])).exitCode, EXIT.INVALID);
+
+    const receipt = join(home, 'attest-receipt.json');
+    await writeFile(receipt, JSON.stringify([{ step_id: 'proof.permission', answer: 'attest-receipt' }]));
+    const refused = await run(['resume', '--latest-open', '--answers', receipt]);
+    strictEqual(refused.exitCode, EXIT.INVALID, 'attest-receipt is not an answer any more');
+    match(refused.report.error, /answers\[0\]/);
+
+    for (const retired of ['proof.egress-provider-ack', 'egress.configured', 'config.notify_kinds', 'notify.configured', 'notify.codex.configured']) {
+      const file = join(home, `retired-${retired}.json`);
+      await writeFile(file, JSON.stringify([{ step_id: retired, answer: 'decline' }]));
+      const res = await run(['resume', '--latest-open', '--answers', file]);
+      strictEqual(res.exitCode, EXIT.INVALID, `${retired} is not a step this run expects`);
+      match(res.report.error, /names a step this run does not expect/);
+    }
+    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
   it('C1 — a prior decline cannot smuggle an execute past applicability', async () => {
     // judgeSteps writes `not-applicable` and then RESTORES a prior `declined`
     // over it for any declinable step, so reading applicability off the STATUS
@@ -476,7 +477,7 @@ describe('runtime bootstrap CLI — R0 and executor boundaries', () => {
   it('#33 — status and verify leave the ENTIRE artifact home byte-identical and never invoke doctor', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const spy = spySubprocess({ settingsHash: 'a'.repeat(64) });
-    const answers = await writeEgressDecline(home);
+    const answers = await writeSessionDecline(home);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answers], home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
     strictEqual(plan.exitCode, EXIT.CONFIGURED_NOT_VERIFIED, 'CONFIG resolved + no proof recorded reduces to configured-not-verified (test #14 half)');
 
@@ -518,7 +519,7 @@ describe('runtime bootstrap CLI — R0 and executor boundaries', () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const spy = spySubprocess({ settingsHash: 'b'.repeat(64) });
     const sentinelsBefore = await snapshotSentinels(home);
-    const answers = await writeEgressDecline(home);
+    const answers = await writeSessionDecline(home);
 
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answers], home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
     strictEqual(plan.exitCode, EXIT.CONFIGURED_NOT_VERIFIED);
@@ -596,236 +597,6 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
   });
 
-  // ADR-0048 §3/D0.2 — the egress proof is OPT-IN, and "opted in" must not be
-  // satisfied by the plan that enumerated the step. The registry pushes
-  // `proof.egress-provider-ack` on every run so it can be reported, `judgeSteps`
-  // persists that row as `not-applicable`, and both readers used to test only
-  // that the row EXISTED — so every machine owed a proof it never asked for and
-  // could never reach `complete`. `status`/`verify`/`resume` all re-derive the
-  // opt-in through reprobeAgainstRun with no answers file, so they are the sites
-  // that regress: assert across the whole loop, not just at plan.
-  it('a run planned with NO answers never owes the egress proof — across plan, status, resume and verify', async () => {
-    const { home, cwd } = await makeHome();
-    const spy = spySubprocess();
-    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
-    const egressOf = (report) => report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    // Fixture sanity: the row IS enumerated. Without this the assertions below
-    // would hold for the wrong reason — a run that simply lacked the step.
-    const row = plan.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
-    ok(row, 'the step is enumerated even unrequested (§6.1 — reported, not owed)');
-    strictEqual(row.status, 'not-applicable');
-
-    for (const [label, argv] of [
-      ['plan', null],
-      ['status', ['status', '--format', 'json']],
-      ['resume', ['resume', '--latest-open', '--format', 'json']],
-      ['verify', ['verify', '--latest', '--format', 'json']],
-    ]) {
-      const report = argv === null ? plan.report : (await run(argv)).report;
-      const egress = egressOf(report);
-      strictEqual(egress.required, false, `${label} must not owe an unrequested egress proof`);
-      strictEqual(egress.status, 'not-applicable', `${label} judges it not-applicable, never absent`);
-    }
-    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
-  });
-
-  it('an opt-in answer DOES make it owed — the same loop, the other direction', async () => {
-    const { home, cwd } = await makeHome();
-    const spy = spySubprocess();
-    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
-    const optIn = join(home, 'egress-opt-in.json');
-    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-
-    const plan = await run(['plan', '--bundle', 'base', '--answers', optIn, '--format', 'json']);
-    const planned = plan.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(planned.required, true, 'the recorded answer is the opt-in');
-
-    // The opt-in must SURVIVE a verb that passes no answers file — it persists on
-    // the run's own step row and in choices[], not in the invocation.
-    const status = await run(['status', '--format', 'json']);
-    const later = status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(later.required, true, 'status re-derives the opt-in from the run, not from argv');
-    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
-  });
-
-  // The `choices[]` leg IN ISOLATION. `judgeSteps` rewrites the egress row on
-  // every re-judgement, so the row cannot be the ledger's backstop: on a run whose
-  // row was written by the judge, only the recorded answer distinguishes an opt-in
-  // from the enumeration. Forcing the row to `not-applicable` while keeping the
-  // choice is the one edit that isolates this leg — and it is also the shape a
-  // run poisoned by the old presence test would have if it HAD answered.
-  it('the choices ledger alone keeps the proof owed — a hand-cleared step row does not release it', async () => {
-    const { home, cwd } = await makeHome();
-    const spy = spySubprocess();
-    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
-    const optIn = join(home, 'egress-opt-in.json');
-    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-
-    const plan = await run(['plan', '--bundle', 'base', '--answers', optIn, '--format', 'json']);
-    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
-    const manifest = JSON.parse(await readFile(runPath, 'utf8'));
-    ok(manifest.choices.some((c) => c.step_id === 'proof.egress-provider-ack'), 'the answer ledger recorded it');
-    // `blocked`, not `pending`: this fixture never configures egress, so the
-    // demotion pass blocks the proof behind `egress.configured`.
-    strictEqual(
-      manifest.steps.find((s) => s.id === 'proof.egress-provider-ack').status,
-      'blocked',
-      'ground truth for this fixture — the judge blocks the opted-in proof behind egress.configured',
-    );
-
-    await writeFile(runPath, JSON.stringify({
-      ...manifest,
-      steps: manifest.steps.map((s) => (s.id === 'proof.egress-provider-ack' ? { ...s, status: 'not-applicable' } : s)),
-    }, null, 2));
-
-    const status = await run(['status', '--format', 'json']);
-    const egress = status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(egress.required, true, 'the recorded answer still owes the proof');
-    strictEqual(egress.status, 'absent', 'and it is absent, not not-applicable — the run still owes evidence');
-
-    // The persisted ROW must agree with that verdict. The reducer derives the
-    // requirement independently, so a re-probe that failed to carry the opt-in into
-    // its expected set would leave the manifest self-contradicting: a row reading
-    // `not-applicable` beside a completion saying the proof is owed.
-    await run(['resume', '--latest-open', '--format', 'json']);
-    const rejudged = JSON.parse(await readFile(runPath, 'utf8'));
-    const rejudgedRow = rejudged.steps.find((s) => s.id === 'proof.egress-provider-ack');
-    ok(rejudgedRow.status !== 'not-applicable',
-      `the re-probe carries the opt-in into the row too (got ${rejudgedRow.status})`);
-    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
-  });
-
-  // The opt-in arriving at RESUME time rather than plan time. At that invocation
-  // the run's stored ledger does NOT yet hold the answer — it is appended by the
-  // same update that persists the judged rows — so a reduction over the stored
-  // ledger alone would report the proof the operator just authorized as
-  // not-applicable, and a machine could terminalize without ever owing it.
-  it('an opt-in answered at resume time is owed in the SAME invocation', async () => {
-    const { home, cwd } = await makeHome();
-    const spy = spySubprocess();
-    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const planned = plan.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(planned.required, false, 'nothing owed before the answer');
-
-    const optIn = join(home, 'egress-opt-in.json');
-    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-    const resume = await run(['resume', '--latest-open', '--answers', optIn, '--format', 'json']);
-    const owed = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(owed.required, true, 'the answer counts in the invocation that made it, not only the next one');
-
-    // And it persists, so the following read-only verb agrees.
-    const status = await run(['status', '--format', 'json']);
-    strictEqual(status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack').required, true);
-    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
-  });
-
-  // The poisoning case the row-status leg would have created. A run planned under
-  // the broken presence test and then resumed by it holds a judge-written
-  // `pending`/`blocked` egress row with NO answer behind it; version invalidation
-  // preserves both statuses and a same-schema run never enters the migration path.
-  // Had the fix accepted generic row status as consent, that run would owe an
-  // impossible proof forever — the original defect, surviving its own fix.
-  it('a run POISONED by the old presence test heals — a judge-written row with no answer stops owing the proof', async () => {
-    const { home, cwd } = await makeHome();
-    const spy = spySubprocess();
-    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
-    const manifest = JSON.parse(await readFile(runPath, 'utf8'));
-    ok(!manifest.choices.some((c) => c.step_id === 'proof.egress-provider-ack'), 'nobody answered');
-
-    // Exactly what an old-code resume persisted: the row promoted, ledger untouched.
-    for (const poisoned of ['pending', 'blocked']) {
-      await writeFile(runPath, JSON.stringify({
-        ...manifest,
-        steps: manifest.steps.map((s) => (s.id === 'proof.egress-provider-ack' ? { ...s, status: poisoned } : s)),
-      }, null, 2));
-
-      const status = await run(['status', '--format', 'json']);
-      const egress = status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-      strictEqual(egress.required, false, `a '${poisoned}' row with no answer must not owe the proof`);
-      strictEqual(egress.status, 'not-applicable');
-    }
-
-    // And the heal is persisted, not just reported: resume re-judges the row back
-    // to not-applicable, so the poison does not linger in the file.
-    await run(['resume', '--latest-open', '--format', 'json']);
-    const healed = JSON.parse(await readFile(runPath, 'utf8'));
-    strictEqual(
-      healed.steps.find((s) => s.id === 'proof.egress-provider-ack').status,
-      'not-applicable',
-      'the next judgement rewrites the poisoned row',
-    );
-    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
-  });
-
-  // The proof file is written BEFORE the manifest update that records the choice
-  // and the promoted row, so a failure in between (a validation refusal, a full
-  // disk, a kill) leaves real delivery evidence on disk beside a manifest that
-  // still says nobody opted in. Without the evidence leg, `recomputeProofStatus`
-  // short-circuits to `not-applicable` and never inspects the record: a FAILED ack
-  // would be reduced away and the run could read `complete`. Simulated here by
-  // writing the proof and then reverting the manifest to its pre-answer bytes —
-  // the exact state that window produces.
-  it('a recorded ack survives a manifest that never recorded the choice — evidence is judged, not reduced away', async () => {
-    const { home, cwd } = await makeHome();
-    const spy = spySubprocess();
-    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
-    const preAnswer = await readFile(runPath, 'utf8');
-
-    const { writeBootstrapProof } = await import('../../plugins/runtime/scripts/lib/bootstrap-artifacts.mjs');
-    const persisted = await writeBootstrapProof({
-      homeDir: home,
-      repoRoot: null,
-      runId,
-      kind: 'egress-provider-ack',
-      record: {
-        kind: 'egress-provider-ack',
-        status: 'failed',
-        provider_ack: { result: 'failed', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'f'.repeat(64), ran_at: new Date(NOW).toISOString() },
-        mirror_correlated: false,
-        artifact_pointer: null,
-        artifact_hash: 'b'.repeat(64),
-        // Any well-formed binding: the point is that the record gets JUDGED at all.
-        // On this bare fixture it re-judges failed/stale either way — what must never
-        // happen is the not-applicable short-circuit that skips the record entirely.
-        bound_versions: { runtime: '0.0.1', claude: '0.0.1', codex: '0.0.1', plugins: { claude: {}, codex: {} } },
-        ran_at: new Date(NOW).toISOString(),
-      },
-    });
-    ok(persisted?.ok, `proof write failed: ${JSON.stringify(persisted)}`);
-    // The manifest update that would have recorded choice + row never landed.
-    await writeFile(runPath, preAnswer);
-    const reverted = JSON.parse(preAnswer);
-    ok(!reverted.choices.some((c) => c.step_id === 'proof.egress-provider-ack'), 'no choice was recorded');
-    strictEqual(reverted.steps.find((s) => s.id === 'proof.egress-provider-ack').status, 'not-applicable');
-
-    const status = await run(['status', '--format', 'json']);
-    const egress = status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(egress.required, true, 'evidence on disk makes the run accountable for it');
-    ok(egress.status !== 'not-applicable', `the record is judged, not skipped (got ${egress.status})`);
-    ok(status.report.completion.state !== 'complete', 'a machine holding a failed ack never reads complete');
-
-    // Row/completion agreement, as for the other two provenances: the re-probe
-    // must carry recorded evidence into its expected set too, or the manifest is
-    // left claiming not-applicable about a proof the completion says is owed.
-    await run(['resume', '--latest-open', '--format', 'json']);
-    const rejudged = JSON.parse(await readFile(runPath, 'utf8'));
-    const rejudgedRow = rejudged.steps.find((s) => s.id === 'proof.egress-provider-ack');
-    ok(rejudgedRow.status !== 'not-applicable',
-      `the re-probe carries recorded evidence into the row too (got ${rejudgedRow.status})`);
-    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
-  });
-
   // ADR-0048 §3 read-back — the false-demotion regression. Before 1.2 the
   // proof/ files were write-only: re-judgement consumed the manifest's REDUCED
   // completion.proofs (a shape with no `directions`), so recomputeProofStatus
@@ -889,20 +660,22 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     strictEqual(status.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke')?.status, 'passed', 'status reads the same recorded evidence');
   });
 
-  it('fragment persistence COMPOSES the actionable egress recovery with the §10.3 guidance instead of replacing it (Codex review)', async () => {
+  it('fragment persistence COMPOSES a judge\'s recovery with the §10.3 guidance instead of replacing it (Codex review)', async () => {
     const { home, cwd } = await makeHome();
-    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
+    // A statusline of the operator's own: the Claude judge names it and says
+    // runtime never chains it (its observation-time recovery), and the step is
+    // still unresolved, so its fragment is persisted beside that recovery.
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({ statusLine: { type: 'command', command: 'node /opt/my-own-statusline.mjs' } }, null, 2)}\n`);
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
     const manifest = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json'), 'utf8'));
-    const egress = manifest.steps.find((step) => step.id === 'egress.configured');
-    strictEqual(egress.status, 'pending');
-    ok(egress.fragment_pointer, 'the egress launcher fragment was persisted for the pending step');
-    // Both halves must survive: the activation procedure (channel+recipient+
-    // credential, placeholder-only) AND the fragment backup/verify guidance.
-    ok(/ADR-0041 §2c/.test(egress.recovery), 'the actionable activation recovery survives fragment persistence');
-    ok(/TELEGRAM_BOT_TOKEN/.test(egress.recovery), 'the credential env-key procedure survives fragment persistence');
-    ok(/Backup /.test(egress.recovery), 'the §10.3 fragment guidance is appended');
+    const step = manifest.steps.find((s) => s.id === 'statusline.claude.configured');
+    ok(!['satisfied', 'declined', 'not-applicable'].includes(step.status), `precondition: the step is unresolved (${step.status})`);
+    ok(step.fragment_pointer, 'the statusline fragment was persisted for the unresolved step');
+    // Both halves must survive: the judge's own recovery AND the fragment
+    // backup/verify guidance.
+    ok(/never auto-chains a statusline/.test(step.recovery), `the judge's recovery survives fragment persistence: ${step.recovery}`);
+    ok(/Backup /.test(step.recovery), 'the §10.3 fragment guidance is appended');
   });
-
   // ADR-0061 S3 (Codex review round 4): Codex lists engineer installed at 9.9.9 but no
   // install-cache directory holds it. The plan names the manual reinstall beside the
   // presented executor — never folded into it, since the executor cannot repair it —
@@ -955,333 +728,44 @@ describe('runtime bootstrap CLI — lifecycle', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ADR-0048 §3 / D0.1 — the attest verb (owner phone-receipt testimony)
+// ADR-0048 §2.1 — the Codex [tui] statusline fragment and declined hand-offs
 // ---------------------------------------------------------------------------
 
-describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
-  const EGRESS_ENV = Object.freeze({
-    AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
-    TELEGRAM_CHAT_ID: '123456789',
-    TELEGRAM_BOT_TOKEN: 'test-secret-token-value',
-  });
-
-  it('refuses an open run (resume is the audited door), a terminal run with no ack, and an abandoned run outright', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const spy = spySubprocess();
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spy.runner, env: { ...EGRESS_ENV } });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-
-    // Open → the audited resume --answers path is the only door (D0.1).
-    const onOpen = await run(['attest', '--run-id', runId]);
-    strictEqual(onOpen.exitCode, EXIT.INVALID);
-    ok(/resume --answers/.test(onOpen.report.diagnostics.join(' ')), 'the refusal routes to the audited path');
-
-    // Terminal (current-schema) with no recorded ack → the missing-evidence refusal.
-    const bareId = 'bootstrap-20260718T040000Z-0bb001';
-    const dir = join(home, '.agentic-plugins', 'runs', 'bootstrap', bareId);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, 'run.json'), `${JSON.stringify({
-      schema: 'runtime-bootstrap-run-1.4',
-      run_id: bareId,
-      started_at: '2026-07-18T04:00:00Z',
-      updated_at: '2026-07-18T04:00:00Z',
-      status: 'configured-not-verified',
-      selection: { bundle: 'base', desired: ['runtime', 'companions'], excluded: [] },
-      steps: [],
-      boundary: { writes_host_config: false, writes_credential: false, writes_config_local_toml: false, performs_network_request: false },
-    }, null, 2)}\n`);
-    const noAck = await run(['attest', '--run-id', bareId]);
-    strictEqual(noAck.exitCode, EXIT.INVALID);
-    ok(/pre-existing acked attempt/.test(noAck.report.diagnostics.join(' ')), 'the refusal names the missing ack');
-
-    await run(['abandon', '--run-id', runId, '--reason', 'test']);
-    const onAbandoned = await run(['attest', '--run-id', runId]);
-    strictEqual(onAbandoned.exitCode, EXIT.INVALID);
-    ok(/abandoned run is an escape hatch/.test(onAbandoned.report.diagnostics.join(' ')));
-  });
-
-  it('refuses a legacy-schema run — attest records CURRENT-schema evidence only', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const spy = spySubprocess();
-    // Seed a schema-1.1 terminal run directly (the pre-vnext world).
-    const runId = 'bootstrap-20260716T000000Z-abcdef';
-    const dir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, 'run.json'), `${JSON.stringify({
-      schema: 'runtime-bootstrap-run-1.1',
-      run_id: runId,
-      started_at: '2026-07-16T00:00:00Z',
-      updated_at: '2026-07-16T00:00:00Z',
-      status: 'complete',
-      selection: { bundle: 'base', desired: [], excluded: [] },
-      steps: [],
-      boundary: { writes_host_config: false, writes_credential: false, writes_config_local_toml: false, performs_network_request: false },
-    }, null, 2)}\n`);
-
-    const result = await boot({ argv: ['attest', '--run-id', runId], home, cwd, runner: hostedRunner(), subprocess: spy.runner, env: { ...EGRESS_ENV } });
-    strictEqual(result.exitCode, EXIT.INVALID);
-    ok(/schema runtime-bootstrap-run-1\.1/.test(result.report.diagnostics.join(' ')), 'the refusal names the legacy schema');
-  });
-
-  it('records testimony over a currently-passing ack, and the completion renders delivery-attested', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const spy = spySubprocess();
-    const env = { ...EGRESS_ENV };
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spy.runner, env });
-
-    // 1. Plan with the egress-proof opt-in (an execute answer makes the step expected).
-    const optIn = join(home, 'opt-in.json');
-    await writeFile(optIn, JSON.stringify([
-      { step_id: 'proof.egress-provider-ack', answer: 'execute' },
-      // §6.1.3 — the two Stage-4 value steps are CONFIG obligations like any
-      // other; a run that never resolves them cannot terminalize, which is the
-      // interview doing its job. Declining is this fixture's answer because its
-      // subject is the receipt door, not the value grammar.
-      { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
-    ]));
-    const plan = await run(['plan', '--bundle', 'base', '--answers', optIn, '--format', 'json']);
-    const runId = plan.report.run_id;
-    ok(plan.report.steps.some((s) => s.id === 'proof.egress-provider-ack'), 'the opt-in makes the step expected');
-
-    // 2. Seed the ack proof the executor leaf will eventually produce: bound to
-    //    the CURRENT hosted probe and the CURRENT activation fingerprint.
-    const { deriveActivationFingerprint } = await import('../../plugins/runtime/scripts/lib/evidence-contract.mjs');
-    const { writeBootstrapProof } = await import('../../plugins/runtime/scripts/lib/bootstrap-artifacts.mjs');
-    const { RUNTIME_VERSION } = await import('../../plugins/runtime/scripts/version.mjs');
-    const { loadPluginSet, resolveBundle } = await import('../../plugins/runtime/scripts/lib/plugin-set.mjs');
-    const pluginSet = await loadPluginSet({ pluginRoot: PLUGIN_ROOT });
-    const base = resolveBundle(pluginSet, 'base');
-    const perHost = (host) => Object.fromEntries(base.filter((n) => (pluginSet.plugins[n]?.hosts ?? []).includes(host)).map((n) => [n, '9.9.9']));
-    const fingerprint = deriveActivationFingerprint({ channel: 'telegram', recipient: EGRESS_ENV.TELEGRAM_CHAT_ID, credentialEnvVar: 'TELEGRAM_BOT_TOKEN' });
-    const attempt = 'a'.repeat(64);
-    const seeded = await writeBootstrapProof({
-      homeDir: home,
-      repoRoot: null,
-      runId,
-      kind: 'egress-provider-ack',
-      record: {
-        kind: 'egress-provider-ack',
-        status: 'passed',
-        provider_ack: { result: 'acked', attempt_hash: attempt, activation_fingerprint: fingerprint, ran_at: new Date(NOW).toISOString() },
-        // The fully-verified shape: the reducer's recomputed aggregate
-        // requires the mirror seat AND a linkable artifact hash alongside
-        // the ack (a seed missing either reduces failed, and attest would
-        // rightly refuse the testimony).
-        mirror_correlated: true,
-        artifact_pointer: null,
-        artifact_hash: 'b'.repeat(64),
-        bound_versions: { runtime: RUNTIME_VERSION, claude: '2.1.0', codex: '0.140.0', plugins: { claude: perHost('claude'), codex: perHost('codex') } },
-        ran_at: new Date(NOW).toISOString(),
-      },
-    });
-    strictEqual(seeded.ok, true, `ack seed persists: ${seeded.diagnostics.join('; ')}`);
-
-    // 3. Execute the smoke through the doctor stub so the run TERMINALIZES as
-    //    complete (attest is the post-terminal door only — an open run routes
-    //    through resume --answers).
-    const exec = join(home, 'execute-smoke.json');
-    await writeFile(exec, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }, { step_id: 'proof.permission', answer: 'execute' }]));
-    const doctorStub = async (scriptPath, args) => {
-      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
-      if (scriptPath.endsWith('doctor.mjs')) {
-        // ADR-0057 §Decision 5 — `proof.permission` is now ALWAYS applicable, so a run
-        // that must terminalize `complete` owes it exactly as it owes the smoke.
-        if (args.includes('--execute-permission-proof')) {
-          return okOut(JSON.stringify({
-            permission_proof: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
-            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
-          }));
-        }
-        if (args.includes('--execute-deep-peer-smoke')) {
-          return okOut(JSON.stringify({
-            deep_peer_smoke: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
-            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
-          }));
-        }
-        return okOut(JSON.stringify({}));
-      }
-      return missing();
-    };
-    const resume = await boot({ argv: ['resume', '--run-id', runId, '--answers', exec, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: doctorStub, env });
-    strictEqual(resume.report.run_status, 'complete', `the run terminalizes complete over the executed smoke + recorded ack: ${JSON.stringify(resume.report.completion.proofs?.filter((p) => p.required).map((p) => [p.kind, p.status, p.reasons]))} unsat=${JSON.stringify(resume.report.completion.unsatisfied)} warn=${JSON.stringify(resume.report.warnings)}`);
-
-    // 4. Attest the terminal run: testimony lands, verdict attested, label derives.
-    const attest = await run(['attest', '--run-id', runId, '--format', 'json']);
-    strictEqual(attest.exitCode, EXIT.OK, JSON.stringify(attest.report.diagnostics ?? attest.report));
-    strictEqual(attest.report.receipt.status, 'attested', JSON.stringify(attest.report.receipt));
-    strictEqual(attest.report.receipt.attempt_hash, attempt);
-
-    // 5. A REPEATED attest over the same attempt/bytes is idempotent — the
-    //    original testimony (its attested_at included) survives verbatim.
-    const receiptPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-receipt-attestation.json');
-    const firstBytes = await readFile(receiptPath, 'utf8');
-    const again = await boot({ argv: ['attest', '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spy.runner, env, now: NOW + 60_000 });
-    strictEqual(again.exitCode, EXIT.OK);
-    strictEqual(await readFile(receiptPath, 'utf8'), firstBytes, 'identical testimony is never rewritten');
-
-    const verify = await run(['verify', '--run-id', runId]);
-    ok(/delivery-attested/.test(verify.rendered), 'the derived label decorates the completion line');
-    ok(/receipt attestation: attested/.test(verify.rendered), 'the receipt line is rendered');
-
-    // 6. At-rest evidence downgrade (Refine-verify round 3): if the persisted
-    //    ack record loses its mirror leg AFTER terminalization, the recomputed
-    //    aggregate goes failed and a FRESH attest refuses the testimony — the
-    //    gate consumes the recomputation, never the stored status. (The
-    //    receipt from step 4 already exists; delete it so the refusal below
-    //    is the ack gate, not receipt idempotency.)
-    const ackPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json');
-    const ackRecord = JSON.parse(await readFile(ackPath, 'utf8'));
-    ackRecord.mirror_correlated = false;
-    await writeFile(ackPath, `${JSON.stringify(ackRecord, null, 2)}\n`);
-    await rm(receiptPath);
-    const refused = await run(['attest', '--run-id', runId, '--format', 'json']);
-    strictEqual(refused.exitCode, EXIT.INVALID, JSON.stringify(refused.report));
-    ok((refused.report.diagnostics ?? []).some((d) => /pass/i.test(d) || /ack/i.test(d)),
-      `the refusal names the non-passing ack: ${JSON.stringify(refused.report.diagnostics)}`);
-
-    // 7. Same downgrade through the ARTIFACT-HASH leg (Refine-verify round
-    //    4): restore the mirror but drop the doctor-artifact hash — the
-    //    three-leg recompute fails on linkage and a fresh attest refuses.
-    ackRecord.mirror_correlated = true;
-    ackRecord.artifact_hash = null;
-    await writeFile(ackPath, `${JSON.stringify(ackRecord, null, 2)}\n`);
-    const refusedNoHash = await run(['attest', '--run-id', runId, '--format', 'json']);
-    strictEqual(refusedNoHash.exitCode, EXIT.INVALID, JSON.stringify(refusedNoHash.report));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ADR-0048 §2.1 — frozen [tui] preview vs a re-rendered combined fragment
-// ---------------------------------------------------------------------------
-
-describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED (Refine-verify round 3)', () => {
-  it('a satisfied→pending statusline re-transition WITHOUT version drift keeps the frozen preview and warns, naming the combined fragment as the source', async () => {
-    // Hosted runner: versions are observed and stable across plan → resume,
-    // so §7 invalidation never fires and the notify artifact stays FROZEN
-    // with the preview it rendered while the statusline step was satisfied.
-    // When the statusline observation then disappears, resume re-renders the
-    // combined fragment beside the frozen preview — two [tui] carriers. The
-    // reconciliation is the fragment-freeze follow-up; the run must NAME the
-    // supersession instead of hiding it.
+describe('bootstrap Codex statusline fragment — one [tui] table, declined hand-offs are history', () => {
+  it('plan renders the Codex [tui] fragment with status_line alone, and no notification or egress fragment (ADR-0064)', async () => {
     const { home, cwd } = await makeHome();
-    const codexConfig = join(home, '.codex', 'config.toml');
-    await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'fragments');
+    const names = (await readdir(fragmentsDir)).sort();
+    ok(names.includes('statusline-codex.fragment'), `precondition: the Codex statusline fragment rendered: ${JSON.stringify(names)}`);
+    ok(!names.includes('notification-plan.fragment'), 'the notification plan is not rendered');
+    ok(!names.includes('egress-launcher-plan.fragment'), 'the egress launcher plan is not rendered');
+    ok(!names.some((n) => /notify/.test(n)), `no notify fragment of any name: ${JSON.stringify(names)}`);
 
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-    strictEqual(plan.report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'satisfied');
-    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
-    const notifyBefore = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
-    ok(notifyBefore.fragments.tui_notifications_toml, 'the preview is the carrier while the statusline step is satisfied');
-
-    // The observation disappears (operator reverted their config) — same
-    // versions, so the freeze holds.
-    await writeFile(codexConfig, '# empty\n');
-    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
-
-    const carriers = [];
-    for (const name of (await readdir(fragmentsDir)).filter((n) => n.endsWith('.fragment')).sort()) {
-      if (/\[tui\]/.test(await readFile(join(fragmentsDir, name), 'utf8'))) carriers.push(name);
-    }
-    deepStrictEqual(carriers, ['notification-plan.fragment', 'statusline-codex.fragment'],
-      'the frozen preview and the re-rendered combined fragment coexist — the honest state the warning exists for');
-    ok((resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact still carries/.test(w) && /combined statusline-codex fragment/.test(w)),
-      `the two-carrier state is NAMED with the superseding source: ${JSON.stringify(resume.report.warnings)}`);
+    const fragment = JSON.parse(await readFile(join(fragmentsDir, 'statusline-codex.fragment'), 'utf8'));
+    match(fragment.fragment_toml, /^\[tui\]$/m, 'one [tui] table');
+    match(fragment.fragment_toml, /^status_line = \[/m, 'carrying status_line');
+    ok(!/notifications/.test(fragment.fragment_toml), `and no notifications key: ${fragment.fragment_toml}`);
+    ok(!plan.report.steps.some((s) => /^(notify|egress)\.|^config\.notify_kinds$|^proof\.egress-provider-ack$/.test(s.id)),
+      'no retired step is derived');
   });
 
-  it('a DECLINED statusline step never makes its historical combined fragment authoritative — the fresh preview stays the presented source (round-4 High)', async () => {
-    // Plan with notify satisfied + statusline pending: the combined fragment
-    // renders carrying BOTH keys and the (satisfied) notify step persists no
-    // artifact. Then notify regresses to pending while the operator DECLINES
-    // statusline: the declined step keeps its historical pointer, but that
-    // frozen fragment still carries the refused status_line key — routing
-    // the operator there would make a refused key authoritative. The strip
-    // predicate must treat a dead step's pointer as history: the fresh
-    // notification preview is the presented [tui] source, un-stripped and
-    // un-noted.
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const codexConfig = join(home, '.codex', 'config.toml');
-    // The notify step fully configured (BOTH halves — argv + the ADR-0040 §4b
-    // notifications selection) while the statusline step is not: no
-    // `status_line` key. A satisfied notify step skips fragment persistence, so
-    // no notify artifact freezes on this plan run — which is the precondition
-    // this test needs. Configuring only the argv would leave the step pending,
-    // freeze a STRIPPED artifact here, and turn the scenario into the §6.1.1
-    // no-source case that the rounds-5-6 test below already covers.
-    const notifyConfigured = `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n[tui]\nnotifications = ["approval-requested", "agent-turn-complete"]\n`;
-    await writeFile(codexConfig, notifyConfigured);
+  it('declining the Codex statusline step withdraws its hand-off and never rewrites the frozen fragment (rounds 5-6)', async () => {
+    // Decline withdraws the step's presentation fields (pointer + apply +
+    // desired): a refused key is history. The frozen fragment itself is never
+    // rewritten (a round-5 restore attempt opened a fragment-vs-manifest
+    // commit-ordering hole; round-6 High), and the declined step's historical
+    // hand-off must not render anywhere.
+    const { home, cwd } = await makeHome();
     const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
 
     const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
     const runId = plan.report.run_id;
-    strictEqual(plan.report.steps.find((s) => s.id === 'notify.codex.configured').status, 'satisfied');
-    ok(plan.report.steps.find((s) => s.id === 'statusline.codex.configured').fragment_pointer,
-      'the combined fragment rendered while the statusline step was alive');
-    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
+    const fragmentPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'statusline-codex.fragment');
+    ok(plan.report.steps.find((s) => s.id === 'statusline.codex.configured').fragment_pointer, 'precondition: the fragment was presented');
+    const frozenBytes = await readFile(fragmentPath, 'utf8');
 
-    // notify regresses (wiring removed) + the operator declines statusline.
-    await writeFile(codexConfig, '# empty\n');
     const answersPath = join(home, 'decline-sl.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'statusline.codex.configured', answer: 'decline' }]));
-    const resume = await run(['resume', '--run-id', runId, '--answers', answersPath, '--format', 'json']);
-    strictEqual(resume.report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'declined');
-
-    const notifyArtifact = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
-    ok(notifyArtifact.fragments.tui_notifications_toml,
-      'the fresh preview is the presented source — a declined step\'s historical fragment must not swallow it');
-    ok(notifyArtifact.tui_note == null,
-      'no routing note may point at a declined (historical) combined fragment');
-    ok(!(resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact/.test(w)),
-      `no supersession warning — the preview IS the source here: ${JSON.stringify(resume.report.warnings)}`);
-  });
-
-  it('the frozen-supersession warning inspects the preview FIELD, not the serialized text — a [tui] literal in tui_warning is not a preview (round-4 false-positive)', async () => {
-    const { home, cwd } = await makeHome();
-    const codexConfig = join(home, '.codex', 'config.toml');
-    await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-    const notifyPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'notification-plan.fragment');
-    // Simulate a frozen artifact whose preview is ALREADY stripped but whose
-    // builder-level prose legitimately contains the [tui] literal.
-    const artifact = JSON.parse(await readFile(notifyPath, 'utf8'));
-    artifact.fragments.tui_notifications_toml = null;
-    artifact.tui_warning = 'existing [tui] notifications were observed in the host config';
-    await writeFile(notifyPath, `${JSON.stringify(artifact, null, 2)}\n`);
-
-    await writeFile(codexConfig, '# empty\n');
-    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
-    ok(!(resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact still carries/.test(w)),
-      `a stripped preview with prose-level [tui] must not trigger the supersession warning: ${JSON.stringify(resume.report.warnings)}`);
-  });
-
-  it('declining the statusline step on an all-pending run NAMES the no-source state and withdraws the declined hand-off (rounds 5-6)', async () => {
-    // All-pending plan: the combined fragment renders and the notify
-    // artifact persists STRIPPED. The operator then declines statusline:
-    // decline withdraws the step's presentation fields (pointer + apply +
-    // desired), the combined fragment loses authority, and the run now
-    // presents NO [tui] source. Runtime must NAME that state with a
-    // re-plan warning — never rewrite the frozen artifact (a round-5
-    // restore attempt opened a fragment-vs-manifest commit-ordering hole;
-    // round-6 High). The declined step's historical hand-off must not
-    // render anywhere.
-    const { home, cwd } = await makeHome();
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
-    const stripped = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
-    strictEqual(stripped.fragments.tui_notifications_toml, null, 'all-pending plan strips the preview (combined is the source)');
-    const strippedBytes = await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8');
-
-    const answersPath = join(home, 'decline-sl-allpending.json');
     await writeFile(answersPath, JSON.stringify([{ step_id: 'statusline.codex.configured', answer: 'decline' }]));
     const resume = await run(['resume', '--run-id', runId, '--answers', answersPath, '--format', 'json']);
 
@@ -1290,11 +774,7 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
     strictEqual(slStep.fragment_pointer ?? null, null, 'decline withdraws the presentation pointer — a refused key is history');
     strictEqual(slStep.apply_command ?? null, null, 'decline withdraws the apply command');
     strictEqual(slStep.desired ?? null, null, 'decline withdraws the frozen plan expectation');
-
-    strictEqual(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'), strippedBytes,
-      'the frozen artifact is NEVER rewritten (no fragment-vs-manifest commit-ordering hole)');
-    ok((resume.report.warnings ?? []).some((w) => /presents NO \[tui\] source/.test(w) && /Re-plan/.test(w)),
-      `the no-source state is NAMED with the re-plan recovery: ${JSON.stringify(resume.report.warnings)}`);
+    strictEqual(await readFile(fragmentPath, 'utf8'), frozenBytes, 'the frozen fragment is NEVER rewritten');
 
     const rendered = (await run(['status', '--run-id', runId])).rendered;
     const renderedLines = rendered.split('\n');
@@ -1304,6 +784,22 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
       `the declined step's historical hand-off must not render beneath it: next line = ${JSON.stringify(renderedLines[declinedIdx + 1])}`);
   });
 
+  it('a canonical-LOOKING status_line under a redefined [tui] table is pending, never certified', async () => {
+    // A dotted assignment implicitly creates [tui], and the later explicit header
+    // redefines it — invalid TOML that Codex will not load, whose captured
+    // status_line nonetheless reads exactly like the canonical array.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    await writeFile(join(home, '.codex', 'config.toml'), [
+      'approval_policy = "on-request"',
+      'tui.theme = "dark"',
+      '[tui]',
+      'status_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]',
+      '',
+    ].join('\n'));
+    const report = (await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner })).report;
+    strictEqual(report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'pending');
+    ok(report.completion.unsatisfied.includes('statusline.codex.configured'), 'and it holds completion back');
+  });
   it('a LEGACY declined step later observed satisfied never resurrects its refused render state (round-6 Medium)', async () => {
     // Seed a run whose statusline step was declined by an OLDER runtime that
     // did not withdraw the fields, then make the observation satisfy it: the
@@ -1363,25 +859,6 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
     strictEqual(judged.fragment_pointer ?? null, null, 'the refused pointer never resurrects (desired-free variant)');
     ok(judged.fragment_applied !== true, 'the refused render never promotes fragment_applied (desired-free variant)');
   });
-
-  it('a frozen artifact that fails to PARSE keeps the supersession call conservative, never silent (round-5 Medium)', async () => {
-    const { home, cwd } = await makeHome();
-    const codexConfig = join(home, '.codex', 'config.toml');
-    await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-    const notifyPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'notification-plan.fragment');
-    // Truncate the frozen artifact mid-preview: unparseable, preview fate unknown.
-    const original = await readFile(notifyPath, 'utf8');
-    await writeFile(notifyPath, original.slice(0, Math.floor(original.length / 2)));
-
-    await writeFile(codexConfig, '# empty\n');
-    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
-    ok((resume.report.warnings ?? []).some((w) => /could not be parsed/.test(w) && /combined statusline-codex fragment is the presented/.test(w)),
-      `parse failure must warn conservatively, not silence the supersession: ${JSON.stringify(resume.report.warnings)}`);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1416,12 +893,16 @@ describe('runtime bootstrap CLI — schema-minor migration (ADR-0048 §1)', () =
     ok(resume.exitCode !== EXIT.INVALID, JSON.stringify(resume.report.diagnostics ?? []));
 
     const migrated = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8'));
-    strictEqual(migrated.schema, 'runtime-bootstrap-run-1.4', 'the schema stamp is bumped explicitly (the old spread preserved 1.1)');
-    ok(migrated.history.some((h) => h.from === 'runtime-bootstrap-run-1.1' && h.to === 'runtime-bootstrap-run-1.4'), 'the migration is a history row, not a silent rewrite');
-    // Registry-new steps joined the persisted run (the 1.1 world had no notify.codex.configured).
-    ok(migrated.steps.some((s) => s.id === 'notify.codex.configured'), 'the ADR-0048 §1 split step was injected additively');
-    // The satisfied fixture wires notify=, so the injected step judged satisfied on the same resume.
-    strictEqual(migrated.steps.find((s) => s.id === 'notify.codex.configured').status, 'satisfied');
+    strictEqual(migrated.schema, 'runtime-bootstrap-run-1.5', 'the schema stamp is bumped explicitly (the old spread preserved 1.1)');
+    const migrations = migrated.history.filter((h) => h.from === 'runtime-bootstrap-run-1.1' && h.to === 'runtime-bootstrap-run-1.5');
+    strictEqual(migrations.length, 1, 'the migration is a history row, not a silent rewrite');
+    match(migrations[0].reason, /and no retired step rows to drop\./, 'a run with no retired rows says so rather than naming none');
+    // Registry-new steps joined the persisted run (the 1.1 world had no
+    // statusline steps).
+    ok(migrated.steps.some((s) => s.id === 'statusline.codex.configured'), 'the ADR-0048 §1 statusline step was injected additively');
+    // The satisfied fixture carries the canonical status_line, so the injected
+    // step judged satisfied on the same resume.
+    strictEqual(migrated.steps.find((s) => s.id === 'statusline.codex.configured').status, 'satisfied');
   });
 
   // D1 (ratified 2026-08-02) — a legacy terminal run is still immutable history,
@@ -1532,338 +1013,176 @@ describe('runtime bootstrap CLI — schema-minor migration (ADR-0048 §1)', () =
     strictEqual(resume.exitCode, EXIT.INVALID);
     ok(/newer than this runtime/.test(resume.report.diagnostics.join(' ')), 'the refusal names the version relation');
   });
+
+  // ADR-0064 Decision 7 — "Retained and open bootstrap runs". The retired ids,
+  // listed here rather than read from the registry, so the test states what
+  // ADR-0064 retired instead of following whatever the code now says.
+  const ADR0064_RETIRED = ['config.notify_kinds', 'egress.configured', 'notify.codex.configured', 'notify.configured', 'proof.egress-provider-ack'];
+  const SHA_A = 'a'.repeat(64);
+  const SHA_B = 'b'.repeat(64);
+  const retiredAckRecord = () => ({
+    kind: 'egress-provider-ack',
+    status: 'passed',
+    provider_ack: { result: 'acked', attempt_hash: SHA_A, activation_fingerprint: 'c'.repeat(64), ran_at: '2026-09-20T00:00:00.000Z' },
+    mirror_correlated: true,
+    artifact_pointer: '~/.agentic-plugins/runs/doctor/doctor-20260920T000000Z-abc123/doctor.json',
+    artifact_hash: SHA_B,
+    bound_versions: { runtime: '0.90.0', claude: '2.1.0', codex: '0.140.0', plugins: { claude: {}, codex: {} } },
+    ran_at: '2026-09-20T00:00:00.000Z',
+  });
+  const retiredReceiptRecord = () => ({ surface: 'owner-phone', attested_at: '2026-09-20T00:05:00.000Z', attempt_hash: SHA_A, provider_proof_artifact_hash: SHA_B });
+
+  it('an OPEN 1.4 run holding retired rows migrates on resume: rows dropped and named, ledger and linkage kept, retired evidence skipped (ADR-0064 Decision 7)', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runId = 'bootstrap-20260920T000000Z-0cc001';
+    const at = '2026-09-20T00:00:00Z';
+    const seeded = {
+      ...legacyOpenManifest(runId),
+      schema: 'runtime-bootstrap-run-1.4',
+      started_at: at,
+      updated_at: at,
+      steps: [
+        { id: 'config.notify_kinds', stage: 4, status: 'pending', declinable: true, blocked_by: [] },
+        { id: 'notify.configured', stage: 5, status: 'satisfied', declinable: true, blocked_by: [], observed: 'notify_channel=telegram' },
+        { id: 'notify.codex.configured', stage: 5, status: 'pending', declinable: true, blocked_by: ['host.codex.present'] },
+        { id: 'egress.configured', stage: 5, status: 'satisfied', declinable: true, blocked_by: [] },
+        { id: 'proof.egress-provider-ack', stage: 8, status: 'pending', declinable: true, blocked_by: ['egress.configured'] },
+      ],
+      choices: [
+        { step_id: 'config.notify_kinds', answer: 'set:notify_kinds=approval,idle', at },
+        { step_id: 'proof.egress-provider-ack', answer: 'execute', at },
+      ],
+      history: [
+        { step_id: 'egress.configured', from: 'pending', to: 'satisfied', reason: 'observed on resume', at },
+      ],
+      seeded_from: { profile_id: 'laptop', profile_hash: SHA_A },
+    };
+    const runDir = await seedManifest(home, seeded);
+    // PRE-CONTROL: the 1.5 schema still accepts every retired member, or the
+    // run could only be abandoned (Decision 7, first bullet).
+    const validate = await makeValidator('runtime-bootstrap-run', { pluginRoot: PLUGIN_ROOT });
+    deepStrictEqual(validate(seeded).errors, [], 'the retained 1.4 manifest validates under the packaged schema');
+    await mkdir(join(runDir, 'proof'), { recursive: true });
+    const ackPath = join(runDir, 'proof', 'egress-provider-ack.json');
+    const receiptPath = join(runDir, 'proof', 'egress-receipt-attestation.json');
+    await writeFile(ackPath, `${JSON.stringify(retiredAckRecord(), null, 2)}\n`);
+    await writeFile(receiptPath, `${JSON.stringify(retiredReceiptRecord(), null, 2)}\n`);
+    const ackBefore = await readFile(ackPath);
+    const receiptBefore = await readFile(receiptPath);
+
+    const resume = await boot({ argv: ['resume', '--latest-open', '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    notStrictEqual(resume.report.status, 'evidence-unreadable', `the retired evidence files are skipped, not refused: ${JSON.stringify(resume.report.diagnostics)}`);
+    ok([EXIT.INCOMPLETE, EXIT.CONFIGURED_NOT_VERIFIED].includes(resume.exitCode), `resume succeeds (exit ${resume.exitCode}): ${JSON.stringify(resume.report.diagnostics ?? [])}`);
+
+    const migrated = JSON.parse(await readFile(join(runDir, 'run.json'), 'utf8'));
+    strictEqual(migrated.schema, 'runtime-bootstrap-run-1.5', 'the run is stamped with the current minor');
+    deepStrictEqual(migrated.steps.filter((step) => ADR0064_RETIRED.includes(step.id)).map((step) => step.id), [], 'no retired row survives in steps[]');
+    deepStrictEqual(resume.report.steps.filter((step) => ADR0064_RETIRED.includes(step.id)).map((step) => step.id), [], 'nor in the reported steps');
+
+    const migrations = migrated.history.filter((h) => h.step_id === null && h.from === 'runtime-bootstrap-run-1.4' && h.to === 'runtime-bootstrap-run-1.5');
+    strictEqual(migrations.length, 1, `exactly one migration row: ${JSON.stringify(migrated.history)}`);
+    for (const id of ADR0064_RETIRED) {
+      ok(migrations[0].reason.includes(`${id} (ADR-0064)`), `the migration row names ${id} with the ADR that retired it: ${migrations[0].reason}`);
+    }
+    ok(!/permission\.(claude|codex)\.applied/.test(migrations[0].reason), 'and names no retired id the run did not carry');
+
+    deepStrictEqual(migrated.choices.slice(0, seeded.choices.length), seeded.choices, 'choices[] keeps every row as written, retired ids included');
+    deepStrictEqual(migrated.history.slice(0, seeded.history.length), seeded.history, 'history[] keeps every earlier row as written');
+    deepStrictEqual(migrated.seeded_from, seeded.seeded_from, 'seeded_from stays as written');
+    deepStrictEqual(validate(migrated).errors, [], 'the migrated manifest validates');
+
+    ok((await readFile(ackPath)).equals(ackBefore), 'the retired ack file stays on disk byte-identical');
+    ok((await readFile(receiptPath)).equals(receiptBefore), 'the retired receipt file stays on disk byte-identical');
+
+    for (const completion of [resume.report.completion, migrated.completion]) {
+      ok(!completion.proofs.some((p) => p.kind === 'egress-provider-ack'), `no egress-provider-ack proof is reduced: ${JSON.stringify(completion.proofs.map((p) => p.kind))}`);
+      ok(!('egress_receipt_attestation' in completion), 'and no receipt verdict is written');
+    }
+
+    // The migrated run is a 1.5 run now, so status reads its proof directory —
+    // the skip is not limited to open runs of an earlier minor.
+    const status = await boot({ argv: ['status', '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    notStrictEqual(status.report.status, 'evidence-unreadable', JSON.stringify(status.report.diagnostics));
+    notStrictEqual(status.exitCode, EXIT.UNEXPECTED);
+    strictEqual(status.report.historical, undefined, 'a 1.5 run takes the current path, not the historical one');
+    ok(!status.report.completion.proofs.some((p) => p.kind === 'egress-provider-ack'));
+  });
+
+  it('a TERMINAL 1.4 run keeps its stored egress proof and receipt verdict as history, and its proof files are not read (ADR-0064 Decision 7)', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runId = 'bootstrap-20260920T000000Z-0cc002';
+    const stored = {
+      ...legacyOpenManifest(runId),
+      schema: 'runtime-bootstrap-run-1.4',
+      status: 'complete',
+      steps: [
+        { id: 'egress.configured', stage: 5, status: 'satisfied', declinable: true, blocked_by: [] },
+        { id: 'proof.egress-provider-ack', stage: 8, status: 'satisfied', declinable: true, blocked_by: ['egress.configured'] },
+      ],
+      completion: {
+        state: 'complete',
+        unsatisfied: [],
+        missing_steps: [],
+        proofs: [
+          { kind: 'deep-peer-smoke', step_id: 'proof.deep-peer-smoke', declined: false, status: 'passed', reasons: [], required: true, artifact_pointer: null, artifact_hash: SHA_A, bound_versions: null, ran_at: '2026-09-20T00:00:00Z' },
+          { kind: 'egress-provider-ack', step_id: 'proof.egress-provider-ack', declined: false, status: 'passed', reasons: ['acked and mirrored'], required: true, artifact_pointer: null, artifact_hash: SHA_B, bound_versions: null, ran_at: '2026-09-20T00:00:00Z' },
+        ],
+        hook_attestation: { status: 'not-applicable', reasons: [], attested_plugins: [], bound_versions: null, artifact_pointer: null, artifact_hash: null, attested_at: null },
+        egress_receipt_attestation: { status: 'attested', reasons: [], attested_at: '2026-09-20T00:05:00Z', attempt_hash: SHA_A, provider_proof_artifact_hash: SHA_B },
+      },
+    };
+    const runDir = await seedManifest(home, stored);
+    const before = await readFile(join(runDir, 'run.json'), 'utf8');
+    const reportOf = async (verb) => boot({ argv: [verb, '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const clean = {};
+    for (const verb of ['status', 'verify']) {
+      const result = await reportOf(verb);
+      clean[verb] = result.report;
+      strictEqual(result.exitCode, EXIT.LEGACY_HISTORICAL, `${verb} exits 50`);
+      strictEqual(result.report.historical, true);
+      strictEqual(result.report.legacy_schema, 'runtime-bootstrap-run-1.4');
+      const summary = result.report.legacy_completion_summary;
+      deepStrictEqual(summary.proofs.find((p) => p.kind === 'egress-provider-ack'), {
+        kind: 'egress-provider-ack',
+        status: 'passed',
+        required: true,
+        declined: false,
+        step_id: 'proof.egress-provider-ack',
+        artifact_hash: SHA_B,
+        ran_at: '2026-09-20T00:00:00Z',
+        reason_count: 1,
+      }, `${verb}: the stored egress row is projected, not dropped`);
+      strictEqual(summary.proofs.length, 2, 'both stored rows are projected');
+      strictEqual(summary.unreadable_proof_records, 0, `${verb}: the retired kind is not counted unreadable`);
+      ok(summary.egress_receipt_attestation, `${verb}: the stored receipt verdict is summarized`);
+      strictEqual(summary.egress_receipt_attestation.status, 'attested');
+    }
+
+    const text = (await boot({ argv: ['status', '--run-id', runId], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner })).rendered;
+    ok(/^ {2}- receipt attestation: attested$/m.test(text), `the historical render keeps the receipt line:\n${text}`);
+    ok(/^ {2}- \[stage 8\] proof\.egress-provider-ack: passed; 1 reason\(s\) withheld$/m.test(text), `and the egress row:\n${text}`);
+    ok(!/proof record\(s\) carried no recognizable kind/.test(text), 'nothing is reported unreadable');
+
+    // Its proof files are not read: an invalid retired file AND an invalid
+    // live-kind file change nothing. The live-kind one is the discriminator — the
+    // reader skips a retired file by name on every path, but it refuses an
+    // unparseable deep-peer-smoke.json on any path that reads the directory.
+    await mkdir(join(runDir, 'proof'), { recursive: true });
+    await writeFile(join(runDir, 'proof', 'egress-provider-ack.json'), 'not json {');
+    await writeFile(join(runDir, 'proof', 'deep-peer-smoke.json'), 'not json {');
+    for (const verb of ['status', 'verify']) {
+      const result = await reportOf(verb);
+      strictEqual(result.exitCode, EXIT.LEGACY_HISTORICAL, `${verb} still exits 50`);
+      deepStrictEqual(result.report, clean[verb], `${verb}: the outcome does not depend on the run's proof files`);
+    }
+    strictEqual(await readFile(join(runDir, 'run.json'), 'utf8'), before, 'the terminal record is byte-identical');
+  });
 });
 
 function renderOf(result) {
   return result.rendered ?? '';
 }
-
-// ---------------------------------------------------------------------------
-// ADR-0048 §3 — egress-provider-ack via the doctor executor, end to end
-// ---------------------------------------------------------------------------
-
-describe('bootstrap egress-provider-ack executor E2E (ADR-0048 §3)', () => {
-  const EGRESS_ENV = {
-    AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
-    TELEGRAM_CHAT_ID: '424242424242',
-    TELEGRAM_BOT_TOKEN: '999999:e2e-sentinel-token',
-  };
-  // The fingerprint the CURRENT readers derive from EGRESS_ENV — the stubbed
-  // doctor report must echo it, or the reducer honestly re-judges the recorded
-  // ack stale (recorded against an activation this machine no longer carries).
-  const CURRENT_FINGERPRINT = deriveActivationFingerprint({
-    channel: 'telegram',
-    recipient: '424242424242',
-    credentialEnvVar: 'TELEGRAM_BOT_TOKEN',
-  });
-  const ATTEMPT_HASH = 'a'.repeat(64);
-  const ARTIFACT_SHA = 'b'.repeat(64);
-
-  function egressDoctorStub({ blocked = false } = {}) {
-    const calls = [];
-    const runner = async (scriptPath, args) => {
-      calls.push({ scriptPath, args: [...args] });
-      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
-      if (scriptPath.endsWith('doctor.mjs')) {
-        if (args.includes('--execute-egress-ack-proof')) {
-          if (blocked) {
-            // A blocked egress executor is what runtime:doctor exits
-            // PROOF_INCOMPLETE (20) for — it is a requested proof that produced
-            // no verdict. The stub carries the real code so this fixture keeps
-            // describing a report doctor can actually emit; the import must
-            // still read it, which is the property being pinned.
-            return { ...okOut(JSON.stringify({
-              egress_ack_proof: {
-                requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked',
-                provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false,
-                blockers: ['AGENTIC_EGRESS_REAL_SMOKE=1 is not set — the real-network send needs this third consent alongside the two flags (export it in the shell that runs the executor)'],
-                limits: [],
-              },
-              doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: ARTIFACT_SHA },
-            })), ok: false, exit_code: 20 };
-          }
-          return okOut(JSON.stringify({
-            egress_ack_proof: {
-              requested: true, executed: true, mode: 'explicit_egress_executor', status: 'passed',
-              provider_ack: { result: 'acked', attempt_hash: ATTEMPT_HASH, activation_fingerprint: CURRENT_FINGERPRINT, ran_at: '2026-07-18T04:00:00.000Z' },
-              outcome_reason: 'dispatched', mirror_correlated: true, network_request_performed: true,
-              subject_suffix: 'abcdef012345', blockers: [], limits: [],
-            },
-            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: ARTIFACT_SHA },
-          }));
-        }
-        // Not the hook-attestation path either — `base` again (see above).
-        return okOut(JSON.stringify({}));
-      }
-      return missing();
-    };
-    return { calls, runner };
-  }
-
-  // A PASSED proof can still carry a WAL warning: the provider acked and the
-  // mirror correlated — which is exactly what `passed` asserts — while the intent
-  // record that fences the NEXT attempt was not written durably. The import only
-  // forwarded diagnostics when it FAILED, so on the success path the warning died
-  // inside bootstrap and the operator was never told the fence may not survive a
-  // reboot (peer round-3 MAJOR: reporting nobody reads is not reporting).
-  it('resume surfaces a PASSED proof\'s intent-WAL warning instead of swallowing it', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const base = egressDoctorStub();
-    const runner = async (scriptPath, args) => {
-      const out = await base.runner(scriptPath, args);
-      if (scriptPath.endsWith('doctor.mjs') && args.includes('--execute-egress-ack-proof')) {
-        const report = JSON.parse(out.stdout);
-        report.egress_ack_proof.wal_durability = 'failed';
-        report.egress_ack_proof.limits = ['the intent WAL could not be updated durably (write-failed, phase=pre-publish, published=false). The provider outcome above stands; could not stage the terminal record for fp.json (EACCES).'];
-        report.overall = { warnings: ['egress intent WAL failed — the provider outcome stands, but the fence for a future attempt may not (see egress_ack_proof.limits)'] };
-        return okOut(JSON.stringify(report));
-      }
-      return out;
-    };
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: runner, env: EGRESS_ENV });
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const answersPath = join(home, 'execute-egress-wal.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
-
-    const warnings = (resume.report.warnings ?? []).join(' ');
-    ok(/intent WAL/i.test(warnings), `the WAL warning must survive a PASSED proof: ${JSON.stringify(resume.report.warnings)}`);
-    ok(/egress-provider-ack/.test(warnings), `and name the proof it belongs to: ${warnings}`);
-    // Control: the proof itself still imported — the warning is additional
-    // information, never a downgrade of an independently true provider fact.
-    const proofPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'proof', 'egress-provider-ack.json');
-    strictEqual(JSON.parse(await readFile(proofPath, 'utf8')).provider_ack.result, 'acked');
-  });
-
-  it('resume executes the opted-in egress proof through doctor, persists provider_ack evidence with the artifact hash, then attest-receipt completes delivery attestation', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const stub = egressDoctorStub();
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub.runner, env: EGRESS_ENV });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-
-    // Stage 8 — the operator's explicit `execute` answer against the opt-in step.
-    const answersPath = join(home, 'execute-egress.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
-
-    // The doctor invocation used the registered flag pair (both consents) + --record.
-    const doctorCall = stub.calls.find((c) => c.scriptPath.endsWith('doctor.mjs') && c.args.includes('--execute-egress-ack-proof'));
-    ok(doctorCall, 'resume must delegate to runtime:doctor for the egress proof');
-    ok(doctorCall.args.includes('--egress-ack-proof'), 'the plan flag rides with the execute flag');
-    ok(doctorCall.args.includes('--record'), 'the §8.2 delegation is a --record invocation');
-
-    // The recorded proof: provider_ack (single-delivery evidence, NO directions)
-    // + the doctor artifact linked by its exact-byte hash — for THIS kind and,
-    // per the same slice, every kind (artifact_hash import for ALL kinds).
-    const proofPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json');
-    const recorded = JSON.parse(await readFile(proofPath, 'utf8'));
-    strictEqual(recorded.kind, 'egress-provider-ack');
-    strictEqual(recorded.provider_ack.result, 'acked');
-    strictEqual(recorded.provider_ack.attempt_hash, ATTEMPT_HASH);
-    strictEqual(recorded.artifact_hash, ARTIFACT_SHA, 'the doctor artifact_sha256 is imported as artifact_hash');
-    strictEqual(recorded.directions, undefined, 'egress evidence is single-delivery — no directions member');
-
-    const ackAfterResume = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(ackAfterResume?.status, 'passed', `the executed ack reduces to passed: ${JSON.stringify(ackAfterResume?.reasons)}`);
-    strictEqual(resume.report.completion.egress_receipt_attestation?.status === 'attested', false, 'no receipt testimony yet');
-
-    // D0.1 — the owner's after-the-fact phone-receipt testimony on a later resume.
-    const attestPath = join(home, 'attest-egress.json');
-    await writeFile(attestPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'attest-receipt' }]));
-    const attest = await run(['resume', '--latest-open', '--answers', attestPath]);
-
-    const receiptPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-receipt-attestation.json');
-    const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
-    strictEqual(receipt.surface, 'owner-phone');
-    strictEqual(receipt.attempt_hash, ATTEMPT_HASH, 'the testimony names the acked synthetic attempt');
-    const ackBytes = await readFile(proofPath);
-    strictEqual(receipt.provider_proof_artifact_hash, createHash('sha256').update(ackBytes).digest('hex'), 'the testimony links the stored ack bytes by hash');
-
-    const verdict = attest.report.completion.egress_receipt_attestation;
-    strictEqual(verdict?.status, 'attested', `delivery is attested: ${JSON.stringify(verdict)}`);
-    const ackFinal = attest.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(ackFinal?.status, 'passed', 'the machine proof still stands beside the human testimony');
-  });
-
-  it('a blocked doctor executor surfaces its blockers as a resume warning, records nothing, and stays retryable', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const stub = egressDoctorStub({ blocked: true });
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub.runner, env: EGRESS_ENV });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-    const answersPath = join(home, 'execute-egress.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
-
-    ok(resume.report.warnings.some((w) => /AGENTIC_EGRESS_REAL_SMOKE=1/.test(w)), `the third-consent blocker reaches the operator: ${JSON.stringify(resume.report.warnings)}`);
-    let proofExists = true;
-    try { await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json')); } catch { proofExists = false; }
-    strictEqual(proofExists, false, 'a blocked executor persists no proof record (the kind stays absent and retryable)');
-    const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    ok(ack?.status !== 'passed', 'nothing reduces to passed off a blocked executor');
-  });
-});
-
-// The two remaining executor-slice behaviors, each pinned by a test that its
-// mutation demonstrably fails (mutation-verified guards, not decoration):
-// the acked-consistency refusal and the post-execution READERS re-read.
-describe('bootstrap egress-provider-ack executor — consistency matrix + readers re-read (ADR-0048 §3)', () => {
-  const EGRESS_ENV_NO_RECIPIENT = {
-    AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
-    TELEGRAM_BOT_TOKEN: '999999:e2e-sentinel-token',
-  };
-
-  it('an internally inconsistent doctor section (passed without a correlated mirror) is refused, not persisted', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const calls = [];
-    const runner = async (scriptPath, args) => {
-      calls.push({ scriptPath, args: [...args] });
-      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
-      if (scriptPath.endsWith('doctor.mjs')) {
-        if (args.includes('--execute-egress-ack-proof')) {
-          return okOut(JSON.stringify({
-            egress_ack_proof: {
-              requested: true, executed: true, mode: 'explicit_egress_executor',
-              // The forged shape the matrix exists to refuse: a pass whose own
-              // evidence legs contradict it.
-              status: 'passed',
-              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'c'.repeat(64), ran_at: '2026-07-18T04:00:00.000Z' },
-              outcome_reason: 'dispatched', mirror_correlated: false, network_request_performed: true,
-              subject_suffix: 'abcdef012345', blockers: [], limits: [],
-            },
-            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
-          }));
-        }
-        return okOut(JSON.stringify({}));
-      }
-      return missing();
-    };
-    const env = { ...EGRESS_ENV_NO_RECIPIENT, TELEGRAM_CHAT_ID: '424242424242' };
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: runner, env });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-    const answersPath = join(home, 'execute-egress.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
-
-    ok(resume.report.warnings.some((w) => /internally inconsistent/.test(w) && /mirror_correlated=false/.test(w)),
-      `the refusal names the contradiction: ${JSON.stringify(resume.report.warnings)}`);
-    let proofExists = true;
-    try { await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json')); } catch { proofExists = false; }
-    strictEqual(proofExists, false, 'an inconsistent section must never persist as evidence');
-  });
-
-  it('a dispatched-but-unmirrored section (result=acked, status=failed) imports as a FAILED proof with the provider fact intact', async () => {
-    // provider_ack records the PROVIDER FACT only (schema providerAck $def):
-    // dispatched + lost mirror is a legitimate failed proof whose ack leg is
-    // true. The matrix must import it — refusing it as "inverse
-    // contradiction" would only be correct when the mirror ALSO correlated.
-    // The stubbed fingerprint matches the LIVE activation and bound_versions
-    // import fresh, so the only non-passing leg left for the reducer is the
-    // mirror itself — a mismatched fingerprint would hide the mirror defect
-    // behind staleness (Refine-verify peer, round 2).
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const LIVE_FINGERPRINT = deriveActivationFingerprint({
-      channel: 'telegram',
-      recipient: '424242424242',
-      credentialEnvVar: 'TELEGRAM_BOT_TOKEN',
-    });
-    const runner = async (scriptPath, args) => {
-      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
-      if (scriptPath.endsWith('doctor.mjs')) {
-        if (args.includes('--execute-egress-ack-proof')) {
-          return okOut(JSON.stringify({
-            egress_ack_proof: {
-              requested: true, executed: true, mode: 'explicit_egress_executor',
-              status: 'failed',
-              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: LIVE_FINGERPRINT, ran_at: '2026-07-18T04:00:00.000Z' },
-              outcome_reason: 'mirror-missing', mirror_correlated: false, network_request_performed: true,
-              subject_suffix: 'abcdef012345', blockers: [], limits: [],
-            },
-            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
-          }));
-        }
-        return okOut(JSON.stringify({}));
-      }
-      return missing();
-    };
-    const env = { ...EGRESS_ENV_NO_RECIPIENT, TELEGRAM_CHAT_ID: '424242424242' };
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: runner, env });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    const runId = plan.report.run_id;
-    const answersPath = join(home, 'execute-egress-unmirrored.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
-
-    ok(!resume.report.warnings.some((w) => /internally inconsistent/.test(w)),
-      `a legitimate failed-with-ack section must not be refused: ${JSON.stringify(resume.report.warnings)}`);
-    const proof = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json'), 'utf8'));
-    strictEqual(proof.status, 'failed', 'the proof stays failed — the mirror gate is not relaxed');
-    strictEqual(proof.provider_ack.result, 'acked', 'the provider fact survives the import untouched');
-    strictEqual(proof.mirror_correlated, false, 'the mirror verdict is durable evidence in the persisted record');
-    const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(ack?.status, 'failed',
-      `the recomputed aggregate is failed on the mirror leg — not stale, not passed (got ${ack?.status}: ${JSON.stringify(ack?.reasons)})`);
-    ok((ack?.reasons ?? []).some((r) => /mirror/.test(r)), `the failure names the mirror: ${JSON.stringify(ack?.reasons)}`);
-  });
-
-  it('the final reduce re-reads the READERS: an activation changed DURING the proof is judged post-execution, not from the stale snapshot', async () => {
-    // Recipient comes from the verified-ignored-local layer (owner-owned 0600
-    // file under HOME), so the subprocess stub can change it MID-RESUME — the
-    // exact window the post-execution re-read exists for. The stubbed ack is
-    // fingerprinted against the NEW recipient: only a reducer that re-reads
-    // the readers after execution judges it fresh (the pre-execution snapshot
-    // still carries the old recipient and would demote the ack to stale).
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const localPath = join(home, '.agentic-plugins', 'config.local.toml');
-    await writeFile(localPath, 'egress_chat_id = "111111111111"\n', { mode: 0o600 });
-    const NEW_FINGERPRINT = deriveActivationFingerprint({
-      channel: 'telegram',
-      recipient: '222222222222',
-      credentialEnvVar: 'TELEGRAM_BOT_TOKEN',
-    });
-    const runner = async (scriptPath, args) => {
-      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
-      if (scriptPath.endsWith('doctor.mjs')) {
-        if (args.includes('--execute-egress-ack-proof')) {
-          // The operator rotates the recipient while the executor runs.
-          await writeFile(localPath, 'egress_chat_id = "222222222222"\n', { mode: 0o600 });
-          return okOut(JSON.stringify({
-            egress_ack_proof: {
-              requested: true, executed: true, mode: 'explicit_egress_executor', status: 'passed',
-              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: NEW_FINGERPRINT, ran_at: '2026-07-18T04:00:00.000Z' },
-              outcome_reason: 'dispatched', mirror_correlated: true, network_request_performed: true,
-              subject_suffix: 'abcdef012345', blockers: [], limits: [],
-            },
-            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
-          }));
-        }
-        return okOut(JSON.stringify({}));
-      }
-      return missing();
-    };
-    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: runner, env: EGRESS_ENV_NO_RECIPIENT });
-
-    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
-    // Precondition, not decoration: the local layer really is the recipient
-    // source here (otherwise the mid-resume rotation would be a no-op and the
-    // test would pass vacuously with or without the re-read).
-    const egressStep = plan.report.steps.find((s) => s.id === 'egress.configured');
-    strictEqual(egressStep?.status, 'satisfied', `the verified-local recipient activates egress in this fixture: ${JSON.stringify(egressStep)}`);
-
-    const answersPath = join(home, 'execute-egress.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
-    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
-    const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(ack?.status, 'passed',
-      `the ack recorded against the rotated activation judges fresh off the POST-execution readers (got ${ack?.status}: ${JSON.stringify(ack?.reasons)})`);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // resume's ONE final snapshot
@@ -1918,13 +1237,11 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
   }
 
   async function writeSmokeAnswers(home) {
-    const path = join(home, 'execute-smoke-and-decline-egress.json');
+    const path = join(home, 'execute-smoke-and-decline-session.json');
     await writeFile(path, JSON.stringify([
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
       { step_id: 'proof.permission', answer: 'execute' },
-      { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
     ]));
     return path;
   }
@@ -2020,9 +1337,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     await writeFile(answersPath, JSON.stringify([
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
-      { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
       { step_id: 'proof.permission', answer: 'execute' },
     ]));
@@ -2066,9 +1381,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       { step_id: 'plugin.designer.claude.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
-      { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
       { step_id: 'proof.permission', answer: 'execute' },
     ]));
@@ -2134,9 +1447,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     await writeFile(answersPath, JSON.stringify([
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
-      { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath],
@@ -2203,9 +1514,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     await writeFile(answersPath, JSON.stringify([
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
-      { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
     ]));
     // Nothing moves during the proof here — this is the OTHER window.
@@ -2252,9 +1561,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     await writeFile(answersPath, JSON.stringify([
       { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
-      { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
       { step_id: 'proof.permission', answer: 'execute' },
     ]));
@@ -2273,35 +1580,41 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
   it('the answered rows are re-judged even when NOTHING ran — resume and status agree about the dependency graph', async () => {
     // The skip this replaces was justified by "identical inputs"; applyAnswers
     // mutates rows in place, so they are not identical. Without the pass resume
-    // reports a proof `blocked` behind a predecessor the same report shows
+    // reports a step `blocked` behind a predecessor the same report shows
     // `declined`, and an immediate status reports it `pending`.
+    //
+    // designer is on Claude and absent on Codex, so `plugin.designer.codex.enabled`
+    // is blocked behind a PENDING `plugin.designer.codex.installed` — a declinable
+    // predecessor this resume's own answer then resolves. A host-scoped decline
+    // keeps the plugin, so the dependent stays in the expectation.
     const { home, cwd } = await makeHome({ satisfied: true });
-    const state = { hosts: ['claude', 'codex'], installed: [...ALL_PLUGINS] };
+    const state = { hosts: ['claude', 'codex'], claude: [...ALL_PLUGINS], codex: ALL_PLUGINS.filter((p) => p !== 'designer') };
     const run = (argv) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess: spySubprocess().runner });
-    await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,designer', '--format', 'json']);
+    strictEqual(plan.report.steps.find((s) => s.id === 'plugin.designer.codex.enabled')?.status, 'blocked',
+      'precondition: the dependent starts blocked behind its pending predecessor');
 
-    const answersPath = join(home, 'accept-proof-decline-predecessor.json');
+    const answersPath = join(home, 'decline-predecessor.json');
     await writeFile(answersPath, JSON.stringify([
-      { step_id: 'proof.egress-provider-ack', answer: 'accept' },
-      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
     ]));
-    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath, '--format', 'json']);
     // CONTROL: no child ran, so this is the no-snapshot-movement path — the one
     // the old gate skipped.
-    strictEqual(resume.report.steps.find((s) => s.id === 'egress.configured')?.status, 'declined',
+    strictEqual(resume.report.steps.find((s) => s.id === 'plugin.designer.codex.installed')?.status, 'declined',
       'precondition: the predecessor is resolved by this resume\'s own answer');
 
     const status = await run(['status', '--format', 'json']);
-    const resumeRow = resume.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
-    const statusRow = status.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    const resumeRow = resume.report.steps.find((s) => s.id === 'plugin.designer.codex.enabled');
+    const statusRow = status.report.steps.find((s) => s.id === 'plugin.designer.codex.enabled');
+    ok(resumeRow, 'precondition: the dependent is still expected after a host-scoped decline');
     strictEqual(resumeRow?.status, statusRow?.status,
       `resume and status must agree about the row (resume=${resumeRow?.status}, status=${statusRow?.status})`);
+    notStrictEqual(resumeRow?.status, 'blocked', 'the declined predecessor converges the dependent in the same resume');
     ok(!/resolve the predecessor first/.test(resumeRow?.recovery ?? ''),
       `and the recovery must not send the operator after a predecessor already declined: ${resumeRow?.recovery}`);
   });
-
   it('a doctor child that ran and then FAILED to produce importable evidence still triggers the final snapshot', async () => {
     // The trigger is the SPAWN, not the import. A doctor invocation that returns
     // unparseable output imports nothing while the machine had the whole run of
@@ -2331,6 +1644,35 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       'the machine is re-probed after the child, however that child ended');
     strictEqual(manifest.steps.find((s) => s.id === 'plugin.attention.claude.installed')?.status, 'pending',
       'and the persisted rows are judged from that probe, not from the pre-execution one');
+  });
+
+  it('the final reduce re-reads the READERS: a user-global config changed DURING the proof is judged post-execution', async () => {
+    // The readers half of the one final snapshot. The Codex statusline judge
+    // reads $CODEX_HOME/config.toml through the reader snapshot, so a snapshot
+    // taken before the executor would persist a row judged from a config the
+    // operator has since changed.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const codexConfig = join(home, '.codex', 'config.toml');
+    await writeFile(codexConfig, '# empty\n');
+    const state = { hosts: ['claude', 'codex'], installed: [...ALL_PLUGINS] };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    // CONTROL: the step is open before the proof, so a satisfied row below can
+    // only come from the post-execution read.
+    strictEqual(plan.report.steps.find((s) => s.id === 'statusline.codex.configured')?.status, 'pending',
+      'precondition: the Codex statusline is not configured at plan time');
+
+    const resume = await run(
+      ['resume', '--latest-open', '--answers', await writeSmokeAnswers(home)],
+      smokeDoctorStub(async () => {
+        await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+      }),
+    );
+    strictEqual(resume.report.steps.find((s) => s.id === 'statusline.codex.configured')?.status, 'satisfied',
+      'the row is judged from the readers taken after the executor');
+    strictEqual((await manifestOf(home, runId)).steps.find((s) => s.id === 'statusline.codex.configured')?.status, 'satisfied',
+      'and the persisted row agrees');
   });
 
   it('the READ-ONLY hook-attestation doctor is a child too — a machine that moves during it is re-probed', async () => {
@@ -2368,7 +1710,7 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       return missing();
     };
     const answersPath = join(home, 'no-executor.json');
-    await writeFile(answersPath, JSON.stringify([{ step_id: 'egress.configured', answer: 'decline' }, { step_id: 'config.session', answer: 'decline' }, { step_id: 'config.notify_kinds', answer: 'decline' }]));
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'config.session', answer: 'decline' }]));
     await run(['resume', '--latest-open', '--answers', answersPath], readOnlyDoctorStub);
 
     // CONTROL: the only child really was the read-only fetch.
@@ -2383,114 +1725,6 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
   });
 });
 
-// The one verb that deliberately does NOT converge (§7, owner decision
-// 2026-08-02). Its subject is a send that already happened, so a selection that
-// lapsed after the run closed must not refuse testimony about it — and the
-// resulting divergence from `status` must be stated, not silent.
-describe('bootstrap attest — the receipt door judges the run as it was reduced', () => {
-  const EGRESS_ENV = { AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_BOT_TOKEN: '999999:sentinel' };
-  const RECIPIENT = '424242424242';
-
-  async function completedRunWithPassedAck() {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    await writeFile(join(home, '.agentic-plugins', 'config.local.toml'), `egress_chat_id = "${RECIPIENT}"\n`, { mode: 0o600 });
-    const state = {
-      hosts: ['claude', 'codex'],
-      claude: [...ALL_PLUGINS],
-      codex: ALL_PLUGINS.filter((p) => p !== 'designer'),
-    };
-    const fingerprint = deriveActivationFingerprint({ channel: 'telegram', recipient: RECIPIENT, credentialEnvVar: 'TELEGRAM_BOT_TOKEN' });
-    const subprocess = async (scriptPath, args) => {
-      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
-      if (scriptPath.endsWith('doctor.mjs')) {
-        if (args.includes('--execute-egress-ack-proof')) {
-          return okOut(JSON.stringify({
-            egress_ack_proof: {
-              requested: true, executed: true, mode: 'explicit_egress_executor', status: 'passed',
-              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: fingerprint, ran_at: '2026-07-18T04:00:00.000Z' },
-              outcome_reason: 'dispatched', mirror_correlated: true, network_request_performed: true,
-              subject_suffix: 'abcdef012345', blockers: [], limits: [],
-            },
-            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
-          }));
-        }
-        // ADR-0057 §Decision 5 — `proof.permission` is now ALWAYS applicable, so a run
-        // that must terminalize `complete` owes it exactly as it owes the smoke.
-        if (args.includes('--execute-permission-proof')) {
-          return okOut(JSON.stringify({
-            permission_proof: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
-            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
-          }));
-        }
-        if (args.includes('--execute-deep-peer-smoke')) {
-          return okOut(JSON.stringify({
-            deep_peer_smoke: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
-            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json' },
-          }));
-        }
-        return okOut(JSON.stringify({}));
-      }
-      return missing();
-    };
-    const run = (argv) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess, env: EGRESS_ENV });
-    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,designer', '--format', 'json']);
-    const answersPath = join(home, 'close-with-ack.json');
-    await writeFile(answersPath, JSON.stringify([
-      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
-      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
-      { step_id: 'proof.egress-provider-ack', answer: 'execute' },
-      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
-      { step_id: 'proof.permission', answer: 'execute' },
-      // §6.1.3 — CONFIG obligations this suite is not about; declined so the run
-      // can reach the terminal state whose receipt door IS the subject.
-      { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
-    ]));
-    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
-    strictEqual(resume.report.run_status, 'complete', 'precondition: the run closed');
-    strictEqual(resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack')?.status, 'passed',
-      'precondition: with a passed ack, which is what testimony is about');
-    return { run, state, resume };
-  }
-
-  it('a refusal that lapses AFTER the run closed does not refuse the owner\'s receipt', async () => {
-    // Before the convergence reached attest this returned exit 40 ('re-judges
-    // stale'), and a terminal run cannot be resumed — so the owner who really
-    // received the receipt could never record it, because they installed an
-    // unrelated plugin afterwards.
-    const { run, state } = await completedRunWithPassedAck();
-    state.codex = [...state.codex, 'designer'];
-
-    const attest = await run(['attest', '--format', 'json']);
-    strictEqual(attest.exitCode, EXIT.OK, `the door stays open: ${JSON.stringify(attest.report.diagnostics)}`);
-    ok(attest.report.receipt_pointer, 'and the testimony is actually recorded');
-  });
-
-  it('and it SAYS that its verdict can differ from status, rather than diverging in silence', async () => {
-    const { run, state } = await completedRunWithPassedAck();
-    state.codex = [...state.codex, 'designer'];
-
-    const attest = await run(['attest', '--format', 'json']);
-    const warning = (attest.report.warnings ?? []).find((w) => /designer/.test(w));
-    ok(warning, `the lapsed refusal is named: ${JSON.stringify(attest.report.warnings)}`);
-    ok(/does NOT re-derive/.test(warning) && /differ from what `status` reports/.test(warning),
-      `and the divergence is stated, in wording that does not claim a re-derivation attest did not do: ${warning}`);
-
-    // The divergence is real — that is the accepted cost, and why it is stated.
-    const status = await run(['status', '--format', 'json']);
-    strictEqual(attest.report.completion.state, 'complete', 'attest judges the run as it was reduced');
-    notStrictEqual(status.report.completion.state, 'complete', 'status judges the machine as it is now');
-  });
-
-  it('a run whose selection never lapsed gets no such warning', async () => {
-    // Control: the warning must be about the lapse, not about running attest.
-    const { run } = await completedRunWithPassedAck();
-    const attest = await run(['attest', '--format', 'json']);
-    strictEqual(attest.exitCode, EXIT.OK);
-    deepStrictEqual(attest.report.warnings, [], 'nothing lapsed, nothing warned');
-  });
-});
-
 // The refactor that made the reader snapshot ONE read per file: these pin the
 // projections against the per-family readers they replaced, so a future edit
 // cannot quietly change what a family resolves to while collapsing the reads.
@@ -2499,10 +1733,8 @@ describe('bootstrap user-global readers — one read per file (projection equiva
     const { home } = await makeHome({ satisfied: true });
     const snapshot = await readUserGlobalRuntimeConfig({ homeDir: home });
     deepStrictEqual(projectModelEffort(snapshot), await readUserGlobalModelEffort({ homeDir: home }));
-    deepStrictEqual(projectNotify(snapshot), await readUserGlobalNotify({ homeDir: home }));
-    // Not vacuous: the fixture really carries both families.
+    // Not vacuous: the fixture really carries the family.
     strictEqual(projectModelEffort(snapshot).keys.model.value, 'gpt-5.2-codex');
-    strictEqual(projectNotify(snapshot).keys.notify_channel.value, 'file-log');
   });
 });
 
@@ -2513,7 +1745,7 @@ describe('bootstrap user-global readers — one read per file (projection equiva
 // `completion.proofs[]` (the reducer's evidence verdict) and once from the
 // generic unresolved-step loop (the control row, which proof judgement leaves
 // at `pending`/`blocked`). The two rows looked like peers and disagreed, and a
-// live-fire operator read a passed egress send as a failure. The two axes are
+// live-fire operator read a passed proof as a failure. The two axes are
 // genuinely independent — `passed + declined` and `stale + blocked` are both
 // reachable — so the fix is ONE joined row per proof, sourced from the reducer,
 // with control state kept only as labelled context.
@@ -2669,7 +1901,7 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
     const actionable = [
       'plugin runtime is not installed on codex',
       'companions bridge smoke did not run on this host',
-      'egress activation fingerprint does not match the recorded one',
+      'permission proof did not run on this host',
     ];
     const text = renderText({
       verb: 'status',
@@ -2783,7 +2015,7 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
   });
 
   it('the hook attestation reasons reach the operator at all', () => {
-    // The THIRD reason array on `completion`, which had no row whatsoever —
+    // The second reason array on `completion`, which had no row whatsoever —
     // not truncated, absent (Refine-verify peer, MAJOR).
     const text = renderText({
       verb: 'status',
@@ -2897,11 +2129,11 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
     const text = renderText({
       verb: 'status',
       completion: completionOf([evaluatedProof({ status: 'stale', reasons: ['runtime 0.86.0 → 0.86.1'] })]),
-      steps: [controlRow({ status: 'blocked', recovery: 'Blocked by egress.configured; resolve the predecessor first.' })],
+      steps: [controlRow({ status: 'blocked', recovery: 'Blocked by host.claude.authenticated; resolve the predecessor first.' })],
     });
     ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: stale$/m.test(text), `verdict:\n${text}`);
     ok(/^ {6}evidence: runtime 0\.86\.0 → 0\.86\.1$/m.test(text), 'the drift reason renders');
-    ok(/^ {6}execution: Blocked by egress\.configured/m.test(text), 'and the unreachable re-execution is still named');
+    ok(/^ {6}execution: Blocked by host\.claude\.authenticated/m.test(text), 'and the unreachable re-execution is still named');
   });
 
   it('passed evidence under a BLOCKED control keeps the verdict and names the blocker', () => {
@@ -3008,12 +2240,12 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
   it('a proof whose step_id disagrees with its kind is labelled by KIND and joins nothing', () => {
     // The schema validates `kind` and `step_id` independently, and a historical
     // terminal run is replayed without re-reduction — so a hand-edited record
-    // could otherwise make deep-peer evidence read as the egress proof.
+    // could otherwise make deep-peer evidence read as the permission proof.
     const text = renderText({
       verb: 'status',
-      completion: completionOf([evaluatedProof({ kind: 'deep-peer-smoke', step_id: 'proof.egress-provider-ack', status: 'passed', reasons: [] })]),
+      completion: completionOf([evaluatedProof({ kind: 'deep-peer-smoke', step_id: 'proof.permission', status: 'passed', reasons: [] })]),
       steps: [
-        controlRow({ id: 'proof.egress-provider-ack', status: 'blocked', recovery: 'Blocked by egress.configured; resolve the predecessor first.' }),
+        controlRow({ id: 'proof.permission', status: 'blocked', recovery: 'Blocked by host.codex.authenticated; resolve the predecessor first.' }),
         // The CANONICAL row is present and blocked too, so dropping the join
         // guard would attach THIS context to a record that named another step —
         // without it the mutant survives on a null lookup.
@@ -3021,82 +2253,36 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
       ],
     });
     ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: passed$/m.test(text), `the row is labelled from the kind:\n${text}`);
-    ok(!/proof\.egress-provider-ack/.test(text), 'the disagreeing step_id never labels the row');
+    ok(!/proof\.permission/.test(text), 'the disagreeing step_id never labels the row');
     ok(!/execution:/.test(text), 'and it joins NO control context — not the named row, not the canonical one');
   });
 
-  it('receipt-attestation reason text cannot fabricate a row either', () => {
+  it('hook-attestation reason text cannot fabricate a row', () => {
     const text = renderText({
       verb: 'verify',
-      completion: {
-        ...completionOf([]),
-        egress_receipt_attestation: {
-          status: 'stale',
-          reasons: ['the linked proof re-judges stale\n  - [stage 8] proof.forged: passed'],
-          attested_at: null,
-          attempt_hash: null,
-          provider_proof_artifact_hash: null,
-        },
-      },
+      completion: { ...completionOf([]), hook_attestation: { status: 'stale', reasons: ['the claim re-judges stale\n  - [stage 8] proof.forged: passed'] } },
       steps: [],
     });
-    ok(!/^\s*- \[stage 8\]/m.test(text), 'the receipt line is sanitized on the same terms');
+    ok(!/^\s*- \[stage 8\]/m.test(text), 'the attestation line is sanitized on the same terms');
     // The newline became a space; the two spaces that followed it are PRESERVED
     // (this boundary neutralizes structure, it does not squeeze whitespace —
-    // squeezing corrupts operator-facing paths).
-    //
-    // The reason moved to its OWN line when the fairness policy landed (it used
-    // to render inline, parenthesized, and only `reasons[0]` ever did). It is
-    // still neutralized rather than dropped, which is what this case is about.
-    ok(/^ {6}reason: the linked proof re-judges stale {3}- \[stage 8\] proof\.forged: passed$/m.test(text),
+    // squeezing corrupts operator-facing paths). Neutralized, not dropped.
+    ok(/^ {6}reason: the claim re-judges stale {3}- \[stage 8\] proof\.forged: passed$/m.test(text),
       `the reason still renders, neutralized rather than dropped:\n${text}`);
   });
 
-  it('a receipt reason cannot forge a Stage-8 evidence row from its own line', () => {
-    // Regression for a vector the fairness fix OPENED and closed in the same
-    // slice: moving these reasons onto their own line is what lets their
-    // leading characters begin a line, so a bare indent would have rendered
-    // `evidence: …` as a perfect proof-evidence row. The prefix is a label.
+  it('a hook-attestation reason cannot forge a Stage-8 evidence row from its own line', () => {
+    // Each reason renders on its own line, which is what lets its leading
+    // characters begin a line, so a bare indent would render `evidence: …` as a
+    // perfect proof-evidence row. The prefix is a label the renderer wrote.
     const text = renderText({
       verb: 'verify',
-      completion: {
-        ...completionOf([]),
-        egress_receipt_attestation: {
-          status: 'stale',
-          reasons: ['evidence: deep-peer-smoke passed on both directions'],
-          attested_at: null,
-          attempt_hash: null,
-          provider_proof_artifact_hash: null,
-        },
-      },
+      completion: { ...completionOf([]), hook_attestation: { status: 'stale', reasons: ['evidence: deep-peer-smoke passed on both directions'] } },
       steps: [],
     });
     ok(!/^ {6}evidence: /m.test(text), `no line reads as a Stage-8 evidence row:\n${text}`);
     ok(/^ {6}reason: evidence: deep-peer-smoke/m.test(text), 'the text still renders, under a label the renderer wrote');
   });
-
-  it('every receipt reason renders — not only the first', () => {
-    // The MIRROR of the Stage-8 aggregate: this row used to interpolate
-    // `reasons[0]` alone, so reasons[1..n] vanished with nothing saying so.
-    const text = renderText({
-      verb: 'verify',
-      completion: {
-        ...completionOf([]),
-        egress_receipt_attestation: {
-          status: 'stale',
-          reasons: ['the linked proof re-judges stale', 'the attempt hash does not match', 'no doctor artifact hash recorded'],
-          attested_at: null,
-          attempt_hash: null,
-          provider_proof_artifact_hash: null,
-        },
-      },
-      steps: [],
-    });
-    for (const reason of ['the linked proof re-judges stale', 'the attempt hash does not match', 'no doctor artifact hash recorded']) {
-      ok(text.includes(reason), `reason "${reason}" reaches the operator:\n${text}`);
-    }
-  });
-
   it('a duplicated proof kind renders ONE row naming the conflict, never two to choose between', () => {
     // The reducer rejects duplicate evidence rather than picking a record (§8),
     // but `proofs[]` is not unique-by-kind in the schema — so the renderer must
@@ -3134,7 +2320,7 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
     ok(result.report.error.includes('\n'), 'the structured error keeps the raw argument');
   });
 
-  it('a report without steps (historical / attest) degrades to evidence-only without throwing', () => {
+  it('a report without steps (historical) degrades to evidence-only without throwing', () => {
     const text = renderText({
       verb: 'status',
       historical: true,
@@ -3244,7 +2430,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const stub = hookDoctorStub({ review: currentReview() });
     const { run, runId } = await planEngineering(home, cwd, stub);
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     // `hook-attestation` is an embeddedKind:false family, so the file IS the
     // record — there is no envelope to unwrap.
@@ -3265,9 +2451,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const answersPath = join(home, 'execute-smoke.json');
     await writeFile(answersPath, JSON.stringify([
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
-      { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
     ]));
     await run(['resume', '--latest-open', '--answers', answersPath]);
 
@@ -3309,9 +2493,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const path = join(home, 'execute-smoke-exit.json');
     await writeFile(path, JSON.stringify([
       { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
-      { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
     ]));
     return path;
   };
@@ -3324,7 +2506,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const stub = withDoctorExit(hookDoctorStub({ review: currentReview() }), { exit_code: 10 });
     const { run, runId } = await planEngineering(home, cwd, stub);
 
-    await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
     strictEqual(recorded.status, 'attested');
@@ -3343,7 +2525,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     );
     const { run, runId } = await planEngineering(home, cwd, stub);
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     await rejects(() => readFile(proofPath(home, runId), 'utf8'), /ENOENT/, 'nothing may be imported from a report that does not exist');
     ok((resume.report.warnings ?? []).some((w) => /could not be run \(ETIMEDOUT\)/.test(w)), `the absent report is named: ${JSON.stringify(resume.report.warnings)}`);
@@ -3357,7 +2539,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const stub = withDoctorExit(hookDoctorStub({ review: currentReview() }), { exit_code: 99 });
     const { run, runId } = await planEngineering(home, cwd, stub);
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     await rejects(() => readFile(proofPath(home, runId), 'utf8'), /ENOENT/, 'an uncontracted exit fabricates no evidence');
     ok((resume.report.warnings ?? []).some((w) => /exited 99, which carries no report contract/.test(w)), `the refusal names the code: ${JSON.stringify(resume.report.warnings)}`);
@@ -3366,7 +2548,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const okStub = withDoctorExit(hookDoctorStub({ review: currentReview() }), { exit_code: 10 });
     const second = await makeHome({ satisfied: true });
     const okRun = await planEngineering(second.home, second.cwd, okStub);
-    await okRun.run(['resume', '--latest-open', '--answers', await writeEgressDecline(second.home)]);
+    await okRun.run(['resume', '--latest-open', '--answers', await writeSessionDecline(second.home)]);
     strictEqual(JSON.parse(await readFile(proofPath(second.home, okRun.runId), 'utf8')).status, 'attested');
   });
 
@@ -3412,7 +2594,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const stub = hookDoctorStub({ review: currentReview() });
     const { run } = await planEngineering(home, cwd, stub);
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     // reprobeAgainstRun reads proof/ and judges in ONE pass, and the import runs
     // after it — so without a re-judge the resume that finally imports the claim
@@ -3433,21 +2615,21 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     // Re-judging from the pre-answer snapshot reverted the decline to `pending`
     // and restored the hand-off the operator had just refused, while `choices`
     // and `history` still recorded the decline — state contradicting itself.
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'satisfied', 'the import still lands');
-    const egress = resume.report.steps.find((s) => s.id === 'egress.configured');
-    strictEqual(egress?.status, 'declined', `the decline survives the re-judge: ${JSON.stringify(egress)}`);
-    strictEqual(egress.fragment_pointer, null, 'a refused hand-off is not re-offered');
-    strictEqual(egress.apply_command, null);
-    strictEqual(egress.desired, null);
+    const session = resume.report.steps.find((s) => s.id === 'config.session');
+    strictEqual(session?.status, 'declined', `the decline survives the re-judge: ${JSON.stringify(session)}`);
+    strictEqual(session.fragment_pointer ?? null, null, 'a refused hand-off is not re-offered');
+    strictEqual(session.apply_command ?? null, null);
+    strictEqual(session.desired ?? null, null);
 
     // The persisted manifest must agree with the report — choices, history and
     // the step row are three views of one decision.
     const manifest = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8'));
-    strictEqual(manifest.steps.find((s) => s.id === 'egress.configured')?.status, 'declined');
-    ok(manifest.choices.some((c) => c.step_id === 'egress.configured' && c.answer === 'decline'), 'the choice ledger records it');
-    ok(manifest.history.some((h) => h.step_id === 'egress.configured' && h.to === 'declined'), 'and history agrees with the row');
+    strictEqual(manifest.steps.find((s) => s.id === 'config.session')?.status, 'declined');
+    ok(manifest.choices.some((c) => c.step_id === 'config.session' && c.answer === 'decline'), 'the choice ledger records it');
+    ok(manifest.history.some((h) => h.step_id === 'config.session' && h.to === 'declined'), 'and history agrees with the row');
   });
 
   it('a proof declined in the importing resume keeps its completion cap', async () => {
@@ -3460,9 +2642,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     // it reach `complete` on evidence the operator refused to produce.
     const answersPath = join(home, 'decline-proof.json');
     await writeFile(answersPath, JSON.stringify([
-      { step_id: 'egress.configured', answer: 'decline' },
       { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
       { step_id: 'proof.deep-peer-smoke', answer: 'decline' },
     ]));
     const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
@@ -3480,18 +2660,11 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     // about, and it is the one asserted.
   });
 
-  it('the re-judge converges a dependent the answered decline unblocked, and legacy Stage-6 rows migrate as stated', async () => {
+  it('legacy Stage-6 rows in a current-schema run are dropped by the re-judge, as stated', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const stub = hookDoctorStub({ review: currentReview() });
     const { run, runId } = await planEngineering(home, cwd, stub);
 
-    // The dependent must be APPLICABLE for this to prove anything:
-    // proof.egress-provider-ack is opt-in, so without an answer naming it the row
-    // is `not-applicable` and `status !== 'blocked'` passes for the wrong reason.
-    // `accept` opts in without executing anything (only `execute` runs a proof).
-    // Then declining its predecessor is what converges it: the first judge pass
-    // demoted it behind a then-pending `egress.configured`, and the re-judge sees
-    // that predecessor `declined` — which counts as resolved.
     const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
     const seeded = JSON.parse(await readFile(runPath, 'utf8'));
     // ADR-0057 open-run migration, seeded here because this runtime can no longer
@@ -3513,20 +2686,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
       'pre-control: the pre-removal run really carries two Stage-6 rows going in',
     );
 
-    const answersPath = join(home, 'accept-ack-decline-egress.json');
-    await writeFile(answersPath, JSON.stringify([
-      { step_id: 'proof.egress-provider-ack', answer: 'accept' },
-      { step_id: 'egress.configured', answer: 'decline' },
-      { step_id: 'config.session', answer: 'decline' },
-      { step_id: 'config.notify_kinds', answer: 'decline' },
-    ]));
-    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
-
-    strictEqual(resume.report.steps.find((s) => s.id === 'egress.configured')?.status, 'declined');
-    const dependent = resume.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
-    // Measured: `blocked` when the re-judge is disabled, `pending` with it.
-    strictEqual(dependent?.status, 'pending', `the declined predecessor converges it (was 'blocked' before the re-judge): ${JSON.stringify(dependent)}`);
-    ok(resume.report.completion.state !== 'complete', 'earlier convergence is not completion — both blocked and pending are unresolved');
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     // ADR-0057 open-run migration, MEASURED rather than assumed: `judgeSteps`
     // rebuilds steps[] from the EXPECTATION, so rows the registry no longer emits
@@ -3561,7 +2721,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     });
     const { run, runId } = await planEngineering(home, cwd, stub);
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
     deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS, 'the claim covers the selection, so it imports');
@@ -3578,7 +2738,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     });
     const { run } = await planEngineering(home, cwd, stub);
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'pending', 'a claim that does not stand does not satisfy the step');
     const warning = (resume.report.warnings ?? []).find((w) => /does not hold for this selection/.test(w));
@@ -3608,7 +2768,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const run = (argv) => boot({ argv, home, cwd, runner, subprocess });
     const plan = await run(['plan', '--bundle', 'engineering', '--format', 'json']);
     const runId = plan.report.run_id;
-    const decline = await writeEgressDecline(home);
+    const decline = await writeSessionDecline(home);
 
     await run(['resume', '--latest-open', '--answers', decline]);
     strictEqual(JSON.parse(await readFile(proofPath(home, runId), 'utf8')).bound_versions.codex, '0.140.0');
@@ -3634,7 +2794,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
       };
       const { run, runId } = await planEngineering(home, cwd, { runner, calls: [] });
 
-      const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+      const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
       ok((resume.report.warnings ?? []).some((w) => /parsed but is not a report object/.test(w)), `"every branch warns" must hold for ${payload}: ${JSON.stringify(resume.report.warnings)}`);
       await rejects(() => readFile(proofPath(home, runId), 'utf8'), `${payload} fabricates no evidence`);
     }
@@ -3656,7 +2816,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
       const stub = hookDoctorStub({ review });
       const { run, runId } = await planEngineering(home, cwd, stub);
 
-      const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+      const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
       const warnings = resume.report.warnings ?? [];
       ok(warnings.some((w) => /(is not an object|is missing)/.test(w) && /repair or upgrade the runtime plugin/.test(w)), `malformed ${label} reads as a shape mismatch: ${JSON.stringify(warnings)}`);
       ok(!warnings.some((w) => /no Codex \/hooks attestation has been recorded/.test(w)), `malformed ${label} must not be reported as "nothing recorded": ${JSON.stringify(warnings)}`);
@@ -3669,7 +2829,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const stub = hookDoctorStub({ review: { status: 'missing', current: false, currency_reason: 'missing', latest: null } });
     const { run, runId } = await planEngineering(home, cwd, stub);
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     await rejects(() => readFile(proofPath(home, runId), 'utf8'), 'nothing is fabricated when nothing was attested');
     const warning = (resume.report.warnings ?? []).find((w) => /no Codex \/hooks attestation has been recorded/.test(w));
@@ -3689,7 +2849,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     };
     const { run, runId } = await planEngineering(home, cwd, { runner, calls });
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
 
     await rejects(() => readFile(proofPath(home, runId), 'utf8'));
     const warning = (resume.report.warnings ?? []).find((w) => /no settings_runs\.codex_hook_review section/.test(w));
@@ -3709,7 +2869,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     };
     const { run } = await planEngineering(home, cwd, { runner, calls });
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
     // The shared doctor reader states the failure; the call site appends which
     // import it belongs to. Both facts must still appear, and the failure code
     // now does too — a stricter assertion than the single-sentence form it
@@ -3723,7 +2883,7 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub.runner });
     await run(['plan', '--bundle', 'base', '--format', 'json']);
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
     strictEqual(doctorCalls(stub).length, 0, 'no attestation fetch on a selection with nothing to attest');
     ok(!(resume.report.warnings ?? []).some((w) => /attestation/i.test(w)), 'and nothing to warn about');
   });
@@ -3793,9 +2953,7 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
     { step_id: 'plugin.image.codex.enabled', answer: 'decline' },
   ];
   const EXECUTE_SMOKE = [
-    { step_id: 'egress.configured', answer: 'decline' },
     { step_id: 'config.session', answer: 'decline' },
-    { step_id: 'config.notify_kinds', answer: 'decline' },
     { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
   ];
 
@@ -3843,10 +3001,10 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
     const recorded = JSON.parse(await readFile(smokeProofPath(home, runId), 'utf8'));
     deepStrictEqual(Object.keys(recorded.bound_versions.plugins.claude).sort(), ['companions', 'runtime']);
 
-    // And the persisted document is still a 1.2 manifest — the narrowing needed no
-    // schema addition, which is what keeps an older runtime able to read this run
-    // (§4.1: an unknown non-scalar key is refused at EVERY minor).
-    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.4');
+    // And the persisted document is a current-schema manifest — the narrowing
+    // needed no schema addition, which is what keeps an older runtime able to read
+    // this run (§4.1: an unknown non-scalar key is refused at EVERY minor).
+    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.5');
     const validate = await makeValidator('runtime-bootstrap-run', { pluginRoot: PLUGIN_ROOT });
     deepStrictEqual(validate(manifest).errors, []);
   });
@@ -4113,10 +3271,8 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
 describe('runtime bootstrap CLI — §6.1.1 the model/effort posture', () => {
   const configPath = (home) => join(home, '.agentic-plugins', 'config.toml');
 
-  // The notify key keeps the Stage-5 local-policy step satisfied so the run's
-  // other steps do not mask what Stage 4 is doing.
   async function writeConfig(home, body) {
-    await writeFile(configPath(home), `notify_channel = "file-log"\n${body}`);
+    await writeFile(configPath(home), body);
   }
 
   const stub = async (scriptPath) => {
@@ -4202,88 +3358,9 @@ describe('runtime bootstrap CLI — §6.1.1 the model/effort posture', () => {
     // The operator declares the posture, then resumes. Nothing about the run
     // changed — the machine did.
     await writeConfig(home, 'model_effort_fallback = "host-native"\n');
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSessionDecline(home)]);
     strictEqual(stage4Of(resume.report).status, 'satisfied');
     ok(!resume.report.completion.unsatisfied.includes('config.model_effort'), 'and the step stops holding completion back');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ADR-0040 §4b — the approval half of notify.codex.configured (follow-ups.md:38)
-// ---------------------------------------------------------------------------
-
-describe('bootstrap notify.codex.configured — the [tui] notifications half is judged', () => {
-  // The reproduced false pass: `notify =` fires only on agent-turn-complete, so
-  // a machine with canonical receiver wiring and `notifications = false` had
-  // approval attention switched off while every Stage-5 step judged satisfied.
-  const notifyStep = (report) => report.steps.find((s) => s.id === 'notify.codex.configured');
-  const planOn = async (home, cwd) => (await boot({
-    argv: ['plan', '--bundle', 'base', '--format', 'json'],
-    home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner,
-  })).report;
-
-  // Replace the fixture's notifications line — never append. Appending a second
-  // assignment makes a DUPLICATE key, which classifies `invalid`, so the test
-  // would go green through the untrusted-value branch without the boolean-false
-  // branch ever being exercised.
-  async function setNotifications(home, replacement) {
-    const path = join(home, '.codex', 'config.toml');
-    const text = await readFile(path, 'utf8');
-    const next = text.replace(/^notifications = .*$/m, replacement);
-    ok(next !== text, 'precondition: the satisfied fixture must carry a notifications line to replace');
-    await writeFile(path, next);
-    return next;
-  }
-
-  it('CONTROL — the canonical fixture satisfies the step and stops holding completion back', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const report = await planOn(home, cwd);
-    strictEqual(notifyStep(report).status, 'satisfied');
-    match(notifyStep(report).observed, /canonical \[tui\] notifications observed/);
-    ok(!report.completion.unsatisfied.includes('notify.codex.configured'),
-      'the canonical machine does not owe this step');
-  });
-
-  it('notifications = false is manual-follow-up and HOLDS completion — the reproduction', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    await setNotifications(home, 'notifications = false');
-    const report = await planOn(home, cwd);
-    strictEqual(notifyStep(report).status, 'manual-follow-up');
-    match(notifyStep(report).observed, /explicitly disabled/);
-    ok(report.completion.unsatisfied.includes('notify.codex.configured'),
-      'a manual-follow-up step does not resolve, so the run can no longer reach complete');
-  });
-
-  it('a REMOVED notifications key is pending — the canonical configuration was not observed', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    await setNotifications(home, '');
-    const report = await planOn(home, cwd);
-    strictEqual(notifyStep(report).status, 'pending');
-    match(notifyStep(report).observed, /not configured/);
-    ok(report.completion.unsatisfied.includes('notify.codex.configured'));
-  });
-
-  it('a canonical-LOOKING value under a redefined [tui] table is pending, never certified', async () => {
-    // The forgery the typed classification exists to refuse: a dotted
-    // assignment implicitly creates [tui], and the later explicit header
-    // redefines it — invalid TOML that Codex will not load, whose captured raw
-    // nonetheless reads exactly like the canonical selection.
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const path = join(home, '.codex', 'config.toml');
-    await writeFile(path, [
-      'approval_policy = "on-request"',
-      `notify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]`,
-      'tui.notifications = ["approval-requested", "agent-turn-complete"]',
-      '[tui]',
-      'status_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]',
-      '',
-    ].join('\n'));
-    const report = await planOn(home, cwd);
-    strictEqual(notifyStep(report).status, 'pending');
-    match(notifyStep(report).observed, /cannot be trusted/);
-    // THE MIRROR: the same redefinition invalidates the sibling status_line
-    // capture, whose EXACT probe already shipped — one parser fix, both keys.
-    strictEqual(report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'pending');
   });
 });
 
@@ -4325,11 +3402,14 @@ describe('runtime bootstrap CLI — report finding bound (§3.2)', () => {
     strictEqual(bounded.findings_omitted, true);
   });
 
-  it('the JSON report identifier bumped — the historical completion key was removed, not renamed', async () => {
+  it('the JSON report identifier is 3.0 — the attest report, the live receipt verdict and the egress proof rows were removed (ADR-0064 Decision 7)', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const result = await boot({ argv: ['status', '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
-    strictEqual(JSON.parse(result.rendered).schema, BOOTSTRAP_REPORT_SCHEMA_VERSION);
-    strictEqual(BOOTSTRAP_REPORT_SCHEMA_VERSION, 'runtime-bootstrap-report-2.0');
+    strictEqual(JSON.parse(result.rendered).schema, 'runtime-bootstrap-report-3.0', 'the emitted report carries the bumped identifier');
+    strictEqual(BOOTSTRAP_REPORT_SCHEMA_VERSION, 'runtime-bootstrap-report-3.0');
+    // A plan report is stamped the same way, not only a no-run status.
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    strictEqual(JSON.parse(plan.rendered).schema, 'runtime-bootstrap-report-3.0');
   });
 });
 
@@ -4384,7 +3464,7 @@ describe('runtime bootstrap CLI — pre-removal terminal runs are HISTORY, not r
   }
 
   for (const verb of ['status', 'verify']) {
-    it(`${verb} presents a terminal 1.3 run as legacy history instead of re-judging it against the 1.4 registry`, async () => {
+    it(`${verb} presents a terminal 1.3 run as legacy history instead of re-judging it against the current registry`, async () => {
       const { home, cwd } = await makeHome({ satisfied: true });
       const runId = 'bootstrap-20260801T000000Z-0aa001';
       await seedTerminalPreRemovalRun(home, runId);
@@ -4411,7 +3491,7 @@ describe('runtime bootstrap CLI — proof-directory entry names (§3.2)', () => 
     const runDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId);
     await mkdir(join(runDir, 'proof'), { recursive: true });
     await writeFile(join(runDir, 'run.json'), `${JSON.stringify({
-      schema: 'runtime-bootstrap-run-1.4',
+      schema: 'runtime-bootstrap-run-1.5',
       run_id: runId,
       started_at: '2026-07-16T00:00:00Z',
       updated_at: '2026-07-16T00:00:00Z',
@@ -4503,7 +3583,8 @@ describe('runtime bootstrap CLI — proof-directory entry names (§3.2)', () => 
     await writeFile(answers, '[{"step_id":"host.claude.present","answer":"PRIVATE_CANARY_ANSWER_42"}]');
     const result = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answers], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
     match(JSON.stringify(result.report), /for host\.claude\.present/, 'the matched registry step id is still named');
-    match(JSON.stringify(result.report), /decline\|accept\|execute\|attest-receipt/, 'the expected vocabulary is still named');
+    match(JSON.stringify(result.report), /decline\|accept\|execute/, 'the expected vocabulary is still named');
+    ok(!/attest-receipt/.test(JSON.stringify(result.report)), 'and the retired receipt answer is no longer offered');
   });
 
   it('the reported parse position comes from the PARSER, and cannot be forged by the input', async () => {

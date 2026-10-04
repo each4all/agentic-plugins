@@ -82,7 +82,7 @@ import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rmdir, u
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { scrubSecrets } from './secret-scrub.mjs';
-import { EVIDENCE_FAMILIES, EVIDENCE_KINDS, validateEvidenceRecord } from './evidence-contract.mjs';
+import { EVIDENCE_FAMILIES, EVIDENCE_KINDS, RETIRED_EVIDENCE_KINDS, validateEvidenceRecord } from './evidence-contract.mjs';
 import { isUnder } from './path-containment.mjs';
 import { makeValidator } from './schema-validate.mjs';
 import { machineGlobalRoot, machinePointer, MACHINE_BOOTSTRAP_RETENTION_CAP } from './state-readers.mjs';
@@ -102,19 +102,14 @@ function runManifestValidator() {
 // ---------------------------------------------------------------------------
 
 export const BOOTSTRAP_ARTIFACT_FAMILY = 'bootstrap';
-// The run-schema version this storage layer stamps (tombstones) and gates on
-// (the post-terminal receipt window). bootstrap.mjs imports THIS — one lockstep
-// site, not two.
-// 1.3 (§3.3) — the value-carrying interview. Bumping this CLOSES the
-// post-terminal receipt window for every terminal 1.2 run: the gate below is an
-// exact-current-schema test ("receipt testimony is current-schema vocabulary"),
-// deliberately the strictest in this writer, and an operator holding a terminal
-// 1.2 run with a recorded provider ack but no receipt attestation can no longer
-// record one. That cost was weighed and accepted (owner decision, 2026-08-26)
-// rather than relaxing the narrowest door in the evidence writer to accommodate
-// a config-step addition. §7's terminal policy states it; a fresh plan is the
-// recovery for the config steps, and there is none for the lost receipt window.
-export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.4';
+// The run-schema version this storage layer stamps (tombstones) and refuses to
+// downgrade. bootstrap.mjs imports THIS — one lockstep site, not two.
+// 1.5 (ADR-0064) — the registry no longer derives the notification and egress
+// steps or the egress delivery proof. Like 1.4 it is a semantic bump with no
+// shape change: it arms the future-minor fence, so an older runtime cannot
+// restore the retired rows into a run this runtime migrated, and the
+// legacy-terminal fence, so a terminal run of an earlier minor stays history.
+export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.5';
 export const BOOTSTRAP_LATEST_SCHEMA_VERSION = 'runtime-bootstrap-latest-1.0';
 
 // The run-schema minor, parsed locally so the storage layer's no-downgrade guard
@@ -134,10 +129,6 @@ export const BOOTSTRAP_RUN_ID_RE = /^bootstrap-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // complete / configured-not-verified are the reducer's to assign (§8, C5).
 export const BOOTSTRAP_RUN_STATUSES = Object.freeze(['open', 'complete', 'configured-not-verified', 'abandoned']);
 export const BOOTSTRAP_TERMINAL_RUN_STATUSES = Object.freeze(['complete', 'configured-not-verified', 'abandoned']);
-// The terminal statuses the D0.1 receipt attestation may still append into —
-// the reducer-assigned completions, NEVER `abandoned`: an abandoned run is an
-// escape hatch, not a completed bootstrap anyone can testify about.
-export const BOOTSTRAP_COMPLETION_RUN_STATUSES = Object.freeze(['complete', 'configured-not-verified']);
 
 // The artifact file-stem charset (contract §10.2): the fragment and proof writers
 // validate the names they turn into path components with it. It was first the
@@ -1748,16 +1739,15 @@ export async function writeBootstrapFragment({ homeDir, repoRoot, runId, name, c
 //
 // Three more gates, in refusal order:
 //   - unknown-evidence-kind — the kind must be in EVIDENCE_FAMILIES; the old
-//     path-charset check let any well-formed name become a proof file;
+//     path-charset check let any well-formed name become a proof file. The
+//     kinds ADR-0064 retired are not in it, so nothing writes them any more;
 //   - run-not-open — evidence lands only in an OPEN run. Terminal evidence is
-//     immutable history (§7); the single exception is the D0.1 receipt
-//     attestation (postTerminalWritable) into a complete/configured-not-verified
-//     run — never into an abandoned one;
+//     immutable history (§7). The one post-terminal exception, the owner's
+//     receipt attestation, was retired with egress (ADR-0064);
 //   - secret-shaped-content — the serialized record must survive scrubSecrets
-//     unchanged (ADR-0048 §4 scrub-before-write; same fail-closed pattern as
-//     the egress launcher plan). A proof that trips it is refused, not
-//     laundered: a scrubbed-then-written record would hash differently than
-//     what the caller believes it recorded.
+//     unchanged (ADR-0048 §4 scrub-before-write). A proof that trips it is
+//     refused, not laundered: a scrubbed-then-written record would hash
+//     differently than what the caller believes it recorded.
 export async function writeBootstrapProof({ homeDir, repoRoot, runId, kind, record }) {
   validateBootstrapRunId(runId);
   validateProfileName(kind);
@@ -1772,29 +1762,12 @@ export async function writeBootstrapProof({ homeDir, repoRoot, runId, kind, reco
   if (!exists.ok) return { ok: false, reason: exists.reason, diagnostics: [exists.diagnostic], proof: null };
   const runStatus = exists.status;
   if (runStatus !== 'open') {
-    const terminalButAttestable = family.postTerminalWritable && BOOTSTRAP_COMPLETION_RUN_STATUSES.includes(runStatus);
-    if (!terminalButAttestable) {
-      return {
-        ok: false,
-        reason: 'run-not-open',
-        diagnostics: [`Run ${runId} is ${runStatus ?? 'in an unknown state'} — evidence writes land only in an open run (terminal evidence is immutable history, §7${family.postTerminalWritable ? '' : `; only the receipt attestation may append to a completed run, and "${kind}" is not it`}).`],
-        proof: null,
-      };
-    }
-    // The post-terminal window is the NARROWEST door in this writer, so it
-    // carries the strictest gate (Codex review MAJOR): the terminal manifest
-    // must be schema-valid AND current-schema — a status string alone let a
-    // receipt land inside a schema-invalid or legacy record whose verdict
-    // machinery cannot even read it.
-    const manifestVerdict = exists.manifest ? (await runManifestValidator())(exists.manifest) : { ok: false, errors: ['manifest unreadable'] };
-    if (!manifestVerdict.ok || exists.manifest?.schema !== BOOTSTRAP_RUN_SCHEMA_VERSION) {
-      return {
-        ok: false,
-        reason: 'run-not-attestable',
-        diagnostics: [`Run ${runId} is terminal but ${manifestVerdict.ok ? `carries schema ${exists.manifest?.schema}, not ${BOOTSTRAP_RUN_SCHEMA_VERSION} — receipt testimony is current-schema vocabulary` : `its manifest is schema-invalid (${manifestVerdict.errors.slice(0, 3).join('; ')})`}; refusing the receipt append.`],
-        proof: null,
-      };
-    }
+    return {
+      ok: false,
+      reason: 'run-not-open',
+      diagnostics: [`Run ${runId} is ${runStatus ?? 'in an unknown state'} — evidence writes land only in an open run (terminal evidence is immutable history, §7).`],
+      proof: null,
+    };
   }
 
   // SERIALIZE ONCE, SCRUB FIRST, VALIDATE THE PARSED BYTES, WRITE THE SAME
@@ -1857,10 +1830,15 @@ export const PROOF_FILE_MAX_BYTES = 128 * 1024;
  * credential publishes itself. A missing proof/
  * directory is simply "no evidence yet" (ok, empty).
  *
+ * The one exception to "every entry": `<retired-kind>.json` for a kind
+ * ADR-0064 retired (RETIRED_EVIDENCE_KINDS) is SKIPPED by name — not opened,
+ * validated or returned — and listed in `retired`. Refusing it would strand an
+ * open run that recorded one, since `resume` reads this directory on every pass.
+ * The file stays on disk as history; nothing credits it.
+ *
  * Each returned row carries the file's own sha256 (over the exact stored
  * bytes) — the hash writeBootstrapProof returned at write time, re-derived —
- * so a receipt attestation's `provider_proof_artifact_hash` link can be
- * verified byte-for-byte, and any consumer can detect a swapped record.
+ * so any consumer can detect a swapped record.
  */
 export async function readBootstrapProofRecords({ homeDir, runId }) {
   validateBootstrapRunId(runId);
@@ -1869,17 +1847,24 @@ export async function readBootstrapProofRecords({ homeDir, runId }) {
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch (err) {
-    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return { ok: true, errors: [], records: [] };
-    return { ok: false, errors: [`proof directory unreadable (${err?.code ?? String(err)})`], records: null };
+    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return { ok: true, errors: [], records: [], retired: [] };
+    return { ok: false, errors: [`proof directory unreadable (${err?.code ?? String(err)})`], records: null, retired: [] };
   }
 
   const errors = [];
   const records = [];
+  const retired = [];
   const seen = new Set();
   let ordinal = -1;
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const name = entry.name;
     ordinal += 1;
+    // ADR-0064 Decision 7 — retired evidence is history, skipped before any
+    // check. The name is one this runtime defined, so it may be reported.
+    if (RETIRED_EVIDENCE_KINDS.some((kind) => name === `${kind}.json`)) {
+      retired.push(name);
+      continue;
+    }
     // D1 §3.2 — a directory ENTRY NAME is not clamped by anything. The
     // evidence kinds are a closed set, so `<kind>.json` is a name this runtime
     // itself defined and may be quoted; every other name is free content that
@@ -1958,8 +1943,8 @@ export async function readBootstrapProofRecords({ homeDir, runId }) {
     records.push({ kind, record, sha256: sha256(bytes), bytes: bytes.byteLength, pointer: machinePointer(homeDir, path) });
   }
 
-  if (errors.length > 0) return { ok: false, errors, records: null };
-  return { ok: true, errors: [], records };
+  if (errors.length > 0) return { ok: false, errors, records: null, retired };
+  return { ok: true, errors: [], records, retired };
 }
 
 // ---------------------------------------------------------------------------

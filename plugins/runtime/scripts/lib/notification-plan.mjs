@@ -119,10 +119,11 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 export { tomlBasicString };
 
 // The CANONICAL notify= argv for one render machine — the single source the
-// fragment renderer AND the notify.codex.configured exact probe consume, so
-// "what we tell the operator to merge" and "what the judge later expects to
-// observe" cannot drift (ADR-0048 §2's single-policy-definition rule, applied
-// to notify).
+// fragment renderer AND the planner's already-configured check consume, so
+// "what we tell the operator to merge" and "what the planner later recognizes
+// as ours" cannot drift (ADR-0048 §2's single-policy-definition rule, applied
+// to notify). Bootstrap's notify.codex.configured exact probe consumed it too
+// until ADR-0064 slice R4n1 removed that step.
 //
 // Per-OS shape (macro notify-axis slice):
 //   - POSIX keeps `/usr/bin/env node <receiver>` — Node-on-PATH via env,
@@ -145,8 +146,8 @@ export function expectedCodexNotifyArgv({ receiverPath, platform = process.platf
 
 // The notify= fragment — never a version-pinned plugin cache path; Codex
 // appends the payload JSON as one extra argv item. Renders exactly
-// expectedCodexNotifyArgv (see above) so the exact probe and the fragment
-// agree by construction.
+// expectedCodexNotifyArgv (see above) so the already-configured check and the
+// fragment agree by construction.
 export function renderCodexNotifyFragmentToml({ receiverPath, platform = process.platform, execPath = process.execPath }) {
   const argv = expectedCodexNotifyArgv({ receiverPath, platform, execPath });
   return `notify = [${argv.map((item) => tomlBasicString(item)).join(', ')}]\n`;
@@ -644,9 +645,10 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
 }
 
 // ORCHESTRATOR (settings surface): gather → deterministic build → persist repo-
-// relative. Behavior-compatible with the pre-§1.3 single function. Bootstrap composes
-// gatherCodexNotificationInputs + buildCodexNotificationPlanSection itself and persists
-// artifactBody under its machine-global run instead (§10).
+// relative. Behavior-compatible with the pre-§1.3 single function. Until ADR-0064
+// slice R4n1, bootstrap composed gatherCodexNotificationInputs +
+// buildCodexNotificationPlanSection itself and persisted artifactBody under its
+// machine-global run (§10); this orchestrator is now their only caller.
 export async function buildCodexNotificationPlan({
   repoRoot,
   homeDir,
