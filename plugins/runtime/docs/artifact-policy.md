@@ -159,6 +159,13 @@ the other's root.
 The machine scope also listed a `profiles` family, exempt from the cap, until
 ADR-0064 Decision 3 removed the machine profile on 2026-10-04.
 
+A bootstrap run's `proof/` directory in a run retained from before ADR-0064 R4n1
+(2026-10-05) may hold `egress-provider-ack.json` and
+`egress-receipt-attestation.json`. They are history: the 1.5 reader skips them by
+name on every read and never opens, validates or credits them, and the files stay
+on disk until the operator removes them (contract §7). Nothing writes either file
+any more.
+
 The machine scope also holds ONE non-family path that is deliberately not a run
 family and deliberately not inventoried: `~/.agentic-plugins/runs/doctor/egress-intents/`,
 the ADR-0048 §3 egress intent WAL. It is **side-effect state, not an artifact** —

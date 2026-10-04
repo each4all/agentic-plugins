@@ -182,6 +182,12 @@ evidence is never evidence of registration.
 > parse (`parseCodexPermissionConfigToml` and the user-global-only permission
 > readers), with the portable machine profile that was its last consumer. Three
 > extractions remain.
+>
+> **ADR-0064 Decision 1 (2026-10-05, slice R4n1)** removed the notification and
+> egress-launcher planners from bootstrap: it no longer imports
+> `lib/notification-plan.mjs` or `lib/egress-launcher-plan.mjs` and renders neither
+> plan. One extraction remains, the plugin-management plan half; the rule below
+> still governs it.
 
 The existing planners **combine computation with unconditional repo-relative
 persistence**, so bootstrap cannot compose them as they stand without writing
@@ -191,19 +197,15 @@ injected:
 
 | Planner | Today | Required |
 |---|---|---|
-| notification | `lib/notification-plan.mjs` — builds *and* persists repo-relative | pure build + injected persist |
-| egress launcher | `lib/egress-launcher-plan.mjs` — builds *and* persists repo-relative | pure build + injected persist |
 | plugin-management **plan half** | private to `scripts/settings.mjs`; also classifies recommendations it does not compute | lift to `lib/`, separated from the execute half, fed by §1.4 |
 
 Bootstrap persists **only** under its machine-global run (§10).
 
-**Resolved (S8a1 → S8a3).** All five rows are extracted; the *Today* column above
-records the pre-extraction state, not the tree. Where each planner lives now:
+**Resolved (S8a1 → S8a3).** Every row was extracted; the *Today* column above
+records the pre-extraction state, not the tree. Where the planner lives now:
 
 | Planner | Gather | Pure build | Injected persist |
 |---|---|---|---|
-| notification | `gatherCodexNotificationInputs` | `buildCodexNotificationPlanSection` | `writeNotificationPlanArtifact` |
-| egress launcher | `gatherEgressLauncherInputs` | `buildEgressLauncherPlanSection` | `writeEgressLauncherPlanArtifact` |
 | plugin-management plan half | `lib/plugin-management-plan.mjs` | — | — (execute half stays in `scripts/settings.mjs`) |
 
 Two S8a3 findings worth carrying forward, because a consumer that assumes otherwise
@@ -451,7 +453,7 @@ registration, which can be removed after install and MUST still be probed (§1.2
 | 2 | marketplace registered, both hosts | operator (Claude) / H2 (Codex) |
 | 3 | selected bundle installed + enabled | H2 via `settings --execute-plugin-management`, **presented** |
 | 4 | model / effort defaults | `settings --apply --target user` (agentic-plugins-owned) |
-| 5 | operator observability + egress (ADR-0048 §1 — renamed from "notification + egress"; no stage inserted, nothing renumbered) | operator applies the rendered fragments |
+| 5 | operator observability — the statusline steps (ADR-0048 §1; ADR-0064 Decision 6 removed the notification and egress steps; the number is kept and nothing is renumbered) | operator applies the rendered fragments |
 | 6 | *(empty — ADR-0057 removed the permission-posture stage with the advisor that rendered its fragments. The NUMBER is deliberately not reused and stages 7 and 8 are not renumbered: retained run manifests carry stage-6 rows, and renumbering would invalidate every one of them.)* | — |
 | 7 | Codex `/hooks` review + trust | operator (interactive TUI), then attestation |
 | 8 | execution proof (§8) | `runtime:doctor --execute-*` |
@@ -467,7 +469,6 @@ runtime:bootstrap status   [--run-id <id> | --latest | --latest-open] [--format 
 runtime:bootstrap resume   [--run-id <id> | --latest-open] [--answers <path>]
                            [--format text|json]
 runtime:bootstrap verify   [--run-id <id> | --latest] [--format text|json]
-runtime:bootstrap attest   [--run-id <id> | --latest] [--format text|json]
 runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
 ```
 
@@ -476,6 +477,21 @@ runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
 > `plan --profile-file`, with the portable machine profile they wrote and read
 > (§4). `profile` is now an unknown verb and `--profile-file` an unknown flag;
 > both exit `40` like any other grammar error.
+
+> **2026-10-05 — [ADR-0064](../../../docs/adr/0064-runtime-surface-reduction.md)
+> Decisions 1 and 6 (slice R4n1)** removed bootstrap's notification and egress
+> surface. The `attest` verb and the `attest-receipt` answer are gone (an unknown
+> verb exits `40` with `expected: plan | status | resume | verify | abandon`). The
+> Stage-4 `config.notify_kinds` step, the Stage-5 `notify.configured`,
+> `notify.codex.configured` and `egress.configured` steps and the Stage-8
+> `proof.egress-provider-ack` proof are gone, with their fragments, judges and
+> readers, the egress delivery proof, the receipt attestation, the opt-in-proof
+> warning and the ADR-0047 dual-kind warning. Probes, the settings dry-run and
+> the doctor fetch now receive the caller's environment unchanged: bootstrap no
+> longer scrubs an egress credential, because it no longer names one. The run
+> schema is `runtime-bootstrap-run-1.5` and the `--format json` report is
+> `runtime-bootstrap-report-3.0`. Runs recorded before the removal are read as
+> §7 ("Runs of an earlier minor") states.
 
 - **Run selection** follows the semantics [`footer-contract.md`](footer-contract.md)
   already established: `--run-id` is explicit; `--latest` is the newest run;
@@ -506,23 +522,11 @@ runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
   likes without re-running a single peer smoke.
 - With **no run**, `status` and `verify` report `no-active-run` and exit `30`; they
   never synthesize one.
-- **`attest` is the post-terminal receipt door (ADR-0048 §3 / D0.1).** A
-  successful final proof send terminalizes the run, after which `resume` refuses
-  it — so the owner's after-the-fact phone-receipt testimony needs a verb of its
-  own. `attest` requires a recorded `egress-provider-ack` that still re-judges
-  `passed`, assembles the receipt record (surface `owner-phone`, the ack's
-  synthetic `attempt_hash`, the stored ack file's own sha256 as
-  `provider_proof_artifact_hash`, and a time — no free text, no device
-  identifier), and persists it through the proof writer's one
-  `postTerminalWritable` exception. It never touches the manifest — steps,
-  proofs, status, and the stored completion are inviolate — and it refuses an
-  `abandoned` run (an escape hatch is not a completed bootstrap anyone can
-  testify about) and any run whose schema is not the current one (receipt is
-  1.2 vocabulary; an open legacy run migrates via `resume` first). Submitting
-  `execute` and `attest-receipt` against the ack step in ONE answers file
-  resolves to one effective action (last-wins), so executing and testifying in
-  the same resume is structurally impossible — testimony is always about a
-  PRE-EXISTING acked attempt.
+- **There is no post-terminal door.** `attest` recorded the owner's phone-receipt
+  testimony into a run that a successful egress proof had already terminalized.
+  ADR-0064 removed it with the egress proof it testified about: the proof writer
+  refuses **every** write into a run that is not `open` (reason `run-not-open`).
+  A stored receipt verdict in a retained run is history (§7).
 - `abandon` closes an open run (`status: abandoned`) so a new `plan` can start. A
   crashed or unwanted run MUST be recoverable without hand-editing the artifact
   home — otherwise one interrupted run blocks the machine forever. `abandon` never
@@ -564,8 +568,9 @@ runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
   bounded, the block bounded as a whole, and any remainder declared on its own
   `<label>-omitted:` line with a count — so no reason can spend another's budget
   and no omission is silent. It applies to all three reason arrays on
-  `completion` (the Stage-8 proofs, the Codex `/hooks` attestation, and the
-  egress receipt attestation). It also applied to the `profile seed` proposal
+  `completion` (the Stage-8 proofs and the Codex `/hooks` attestation; the third,
+  the egress receipt attestation, went with that verdict in ADR-0064 R4n1,
+  2026-10-05). It also applied to the `profile seed` proposal
   and note rows until that verb was removed (ADR-0064 Decision 3, 2026-10-04).
   The omission marker carries a DIFFERENT label from the reasons themselves;
   sharing one let a reason forge a count the renderer never made. Truncation
@@ -610,22 +615,19 @@ runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
   interview. An answer whose `step_id` is not an expected step of the run is rejected (exit
   `40`) rather than recorded, so a stale answers file cannot smuggle a step into a
   manifest the registry never derived (§6.1). The answer vocabulary is exactly
-  four values (S8b errata fixed the shape-without-values gap; ADR-0048 §3 added
-  the fourth): **`decline`** marks a declinable step declined (a non-declinable
+  three values (S8b errata fixed the shape-without-values gap; ADR-0048 §3 added
+  a fourth, `attest-receipt`, that ADR-0064 R4n1 removed again):
+  **`decline`** marks a declinable step declined (a non-declinable
   target is exit `40`, and a plugin decline re-runs the §9.1 closure over the
   retained set); **`accept`** records the operator's go-ahead without changing
   step state (steps are promoted only by post-probes, §6); **`execute`** — valid
   against `proof.*` steps only, a non-proof target being exit `40` because no
   executor could ever reach it — is the explicit approval that lets `resume` run
   that proof through `runtime:doctor --record`. Under `plan` an `execute` is
-  exit `40` — `resume` builds its execute set from its OWN answers file, so a
-  plan-time approval would be recorded and never consumed — with exactly one
-  exception: `proof.egress-provider-ack`, where any answer promotes the step and
-  lands in `choices[]`, which IS the §8.1 opt-in the reducer reads;
-  **`attest-receipt`** — valid against `proof.egress-provider-ack` only, and
-  never under `plan` (no ack can exist yet, so there is nothing to testify
-  about) — records the owner's phone-receipt testimony intent, audit-logged in
-  `choices[]` like every other answer. Duplicate answers for one step apply in
+  exit `40` for **every** proof step — `resume` builds its execute set from its
+  OWN answers file, so a plan-time approval would be recorded and never
+  consumed. (Until ADR-0064 R4n1 one proof, the egress ack, was exempt because
+  any answer against it was the opt-in the reducer read.) Duplicate answers for one step apply in
   file order and every one is recorded in `choices[]`, keeping the run
   replayable from its own manifest — and consumers read the per-step
   **EFFECTIVE** action (the last one), never the raw rows: the raw-filter
@@ -636,17 +638,13 @@ runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
   declined`) shows nothing and no verb acts on it — the operator's action would
   be absorbed and then invisible. A **`decline`** against that same step stays
   legal, because it is the one answer that IS surfaced (`not-applicable
-  (declined)`) and because a declined row is one of the three provenances that
-  opt the egress proof in (§8.1); refusing the whole status would delete a
+  (declined)`); refusing the whole status would delete a
   contract-visible path in order to close an invisible one. The rule reads the DERIVED
   expectation, never the judged status: the judge writes `not-applicable` and
   then restores a prior `declined` over it for any declinable step, so a proof
   declined earlier and since made non-applicable reads `declined` and would slip
   past a status test — and did, with the executor running for a step the reducer
-  simultaneously reported `required: false, status: not-applicable`. Reading the
-  expectation is also what makes the egress promotion safe: any answer naming
-  `proof.egress-provider-ack` makes it applicable BEFORE the expectation is
-  derived. Because the rule now refuses rather than merely filters, that
+  simultaneously reported `required: false, status: not-applicable`. Because the rule now refuses rather than merely filters, that
   expectation must reflect what THIS verb observed. (Before ADR-0057 the
   re-derivation also covered `permission.<host>.applied` promoting to
   `fragment_applied`; with Stage 6 gone the effective selection is the only
@@ -657,14 +655,15 @@ runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
   (§6.2) until a proof approved later in that same file no longer applies. Both
   answers were legal when given, so this is not a refusal — the executor skips
   the proof, warns, and leaves the choice recorded in `choices[]`.
-- **The VALUE answer (§3.3).** Two Stage-4 steps (§6.1.3) need the operator to
-  CHOOSE a value, not merely to approve or refuse a step, so the vocabulary has
-  a fifth form beside the four bare answers:
+- **The VALUE answer (§3.3).** One Stage-4 step (§6.1.3, `config.session`) needs
+  the operator to CHOOSE a value, not merely to approve or refuse a step, so the
+  vocabulary has a fourth form beside the three bare answers:
 
       set:<key>=<value|unset>[;<key>=<value|unset>]...
 
-  `;` separates pairs and `=` separates key from value. The separator is not a
-  comma because `notify_kinds`' own value IS a comma-separated kind list.
+  `;` separates pairs and `=` separates key from value. (The separator is not a
+  comma because the step that once took a comma-separated value, `notify_kinds`,
+  needed one; ADR-0064 R4n1 removed that step and the separator stayed.)
   `unset` means "leave this key UNWRITTEN; the shipped default stands,
   **deliberately**" — a recorded decision, not an absence (§6.1.3).
 
@@ -686,13 +685,8 @@ runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
   keys is exit `40` (it would be recorded and read by nothing), and `accept`
   against a value step is exit `40` — `accept` means "go ahead without changing
   step state", and a value step has nothing to go ahead with, so it would record
-  an answer while leaving every key undecided. Two `notify_kinds` payloads are
-  additionally refused: the enumeration of **every** current kind (identical to
-  `unset` today, permanently narrower tomorrow — the refusal names `unset`), and
-  the **blank** CSV (behaves as unset while writing a byte that looks like a
-  filter). Comparison is by set semantics after trimming and de-duplication, so
-  neither ordering nor a repeated token walks an all-kinds payload past the
-  refusal.
+  an answer while leaving every key undecided. Comparison of a recorded value with
+  the observed one is plain string equality.
 
   **The STANDING decision is folded from `choices[]`, never held in
   `steps[].desired`.** §7 clears `desired` on any version drift — for satisfied,
@@ -735,7 +729,7 @@ runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
   replayable from its own manifest. A value interview makes corrections ordinary,
   so `resume` refuses an over-cap write BEFORE executing any proof — otherwise a
   resume carrying both a value answer and an `execute` would run the executor
-  (a real subprocess, and for the egress kind a real network send) and only then
+  (a real subprocess) and only then
   fail the manifest write, leaving the effect performed and unrecorded.
 
 - **Run terminalization is asymmetric** (S8b errata — closing on the reduction
@@ -767,8 +761,13 @@ packaged schema **grammar-clamps** it — an anchored `pattern`, an `enum`, a
 `const`, a boolean, or a number. Everything else leaves as its **TYPE**, its
 **LENGTH**, or its **ORDINAL**, never as its content.
 
-The report schema id is `runtime-bootstrap-report-2.0`. The major moved because
-the historical path's `completion` key was **removed**, not renamed.
+The report schema id is `runtime-bootstrap-report-3.0`. The major moved because
+a key was **removed**, not renamed, twice: the historical path's `completion` key
+(2.0), and the `attest` verb's report, the live
+`completion.egress_receipt_attestation` and the `egress-provider-ack` proof rows
+(3.0, ADR-0064 R4n1). The report is emitted per invocation and never read back,
+so the bump has no host-pair skew. The historical projection of a retained run
+keeps its egress proof row and its receipt verdict summary (§7).
 
 *Why a classification rule and not a redaction one.* A sink sanitizer was built
 for this boundary and withdrawn on measurement: a generic 32+-hex rule destroyed
@@ -870,7 +869,7 @@ validator that happens to sit on it:
   runtime declared and keeps being named; a step id that did not match, and an
   `answer` outside the closed vocabulary, are unclamped by definition and are
   located by `answers[n]` instead. Both refusals still name what was expected —
-  the ids this run does have, and the four legal answers — because withholding
+  the ids this run does have, and the three legal answers — because withholding
   those would cost the operator the only actionable part of the message while
   buying no secrecy at all.
 
@@ -955,7 +954,7 @@ schema that admitted it. Value-level newer-minor tolerance is tracked in
 
 ```jsonc
 {
-  "schema": "runtime-bootstrap-run-1.4",
+  "schema": "runtime-bootstrap-run-1.5",
   "run_id": "<run-id>",
   "started_at": "<iso-8601-utc>",
   "updated_at": "<iso-8601-utc>",
@@ -1009,7 +1008,7 @@ schema that admitted it. Value-level newer-minor tolerance is tracked in
     "unsatisfied": ["<step-id>"],
     "missing_steps": ["<step-id>"],
     "proofs": [
-      { "kind": "deep-peer-smoke|workflow-continuation|permission|egress-provider-ack",
+      { "kind": "deep-peer-smoke|workflow-continuation|permission",   // a retained run may also carry "egress-provider-ack" (retired, §7)
         "step_id": "<proof.*>",
         "status": "passed|failed|stale|not-applicable|absent",
         "reasons": ["<why this verdict, recomputed>"],
@@ -1051,9 +1050,9 @@ wrong one.
 `seeded_from` recorded the **profile id and hash** of the machine profile a run
 was seeded from, never a filesystem path (a path can itself reveal operator
 layout). ADR-0064 Decision 3 removed the machine profile on 2026-10-04, and no
-writer sets `seeded_from` any more. It stays valid in `runtime-bootstrap-run-1.4`,
-so a retained run that carries it still reads, and the removal needed no
-run-schema bump.
+writer sets `seeded_from` any more. It stays valid in the packaged run schema
+(`runtime-bootstrap-run-1.5`), so a retained run that carries it still reads, and
+the removal needed no run-schema bump of its own.
 
 Five shapes are load-bearing and agree with §8 / §8.1:
 
@@ -1063,15 +1062,13 @@ Five shapes are load-bearing and agree with §8 / §8.1:
   "unknown" and let a `sandbox_limited` read masquerade as authenticated.
 - **The RECORDED proof's `directions` is a per-direction result map**, not a list of
   direction names (§8.1). A proof's `status` is the **aggregate recomputed from the
-  kind's evidence facts** — `directions` for the directional kinds; for
-  `egress-provider-ack` (1.2, ADR-0048 §3) the full three-leg set:
-  `provider_ack` **and** the sibling `mirror_correlated` seat **and** a
-  present, well-formed `artifact_hash` (the recompute checks
-  presence/shape; byte-verification against the doctor artifact is the
-  import boundary's job) — never trusted from storage: a smoke
-  that passed `claude->codex` and failed `codex->claude` is `failed`, a schema
-  that could only say `directions: [...]` could not express it, and an
-  acked-but-unmirrored or hash-less egress record recomputes `failed`. Two shapes exist
+  kind's evidence facts** — `directions` for the directional kinds
+  (until ADR-0064 R4n1 the `egress-provider-ack` kind carried a three-leg set
+  instead; it is retired, §8.1); the recompute does not read `artifact_hash`, and
+  byte-verification against the doctor artifact it links is the import boundary's
+  job (§8.2) — never trusted from storage: a smoke
+  that passed `claude->codex` and failed `codex->claude` is `failed`, and a schema
+  that could only say `directions: [...]` could not express it. Two shapes exist
   and must not be conflated (the 1.1-era text conflated them, and re-judgement
   read the wrong one — the false-demotion repair): the **recorded** proof lives in
   `proof/<kind>.json` and keeps its evidence member; the **reduced**
@@ -1079,12 +1076,14 @@ Five shapes are load-bearing and agree with §8 / §8.1:
   and carries no `directions` at all. Re-judgement (status/verify/resume) reads
   the RECORDED files back — validated, byte-rehashed — and the manifest's
   completion is a cached reduction over them, never the re-judgement source.
-  The 1.2 kind discriminator is enforced in code (lib/evidence-contract.mjs, one
+  The kind discriminator is enforced in code (lib/evidence-contract.mjs, one
   table for importer/writer/reader/reducer): directional kinds require
-  `directions` and forbid `provider_ack`; `egress-provider-ack` the reverse;
-  unknown kind, both members, neither member, filename/embedded-kind mismatch,
-  and duplicate kinds are refused fail-closed — the schema deliberately leaves
-  both members optional because the §4.1 validator has no `oneOf`.
+  `directions` and forbid `provider_ack`; `mirror_correlated` is refused on every
+  kind now that the egress kind is retired; an unknown kind (the two retired
+  evidence file names are skipped, not refused, §7), a filename/embedded-kind
+  mismatch and duplicate kinds are refused fail-closed — the schema deliberately leaves the retired members
+  optional and valid because the §4.1 validator has no `oneOf` and a retained run
+  must stay readable.
 - **A Stage-8 `steps[]` row is CONTROL state, never evidence.** THREE things
   describe one proof and none substitutes for another: the `steps[]` row records
   execution **disposition** (`pending` / `blocked` / `declined` /
@@ -1094,8 +1093,8 @@ Five shapes are load-bearing and agree with §8 / §8.1:
   control row reads `pending` however the evidence reads. The two axes genuinely
   disagree — `passed` + `declined` and `stale` + `blocked` are both reachable —
   so one field could not carry both, and presenting them as peer rows misreads
-  as a contradiction. It did: on the 0.86.0 live-fire run the reducer judged the
-  egress ack `passed` while the step row rendered `pending`, and the operator
+  as a contradiction. It did: on the 0.86.0 live-fire run the reducer judged a
+  proof `passed` while the step row rendered `pending`, and the operator
   read a successful real-network send as a failure. §8 pins the presentation
   rule that closes it.
 - **`bound_versions.plugins` is per-host** (`{ claude: {…}, codex: {…} }`) and binds
@@ -1147,8 +1146,8 @@ evidence say*. Recorded proof evidence NEVER promotes a control row to
 `satisfied`: proof judgement does not read evidence at all, and §8 evaluates
 Stage 8 from `completion.proofs[]` instead. The table's "counts toward
 completion" column is therefore a CONFIG statement; a Stage-8 row reaches the
-reducer only as the decline flag and the opt-in signal (§8), and the recomputed
-verdict decides the rest. The two axes are independent by construction, so
+reducer only as the decline flag (§8), and the recomputed verdict decides the
+rest. The two axes are independent by construction, so
 `passed` + `declined` and `stale` + `blocked` are both ordinary states — not
 contradictions to be resolved into one value.
 
@@ -1177,17 +1176,16 @@ left to S8:
 | `plugin.<name>.codex.enabled` | 3 | per plugin in the selection targeting Codex | follows `.installed` |
 | `config.model_effort` | 4 | always | no (see §6.1.1 — a recorded `host-native` posture satisfies it; a decline is not the vocabulary for that) |
 | `config.session` | 4 | always | **yes** (see §6.1.3 — a VALUE-bearing step; `accept` is refused, `set:` or `decline`) |
-| `config.notify_kinds` | 4 | always | **yes** (see §6.1.3 — same value grammar; `unset` is the future-open answer) |
-| `notify.configured` | 5 | always | **yes** |
-| `notify.codex.configured` | 5 | always | **yes** |
 | `statusline.claude.configured` | 5 | always | **yes** |
 | `statusline.codex.configured` | 5 | always | **yes** |
-| `egress.configured` | 5 | always | **yes** |
 | `hooks.codex.attested` | 7 | iff any selected plugin has `hook_bearing.codex` | no (but `not-applicable` when no Codex hook-bearing plugin is selected) |
 | `proof.deep-peer-smoke` | 8 | always | **yes** (declining caps at `configured-not-verified`) |
 | `proof.workflow-continuation` | 8 | iff `engineer` ∈ selection | **yes** (same cap) |
 | `proof.permission` | 8 | always | **yes** (same cap) |
-| `proof.egress-provider-ack` | 8 | iff the operator opted in — an answer against the step in `choices[]`, a `declined` status on its row, or a recorded `egress-provider-ack` proof (ADR-0048 §3/D0.2) | **yes** (same cap) |
+
+Stage 5 carries the two statusline steps only, and Stage 6 stays empty. Stage 8
+carries `proof.deep-peer-smoke`, `proof.workflow-continuation` and
+`proof.permission`.
 
 #### 6.1.1 Stage 4 asks for a recorded POSTURE, not for a key
 
@@ -1238,90 +1236,26 @@ Three judgement rules follow, and each closes a hole the presence test had:
   reaches the judge unvalidated — validators run on the write path — so a typo
   would otherwise satisfy the step while `runtime:settings --apply` refuses it.
 
-`notify.configured` keeps meaning exactly the LOCAL runtime notification policy
-(`~/.agentic-plugins/config.toml` notify family); `notify.codex.configured`
-observes the Codex-side wiring as an **EXACT probe** (notify-axis slice):
-`satisfied` means the merged `notify =` argv in `$CODEX_HOME/config.toml`
-EQUALS the canonical argv this machine's rendered fragment carries — the
-shuttle, or the chain script in wrapper-chain mode — element-wise
-(`expectedCodexNotifyArgv` is the one source both the fragment renderer and
-this probe consume, so they cannot drift; the argv is per-OS: POSIX
-`/usr/bin/env node <receiver>`, win32 the render machine's own node executable
-path). A present, parseable, non-empty argv that is NOT the canonical wiring
-judges `manual-follow-up` — some other notifier is wired, and runtime never
-auto-chains an existing notifier, so reconciling it (re-render the plan for its
-wrapper-chaining offer, or decline the step) is an operator decision.
-`notify = []` runs nothing and a present-but-unparseable value is a config the
-host will not run — both judge `pending`; an unreadable config judges
-`unknown`. The rendered Codex notify fragment attaches to the Codex step,
-whose judge re-observes it (ADR-0048 §1 split — the pre-split judge only ever
-read the local config, so the merge was presented but never re-observed).
+#### 6.1.2 Retired step ids
 
-#### 6.1.2 `notify.codex.configured` is a CONJUNCTION of two exact predicates
+`lib/step-registry.mjs` keeps a `RETIRED_STEP_IDS` map, id to the ADR that
+retired it, and `deriveExpectedSteps` derives none of them. They are listed here
+as history, in prose and not as table rows, because the table above is held to
+the registry by `tests/runtime/test-step-registry.mjs`:
 
-Codex-side attention has two halves (ADR-0040 §4) and this one step owns both.
-`notify =` fires only on `agent-turn-complete`; `[tui] notifications` is the
-**only** channel that carries `approval-requested`. Judging the argv alone let a
-machine with canonical receiver wiring and `notifications = false` certify
-attention that was switched off, and reach `complete`.
+- `permission.claude.applied` and `permission.codex.applied` (Stage 6) —
+  ADR-0057;
+- `config.notify_kinds` (Stage 4), `notify.configured`,
+  `notify.codex.configured` and `egress.configured` (Stage 5), and
+  `proof.egress-provider-ack` (Stage 8) — ADR-0064 Decisions 1 and 6, slice
+  R4n1.
 
-Ownership was never the open question — it was already written down twice. §6.1.1
-above states the rendered fragment is ONE `[tui]` table carrying BOTH
-**runtime-planned keys**, and the fragment builder already rides the
-`notifications` key on *this* step's decision (`each planned key rides iff its
-step is not declined`). The judge was the one component that did not observe it.
-
-**Precedence.** The notifications predicate is asked **only once the argv
-predicate has already yielded `satisfied`**. It may hold that verdict or lower
-it; it never raises one, and it never reclassifies the argv half's own outcomes —
-an explicit `notify = []`, an unparseable argv, and an absent key all stay
-`pending`, and an unreadable config stays `unknown`, exactly as stated above.
-
-| observed `[tui] notifications` | status | meaning |
-|---|---|---|
-| absent | `pending` | the canonical two-event configuration was not observed |
-| `false` | `manual-follow-up` | approval attention is explicitly disabled |
-| `true` | `manual-follow-up` | broader than the canonical two-event selection |
-| the canonical array, element-wise | `satisfied` | canonical approval attention observed |
-| any other array — reordered, subset, superset, or `[]` | `manual-follow-up` | a present full-replace selection is the operator's and is never overwritten; the reason reports whether `approval-requested` survives in it |
-| untrustworthy | `pending` | duplicate key, redefined `[tui]` table, or a value the scan cannot classify |
-
-Absent is `pending` rather than `satisfied` even though Codex's own default is
-on, for the same reason §6.1.1 requires a recorded posture: a default is not a
-decision, and the step is **declinable**, so an operator who deliberately wants
-no approval attention records that by declining — the decline *is* the
-declaration, and no new config key is needed to carry it.
-
-**The value is read through a typed classification, never from its raw text.**
-`parseCodexConfigToml` (`lib/codex-config.mjs`) returns
-`form ∈ absent | true | false | array | invalid`, exhaustive and fail-closed to
-`invalid`. A boolean "the capture is clean" flag is **not** sufficient and was
-rejected on measurement: the structural facts alone report `["a" "b"]` and
-`true junk` as cleanly captured, while a dotted `tui.notifications = …` followed
-by an explicit `[tui]` header captures a **canonical-looking** raw out of a
-config Codex cannot load. Interpreting the raw would therefore have closed one
-false pass by opening another. The same `tuiRedefined` gate gives
-`statusline.codex.configured` the same protection — it had the identical hole.
-
-`invalid` also covers every construct that clouds the **table scope or the key
-identity**, because a line scanner cannot resolve them and a wrong answer here is
-a certified false pass. Each of these was measured certifying a canonical array
-out of a config Codex rejects: any *other* dotted `tui.<…>` assignment before an
-explicit `[tui]` header (the table is created by all of them, not only the two
-keys this scan reads); a `[tui.<key>]` sub-table claiming one of those key names;
-a deeper dotted path (`notifications.enabled = …`) defining the key as a table;
-and the same key spelled bare beside its quoted form. A whole-table inline
-assignment (`tui = { … }`) is `invalid` rather than `absent` for a different
-reason — reporting it absent is not merely imprecise, it produces a recovery that
-tells the operator to merge a `[tui]` block that would **break** a config Codex
-accepts today. Finally, a triple-quote delimiter inside a comment is not a
-delimiter: treating it as one let a commented section header be swallowed, so a
-value nested under `[tui.child]` was read as if it sat under `[tui]`.
-
-The persisted plan artifact carries the classification beside the raw
-(`read_check.tui_notifications_form`, `runtime-notification-plan-1.1`, validated
-on write) and the settings report renders it, because an un-classified raw is
-that same misleading surface one level down.
+A retired id stays nameable in a retained run: the step-id pattern never
+enumerated ids, so a row or a `choices[]` entry carrying one is schema-valid. A
+retired id is never owed, never judged and never rendered by a 1.5 runtime. §7
+states how a retained or open run that carries one is read. An `--answers` entry
+naming a retired id is exit `40`, like any step the registry did not derive
+(§3).
 
 **`blocked_by` edges** (the column §5's `steps[].blocked_by` serializes; enumerated here
 because §5 referenced them and this table did not define them — S8a2 C4). Each step is
@@ -1336,17 +1270,14 @@ be attempted at all, never a mere stage ordering:
 | `plugin.<name>.<h>.installed` | `marketplace.<h>.registered` |
 | `plugin.<name>.codex.enabled` | `plugin.<name>.codex.installed` |
 | `config.model_effort` | — (agentic-plugins' own config; no host needed) |
-| `notify.configured`, `egress.configured` | — (same) |
-| `notify.codex.configured` | `host.codex.present` (a Codex-side config needs the Codex CLI) |
 | `statusline.<h>.configured` | `host.<h>.present` (a host-targeted config step) |
 | `hooks.codex.attested` | every selected Codex-hook-bearing plugin's `.codex.installed` **and** `.codex.enabled` |
 | `proof.deep-peer-smoke` | both hosts' `.authenticated`, plus `companions` `.installed` on both and `.enabled` on Codex |
 | `proof.workflow-continuation` | `engineer`'s `.installed` on both hosts and `.enabled` on Codex |
 | `proof.permission` | both hosts' `.authenticated`, plus `companions` `.installed` on both and `.enabled` on Codex (ADR-0057 §Decision 5 — the same edges its sibling smoke proof carries, because it makes the same live companion invocation; the removed Stage-6 edges are replaced, not emptied) |
-| `proof.egress-provider-ack` | `egress.configured` (an ack over an unconfigured egress channel is unreachable by construction) |
 
 A **Stage-8 entry is an execution anchor**, not an evidence record: it exists so an
-answer (`execute` / `decline` / `attest-receipt`) has something to target and so the
+answer (`execute` / `decline`) has something to target and so the
 executor knows whether running is reachable. Its `blocked_by` edges therefore govern
 EXECUTION reachability only and say nothing about evidence already recorded — a proof
 whose predecessors have since broken is `blocked` for re-execution while its recorded
@@ -1380,38 +1311,21 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   `$CODEX_HOME/config.toml` EQUALS the canonical item order element-wise.
   ABSENT means Codex renders its two-item default: `pending`, named. A present
   non-canonical list is the operator's own selection: `manual-follow-up`,
-  never overwritten. The rendered fragment is ONE `[tui]` table carrying BOTH
-  runtime-planned keys (`status_line` + `notifications`, via the shared
-  composer in `lib/toml.mjs`), and a run PRESENTS exactly ONE `[tui]`
-  source: when the combined fragment is the presented source (its step
-  carries a `fragment_pointer` AND is not declined/not-applicable), the
-  notification-plan artifact is stripped to the `notify =` wiring only
-  (with an in-artifact note routing the operator here); otherwise the
-  notification plan's `[tui]` preview stays the presented source — that
-  covers a statusline step that never rendered a fragment, a DECLINED step
-  whose historical fragment still exists but is no longer authoritative (a
-  refused key must never be routed to), and a failed combined write.
-  Physical files can transiently disagree with the presented source in
-  NAMED, non-silent states: a frozen notify artifact whose preview predates
-  a statusline re-transition is superseded by the combined fragment and
-  flagged with an explicit warning; a §7-cleared combined file can
-  linger unpresented until its re-render lands (its write failure is
-  itself warned); and a run whose preview was stripped while the combined
-  fragment held authority can reach a NO-SOURCE state when that authority
-  is later withdrawn (declined) — the frozen stripped artifact is NEVER
-  rewritten (a restore write would race the manifest's authority
-  withdrawal with no CAS transaction to order them), so runtime names the
-  state with an explicit abandon-and-re-plan warning instead. The
-  underlying freeze-vs-decision reconciliation is the fragment-freeze
-  follow-up.
+  never overwritten. The rendered fragment is ONE `[tui]` table carrying the one
+  runtime-planned key, `status_line` (via the shared composer in
+  `lib/toml.mjs`; the fragment's `note` tells the operator to merge `status_line`
+  into the ONE `[tui]` table of `$CODEX_HOME/config.toml`). Until ADR-0064 R4n1 (2026-10-05) the table carried a second
+  key, `notifications`, and a run chose between this fragment and the
+  notification plan's `[tui]` preview as the one presented source; with the
+  notification plan no longer rendered there is one `[tui]` source and none of
+  that arbitration.
 - **`statusline.claude.configured`** — satisfied iff the USER-layer
   `settings.json` (`CLAUDE_CONFIG_DIR` honored; ONE shared snapshot — it served
   the permission consumer too until ADR-0057 removed it) carries
   `statusLine: { type: "command", command: <canonical> }` where the canonical
   command is `node '<home>/.agentic-plugins/bin/agentic-statusline.mjs'` —
   forward-slash, SINGLE-quoted, shell-resolved `node` (the Claude statusLine
-  runs through Git Bash/PowerShell, unlike Codex's shell-less notify spawn —
-  the documented asymmetry with `expectedCodexNotifyArgv`). Single quotes are
+  runs through Git Bash/PowerShell). Single quotes are
   the canonical form because double quotes interpolate in BOTH Git Bash and
   PowerShell — a home path containing `$(...)` would execute substitution and
   change the shim argv; a path that itself contains a single quote has no
@@ -1486,13 +1400,14 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
 
 #### 6.1.3 The VALUE-bearing Stage-4 steps
 
-`config.session` and `config.notify_kinds` are the only steps whose resolution
-depends on a value the operator **chooses** rather than on a fact the probe
-finds. Their grammar is §3.3; this section is what they mean.
+`config.session` is the only step whose resolution depends on a value the
+operator **chooses** rather than on a fact the probe finds. (`config.notify_kinds`
+was the other until ADR-0064 R4n1, 2026-10-05.) Its grammar is §3.3; this section
+is what it means.
 
 **What they certify is the PERSISTED USER-GLOBAL POSTURE**, never the effective
 value on this machine right now, and the distinction is load-bearing rather than
-pedantic. `notify_kinds` and `session_capture` resolve repo → user → default at
+pedantic. `session_capture` resolves repo → user → default at
 runtime, and `entry_brief` / `entry_brief_empty` resolve env → user → default
 (ADR-0045 §7). So a satisfied step can coexist with a repo or env layer that
 wins at runtime. That is deliberate: §1.1 keeps bootstrap off the repo-scoped
@@ -1509,15 +1424,9 @@ step.
 into a host file. `config.model_effort` is the precedent: a Stage-4 step that
 asks for a recorded decision about agentic-plugins' own config.
 
-**Why two steps and not one.** They are independently declinable, and a fragment
-binds to exactly one step id. A shared fragment could not be amended once one
-step was declined and the other answered, because the freeze keeps first renders
-— so a single fragment across two independently declinable steps is unsafe by
-construction, not merely untidy.
-
-**Why declinable, when `config.model_effort` beside them is not.** The posture
+**Why declinable, when `config.model_effort` beside it is not.** The posture
 step asks for a decision that must EXIST: a machine has some model/effort
-posture whether or not it says so. These two ask about OPTIONAL machinery whose
+posture whether or not it says so. This one asks about OPTIONAL machinery whose
 shipped defaults are a legitimate standing answer. `decline` is the vocabulary
 for "leave this unmanaged and stop asking" — which is **not** the same as
 choosing the defaults. Choosing the defaults deliberately is
@@ -1540,29 +1449,18 @@ hand-off:
 | any | user config unreadable | `unknown` (§6: unknown is never satisfied) |
 
 **`unset` is satisfied by physical ABSENCE only.** `parseRuntimeConfigToml`
-preserves a present-but-empty key, so `notify_kinds = ""` is a *present blank*,
-not an unset key — even though `parseKindsFilter` happens to treat it as no
-filter today. A blank is a byte the operator still has to remove, and
+preserves a present-but-empty key, so `session_capture = ""` is a *present blank*,
+not an unset key. A blank is a byte the operator still has to remove, and
 `runtime:settings --unset <key>` is what removes it.
 
-**The apply path for `unset` is a real operation, not a hand-edit.** The config
-writer had only add/update, so `--notify-kinds` could narrow a filter and
-nothing could widen it back — a one-way door in a settings CLI, independent of
-this interview and surfaced by it. `runtime:settings --unset <key>[,<key>]`
-deletes **every** assignment line for the key (the config parser is
-last-value-wins, so a surviving duplicate would resurrect it) and reports how
-many lines went. Removal is deliberately **not** filtered by the user-scope-only
-rule: ADR-0045 §7 forbids a tracked repo value from *activating* a
-session-shaping key, and deleting one can only ever deactivate.
-
-**ADR-0047 §8's dual-kind window is a warning, not a refusal.** A `notify_kinds`
-filter naming exactly one of `turn-complete` / `response-needed` gets a warning
-naming the verification a one-sided filter presupposes. §8 step 2 opens the
-window with both (or no filter) and §8 step 5 explicitly permits narrowing once
-both producers are verified upgraded, so refusing would block a legitimate
-post-window narrowing. The warning is recomputed from the standing ledger on
-every verb rather than emitted once while parsing an incoming answer, so it does
-not vanish with the resume that produced it.
+**The apply path for `unset` is a real operation, not a hand-edit.**
+`runtime:settings --unset <key>[,<key>]` deletes **every** assignment line for the
+key (the config parser is last-value-wins, so a surviving duplicate would
+resurrect it) and reports how many lines went. Removal is deliberately **not**
+filtered by the user-scope-only rule: ADR-0045 §7 forbids a tracked repo value
+from *activating* a session-shaping key, and deleting one can only ever
+deactivate. (The ADR-0047 §8 dual-kind warning for a one-sided `notify_kinds`
+filter went with that step in ADR-0064 R4n1.)
 
 **Concurrent resumes are still an operating assumption, and this feature raises
 the stakes.** `resume` computes from an unlocked snapshot and the locked mutator
@@ -1606,8 +1504,8 @@ smoke proof would define an unreachable terminal state. Making the *proof* condi
 instead would be worse: it would let a machine reach `complete` having proven nothing.
 
 **Declinable**: optional plugins (any plugin not reached by a hard edge from a
-retained plugin, and not `runtime` or `companions`); notification; egress;
-the statuslines; and the execution proofs — declining a proof caps the run at
+retained plugin, and not `runtime` or `companions`); the statuslines; and the
+execution proofs — declining a proof caps the run at
 `configured-not-verified` and **never** grants `complete`.
 
 Declining a plugin creates a **new effective `custom` selection** and **re-runs hard
@@ -1722,7 +1620,7 @@ An older runtime's `status` / `verify` on a newer-minor run derives its OWN
 registry, so a step the newer minor added is simply absent from its expectation:
 the report is optimistic and the exit code can read `0` while that step is
 unresolved. This is the shipped, accepted behaviour of every step addition — the
-1.1 → 1.2 bump added `notify.codex.configured` in the same commit and has the
+1.1 → 1.2 bump added a Stage-5 step in the same commit and has the
 identical property — and it is why the fence lives on the MUTATORS: `resume`
 refuses a future minor outright (as `profile seed` did until ADR-0064 Decision 3
 removed it on 2026-10-04), so an older runtime can never *close* a run under an
@@ -1731,15 +1629,12 @@ R0 and write nothing, so an optimistic read costs a re-run, not a state.
 Stating it rather than implying it: the remedy for a stale reader is to upgrade
 the runtime, not to consult its verdict.
 
-**A bump also closes the post-terminal receipt window for runs under the old
-minor.** `attest` requires the terminal manifest to carry the EXACT current
-schema — receipt testimony is current-schema vocabulary, and it is deliberately
-the strictest gate in the evidence writer. So an operator holding a terminal run
-under the previous minor, with a recorded provider ack but no receipt
-attestation, can no longer record one; there is no recovery for that window, and
-a fresh plan does not reopen it. The 1.2 → 1.3 bump paid that cost knowingly
-(owner decision, 2026-08-26) rather than loosening the narrowest door in the
-evidence writer to accommodate a config-step addition.
+**The post-terminal receipt window is closed.** `attest` once required the terminal
+manifest to carry the EXACT current schema, so each minor bump closed the window
+for runs under the previous one (the 1.2 → 1.3 bump paid that cost knowingly,
+owner decision 2026-08-26). ADR-0064 R4n1 closed it for every run: there is no
+`attest`, and the proof writer refuses every write into a run that is not
+`open` (§3).
 
 **Terminal runs never adopt new steps.** `resume` refuses a terminal run, so a
 `complete` / `configured-not-verified` / `abandoned` run cannot take an injected
@@ -1753,9 +1648,7 @@ minor), which is exactly why they must not be read as a current verdict.
 other.** This clause resets version-bound *observations* on the CONTROL axis
 (`satisfied` / `manual-follow-up` rows, plus any render state a pending row
 froze). A proof's freshness is recomputed independently, from the proof's OWN
-`bound_versions` — and, for `egress-provider-ack`, from the activation
-fingerprint too (§8.1), which can drift with no version change at all. The
-converse also holds: a later resume may refresh `probe` while a recorded proof
+`bound_versions`. The converse also holds: a later resume may refresh `probe` while a recorded proof
 stays stale. So a Stage-8 control row is never the place a proof's staleness is
 recorded, and this reset never makes a stale proof current.
 
@@ -1775,10 +1668,7 @@ is usable whenever it parses to a plain object AND the exit code is one this
 runtime has a report contract for. Only an absent or unparseable report — or an
 exit code outside that set — is the crash case. The one code that refuses an
 otherwise-usable report is `record-failed`: §8.2 links a proof to its doctor
-artifact by exact-byte hash, and there is no artifact to link. For
-`egress-provider-ack` that refusal carries an extra caveat, because the provider
-send happens long before the artifact is written — "not imported" must not be
-read as "not sent".
+artifact by exact-byte hash, and there is no artifact to link.
 
 That second
 snapshot then becomes the verb's ONLY account of the machine: `probe`, the raw
@@ -1793,23 +1683,27 @@ that disagrees with what it persisted.
 judges reading the same file separately can observe an atomic replacement between
 them and then agree about a file that no single version of satisfies. Inside the
 reader gathering, Claude's `settings.json` (statusline),
-`~/.agentic-plugins/config.toml` (model/effort + notify) and
-`$CODEX_HOME/config.toml` (notify/statusline) are each read ONCE and projected.
+`~/.agentic-plugins/config.toml` (model/effort + session) and
+`$CODEX_HOME/config.toml` (statusline) are each read ONCE and projected.
 (The permission projections of the first and last went with the machine profile,
 their only consumer: ADR-0064 Decision 3, 2026-10-04.)
 
 *Scoped to the gathering on purpose, because a broader claim would be false*: the
 machine PROBE reads `$CODEX_HOME/config.toml` again for Codex hook state, so that
 file is still sampled twice per verb across the two phases, and a replacement
-between them can pair hook facts from one version with notify/statusline facts
+between them can pair hook facts from one version with statusline facts
 from another. Recorded as a follow-up; the claim above is
 deliberately the narrow one the code actually keeps.
 
-*Fragment composition is handed that same reader snapshot, but is not fully bound
-by it*: the fragment builders re-read notification, egress and statusline config
-themselves. A config change between the snapshot and the render therefore still
-produces a fragment built from later bytes than the rows beside it. Named here
-rather than implied away; folding those reads into the snapshot is a follow-up.
+*Fragment composition is handed that same reader snapshot.* Until ADR-0064 slice
+R4n1 (2026-10-05) it was not fully bound by it: the notification builder (which also
+composed the Codex `[tui]` table) and the egress-launcher builder re-read their config
+themselves, so a config change between the snapshot and the render could produce a
+fragment built from later bytes than the rows beside it. Those builders are removed.
+The statusline builders take their user configuration from the snapshot
+(`readersForFragments`) alone. Besides packaged templates, they read only the
+installed-receiver inventory (`inspectInstalledReceivers`), which is sampled
+separately at render time.
 
 **The expectation's own inputs move with the snapshot**, so they are re-derived
 before the rebuild and the rows re-judged. Two of them:
@@ -1843,23 +1737,11 @@ hook verdict is re-derived with the selection at every point it moves: a claim
 that covered the narrow set must not go on satisfying a non-declinable step it
 no longer covers.
 
-**`attest` is the one exception, deliberately — and only for the SELECTION.** Its
-subject is a send that already HAPPENED, and the gate it protects asks whether a
-recorded ack may be testified about, so the selection it judges against is the
-one the run was REDUCED with, not a re-derived one. Everything else about attest
-is current: the rows are freshly judged, the completion is recomputed, and its
-verdict can therefore read `incomplete` on a machine that has since drifted for
-reasons having nothing to do with the selection. It is a historical scope for one
-input, not a historical report. The drift this clause names for a proof is *bound versions*;
-refusing an owner's receipt because they installed an unrelated plugin after the
-run closed is a selection-drift refusal, and an unrecoverable one — `resume`
-refuses a terminal run, so the door would simply shut. The cost is that attest's
-recomputed verdict can differ from `status`'s for the same run, and that cost is
-**stated in attest's own output** on every affected run rather than left for the
-operator to discover: the warning names the lapsed refusal, says attest did not
-re-derive it, and says the verdict may differ. Two verbs disagreeing is
-acceptable when each says which question it answers; disagreeing silently is
-not.
+**Convergence has no exception.** `attest` was the one verb that judged against the
+selection the run was REDUCED with, not a re-derived one, because its subject was a
+send that had already happened. It was removed with the egress proof (ADR-0064
+R4n1), so every verb that speaks about the machine converges on the current
+selection.
 
 **Stated limit.** §7 version invalidation sits OUTSIDE both convergences: it runs
 once, early, against the selection as it stood before either. Two windows escape
@@ -1894,6 +1776,63 @@ is where the minor moves:
   persist a document it only half-understands, silently shedding additions a
   newer runtime recorded (§4.6: downgrade is never attempted). R0 verbs may
   still read it under the §4.1 scalar tolerance.
+
+**Runs of an earlier minor, read by the 1.5 runtime (ADR-0064 Decision 7).**
+Bootstrap runs are machine-scoped, and one packaged schema validates documents of
+every minor. The 1.5 bump is semantic: it arms the existing refuse-newer and
+legacy-terminal fences, so an older runtime cannot restore the retired rows into a
+run this runtime migrated.
+
+- **Every retired member stays schema-valid.** The retired step ids (the step-id
+  pattern never enumerated them), `seeded_from`, the `egress-provider-ack` kind
+  with `provider_ack` and `mirror_correlated`, the `egressReceiptAttestation`
+  definition and `completion.egress_receipt_attestation` all still validate. A
+  1.5 writer never writes them. Dropping them would make every retained run that
+  carries one schema-invalid, and an invalid run can only be abandoned, not
+  shown.
+- **A terminal run of an earlier minor is history.** `status` and `verify` exit
+  `50` (§3.1), re-probe and re-certify nothing, and do not read its proof files.
+  The historical projection (§3.2) keeps projecting a stored `egress-provider-ack`
+  proof row and a stored receipt verdict summary: it filters rows through its own
+  `HISTORICAL_PROOF_KINDS` list (the live kinds plus the retired egress kind), not
+  through the live `PROOF_KINDS`, so those rows are shown rather than counted
+  unreadable. The text renderer prints `receipt attestation:` for a stored
+  verdict on this path only.
+- **An open run of an earlier minor migrates on `resume`.** The run is judged
+  against the 1.5 registry, which owes none of the retired steps, so their rows
+  leave `steps[]`. The migration history row (`from` the old schema, `to`
+  `runtime-bootstrap-run-1.5`, no `step_id`) names the dropped rows and their
+  retiring ADRs, or says there were none. `choices[]`, `history[]` and
+  `seeded_from` stay exactly as written.
+- **Retired evidence files are skipped on every read of `proof/`.**
+  `egress-provider-ack.json` and `egress-receipt-attestation.json` are never
+  opened, validated, returned or credited; the reader reports their names in a
+  separate `retired` list. The proof reader refuses any unknown kind, so without
+  the skip an open run holding one could not resume. The skip is not limited to
+  open runs: a migrated run that later completes is a 1.5 run, so `status` and
+  `verify` read its proof directory instead of taking the historical path. The
+  files stay on disk as history.
+- **`abandon` stays the way out** of a run the operator does not want to finish.
+  It accepts a run whose manifest no longer validates. `plan` keeps refusing to
+  start while a run is open, so an operator who does not want to resume abandons
+  first.
+- **One resume at a time** stays an operating assumption (§10.2). The schema
+  fence stops an older runtime from writing a newer manifest, but a resume already
+  in flight when the other host upgrades can still write fragment and proof files
+  before its manifest update is refused.
+
+**A partially upgraded host pair.** Both hosts read the same machine-scoped
+`~/.agentic-plugins/runs/bootstrap/`. While one host runs the 1.5 runtime and the
+other an older one, the older runtime refuses to `resume` a 1.5 run or change its
+steps (the future-minor fence, "upgrade the runtime plugin"). `abandon` is exempt
+as a recovery verb: it can close a newer open run and keeps its schema string.
+`status` and `verify` re-judge the run against the older registry, rebuilding a row
+for every step that registry owes, so their verdict on the retired steps depends on
+whatever notify and egress configuration that machine still holds — missing,
+pending or satisfied. That is an obsolete, read-only judgment that ends when the
+host updates. The 1.5 release is therefore installed on both hosts before either
+host's bootstrap verdict is relied on. The `--format json` report is computed per
+invocation and never read back, so it has no such skew.
 
 **History-cap boundary (schema `history` maxItems 256).** A valid legacy run
 sitting exactly at the cap cannot take the migration history row: the update
@@ -1976,19 +1915,13 @@ kind to `failed` with the duplication named AND caps `state` at `incomplete`
 regardless of whether the duplicated proof was required. A duplicated
 non-required proof is still an evidence-integrity violation, not a pass.
 
-**The receipt attestation verdict (1.2, ADR-0048 §3 / D0.1).** The reducer
-carries `completion.egress_receipt_attestation` — the recomputed verdict over the
-recorded owner testimony — ONLY when the run has anything to say about it
-(testimony recorded, or the egress proof opted in); every other run keeps the
-exact 1.1 completion shape. `attested` requires the linked `egress-provider-ack`
-to still re-judge `passed` at current bound versions, the receipt's
-`provider_proof_artifact_hash` to equal the stored ack file's own sha256
-(byte-rehashed at read-back), and the `attempt_hash` to match by equality. Any
-drift — ack stale/failed, replaced file, different attempt — is `stale` with the
-reason named; testimony never silently vanishes into `not-applicable` on drift
-(removal is a staleness fact about recorded testimony, not a retraction of it).
-Presentation derives the **`delivery-attested`** label from ack `passed` +
-verdict `attested`; the generic completion `state` is never redefined by receipt.
+**The receipt attestation verdict was removed (ADR-0064 R4n1).** From 1.2 to 1.4 the
+reducer carried `completion.egress_receipt_attestation`, a recomputed verdict over
+the owner's recorded phone-receipt testimony. A 1.5 reducer never computes or
+writes it: `reduceCompletion` takes `{ pluginSet, selection, steps, proofs,
+hookAttestation, probe, runtimeVersion }`, and the completion shape is the 1.1
+shape. A retained terminal run's stored verdict is history, shown only by the
+§3.2 projection (§7).
 
 ### 8.1 Which proofs are required
 
@@ -1997,58 +1930,14 @@ verdict `attested`; the generic completion `state` is never redefined by receipt
 | `deep-peer-smoke` | **always** | It is the only proof that the cross-host companion bridge actually works. It is always *applicable* because `companions` is mandatory in every selection (§6.2) — that rule exists precisely to keep this proof reachable. |
 | `workflow-continuation` | **iff `engineer` ∈ selection** | It exercises engineer machinery. Requiring it with no engineer installed would be unreachable. |
 | `permission` | **always** | ADR-0057 §Decision 5. It is the dedicated live proof that RECORDS ADR-0035 §4's no-relaxation fact — `permission_policy: {host_native_default, relaxed_by_doctor, injected_flags}`. It used to apply only when an operator had applied an advisor fragment, which made a boundary proof conditional on an advisory artifact; with the advisor gone that gate has no referent, and merely deleting it would have made the proof permanently non-applicable. |
-| `egress-provider-ack` | **iff the operator opted in** (§6.1 — an answer in `choices[]`, a `declined` row status, or a recorded ack proof) | ADR-0048 §3: it proves exactly that the pinned provider request returned HTTP 2xx + `{ok:true}` — deliberately not named "dispatch" or "delivery". Requiring it unrequested would make every non-egress machine unable to complete. |
 
-**The opt-in must carry provenance.** Both readers — the reducer and the re-probe
-— derive it through ONE shared predicate (`egressProofOptedIn`), which accepts
-exactly three facts, any one of which is enough:
-
-1. an `execute`/`decline`/`attest-receipt` answer against the step in `choices[]`
-   — the operator's own ledger, appended to and never rewritten;
-2. a `declined` status on the step's row — the judge never *generates* that
-   status, it only restores one `applyAnswers` wrote from an answer, so it traces
-   back to a person. A decline is an answer against the step (and caps the run at
-   `configured-not-verified` per §6.2), not the absence of one;
-3. a **recorded** `egress-provider-ack` proof. The proof file is written before the
-   manifest update that records the choice, so a failure in between would
-   otherwise leave a machine holding a failed ack on disk that its own run calls
-   not-applicable — and `recomputeProofStatus` returns `not-applicable` without
-   ever inspecting the record. Evidence of a real send must never become
-   ignorable.
-
-Two things are deliberately **not** accepted, and both were shipped defects:
-
-- **The row's mere PRESENCE.** §6.1 enumerates `proof.egress-provider-ack` on
-  every run — a not-applicable step is enumerated so it can be REPORTED — and the
-  judge persists that enumeration as a `not-applicable` row, so a presence test is
-  true on every machine that has ever run `plan`. That made the proof required
-  everywhere and delivered exactly the outcome the row above says must not happen:
-  no evidence can exist for an ack over an unconfigured egress channel, so
-  `complete` was unreachable on every machine that never opted in.
-- **The row's generic status.** `pending` is what the judge writes for every
-  `proof.*` step and `blocked` is what its demotion pass rewrites that to, so
-  "any status but `not-applicable`" reads machine output as consent. It would also
-  make the first defect OUTLIVE its fix: a run planned under the broken code and
-  then resumed by it holds a `pending`/`blocked` egress row with no answer behind
-  it, §7 invalidation preserves both statuses, and a same-schema run never enters
-  the minor-migration path. With generic status excluded such a run heals — the
-  next judgement re-derives the step as `not-applicable`.
-
-Applicability derived from the very row the derivation produces is circular. It
-has to come from a fact about the operator, or about evidence on disk.
-
-The `egress-provider-ack` freshness additionally binds the **sanitized activation
-fingerprint** by EQUALITY — a domain-separated sha256 over channel + recipient +
-the credential env var NAME (lib/evidence-contract.mjs owns the derivation;
-nothing credential-value-derived may enter a persisted fingerprint). A removed or
-changed activation stales the proof; it never becomes `not-applicable`.
-**Documented limit**: credential ROTATION is invisible to this fingerprint by
-design (folding the value in would persist a value-derived hash, which §4/ADR-0048
-forbids) — a rotated token surfaces as the executor's next real attempt failing,
-not as staleness. The "contract version" the proof binds is realized as the run
-schema id (`runtime-bootstrap-run-1.4`) plus the runtime semver already in
-`bound_versions` — the contract document ships inside the runtime package, so the
-runtime version pins it; no separate field exists.
+**The egress delivery proof was retired (ADR-0064 R4n1).** `egress-provider-ack` was
+an opt-in proof (ADR-0048 §3) that a provider request returned HTTP 2xx and
+`{ok:true}`. The kind, its `egressProofOptedIn` provenance rule, its activation
+fingerprint binding and its executor are gone, and no operator input can make a
+proof applicable any more: the three proofs above are the whole table. The kind
+survives only as a retained-run vocabulary (§7): its stored rows project, and its
+`proof/` file is skipped.
 
 A proof is `stale` — and does **not** satisfy `complete` — when its `bound_versions`
 do not match the current probe. **`bound_versions` binds the plugin versions too**,
@@ -2074,6 +1963,11 @@ selected plugin version), and **per-direction results** — into
 and never printed. The Codex `/hooks` attestation is carried the same way, as a
 `hook_attestation` record with its own bound versions — it is an operator claim, and
 a claim made against Codex `0.137` does not survive an upgrade.
+
+Every proof kind links the doctor artifact by its exact-byte `artifact_sha256`
+(doctor's write is temp+rename atomic), so `artifact_hash` is never null on a freshly
+recorded proof. Byte-verification against that artifact is the import boundary's
+job.
 
 **Under `resume`, and only `resume` (§3 errata).** Both halves of that decision —
 the `--record` invocation and the metadata copy — are writes, so they belong to the
@@ -2120,210 +2014,16 @@ has no engineer installed, recording `tool_root_cross_host_fallback`. The siblin
 rung applies only when doctor itself runs from a checkout. The resolver still never
 consults `repoRoot`.
 
-**The egress-provider-ack executor (ADR-0048 §3 — the one real-network proof).**
-The same `resume` → `runtime:doctor --record` delegation carries the egress kind
-through the flag pair `--egress-ack-proof --execute-egress-ack-proof`, with four
-decisions that differ from the directional kinds and are normative here:
-
-- **Single-delivery evidence, not directions.** The recorded proof carries
-  `provider_ack` (result / `attempt_hash` / `activation_fingerprint` / `ran_at`)
-  plus the sibling `mirror_correlated` seat, and **no** `directions` member —
-  there is one provider request, not a peer matrix. `provider_ack.result` is
-  the PROVIDER FACT alone (HTTP 2xx + `{ok:true}`); `mirror_correlated` is the
-  independent verification fact, recorded as a sibling precisely so the
-  reducer's recomputed aggregate can require BOTH (acked **and** mirrored —
-  an acked-but-unmirrored attempt is a legitimate *failed* proof whose
-  provider fact stands, and it can never re-evaluate to passed; a legacy
-  record without the seat reduces the same way, fail-closed). Import is
-  fail-closed on the acked-consistency matrix: an executed section must carry
-  `provider_ack` (a failed attempt is evidence too), `passed` requires
-  result=`acked` **and** a correlated mirror **and** a linkable artifact
-  hash, and result=`acked` **with** a correlated mirror under a non-passed
-  status is refused as the inverse contradiction. With
-  this slice every kind — directional included — links the doctor artifact by
-  its exact-byte `artifact_sha256` (doctor's write is temp+rename atomic), so
-  `artifact_hash` is never null on a freshly recorded proof.
-- **`AGENTIC_EGRESS_REAL_SMOKE=1` is the production third consent.** The flag
-  pair alone never reaches the network: doctor refuses the send unless the
-  operator's shell exports the same switch that gates the live acceptance
-  suite (K/K2/K3). One opt-in governs every real send, and bootstrap's own
-  process still performs no network I/O — the § 1 qualifier is unchanged.
-- **Temp-repo proof scope.** The delegated emit runs against an **ephemeral**
-  `mkdtemp` repo, so the proof exercises the user-global + shipped-default
-  notify policy; the consumer repo's repo-layer notify config is deliberately
-  not consulted, and the consumer repo's operational notify state (mirror log,
-  dedupe claims, throttle) is never touched. What IS proven: the pinned
-  provider request round-trips from this machine's activation. What is NOT: the
-  consumer repo's own notify layering.
-- **The mirror is correlation, not provider evidence — and the intent WAL is
-  the ambiguity boundary.** The provider ack is the HTTP 2xx + `{ok:true}`
-  classification; the temp-repo mirror row is how the executor proves the
-  dispatched return refers to **this** synthetic attempt (exactly one
-  well-formed `dispatched` row for the unique event id). A dispatched return
-  with a missing/ambiguous mirror fails closed as unverifiable — the message
-  may be on the phone, but it is not *proven*. Because Telegram has no
-  idempotency key, a write-ahead intent record brackets the send: a crash
-  between intent and resolution leaves a `pending` intent, and the next execute
-  **refuses to auto-resend** until the operator checks the phone and deletes
-  the named intent file. The operator correlates the phone message by the
-  12-hex token in its enumerated `topic` field; the raw event id never enters
-  durable artifacts.
-
-- **The intent record is a CLAIM, and its durability guarantee is conditional.**
-  The pending record is named by activation fingerprint and published with
-  `link(2)`, so creating the fence is the same act that excludes a concurrent
-  execute: a second attempt for the same activation fails `EEXIST` and never
-  reaches the emitter. There is deliberately no separate lock and therefore no
-  automatic reclaim — **the operator is the only reclaim authority**. The claim
-  carries `pid`/`acquired_at`, used ONLY to choose which blocker an operator
-  sees, never to take a claim over. The holder is classified three ways, because
-  two inputs answer different questions and a boolean loses the one that matters:
-  a live pid with a recent claim says **wait** and never mentions deletion (that
-  advice would free the fence for a second message to the phone); a live pid with
-  an unusually old claim says the process is **still running** and offers the
-  deletion only behind the operator's own certainty; a gone pid gets the
-  check-the-phone-then-delete instruction; and a record carrying NO usable
-  identity is an **unknown**, never a corpse — the previous release wrote no
-  `pid` at all, so reading absence as death advertised a still-running older
-  sender as crashed and handed the operator the flat delete instruction, which is
-  the rollback path arrived at from the other direction. Age deliberately does
-  not resolve that one: an old record with no identity is still unknown. **Age never downgrades a confirmed
-  live pid** — it only selects wording — and age is judged from the FILE MTIME
-  against a REAL WALL CLOCK (both halves of that subtraction must come from the
-  same world; an earlier cut compared the kernel's mtime against the caller's
-  injected report clock, so a report timestamp an hour ahead turned a live
-  holder's fresh claim into a deletable one),
-  not from the body, since an injected clock or a forged `acquired_at` must not
-  decide it.
-
-- **The WAL is APPEND-ONLY: two names per attempt, and nothing is ever mutated.**
-
-  ```
-  claim     <activation-fingerprint>.json                      link(2) — the fence + the exclusion
-  terminal  <activation-fingerprint>.<owner-token>.terminal.json   link(2) — that attempt's outcome
-  ```
-
-  The claim's name is the ACTIVATION, so creating it is the exclusion. The
-  terminal record's name additionally carries the attempt's own `owner_token`,
-  so no attempt can ever write at another's name. No record is renamed over,
-  replaced, or unlinked by any code path here.
-
-  That shape is the conclusion of four review rounds, and the rounds are worth
-  more than the conclusion. Each kept the goal and changed only HOW the record at
-  the canonical name was updated, and each was refuted by the same impossibility
-  from a new angle: **deciding that the record at a pathname is still yours
-  cannot be made atomic on a pathname.**
-
-  1. *Remove it* (recheck, then unlink) — check-then-act; a contender already
-     past its own scan claimed the freed name and sent a second message.
-  2. *Take it aside, then verify* (`rename` to a token-unique name) — the fence
-     is absent for the width of the verify. Parked where the scan could not see
-     it, the fence vanished on the normal path after the wire; parked where the
-     scan could, the canonical name was still free long enough for a contender to
-     claim it. The exclusion is the `link` on the canonical name and the scan is
-     only advisory, so a vacated name defeats it whatever the vacated record is
-     called.
-  3. *Replace it in place* (read ownership, then `rename` over it) — this one
-     looked airtight, because `rename(2)` never leaves the name absent, so the
-     fence was continuously OCCUPIED. It was still wrong: occupancy was never the
-     guarantee, CONTENT is. After an operator deleted a live claim and a
-     successor claimed the freed name, a stale terminal record overwrote that
-     successor's live claim with a `no-wire` outcome — and the next scan then
-     read `no-wire` and told the operator that deleting it was safe while the
-     successor's message was already on the phone.
-
-  Serializing the mutation behind a short-lived lock was prototyped and measured
-  as an alternative to (2): it does not remove the vacate, only hides it, it
-  makes the claim-collision branch dead code, and it pre-empts this section's
-  fail-closed diagnostics with a lock message. Writing to a name only one attempt
-  can produce removes the question instead of answering it faster.
-
-  **Reading the WAL is therefore a JOIN.** The scan pairs each claim to its
-  terminal record by `owner_token`: a claim WITH its terminal is a resolved
-  attempt and its disposition decides fencing; a claim WITHOUT one is pending and
-  its holder's liveness decides the wording; a terminal record with no claim is
-  an ORPHAN and is judged on its own disposition. A terminal record whose name
-  and body disagree cannot be attributed to an attempt and fences, fail-closed.
-  An orphaned terminal is not a curiosity — it is exactly the state that used to
-  be defect (3), reported now as its own finding beside the successor's claim
-  rather than written over it.
-
-  **The most cautious finding decides the wording, and every other finding is
-  still named.** A WAL holding several records was twice judged by one of them:
-  the guard read `clearable && unresolved.length === 0`, which named one of four
-  dangerous states and let the safe-to-delete sentence win over the other three —
-  including a pid-less, possibly-live pending record. The replacement table then
-  repeated the shape one level up: it ranked the severities it KNEW and let an
-  unrecognized one fall through to whatever listed severity happened to be
-  present.
-
-  The order is therefore total over its INPUT, not merely over its own list:
-  `unclassified` > `in-flight` > `live-stale` > `unidentified` > `unresolved` >
-  `clearable`. `clearable` is last precisely because its message is the only one
-  in the WAL that calls a deletion safe; `unclassified` is first for the mirror
-  reason, and an unrecognized severity is normalized into it rather than skipped
-  over. The two ends share a rule: a message that must not advise removal must
-  not advise it for the other records in its tail either.
-
-  **Liveness decides severity; everything else annotates.** A body that
-  contradicts its own name, or an unscopable fingerprint, makes a record less
-  trustworthy — it never turns a running attempt into one an operator is told to
-  delete. That is not a stylistic preference: the first cut of the name/body
-  agreement check answered a mismatched claim with a flat `unresolved`, which
-  carries "check the phone, then delete", and a measurement found it advertising
-  a claim with a LIVE pid as deletable — reopening the duplicate-send path this
-  whole section exists to close, from inside the fix for a different defect.
-
-  The consequence is deliberate and is the cost of the guarantee: **a provably
-  pre-wire attempt now fences the next one**, where an earlier design freed the
-  name so it would not. Those two properties were measured to be mutually
-  exclusive. Both records are cleared by the OPERATOR — and because nothing was
-  sent, that is the one delete instruction in the WAL which is provably safe, so
-  it is worded as such, names BOTH files, and is issued on the attempt's own
-  result rather than one run later.
-
-  **Rollback is fail-closed in both directions**, which was checked against the
-  shipped scan rather than assumed. An OLDER runtime reads the append-only WAL
-  and sees a `pending` claim that is never cleared, so it refuses — over-strict,
-  never permissive. This runtime reads an older WAL and finds a record with no
-  `owner_token`, which can pair with nothing and therefore falls through to the
-  pending judgement; with no `pid` either, that is `unidentified`, which also
-  refuses.
-
-  Writes follow temp → write → `fsync` → close → atomic publish → directory
-  `fsync`. `close()` is part of that ordering, not cleanup — some filesystems
-  surface a delayed writeback error only there, so a failed close aborts the
-  publication instead of being swallowed. On a first-use home the recursive
-  `mkdir` creates the whole parent chain, and **every directory from the machine
-  home down to the intent directory's parent is fsynced on every claim** —
-  unconditionally, not only when this run is the one that created it. Syncing
-  only the leaf would leave the directory the claim lives in unpersisted, which
-  loses the claim itself on a power loss; and keying the sync off what `mkdir`
-  reports creating would skip it precisely on the retry after a failed sync,
-  when the directories exist but nothing about them is durable. Existence is not
-  proof of durability. The caller names the anchor that bounds the chain, and a
-  claim that names none is refused rather than published under an unstated
-  durability claim. Three limits are stated rather than implied. **(i)** On macOS,
-  `fsync(2)` does not flush the drive's write cache — that needs `F_FULLFSYNC`,
-  which Node does not expose — so the durability claim is "reached the OS", not
-  "reached the platter". **(ii)** Where the platform cannot open a directory
-  handle at all, the directory `fsync` degrades; the run then reports
-  `wal_durability` other than `durable` plus a `limits[]` entry, and the
-  survives-a-power-loss property is **not** established on that platform.
-  Permission faults (`EACCES`/`EPERM`) are never treated as platform limits and
-  fail closed. **(iii)** A WAL write that fails after a real send does not
-  change the proof verdict: `passed` means the provider acked and the mirror
-  correlated (§3), both still true, and folding storage bookkeeping into that
-  verb would trip the acked-consistency matrix and refuse the import — forcing a
-  second message to the phone to record a proof for one that already arrived.
-  It surfaces as a limit and an `overall` warning instead.
-
-- **Downgrade is quiescent-only.** An older runtime does not understand the
-  claim, but it still scans the WAL and blocks on a `pending` record, so a claim
-  this version published does fence it — unlike a lock file, which an older
-  runtime would not look at at all. That protection is partial: if the old
-  process completes its scan before the new one publishes, both proceed. Roll
-  back only with no executor in flight.
+*Removed 2026-10-05 ([ADR-0064](../../../docs/adr/0064-runtime-surface-reduction.md)
+Decision 1, slice R4n1):* this section also specified the `egress-provider-ack`
+executor, the one proof that made a real network send. It reached doctor through
+`--egress-ack-proof --execute-egress-ack-proof`, was gated by
+`AGENTIC_EGRESS_REAL_SMOKE=1`, and bracketed the send with an append-only
+write-ahead intent record. Bootstrap's `executeProofViaDoctor` has no egress
+branch, `PROOF_EXECUTE_FLAGS` and `DOCTOR_SECTION_BY_KIND` name the directional
+kinds only, and bootstrap no longer forwards a doctor intent-WAL warning or
+egress retry advice. Doctor's own egress proof section is removed by a later slice
+(R4n2). Git history holds the specification of the executor and its WAL.
 
 ### 8.3 One-host operators — a documented limitation, stated exactly
 
@@ -2432,8 +2132,8 @@ security, pointer, inventory, and retention.
   open run can interleave an evidence write between one another's read-back and
   manifest update, and each will persist a reduction over the bytes it saw.
   Full run-scoped locking/CAS is deliberately out of this slice's scope (it
-  becomes materially riskier only once the egress executor gives a proof a
-  network side effect — the trigger for a dedicated slice); until then, one
+  would become materially riskier only if a proof gained a non-idempotent side
+  effect — the trigger for a dedicated slice); until then, one
   resume at a time per machine is the operating assumption, and `abandon` +
   fresh `plan` is the recovery when concurrent resumes were run anyway.
 - **Symlink refusal** and **canonical containment**: resolve the real path and
@@ -2444,8 +2144,7 @@ security, pointer, inventory, and retention.
   export's `--name`, which it also checked until ADR-0064 Decision 3 removed the
   verb on 2026-10-04.)
 - **`$HOME` is the current repository** (some devcontainers): **fail closed** with a
-  diagnostic. The egress config's verified-ignored-local reader already establishes
-  this fail-closed posture; bootstrap does not invent a softer one.
+  diagnostic. Bootstrap does not invent a softer posture.
 - **`$CODEX_HOME`** is honored wherever it is set; `~/.codex` is the default, not a
   hardcode.
 - **A family-wide creation/index lock, not a per-run lock.** A per-run lock cannot
@@ -2552,43 +2251,32 @@ in `test-machine-profile.mjs`, went with the machine profile: ADR-0064 Decision 
   the test red).
 - **Writer gates**: proof validation is mandatory and internal (no injectable
   validator to forget); unknown evidence kind, kind-discriminator violations,
-  terminal-run writes (except the D0.1 receipt into a completed run — and never
-  into an abandoned one) are each refused.
+  writes into any run that is not `open` (reason `run-not-open`) are each refused.
 - **Read boundaries**: a schema-invalid manifest cannot prove itself terminal
   (scan), cannot be selected for reduction (selectRun), cannot be updated
   (previous-invalid), and CAN still be abandoned into a valid tombstone.
 - **Duplicate evidence**: rejected at the read boundary all-or-nothing, and the
   reducer caps at `incomplete` independent of requiredness.
-- **Receipt lifecycle**: attest refuses no-ack / abandoned / legacy-schema; a
-  recorded receipt re-judges attested/stale on ack drift, file replacement, and
-  attempt mismatch; `delivery-attested` renders without redefining `complete`.
+- **Retired evidence**: `egress-provider-ack.json` and
+  `egress-receipt-attestation.json` in a run's `proof/` directory are skipped by the
+  reader (named in `retired`, never opened) and an open run holding one still
+  resumes; a terminal earlier-minor run's stored egress proof row and receipt
+  verdict are projected by the historical path (both paths tested).
 - **Migration**: an open 1.1 run resumes into a 1.2 stamp + history row +
-  injected registry-new steps + rendered fragments; a terminal 1.1 run answers
+  injected registry-new steps + rendered fragments, and an open 1.4 run resumes
+  into a 1.5 stamp whose history row names the dropped retired step rows while
+  `choices[]`, `history[]` and `seeded_from` stay as written; a terminal 1.1 run answers
   exit 50 with `historical`/`not_recertified` and stays byte-identical; a
   future-minor run refuses resume.
 - **Answers**: effective-action last-wins (execute-then-decline does not
-  execute); `attest-receipt` is refused under plan and against any other step.
-- **The `notify.codex.configured` conjunction** (§6.1.2): the full `form` matrix
-  is pinned at the judge, and the reproduction is pinned at the CLI — a
-  `satisfied` fixture whose `notifications` value is **replaced** (never appended:
-  appending makes a duplicate key, which classifies `invalid`, so the test would
-  go green through the untrusted branch without ever exercising the boolean one)
-  by `false` judges `manual-follow-up` and enters `completion.unsatisfied`, with
-  the canonical fixture asserted first as the control. The **cross-product** is a
-  separate obligation, because every form row holds the argv half canonical and
-  so cannot prove precedence on its own: for each form, `notify = []`, an
-  unparseable argv, an absent key, a foreign notifier, and an unreadable config
-  each keep their own verdict. Parser-side, all fourteen observable shapes are
-  pinned — including `true junk` and `false junk`, which the structural facts
-  alone report as cleanly captured, and the dotted-then-`[tui]` redefinition for
-  **both** tui keys.
+  execute); `execute` is refused under plan for every proof step.
 - **Stage-8 presentation** (§3, §8): the render carries exactly ONE row per
   presented proof, sourced from `completion.proofs[]`, and no Stage-8 row from
   the generic step loop. Pinned across the verdict × control matrix — the row
   states the verdict while the control status disagrees (`absent` + `blocked`);
   a decline stays visible even when the selection stops requiring the proof
   (non-required + `declined`); a `blocked` control joins as a labelled
-  `execution:` line; and a report with no `steps` (historical / attest) degrades
+  `execution:` line; and a report with no `steps` (historical) degrades
   to evidence-only rather than throwing. Reason text is structurally
   neutralized and bounded at the render boundary, so a `reasons` entry carrying a newline or
   a control character cannot fabricate a row (`reasons` is schema-bounded by
@@ -2602,8 +2290,7 @@ in `test-machine-profile.mjs`, went with the machine profile: ADR-0064 Decision 
   the projection withholds both free fields rather than that a sanitizer cleaned
   them. The **CONFIG** rows are pinned the
   same way, because they interpolate the same unclamped probe version one loop
-  below — neutralized but NOT truncated — and so are the receipt-attestation
-  reason, the C1 range (U+009B is CSI, which a C0-only helper misses), and the
+  below — neutralized but NOT truncated — and so are the C1 range (U+009B is CSI, which a C0-only helper misses), and the
   BiDi overrides/isolates. The inverse is pinned too: a 64-hex plan hash, an
   email-shaped path component, a double space, and a long-hex path component all
   survive verbatim, because a redacting or whitespace-squeezing sanitizer at

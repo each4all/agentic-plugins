@@ -51,35 +51,17 @@ export const stepIds = Object.freeze({
   pluginInstalled: (name, host) => `plugin.${name}.${host}.installed`,
   pluginEnabled: (name) => `plugin.${name}.codex.enabled`,
   configModelEffort: () => 'config.model_effort',
-  // §3.3 / §6.1.3 — the two VALUE-BEARING Stage-4 steps. Stage 4 and not 5
-  // because `appliedByFor` maps stage 4 to `agentic-config` and stage 5 to
-  // `operator`, and what writes these is `runtime:settings --apply --target
-  // user`, not an operator editing a host file. `config.model_effort` is the
-  // precedent: a Stage-4 step that asks for a recorded decision about
-  // agentic-plugins' own config rather than for a host-side merge.
-  //
-  // Two steps and not one, even though both live in the same config file: they
-  // are independently declinable, and a fragment binds to exactly one step id
-  // (composeFragments' `persist`), so a shared fragment across them could not be
-  // amended when one was declined and the other answered — the freeze keeps
-  // first renders.
+  // §3.3 / §6.1.3 — the VALUE-BEARING Stage-4 step. Stage 4 and not 5 because
+  // `appliedByFor` maps stage 4 to `agentic-config` and stage 5 to `operator`,
+  // and what writes it is `runtime:settings --apply --target user`, not an
+  // operator editing a host file. `config.model_effort` is the precedent: a
+  // Stage-4 step that asks for a recorded decision about agentic-plugins' own
+  // config rather than for a host-side merge.
   configSession: () => 'config.session',
-  configNotifyKinds: () => 'config.notify_kinds',
-  notifyConfigured: () => 'notify.configured',
-  // ADR-0048 §1 (notify split): `notify.configured` keeps meaning exactly the
-  // LOCAL runtime notification policy (~/.agentic-plugins/config.toml notify
-  // family); this one observes the CODEX-side wiring (`notify =` in
-  // $CODEX_HOME/config.toml) separately. One id per host-shaped fact.
-  notifyCodexConfigured: () => 'notify.codex.configured',
-  egressConfigured: () => 'egress.configured',
   hooksAttested: () => 'hooks.codex.attested',
   proofDeepPeerSmoke: () => 'proof.deep-peer-smoke',
   proofWorkflowContinuation: () => 'proof.workflow-continuation',
   proofPermission: () => 'proof.permission',
-  // ADR-0048 §3 — the OPT-IN egress delivery evidence step. The kind string is
-  // pinned as `egress-provider-ack` (never "dispatch"/"delivery"): it proves
-  // exactly that the pinned provider request returned HTTP 2xx + {ok:true}.
-  proofEgressProviderAck: () => 'proof.egress-provider-ack',
   // ADR-0048 §1 — per-host statusline configuration steps. The Claude step's
   // meaning is pinned to "canonical configuration OBSERVED" — never
   // "statusline runs" (workspace trust / disableAllHooks / safe mode gate
@@ -88,24 +70,25 @@ export const stepIds = Object.freeze({
 });
 
 /**
- * The proofs whose APPLICABILITY comes from an operator CHOICE rather than from a
- * machine fact — the "opt-in" class.
+ * Step ids an earlier registry derived and this one never will, with the
+ * decision that retired each. They are HISTORY, not expectations: a retained
+ * run keeps its rows, and `resume` drops them from an open run of an earlier
+ * minor and names them in the migration history row (machine-bootstrap-contract.md
+ * §7). Nothing derives, judges or renders them.
  *
- * The distinction matters because of what happens if the choice is never made.
- * Every other Stage-8 proof derives its applicability from something observable:
- * `proof.workflow-continuation` from whether `engineer` is selected,
- * `proof.permission` and `proof.deep-peer-smoke` from nothing at all (always
- * owed — ADR-0057 §Decision 5). Those cannot be
- * "missed" — the machine already decided. An OPT-IN proof is `not-applicable`
- * until the operator asks for it, so a run whose other required proofs all pass
- * TERMINALIZES around it, and `resume` refuses a terminal run: the proof can
- * then never be attached, and the only recovery is a fresh plan.
- *
- * Kept as a list rather than a predicate over `applicable` because "not
- * applicable" alone cannot tell the two classes apart — which is precisely the
- * confusion the plan-time warning exists to remove.
+ *   - ADR-0057 removed Stage 6, the permission posture fragments.
+ *   - ADR-0064 removed the Stage 4/5 notification and egress steps and the
+ *     egress delivery proof.
  */
-export const OPT_IN_PROOF_STEPS = Object.freeze([stepIds.proofEgressProviderAck()]);
+export const RETIRED_STEP_IDS = Object.freeze({
+  'permission.claude.applied': 'ADR-0057',
+  'permission.codex.applied': 'ADR-0057',
+  'config.notify_kinds': 'ADR-0064',
+  'notify.configured': 'ADR-0064',
+  'notify.codex.configured': 'ADR-0064',
+  'egress.configured': 'ADR-0064',
+  'proof.egress-provider-ack': 'ADR-0064',
+});
 
 // §6.2 — not declinable, EVER: host CLI presence and authentication; marketplace
 // registration; `runtime`; `companions`; and any plugin reached by a hard edge from
@@ -132,39 +115,12 @@ export const NEVER_DECLINABLE_PLUGINS = Object.freeze(['runtime', 'companions'])
  *                    who forgot to compute it made `engineer` declinable inside a
  *                    bundle whose `orchestrator` hard-requires it, and the operator
  *                    would have been offered a decline that breaks their selection.
- * @param egressProofRequested
- *                    ADR-0048 §3 / D0.2 — the OPT-IN signal for the
- *                    `proof.egress-provider-ack` step. Callers derive it through
- *                    `egressProofOptedIn` (lib/completion-reducer.mjs), which
- *                    accepts exactly three provenances: an `execute`/`decline`
- *                    answer in the run's `choices[]` ledger, a `declined` status
- *                    on the step's row (a status the judge only ever restores
- *                    from an operator answer), or a RECORDED
- *                    `egress-provider-ack` proof. Default false: a machine that
- *                    never opted in never owes the proof, and §8.1's "required
- *                    iff opted in" falls out of applicability.
- *
- *                    Note what this must NEVER be derived from. Not the mere
- *                    PRESENCE of the step in steps[]: this function enumerates
- *                    the step on every run (below) so it can be reported, and
- *                    judgeSteps persists that enumeration, so a presence test is
- *                    true on every machine — which made the proof required
- *                    everywhere and put `complete` out of reach for every machine
- *                    that never opted in. Nor the row's generic status: `pending`
- *                    is what judgeSteps writes for every `proof.*` step and
- *                    `blocked` is what its demotion pass rewrites that to, so
- *                    treating "any status but not-applicable" as consent reads
- *                    machine output as an operator answer — and lets the defect
- *                    above outlive its fix on any run the broken code resumed.
- *                    Applicability derived from the row this derivation itself
- *                    produces is circular; it has to come from a fact about the
- *                    operator, or about evidence on disk.
  *
  * Returns steps in canonical order (stage, then id), each with an EXPLICIT blocked_by
  * array — `[]` is written, never omitted, so "no predecessors" and "edges missing from
  * the file" are not the same bytes.
  */
-export function deriveExpectedSteps({ pluginSet, selection, egressProofRequested = false }) {
+export function deriveExpectedSteps({ pluginSet, selection }) {
   const plugins = [...new Set(selection.plugins ?? [])].sort();
   // DERIVED from the plugin-set's hard edges, transitively — never taken from the
   // caller (§6.2, and the registry-authority rule in this file's header).
@@ -219,35 +175,27 @@ export function deriveExpectedSteps({ pluginSet, selection, egressProofRequested
 
   // Stage 4–5 — agentic-plugins' own config, then the operator-applied fragments.
   // (Stage 6 was the permission posture; ADR-0057 removed it and left the number
-  // unused rather than renumbering stages 7 and 8.)
+  // unused rather than renumbering stages 7 and 8. ADR-0064 left Stage 5 with the
+  // statusline steps alone.)
   steps.push({ id: stepIds.configModelEffort(), stage: 4, applicable: true, declinable: false, blocked_by: [] });
-  // §6.1.3 — the value-carrying interview steps. DECLINABLE, unlike the posture
-  // step beside them, and the difference is real: `config.model_effort` asks for
+  // §6.1.3 — the value-carrying interview step. DECLINABLE, unlike the posture
+  // step beside it, and the difference is real: `config.model_effort` asks for
   // a decision that must EXIST (a machine has some model/effort posture whether
-  // or not it says so), while these two ask about OPTIONAL machinery whose
+  // or not it says so), while this one asks about OPTIONAL machinery whose
   // shipped defaults are a legitimate standing answer. `decline` is the
   // vocabulary for "leave this unmanaged and stop asking"; it is not the same as
   // choosing the defaults, which is what an explicit `set:<key>=unset` records.
   //
-  // No `blocked_by`: both are writes to agentic-plugins' own user-global config,
-  // which depends on no host CLI, no marketplace, and no plugin being present.
+  // No `blocked_by`: it writes agentic-plugins' own user-global config, which
+  // depends on no host CLI, no marketplace, and no plugin being present.
   // Asserting an edge here would block a step that is actually reachable — the
   // same reasoning §6.1 applies to marketplace registration.
   steps.push({ id: stepIds.configSession(), stage: 4, applicable: true, declinable: true, blocked_by: [] });
-  steps.push({ id: stepIds.configNotifyKinds(), stage: 4, applicable: true, declinable: true, blocked_by: [] });
-  steps.push({ id: stepIds.notifyConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [] });
-  // ADR-0048 §1 — the Codex-side notify wiring, split from the local policy
-  // step above (the pre-split judge only ever read ~/.agentic-plugins/config.toml,
-  // so the Codex `notify =` merge was presented but never re-observed). Edged
-  // on the Codex CLI being present, the permission.<host>.applied precedent
-  // for a host-targeted config step.
-  steps.push({ id: stepIds.notifyCodexConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent('codex')] });
   // ADR-0048 §1 — the two per-host, DECLINABLE statusline steps (a single
   // combined step could false-pass after only one host is configured).
   for (const host of PLUGIN_SET_HOSTS) {
     steps.push({ id: stepIds.statuslineConfigured(host), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent(host)] });
   }
-  steps.push({ id: stepIds.egressConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [] });
 
   // Stage 7 — Codex hook attestation. Applicable IFF a RETAINED plugin is
   // Codex-hook-bearing; keys off the CODEX value, because Claude trusts plugin hooks
@@ -331,19 +279,6 @@ export function deriveExpectedSteps({ pluginSet, selection, egressProofRequested
       ...companionsHosts.map((h) => stepIds.pluginInstalled('companions', h)),
       ...(companionsHosts.includes('codex') ? [stepIds.pluginEnabled('companions')] : []),
     ],
-  });
-
-  // ADR-0048 §3 — OPT-IN delivery evidence (D0.2): applicable only once the
-  // operator asked for it; a machine that never opted in reduces it
-  // not-applicable, which is §8.1's "required iff opted in". Edged on the
-  // egress activation step — an ack proof over an unconfigured egress channel
-  // is unreachable by construction.
-  steps.push({
-    id: stepIds.proofEgressProviderAck(),
-    stage: 8,
-    applicable: egressProofRequested === true,
-    declinable: true,
-    blocked_by: [stepIds.egressConfigured()],
   });
 
   return steps.sort((a, b) => a.stage - b.stage || a.id.localeCompare(b.id));

@@ -13,11 +13,11 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { loadPluginSet, resolveBundle } from '../../plugins/runtime/scripts/lib/plugin-set.mjs';
-import { PROOF_STAGES, deriveExpectedSteps, expectedStepIds, stepIds } from '../../plugins/runtime/scripts/lib/step-registry.mjs';
+import { deriveExpectedSteps, expectedStepIds, stepIds } from '../../plugins/runtime/scripts/lib/step-registry.mjs';
 import {
+  HISTORICAL_PROOF_KINDS,
   boundVersionsFresh,
   currentBoundVersions,
-  egressProofOptedIn,
   invalidateStaleSteps,
   recomputeHookAttestation,
   requiredBoundPlugins,
@@ -25,9 +25,9 @@ import {
   importHookAttestation,
   projectLegacyCompletion,
   recomputeProofStatus,
-  recomputeReceiptAttestation,
   reduceCompletion,
 } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
+import { PROOF_KINDS } from '../../plugins/runtime/scripts/lib/evidence-contract.mjs';
 import { makeDefValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 
 const RUNTIME_VERSION = '0.80.1';
@@ -89,40 +89,6 @@ async function completeMachine({ bundle = 'base' } = {}) {
   const proofs = [passingProof('deep-peer-smoke', current), passingProof('permission', current)];
   if (expected.find((s) => s.id === 'proof.workflow-continuation')?.applicable) proofs.push(passingProof('workflow-continuation', current));
   return { pluginSet, selection, probe, current, steps, proofs, expected };
-}
-
-// The steps[] a run ACTUALLY carries. `completeMachine` above builds the CONFIG
-// rows only, but the run file always holds Stage-8 rows too: the registry
-// enumerates every proof step even when it does not apply (§6.1 — a
-// not-applicable step is enumerated so it can be REPORTED), and `judgeSteps`
-// persists that enumeration — an applicable proof row lands `pending` (its
-// verdict lives in completion.proofs, never in the row), a non-applicable one
-// lands `not-applicable`.
-//
-// A fixture without those rows cannot see a defect that lives in READING them,
-// which is exactly how the egress opt-in regression below survived 82 green
-// reducer tests: the reducer derived the opt-in from the row's mere existence,
-// and no fixture ever supplied the row.
-//
-// The `pending` branch assumes `m`'s CONFIG rows are resolved — true for every
-// `completeMachine`-derived caller, where each applicable stage-1-7 step is
-// `satisfied`. On a partially-satisfied machine the real judge would demote an
-// applicable proof to `blocked` behind its unresolved predecessor, so reusing this
-// helper on such an `m` would manufacture a row the judge cannot produce.
-function withJudgedProofRows(m, { egressStatus = null } = {}) {
-  const proofRows = m.expected
-    .filter((s) => PROOF_STAGES.includes(s.stage))
-    .map((s) => ({
-      id: s.id,
-      stage: s.stage,
-      status: s.id === stepIds.proofEgressProviderAck() && egressStatus !== null
-        ? egressStatus
-        : (s.applicable ? 'pending' : 'not-applicable'),
-      declinable: s.declinable,
-      blocked_by: s.blocked_by,
-      fragment_applied: false,
-    }));
-  return { ...m, steps: [...m.steps, ...proofRows] };
 }
 
 const reduce = (m, over = {}) => reduceCompletion({
@@ -198,9 +164,9 @@ describe('runtime completion reducer — false-pass pins (#11)', () => {
     const m = await completeMachine();
     const result = reduce({
       ...m,
-      steps: m.steps.map((s) => (['notify.configured', 'egress.configured'].includes(s.id) ? { ...s, status: 'declined' } : s)),
+      steps: m.steps.map((s) => (['config.session', 'statusline.codex.configured'].includes(s.id) ? { ...s, status: 'declined' } : s)),
     });
-    strictEqual(result.state, 'complete', 'an operator who declined notify and egress still has a complete machine');
+    strictEqual(result.state, 'complete', 'an operator who declined the session and Codex statusline steps still has a complete machine');
   });
 
   // The registry-authority rule, applied where it actually bites. A manifest is
@@ -218,7 +184,7 @@ describe('runtime completion reducer — false-pass pins (#11)', () => {
 
   it('an APPLICABLE step cannot forge `not-applicable`', async () => {
     const m = await completeMachine();
-    for (const id of ['egress.configured', 'host.codex.present', 'statusline.claude.configured']) {
+    for (const id of ['config.session', 'host.codex.present', 'statusline.claude.configured']) {
       const result = reduce({ ...m, steps: m.steps.map((s) => (s.id === id ? { ...s, status: 'not-applicable' } : s)) });
       strictEqual(result.state, 'incomplete', `${id} applies to this selection, so it cannot exempt itself`);
       ok(result.unsatisfied.includes(id));
@@ -511,9 +477,9 @@ describe('runtime completion reducer — invalidation (#13)', () => {
 
   it('only OBSERVED steps are invalidated — a pending step has nothing to invalidate', async () => {
     const m = await completeMachine();
-    const withPending = m.steps.map((s) => (s.id === 'notify.configured' ? { ...s, status: 'pending' } : s));
+    const withPending = m.steps.map((s) => (s.id === 'statusline.codex.configured' ? { ...s, status: 'pending' } : s));
     const { invalidated } = invalidateStaleSteps({ steps: withPending, probe: m.probe, current: { ...m.current, runtime: '0.99.0' }, at: AT });
-    ok(!invalidated.includes('notify.configured'));
+    ok(!invalidated.includes('statusline.codex.configured'));
   });
 
   it('an invalidated step then blocks completion — it is pending, not satisfied', async () => {
@@ -832,10 +798,10 @@ describe('runtime completion reducer — invalidation is scoped to the selection
 
   it('a DECLINED step survives drift — it is an operator choice, not an observation', async () => {
     const m = await completeMachine();
-    const steps = m.steps.map((s) => (s.id === 'notify.configured' ? { ...s, status: 'declined' } : s));
+    const steps = m.steps.map((s) => (s.id === 'statusline.codex.configured' ? { ...s, status: 'declined' } : s));
     const { steps: next, invalidated } = invalidateStaleSteps({ steps, probe: m.probe, current: { ...m.current, codex: '0.145.0' }, selection: m.selection, at: AT });
-    ok(!invalidated.includes('notify.configured'), 're-asking because Codex shipped a patch would be noise');
-    strictEqual(next.find((s) => s.id === 'notify.configured').status, 'declined');
+    ok(!invalidated.includes('statusline.codex.configured'), 're-asking because Codex shipped a patch would be noise');
+    strictEqual(next.find((s) => s.id === 'statusline.codex.configured').status, 'declined');
   });
 });
 
@@ -945,241 +911,44 @@ describe('runtime completion reducer — importHookAttestation (§8.2, S8a4-4)',
 });
 
 // ---------------------------------------------------------------------------
-// ADR-0048 §3 — egress evidence: kind-discriminated aggregate, duplicate
-// rejection, and the owner receipt verdict (D0.1)
+// ADR-0064 — the egress delivery proof is retired; the importer reads directional kinds only
 // ---------------------------------------------------------------------------
 
-describe('runtime completion reducer — egress-provider-ack aggregate (ADR-0048 §3)', () => {
-  const FP = 'f'.repeat(64);
-  const ATTEMPT = 'a'.repeat(64);
-  // `mirror: null` omits the sibling seat entirely (the legacy-record shape);
-  // true/false write it. The default is the fully-verified shape: ack +
-  // mirror + a linkable artifact hash (the three §8 evidence legs).
-  function ackProof(current, { result = 'acked', fingerprint = FP, mirror = true, artifactHash = 'b'.repeat(64) } = {}) {
-    return {
-      kind: 'egress-provider-ack',
-      status: 'passed',
-      provider_ack: { result, attempt_hash: ATTEMPT, activation_fingerprint: fingerprint, ran_at: AT },
-      ...(mirror === null ? {} : { mirror_correlated: mirror }),
-      artifact_pointer: null,
-      artifact_hash: artifactHash,
-      bound_versions: structuredClone(current),
-      ran_at: AT,
-    };
-  }
+describe('runtime completion reducer — the importer drops egress-only members (ADR-0064)', () => {
   const current = { runtime: RUNTIME_VERSION, claude: '2.1.208', codex: '0.144.1', plugins: { claude: {}, codex: {} } };
+  const directions = { 'claude->codex': { status: 'passed', ran_at: AT }, 'codex->claude': { status: 'passed', ran_at: AT } };
 
-  it('an acked, fresh, fingerprint-matching proof is passed', () => {
-    const r = recomputeProofStatus(ackProof(current), { current, currentActivationFingerprint: FP });
-    strictEqual(r.status, 'passed');
-  });
-
-  it('a failed ack result is failed — the stored status is never consulted', () => {
-    const r = recomputeProofStatus(ackProof(current, { result: 'failed' }), { current, currentActivationFingerprint: FP });
-    strictEqual(r.status, 'failed');
-  });
-
-  it('an acked-but-unmirrored proof is FAILED, not passed — the mirror seat is a required recompute input (Refine-verify round 2)', () => {
-    const r = recomputeProofStatus(ackProof(current, { mirror: false }), { current, currentActivationFingerprint: FP });
-    strictEqual(r.status, 'failed');
-    match(r.reasons.join(' '), /not verifiably mirrored/);
-  });
-
-  it('a record WITHOUT the mirror seat (legacy shape) reduces fail-closed as not-verified — absence never reads as passed', () => {
-    const r = recomputeProofStatus(ackProof(current, { mirror: null }), { current, currentActivationFingerprint: FP });
-    strictEqual(r.status, 'failed');
-    match(r.reasons.join(' '), /not verifiably mirrored/);
-  });
-
-  it('an acked+mirrored record with NO artifact link is FAILED — the at-rest aggregate enforces all three §8 legs (Refine-verify round 3)', () => {
-    const r = recomputeProofStatus(ackProof(current, { artifactHash: null }), { current, currentActivationFingerprint: FP });
-    strictEqual(r.status, 'failed');
-    match(r.reasons.join(' '), /well-formed doctor-artifact hash/);
-  });
-
-  it('a MALFORMED artifact hash is FAILED — "well-formed" means the sha256 shape, not mere presence (Refine-verify round 5)', () => {
-    const r = recomputeProofStatus(ackProof(current, { artifactHash: 'not-a-sha256' }), { current, currentActivationFingerprint: FP });
-    strictEqual(r.status, 'failed');
-    match(r.reasons.join(' '), /well-formed doctor-artifact hash/);
-  });
-
-  it('a removed activation stales the proof — never not-applicable (peer E5)', () => {
-    const r = recomputeProofStatus(ackProof(current), { current, currentActivationFingerprint: null });
-    strictEqual(r.status, 'stale');
-    match(r.reasons.join(' '), /no longer carries/);
-  });
-
-  it('a changed activation identity stales by EQUALITY, not presence', () => {
-    const r = recomputeProofStatus(ackProof(current), { current, currentActivationFingerprint: 'e'.repeat(64) });
-    strictEqual(r.status, 'stale');
-    match(r.reasons.join(' '), /identity drift/);
-  });
-
-  it('the importer reconstructs provider_ack and refuses the other kind\'s member', () => {
-    const good = importProofMetadata({
-      kind: 'egress-provider-ack', status: 'passed',
-      provider_ack: { result: 'acked', attempt_hash: ATTEMPT, activation_fingerprint: FP, ran_at: AT },
-      artifact_pointer: null, artifact_hash: null, bound_versions: current, ran_at: AT,
-    });
-    ok(good.ok, JSON.stringify(good.errors));
-    ok(!('directions' in good.record), 'an egress record carries no directions member');
-
+  it('a directional record cannot carry provider_ack or mirror_correlated through the importer; the drops are reported by key', () => {
     const smuggled = importProofMetadata({
-      kind: 'deep-peer-smoke', status: 'passed',
-      directions: { 'claude->codex': { status: 'passed', ran_at: AT }, 'codex->claude': { status: 'passed', ran_at: AT } },
-      provider_ack: { result: 'acked', attempt_hash: ATTEMPT, activation_fingerprint: FP, ran_at: AT },
-      artifact_pointer: null, artifact_hash: null, bound_versions: current, ran_at: AT,
-    });
-    ok(smuggled.ok);
-    ok(!('provider_ack' in smuggled.record), 'a directional record cannot carry provider_ack through the importer');
-    ok(smuggled.dropped.some((d) => d.startsWith('provider_ack')), 'and the drop is reported');
-  });
-
-  it('the mirror seat imports as strict boolean-or-absent, and directional kinds refuse it', () => {
-    const base = {
-      kind: 'egress-provider-ack', status: 'failed',
-      provider_ack: { result: 'acked', attempt_hash: ATTEMPT, activation_fingerprint: FP, ran_at: AT },
-      artifact_pointer: null, artifact_hash: null, bound_versions: current, ran_at: AT,
-    };
-    const mirrored = importProofMetadata({ ...base, mirror_correlated: true });
-    ok(mirrored.ok, JSON.stringify(mirrored.errors));
-    strictEqual(mirrored.record.mirror_correlated, true, 'a boolean seat survives the import');
-
-    const nonBool = importProofMetadata({ ...base, mirror_correlated: 'yes' });
-    ok(nonBool.ok, JSON.stringify(nonBool.errors));
-    ok(!('mirror_correlated' in nonBool.record), 'a non-boolean claim is never coerced into evidence');
-    ok(nonBool.dropped.some((d) => d.startsWith('mirror_correlated')), 'and the drop is reported');
-
-    const onDirectional = importProofMetadata({
-      kind: 'deep-peer-smoke', status: 'passed',
-      directions: { 'claude->codex': { status: 'passed', ran_at: AT }, 'codex->claude': { status: 'passed', ran_at: AT } },
+      kind: 'deep-peer-smoke', status: 'passed', directions,
+      provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'f'.repeat(64), ran_at: AT },
       mirror_correlated: true,
       artifact_pointer: null, artifact_hash: null, bound_versions: current, ran_at: AT,
     });
-    ok(onDirectional.ok, JSON.stringify(onDirectional.errors));
-    ok(!('mirror_correlated' in onDirectional.record), 'the mirror fact belongs to the egress shape only');
-    ok(onDirectional.dropped.some((d) => d.startsWith('mirror_correlated')), 'and the drop is reported');
+    ok(smuggled.ok, JSON.stringify(smuggled.errors));
+    ok(!('provider_ack' in smuggled.record), 'provider_ack does not travel');
+    ok(!('mirror_correlated' in smuggled.record), 'mirror_correlated does not travel');
+    ok(smuggled.dropped.some((d) => d.startsWith('provider_ack')), 'the provider_ack drop is reported');
+    ok(smuggled.dropped.some((d) => d.startsWith('mirror_correlated')), 'the mirror_correlated drop is reported');
+  });
+
+  it('the retired egress kind is not an importable kind', () => {
+    const r = importProofMetadata({ kind: 'egress-provider-ack', status: 'passed', bound_versions: current, ran_at: AT });
+    strictEqual(r.ok, false);
   });
 });
 
-describe('runtime completion reducer — the egress proof opt-in needs PROVENANCE (ADR-0048 §3/D0.2)', () => {
-  // Two defects live here, and the fix has to close both without reopening the
-  // other.
-  //
-  // (a) Row EXISTENCE is not an opt-in. `deriveExpectedSteps` pushes
-  //     `proof.egress-provider-ack` on every run (applicable:false when nobody
-  //     asked) and `judgeSteps` persists that row, so a presence test was true on
-  //     every machine: the proof came back `required` with no evidence able to
-  //     exist for it, and `complete` was unreachable — the exact outcome §8.1
-  //     names as the reason this proof is opt-in.
-  // (b) Row STATUS is not an opt-in either. `pending` is what the judge writes for
-  //     every `proof.*` step and `blocked` is what the demotion pass rewrites it
-  //     to, so accepting "any status but not-applicable" reads machine output as
-  //     consent — and would make (a) OUTLIVE the fix, because a run planned and
-  //     resumed under the broken code holds exactly that row with no answer
-  //     behind it.
-  //
-  // What remains: a recorded decline, the operator's `choices[]` ledger, and
-  // recorded delivery evidence.
-  const EGRESS = stepIds.proofEgressProviderAck();
-  const ackRecord = (current) => ({
-    kind: 'egress-provider-ack',
-    status: 'passed',
-    provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'f'.repeat(64), ran_at: AT },
-    mirror_correlated: true,
-    artifact_pointer: null,
-    artifact_hash: 'b'.repeat(64),
-    bound_versions: structuredClone(current),
-    ran_at: AT,
-  });
-
-  it('CONTROL — a machine that never opted in reaches complete with the not-applicable row present', async () => {
-    const m = withJudgedProofRows(await completeMachine());
-    // The fixture is only meaningful if it carries the row the defect read.
-    const row = m.steps.find((s) => s.id === EGRESS);
-    ok(row, 'fixture sanity: the run carries the enumerated egress row');
-    strictEqual(row.status, 'not-applicable', 'fixture sanity: nobody opted in');
-
+describe('runtime completion reducer — retired egress members stay out of the live reduction (ADR-0064)', () => {
+  it('reduceCompletion never emits egress_receipt_attestation, and its proofs are the directional kinds only', async () => {
+    const m = await completeMachine();
     const result = reduce(m);
-    const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(egress.required, false, 'an un-opted-in egress proof is never owed');
-    strictEqual(result.state, 'complete', `expected complete, got ${result.state}: proofs=${JSON.stringify(result.proofs.map((p) => [p.kind, p.status, p.required]))}`);
-    // §5 — the receipt verdict rides completion only when the run has something to
-    // say about it; a machine outside the egress world keeps the exact 1.1 shape.
-    ok(!('egress_receipt_attestation' in result), 'no testimony verdict is invented for a non-egress machine');
+    ok(!('egress_receipt_attestation' in result), 'no receipt verdict is ever produced');
+    deepStrictEqual(result.proofs.map((p) => p.kind).sort(), [...PROOF_KINDS].sort());
+    ok(!result.proofs.some((p) => p.kind === 'egress-provider-ack'));
   });
 
-  it('a JUDGE-WRITTEN pending/blocked row is NOT an opt-in — a run poisoned by the old presence test heals instead of staying stuck', async () => {
-    for (const machineStatus of ['pending', 'blocked']) {
-      const m = withJudgedProofRows(await completeMachine(), { egressStatus: machineStatus });
-      const result = reduce(m);
-      const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
-      strictEqual(egress.required, false, `a '${machineStatus}' row with no answer behind it does not owe the proof`);
-      strictEqual(result.state, 'complete', `a run carrying a machine-written '${machineStatus}' egress row must still be able to complete`);
-    }
-  });
-
-  it('the CHOICES ledger is an opt-in — the operator answered, so the proof is owed and absent evidence blocks complete', async () => {
-    const m = withJudgedProofRows(await completeMachine(), { egressStatus: 'pending' });
-    const result = reduce(m, { choices: [{ step_id: EGRESS, answer: 'execute', at: AT }] });
-    const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(egress.required, true, 'the recorded answer is the opt-in');
-    strictEqual(egress.status, 'absent');
-    strictEqual(result.state, 'configured-not-verified', 'CONFIG is done; the opted-in proof is not');
-  });
-
-  it('a DECLINE on the row is an opt-in — the judge never writes that status, only restores an operator answer', async () => {
-    const m = withJudgedProofRows(await completeMachine(), { egressStatus: 'declined' });
-    const result = reduce(m);
-    const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(egress.required, true, 'a decline is an answer against the step, not an absence of one');
-    strictEqual(result.state, 'configured-not-verified', 'a declined proof never grants complete (§6.2)');
-  });
-
-  it('RECORDED EVIDENCE forces applicability — a proof on disk can never be reduced away, whatever the row says', async () => {
-    // The window this closes: the proof file is written BEFORE the manifest update
-    // that records the choice, so a failure in between leaves evidence on disk
-    // with an unchanged `not-applicable` row and no choice. recomputeProofStatus
-    // returns not-applicable without ever inspecting the record, so a FAILED ack
-    // would be silently reduced away — a false pass over real evidence.
-    const m = withJudgedProofRows(await completeMachine());
-    const failed = { ...ackRecord(m.current), provider_ack: { ...ackRecord(m.current).provider_ack, result: 'failed' } };
-    const result = reduce(m, {
-      proofs: [...m.proofs, failed],
-      currentActivationFingerprint: 'f'.repeat(64),
-    });
-    const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
-    strictEqual(egress.required, true, 'evidence on disk makes the run accountable for it');
-    strictEqual(egress.status, 'failed', 'and the record is JUDGED, not skipped as not-applicable');
-    strictEqual(result.state, 'configured-not-verified', 'a machine holding a failed ack never reads complete');
-  });
-
-  it('the opt-in predicate is the ONE implementation both readers share, and names exactly three provenances', () => {
-    strictEqual(egressProofOptedIn(), false, 'no run data at all is no opt-in');
-    strictEqual(egressProofOptedIn({}), false, 'an empty run is no opt-in');
-    strictEqual(egressProofOptedIn({ steps: [{ id: EGRESS, status: 'not-applicable' }] }), false,
-      'the enumerated-but-unrequested row is no opt-in');
-
-    // (b) — the statuses the JUDGE produces carry no consent.
-    for (const status of ['pending', 'blocked', 'satisfied', 'manual-follow-up', 'unknown']) {
-      strictEqual(egressProofOptedIn({ steps: [{ id: EGRESS, status }] }), false,
-        `'${status}' is judge output, not an operator answer`);
-    }
-    // The three that do.
-    strictEqual(egressProofOptedIn({ steps: [{ id: EGRESS, status: 'declined' }] }), true, 'a decline is an answer');
-    strictEqual(egressProofOptedIn({ choices: [{ step_id: EGRESS, answer: 'execute' }] }), true, 'the answer ledger');
-    strictEqual(egressProofOptedIn({ proofs: [{ kind: 'egress-provider-ack' }] }), true, 'recorded evidence');
-
-    // Manifest-boundary robustness: rows, choices and proofs are all
-    // operator-editable, so malformed entries must not manufacture a requirement.
-    strictEqual(egressProofOptedIn({ steps: [null, 'x', { id: EGRESS }] }), false, 'a row with no status is not an opt-in');
-    strictEqual(egressProofOptedIn({ choices: [null, 'x'] }), false, 'malformed ledger entries are not answers');
-    strictEqual(egressProofOptedIn({ steps: [{ id: 'proof.deep-peer-smoke', status: 'declined' }] }), false,
-      'another proof row is not this opt-in');
-    strictEqual(egressProofOptedIn({ choices: [{ step_id: 'proof.permission', answer: 'decline' }] }), false,
-      'another step\'s answer is not this opt-in');
-    strictEqual(egressProofOptedIn({ proofs: [{ kind: 'deep-peer-smoke' }] }), false,
-      'another kind of evidence is not this opt-in');
+  it('HISTORICAL_PROOF_KINDS is the live proof kinds plus the retired egress kind, and nothing else', () => {
+    deepStrictEqual([...HISTORICAL_PROOF_KINDS], [...PROOF_KINDS, 'egress-provider-ack']);
   });
 });
 
@@ -1205,71 +974,6 @@ describe('runtime completion reducer — duplicate evidence is rejected (ADR-004
     const evaluated = duplicated.proofs.find((p) => p.kind === 'deep-peer-smoke');
     strictEqual(evaluated.status, 'failed');
     match(evaluated.reasons.join(' '), /duplicate evidence is rejected/);
-  });
-});
-
-describe('runtime completion reducer — receipt attestation verdict (ADR-0048 §3 / D0.1)', () => {
-  const ACK_SHA = '1'.repeat(64);
-  const ATTEMPT = 'a'.repeat(64);
-  const receipt = (over = {}) => ({
-    surface: 'owner-phone',
-    attested_at: AT,
-    attempt_hash: ATTEMPT,
-    provider_proof_artifact_hash: ACK_SHA,
-    ...over,
-  });
-  const args = (over = {}) => ({
-    record: receipt(),
-    providerAckSha256: ACK_SHA,
-    providerAckAttemptHash: ATTEMPT,
-    ackStatus: 'passed',
-    applicable: true,
-    ...over,
-  });
-
-  it('attested requires: ack currently passing + file-hash link + attempt equality', () => {
-    strictEqual(recomputeReceiptAttestation(args()).status, 'attested');
-  });
-
-  it('an ack that no longer passes stales the testimony — it never stays attested past its evidence', () => {
-    for (const ackStatus of ['failed', 'stale', 'absent']) {
-      const v = recomputeReceiptAttestation(args({ ackStatus }));
-      strictEqual(v.status, 'stale', `ackStatus=${ackStatus}`);
-      match(v.reasons.join(' '), /no longer stands/);
-    }
-  });
-
-  it('a replaced provider-proof file stales by hash inequality', () => {
-    const v = recomputeReceiptAttestation(args({ providerAckSha256: '2'.repeat(64) }));
-    strictEqual(v.status, 'stale');
-    match(v.reasons.join(' '), /not the one on disk/);
-  });
-
-  it('a receipt naming a different attempt does not cover this one', () => {
-    const v = recomputeReceiptAttestation(args({ providerAckAttemptHash: 'b'.repeat(64) }));
-    strictEqual(v.status, 'stale');
-    match(v.reasons.join(' '), /different synthetic attempt/);
-  });
-
-  it('no testimony is absent; a run that never opted in is not-applicable', () => {
-    strictEqual(recomputeReceiptAttestation(args({ record: null })).status, 'absent');
-    strictEqual(recomputeReceiptAttestation(args({ record: null, applicable: false })).status, 'not-applicable');
-  });
-
-  it('reduceCompletion carries the verdict as the OPTIONAL completion member — absent for a run outside the egress world', async () => {
-    const pluginSet = await loadPluginSet();
-    const plugins = resolveBundle(pluginSet, 'base');
-    const probe = probeFor(plugins);
-    const expected = deriveExpectedSteps({ pluginSet, selection: { plugins } });
-    const steps = expected.filter((s) => s.applicable).map((s) => ({ id: s.id, status: 'satisfied' }));
-    const without = reduceCompletion({ pluginSet, selection: { plugins }, steps, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION });
-    ok(!('egress_receipt_attestation' in without), 'a run that never opted in keeps the exact 1.1 completion shape');
-
-    const withReceipt = reduceCompletion({
-      pluginSet, selection: { plugins }, steps, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION,
-      receiptEvidence: { record: receipt(), providerAckSha256: ACK_SHA },
-    });
-    strictEqual(withReceipt.egress_receipt_attestation.status, 'stale', 'testimony with no passing ack behind it is stale, not silently dropped');
   });
 });
 
@@ -1402,12 +1106,31 @@ describe('legacy completion projection — the disclosure invariant (§3.2)', ()
     ok(!JSON.stringify(summary).includes('SECRET'));
   });
 
+  it('a stored egress-provider-ack row is projected as a proof row, not counted unreadable (ADR-0064 Decision 7)', () => {
+    const summary = projectLegacyCompletion(storedCompletion({
+      proofs: [storedProof(), storedProof({ kind: 'egress-provider-ack', step_id: 'proof.egress-provider-ack', status: 'failed' })],
+    }), { artifactPointer: POINTER });
+    strictEqual(summary.unreadable_proof_records, 0);
+    const egress = summary.proofs.find((p) => p.kind === 'egress-provider-ack');
+    ok(egress, 'the retired row is shown under its own kind');
+    strictEqual(egress.status, 'failed');
+    strictEqual(summary.proofs.length, 2);
+  });
+
+  it('a stored egress_receipt_attestation is still summarized by a clamped status and a reason count', () => {
+    const summary = projectLegacyCompletion(storedCompletion({
+      egress_receipt_attestation: { status: 'attested', reasons: [SECRET, 'two'] },
+    }), { artifactPointer: POINTER });
+    deepStrictEqual(summary.egress_receipt_attestation, { status: 'attested', reason_count: 2 });
+    ok(!JSON.stringify(summary).includes('SECRET'));
+  });
+
   it('a non-object completion projects to null rather than throwing', () => {
     for (const bad of [null, undefined, 'string', 42, []]) strictEqual(projectLegacyCompletion(bad, { artifactPointer: POINTER }), null);
   });
 
   it('the projection\'s step-id grammar is the PACKAGED schema\'s, not a copy that drifted', async () => {
-    const schema = JSON.parse(await readFile(resolve('plugins/runtime/data/schemas/runtime-bootstrap-run-1.4.json'), 'utf8'));
+    const schema = JSON.parse(await readFile(resolve('plugins/runtime/data/schemas/runtime-bootstrap-run-1.5.json'), 'utf8'));
     // The projection clamps step_id against a regex written in the reducer. If
     // the schema's pattern ever moves, that copy must move with it — so the two
     // are compared here rather than trusted to stay aligned.

@@ -32,6 +32,7 @@ import {
   makeBootstrapRunId,
   readBootstrapLatest,
   repairBootstrapLatest,
+  readBootstrapProofRecords,
   reportBootstrapRetention,
   resolveMachineArtifactHome,
   scanBootstrapRuns,
@@ -868,7 +869,7 @@ describe('runtime bootstrap artifacts — abandonment (#29)', () => {
     const validate = await makeValidator('runtime-bootstrap-run');
     const verdict = validate(tombstone);
     strictEqual(verdict.ok, true, `the replacement record conforms to the run schema: ${verdict.errors.join('; ')}`);
-    strictEqual(tombstone.schema, 'runtime-bootstrap-run-1.4');
+    strictEqual(tombstone.schema, 'runtime-bootstrap-run-1.5');
     const next = await createBootstrapRun({ homeDir, repoRoot: null, now: NOW, manifest: baseManifest() });
     strictEqual(next.created, true);
     await rm(homeDir, { recursive: true, force: true });
@@ -1052,15 +1053,10 @@ describe('runtime bootstrap artifacts — fragment + proof writers', () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
-  // ADR-0048 §3 / D0.1 — evidence lands only in an OPEN run; the single
-  // exception is the owner receipt attestation into a reducer-terminal run.
-  it('the proof writer refuses a terminal run, except the receipt attestation into a completed one', async () => {
+  // ADR-0064 Decision 7 — evidence lands only in an OPEN run; the receipt
+  // attestation window is gone, so no kind has a post-terminal door.
+  it('the proof writer refuses every terminal run', async () => {
     const homeDir = await tempHome();
-    const runId = makeBootstrapRunId(NOW);
-    // The post-terminal receipt door additionally requires a CURRENT-schema,
-    // schema-valid manifest (Codex review MAJOR) — the fixture declares 1.2.
-    await seedRun(homeDir, runId, { status: 'complete', schema: 'runtime-bootstrap-run-1.4' });
-
     const record = {
       kind: 'deep-peer-smoke',
       status: 'passed',
@@ -1073,26 +1069,61 @@ describe('runtime bootstrap artifacts — fragment + proof writers', () => {
       bound_versions: { runtime: '0.85.0', claude: null, codex: null, plugins: { claude: {}, codex: {} } },
       ran_at: NOW.toISOString(),
     };
-    const refused = await writeBootstrapProof({ homeDir, repoRoot: null, runId, kind: 'deep-peer-smoke', record });
+    let offset = 0;
+    for (const status of ['complete', 'abandoned']) {
+      const runId = makeBootstrapRunId(new Date(NOW.getTime() + offset));
+      offset += 1000;
+      await seedRun(homeDir, runId, { status, schema: 'runtime-bootstrap-run-1.5' });
+      const refused = await writeBootstrapProof({ homeDir, repoRoot: null, runId, kind: 'deep-peer-smoke', record });
+      strictEqual(refused.ok, false, `${status}: refused`);
+      strictEqual(refused.reason, 'run-not-open', `${status}: reason`);
+    }
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('the proof writer refuses the retired egress-provider-ack kind as an unknown evidence kind', async () => {
+    const homeDir = await tempHome();
+    const created = await createBootstrapRun({ homeDir, repoRoot: null, now: NOW, manifest: baseManifest() });
+    const refused = await writeBootstrapProof({ homeDir, repoRoot: null, runId: created.run_id, kind: 'egress-provider-ack', record: { kind: 'egress-provider-ack', status: 'passed' } });
     strictEqual(refused.ok, false);
-    strictEqual(refused.reason, 'run-not-open');
+    strictEqual(refused.reason, 'unknown-evidence-kind');
+    await rm(homeDir, { recursive: true, force: true });
+  });
 
-    const receipt = {
-      surface: 'owner-phone',
-      attested_at: NOW.toISOString(),
-      attempt_hash: 'a'.repeat(64),
-      provider_proof_artifact_hash: 'c'.repeat(64),
+  it('readBootstrapProofRecords skips retired evidence files unread and still fails on an unknown file', async () => {
+    const homeDir = await tempHome();
+    const created = await createBootstrapRun({ homeDir, repoRoot: null, now: NOW, manifest: baseManifest() });
+    const record = {
+      kind: 'deep-peer-smoke',
+      status: 'passed',
+      directions: {
+        'claude->codex': { status: 'passed', ran_at: NOW.toISOString() },
+        'codex->claude': { status: 'passed', ran_at: NOW.toISOString() },
+      },
+      artifact_pointer: null,
+      artifact_hash: null,
+      bound_versions: { runtime: '0.85.0', claude: null, codex: null, plugins: { claude: {}, codex: {} } },
+      ran_at: NOW.toISOString(),
     };
-    const attested = await writeBootstrapProof({ homeDir, repoRoot: null, runId, kind: 'egress-receipt-attestation', record: receipt });
-    strictEqual(attested.ok, true, `the D0.1 receipt append is the one allowed post-terminal write: ${attested.diagnostics.join('; ')}`);
+    const written = await writeBootstrapProof({ homeDir, repoRoot: null, runId: created.run_id, kind: 'deep-peer-smoke', record });
+    strictEqual(written.ok, true, written.diagnostics.join('; '));
+    const proofDir = join(bootstrapFamilyRoot(homeDir), created.run_id, 'proof');
+    // One retired file is not even JSON; the other is a directory.
+    await writeFile(join(proofDir, 'egress-provider-ack.json'), '{ not json');
+    await mkdir(join(proofDir, 'egress-receipt-attestation.json'));
 
-    // Never into an abandoned run — an abandoned run is an escape hatch, not a
-    // completed bootstrap anyone can testify about.
-    const abandonedId = makeBootstrapRunId(new Date(NOW.getTime() + 1000));
-    await seedRun(homeDir, abandonedId, { status: 'abandoned' });
-    const refusedReceipt = await writeBootstrapProof({ homeDir, repoRoot: null, runId: abandonedId, kind: 'egress-receipt-attestation', record: receipt });
-    strictEqual(refusedReceipt.ok, false);
-    strictEqual(refusedReceipt.reason, 'run-not-open');
+    const read = await readBootstrapProofRecords({ homeDir, runId: created.run_id });
+    strictEqual(read.ok, true, `retired evidence never fails the read: ${read.errors.join('; ')}`);
+    deepStrictEqual([...read.retired].sort(), ['egress-provider-ack.json', 'egress-receipt-attestation.json']);
+    strictEqual(read.records.length, 1);
+    strictEqual(read.records[0].kind, 'deep-peer-smoke');
+
+    // An unknown, non-retired file is still a failed read.
+    await writeFile(join(proofDir, 'mystery.json'), '{}');
+    const bad = await readBootstrapProofRecords({ homeDir, runId: created.run_id });
+    strictEqual(bad.ok, false);
+    match(bad.errors.join(' '), /unknown evidence kind/);
+    deepStrictEqual([...bad.retired].sort(), ['egress-provider-ack.json', 'egress-receipt-attestation.json']);
     await rm(homeDir, { recursive: true, force: true });
   });
 });

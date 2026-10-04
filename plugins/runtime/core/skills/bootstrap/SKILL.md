@@ -1,6 +1,6 @@
 ---
 name: bootstrap
-description: "Machine-scoped, artifact-only bootstrap lifecycle. Use when the user wants to bring a machine from a bare host to a proven install: probe both host CLIs live, plan a bundle (base|engineering|business|design|full|custom) with hard-dependency closure, print Stage 0 commands for a missing peer host or marketplace registration, render the Stage 4-5 model/effort, notification, statusline, and egress launcher fragments per host with backup and revert guidance, present the plugin-management command carrying its plan hash, resume with live re-probe plus proof recording through runtime:doctor --record, verify recorded proof evidence without running a proof to make itself pass, attest the owner's phone receipt, and abandon a crashed run. bootstrap never executes; status and verify are read-only; artifacts land only under ~/.agentic-plugins; host config, credentials, and config.local.toml are never written."
+description: "Machine-scoped, artifact-only bootstrap lifecycle. Use when the user wants to bring a machine from a bare host to a proven install: probe both host CLIs live, plan a bundle (base|engineering|business|design|full|custom) with hard-dependency closure, print Stage 0 commands for a missing peer host or marketplace registration, render the Stage 4-5 model/effort, session, and statusline fragments per host with backup and revert guidance, present the plugin-management command carrying its plan hash, resume with live re-probe plus proof recording through runtime:doctor --record, verify recorded proof evidence without running a proof to make itself pass, and abandon a crashed run. bootstrap never executes; status and verify are read-only; artifacts land only under ~/.agentic-plugins; host config, credentials, and config.local.toml are never written."
 ---
 
 # Bootstrap (runtime framework primitive)
@@ -23,7 +23,6 @@ node "<runtime-plugin-root>/scripts/bootstrap.mjs" plan     [--bundle <id>] [--p
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" status   [--run-id <id> | --latest | --latest-open] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" resume   [--run-id <id> | --latest-open] [--answers <path>] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" verify   [--run-id <id> | --latest] [--format text|json]
-node "<runtime-plugin-root>/scripts/bootstrap.mjs" attest   [--run-id <id> | --latest] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" abandon  (--run-id <id> | --latest-open) [--reason <text>]
 ```
 
@@ -49,17 +48,15 @@ read them.
    confirm**:
    - **Diagnose**: run `plan` / `status` first; the live probe answers most
      questions. Never ask what the probe already observed.
-   - **Ask**: only about declinable steps (notification, statusline — per
-     host, egress, optional plugins, proofs) and the
+   - **Ask**: only about declinable steps (the statusline — per host, optional
+     plugins, proofs), the Stage-4 `config.session` value step, and the
      bundle. Collect decisions into a JSON answers file
-     `[{ "step_id", "answer": "decline"|"accept"|"execute"|"attest-receipt" }]`
+     `[{ "step_id", "answer": "decline"|"accept"|"execute"|"set:<key>=<value|unset>" }]`
      and pass it via `--answers` on `plan` or `resume` — the only two verbs
-     that accept it. Prose never reaches the script directly.
-     `attest-receipt` (ADR-0048 §3) is the owner's phone-receipt testimony:
-     it targets the egress provider-ack proof step only, and as an ANSWER it
-     is accepted under `resume` only, never `plan`. The standalone `attest`
-     verb records the same testimony post-terminally without an answers
-     file.
+     that accept it. Prose never reaches the script directly. `execute` is
+     accepted under `resume` only, never `plan`, and only against a `proof.*`
+     step; put every proof to run into ONE resume, because a run terminalizes
+     as soon as the proofs it owes pass.
    - **Render / apply-command**: surface the rendered fragments and presented
      commands verbatim, including the plugin-management command carrying the
      plan hash and each fragment's backup/verify/manual-revert guidance. The
@@ -88,9 +85,7 @@ read them.
   config, credentials, and `config.local.toml` are never written. Delegated
   effects are named, never silent: EVERY proof driven by an explicit
   operator `execute` answer runs through `runtime:doctor --record`, which
-  records its doctor artifact under the repo's `.agentic-plugins/runs/doctor/`;
-  the egress proof's executor additionally performs the one real-network
-  send, behind the `AGENTIC_EGRESS_REAL_SMOKE=1` third consent.
+  records its doctor artifact under the repo's `.agentic-plugins/runs/doctor/`.
 - No second executor: plugin management is presented to
   `runtime:settings --execute-plugin-management`; proofs run only through
   `runtime:doctor --record` under `resume`, and only on an explicit operator

@@ -12,7 +12,7 @@
 //      itself. The state transitions (decline → set, changed set → un-freeze)
 //      exist only across verbs and cannot be observed at layer 1 at all.
 
-import { deepStrictEqual, match, ok, rejects, strictEqual, throws } from 'node:assert';
+import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -29,21 +29,21 @@ import {
   applyCommandFor,
   classifyAnswer,
   compareStanding,
-  dualKindWarning,
   foldStandingDecisions,
   isValueStep,
   parseSetPayload,
+  sameConfigValue,
   undecidedKeys,
   valueStepKeys,
 } from '../../plugins/runtime/scripts/lib/answer-values.mjs';
-import { NOTIFY_KINDS } from '../../plugins/runtime/scripts/lib/notify-schema.mjs';
 import { CONFIG_KEY_FAMILIES } from '../../plugins/runtime/scripts/lib/runtime-config.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
 const PLUGIN_ROOT = join(REPO_ROOT, 'plugins', 'runtime');
 const NOW = Date.parse('2026-08-26T04:00:00Z');
 const SESSION = stepIds.configSession();
-const KINDS = stepIds.configNotifyKinds();
+// The retired second value step (ADR-0064): only its history survives.
+const RETIRED_KINDS = 'config.notify_kinds';
 
 // ---------------------------------------------------------------------------
 // 1. The pure grammar
@@ -55,8 +55,8 @@ describe('value grammar — payload parsing (§3.3)', () => {
     // second copy the module exists to avoid, and would keep passing after the
     // family changed underneath it.
     deepStrictEqual([...valueStepKeys(SESSION)], [...CONFIG_KEY_FAMILIES.session]);
-    deepStrictEqual([...valueStepKeys(KINDS)], ['notify_kinds']);
     strictEqual(isValueStep('config.model_effort'), false, 'the posture step owns no value keys');
+    strictEqual(isValueStep(RETIRED_KINDS), false, 'a retired value step is no longer a value step');
   });
 
   it('parses a full session payload, order-independently', () => {
@@ -79,7 +79,6 @@ describe('value grammar — payload parsing (§3.3)', () => {
       ok(parsed.ok, `${key}=${UNSET} parses`);
       strictEqual(parsed.decisions.get(key), UNSET);
     }
-    ok(parseSetPayload(KINDS, `notify_kinds=${UNSET}`).ok);
   });
 
   it('is ATOMIC — a duplicate key rejects the WHOLE row, so order cannot decide the answer', () => {
@@ -89,7 +88,7 @@ describe('value grammar — payload parsing (§3.3)', () => {
     match(parsed.errors.join(' '), /appears twice/);
   });
 
-  it('rejects the other four defect shapes, each with its own diagnosis', () => {
+  it('rejects the other defect shapes, each with its own diagnosis', () => {
     const cases = [
       ['', /empty payload/],
       ['session_capture', /must be <key>=<value>/],
@@ -105,16 +104,33 @@ describe('value grammar — payload parsing (§3.3)', () => {
     }
   });
 
+  it('a retired value step accepts no value answer', () => {
+    const parsed = parseSetPayload(RETIRED_KINDS, 'notify_kinds=approval');
+    strictEqual(parsed.ok, false);
+    match(parsed.errors.join(' '), /does not accept a value answer/);
+  });
+
+  it('the refusal is BOUNDED — a payload of separators yields a capped defect list plus the total', () => {
+    const parsed = parseSetPayload(SESSION, ';'.repeat(500));
+    strictEqual(parsed.ok, false);
+    ok(parsed.errors.length <= 9, `bounded at the cap plus one summary line (got ${parsed.errors.length})`);
+    match(parsed.errors[parsed.errors.length - 1], /further defects/);
+  });
+
   it('the payload cap leaves room for the `set:` prefix the schema actually measures', () => {
     // The cap was a flat 1024 and that was an off-by-prefix: the run schema caps
     // the STORED answer, so a payload at 1024 produced a 1028-character answer
     // that parsed here and was rejected by validateRun at persist — after resume
     // had already run a proof executor (cross-host review, MAJOR).
     strictEqual(SET_PAYLOAD_MAX, SET_ANSWER_MAX - SET_ANSWER_PREFIX.length);
-    const atCap = `notify_kinds=approval${' '.repeat(SET_PAYLOAD_MAX - 'notify_kinds=approval'.length)}`;
-    ok(parseSetPayload(KINDS, atCap).ok, 'a payload AT the cap is legal');
-    strictEqual((SET_ANSWER_PREFIX + atCap).length, SET_ANSWER_MAX, 'and its stored answer lands exactly on the schema cap');
-    strictEqual(parseSetPayload(KINDS, `${atCap} `).ok, false, 'one character more is refused here, not at persist');
+    // A payload AT the cap passes the length gate (it fails the value validator
+    // instead — a different defect); one character more fails the length gate.
+    const atCap = parseSetPayload(SESSION, `session_capture=${'x'.repeat(SET_PAYLOAD_MAX - 'session_capture='.length)}`);
+    strictEqual(atCap.ok, false);
+    ok(!atCap.errors.join(' ').includes('exceeds'), 'a payload AT the cap is not refused for length');
+    strictEqual((SET_ANSWER_PREFIX + 'x'.repeat(SET_PAYLOAD_MAX)).length, SET_ANSWER_MAX, 'and its stored answer lands exactly on the schema cap');
+    const over = parseSetPayload(SESSION, `session_capture=${'x'.repeat(SET_PAYLOAD_MAX - 'session_capture='.length + 1)}`);
+    match(over.errors[0], new RegExp(`exceeds ${SET_PAYLOAD_MAX} characters`), 'one character more is refused here, not at persist');
   });
 
   it('refuses an over-long payload BEFORE parsing it, and withholds the value', () => {
@@ -132,57 +148,11 @@ describe('value grammar — payload parsing (§3.3)', () => {
   });
 });
 
-describe('value grammar — the notify_kinds refusals (§3.3)', () => {
-  it('refuses the enumeration of EVERY current kind, naming unset as the thing meant', () => {
-    const parsed = parseSetPayload(KINDS, `notify_kinds=${NOTIFY_KINDS.join(',')}`);
-    strictEqual(parsed.ok, false);
-    match(parsed.errors[0], /indistinguishable from unset/);
-    match(parsed.errors[0], /notify_kinds=unset/);
-  });
-
-  it('the all-kinds refusal compares by SET semantics — order and duplicates cannot walk past it', () => {
-    const shuffled = [...NOTIFY_KINDS].reverse().join(',');
-    const duplicated = `${NOTIFY_KINDS.join(',')},${NOTIFY_KINDS[0]},${NOTIFY_KINDS[0]}`;
-    for (const payload of [shuffled, duplicated]) {
-      strictEqual(parseSetPayload(KINDS, `notify_kinds=${payload}`).ok, false, `${payload.slice(0, 30)}… is still all-kinds`);
-    }
-  });
-
-  it('refuses a BLANK csv — it behaves as unset while writing a byte that looks like a filter', () => {
-    const parsed = parseSetPayload(KINDS, 'notify_kinds=');
-    strictEqual(parsed.ok, false);
-    match(parsed.errors[0], /same posture as unset/);
-  });
-
-  it('a PROPER SUBSET is accepted and normalized to a sorted set, so a reorder is not a new decision', () => {
-    const a = parseSetPayload(KINDS, 'notify_kinds=idle,approval');
-    const b = parseSetPayload(KINDS, 'notify_kinds=approval,idle,approval');
-    ok(a.ok && b.ok);
-    strictEqual(a.decisions.get('notify_kinds'), 'approval,idle');
-    strictEqual(b.decisions.get('notify_kinds'), a.decisions.get('notify_kinds'), 'reorder + duplicate fold to one value');
-  });
-
-  it('an unknown kind is refused WITHOUT quoting the token parseKindsFilter would have quoted', () => {
-    const parsed = parseSetPayload(KINDS, 'notify_kinds=approval,not-a-kind');
-    strictEqual(parsed.ok, false);
-    ok(!parsed.errors.join(' ').includes('not-a-kind'), 'the answers boundary withholds where the parser would quote');
-    match(parsed.errors[0], new RegExp(NOTIFY_KINDS[0]), 'the closed set is named instead');
-  });
-
-  it('the ADR-0047 dual-kind warning is XOR — one of the pair warns, both or neither does not', () => {
-    ok(dualKindWarning('approval,turn-complete'), 'turn-complete alone warns');
-    ok(dualKindWarning('approval,response-needed'), 'response-needed alone warns');
-    strictEqual(dualKindWarning('turn-complete,response-needed'), null, 'both = the window is open');
-    strictEqual(dualKindWarning('approval,idle'), null, 'neither = not in the window at all');
-    match(dualKindWarning('approval,response-needed'), /verified upgraded/, 'it names the verification a narrowing presupposes');
-  });
-});
-
 describe('value grammar — the standing fold (§3.3)', () => {
   const row = (step_id, answer, at = '2026-08-26T00:00:00Z') => ({ step_id, answer, at });
   // The fold judges PROVENANCE, so every call has to say which schema minor the
   // document declares. `CURRENT` is "a document this runtime wrote".
-  const CURRENT = { documentMinor: 3 };
+  const CURRENT = { documentMinor: 5 };
   const fold = (rows, opts = CURRENT) => foldStandingDecisions(rows, opts);
 
   it('later rows win, and a partial payload MERGES per key rather than replacing', () => {
@@ -227,7 +197,7 @@ describe('value grammar — the standing fold (§3.3)', () => {
     // legacy row would be reported malformed on every verb, turning bytes that
     // were never an answer into permanent diagnostic noise.
     const { standing, malformed } = fold([
-      row('egress.configured', 'set:notify_kinds=approval'),
+      row('statusline.codex.configured', 'set:session_capture=stop-hook'),
       row('config.model_effort', 'set:entry_brief=startup'),
     ]);
     strictEqual(standing.size, 0, 'no non-value step acquires a standing decision');
@@ -259,22 +229,36 @@ describe('value grammar — the standing fold (§3.3)', () => {
     // for rows an older RUNTIME writes, and a run file is operator-editable data
     // — the entire premise of the registry-authority rule. `config.session`
     // matches the same $defs.stepId pattern 1.2 already accepted.
-    const rows = [row(KINDS, 'set:notify_kinds=approval')];
+    const rows = [row(SESSION, 'set:session_capture=stop-hook')];
     const legacy = fold(rows, { documentMinor: 2 });
     strictEqual(legacy.standing.size, 0, 'a 1.2 document cannot carry 1.3 policy');
     strictEqual(legacy.preDating.length, 1, 'and the refusal is REPORTED, not silent');
     match(legacy.preDating[0], /did not exist at the document's schema minor/);
 
-    strictEqual(fold(rows, { documentMinor: 3 }).standing.size, 1, 'CONTROL: the same row at its own minor IS honoured');
+    strictEqual(fold(rows, { documentMinor: 3 }).standing.size, 1, 'CONTROL: the same row at the step\'s own introducing minor IS honoured');
   });
 
   it('an UNREADABLE or omitted minor fails CLOSED — unreadable provenance cannot authorize a decision', () => {
-    const rows = [row(KINDS, 'set:notify_kinds=approval')];
+    const rows = [row(SESSION, 'set:session_capture=stop-hook')];
     for (const [label, opts] of [['null', { documentMinor: null }], ['omitted', {}]]) {
       const folded = fold(rows, opts);
       strictEqual(folded.standing.size, 0, `${label}: refused`);
       strictEqual(folded.preDating.length, 1, `${label}: and reported`);
     }
+  });
+
+  it('RETIRED value steps are history — a 1.4 run\'s config.notify_kinds row is ignored without a warning', () => {
+    // ADR-0064 removed the step; a retained run's choices[] still holds its
+    // rows. The fold reads only the CURRENT value steps, so such a row yields
+    // no standing entry, no malformed report and no pre-dating report.
+    const { standing, malformed, preDating } = fold([
+      { step_id: RETIRED_KINDS, answer: 'set:notify_kinds=approval', at: '2026-08-26T00:00:00Z' },
+      row(SESSION, 'set:entry_brief=startup'),
+    ], { documentMinor: 4 });
+    strictEqual(standing.has(RETIRED_KINDS), false, 'no standing entry for the retired step');
+    deepStrictEqual(malformed, []);
+    deepStrictEqual(preDating, []);
+    strictEqual(standing.get(SESSION).decisions.get('entry_brief'), 'startup', 'CONTROL: the surviving step still folds beside it');
   });
 
   it('classifyAnswer separates the prefix family from the bare four', () => {
@@ -289,9 +273,9 @@ describe('value grammar — comparison and the apply command (§6.1.3)', () => {
   const entryOf = (pairs) => ({ mode: 'set', decisions: new Map(pairs) });
 
   it('UNSET is satisfied by physical ABSENCE only — a present BLANK is not unset', () => {
-    const entry = entryOf([['notify_kinds', UNSET]]);
-    strictEqual(compareStanding(KINDS, entry, () => null).mismatched.length, 0, 'absent matches unset');
-    const blank = compareStanding(KINDS, entry, () => '');
+    const entry = entryOf([['entry_brief', UNSET]]);
+    strictEqual(compareStanding(SESSION, entry, () => null).mismatched.length, 0, 'absent matches unset');
+    const blank = compareStanding(SESSION, entry, () => '');
     strictEqual(blank.mismatched.length, 1, 'a present blank does NOT match unset');
     strictEqual(blank.mismatched[0].got, '', 'and the blank is reported as what it is');
   });
@@ -309,10 +293,18 @@ describe('value grammar — comparison and the apply command (§6.1.3)', () => {
   });
 
   it('an unset key that is currently PRESENT becomes the removal operation', () => {
-    const entry = entryOf([['notify_kinds', UNSET]]);
-    const command = applyCommandFor(KINDS, entry, () => 'approval');
-    match(command, /--unset notify_kinds/, 'the only way back to a future-open posture');
+    const entry = entryOf([['entry_brief', UNSET]]);
+    const command = applyCommandFor(SESSION, entry, () => 'startup');
+    match(command, /--unset entry_brief/, 'the only way back to a future-open posture');
     match(command, /--target user/);
+  });
+
+  it('sameConfigValue(want, got) is string equality against a PRESENT value', () => {
+    strictEqual(sameConfigValue('startup', 'startup'), true);
+    strictEqual(sameConfigValue('startup', 'off'), false);
+    strictEqual(sameConfigValue('startup', null), false, 'absence is never a match for a value');
+    strictEqual(sameConfigValue('startup', undefined), false);
+    strictEqual(sameConfigValue('startup', ' startup '), false, 'no normalization: every key carries one enum token');
   });
 
   it('a key already matching contributes nothing to the command', () => {
@@ -328,7 +320,7 @@ describe('value grammar — comparison and the apply command (§6.1.3)', () => {
 
 function judgeValue({ stepId = SESSION, keys = {}, sourceStatus = 'readable', standing = new Map(), previousById = new Map(), envShadow = {} } = {}) {
   const family = {
-    family: stepId === KINDS ? 'notify' : 'session',
+    family: 'session',
     keys: Object.fromEntries((valueStepKeys(stepId) ?? []).map((key) => [key, { value: keys[key] ?? null, provenance: keys[key] == null ? null : 'user-global' }])),
     source: { scope: 'user', status: sourceStatus },
   };
@@ -337,7 +329,7 @@ function judgeValue({ stepId = SESSION, keys = {}, sourceStatus = 'readable', st
     probe: { hosts: { claude: { plugins: {} }, codex: { plugins: {} } } },
     raw: {},
     pluginSet: { plugins: {} },
-    readers: stepId === KINDS ? { notify: family, sessionEnvShadow: envShadow } : { session: family, sessionEnvShadow: envShadow },
+    readers: { session: family, sessionEnvShadow: envShadow },
     hookVerdict: null,
     previousById,
     standing,
@@ -379,24 +371,24 @@ describe('judgeSteps — the value-step status matrix (§6.1.3)', () => {
   });
 
   it('a mismatch with NOTHING rendered yet is pending; the same mismatch with a fragment is manual-follow-up', () => {
-    const standing = standingOf(KINDS, [['notify_kinds', 'approval,idle']]);
-    const first = judgeValue({ stepId: KINDS, standing, keys: { notify_kinds: 'health' } });
+    // A COMPLETE decision: a partial one presents no command (undecided keys first).
+    const standing = standingOf(SESSION, [['session_capture', 'stop-hook'], ['entry_brief', UNSET], ['entry_brief_empty', UNSET]]);
+    const first = judgeValue({ standing, keys: { session_capture: 'off' } });
     strictEqual(first.status, 'pending', 'no hand-off exists yet');
-    match(first.apply_command, /--notify-kinds approval,idle/);
+    match(first.apply_command, /--session-capture stop-hook/);
 
     const later = judgeValue({
-      stepId: KINDS,
       standing,
-      keys: { notify_kinds: 'health' },
-      previousById: new Map([[KINDS, { id: KINDS, status: 'pending', fragment_pointer: 'runs/bootstrap/x/fragments/config-notify-kinds.fragment' }]]),
+      keys: { session_capture: 'off' },
+      previousById: new Map([[SESSION, { id: SESSION, status: 'pending', fragment_pointer: 'runs/bootstrap/x/fragments/config-session.fragment' }]]),
     });
     strictEqual(later.status, 'manual-follow-up', 'a rendered fragment IS the hand-off §6 names');
   });
 
   it('an UNSET decision over a present value routes to the REMOVAL command, not a hand-edit', () => {
-    const entry = judgeValue({ stepId: KINDS, standing: standingOf(KINDS, [['notify_kinds', UNSET]]), keys: { notify_kinds: 'approval' } });
-    match(entry.apply_command, /--unset notify_kinds/);
-    match(entry.observed, /chose unset, observed approval/);
+    const entry = judgeValue({ standing: standingOf(SESSION, [['session_capture', UNSET], ['entry_brief', UNSET], ['entry_brief_empty', UNSET]]), keys: { entry_brief: 'startup' } });
+    match(entry.apply_command, /--unset entry_brief/);
+    match(entry.observed, /chose unset, observed startup/);
   });
 
   it('an UNREADABLE config is UNKNOWN — never "nothing set" (§6)', () => {
@@ -422,30 +414,24 @@ describe('judgeSteps — the value-step status matrix (§6.1.3)', () => {
     // (cross-host review, MAJOR; reproduced). §3.2 decides by grammar clamping,
     // and every value key here has a closed-set validator — so the question is
     // decidable rather than a judgement call.
-    const standing = standingOf(KINDS, [['notify_kinds', 'approval,idle']]);
-    const leaky = judgeValue({ stepId: KINDS, standing, keys: { notify_kinds: '/Users/someone/PRIVATE-MARKER' } });
+    const standing = standingOf(SESSION, [['session_capture', 'stop-hook'], ['entry_brief', UNSET], ['entry_brief_empty', UNSET]]);
+    const leaky = judgeValue({ standing, keys: { session_capture: '/Users/someone/PRIVATE-MARKER' } });
     ok(!leaky.observed.includes('PRIVATE-MARKER'), `the unclamped value must not cross:\n${leaky.observed}`);
     match(leaky.observed, /chars — not a value this runtime declares/, 'type and length cross instead');
 
     // CONTROL: a value this runtime's own grammar accepts IS named — a blanket
     // "withhold every string" would pass the assertion above and fail this one.
-    const clamped = judgeValue({ stepId: KINDS, standing, keys: { notify_kinds: 'health' } });
-    match(clamped.observed, /observed health/, 'a clamped token is disclosed, not reduced to a length');
+    const clamped = judgeValue({ standing, keys: { session_capture: 'off' } });
+    match(clamped.observed, /observed off/, 'a clamped token is disclosed, not reduced to a length');
   });
 
-  it('a semantically identical notify_kinds observation SATISFIES — set semantics, not string equality', () => {
-    // Answers are normalized to a sorted set and the runtime consumer parses a
-    // set, but the observation was compared raw: `idle,approval` was a mismatch
-    // against a standing `approval,idle`, sending the step to manual-follow-up
-    // and presenting a rewrite command for a no-op (cross-host review, MINOR).
-    const standing = standingOf(KINDS, [['notify_kinds', 'approval,idle']]);
-    for (const observed of ['idle,approval', 'approval,idle,approval', ' approval , idle ']) {
-      const entry = judgeValue({ stepId: KINDS, standing, keys: { notify_kinds: observed } });
-      strictEqual(entry.status, 'satisfied', `${JSON.stringify(observed)} is the same configuration`);
-      strictEqual(entry.apply_command ?? null, null, 'and no rewrite is proposed for it');
-    }
-    // CONTROL: a genuinely different set still mismatches.
-    strictEqual(judgeValue({ stepId: KINDS, standing, keys: { notify_kinds: 'approval' } }).status, 'pending');
+  it('an observation EQUAL to the decision SATISFIES and proposes no rewrite', () => {
+    const standing = standingOf(SESSION, [['session_capture', 'stop-hook'], ['entry_brief', 'startup'], ['entry_brief_empty', 'report']]);
+    const entry = judgeValue({ standing, keys: { session_capture: 'stop-hook', entry_brief: 'startup', entry_brief_empty: 'report' } });
+    strictEqual(entry.status, 'satisfied');
+    strictEqual(entry.apply_command ?? null, null, 'and no rewrite is proposed for a no-op');
+    // CONTROL: a genuinely different value still mismatches.
+    strictEqual(judgeValue({ standing, keys: { session_capture: 'off', entry_brief: 'startup', entry_brief_empty: 'report' } }).status, 'pending');
   });
 
   it('a recorded DECLINE is restored over a non-satisfying observation, as for any declinable step (§6.2)', () => {
@@ -456,6 +442,7 @@ describe('judgeSteps — the value-step status matrix (§6.1.3)', () => {
     strictEqual(entry.status, 'declined');
   });
 });
+
 
 // ---------------------------------------------------------------------------
 // 3. The CLI, end to end — the transitions that exist only across verbs
@@ -539,15 +526,17 @@ const manifestOf = async (home, runId) =>
 
 const stepOf = (report, id) => report.steps.find((s) => s.id === id);
 
+const FULL_SET = 'set:session_capture=stop-hook;entry_brief=startup;entry_brief_empty=report';
+const FULL_UNSET = `set:session_capture=${UNSET};entry_brief=${UNSET};entry_brief_empty=${UNSET}`;
+
 describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
-  it('a run carrying no decision leaves BOTH value steps unresolved — the interview is a real obligation', async () => {
+  it('a run carrying no decision leaves the value step unresolved — the interview is a real obligation', async () => {
     const { home, cwd } = await makeHome();
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
-    for (const id of [SESSION, KINDS]) {
-      strictEqual(stepOf(plan.report, id).status, 'pending', `${id} is owed`);
-      strictEqual(stepOf(plan.report, id).stage, 4, `${id} is Stage 4`);
-      strictEqual(stepOf(plan.report, id).applied_by, 'agentic-config', `${id} is applied by agentic-config, not the operator`);
-    }
+    strictEqual(stepOf(plan.report, SESSION).status, 'pending', `${SESSION} is owed`);
+    strictEqual(stepOf(plan.report, SESSION).stage, 4, `${SESSION} is Stage 4`);
+    strictEqual(stepOf(plan.report, SESSION).applied_by, 'agentic-config', `${SESSION} is applied by agentic-config, not the operator`);
+    strictEqual(stepOf(plan.report, RETIRED_KINDS), undefined, 'the retired value step is not derived');
     ok(plan.report.completion.unsatisfied.includes(SESSION), 'and the reducer counts it unsatisfied');
   });
 
@@ -556,13 +545,9 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     // pass judges a value step against the PREVIOUS standing decision (on plan,
     // against none) and persists a status the observation never matched.
     const { home, cwd } = await makeHome();
-    const file = await answers(home, 'unset-all.json', [
-      { step_id: SESSION, answer: `set:session_capture=${UNSET};entry_brief=${UNSET};entry_brief_empty=${UNSET}` },
-      { step_id: KINDS, answer: `set:notify_kinds=${UNSET}` },
-    ]);
+    const file = await answers(home, 'unset-all.json', [{ step_id: SESSION, answer: FULL_UNSET }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
     strictEqual(stepOf(plan.report, SESSION).status, 'satisfied', 'an all-unset decision over an empty config satisfies at once');
-    strictEqual(stepOf(plan.report, KINDS).status, 'satisfied');
   });
 
   it('a satisfied UNSET decision is VISIBLE in text — the state where it worked is the state where it would vanish', async () => {
@@ -570,19 +555,20 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     // projection an `unset` posture leaves no trace anywhere: the config carries
     // nothing by design and the step row is suppressed.
     const { home, cwd } = await makeHome();
-    const file = await answers(home, 'unset.json', [{ step_id: KINDS, answer: `set:notify_kinds=${UNSET}` }]);
+    const file = await answers(home, 'unset.json', [{ step_id: SESSION, answer: FULL_UNSET }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file], home, cwd });
-    strictEqual(plan.report.steps.find((s) => s.id === KINDS).status, 'satisfied');
-    ok(!plan.rendered.includes(`${KINDS}: satisfied`), 'the step loop does suppress it (the premise of this test)');
-    match(plan.rendered, new RegExp(`${KINDS.replace('.', '\\.')}: set — notify_kinds=unset`), 'the decision block carries it instead');
+    strictEqual(plan.report.steps.find((s) => s.id === SESSION).status, 'satisfied');
+    ok(!plan.rendered.includes(`${SESSION}: satisfied`), 'the step loop does suppress it (the premise of this test)');
+    match(plan.rendered, new RegExp(`${SESSION.replace('.', '\\.')}: set — .*session_capture=unset`), 'the decision block carries it instead');
   });
 
   it('the report reconstructs the value CANONICALLY rather than echoing the raw answer string', async () => {
     const { home, cwd } = await makeHome();
-    const file = await answers(home, 'reorder.json', [{ step_id: KINDS, answer: 'set:notify_kinds=idle,approval,idle' }]);
+    const file = await answers(home, 'reorder.json', [{ step_id: SESSION, answer: 'set:entry_brief=startup;session_capture=stop-hook' }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
-    const row = plan.report.value_decisions.find((r) => r.step_id === KINDS);
-    strictEqual(row.decisions.notify_kinds, 'approval,idle', 'normalized, not the operator string');
+    const row = plan.report.value_decisions.find((r) => r.step_id === SESSION);
+    strictEqual(row.decisions.session_capture, 'stop-hook', 'reconstructed per key, not the operator string');
+    strictEqual(row.decisions.entry_brief, 'startup');
   });
 
   it('a set: over a standing DECLINE lifts it — otherwise the reducer closes the run with the new choice unapplied', async () => {
@@ -590,15 +576,15 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     // RESOLVED in the reducer, so without the lift the run would reduce clean
     // while the operator's value was never applied.
     const { home, cwd } = await makeHome();
-    const declineFile = await answers(home, 'decline.json', [{ step_id: KINDS, answer: 'decline' }]);
+    const declineFile = await answers(home, 'decline.json', [{ step_id: SESSION, answer: 'decline' }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', declineFile, '--format', 'json'], home, cwd });
-    strictEqual(stepOf(plan.report, KINDS).status, 'declined', 'precondition: the decline stands');
+    strictEqual(stepOf(plan.report, SESSION).status, 'declined', 'precondition: the decline stands');
 
-    const setFile = await answers(home, 'set.json', [{ step_id: KINDS, answer: 'set:notify_kinds=approval,idle' }]);
+    const setFile = await answers(home, 'set.json', [{ step_id: SESSION, answer: FULL_SET }]);
     const resume = await boot({ argv: ['resume', '--latest-open', '--answers', setFile, '--format', 'json'], home, cwd });
-    const after = stepOf(resume.report, KINDS);
+    const after = stepOf(resume.report, SESSION);
     ok(after.status !== 'declined', `the decline is lifted (got ${after.status})`);
-    match(after.apply_command, /--notify-kinds approval,idle/, 'and the new choice is what is now presented');
+    match(after.apply_command, /--session-capture stop-hook/, 'and the new choice is what is now presented');
   });
 
   it('a CHANGED decision withdraws the rendered hand-off so the next render re-freezes against it', async () => {
@@ -611,21 +597,22 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     // hostedRunner's comment.
     const { home, cwd } = await makeHome();
     const runner = hostedRunner();
-    const first = await answers(home, 'first.json', [{ step_id: KINDS, answer: 'set:notify_kinds=approval,idle' }]);
+    const fragmentPath = (runId) => join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'config-session.fragment');
+    const first = await answers(home, 'first.json', [{ step_id: SESSION, answer: 'set:session_capture=stop-hook' }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', first, '--format', 'json'], home, cwd, runner });
     const runId = plan.report.run_id;
-    const rendered = stepOf(plan.report, KINDS).fragment_pointer;
+    const rendered = stepOf(plan.report, SESSION).fragment_pointer;
     ok(rendered, 'precondition: a fragment was rendered for the first decision');
-    const firstBody = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'config-notify-kinds.fragment'), 'utf8'));
-    deepStrictEqual(firstBody.recorded_decision, { notify_kinds: 'approval,idle' });
+    const firstBody = JSON.parse(await readFile(fragmentPath(runId), 'utf8'));
+    deepStrictEqual(firstBody.recorded_decision, { session_capture: 'stop-hook' });
 
     const resume1 = await boot({ argv: ['resume', '--latest-open', '--format', 'json'], home, cwd, runner });
-    ok(stepOf(resume1.report, KINDS).fragment_pointer, 'CONTROL: with no new answer the pointer SURVIVES the resume — the freeze is live in this fixture, which is what makes the next assertion mean anything');
+    ok(stepOf(resume1.report, SESSION).fragment_pointer, 'CONTROL: with no new answer the pointer SURVIVES the resume — the freeze is live in this fixture, which is what makes the next assertion mean anything');
 
-    const second = await answers(home, 'second.json', [{ step_id: KINDS, answer: 'set:notify_kinds=health' }]);
+    const second = await answers(home, 'second.json', [{ step_id: SESSION, answer: 'set:session_capture=off' }]);
     await boot({ argv: ['resume', '--latest-open', '--answers', second, '--format', 'json'], home, cwd, runner });
-    const secondBody = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'config-notify-kinds.fragment'), 'utf8'));
-    deepStrictEqual(secondBody.recorded_decision, { notify_kinds: 'health' }, 'the frozen artifact re-rendered against the NEW decision');
+    const secondBody = JSON.parse(await readFile(fragmentPath(runId), 'utf8'));
+    deepStrictEqual(secondBody.recorded_decision, { session_capture: 'off' }, 'the frozen artifact re-rendered against the NEW decision');
   });
 
   it('an UNCHANGED re-answer does NOT churn the fragment — the freeze is spent only on a real change', async () => {
@@ -633,14 +620,14 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     // the render state every resume, so "the freeze held" is unobservable.
     const { home, cwd } = await makeHome();
     const runner = hostedRunner();
-    const file = await answers(home, 'same.json', [{ step_id: KINDS, answer: 'set:notify_kinds=approval,idle' }]);
+    const file = await answers(home, 'same.json', [{ step_id: SESSION, answer: 'set:session_capture=stop-hook' }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd, runner });
     const runId = plan.report.run_id;
-    const pointerBefore = stepOf(plan.report, KINDS).fragment_pointer;
+    const pointerBefore = stepOf(plan.report, SESSION).fragment_pointer;
     const manifestBefore = await manifestOf(home, runId);
 
     const resume = await boot({ argv: ['resume', '--latest-open', '--answers', file, '--format', 'json'], home, cwd, runner });
-    strictEqual(stepOf(resume.report, KINDS).fragment_pointer, pointerBefore, 'the same decision keeps the same frozen pointer');
+    strictEqual(stepOf(resume.report, SESSION).fragment_pointer, pointerBefore, 'the same decision keeps the same frozen pointer');
     // The ledger still records the row — the audit log keeps every answer.
     const manifestAfter = await manifestOf(home, runId);
     strictEqual(manifestAfter.choices.length, manifestBefore.choices.length + 1, 'the re-answer IS recorded, it just changes nothing');
@@ -653,15 +640,15 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     // decision is recorded" over a decision that plainly was.
     const { home, cwd } = await makeHome();
     const runner = hostedRunner();
-    const set = await answers(home, 'unset-first.json', [{ step_id: KINDS, answer: `set:notify_kinds=${UNSET}` }]);
+    const set = await answers(home, 'unset-first.json', [{ step_id: SESSION, answer: FULL_UNSET }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', set, '--format', 'json'], home, cwd, runner });
-    strictEqual(stepOf(plan.report, KINDS).status, 'satisfied', 'precondition: the step is satisfied');
+    strictEqual(stepOf(plan.report, SESSION).status, 'satisfied', 'precondition: the step is satisfied');
 
-    const decline = await answers(home, 'then-decline.json', [{ step_id: KINDS, answer: 'decline' }]);
+    const decline = await answers(home, 'then-decline.json', [{ step_id: SESSION, answer: 'decline' }]);
     const resume = await boot({ argv: ['resume', '--latest-open', '--answers', decline, '--format', 'json'], home, cwd, runner });
-    strictEqual(stepOf(resume.report, KINDS).status, 'declined', 'the ledger decline is authoritative');
-    match(stepOf(resume.report, KINDS).observed, /left unmanaged/);
-    deepStrictEqual(resume.report.value_decisions.find((r) => r.step_id === KINDS).decisions, null, 'and it carries no standing value');
+    strictEqual(stepOf(resume.report, SESSION).status, 'declined', 'the ledger decline is authoritative');
+    match(stepOf(resume.report, SESSION).observed, /left unmanaged/);
+    deepStrictEqual(resume.report.value_decisions.find((r) => r.step_id === SESSION).decisions, null, 'and it carries no standing value');
   });
 
   it('`accept` is refused against a value step, naming the grammar that would work', async () => {
@@ -675,7 +662,7 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
 
   it('`set:` is refused against a step that owns no config keys', async () => {
     const { home, cwd } = await makeHome();
-    const file = await answers(home, 'wrong-step.json', [{ step_id: 'egress.configured', answer: 'set:notify_kinds=approval' }]);
+    const file = await answers(home, 'wrong-step.json', [{ step_id: 'config.model_effort', answer: 'set:entry_brief=startup' }]);
     const result = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
     strictEqual(result.exitCode, EXIT.INVALID);
     match(result.report.error, /owns no config keys/);
@@ -683,37 +670,25 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
 
   it('an INVALID payload is refused at the answers boundary, before anything is recorded', async () => {
     const { home, cwd } = await makeHome();
-    const file = await answers(home, 'bad.json', [{ step_id: KINDS, answer: `set:notify_kinds=${NOTIFY_KINDS.join(',')}` }]);
+    const file = await answers(home, 'bad.json', [{ step_id: SESSION, answer: 'set:session_capture=not-a-mode' }]);
     const result = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
     strictEqual(result.exitCode, EXIT.INVALID);
-    match(result.report.error, /indistinguishable from unset/);
-  });
-
-  it('the ADR-0047 warning is recomputed from the STANDING ledger, so it survives into a later resume', async () => {
-    const { home, cwd } = await makeHome();
-    const file = await answers(home, 'one-sided.json', [{ step_id: KINDS, answer: 'set:notify_kinds=approval,turn-complete' }]);
-    await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
-    // A resume carrying NO answers at all: the warning can only come from the
-    // persisted ledger, never from parsing an incoming row.
-    const resume = await boot({ argv: ['resume', '--latest-open', '--format', 'json'], home, cwd });
-    ok(resume.report.warnings.some((w) => /dual-kind window/.test(w)), 'the warning does not vanish with the verb that produced it');
+    match(result.report.error, /session_capture/);
   });
 
   it('a set: answer is recorded as ONE atomic string — no sibling value field is written', async () => {
     const { home, cwd } = await makeHome();
-    const file = await answers(home, 'atomic.json', [{ step_id: KINDS, answer: 'set:notify_kinds=approval,idle' }]);
+    const file = await answers(home, 'atomic.json', [{ step_id: SESSION, answer: 'set:session_capture=stop-hook;entry_brief=startup' }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
     const manifest = await manifestOf(home, plan.report.run_id);
-    const row = manifest.choices.find((c) => c.step_id === KINDS);
+    const row = manifest.choices.find((c) => c.step_id === SESSION);
     deepStrictEqual(Object.keys(row).sort(), ['answer', 'at', 'step_id'], 'the ledger row carries no extra key an older reader would drop');
-    strictEqual(row.answer, 'set:notify_kinds=approval,idle');
+    strictEqual(row.answer, 'set:session_capture=stop-hook;entry_brief=startup');
   });
 
   it('the persisted manifest still validates against the packaged schema', async () => {
     const { home, cwd } = await makeHome();
-    const file = await answers(home, 'valid.json', [
-      { step_id: SESSION, answer: 'set:session_capture=stop-hook;entry_brief=startup;entry_brief_empty=report' },
-    ]);
+    const file = await answers(home, 'valid.json', [{ step_id: SESSION, answer: FULL_SET }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
     const { makeValidator } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
     const validate = await makeValidator('runtime-bootstrap-run', { pluginRoot: PLUGIN_ROOT });
@@ -721,11 +696,11 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
     ok(verdict.ok, `manifest is schema-valid: ${JSON.stringify(verdict.errors ?? []).slice(0, 300)}`);
   });
 
-  it('the schema bumped to 1.3, which is what arms the future-minor fence for the MUTATORS', async () => {
+  it('a new run is stamped 1.5, and the future-minor fence still refuses a NEWER minor on resume', async () => {
     const { home, cwd } = await makeHome();
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
     const manifest = await manifestOf(home, plan.report.run_id);
-    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.4');
+    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.5');
 
     // And the fence itself: a run claiming a NEWER minor is refused by resume.
     const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
@@ -737,33 +712,17 @@ describe('bootstrap CLI — the value interview end to end (§3.3)', () => {
 });
 
 describe('review remediation — the fixes that only exist across verbs', () => {
-  it('the ADR-0047 warning fires on EVERY verb that folds the ledger, not only resume', async () => {
-    // It was inlined in resume alone while both its own comment and the contract
-    // said "every verb", so an operator who answered a one-sided filter at plan
-    // saw nothing there, and status showed nothing either (code review, MEDIUM).
-    // Driven end to end because the finding was about WIRING, not the predicate.
-    const { home, cwd } = await makeHome();
-    const file = await answers(home, 'one-sided.json', [{ step_id: KINDS, answer: 'set:notify_kinds=approval,turn-complete' }]);
-    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
-    ok(plan.report.warnings.some((w) => /dual-kind window/.test(w)), 'plan warns at the moment the operator answers');
-
-    for (const verb of ['status', 'verify']) {
-      const result = await boot({ argv: [verb, '--latest', '--format', 'json'], home, cwd });
-      ok(result.report.warnings.some((w) => /dual-kind window/.test(w)), `${verb} warns too — the hazard is not resume-only`);
-    }
-  });
-
   it('a value row this runtime declined to honour is REPORTED on status, not swallowed', async () => {
     // `foldStandingDecisions().malformed` was computed and dropped at all five
     // call sites, so a recorded answer that stopped parsing left the step saying
     // "No decision is recorded" while choices[] visibly held a row (both lanes).
     const { home, cwd } = await makeHome();
-    const file = await answers(home, 'ok.json', [{ step_id: KINDS, answer: 'set:notify_kinds=approval,idle' }]);
+    const file = await answers(home, 'ok.json', [{ step_id: SESSION, answer: 'set:entry_brief=startup' }]);
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
     const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
     const manifest = JSON.parse(await readFile(path, 'utf8'));
     // Corrupt the STORED payload — stored rows are never revalidated on write.
-    manifest.choices = manifest.choices.map((row) => (row.step_id === KINDS ? { ...row, answer: 'set:notify_kinds=not-a-kind' } : row));
+    manifest.choices = manifest.choices.map((row) => (row.step_id === SESSION ? { ...row, answer: 'set:entry_brief=not-a-mode' } : row));
     await writeFile(path, JSON.stringify(manifest, null, 2));
 
     const status = await boot({ argv: ['status', '--latest', '--format', 'json'], home, cwd });
@@ -777,15 +736,28 @@ describe('review remediation — the fixes that only exist across verbs', () => 
     const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
     const manifest = JSON.parse(await readFile(path, 'utf8'));
     // A hand-edited manifest claiming the OLD minor while carrying a 1.3 answer:
-    // the 1.2 stepId pattern accepted `config.notify_kinds`, so this file is
+    // the 1.2 stepId pattern accepted `config.session`, so this file is
     // schema-valid and was previously honoured (cross-host review, MAJOR).
     manifest.schema = 'runtime-bootstrap-run-1.2';
-    manifest.choices = [{ step_id: KINDS, answer: 'set:notify_kinds=approval', at: '2026-01-01T00:00:00Z' }];
+    manifest.choices = [{ step_id: SESSION, answer: 'set:session_capture=stop-hook', at: '2026-01-01T00:00:00Z' }];
     await writeFile(path, JSON.stringify(manifest, null, 2));
 
     const status = await boot({ argv: ['status', '--latest', '--format', 'json'], home, cwd });
     deepStrictEqual(status.report.value_decisions, [], 'the pre-dating row is not standing policy');
     ok(status.report.warnings.some((w) => /did not exist at the document's schema minor/.test(w)), 'and the refusal is named');
+  });
+
+  it('a 1.4 run\'s retired config.notify_kinds row stays in choices[] as history and raises no warning', async () => {
+    const { home, cwd } = await makeHome();
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
+    const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    manifest.choices = [{ step_id: RETIRED_KINDS, answer: 'set:notify_kinds=approval', at: '2026-01-01T00:00:00Z' }];
+    await writeFile(path, JSON.stringify(manifest, null, 2));
+
+    const status = await boot({ argv: ['status', '--latest', '--format', 'json'], home, cwd });
+    deepStrictEqual(status.report.value_decisions.filter((r) => r.step_id === RETIRED_KINDS), [], 'no standing decision for a retired step');
+    ok(!status.report.warnings.some((w) => /notify_kinds|cannot parse|did not exist/.test(w)), `no warning:\n${status.report.warnings.join('\n')}`);
   });
 
   it('the ledger preflight budgets injection rows even WITHOUT a schema bump', async () => {
@@ -801,7 +773,7 @@ describe('review remediation — the fixes that only exist across verbs', () => 
     manifest.history = Array.from({ length: 256 }, () => ({ step_id: null, from: 'a', to: 'b', reason: 'filler', at: '2026-08-26T00:00:00Z' }));
     // Registry-new steps with NO schema drift: the document already claims the
     // current minor, so `migratingFromSchema` is null.
-    manifest.steps = (manifest.steps ?? []).filter((row) => row.id !== SESSION && row.id !== KINDS);
+    manifest.steps = (manifest.steps ?? []).filter((row) => row.id !== SESSION);
     await writeFile(path, JSON.stringify(manifest, null, 2));
 
     const resume = await boot({ argv: ['resume', '--latest-open', '--format', 'json'], home, cwd });
@@ -811,46 +783,13 @@ describe('review remediation — the fixes that only exist across verbs', () => 
   });
 });
 
-describe('bootstrap CLI — the opt-in proof warning (§3, terminalization)', () => {
-  it('plan WARNS that a non-opted-in proof can never be attached once the run terminalizes', async () => {
+describe('bootstrap CLI — the opt-in proof warning is gone', () => {
+  it('plan and an open resume carry no "NOT opted in" proof warning', async () => {
     const { home, cwd } = await makeHome();
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
-    const warned = plan.report.warnings.filter((w) => w.includes('proof.egress-provider-ack'));
-    strictEqual(warned.length, 1, `exactly one opt-in proof is unclaimed:\n${plan.report.warnings.join('\n')}`);
-    match(warned[0], /NOT opted in/);
-    match(warned[0], /terminalizes/, 'it names WHEN the door shuts');
-    match(warned[0], /can never be attached/, 'and that the loss is permanent');
-    match(warned[0], /fresh plan/, 'and what the recovery costs');
-  });
-
-  it('CONTROL — opting in silences it, because the run then OWES the proof', async () => {
-    // Without this control the assertion above passes on a warning that fires
-    // unconditionally, which would be noise rather than a signal.
-    const { home, cwd } = await makeHome();
-    const file = await answers(home, 'opt-in.json', [{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]);
-    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
-    strictEqual(plan.report.warnings.filter((w) => w.includes('proof.egress-provider-ack')).length, 0,
-      'an opted-in proof is owed, so there is nothing to warn about');
-    const step = stepOf(plan.report, 'proof.egress-provider-ack');
-    ok(step && step.status !== 'not-applicable', `and the step is genuinely owed (${step?.status})`);
-  });
-
-  it('a DECLINE also silences it — refusing is a decision, not an oversight', async () => {
-    const { home, cwd } = await makeHome();
-    const file = await answers(home, 'declined.json', [{ step_id: 'proof.egress-provider-ack', answer: 'decline' }]);
-    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd });
-    strictEqual(plan.report.warnings.filter((w) => w.includes('proof.egress-provider-ack')).length, 0);
-  });
-
-  it('an OPEN resume repeats it — the split-proof-run trap is a resume-time failure', async () => {
-    // This is the half that actually bit: a proof run split across resumes
-    // terminalizes on the first one whose owed set passes, and the proofs left
-    // for "the next resume" have nowhere to go.
-    const { home, cwd } = await makeHome();
-    await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
+    ok(!plan.report.warnings.some((w) => /NOT opted in/.test(w)), `plan:\n${plan.report.warnings.join('\n')}`);
     const resume = await boot({ argv: ['resume', '--latest-open', '--format', 'json'], home, cwd });
-    strictEqual(resume.report.run_status, 'open', 'precondition: the run is still open, so the warning is still actionable');
-    ok(resume.report.warnings.some((w) => w.includes('proof.egress-provider-ack')), 'and resume repeats it');
+    ok(!resume.report.warnings.some((w) => /NOT opted in/.test(w)), `resume:\n${resume.report.warnings.join('\n')}`);
   });
 });
 
@@ -862,10 +801,10 @@ describe('bootstrap CLI — the ledger capacity preflight (§3.3)', () => {
     const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
     const manifest = await manifestOf(home, runId);
     // 256 is the cap; fill it so one more row cannot land.
-    manifest.choices = Array.from({ length: 256 }, () => ({ step_id: KINDS, answer: 'set:notify_kinds=approval', at: '2026-08-26T00:00:00Z' }));
+    manifest.choices = Array.from({ length: 256 }, () => ({ step_id: SESSION, answer: 'set:entry_brief=startup', at: '2026-08-26T00:00:00Z' }));
     await writeFile(path, JSON.stringify(manifest, null, 2));
 
-    const file = await answers(home, 'one-more.json', [{ step_id: KINDS, answer: 'set:notify_kinds=idle' }]);
+    const file = await answers(home, 'one-more.json', [{ step_id: SESSION, answer: 'set:entry_brief=off' }]);
     const resume = await boot({ argv: ['resume', '--latest-open', '--answers', file, '--format', 'json'], home, cwd });
     strictEqual(resume.exitCode, EXIT.INVALID);
     strictEqual(resume.report.reason, 'ledger-capacity');
@@ -880,7 +819,7 @@ describe('bootstrap CLI — the ledger capacity preflight (§3.3)', () => {
     // A preflight bound that drifted BELOW the schema would refuse writes the
     // schema would accept; one that drifted ABOVE would let the effect run and
     // fail at persist — the exact failure the preflight exists to prevent.
-    const schema = JSON.parse(await readFile(join(PLUGIN_ROOT, 'data', 'schemas', 'runtime-bootstrap-run-1.4.json'), 'utf8'));
+    const schema = JSON.parse(await readFile(join(PLUGIN_ROOT, 'data', 'schemas', 'runtime-bootstrap-run-1.5.json'), 'utf8'));
     strictEqual(schema.properties.choices.maxItems, 256);
     strictEqual(schema.properties.history.maxItems, 256);
   });

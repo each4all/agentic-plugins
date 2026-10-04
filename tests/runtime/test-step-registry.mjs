@@ -15,6 +15,7 @@ import { hardRequiredClosure, loadPluginSet, resolveBundle } from '../../plugins
 import {
   CONFIG_STAGES,
   PROOF_STAGES,
+  RETIRED_STEP_IDS,
   RESOLVED_STEP_STATUSES,
   deriveExpectedSteps,
   expectedStepIds,
@@ -43,7 +44,7 @@ async function parseStepTable() {
   if (start < 0 || end < 0 || end <= start) throw new Error('could not locate the §6.1 step table in the contract');
   const rows = [...doc.slice(start, end).matchAll(/^\|\s*`([^`]+)`\s*\|\s*(\d)\s*\|([^|]*)\|([^|]*)\|/gm)]
     .map(([, id, stage, applicability, declinable]) => ({ id, stage: Number(stage), applicability: applicability.trim(), declinable: declinable.trim() }));
-  if (rows.length < 18) throw new Error(`§6.1 table parsed only ${rows.length} rows — the parser has drifted from the table`);
+  if (rows.length < 17) throw new Error(`§6.1 table parsed only ${rows.length} rows — the parser has drifted from the table`);
   return rows;
 }
 
@@ -224,14 +225,28 @@ describe('runtime step registry — declinability (§6.2)', () => {
     deepStrictEqual([...hardRequiredClosure(cyclic, ['a'])].sort(), ['a', 'b']);
   });
 
-  it('notify, egress and every proof are declinable', async () => {
+  it('statusline and every proof are declinable', async () => {
     const steps = await derive('engineering');
     const by = new Map(steps.map((s) => [s.id, s]));
     for (const id of [
-      'notify.configured', 'egress.configured',
+      'statusline.claude.configured', 'statusline.codex.configured',
       'proof.deep-peer-smoke', 'proof.workflow-continuation', 'proof.permission',
     ]) {
       strictEqual(by.get(id).declinable, true, `${id} is declinable`);
+    }
+  });
+});
+
+describe('runtime step registry — retired steps (ADR-0057, ADR-0064)', () => {
+  it('no retired step id is derived for any bundle, and each names the ADR that retired it', async () => {
+    const ids = Object.keys(RETIRED_STEP_IDS);
+    ok(ids.length >= 7, 'the retired-id map is not vacuous');
+    for (const id of ids) {
+      ok(['ADR-0057', 'ADR-0064'].includes(RETIRED_STEP_IDS[id]), `${id} maps to a known ADR, got ${RETIRED_STEP_IDS[id]}`);
+    }
+    for (const bundle of ['base', 'engineering', 'business', 'design', 'full']) {
+      const derived = new Set((await derive(bundle)).map((s) => s.id));
+      for (const id of ids) strictEqual(derived.has(id), false, `${bundle}: retired step ${id} is not derived`);
     }
   });
 });
@@ -319,15 +334,9 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
     // Each prose phrasing is turned into a PREDICATE over a selection, then checked on
     // bundles that make it true and false. "always" that is really conditional, or a
     // condition naming the wrong plugin, fails here.
-    const cases = [
-      { bundle: 'base', egressProofRequested: false },
-      { bundle: 'engineering', egressProofRequested: false },
-      // The full bundle exercises the one remaining manifest-legitimate opt-in seam.
-      { bundle: 'full', egressProofRequested: true },
-    ];
-    for (const { bundle, egressProofRequested } of cases) {
+    for (const bundle of ['base', 'engineering', 'full']) {
       const plugins = resolveBundle(pluginSet, bundle);
-      const steps = deriveExpectedSteps({ pluginSet, selection: { plugins }, egressProofRequested });
+      const steps = deriveExpectedSteps({ pluginSet, selection: { plugins } });
       const by = new Map(steps.map((s) => [s.id, s]));
       for (const row of rows) {
         const step = by.get(row.id);
@@ -337,7 +346,6 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
         if (/^always$/i.test(prose)) expected = true;
         else if (/iff any selected plugin has `hook_bearing.codex`/.test(prose)) expected = plugins.some((n) => pluginSet.plugins[n].hook_bearing.codex);
         else if (/iff `engineer` ∈ selection/.test(prose)) expected = plugins.includes('engineer');
-        else if (/iff the operator opted in/.test(prose)) expected = egressProofRequested === true;
         else throw new Error(`unrecognized applicability prose for ${row.id}: "${prose}" — teach this test the phrasing rather than letting it pass unchecked`);
         strictEqual(step.applicable, expected, `${bundle}/${row.id}: table says "${prose}", registry says applicable=${step.applicable}`);
       }

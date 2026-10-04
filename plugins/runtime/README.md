@@ -479,9 +479,9 @@ CLIs live (neutral cwd, `$CODEX_HOME` honored), resolves the selected bundle
 (`base` | `engineering` | `business` | `design` | `full` | `custom` with
 `--plugins`, hard-dependency closure enforced), judges the expected-step
 registry from observed state only, renders Stage 4–5 fragments (model/effort,
-Codex notification channel, per-host statusline — one shared `[tui]` table on
+session, and the per-host statusline — a `[tui]` table carrying `status_line` on
 Codex, the single-quoted canonical `statusLine.command` plus the
-credential-free shim artifact on Claude — and egress launcher) with per-fragment
+credential-free shim artifact on Claude) with per-fragment
 backup/verify/manual-revert guidance, and presents —
 never executes — the plugin-management command carrying the §1.6 plan hash
 (`runtime:settings --execute-plugin-management --expected-plan-hash <hash>`;
@@ -491,17 +491,17 @@ they re-probe and re-judge in memory and write nothing; `verify` judges the
 never runs a proof to make itself pass. `resume` is the only verb that
 produces Stage-8 evidence: on an explicit operator `execute` answer it invokes
 `runtime:doctor --record` with the relevant `--execute-*` flag and copies the
-proof's metadata only into the run — per-direction results for the peer-proof
-kinds, the sanitized `provider_ack` row plus the independent
-`mirror_correlated` verdict for the egress provider-ack kind (the recomputed
-aggregate requires ack AND mirror AND a present artifact hash), plus
-pointers, hashes, and bound versions in every case. `attest` is the one
-post-terminal append (ADR-0048 §3): it records the owner's phone-receipt
-attestation onto a terminal run's recorded egress-provider-ack without
-re-running the proof — it re-probes and refuses the testimony unless the
-recorded ack still judges as passing at current bound versions. `abandon` closes a crashed or unwanted
-run so a new plan can start; nothing the operator already applied is ever
-reversed.
+proof's metadata only into the run — per-direction results for the
+peer-proof kinds, plus pointers, hashes, and bound versions. `abandon` closes a
+crashed or unwanted run so a new plan can start; nothing the operator already
+applied is ever reversed. Bootstrap's notification and egress steps, its
+`attest` verb and the egress delivery proof were removed by
+[ADR-0064](../../docs/adr/0064-runtime-surface-reduction.md) Decisions 1 and 6
+(2026-10-05): Stage 5 is the statusline, the run schema is
+`runtime-bootstrap-run-1.5` and the `--format json` report is
+`runtime-bootstrap-report-3.0`. A terminal run recorded earlier is shown as
+history (exit `50`), an open one migrates on `resume`, and `abandon` stays the
+way out (contract §7).
 Bootstrap guides each machine through the stages on its own; the portable
 machine profile (`profile export` / `profile seed`), which carried one
 machine's choices to another as interview defaults, was removed by

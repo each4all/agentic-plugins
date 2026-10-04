@@ -187,7 +187,7 @@ function isScalar(value) {
 
 const SCHEMA_VERSION_RE = /^([a-z0-9-]+)-(\d+)\.(\d+)$/;
 
-// `runtime-bootstrap-run-1.4` → { family, major, minor }. Returns null for a
+// `runtime-bootstrap-run-1.5` → { family, major, minor }. Returns null for a
 // string that is not a schema version at all, which callers treat as invalid rather
 // than as version 0.
 export function parseSchemaVersion(value) {
@@ -648,7 +648,10 @@ export const PACKAGED_SCHEMA_FILES = Object.freeze({
   // `proof.permission` re-edged, so a 1.3 stamp would let an older runtime restore
   // rows this runtime deleted and let a terminal pre-removal run be re-judged as
   // current. The bump arms the existing refuse-newer / legacy-terminal fences.
-  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.4.json',
+  // 1.5 (ADR-0064): the same kind of bump, for the retired notification and
+  // egress steps and evidence. The retired members stay valid in the schema so
+  // retained runs keep validating.
+  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.5.json',
   'runtime-plugin-set': 'runtime-plugin-set-1.0.json',
   // ADR-0044 session-capture families (session-capture-contract.md §3). Load-bearing
   // from S2 on: the packaged schemas ARE the validation source for the slot/entry/note

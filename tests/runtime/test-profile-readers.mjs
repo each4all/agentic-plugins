@@ -8,7 +8,6 @@ import {
   projectClaudeStatusline,
   readUserGlobalClaudeSettings,
   readUserGlobalModelEffort,
-  readUserGlobalNotify,
   readUserGlobalSession,
 } from '../../plugins/runtime/scripts/lib/profile-readers.mjs';
 
@@ -75,27 +74,26 @@ describe('profile-readers: session family', () => {
     }
   });
 
-  it('projects the SAME snapshot the other two families read (one file, three projections)', async () => {
-    const { readUserGlobalRuntimeConfig, projectModelEffort, projectNotify, projectSession } =
+  it('projects the SAME snapshot the other family reads (one file, two projections)', async () => {
+    const { readUserGlobalRuntimeConfig, projectModelEffort, projectSession } =
       await import('../../plugins/runtime/scripts/lib/profile-readers.mjs');
     const home = await makeHome();
     await writeFileAt(join(home, '.agentic-plugins', 'config.toml'),
-      'model = "opus"\nnotify_channel = "file-log"\nsession_capture = "stop-hook"\n');
+      'model = "opus"\nsession_capture = "stop-hook"\n');
     const snapshot = await readUserGlobalRuntimeConfig({ homeDir: home });
-    // One read, three projections — so an atomic replacement cannot land between
+    // One read, two projections — so an atomic replacement cannot land between
     // two reads and let two judges agree about a file neither version satisfies.
     strictEqual(projectModelEffort(snapshot).keys.model.value, 'opus');
-    strictEqual(projectNotify(snapshot).keys.notify_channel.value, 'file-log');
     strictEqual(projectSession(snapshot).keys.session_capture.value, 'stop-hook');
     deepStrictEqual(projectSession(snapshot).source, snapshot.source, 'the projection carries the snapshot source');
   });
 });
 
-describe('profile-readers: model/effort + notify (user-global runtime config)', () => {
+describe('profile-readers: model/effort (user-global runtime config)', () => {
   it('reads ONLY ~/.agentic-plugins/config.toml, carries user-global provenance', async () => {
     const home = await makeHome();
     await writeFileAt(join(home, '.agentic-plugins', 'config.toml'),
-      'model = "opus"\nclaude_effort = "high"\nnotify_channel = "file-log"\n');
+      'model = "opus"\nclaude_effort = "high"\n');
     const me = await readUserGlobalModelEffort({ homeDir: home });
     strictEqual(me.keys.model.value, 'opus');
     strictEqual(me.keys.model.provenance, 'user-global');
@@ -103,12 +101,6 @@ describe('profile-readers: model/effort + notify (user-global runtime config)', 
     strictEqual(me.keys.codex_model.value, null, 'unset key → null');
     strictEqual(me.keys.codex_model.provenance, null);
     strictEqual(me.source.status, 'readable');
-
-    const n = await readUserGlobalNotify({ homeDir: home });
-    strictEqual(n.keys.notify_channel.value, 'file-log');
-    strictEqual(n.keys.notify_channel.provenance, 'user-global');
-    // notify reader surfaces ONLY notify keys, never model/effort.
-    ok(!('model' in n.keys));
   });
 
   it('a repo .agentic-plugins/config.toml is structurally unreachable (reader takes only homeDir)', async () => {

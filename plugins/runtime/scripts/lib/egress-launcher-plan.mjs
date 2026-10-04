@@ -680,9 +680,10 @@ export function buildEgressLauncherPlanSection({ gathered, host = 'claude', now 
 }
 
 // ORCHESTRATOR (settings surface): gather → deterministic build → persist repo-
-// relative. Behavior-compatible with the pre-§1.3 single function. Bootstrap composes
-// gatherEgressLauncherInputs + buildEgressLauncherPlanSection itself and persists
-// artifactBody under its machine-global run instead (§10).
+// relative. Behavior-compatible with the pre-§1.3 single function. Until ADR-0064
+// slice R4n1, bootstrap composed gatherEgressLauncherInputs +
+// buildEgressLauncherPlanSection itself and persisted artifactBody under its
+// machine-global run (§10); this orchestrator is now their only caller.
 export async function buildEgressLauncherPlan({
   repoRoot,
   homeDir,
