@@ -24,8 +24,8 @@ schema inside an immutable record manufactures freshness debt.
 This document **ships inside the runtime plugin package**. That is load-bearing:
 a runtime command invoked from an arbitrary consumer repository can read
 `PLUGIN_ROOT/docs/…` (precedent at the time: `scripts/compat.mjs` reading
-`docs/host-parity-baseline.md`, both since removed) but cannot read `repoRoot/docs/…` (anti-pattern:
-`scripts/cutover-audit.mjs`). The ADR is for humans in the source tree; this
+`docs/host-parity-baseline.md`, both since removed) but cannot read `repoRoot/docs/…` (anti-pattern at the time:
+`scripts/cutover-audit.mjs`, since removed). The ADR is for humans in the source tree; this
 contract is for the tool on the operator's machine.
 
 > **Amended 2026-08-10 by [ADR-0051](../../../docs/adr/0051-host-parity-baseline-source.md)**:

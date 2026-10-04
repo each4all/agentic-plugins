@@ -279,5 +279,7 @@ contract section instead).
   rejected.
 - No founder/designer sidecar wiring here — their onboarding subtasks
   (macro S3/S4) build against this contract from the start.
-- No change to consensus/PR-handling/cutover guidance semantics; their
-  states feed the `derived` tier and are otherwise untouched.
+- No change to consensus/PR-handling guidance semantics; their states feed
+  the `derived` tier and are otherwise untouched. (Cutover record guidance
+  was listed here too, until ADR-0064 §Decision 5 removed it with
+  `runtime:cutover`.)

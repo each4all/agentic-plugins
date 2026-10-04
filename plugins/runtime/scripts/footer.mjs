@@ -64,7 +64,6 @@ const VALID_PR_COMPLETION_BOUNDARIES = new Set(['reached', 'not-reached', 'unkno
 const VALID_PR_VALIDATION_STATES = new Set(['passed', 'waived', 'failed', 'not-run', 'unknown']);
 const VALID_PR_REVIEW_STATES = new Set(['clear', 'blocking', 'unknown']);
 const VALID_PR_BRANCH_STATES = new Set(['pushable', 'not-pushable', 'unknown']);
-const VALID_OMCC_ACTIVITY = new Set(['yes', 'no', 'unknown']);
 const CONTEXT_RUN_ID_RE = /^context-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const ARTIFACT_KIND_RE = /^[A-Za-z0-9._-]+$/;
@@ -181,9 +180,6 @@ export async function runFooter(options = {}) {
   const recommendedNextWorkSource = recommendedNextWorkIsDefault
     ? (completion.sources.next_action === 'explicit' ? 'derived' : completion.sources.next_action)
     : recommendedNextWorkProvenance;
-  const cutoverRecord = shouldIncludeCutoverRecord(options)
-    ? buildCutoverRecordGuidance({ host, completion, options })
-    : null;
 
   // Host-localize the advisory surfaces that can carry plugin colon-commands:
   // the projection's persona routing (session handoff + workflow fields) and
@@ -241,7 +237,6 @@ export async function runFooter(options = {}) {
     recommended_next_work_source: recommendedNextWorkSource,
     next_session: nextSession,
     pr_handling: prHandling,
-    cutover_record: cutoverRecord,
     limits: footerLimits(),
   };
   if (localizedSessionHandoff) report.session_handoff = localizedSessionHandoff;
@@ -352,22 +347,6 @@ export function parseArgs(argv) {
           VALID_PR_BRANCH_STATES,
           `${arg} must be pushable, not-pushable, or unknown`,
         );
-        break;
-      case '--cutover-record':
-        options.cutoverRecord = true;
-        break;
-      case '--cutover-omcc-dev-active':
-        options.cutoverOmccDevActive = validateEnum(
-          requireValue(args, arg),
-          VALID_OMCC_ACTIVITY,
-          `${arg} must be yes, no, or unknown`,
-        );
-        break;
-      case '--cutover-omcc-dev-note':
-        options.cutoverOmccDevNote = requireSingleLine(requireValue(args, arg), arg);
-        break;
-      case '--cutover-dogfood-date':
-        options.cutoverDogfoodDate = validateDate(requireValue(args, arg), arg);
         break;
       case '--artifact':
         options.artifacts.push(requireSingleLine(requireValue(args, arg), arg));
@@ -515,17 +494,6 @@ export function formatText(report) {
     for (const criterion of report.pr_handling.criteria ?? []) {
       lines.push(`  - ${criterion.name}: ${criterion.status} (${criterion.observed})`);
     }
-  }
-  if (report.cutover_record) {
-    lines.push('cutover record:');
-    lines.push(`- status: ${report.cutover_record.status}`);
-    lines.push(`- recommended: ${report.cutover_record.recommended}`);
-    lines.push(`- footer_state: ${report.cutover_record.footer_state}`);
-    lines.push(`- omcc_dev_active: ${report.cutover_record.omcc_dev_active ?? '<missing>'}`);
-    if (report.cutover_record.dogfood_date) lines.push(`- dogfood_date: ${report.cutover_record.dogfood_date}`);
-    if (report.cutover_record.command) lines.push(`- command: ${report.cutover_record.command}`);
-    if (report.cutover_record.next_action) lines.push(`- next_action: ${report.cutover_record.next_action}`);
-    for (const limit of report.cutover_record.limits ?? []) lines.push(`- limit: ${limit}`);
   }
   lines.push('limits:');
   for (const limit of report.limits ?? []) lines.push(`- ${limit}`);
@@ -842,78 +810,6 @@ function buildPrHandlingReadiness({ contextState, contextMeasurement, options })
       : null,
     criteria,
   };
-}
-
-function shouldIncludeCutoverRecord(options) {
-  return options.cutoverRecord === true
-    || options.cutoverOmccDevActive !== undefined
-    || options.cutoverOmccDevNote !== undefined
-    || options.cutoverDogfoodDate !== undefined;
-}
-
-function buildCutoverRecordGuidance({ host, completion, options }) {
-  const omccDevActive = options.cutoverOmccDevActive ?? null;
-  const dogfoodDate = options.cutoverDogfoodDate ?? null;
-  const note = options.cutoverOmccDevNote ?? null;
-  const status = omccDevActive ? 'ready' : 'needs-operator-evidence';
-  const command = omccDevActive
-    ? cutoverRecordCommand(host, {
-        footerState: completion.state,
-        footerReason: completion.reason,
-        omccDevActive,
-        omccDevNote: note,
-        dogfoodDate,
-      })
-    : null;
-  return {
-    status,
-    recommended: Boolean(command),
-    footer_state: completion.state,
-    footer_reason: completion.reason,
-    omcc_dev_active: omccDevActive,
-    omcc_dev_note: note,
-    dogfood_date: dogfoodDate,
-    command,
-    next_action: command
-      ? 'Run the cutover record command only if the footer state and omcc-dev activity statement are accurate for this work session.'
-      : 'Provide --cutover-omcc-dev-active yes|no|unknown before using footer guidance to record dogfood evidence.',
-    limits: [
-      'The footer only renders a suggested runtime:cutover record command; it does not write cutover evidence.',
-      'Do not record omcc-dev-active=no unless the current work session actually avoided omcc-dev.',
-    ],
-  };
-}
-
-function cutoverRecordCommand(host, { footerState, footerReason, omccDevActive, omccDevNote, dogfoodDate }) {
-  const command = runtimeCommand(host, 'cutover record');
-  const parts = [
-    command,
-    '--footer-state',
-    quoteCommandArg(footerState),
-    '--footer-reason',
-    quoteCommandArg(footerReason),
-    '--omcc-dev-active',
-    quoteCommandArg(omccDevActive),
-  ];
-  if (omccDevNote) {
-    parts.push('--omcc-dev-note', quoteCommandArg(omccDevNote));
-  }
-  if (dogfoodDate) {
-    parts.push('--dogfood-date', quoteCommandArg(dogfoodDate));
-  }
-  return parts.join(' ');
-}
-
-function runtimeCommand(host, command) {
-  if (host === 'claude') return `/runtime:${command}`;
-  if (host === 'codex') return `$runtime:${command}`;
-  return `runtime:${command}`;
-}
-
-function quoteCommandArg(value) {
-  const text = requireSingleLine(String(value ?? ''), 'command argument');
-  if (/^[A-Za-z0-9._:@%+=,/-]+$/.test(text)) return text;
-  return `"${text.replace(/(["\\$`])/g, '\\$&')}"`;
 }
 
 // Completion-output contract: a caller flag counts as PRESENT only when it
@@ -1358,23 +1254,6 @@ function validateConsensusRunId(runId) {
   return runId;
 }
 
-function validateDate(value, flag) {
-  const text = String(value ?? '').trim();
-  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) throw new Error(`${flag} must be YYYY-MM-DD`);
-  const [, year, month, day] = match;
-  const date = new Date(`${text}T00:00:00.000Z`);
-  if (
-    !Number.isFinite(date.getTime())
-    || date.getUTCFullYear() !== Number.parseInt(year, 10)
-    || date.getUTCMonth() + 1 !== Number.parseInt(month, 10)
-    || date.getUTCDate() !== Number.parseInt(day, 10)
-  ) {
-    throw new Error(`${flag} must be a valid calendar date`);
-  }
-  return text;
-}
-
 function requireValue(args, flag) {
   if (args.length === 0 || args[0].startsWith('-')) {
     throw new Error(`${flag} requires a value`);
@@ -1443,15 +1322,12 @@ Usage:
   runtime footer render --workflow-projection-file <path>   # ADR-0031 session-level continue-vs-fresh preflight
   runtime footer render --completion-state review-needed|publish-needed|cleanup-needed|next-work-available|blocked|closed
   runtime footer render --pr-handling --pr-completion-boundary reached --pr-validation-state passed --pr-review-state clear --pr-branch-state pushable
-  runtime footer render --cutover-record --cutover-omcc-dev-active yes|no|unknown
 
 Renders an advisory, pointer-only completion footer. It reads optional
 runtime:context artifacts and runtime:consensus status guidance when available, but
 does not mutate host session context, workflow state, git state, or pull
-request state. Cutover record guidance renders only a suggested
-runtime:cutover record command; it does not write cutover evidence. Completion
-state is advisory; closed is emitted only when the caller supplies
---completion-state closed.
+request state. Completion state is advisory; closed is emitted only when the
+caller supplies --completion-state closed.
 
 Context risk carries its provenance on two axes: context_state_measurement
 (measured | unmeasured | unknown) and context_state_origin (caller |

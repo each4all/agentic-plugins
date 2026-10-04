@@ -11,6 +11,8 @@ the §7 retention registry is `doctor` and `settings`. The notes sit at §5,
 Superseded by [ADR-0064](0064-runtime-surface-reduction.md) (2026-10-04) **except
 §7** (citation-aware artifact retention, `runtime:retention`), which stands. §5
 was already amended by ADR-0060 D4, and §7's registry by ADR-0060 as well.
+§7's pin 4 no longer reads cutover evidence (ADR-0064 §Decision 5; the note
+sits at pin 4).
 
 <!--
 This ADR sits inside the ADR-0024 runtime/operator control-plane track. It
@@ -576,6 +578,15 @@ boundary between them:
      (`cutover-audit.mjs:359-376`), scanned as data with the same
      bounded-read guards. (The in-memory cutover checklist is not a
      persisted reference and is not scanned.)
+
+     *(Amended 2026-10-04 by [ADR-0064](0064-runtime-surface-reduction.md)
+     §Decision 5.)* `runtime:cutover` was retired, so pin 4 reads the
+     `doctor.json` snapshots only. Retained cutover evidence is history that
+     no command reads, and retention no longer scans it: a run that only a
+     cutover record cited is no longer pinned by it. The scanner version moved
+     to `runtime-retention-scanner-1.1`, which the plan reports and its hash
+     covers, so a plan reviewed before the change is refused. The line reference `cutover-audit.mjs:359-376` points at a file
+     ADR-0064 deleted.
 - **Apply (`retention-apply`)**: a separate explicit executor behind its own
   action-specific flag (ADR-0035 §3 invariant 1: dry-run default, explicit
   `--execute`-class opt-in), registered through the §5 add-gate with all

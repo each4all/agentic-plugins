@@ -73,3 +73,8 @@ R2 is satisfied when `runtime:cutover` reports this map as satisfied: all D1-D20
 rows must be present, every status must be one of the terms above, and any
 `rejected` or `deferred` row must explicitly state that no active daily workflow
 depends on it.
+
+*(2026-10-04.)* [ADR-0064](../adr/0064-runtime-surface-reduction.md)
+§Decision 5 retired `runtime:cutover`, so nothing checks R2 any more. The owner
+declared the cutover on 2026-06-03, and this map is the record that declaration
+rested on; its rows are not re-reviewed.

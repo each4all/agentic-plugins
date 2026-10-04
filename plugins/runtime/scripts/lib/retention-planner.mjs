@@ -46,7 +46,12 @@ import path from 'node:path';
 // now whatever its content; the bump says why instead of leaving an operator to
 // discover a hash mismatch with no reason attached.
 export const RETENTION_PLANNER_VERSION = 'runtime-retention-planner-1.1';
-export const RETENTION_SCANNER_VERSION = 'runtime-retention-scanner-1.0';
+// scanner 1.0 → 1.1 (ADR-0064 §Decision 5): pin 4 no longer reads cutover
+// evidence. A run that only a cutover record cited was pinned under 1.0 and is
+// not now, so the same runs can yield a different decision. The version is in
+// the plan and in its hash, so a plan reviewed under 1.0 is refused whatever
+// its content, and the plan says why.
+export const RETENTION_SCANNER_VERSION = 'runtime-retention-scanner-1.1';
 
 // ── Bounds — implementation constants pinned by test (ADR-0047 §7). The
 // citation scan rides no hot path but still bounds itself so a pathological
@@ -102,12 +107,14 @@ export const RETENTION_FAMILIES = Object.freeze(Object.keys(RETENTION_FAMILY_REG
 const RUN_ID_TOKEN_RE = /\b(?:doctor|settings)-\d{8}T\d{6}Z-[0-9a-f]{6}\b/g;
 
 // Families whose recorded artifacts are scanned for cross-artifact references
-// (pin 4). doctor.json report snapshots embed other families' evidence ids;
-// cutover evidence artifacts carry operator-supplied artifact-pointer lists.
-// The in-memory cutover checklist is not persisted and is not scanned.
+// (pin 4): doctor.json report snapshots embed other families' evidence ids.
+//
+// ⚠ `cutover` LEFT THIS LIST WITH ITS COMMAND (ADR-0064 §Decision 5). Its
+// evidence records under `.agentic-plugins/runs/cutover/` are history that no
+// command writes or reads, so retention no longer scans them either: a doctor or
+// settings run cited only by such a record is no longer pinned by it.
 const CROSS_ARTIFACT_SOURCES = Object.freeze([
   Object.freeze({ family: 'doctor', runIdRe: RETENTION_FAMILY_REGISTRY.doctor.runIdRe, artifactFile: 'doctor.json' }),
-  Object.freeze({ family: 'cutover', runIdRe: /^cutover-\d{8}T\d{6}Z-[0-9a-f]{6}$/, artifactFile: null }),
 ]);
 
 const SETTINGS_NONTERMINAL_STATUSES = new Set(['planned', 'in-progress']);
@@ -494,11 +501,10 @@ export async function resolveLivePins({ repoRoot }) {
 // ── Pin 4: cross-artifact references ──
 //
 // Run ids embedded in OTHER runtime artifacts that outlive them: doctor.json
-// report snapshots (which embed other families' evidence ids) and cutover
-// evidence artifacts (operator-supplied artifact-pointer lists). Scanned as
-// data — read each source artifact (bounded), harvest registry run-id tokens,
-// pin the matches. Fail-closed on an unreadable/malformed source artifact or
-// cap exhaustion.
+// report snapshots, which embed other families' evidence ids. Scanned as data —
+// read each source artifact (bounded), harvest registry run-id tokens, pin the
+// matches. Fail-closed on an unreadable/malformed source artifact or cap
+// exhaustion.
 export async function scanCrossArtifactReferences({ repoRoot }) {
   const pinned = new Map(RETENTION_FAMILIES.map((f) => [f, new Set()]));
   const incomplete = [];
@@ -523,70 +529,53 @@ export async function scanCrossArtifactReferences({ repoRoot }) {
       // the family permanently unactionable (Codex review MAJOR). Cross-refs are
       // ids of OTHER runs that outlive this one.
       const exclude = new Set([entry.name]);
-      const artifactFiles = source.artifactFile
-        ? [path.join(runDir, source.artifactFile)]
-        : await listRunArtifactFiles(runDir, incomplete, source.family);
-      for (const artifactPath of artifactFiles) {
-        if (filesRead >= CROSS_ARTIFACT_MAX_FILES) {
-          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `cross-artifact file count reached cap ${CROSS_ARTIFACT_MAX_FILES}` });
-          return { pinned, scanComplete: false, incomplete, files_read: filesRead };
-        }
-        const read = await readBoundedRegularFile(artifactPath, CROSS_ARTIFACT_MAX_FILE_BYTES);
-        if (!read.ok) {
-          if (read.code === 'ENOENT' && !source.artifactFile) continue; // enumerated-then-vanished race for a non-canonical file
-          if (read.code === 'ENOENT' && source.artifactFile) {
-            // A VALIDATED run whose canonical artifact (doctor.json) is missing is
-            // a corrupt source we cannot scan for cross-refs — fail-closed.
-            incomplete.push({ source: 'cross-artifact', family: source.family, reason: `canonical artifact ${source.artifactFile} missing for ${entry.name}` });
-            continue;
-          }
-          if (read.code === 'ENOTFILE' || read.code === 'ESYMLINK') {
-            // A canonical artifact that is a dir/symlink is corrupt — fail-closed.
-            incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact not a regular file (${read.code})` });
-            continue;
-          }
-          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact unreadable (${read.code})` });
+      if (filesRead >= CROSS_ARTIFACT_MAX_FILES) {
+        incomplete.push({ source: 'cross-artifact', family: source.family, reason: `cross-artifact file count reached cap ${CROSS_ARTIFACT_MAX_FILES}` });
+        return { pinned, scanComplete: false, incomplete, files_read: filesRead };
+      }
+      const read = await readBoundedRegularFile(path.join(runDir, source.artifactFile), CROSS_ARTIFACT_MAX_FILE_BYTES);
+      if (!read.ok) {
+        if (read.code === 'ENOENT') {
+          // A VALIDATED run whose canonical artifact (doctor.json) is missing is
+          // a corrupt source we cannot scan for cross-refs — fail-closed.
+          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `canonical artifact ${source.artifactFile} missing for ${entry.name}` });
           continue;
         }
-        filesRead += 1;
-        const text = decodeText(read.buffer);
-        if (text === null) {
-          incomplete.push({ source: 'cross-artifact', family: source.family, reason: 'artifact undecodable (expected JSON text)' });
+        if (read.code === 'ENOTFILE' || read.code === 'ESYMLINK') {
+          // A canonical artifact that is a dir/symlink is corrupt — fail-closed.
+          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact not a regular file (${read.code})` });
           continue;
         }
-        // Parse as JSON and harvest from the DECODED string values (Codex review
-        // MAJOR): a raw-text regex misses a run-id written as a JSON unicode
-        // escape. A parse failure is a corrupt source — fail-closed.
-        let json;
-        try {
-          json = JSON.parse(text);
-        } catch {
-          incomplete.push({ source: 'cross-artifact', family: source.family, reason: 'artifact malformed (invalid JSON)' });
-          continue;
-        }
-        const harvestState = { truncated: false };
-        harvestRunIdTokensFromJson(json, pinned, exclude, harvestState);
-        if (harvestState.truncated) {
-          // A too-deeply-nested artifact could cite anything below the cap —
-          // fail-closed rather than silently drop those pins.
-          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact nesting exceeds scan depth ${JSON_HARVEST_MAX_DEPTH}` });
-        }
+        incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact unreadable (${read.code})` });
+        continue;
+      }
+      filesRead += 1;
+      const text = decodeText(read.buffer);
+      if (text === null) {
+        incomplete.push({ source: 'cross-artifact', family: source.family, reason: 'artifact undecodable (expected JSON text)' });
+        continue;
+      }
+      // Parse as JSON and harvest from the DECODED string values (Codex review
+      // MAJOR): a raw-text regex misses a run-id written as a JSON unicode
+      // escape. A parse failure is a corrupt source — fail-closed.
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        incomplete.push({ source: 'cross-artifact', family: source.family, reason: 'artifact malformed (invalid JSON)' });
+        continue;
+      }
+      const harvestState = { truncated: false };
+      harvestRunIdTokensFromJson(json, pinned, exclude, harvestState);
+      if (harvestState.truncated) {
+        // A too-deeply-nested artifact could cite anything below the cap —
+        // fail-closed rather than silently drop those pins.
+        incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact nesting exceeds scan depth ${JSON_HARVEST_MAX_DEPTH}` });
       }
     }
   }
 
   return { pinned, scanComplete: incomplete.length === 0, incomplete, files_read: filesRead };
-}
-
-async function listRunArtifactFiles(runDir, incomplete, family) {
-  let names;
-  try {
-    names = await fsp.readdir(runDir);
-  } catch (err) {
-    incomplete.push({ source: 'cross-artifact', family, reason: `run dir unreadable (${err?.code ?? 'error'})` });
-    return [];
-  }
-  return names.filter((n) => n.endsWith('.json')).map((n) => path.join(runDir, n));
 }
 
 // ── Family inventory (validated run-ids only) ──

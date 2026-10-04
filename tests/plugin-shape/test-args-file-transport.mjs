@@ -604,7 +604,7 @@ test('the CLIs read the args file, and the text reaches them intact', async (t) 
     await t.test('runtime: each CLI refuses a malformed args file on its own usage-error path', () => {
       const bad = writeArgs(cwd, 'bad.json', 'x ; y');
       const expected = {
-        'bootstrap.mjs': 40, 'consensus.mjs': 1, 'context.mjs': 1, 'cutover-audit.mjs': 1, 'dashboard.mjs': 1,
+        'bootstrap.mjs': 40, 'consensus.mjs': 1, 'context.mjs': 1, 'dashboard.mjs': 1,
         'doctor.mjs': 2, 'migrate.mjs': 1, 'retention.mjs': 1, 'settings.mjs': 2, 'worktree.mjs': 1,
       };
       for (const [script, status] of Object.entries(expected)) {
@@ -690,7 +690,7 @@ const ARGS_FILE_RUNBOOKS = ([
   'plugins/founder/commands/decide.md',
   // Claude only (ADR-0063 D9): no Codex skill below.
   'plugins/orchestrator/commands/autopilot.md',
-  ...['bootstrap', 'consensus', 'context', 'cutover', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree']
+  ...['bootstrap', 'consensus', 'context', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree']
     .map((c) => `plugins/runtime/commands/${c}.md`),
 ]).filter(inConverted);
 const ARGS_FILE_SKILLS = ([
@@ -699,7 +699,7 @@ const ARGS_FILE_SKILLS = ([
   'plugins/engineer/core/skills/decide/SKILL.md',
   'plugins/engineer/core/skills/start/SKILL.md',
   'plugins/founder/core/skills/decide/SKILL.md',
-  ...['bootstrap', 'consensus', 'context', 'cutover', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree']
+  ...['bootstrap', 'consensus', 'context', 'dashboard', 'doctor', 'migrate', 'retention', 'settings', 'worktree']
     .map((c) => `plugins/runtime/core/skills/${c}/SKILL.md`),
 ]).filter(inConverted);
 
