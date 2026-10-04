@@ -10,9 +10,8 @@
 // commands may continue to call dispatch-peer.mjs until PR-C migrates
 // selected dispatch paths to this managed runner.
 
-import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { createWriteStream, existsSync, realpathSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
 import {
   access,
   copyFile,
@@ -29,7 +28,6 @@ import { constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
-import { discoverRuntimePluginRoot, NOTIFY_CAPABILITY, NOTIFY_MIN_RUNTIME_VERSION } from './discover-runtime.mjs';
 import { resolveCompanion, validateEnvelopeShape } from './dispatch-peer.mjs';
 import { recordPendingEnsemble } from './state.mjs';
 
@@ -121,105 +119,6 @@ async function resolvePeerRunsDirForSweep(repoRoot) {
 
 export function isTerminalStatus(status) {
   return TERMINAL_STATUSES.has(status);
-}
-
-// ---------------------------------------------------------------------------
-// ADR-0040 §5 peer-run terminal self-sensor
-//
-// Emits ONE `peer-run-terminal` notification event for every terminal
-// transition this runner itself writes: runPeer's final updateHandle, the
-// missing-companion early return, cancelPeerRun's cancelled finalize, and
-// sweep reconcileOne's envelope-present / orphaned reconciliations. `pruned`
-// transitions are deliberately NOT emit points (retention cleanup of runs
-// whose terminal state was already notified; the payload is being deleted).
-// Founder is included from day one (ADR-0040 §5): its peer-runner is a full
-// sibling, which partially compensates founder's missing footer sidecar.
-//
-// The repo-ident + event_id composition below is a copy-not-import sibling of
-// the canonical contract lib (plugins/runtime/scripts/lib/notify-schema.mjs,
-// ADR-0010 §5): two producers observing the same subject moment must build
-// byte-identical event_ids — <repo-ident>:peer-run-terminal:<run_id>:<status>
-// — or the §1 cross-surface dedupe breaks (runPeer's live emit and a later
-// sweep reconcile of the same run must collapse to one notification).
-//
-// Fail-closed silent (ADR-0040 §7): never throws, never writes stdout or
-// stderr (peer-runner stdout is a machine channel — run/status/cancel/sweep
-// JSON results). A missing or too-old runtime (NOTIFY_MIN_RUNTIME_VERSION +
-// NOTIFY_CAPABILITY pair — founder's discover copy is dual-consumer per
-// ADR-0043 §2, so the notify ladder names its own gate) is a silent no-op
-// with no stale-cache fallback.
-
-const SELF_SENSOR_SOURCE = 'peer-runner-founder';
-const SELF_SENSOR_TIMEOUT_MS = 5000;
-
-function deriveRepoIdentForNotify(repoRoot) {
-  const resolved = resolve(repoRoot);
-  let real = resolved;
-  try {
-    real = realpathSync(resolved);
-  } catch {
-    // Nonexistent path — resolve-only is still deterministic for a spelling.
-  }
-  const base = basename(real).replace(/[^A-Za-z0-9._-]/g, '-') || 'repo';
-  const hash = createHash('sha256').update(real).digest('hex').slice(0, 16);
-  return `${base}-${hash}`;
-}
-
-export async function emitPeerRunTerminal(args) {
-  try {
-    // Destructure INSIDE the try: a null/garbage argument on this exported
-    // helper must fail-close like every other failure, not throw at the
-    // parameter-destructuring step (Codex plan-verify MINOR).
-    const {
-      repoRoot,
-      runId,
-      status,
-      errorKind = null,
-      workflowPath = null,
-      handlePath = null,
-      env = process.env,
-    } = args ?? {};
-    if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
-    if (typeof runId !== 'string' || runId.length === 0) return;
-    // §5 pruned-skip + defensive terminal gate. Statuses are colon-free set
-    // members, so the event_id's last segment stays parseable.
-    if (status === 'pruned' || !TERMINAL_STATUSES.has(status)) return;
-    const runtimeRoot = await discoverRuntimePluginRoot({
-      env,
-      minVersion: NOTIFY_MIN_RUNTIME_VERSION,
-      // ADR-0043 §2 — the notify ladder gates on notify.mjs; the resolver's
-      // defaults are the FOOTER pair (S3 onboarding), so pass both explicitly.
-      capability: NOTIFY_CAPABILITY,
-    });
-    if (!runtimeRoot) return;
-    const notifyPath = join(runtimeRoot, 'scripts', 'notify.mjs');
-    if (!existsSync(notifyPath)) return;
-    const refs = { run_id: runId };
-    if (typeof workflowPath === 'string' && workflowPath.length > 0) {
-      refs.workflow_id = basename(workflowPath, '.md');
-    }
-    if (typeof handlePath === 'string' && handlePath.length > 0) {
-      refs.path = handlePath;
-    }
-    const event = {
-      event_id: `${deriveRepoIdentForNotify(repoRoot)}:peer-run-terminal:${runId}:${status}`,
-      source: SELF_SENSOR_SOURCE,
-      kind: 'peer-run-terminal',
-      title: `founder peer run ${status}`,
-      body: errorKind ? `run ${runId} ${status} (${errorKind})` : `run ${runId} ${status}`,
-      urgency: 'normal',
-      refs,
-    };
-    spawnSync(process.execPath, [notifyPath, 'emit', '--repo-root', resolve(repoRoot)], {
-      input: `${JSON.stringify(event)}\n`,
-      stdio: ['pipe', 'ignore', 'ignore'],
-      timeout: SELF_SENSOR_TIMEOUT_MS,
-      env,
-    });
-  } catch {
-    // Fail-closed: a notification failure must never break the peer-run
-    // lifecycle or leak onto the machine-channel stdout.
-  }
 }
 
 export function generateRunId(kind = 'manual', now = new Date()) {
@@ -661,23 +560,12 @@ export async function runPeer(args) {
     const companion = await resolveCompanion(options.peer, { env: options.env });
     const companionPath = companion.path;
     if (!companionPath) {
-      // Terminal transition BEFORE the final block (ADR-0040 §5: a
-      // final-block-only sensor would miss every peer_cli_not_found run).
       const failed = await updateHandle(paths.handle, (h) => {
         h.status = 'failed';
         h.completed_at = nowIso();
         h.exit_code = 3;
         h.error_kind = 'peer_cli_not_found';
         h.companion = companionRecord(companion);
-      });
-      await emitPeerRunTerminal({
-        repoRoot: options.repoRoot,
-        runId,
-        status: failed.status,
-        errorKind: failed.error_kind,
-        workflowPath: failed.workflow_path,
-        handlePath: paths.handle,
-        env: options.env,
       });
       return runResult(paths, failed, { ok: false, companionPath: null });
     }
@@ -711,20 +599,11 @@ export async function runPeer(args) {
     } catch (err) {
       // A synchronous spawn throw (invalid options) must still leave a
       // terminal ledger rather than a workflow stuck at `spawning`.
-      const failed = await updateHandle(paths.handle, (h) => {
+      await updateHandle(paths.handle, (h) => {
         h.status = 'failed';
         h.completed_at = nowIso();
         h.exit_code = null;
         h.error_kind = err.code ?? 'spawn_error';
-      });
-      await emitPeerRunTerminal({
-        repoRoot: options.repoRoot,
-        runId,
-        status: failed.status,
-        errorKind: failed.error_kind,
-        workflowPath: failed.workflow_path,
-        handlePath: paths.handle,
-        env: options.env,
       });
       throw err;
     }
@@ -790,7 +669,7 @@ export async function runPeer(args) {
 
     // 'error' is collected, not rejected: a failed spawn emits 'error' and
     // then 'close' (never 'spawn'), so the close barrier still settles and
-    // the terminal finalize + self-sensor emit below run on that path too.
+    // the terminal finalize below runs on that path too.
     let childError = null;
     child.once('error', (err) => {
       childError = err;
@@ -865,17 +744,6 @@ export async function runPeer(args) {
       }
     });
 
-    // ADR-0040 §5: live terminal transition (completed / failed / cancelled).
-    await emitPeerRunTerminal({
-      repoRoot: options.repoRoot,
-      runId,
-      status: final.status,
-      errorKind: final.error_kind,
-      workflowPath: final.workflow_path,
-      handlePath: paths.handle,
-      env: options.env,
-    });
-
     return runResult(paths, final, {
       ok: final.status === 'completed',
       companionPath,
@@ -948,7 +816,6 @@ export async function cancelPeerRun({
   repoRoot = process.cwd(),
   runId,
   graceMs = DEFAULT_CANCEL_GRACE_MS,
-  env = process.env,
 } = {}) {
   assertSafeRunId(runId);
   const paths = await resolvePeerRunPathsForRead(repoRoot, runId);
@@ -1021,19 +888,6 @@ export async function cancelPeerRun({
     h.process_fingerprint = { kind: 'none' };
   });
 
-  // ADR-0040 §5: cancel's explicit cancelled finalize is a terminal
-  // transition this runner writes. The §1 dedupe key (same run_id + status)
-  // collapses it with runPeer's own cancelled final block when both observe
-  // the same run.
-  await emitPeerRunTerminal({
-    repoRoot,
-    runId,
-    status: final.status,
-    errorKind: final.error_kind,
-    workflowPath: final.workflow_path,
-    handlePath: paths.handle,
-    env,
-  });
 
   return {
     ok: true,
@@ -1049,7 +903,6 @@ export async function sweepPeerRuns({
   retentionTtlDays = DEFAULT_RETENTION_TTL_DAYS,
   retentionCap = DEFAULT_RETENTION_CAP,
   now = new Date(),
-  env = process.env,
 } = {}) {
   const root = await resolvePeerRunsDirForSweep(repoRoot);
   const report = {
@@ -1102,7 +955,7 @@ export async function sweepPeerRuns({
     if (!(await exists(paths.handle))) continue;
     report.scanned += 1;
     const before = await readHandle(paths.handle);
-    const after = await reconcileOne(paths, before, { staleGraceMs, now, repoRoot, env });
+    const after = await reconcileOne(paths, before, { staleGraceMs, now });
     if (after.status !== before.status) {
       report.reconciled.push({ run_id: runId, from: before.status, to: after.status });
     }
@@ -1167,9 +1020,6 @@ export async function sweepPeerRuns({
         report.prune_skipped.push({ run_id: planned.run_id, reason: 'no-longer-terminal' });
         continue;
       }
-      // ADR-0040 §5: pruned transitions are SKIPPED as emit points —
-      // retention cleanup of runs whose terminal state was already
-      // notified; the payload is being deleted.
       await rm(paths.dir, { recursive: true, force: true });
       report.pruned.push(planned);
     }
@@ -1178,12 +1028,9 @@ export async function sweepPeerRuns({
   return report;
 }
 
-async function reconcileOne(paths, handle, { staleGraceMs, now, repoRoot, env }) {
+async function reconcileOne(paths, handle, { staleGraceMs, now }) {
   if (isTerminalStatus(handle.status)) return handle;
 
-  // ADR-0040 §5: every reconciliation below writes a terminal transition, so
-  // each branch emits the peer-run-terminal event for the status it lands on
-  // (the §1 dedupe key collapses re-observations of an already-notified run).
   if (await exists(paths.envelope)) {
     try {
       const envelope = JSON.parse(await readFile(paths.envelope, 'utf8'));
@@ -1194,30 +1041,12 @@ async function reconcileOne(paths, handle, { staleGraceMs, now, repoRoot, env })
         h.exit_code = Number.isInteger(envelope.exit_code) ? envelope.exit_code : h.exit_code;
         h.error_kind = envelope.error?.kind ?? (shape.ok ? null : 'envelope_shape_invalid');
       });
-      await emitPeerRunTerminal({
-        repoRoot,
-        runId: next.run_id,
-        status: next.status,
-        errorKind: next.error_kind,
-        workflowPath: next.workflow_path,
-        handlePath: paths.handle,
-        env,
-      });
       return next;
     } catch {
       const next = await updateHandle(paths.handle, (h) => {
         h.status = 'failed';
         h.completed_at ??= now.toISOString();
         h.error_kind = 'envelope_parse_error';
-      });
-      await emitPeerRunTerminal({
-        repoRoot,
-        runId: next.run_id,
-        status: next.status,
-        errorKind: next.error_kind,
-        workflowPath: next.workflow_path,
-        handlePath: paths.handle,
-        env,
       });
       return next;
     }
@@ -1235,15 +1064,6 @@ async function reconcileOne(paths, handle, { staleGraceMs, now, repoRoot, env })
         h.pgid = null;
         h.process_fingerprint = { kind: 'none' };
         h.error_kind = 'orphaned';
-      });
-      await emitPeerRunTerminal({
-        repoRoot,
-        runId: next.run_id,
-        status: next.status,
-        errorKind: next.error_kind,
-        workflowPath: next.workflow_path,
-        handlePath: paths.handle,
-        env,
       });
       return next;
     }
