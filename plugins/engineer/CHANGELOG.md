@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.0...plugin-engineer-v0.24.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** stop routing runtime questions to the retired runtime:cutover ([#856](https://github.com/each4all/agentic-plugins/issues/856)) ([59c297d](https://github.com/each4all/agentic-plugins/commit/59c297de49f6b5864a73bc42b07f1f0d53f5ccd5))
+
 ## [0.24.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.23.0...plugin-engineer-v0.24.0) (2026-10-01)
 
 
