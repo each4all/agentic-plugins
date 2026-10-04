@@ -56,8 +56,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/engineer",
-        "ref": "plugin-engineer-v0.24.0",
-        "sha": "0581e01dc7357e58791d7d103acb69b346b6620d"
+        "ref": "plugin-engineer-v0.24.1",
+        "sha": "dc616e82898f28842e753ac934303dabfeff77d0"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -116,8 +116,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/runtime",
-        "ref": "plugin-runtime-v0.99.2",
-        "sha": "f9dbeb173fea7e1b20b1edb74c97e59c52055ebb"
+        "ref": "plugin-runtime-v0.100.0",
+        "sha": "dc616e82898f28842e753ac934303dabfeff77d0"
       },
       "policy": {
         "installation": "AVAILABLE",
