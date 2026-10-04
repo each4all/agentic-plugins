@@ -55,12 +55,12 @@ agentic-plugins/
 ├── plugins/                        # Reference dual-host plugins (4-layer per ADR-0010)
 │   ├── README.md
 │   ├── attention/                  # L1 framework primitive — HOOK-ONLY plugin (ADR-0040 §3,
-│   │                               # amended by ADR-0044 §2 + ADR-0045 §2): Claude
-│   │                               # Notification/Stop/SubagentStop sensors feeding the runtime
-│   │                               # notify pipeline + the Stop-ordered session-capture spawn,
-│   │                               # and the SessionStart entry sensor relaying the ADR-0045
-│   │                               # entry-brief line — all via a version-gated discover-runtime
-│   │                               # ladder with triple capability floors; no skills/verbs/state.
+│   │                               # amended by ADR-0044 §2 + ADR-0045 §2, reduced by ADR-0064):
+│   │                               # the Claude Stop sensor spawning the session-capture
+│   │                               # publisher and the SessionStart entry sensor relaying the
+│   │                               # ADR-0045 entry-brief line — both via a manifest-identity
+│   │                               # discover-runtime ladder with two capability floors; no
+│   │                               # skills/verbs/state.
 │   │                               # Claude hook registration is manifest-declared at
 │   │                               # adapters/claude/hooks/ (NOT the Codex default-discovery
 │   │                               # path) and the Codex manifest declares no hooks → zero Codex

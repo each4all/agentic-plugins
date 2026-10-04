@@ -1,53 +1,40 @@
-// plugins/attention plugin-shape conformance test (ADR-0040 §3).
+// plugins/attention plugin-shape conformance test (ADR-0040 §3, as reduced by
+// ADR-0064 Decision 1).
 //
 // The attention plugin is the repo's first HOOK-ONLY plugin — hooks + sensor
 // scripts only, the hook-bearing sibling of the ADR-0008 script-only shape.
-// This test holds four gates:
+// It registers two Claude hooks: Stop (session capture, ADR-0044) and
+// SessionStart (entry brief, ADR-0045). This test holds five gates:
 //   1. shape — both host manifests, the hook registration, sensor scripts
-//      with exec bits, and the deliberate ABSENCE of skills/commands/state;
-//   2. contract parity — the §1 event-contract copies in lib/sensor.mjs
-//      (repo-ident, event_id composition, subjects) stay behaviorally
-//      identical to the canonical runtime lib (notify-schema.mjs), and the
-//      events the sensors build pass the canonical validateEvent;
-//   3. discovery gate — the copied discover-runtime.mjs pins
-//      MIN_RUNTIME_VERSION to the release-gate value and gates on
-//      scripts/notify.mjs (missing/too-old ⇒ null, no stale fallback);
-//   4. fail-closed black-box — each sensor, spawned as Claude would spawn
-//      it, exits 0 with EMPTY stdout on garbage/missing input AND on the
-//      happy path, and the Stop sensor's freshness gate routes
-//      workflow-terminal vs bare turn-complete correctly end-to-end
-//      against a stub runtime;
-//   5. capture gate (ADR-0044 §2/§13) — the publisher-floor declaration
+//      with exec bits, and the deliberate ABSENCE of skills/commands/state
+//      and of the removed notification surface;
+//   2. discovery — the copied discover-runtime.mjs resolves the newest
+//      runtime by manifest identity, and the strict floor gate holds
+//      (missing/too-old ⇒ no spawn, no stale fallback);
+//   3. capture gate (ADR-0044 §2/§13) — the publisher-floor declaration
 //      (data/runtime-floors.json) agrees byte-for-byte with the sensor's
-//      spawn-gate constant, the Stop hot-path budget values are pinned as
-//      contract, and the capture spawn runs before + independent of
-//      notification work (short-circuits never skip capture, capture
-//      failure never skips notification, below-floor/capability-drift
-//      skip silently) end-to-end against a 0.82.0 stub runtime;
-//   6. entry gate (ADR-0045 §7/§12/§18) — the entry-brief floor declaration
-//      agrees byte-for-byte with its spawn-gate constant (triple floors,
-//      pairwise distinct), the SessionStart budget values are pinned as
+//      spawn-gate constant, the Stop hot-path budget is pinned as contract,
+//      the Stop sensor is exit-0 silent and relays --workflow-evidence fresh
+//      only for a projection that passes the freshness gate, and the capture
+//      spawn resolves its runtime by manifest identity (below-floor and
+//      capability drift skip silently) — end-to-end against stub runtimes
+//      and the repo's REAL publisher;
+//   4. entry gate (ADR-0045 §7/§12/§18) — the entry-brief floor declaration
+//      agrees byte-for-byte with its spawn-gate constant (distinct from the
+//      publisher floor), the SessionStart budget values are pinned as
 //      contract, the stdout-capturing dispatcher's validation boundary
 //      relays exactly one marker-paired line and suppresses everything
 //      else (bounded buffer, child exit, extra output, control chars,
 //      oversize, timeout, below-floor, executor-absent), and the
 //      SessionStart sensor is exit-0-always with at most that one line —
-//      including end-to-end against the repo's REAL 0.83.0 runtime;
-//   7. response-needed gate (ADR-0047 §2/§3/§4/§9) — the response-signal
-//      floor declaration agrees byte-for-byte with its gate constant (four
-//      floors, pairwise distinct), the classifier scan bounds are pinned as
-//      contract and the ledger-mirror tables stay parity-locked to the
-//      persona peer-runners, the bounded structural classifier holds the
-//      hostile-state matrix (malformed payloads/handles, future skew,
-//      dual-home ambiguity, caps, budget, FIFO), the §3 one-signal-class
-//      precedence and §4 headline producers hold end-to-end against 0.84.0
-//      / 0.83.0 / 0.71.0 stub runtimes, and the emit seam's minVersion
-//      threading refuses a pre-contract runtime.
+//      including end-to-end against the repo's REAL runtime;
+//   5. freshness gate — readFreshProjection's per-persona projection and
+//      marker rules, which decide the capture's workflow evidence.
 //
 // Run via `node --test tests/plugin-shape/test-attention-plugin.mjs`.
 
 import { describe, it, before, after } from 'node:test';
-import { strictEqual, ok, deepStrictEqual, throws, doesNotThrow } from 'node:assert/strict';
+import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile, utimes } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -60,7 +47,6 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/attention');
 
 const sensorLib = await import(resolve(PLUGIN_ROOT, 'scripts/lib/sensor.mjs'));
 const discoverLib = await import(resolve(PLUGIN_ROOT, 'scripts/discover-runtime.mjs'));
-const canonical = await import(resolve(REPO_ROOT, 'plugins/runtime/scripts/lib/notify-schema.mjs'));
 
 async function readJSON(path) {
   return JSON.parse(await readFile(path, 'utf8'));
@@ -103,6 +89,19 @@ describe('plugins/attention — manifests', () => {
     ok(Array.isArray(i.defaultPrompt) && i.defaultPrompt.length <= 3);
   });
 
+  it('neither manifest describes a notification role (ADR-0064 Decision 1)', async () => {
+    for (const rel of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json']) {
+      const json = await readJSON(resolve(PLUGIN_ROOT, rel));
+      ok(!json.keywords.includes('notifications'), `${rel} keywords must drop "notifications"`);
+      const prose = [json.description, json.interface?.shortDescription, json.interface?.longDescription]
+        .filter((text) => typeof text === 'string')
+        .join(' ');
+      for (const word of ['notify.mjs', 'Notification', 'SubagentStop', 'notify_channel', 'notification-plan']) {
+        ok(!prose.includes(word), `${rel} still describes "${word}"`);
+      }
+    }
+  });
+
   // The two manifests' versions are validate-versions' to check against
   // .release-please-manifest.json (ADR-0065 Decision 8 rule 6).
 });
@@ -136,19 +135,12 @@ describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {
     return readJSON(resolve(PLUGIN_ROOT, manifest.hooks));
   }
 
-  it('the declared registration carries exactly Notification(permission_prompt, idle_prompt), Stop, SubagentStop, SessionStart(startup)', async () => {
+  it('the declared registration carries exactly Stop and SessionStart(startup) — no Notification or SubagentStop (ADR-0064)', async () => {
     const json = await readDeclaredHooks();
-    deepStrictEqual(Object.keys(json.hooks).sort(), ['Notification', 'SessionStart', 'Stop', 'SubagentStop']);
-    deepStrictEqual(
-      json.hooks.Notification.map((group) => group.matcher),
-      ['permission_prompt', 'idle_prompt'],
-    );
-    // Stop has no matcher by design (none exists for Stop); SubagentStop
-    // ships unmatched at v1 (agent_type matcher stays available for tuning).
+    deepStrictEqual(Object.keys(json.hooks).sort(), ['SessionStart', 'Stop']);
+    // Stop has no matcher by design (none exists for Stop).
     strictEqual(json.hooks.Stop.length, 1);
     strictEqual(json.hooks.Stop[0].matcher, undefined);
-    strictEqual(json.hooks.SubagentStop.length, 1);
-    strictEqual(json.hooks.SubagentStop[0].matcher, undefined);
     // The SessionStart entry sensor MUST pin an explicit `startup` matcher —
     // an omitted matcher matches every source including `compact`, colliding
     // with the persona compact-hook lane (probed matrix, S9 gate policy) —
@@ -165,10 +157,9 @@ describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {
 
   it('every hook command target exists with the executable bit set, wired per event', async () => {
     const json = await readDeclaredHooks();
-    // Exact per-registration wiring (not a Set union — a union would pass
-    // with two Notification handlers both pointing at stop.mjs): each
-    // event/matcher group carries exactly one plugin-root target, and that
-    // target is the event's own sensor.
+    // Exact per-registration wiring (not a Set union): each event/matcher
+    // group carries exactly one plugin-root target, and that target is the
+    // event's own sensor.
     const wiring = {};
     for (const [eventName, groups] of Object.entries(json.hooks)) {
       wiring[eventName] = groups.map((group) => {
@@ -181,12 +172,7 @@ describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {
       });
     }
     deepStrictEqual(wiring, {
-      Notification: [
-        'adapters/claude/hooks/notification.mjs',
-        'adapters/claude/hooks/notification.mjs',
-      ],
       Stop: ['adapters/claude/hooks/stop.mjs'],
-      SubagentStop: ['adapters/claude/hooks/subagent-stop.mjs'],
       SessionStart: ['adapters/claude/hooks/session-start.mjs'],
     });
     for (const target of new Set(Object.values(wiring).flat())) {
@@ -196,370 +182,37 @@ describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {
     }
   });
 
-  it('ships the discover-runtime copy and the sensor lib', async () => {
+  it('ships the discover-runtime copy and the sensor lib, and no longer the notification sensors (ADR-0064)', async () => {
     for (const rel of ['scripts/discover-runtime.mjs', 'scripts/lib/sensor.mjs']) {
       const st = await stat(resolve(PLUGIN_ROOT, rel));
       ok(st.isFile(), `${rel} missing`);
     }
-  });
-});
-
-describe('plugins/attention — §1 contract parity vs canonical runtime lib', () => {
-  it('deriveRepoIdent is behaviorally identical', () => {
-    for (const root of [REPO_ROOT, tmpdir(), '/nonexistent/fixture/repo']) {
-      strictEqual(sensorLib.deriveRepoIdent(root), canonical.deriveRepoIdent(root));
-    }
-  });
-
-  it('buildEventId is behaviorally identical (incl. the default status token + ADR-0041 hostname weaving)', () => {
-    const cases = [
-      { repoIdent: 'repo-abc', kind: 'approval', subject: 'session:s1:aaaabbbbcccc' },
-      { repoIdent: 'repo-abc', kind: 'idle', subject: 'session:s1' },
-      { repoIdent: 'repo-abc', kind: 'turn-complete', subject: 'session:s1:p1' },
-      { repoIdent: 'repo-abc', kind: 'workflow-terminal', subject: 'compose-x', status: 'terminal' },
-      { repoIdent: 'repo-abc', kind: 'subagent-complete', subject: 'agent-9', status: 'completed' },
-      { repoIdent: 'repo-abc', kind: 'peer-run-terminal', subject: 'run-1', status: 'failed' },
-      // ADR-0041 §4 — the woven-hostname path (incl. sanitization) must be
-      // identical across the copy-not-import copies.
-      { repoIdent: 'repo-abc', kind: 'turn-complete', subject: 'session:s1:p1', hostname: 'mba.local' },
-      { repoIdent: 'repo-abc', kind: 'workflow-terminal', subject: 'compose-x', status: 'terminal', hostname: 'a:b c/d' },
-    ];
-    for (const c of cases) {
-      strictEqual(sensorLib.buildEventId(c), canonical.buildEventId(c));
-    }
-    strictEqual(sensorLib.DEFAULT_STATUS_TOKEN, canonical.DEFAULT_STATUS_TOKEN);
-    deepStrictEqual([...sensorLib.KINDS_WITH_DEFAULT_STATUS], [...canonical.KINDS_WITH_DEFAULT_STATUS]);
-    deepStrictEqual([...sensorLib.NOTIFY_KINDS], [...canonical.NOTIFY_KINDS]);
-    // ADR-0041 §4 — the routing-field contract copies stay identical.
-    deepStrictEqual([...sensorLib.OPTIONAL_ROUTING_FIELDS], [...canonical.OPTIONAL_ROUTING_FIELDS]);
-    deepStrictEqual({ ...sensorLib.ROUTING_FIELD_CAPS }, { ...canonical.ROUTING_FIELD_CAPS });
-  });
-
-  it('ADR-0041 §3a — the copied headline vocab/field/cap + predicate are identical (copy-not-import parity)', () => {
-    // The producer copy MUST match the canonical runtime lib byte-for-byte, or a
-    // token this producer borns would be dropped runtime-side (Guard 2) as
-    // out-of-vocab — the exact drift this parity gate exists to catch.
-    strictEqual(sensorLib.OPTIONAL_HEADLINE_FIELD, canonical.OPTIONAL_HEADLINE_FIELD);
-    deepStrictEqual([...sensorLib.HEADLINE_VOCAB], [...canonical.HEADLINE_VOCAB]);
-    strictEqual(sensorLib.HEADLINE_FIELD_CAP, canonical.HEADLINE_FIELD_CAP);
-    ok(Object.isFrozen(sensorLib.HEADLINE_VOCAB));
-    // The copied membership predicate mirrors the canonical Guard-2 predicate.
-    for (const token of sensorLib.HEADLINE_VOCAB) {
-      strictEqual(sensorLib.isHeadlineToken(token), true);
-      strictEqual(canonical.isHeadlineToken(token), true);
-    }
-    for (const bad of ['COMPLETE', ' complete ', 'not-a-token', '', 42, null, undefined]) {
-      strictEqual(sensorLib.isHeadlineToken(bad), false);
-      // Assert the canonical Guard-2 predicate agrees, so a broadened runtime
-      // predicate cannot drift away from the copied one unnoticed (Codex peer).
-      strictEqual(canonical.isHeadlineToken(bad), false);
-    }
-  });
-
-  it('both libs reject an absent status for status-bearing kinds', () => {
-    for (const lib of [sensorLib, canonical]) {
-      throws(() => lib.buildEventId({ repoIdent: 'r', kind: 'workflow-terminal', subject: 's' }));
-      throws(() => lib.buildEventId({ repoIdent: 'r', kind: 'subagent-complete', subject: 's' }));
-    }
-  });
-
-  it('subject builders are behaviorally identical', () => {
-    strictEqual(
-      sensorLib.approvalSubject({ sessionId: 's1', message: 'Allow Bash?' }),
-      canonical.approvalSubject({ sessionId: 's1', message: 'Allow Bash?' }),
+    const { readdir } = await import('node:fs/promises');
+    deepStrictEqual(
+      (await readdir(resolve(PLUGIN_ROOT, 'adapters/claude/hooks'))).sort(),
+      ['hooks.json', 'session-start.mjs', 'stop.mjs'],
+      'the hooks directory holds the registration and the two sensors only',
     );
-    // Two different approval prompts in one session must NOT share a subject.
-    ok(
-      sensorLib.approvalSubject({ sessionId: 's1', message: 'Allow Bash?' })
-        !== sensorLib.approvalSubject({ sessionId: 's1', message: 'Allow Edit?' }),
-    );
-    strictEqual(
-      sensorLib.idleSubject({ sessionId: 's1' }),
-      canonical.idleSubject({ sessionId: 's1' }),
-    );
-    strictEqual(
-      sensorLib.turnCompleteSubject({ sessionId: 's1', promptId: 'p1' }),
-      canonical.turnCompleteSubject({ sessionId: 's1', promptId: 'p1' }),
-    );
-    strictEqual(
-      sensorLib.workflowTerminalSubject({ workflowId: 'compose-x' }),
-      canonical.workflowTerminalSubject({ workflowId: 'compose-x' }),
-    );
-    strictEqual(
-      sensorLib.subagentCompleteSubject({ agentId: 'agent-9' }),
-      canonical.subagentCompleteSubject({ agentId: 'agent-9' }),
-    );
-  });
-
-  it('every sensor-built event passes the canonical validateEvent', () => {
-    const repoIdent = sensorLib.deriveRepoIdent(REPO_ROOT);
-    const events = [
-      sensorLib.buildEvent({
-        repoIdent,
-        kind: 'approval',
-        subject: sensorLib.approvalSubject({ sessionId: 's1', message: 'Allow?' }),
-        title: 'Approval needed — repo',
-        body: 'Allow?',
-        urgency: 'urgent',
-      }),
-      sensorLib.buildEvent({
-        repoIdent,
-        kind: 'idle',
-        subject: sensorLib.idleSubject({ sessionId: 's1' }),
-        title: 'Idle — repo',
-        body: 'Session is waiting for input',
-        urgency: 'normal',
-      }),
-      sensorLib.buildEvent({
-        repoIdent,
-        kind: 'turn-complete',
-        subject: sensorLib.turnCompleteSubject({ sessionId: 's1', promptId: 'p1' }),
-        title: 'Turn complete — repo',
-        urgency: 'normal',
-      }),
-      sensorLib.buildEvent({
-        repoIdent,
-        kind: 'workflow-terminal',
-        subject: 'compose-20260704T000000Z-abcdef',
-        status: sensorLib.WORKFLOW_TERMINAL_STATUS,
-        title: 'engineer workflow terminal — repo',
-        body: 'compose-20260704T000000Z-abcdef · phase summary-complete',
-        urgency: 'normal',
-        refs: { workflow_id: 'compose-20260704T000000Z-abcdef', path: '.agentic-plugins/state/engineer/workflows/x.md' },
-      }),
-      sensorLib.buildEvent({
-        repoIdent,
-        kind: 'subagent-complete',
-        subject: 'agent-9',
-        status: sensorLib.SUBAGENT_COMPLETE_STATUS,
-        title: 'Subagent complete — repo',
-        body: 'agent agent-9',
-        urgency: 'normal',
-      }),
-      // ADR-0041 §4 — an event carrying the optional routing fields (woven host
-      // token in the id + top-level hostname/topic/session_hint) must ALSO pass
-      // the canonical validateEvent.
-      sensorLib.buildEvent({
-        repoIdent,
-        kind: 'turn-complete',
-        subject: sensorLib.turnCompleteSubject({ sessionId: 's1', promptId: 'p1' }),
-        title: 'Turn complete — repo',
-        urgency: 'normal',
-        hostname: sensorLib.resolveHostname({ env: { AGENTIC_NOTIFY_HOSTNAME: 'test-box' } }),
-        topic: 'repo:main',
-        sessionHint: sensorLib.buildSessionHint({ sessionId: 's1' }),
-      }),
-    ];
-    for (const event of events) {
-      const verdict = canonical.validateEvent(event);
-      deepStrictEqual(verdict, { ok: true, errors: [] }, JSON.stringify(event));
-      strictEqual(event.source, 'attention-claude');
-    }
-    // ADR-0041 §4 — the routing-field event actually carries the woven id + the
-    // top-level fields (born capped; not silently dropped by buildEvent).
-    const routed = events[events.length - 1];
-    strictEqual(routed.hostname, 'test-box');
-    strictEqual(routed.topic, 'repo:main');
-    ok(/:host-[0-9a-f]{16}:/.test(routed.event_id), 'event_id must weave the bounded host-hash token');
-    ok(typeof routed.session_hint === 'string' && routed.session_hint.length > 0);
-  });
-});
-
-describe('plugins/attention — resolveGitBranch (ADR-0041 §3 topic; pure fs, no git exec)', () => {
-  let base;
-  before(async () => { base = await mkdtemp(join(tmpdir(), 'attention-branch-')); });
-  after(async () => { await rm(base, { recursive: true, force: true }); });
-
-  it('reads the branch from a normal .git/HEAD', async () => {
-    const repo = join(base, 'normal');
-    await mkdir(join(repo, '.git'), { recursive: true });
-    await writeFile(join(repo, '.git', 'HEAD'), 'ref: refs/heads/feat/my-branch\n');
-    strictEqual(sensorLib.resolveGitBranch(repo), 'feat/my-branch');
-    strictEqual(sensorLib.resolveTopic({ repoRoot: repo }), `${basename(repo)}:feat/my-branch`);
-  });
-
-  it('follows a .git FILE pointer (worktree/submodule) to the real gitdir HEAD', async () => {
-    const repo = join(base, 'worktree');
-    const gitdir = join(base, 'real-gitdir');
-    await mkdir(gitdir, { recursive: true });
-    await mkdir(repo, { recursive: true });
-    await writeFile(join(gitdir, 'HEAD'), 'ref: refs/heads/wt-branch\n');
-    await writeFile(join(repo, '.git'), `gitdir: ${gitdir}\n`);
-    strictEqual(sensorLib.resolveGitBranch(repo), 'wt-branch');
-  });
-
-  it('returns null on detached HEAD (raw sha) → topic degrades to repo label only', async () => {
-    const repo = join(base, 'detached');
-    await mkdir(join(repo, '.git'), { recursive: true });
-    await writeFile(join(repo, '.git', 'HEAD'), '0123456789abcdef0123456789abcdef01234567\n');
-    strictEqual(sensorLib.resolveGitBranch(repo), null);
-    strictEqual(sensorLib.resolveTopic({ repoRoot: repo }), basename(repo));
-  });
-
-  it('returns null when HEAD / the repo is missing (fail-closed)', async () => {
-    const repo = join(base, 'nohead');
-    await mkdir(join(repo, '.git'), { recursive: true });
-    strictEqual(sensorLib.resolveGitBranch(repo), null);
-    strictEqual(sensorLib.resolveGitBranch(join(base, 'does-not-exist')), null);
-    strictEqual(sensorLib.resolveGitBranch(''), null);
-  });
-
-  it('refuses a NON-REGULAR HEAD (dir/FIFO/device) → null, never blocks the hook (Codex peer MAJOR)', async () => {
-    // readFileSync on a FIFO/device would block the hook indefinitely; the
-    // regular-file gate must reject it. A directory HEAD is the portable proxy
-    // for a non-regular target (mkfifo is not available everywhere).
-    const repo = join(base, 'special-head');
-    await mkdir(join(repo, '.git', 'HEAD'), { recursive: true });
-    strictEqual(sensorLib.resolveGitBranch(repo), null);
-  });
-});
-
-describe('plugins/attention — buildEvent routing-field sanitization (ADR-0041 §5 defense-in-depth)', () => {
-  it('control-strips + caps routing fields at the build boundary (any caller, not just pre-sanitized ones)', () => {
-    const dirty = `repo:main${String.fromCharCode(9)}${String.fromCharCode(1)}branch`;
-    const ev = sensorLib.buildEvent({
-      repoIdent: 'repo-a', kind: 'idle', subject: 'session:s1', title: 't', urgency: 'normal',
-      hostname: 'mba', topic: dirty, sessionHint: 'abc123',
-    });
-    for (const field of ['hostname', 'topic', 'session_hint']) {
-      for (const ch of ev[field] ?? '') {
-        const c = ch.charCodeAt(0);
-        ok(!(c < 0x20 || (c >= 0x7f && c <= 0x9f)), `${field} carries a control char`);
-      }
-    }
-    ok(ev.topic.startsWith('repo:main'), 'topic content preserved after control-strip');
-    strictEqual(canonical.validateEvent(ev).ok, true);
-  });
-
-  it('caps an over-long routing field to its ROUTING_FIELD_CAPS bound', () => {
-    const ev = sensorLib.buildEvent({
-      repoIdent: 'repo-a', kind: 'idle', subject: 'session:s1', title: 't', urgency: 'normal',
-      topic: 'x'.repeat(sensorLib.ROUTING_FIELD_CAPS.topic + 100),
-    });
-    strictEqual(ev.topic.length, sensorLib.ROUTING_FIELD_CAPS.topic);
-  });
-});
-
-describe('plugins/attention — deriveHeadlineToken (ADR-0041 §3a Guard 1 map-or-omit)', () => {
-  it('maps workflow-terminal × the real archive_gate values to the closed vocab', () => {
-    // The three values the persona mapArchiveGate copies actually emit.
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'ready_to_archive' }), 'complete');
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'not_terminal' }), 'in-progress');
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'blocked' }), 'blocked');
-  });
-
-  it("manually-published personas omit on 'blocked' — usually publish-needed, indistinguishable in the frozen projection (ADR-0043 §3)", () => {
-    for (const persona of ['founder', 'designer']) {
-      strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'blocked', persona }), null,
-        `${persona} blocked must OMIT the token (map-or-omit; completion-output contract §2 says publish-needed is not blocked)`);
-      strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'ready_to_archive', persona }), 'complete');
-      strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'not_terminal', persona }), 'in-progress');
-    }
-    // The auto-committing personas keep the blocked token (genuinely blocked work).
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'blocked', persona: 'engineer' }), 'blocked');
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'blocked', persona: 'orchestrator' }), 'blocked');
-  });
-
-  it('omits (null) for an unknown/absent gate or a non-workflow-terminal kind — never a guess', () => {
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'ready' }), null, 'a stale/unknown gate omits');
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: '' }), null);
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: undefined }), null);
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal' }), null);
-    // ADR-0041 §3a — the bare turn-complete deliberately carries no token (a
-    // kind-only token would overstate an interim turn as session status;
-    // doubly so after ADR-0047 §3 narrowed it to interim turns). Every kind
-    // outside the closed table (workflow-terminal, and the two ADR-0047 §4
-    // end-state kinds tested in their own describe) omits.
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'turn-complete', archiveGate: 'ready_to_archive' }), null);
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'subagent-complete', archiveGate: 'ready_to_archive' }), null);
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'idle' }), null);
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'peer-run-terminal' }), null);
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'health' }), null);
-    strictEqual(sensorLib.deriveHeadlineToken({}), null);
-    strictEqual(sensorLib.deriveHeadlineToken(), null);
-  });
-
-  it('ADR-0047 §4 — the two end-state kinds map totally: response-needed → your-turn, approval → needs-approval', () => {
-    // The kind itself encodes the structural verdict (§2 final verdict /
-    // the host's permission_prompt matcher), so the map is total for these
-    // kinds — map-or-omit is preserved UPSTREAM: an uncertain classification
-    // never produces the kind at all. archiveGate/persona are irrelevant.
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'response-needed' }), 'your-turn');
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'approval' }), 'needs-approval');
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'response-needed', archiveGate: 'blocked', persona: 'founder' }), 'your-turn');
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'approval', archiveGate: 'nonsense' }), 'needs-approval');
-    // Both mapped values are canonical Guard-2 vocab members (no silent
-    // drift out of vocab — the exact failure this parity file exists to catch).
-    strictEqual(canonical.isHeadlineToken('your-turn'), true);
-    strictEqual(canonical.isHeadlineToken('needs-approval'), true);
-  });
-
-  it('every mapping value is a canonical closed-vocab member (no silent drift out of vocab)', () => {
-    // Whatever the table maps to must pass the canonical Guard-2 predicate; a value
-    // drifting out of vocab would be dropped runtime-side, silently losing the token.
-    for (const gate of ['ready_to_archive', 'not_terminal', 'blocked']) {
-      const token = sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: gate });
-      ok(token, `${gate} must map to a token`);
-      strictEqual(canonical.isHeadlineToken(token), true, `${gate} → ${token} must be a canonical vocab member`);
-    }
-  });
-
-  it('never throws + omits for a non-string, prototype-key, or coercion-hostile gate (fail-closed — Codex peer MAJOR)', () => {
-    // archive_gate comes from a parsed projection JSON and can be ANY type. None may
-    // throw: a throw escapes to the Stop sensor's outer catch and suppresses the WHOLE
-    // notification instead of omitting only headline. Two nasty shapes: an object with
-    // a NON-CALLABLE toString ({toString:'x'}) makes a bracket-lookup String() throw;
-    // an object with a CALLABLE toString returning a gate name would coerce to a real
-    // token — both must be refused. Inherited string keys must not resolve either.
-    const hostileGates = [
-      42, null, {}, [], true,
-      { toString: 'ready_to_archive' },       // non-callable toString → String() throws
-      { toString: () => 'ready_to_archive' },  // callable → would coerce to 'complete' without the guard
-      'constructor', '__proto__', 'toString', 'hasOwnProperty',
-    ];
-    for (const gate of hostileGates) {
-      let result;
-      doesNotThrow(
-        () => { result = sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: gate }); },
-        `archiveGate=${JSON.stringify(gate)} must not throw`,
-      );
-      strictEqual(result, null, `archiveGate=${JSON.stringify(gate)} must omit (null)`);
-    }
-  });
-});
-
-describe('plugins/attention — buildEvent borns the opt-in headline (ADR-0041 §3a Guard 1)', () => {
-  it('sets a valid token; the event still passes canonical validateEvent + Guard 2', () => {
-    const ev = sensorLib.buildEvent({
-      repoIdent: 'repo-a', kind: 'workflow-terminal', subject: 'compose-x',
-      status: sensorLib.WORKFLOW_TERMINAL_STATUS, title: 't', urgency: 'normal', headline: 'complete',
-    });
-    strictEqual(ev.headline, 'complete');
-    // headline is set VERBATIM (not truncated) so the runtime Guard-2 sees the same
-    // full value — validating the exact token the producer borns.
-    strictEqual(canonical.validateEvent(ev).ok, true);
-    strictEqual(canonical.isHeadlineToken(ev.headline), true);
-  });
-
-  it('omits headline for a null/omitted or out-of-vocab value — never coerced onto the event', () => {
-    for (const bad of [null, undefined, 'not-a-token', ' complete ', 'COMPLETE', 42, {}]) {
-      const ev = sensorLib.buildEvent({
-        repoIdent: 'repo-a', kind: 'turn-complete', subject: 'session:s1:p1',
-        title: 't', urgency: 'normal', headline: bad,
-      });
-      strictEqual('headline' in ev, false, `headline must be absent for ${JSON.stringify(bad)}`);
-      strictEqual(canonical.validateEvent(ev).ok, true, 'a dropped headline never fails the base validation');
-    }
   });
 });
 
 describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', () => {
-  it('pins MIN_RUNTIME_VERSION to the release-gate value (first runtime shipping notify.mjs)', () => {
-    strictEqual(discoverLib.MIN_RUNTIME_VERSION, '0.71.0');
+  it('pins the publisher and entry-brief floors to their recorded first capable releases', () => {
+    // S4a (ADR-0044 §Status) and S8a (ADR-0045 §Status).
+    strictEqual(discoverLib.PUBLISH_SESSION_MIN_RUNTIME_VERSION, '0.82.0');
+    strictEqual(discoverLib.ENTRY_BRIEF_MIN_RUNTIME_VERSION, '0.83.0');
   });
 
-  it('pins ENTRY_BRIEF_MIN_RUNTIME_VERSION to the S8a-recorded first capable release (ADR-0045 §Status)', () => {
-    strictEqual(discoverLib.ENTRY_BRIEF_MIN_RUNTIME_VERSION, '0.83.0');
+  it('ADR-0064 — the notify floors and the notify-gated resolvers are gone', () => {
+    for (const name of [
+      'MIN_RUNTIME_VERSION',
+      'RESPONSE_SIGNAL_MIN_RUNTIME_VERSION',
+      'locateRuntimePluginRoot',
+      'resolveRuntimePluginRoot',
+      'discoverRuntimePluginRoot',
+    ]) {
+      ok(!Object.hasOwn(discoverLib, name), `discover-runtime.mjs must not export ${name}`);
+    }
   });
 
   let stubHome;
@@ -571,26 +224,19 @@ describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', ()
     await rm(stubHome, { recursive: true, force: true });
   });
 
-  async function makeRuntimeStub(name, version, { withNotify = true } = {}) {
+  async function makeRuntimeStub(name, version) {
     const root = join(stubHome, name);
     await mkdir(join(root, '.claude-plugin'), { recursive: true });
-    await mkdir(join(root, 'scripts'), { recursive: true });
     await writeFile(
       join(root, '.claude-plugin/plugin.json'),
       JSON.stringify({ name: 'runtime', version, description: 'stub' }),
     );
-    if (withNotify) {
-      await writeFile(join(root, 'scripts/notify.mjs'), '// stub\n');
-    }
     return root;
   }
 
   it('hyphenated build metadata is not a prerelease — a +build-N release satisfies its own floor (SemVer §10)', async () => {
-    const buildMeta = await makeRuntimeStub('build-meta', '0.71.0+build-5');
-    strictEqual(
-      await discoverLib.discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: buildMeta }, home: stubHome }),
-      buildMeta,
-    );
+    const buildMeta = await makeRuntimeStub('build-meta', '0.82.0+build-5');
+    strictEqual(await discoverLib.runtimeVersionAtLeast(buildMeta, '0.82.0'), true);
   });
 
   it('semverCompare body stays byte-identical to the runtime lib/semver.mjs original (mirror-drift pin)', async () => {
@@ -611,44 +257,28 @@ describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', ()
     );
   });
 
-  it('env override resolves only when scripts/notify.mjs exists AND version >= floor', async () => {
-    const okRoot = await makeRuntimeStub('ok', '0.71.0');
+  it('runtimeVersionAtLeast is the strict floor gate: a prerelease of the floor fails, a higher-core prerelease passes', async () => {
+    strictEqual(await discoverLib.runtimeVersionAtLeast(await makeRuntimeStub('at-floor', '0.82.0'), '0.82.0'), true);
+    strictEqual(await discoverLib.runtimeVersionAtLeast(await makeRuntimeStub('too-old', '0.81.9'), '0.82.0'), false);
     strictEqual(
-      await discoverLib.discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: okRoot }, home: stubHome }),
-      okRoot,
+      await discoverLib.runtimeVersionAtLeast(await makeRuntimeStub('prerelease', '0.82.0-beta.1'), '0.82.0'),
+      false,
     );
-
-    const tooOld = await makeRuntimeStub('too-old', '0.70.9');
-    strictEqual(
-      await discoverLib.discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: tooOld }, home: stubHome }),
-      null,
-    );
-
-    const prerelease = await makeRuntimeStub('prerelease', '0.71.0-beta.1');
-    strictEqual(
-      await discoverLib.discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: prerelease }, home: stubHome }),
-      null,
-    );
-
     // A prerelease of a HIGHER core postdates the floor release and therefore
-    // carries notify.mjs — it passes deliberately (SemVer ordering; same
+    // carries the capability — it passes deliberately (SemVer ordering; same
     // semantics as the engineer sibling copy). Peer-review-pinned contract.
-    const newerPrerelease = await makeRuntimeStub('newer-prerelease', '0.72.0-beta.1');
     strictEqual(
-      await discoverLib.discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: newerPrerelease }, home: stubHome }),
-      newerPrerelease,
+      await discoverLib.runtimeVersionAtLeast(await makeRuntimeStub('newer-prerelease', '0.83.0-beta.1'), '0.82.0'),
+      true,
     );
-
-    const noNotify = await makeRuntimeStub('no-notify', '0.71.0', { withNotify: false });
-    strictEqual(
-      await discoverLib.discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: noNotify }, home: stubHome }),
-      null,
-    );
+    // An unreadable version is too old: no executor runs from a runtime the
+    // gate cannot vouch for.
+    strictEqual(await discoverLib.runtimeVersionAtLeast(join(stubHome, 'does-not-exist'), '0.82.0'), false);
   });
 
   it('no resolvable runtime returns null (fail-closed, no stale fallback)', async () => {
     strictEqual(
-      await discoverLib.discoverRuntimePluginRoot({
+      await discoverLib.resolveNewestRuntimePluginRoot({
         env: { AGENTIC_RUNTIME_ROOT: join(stubHome, 'does-not-exist') },
         home: stubHome,
       }),
@@ -656,23 +286,13 @@ describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', ()
     );
   });
 
-  it('resolveNewestRuntimePluginRoot is manifest-identified — no capability-file filter (entry rung)', async () => {
-    // notify.mjs deliberately absent: the capability-neutral rung must still
-    // resolve, where the notify-gated resolver would not.
-    const bare = join(stubHome, 'bare-manifest');
-    await mkdir(join(bare, '.claude-plugin'), { recursive: true });
-    await writeFile(
-      join(bare, '.claude-plugin/plugin.json'),
-      JSON.stringify({ name: 'runtime', version: '0.83.0', description: 'stub' }),
-    );
+  it('resolveNewestRuntimePluginRoot is manifest-identified — no capability-file filter', async () => {
+    // No scripts/ at all: identity is the manifest name, and each caller
+    // probes its own executor afterwards.
+    const bare = await makeRuntimeStub('bare-manifest', '0.83.0');
     strictEqual(
       await discoverLib.resolveNewestRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: bare }, home: stubHome }),
       bare,
-    );
-    strictEqual(
-      await discoverLib.resolveRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: bare }, home: stubHome }),
-      null,
-      'precondition: the notify-gated resolver refuses the same root',
     );
     // A non-runtime manifest is refused even via the env override.
     const wrongName = join(stubHome, 'wrong-name');
@@ -695,26 +315,37 @@ describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', ()
       for (const version of ['0.83.0-beta.1', '0.83.0']) {
         const root = join(cacheBase, version);
         await mkdir(join(root, '.claude-plugin'), { recursive: true });
-        await mkdir(join(root, 'scripts'), { recursive: true });
         await writeFile(
           join(root, '.claude-plugin/plugin.json'),
           JSON.stringify({ name: 'runtime', version, description: 'stub' }),
         );
-        await writeFile(join(root, 'scripts/notify.mjs'), '// stub\n');
       }
       strictEqual(
         await discoverLib.resolveNewestRuntimePluginRoot({ env: {}, home: tieHome }),
         join(cacheBase, '0.83.0'),
         'SemVer orders a clean release above its own prereleases — never readdir order',
       );
-      strictEqual(
-        await discoverLib.resolveRuntimePluginRoot({ env: {}, home: tieHome }),
-        join(cacheBase, '0.83.0'),
-        'the notify-gated resolver shares the comparator',
-      );
     } finally {
       await rm(tieHome, { recursive: true, force: true });
     }
+  });
+
+  it('the discover CLI prints the manifest-identified root and applies no floor of its own', async () => {
+    const old = await makeRuntimeStub('cli-old', '0.1.0');
+    const cli = resolve(PLUGIN_ROOT, 'scripts/discover-runtime.mjs');
+    const env = { ...process.env, AGENTIC_RUNTIME_ROOT: old, HOME: stubHome };
+    const plain = spawnSync(process.execPath, [cli, 'discover'], { env, encoding: 'utf8' });
+    strictEqual(plain.status, 0, plain.stderr);
+    strictEqual(plain.stdout, `${old}\n`, 'each seam gates the root on its own floor; the CLI only resolves it');
+    const json = spawnSync(process.execPath, [cli, 'discover', '--json'], { env, encoding: 'utf8' });
+    strictEqual(json.status, 0, json.stderr);
+    const report = JSON.parse(json.stdout);
+    strictEqual(report.root, old);
+    strictEqual(report.source, 'env');
+    deepStrictEqual(report.floors, {
+      publish_session: discoverLib.PUBLISH_SESSION_MIN_RUNTIME_VERSION,
+      entry_brief: discoverLib.ENTRY_BRIEF_MIN_RUNTIME_VERSION,
+    });
   });
 });
 
@@ -890,15 +521,15 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
     // A publish-needed founder/designer workflow idles active-terminal while
     // its persona Stop backstop rewrites the projection every turn — mtime
     // stays fresh indefinitely. The rendered marker's at (the render moment)
-    // is what expires the enrichment window and restores the bare
-    // turn-complete path.
+    // is what expires the evidence window, so later turns relay no fresh
+    // workflow evidence.
     const staleAt = new Date(Date.now() - sensorLib.HANDOFF_FRESHNESS_MS - 60_000).toISOString();
     await seed('designer', {
       marker: { workflow_id: WF_ID, status: 'rendered', at: staleAt },
       markerName: 'last-session-handoff.json.footer-rendered',
     });
     strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'designer' }), null,
-      'a lapsed transition anchor must degrade to the bare turn-complete');
+      'a lapsed transition anchor must degrade to no evidence');
     await seed('designer', {
       marker: { workflow_id: WF_ID, status: 'rendered', at: 'not-a-date' },
       markerName: 'last-session-handoff.json.footer-rendered',
@@ -913,7 +544,7 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
       markerName: 'last-session-handoff.json.footer-rendered',
     });
     const now = Date.now();
-    // A far-future at (clock lies / crafted state) must degrade, never enrich —
+    // A far-future at (clock lies / crafted state) must degrade, never count —
     // a unidirectional age check would hold it "fresh" for its entire lead.
     await seedMarkerAt(new Date(now + 24 * 60 * 60 * 1000).toISOString());
     strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'designer', now }), null, 'far-future at');
@@ -944,7 +575,7 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
     const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await utimes(file, future, future);
     strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), null,
-      'a far-future mtime must degrade to the bare turn-complete');
+      'a far-future mtime must degrade to no evidence');
   });
 
   it('workflow_kind is strictly required: missing or padded kinds are malformed (canonical bounded schema)', async () => {
@@ -1023,6 +654,33 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
     strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), null);
   });
 
+  it('a symlinked projection or marker is refused at open (O_NOFOLLOW) — state outside the repo is never read as evidence', async () => {
+    // existsSync and statSync follow a link, so without O_NOFOLLOW a link to
+    // a valid file outside the repo would pass every gate. The control proves
+    // the same bytes as regular files are accepted, so each null is the link.
+    const outside = await mkdtemp(join(tmpdir(), 'attention-outside-'));
+    try {
+      const projectionFile = await seed('engineer', {
+        marker: { workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() },
+        markerName: 'last-session-handoff.json.footer-rendered',
+      });
+      const markerFile = `${projectionFile}.footer-rendered`;
+      ok(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), 'control: regular files are accepted');
+      for (const [label, file] of [['projection', projectionFile], ['marker', markerFile]]) {
+        const target = join(outside, basename(file));
+        await writeFile(target, await readFile(file));
+        await rm(file);
+        await symlink(target, file);
+        strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), null, `symlinked ${label}`);
+        await rm(file);
+        await writeFile(file, await readFile(target));
+        ok(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), `control: the ${label} as a regular file again`);
+      }
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it('reads the legacy home when the canonical home is absent', async () => {
     const legacyRepo = await mkdtemp(join(tmpdir(), 'attention-legacy-'));
     try {
@@ -1062,7 +720,7 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
   it('mixed homes fail-close: a stale canonical candidate shadows a valid legacy one', async () => {
     // Both homes existing is an inconsistent state (persona writes block it);
     // the sensor deliberately evaluates ONLY the first existing candidate and
-    // degrades to a bare notification. Peer-review-pinned contract.
+    // degrades to no evidence. Peer-review-pinned contract.
     const mixedRepo = await mkdtemp(join(tmpdir(), 'attention-mixed-'));
     try {
       await mkdir(join(mixedRepo, '.git'), { recursive: true });
@@ -1085,66 +743,8 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
   });
 });
 
-describe('plugins/attention — emitTerminalEvents deadline batching (ADR-0043 §3)', () => {
-  const EVENTS = [{ event_id: 'a' }, { event_id: 'b' }, { event_id: 'c' }, { event_id: 'd' }];
-
-  // A deterministic clock the helper's injectable `now` reads; `advance` is
-  // what a fake emit uses to simulate a slow/hung emitter without sleeping.
-  function fakeClock(start = 0) {
-    let t = start;
-    return { now: () => t, advance: (ms) => { t += ms; } };
-  }
-
-  it('fast emissions all run and each gets the FULL fixed slot (never a partial timeout)', async () => {
-    const clock = fakeClock();
-    const calls = [];
-    const result = await sensorLib.emitTerminalEvents({
-      repoRoot: '/r',
-      events: EVENTS,
-      emit: async ({ event, timeoutMs }) => { calls.push({ id: event.event_id, timeoutMs }); clock.advance(100); },
-      now: clock.now,
-    });
-    deepStrictEqual(result, { emitted: 4, dropped: 0 });
-    deepStrictEqual(calls.map((c) => c.id), ['a', 'b', 'c', 'd']);
-    ok(calls.every((c) => c.timeoutMs === 12_000), 'every emission gets the full 12s slot');
-  });
-
-  it('a slow emitter exhausts the deadline: later events are DROPPED, never given a partial slot', async () => {
-    const clock = fakeClock();
-    const calls = [];
-    const result = await sensorLib.emitTerminalEvents({
-      repoRoot: '/r',
-      events: EVENTS,
-      emit: async ({ event }) => { calls.push(event.event_id); clock.advance(12_000); },
-      now: clock.now,
-    });
-    // 24s deadline / 12s per emit → exactly two full slots; the rest drop.
-    deepStrictEqual(result, { emitted: 2, dropped: 2 });
-    deepStrictEqual(calls, ['a', 'b']);
-  });
-
-  it('a deadline below one full slot emits nothing (full-slot-or-nothing)', async () => {
-    const clock = fakeClock();
-    const calls = [];
-    const result = await sensorLib.emitTerminalEvents({
-      repoRoot: '/r',
-      events: EVENTS,
-      deadlineMs: 5_000,
-      emit: async ({ event }) => { calls.push(event.event_id); },
-      now: clock.now,
-    });
-    deepStrictEqual(result, { emitted: 0, dropped: 4 });
-    deepStrictEqual(calls, []);
-  });
-
-  it('empty/absent event lists are a no-op', async () => {
-    deepStrictEqual(await sensorLib.emitTerminalEvents({ repoRoot: '/r', events: [], emit: async () => {} }), { emitted: 0, dropped: 0 });
-    deepStrictEqual(await sensorLib.emitTerminalEvents({ repoRoot: '/r', emit: async () => {} }), { emitted: 0, dropped: 0 });
-  });
-});
-
-describe('plugins/attention — sensors are fail-closed silent observers (black-box)', () => {
-  const SENSORS = ['notification.mjs', 'stop.mjs', 'subagent-stop.mjs'];
+describe('plugins/attention — the Stop sensor is a fail-closed silent observer (black-box)', () => {
+  const SENSORS = ['stop.mjs'];
 
   function runSensor(name, { input = '', env = {} } = {}) {
     return spawnSync(
@@ -1168,14 +768,7 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
     const repo = await mkdtemp(join(tmpdir(), 'attention-noruntime-'));
     try {
       await mkdir(join(repo, '.git'), { recursive: true });
-      const payload = JSON.stringify({
-        cwd: repo,
-        session_id: 'sess-1',
-        prompt_id: 'prompt-1',
-        notification_type: 'permission_prompt',
-        message: 'Allow?',
-        agent_id: 'agent-1',
-      });
+      const payload = JSON.stringify({ cwd: repo, session_id: 'sess-1', prompt_id: 'prompt-1' });
       for (const name of SENSORS) {
         const result = runSensor(name, {
           input: payload,
@@ -1188,433 +781,20 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
       await rm(repo, { recursive: true, force: true });
     }
   });
-
-  describe('end-to-end against a stub runtime', () => {
-    let repo;
-    let runtimeStub;
-    let captureFile;
-
-    before(async () => {
-      repo = await mkdtemp(join(tmpdir(), 'attention-e2e-'));
-      await mkdir(join(repo, '.git'), { recursive: true });
-      await mkdir(join(repo, 'subdir'), { recursive: true });
-      runtimeStub = join(repo, 'runtime-stub');
-      captureFile = join(repo, 'capture.json');
-      await mkdir(join(runtimeStub, '.claude-plugin'), { recursive: true });
-      await mkdir(join(runtimeStub, 'scripts'), { recursive: true });
-      await writeFile(
-        join(runtimeStub, '.claude-plugin/plugin.json'),
-        JSON.stringify({ name: 'runtime', version: '0.71.0', description: 'stub' }),
-      );
-      // The stub emitter records argv + stdin (appending, one JSON line per
-      // call) so the test can assert exactly what the sensor handed over.
-      await writeFile(
-        join(runtimeStub, 'scripts/notify.mjs'),
-        [
-          '#!/usr/bin/env node',
-          "import fs from 'node:fs';",
-          'const chunks = [];',
-          'for await (const chunk of process.stdin) chunks.push(chunk);',
-          'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
-          '  argv: process.argv.slice(2),',
-          "  event: JSON.parse(Buffer.concat(chunks).toString('utf8')),",
-          "}) + '\\n');",
-        ].join('\n'),
-      );
-    });
-    after(async () => {
-      await rm(repo, { recursive: true, force: true });
-    });
-
-    // ADR-0041 §4 — pin the machine label so the woven event_id is
-    // deterministic regardless of the CI host's real hostname.
-    const E2E_HOSTNAME = 'e2e-host';
-
-    function runSensorE2E(name, payload) {
-      return spawnSync(
-        process.execPath,
-        [resolve(PLUGIN_ROOT, 'adapters/claude/hooks', name)],
-        {
-          input: JSON.stringify(payload),
-          env: {
-            ...process.env,
-            AGENTIC_RUNTIME_ROOT: runtimeStub,
-            ATTENTION_TEST_CAPTURE: captureFile,
-            AGENTIC_NOTIFY_HOSTNAME: E2E_HOSTNAME,
-          },
-          encoding: 'utf8',
-          timeout: 30_000,
-        },
-      );
-    }
-
-    async function takeCaptures() {
-      let text = '';
-      try {
-        text = await readFile(captureFile, 'utf8');
-      } catch {
-        return [];
-      }
-      await rm(captureFile, { force: true });
-      return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-    }
-
-    it('permission_prompt → approval event with content-hash subject, urgent', async () => {
-      const result = runSensorE2E('notification.mjs', {
-        cwd: join(repo, 'subdir'),
-        session_id: 'sess-1',
-        notification_type: 'permission_prompt',
-        message: 'Allow Bash?',
-      });
-      strictEqual(result.status, 0);
-      strictEqual(result.stdout, '');
-      const captures = await takeCaptures();
-      strictEqual(captures.length, 1);
-      const { argv, event } = captures[0];
-      const expectedRepoRoot = sensorLib.resolveRepoRoot(join(repo, 'subdir'));
-      deepStrictEqual(argv, ['emit', '--repo-root', expectedRepoRoot]);
-      strictEqual(event.kind, 'approval');
-      strictEqual(event.urgency, 'urgent');
-      strictEqual(event.source, 'attention-claude');
-      strictEqual(
-        event.event_id,
-        canonical.buildEventId({
-          repoIdent: canonical.deriveRepoIdent(expectedRepoRoot),
-          kind: 'approval',
-          subject: canonical.approvalSubject({ sessionId: 'sess-1', message: 'Allow Bash?' }),
-          hostname: E2E_HOSTNAME,
-        }),
-      );
-      // ADR-0041 §4 — routing/display fields populated (hostname woven + top-level).
-      strictEqual(event.hostname, E2E_HOSTNAME);
-      strictEqual(event.topic, basename(expectedRepoRoot));
-      ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
-    });
-
-    it('other notification types are ignored', async () => {
-      const result = runSensorE2E('notification.mjs', {
-        cwd: repo,
-        session_id: 'sess-1',
-        notification_type: 'auth_success',
-        message: 'ok',
-      });
-      strictEqual(result.status, 0);
-      strictEqual(result.stdout, '');
-      deepStrictEqual(await takeCaptures(), []);
-    });
-
-    it('bare Stop → turn-complete from common fields only', async () => {
-      const result = runSensorE2E('stop.mjs', {
-        cwd: repo,
-        session_id: 'sess-1',
-        prompt_id: 'prompt-7',
-      });
-      strictEqual(result.status, 0);
-      strictEqual(result.stdout, '');
-      const captures = await takeCaptures();
-      strictEqual(captures.length, 1);
-      const { event } = captures[0];
-      strictEqual(event.kind, 'turn-complete');
-      strictEqual(
-        event.event_id,
-        canonical.buildEventId({
-          repoIdent: canonical.deriveRepoIdent(repo),
-          kind: 'turn-complete',
-          subject: canonical.turnCompleteSubject({ sessionId: 'sess-1', promptId: 'prompt-7' }),
-          hostname: E2E_HOSTNAME,
-        }),
-      );
-      // ADR-0041 §4 — the bare turn-complete still carries the routing fields.
-      strictEqual(event.hostname, E2E_HOSTNAME);
-      ok(typeof event.topic === 'string' && event.topic.length > 0);
-      ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
-      // ADR-0041 §3a — a bare turn-complete (no fresh projection) borns NO headline
-      // (a kind-only token would overstate a single turn as workflow status).
-      strictEqual('headline' in event, false);
-    });
-
-    it('Stop with a fresh rendered projection → workflow-terminal (and NO bare turn-complete)', async () => {
-      const dir = join(repo, '.agentic-plugins', 'state', 'engineer');
-      await mkdir(dir, { recursive: true });
-      const wfId = 'compose-20260704T112944Z-8f2b89';
-      await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({
-        workflow_kind: 'engineer',
-        workflow_id: wfId,
-        workflow_path: '.agentic-plugins/state/engineer/workflows/x.md',
-        phase: 'summary-complete',
-        next_action: 'Commit the change',
-        // A real mapArchiveGate output (engineer/orchestrator emit
-        // ready_to_archive / not_terminal / blocked); ready_to_archive → the
-        // headline token `complete` below (ADR-0041 §3a).
-        archive_gate: 'ready_to_archive',
-        routing_recommendation: 'continue',
-      }));
-      await writeFile(
-        join(dir, 'last-session-handoff.json.footer-rendered'),
-        JSON.stringify({ workflow_id: wfId, status: 'rendered', at: new Date().toISOString() }),
-      );
-      try {
-        const result = runSensorE2E('stop.mjs', {
-          cwd: repo,
-          session_id: 'sess-1',
-          prompt_id: 'prompt-8',
-        });
-        strictEqual(result.status, 0);
-        strictEqual(result.stdout, '');
-        const captures = await takeCaptures();
-        strictEqual(captures.length, 1, 'workflow-terminal must SUPPRESS the bare turn-complete');
-        const { event } = captures[0];
-        strictEqual(event.kind, 'workflow-terminal');
-        strictEqual(event.refs.workflow_id, wfId);
-        strictEqual(event.refs.path, '.agentic-plugins/state/engineer/workflows/x.md');
-        // ADR-0041 §3 — phase rides in refs when a fresh projection exists.
-        strictEqual(event.refs.phase, 'summary-complete');
-        // ADR-0041 §3a — the workflow-terminal event borns the opt-in headline from
-        // the projection's archive_gate (ready_to_archive → complete), end-to-end
-        // through the real Stop sensor. The runtime opt-in + Guard 2 decide egress;
-        // the producer's job — proven here — is to born the correct closed-vocab token.
-        strictEqual(event.headline, 'complete');
-        strictEqual(
-          event.event_id,
-          canonical.buildEventId({
-            repoIdent: canonical.deriveRepoIdent(repo),
-            kind: 'workflow-terminal',
-            subject: wfId,
-            status: 'terminal',
-            hostname: E2E_HOSTNAME,
-          }),
-        );
-        // ADR-0041 §4 — routing/display fields on the workflow-terminal event.
-        strictEqual(event.hostname, E2E_HOSTNAME);
-        ok(typeof event.topic === 'string' && event.topic.length > 0);
-        ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
-
-    it('Stop with a fresh designer projection → workflow-terminal WITHOUT headline on blocked (ADR-0043 §3)', async () => {
-      const dir = join(repo, '.agentic-plugins', 'state', 'designer');
-      await mkdir(dir, { recursive: true });
-      const wfId = 'compose-20260714T000000Z-d51gn3';
-      await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({
-        workflow_kind: 'designer',
-        workflow_id: wfId,
-        workflow_path: '.agentic-plugins/state/designer/workflows/d.md',
-        phase: 'summary-complete',
-        next_action: 'Hand the spec to the frontend',
-        // designer blocked is USUALLY publish-needed (completion-output
-        // contract §2) and the frozen projection cannot distinguish — the
-        // event must therefore carry NO headline token (map-or-omit).
-        archive_gate: 'blocked',
-        routing_recommendation: '/designer:resume',
-      }));
-      await writeFile(
-        join(dir, 'last-session-handoff.json.footer-rendered'),
-        JSON.stringify({ workflow_id: wfId, status: 'rendered', at: new Date().toISOString() }),
-      );
-      try {
-        const result = runSensorE2E('stop.mjs', { cwd: repo, session_id: 'sess-1', prompt_id: 'prompt-d' });
-        strictEqual(result.status, 0);
-        strictEqual(result.stdout, '');
-        const captures = await takeCaptures();
-        strictEqual(captures.length, 1, 'one designer workflow-terminal; the bare turn-complete is suppressed');
-        const { event } = captures[0];
-        strictEqual(event.kind, 'workflow-terminal');
-        strictEqual(event.refs.workflow_id, wfId);
-        strictEqual(event.refs.phase, 'summary-complete');
-        strictEqual('headline' in event, false,
-          'designer blocked must omit the headline token — never a wrong blocked claim for publish-needed');
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
-
-    it('composed producer→consumer: the REAL designer sidecar writes projection+marker, the REAL Stop sensor enriches (ADR-0043 §3)', async () => {
-      // Producer half — a real designer set-terminal against the repo's own
-      // runtime renders the completion footer and upgrades the marker to
-      // rendered (the S4 contract as it exists in the wild, not a hand seed).
-      // Consumer half — the real attention Stop sensor reads that documented
-      // contract and hands one workflow-terminal event to the capture stub.
-      const composedRepo = await mkdtemp(join(tmpdir(), 'attention-composed-'));
-      try {
-        for (const args of [
-          ['init', '-q', '-b', 'feat/x'],
-          ['config', 'user.name', 't'],
-          ['config', 'user.email', 't@t'],
-          ['config', 'commit.gpgsign', 'false'],
-          ['commit', '-q', '--allow-empty', '-m', 'baseline', '--no-verify'],
-        ]) {
-          const r = spawnSync('git', args, { cwd: composedRepo, encoding: 'utf8' });
-          strictEqual(r.status, 0, `git ${args[0]}: ${r.stderr}`);
-        }
-        const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: composedRepo, encoding: 'utf8' }).stdout.trim();
-        const designerState = resolve(REPO_ROOT, 'plugins/designer/scripts/state.mjs');
-        const create = spawnSync(process.execPath, [
-          designerState, 'create', '--repo-root', composedRepo,
-          '--verb', 'compose', '--host', 'claude', '--persona', 'designer',
-          '--git-baseline-branch', 'feat/x', '--git-baseline-head', head,
-          '--status-digest', 'deadbeef', '--profile', 'general',
-          '--original-request', 'composed attention e2e',
-          '--current-phase', 'phase-2-presented', '--next-action', 'Run compose skill',
-        ], { encoding: 'utf8' });
-        strictEqual(create.status, 0, create.stderr);
-        const wfPath = create.stdout.trim();
-        const wfId = basename(wfPath, '.md');
-        const term = spawnSync(process.execPath, [
-          designerState, 'set-terminal', '--workflow-path', wfPath, '--host', 'claude',
-          '--terminal-phase', 'summary-complete', '--terminal-marker', 'true',
-          '--next-action', 'Hand the spec to the frontend (/engineer:start)', '--event', 'updated',
-        ], {
-          cwd: composedRepo,
-          encoding: 'utf8',
-          env: { ...process.env, AGENTIC_RUNTIME_ROOT: resolve(REPO_ROOT, 'plugins/runtime') },
-        });
-        strictEqual(term.status, 0, term.stderr);
-        ok(term.stderr.includes('Runtime completion footer'),
-          'the real designer footer must render so the marker upgrades to rendered');
-        const result = runSensorE2E('stop.mjs', { cwd: composedRepo, session_id: 'sess-c', prompt_id: 'prompt-c' });
-        strictEqual(result.status, 0);
-        strictEqual(result.stdout, '');
-        const captures = await takeCaptures();
-        strictEqual(captures.length, 1, 'one designer workflow-terminal event from the composed pipeline');
-        const { event } = captures[0];
-        strictEqual(event.kind, 'workflow-terminal');
-        strictEqual(event.refs.workflow_id, wfId);
-        // baseline == HEAD → head_moved unmet → archive_gate blocked → the
-        // manually-published omit rule applies end-to-end.
-        strictEqual('headline' in event, false,
-          'the composed designer terminal (publish-needed) must omit the headline token');
-      } finally {
-        await rm(composedRepo, { recursive: true, force: true });
-      }
-    });
-
-    it('four fresh projections (one per persona) → four workflow-terminal events with per-persona headline policy, no bare turn-complete', async () => {
-      // Multiple personas can be terminal in one turn (a macro closes with its
-      // last engineer child; a founder/designer deliverable idles at its fresh
-      // transition). Each workflow-terminal event borns its OWN headline from
-      // its OWN projection's archive_gate AND persona — engineer blocked →
-      // blocked, orchestrator not_terminal → in-progress, founder blocked →
-      // OMITTED (manually-published), designer ready_to_archive → complete —
-      // and the bare turn-complete is suppressed.
-      const engDir = join(repo, '.agentic-plugins', 'state', 'engineer');
-      const orcDir = join(repo, '.agentic-plugins', 'state', 'orchestrator');
-      const fdrDir = join(repo, '.agentic-plugins', 'state', 'founder');
-      const dsgDir = join(repo, '.agentic-plugins', 'state', 'designer');
-      await mkdir(engDir, { recursive: true });
-      await mkdir(orcDir, { recursive: true });
-      await mkdir(fdrDir, { recursive: true });
-      await mkdir(dsgDir, { recursive: true });
-      const engId = 'compose-20260704T112944Z-eeeeee';
-      const macroId = 'macro-plan-20260704T112944Z-aaaaaa';
-      const fdrId = 'compose-20260704T112944Z-ffffff';
-      const dsgId = 'compose-20260704T112944Z-dddddd';
-      // engineer: archive_gate blocked → 'blocked'; UNSCOPED rendered marker shape.
-      await writeFile(join(engDir, 'last-session-handoff.json'), JSON.stringify({
-        workflow_kind: 'engineer', workflow_id: engId,
-        workflow_path: '.agentic-plugins/state/engineer/workflows/e.md',
-        phase: 'plan', next_action: 'n', archive_gate: 'blocked', routing_recommendation: 'continue',
-      }));
-      await writeFile(
-        join(engDir, 'last-session-handoff.json.footer-rendered'),
-        JSON.stringify({ workflow_id: engId, status: 'rendered', at: new Date().toISOString() }),
-      );
-      // orchestrator: archive_gate not_terminal → 'in-progress'; WORKFLOW-ID-SCOPED marker shape.
-      await writeFile(join(orcDir, 'last-session-handoff.json'), JSON.stringify({
-        workflow_kind: 'orchestrator', workflow_id: macroId,
-        workflow_path: '.agentic-plugins/state/orchestrator/workflows/m.md',
-        phase: 'phase-3-dispatch', next_action: 'n', archive_gate: 'not_terminal', routing_recommendation: 'continue',
-      }));
-      await writeFile(
-        join(orcDir, `last-session-handoff.json.${macroId}.footer-rendered`),
-        JSON.stringify({ workflow_id: macroId, status: 'rendered', at: new Date().toISOString() }),
-      );
-      // founder: archive_gate blocked → headline OMITTED (manually-published);
-      // slot-shaped rendered marker per the founder runbook contract.
-      await writeFile(join(fdrDir, 'last-session-handoff.json'), JSON.stringify({
-        workflow_kind: 'founder', workflow_id: fdrId,
-        workflow_path: '.agentic-plugins/state/founder/workflows/f.md',
-        phase: 'summary-complete', next_action: 'n', archive_gate: 'blocked', routing_recommendation: '/founder:resume',
-      }));
-      await writeFile(
-        join(fdrDir, 'last-session-handoff.json.footer-rendered'),
-        JSON.stringify({ workflow_id: fdrId, status: 'rendered', at: new Date().toISOString() }),
-      );
-      // designer: archive_gate ready_to_archive → 'complete'; slot-shaped marker.
-      await writeFile(join(dsgDir, 'last-session-handoff.json'), JSON.stringify({
-        workflow_kind: 'designer', workflow_id: dsgId,
-        workflow_path: '.agentic-plugins/state/designer/workflows/d.md',
-        phase: 'summary-complete', next_action: 'n', archive_gate: 'ready_to_archive', routing_recommendation: '/designer:resume',
-      }));
-      await writeFile(
-        join(dsgDir, 'last-session-handoff.json.footer-rendered'),
-        JSON.stringify({ workflow_id: dsgId, status: 'rendered', at: new Date().toISOString() }),
-      );
-      try {
-        const result = runSensorE2E('stop.mjs', { cwd: repo, session_id: 'sess-1', prompt_id: 'prompt-9' });
-        strictEqual(result.status, 0);
-        strictEqual(result.stdout, '');
-        const captures = await takeCaptures();
-        strictEqual(captures.length, 4, 'one workflow-terminal per fresh persona projection; the bare turn-complete is suppressed');
-        const byWfId = Object.fromEntries(captures.map((c) => [c.event.refs.workflow_id, c.event]));
-        strictEqual(byWfId[engId].kind, 'workflow-terminal');
-        strictEqual(byWfId[engId].headline, 'blocked', 'engineer archive_gate=blocked → headline blocked');
-        strictEqual(byWfId[macroId].kind, 'workflow-terminal');
-        strictEqual(byWfId[macroId].headline, 'in-progress', 'orchestrator archive_gate=not_terminal → headline in-progress');
-        strictEqual(byWfId[fdrId].kind, 'workflow-terminal');
-        strictEqual('headline' in byWfId[fdrId], false, 'founder blocked (usually publish-needed) → headline omitted');
-        strictEqual(byWfId[dsgId].kind, 'workflow-terminal');
-        strictEqual(byWfId[dsgId].headline, 'complete', 'designer archive_gate=ready_to_archive → headline complete');
-        for (const { event } of captures) {
-          strictEqual(event.kind === 'turn-complete', false, 'no bare turn-complete when a terminal event fired');
-        }
-      } finally {
-        await rm(engDir, { recursive: true, force: true });
-        await rm(orcDir, { recursive: true, force: true });
-        await rm(fdrDir, { recursive: true, force: true });
-        await rm(dsgDir, { recursive: true, force: true });
-      }
-    });
-
-    it('SubagentStop → subagent-complete keyed on agent_id', async () => {
-      const result = runSensorE2E('subagent-stop.mjs', {
-        cwd: repo,
-        session_id: 'sess-1',
-        agent_id: 'agent-42',
-        agent_type: 'Explore',
-      });
-      strictEqual(result.status, 0);
-      strictEqual(result.stdout, '');
-      const captures = await takeCaptures();
-      strictEqual(captures.length, 1);
-      const { event } = captures[0];
-      strictEqual(event.kind, 'subagent-complete');
-      strictEqual(
-        event.event_id,
-        canonical.buildEventId({
-          repoIdent: canonical.deriveRepoIdent(repo),
-          kind: 'subagent-complete',
-          subject: 'agent-42',
-          status: 'completed',
-          hostname: E2E_HOSTNAME,
-        }),
-      );
-      // ADR-0041 §4 — routing/display fields on the subagent-complete event.
-      strictEqual(event.hostname, E2E_HOSTNAME);
-      ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
-    });
-  });
 });
 
 describe('plugins/attention — ADR-0044 §13 + ADR-0045 §18 floor declarations (data/runtime-floors.json)', () => {
-  it('ships the declaration file with the schema id and plain-release floors', async () => {
+  it('ships the declaration file with the schema id and exactly the two plain-release floors', async () => {
     const declaration = await readJSON(resolve(PLUGIN_ROOT, 'data/runtime-floors.json'));
     strictEqual(declaration.schema, 'attention-runtime-floors-1.0');
+    // ADR-0064 removed the response_signal floor with the notification
+    // group; the runtime reads publish_session (the founding key) and
+    // entry_brief only.
+    deepStrictEqual(Object.keys(declaration.floors).sort(), ['entry_brief', 'publish_session']);
     // The §13/§18 released-floor rule: a plain X.Y.Z release version — a
     // prerelease or build-suffixed floor is malformed by definition (the
     // runtime-side diagnosis refuses it; prerelease alignment on both sides).
-    for (const key of ['publish_session', 'entry_brief', 'response_signal']) {
+    for (const key of ['publish_session', 'entry_brief']) {
       ok(
         /^\d+\.\d+\.\d+$/.test(declaration.floors[key]),
         `${key} floor "${declaration.floors[key]}" is not a plain X.Y.Z release version`,
@@ -1638,607 +818,70 @@ describe('plugins/attention — ADR-0044 §13 + ADR-0045 §18 floor declarations
     );
     // S8a-recorded first capable released version (ADR-0045 §Status).
     strictEqual(declaration.floors.entry_brief, '0.83.0');
-    strictEqual(
-      discoverLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION,
-      declaration.floors.response_signal,
-      'discover-runtime.mjs RESPONSE_SIGNAL_MIN_RUNTIME_VERSION must equal floors.response_signal byte-for-byte',
-    );
-    // ADR-0047 §9 — Release A of the §8 rollout: the first released runtime
-    // carrying the response-needed contract (recorded by the
-    // signal-runtime-release macro subtask; plugin-runtime-v0.84.0).
-    strictEqual(declaration.floors.response_signal, '0.84.0');
-    // The sensor lib re-exports the floor for the Stop sensor's emit-seam
-    // threading — it must be the SAME constant, not a drifted copy.
-    strictEqual(sensorLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION, discoverLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION);
   });
 
-  it('the four capability floors never share a constant (ADR-0044 §2 / ADR-0045 §12 / ADR-0047 §9)', () => {
+  it('the publisher and entry-brief floors never share a constant (ADR-0044 §2 / ADR-0045 §12)', () => {
     const floors = [
-      discoverLib.MIN_RUNTIME_VERSION,
       discoverLib.PUBLISH_SESSION_MIN_RUNTIME_VERSION,
       discoverLib.ENTRY_BRIEF_MIN_RUNTIME_VERSION,
-      discoverLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION,
     ];
     for (const floor of floors) {
       ok(typeof floor === 'string' && floor.length > 0, 'each floor must be its own exported constant');
     }
     strictEqual(
       new Set(floors).size,
-      4,
-      'notify, publisher, entry-brief, and response-signal floors are pairwise distinct — no gate ever borrows another capability\'s floor',
+      2,
+      'the publisher and entry-brief floors are distinct — no gate ever borrows another capability\'s floor',
     );
-  });
-});
-
-describe('plugins/attention — ADR-0047 §2 classifier constants + peer-runner ledger mirror parity', () => {
-  it('pins the scan bounds as contract values (alongside the four Stop-budget constants)', () => {
-    strictEqual(sensorLib.PEER_SCAN_PER_PERSONA_CAP, 1024);
-    strictEqual(sensorLib.PEER_SCAN_BUDGET_MS, 1_000);
-    strictEqual(sensorLib.PEER_RUN_STALE_GRACE_MS, 60_000);
-    // The cap must clear the ledger's own retention cap with headroom — a
-    // swept repo must never be permanently unpromotable (cap-exhausted).
-    ok(sensorLib.PEER_SCAN_PER_PERSONA_CAP > 200, 'cap must exceed the peer-runner DEFAULT_RETENTION_CAP (200)');
-    // The classifier budget rides INSIDE one emission slot — it must never
-    // approach a slot of its own (adds no slot to the 36s contract).
-    ok(sensorLib.PEER_SCAN_BUDGET_MS < sensorLib.EMIT_SLOT_MS / 2, 'scan budget must stay well inside one emit slot');
-  });
-
-  it('the ledger homes table mirrors each persona peer-runner byte-for-byte (copy-not-import, ADR-0010 §5)', () => {
-    deepStrictEqual(sensorLib.PEER_RUN_HOMES_BY_PERSONA, {
-      engineer: ['.agentic-plugins/state/engineer/peer-runs', '.claude/agentic-engineer/peer-runs'],
-      orchestrator: ['.agentic-plugins/state/orchestrator/peer-runs', '.claude/agentic-orchestrator/peer-runs'],
-      founder: ['.agentic-plugins/state/founder/peer-runs'],
-      designer: ['.agentic-plugins/state/designer/peer-runs'],
-    });
-    // Every SENSOR_PERSONAS member has a modeled home set (a future persona
-    // addition fails closed here, not silently at runtime).
-    for (const persona of sensorLib.SENSOR_PERSONAS) {
-      ok(Array.isArray(sensorLib.PEER_RUN_HOMES_BY_PERSONA[persona]), `${persona} must have a modeled ledger home set`);
-    }
-  });
-
-  it('status vocabulary + stale-grace mirror the engineer peer-runner (the ledger contract source)', async () => {
-    const peerRunner = await import(resolve(REPO_ROOT, 'plugins/engineer/scripts/peer-runner.mjs'));
-    deepStrictEqual(
-      [...sensorLib.PEER_RUN_TERMINAL_STATUSES].sort(),
-      [...peerRunner.TERMINAL_STATUSES].sort(),
-      'terminal statuses must mirror the ledger TERMINAL_STATUSES',
-    );
-    const expectedNonTerminal = [...peerRunner.VALID_STATUSES]
-      .filter((status) => !peerRunner.TERMINAL_STATUSES.has(status))
-      .sort();
-    deepStrictEqual(
-      [...sensorLib.PEER_RUN_NON_TERMINAL_STATUSES].sort(),
-      expectedNonTerminal,
-      'non-terminal statuses must mirror VALID_STATUSES minus TERMINAL_STATUSES',
-    );
-    strictEqual(
-      sensorLib.PEER_RUN_STALE_GRACE_MS,
-      peerRunner.DEFAULT_STALE_GRACE_MS,
-      'the queued/spawning liveness window is the ledger\'s own stale-grace, never a private tunable',
-    );
-  });
-});
-
-describe('plugins/attention — ADR-0047 §2 classifyStopFinality (bounded structural classifier)', () => {
-  // ── rows 1/2: payload evidence (probed 2.1.216 contract) ──
-
-  it('payload rows: running background task or any session cron ⇒ interim (entry-shape-independent)', () => {
-    const repoRoot = tmpdir(); // rows 1/2 short-circuit before any ledger read
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({
-        payload: { background_tasks: [{ id: 'x', type: 'shell', status: 'running' }], session_crons: [] },
-        repoRoot,
-      }),
-      { verdict: 'interim', reason: 'background-tasks-pending' },
-    );
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({
-        payload: { background_tasks: [], session_crons: [{ id: 'c', schedule: '*/10 * * * *', recurring: true, prompt: 'noop' }] },
-        repoRoot,
-      }),
-      { verdict: 'interim', reason: 'session-crons-pending' },
-    );
-    // ANY resident entry is interim evidence — completed tasks were observed
-    // REMOVED from the list (probe B'), and no terminal token was ever
-    // observed surviving; residents therefore read not-terminal (the
-    // accepted false-negative direction, never a guess at a token set).
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({
-        payload: { background_tasks: [{ id: 'x', status: 'completed' }], session_crons: [] },
-        repoRoot,
-      }),
-      { verdict: 'interim', reason: 'background-tasks-pending' },
-    );
-  });
-
-  it('absent/malformed payload surface ⇒ unpromotable WITHOUT running the ledger scan (conservative row 4)', () => {
-    let scanCalls = 0;
-    const scan = () => { scanCalls += 1; return { live: false, complete: true }; };
-    for (const payload of [
-      {},                                              // pre-2.1.145 host
-      null,
-      undefined,
-      [],                                              // non-object payload
-      { background_tasks: null, session_crons: null }, // present-but-null is UNOBSERVABLE, never "empty"
-      { background_tasks: 3, session_crons: 'x' },     // scalars
-      { background_tasks: { 0: 'a' } },                // object is not an array
-    ]) {
-      deepStrictEqual(
-        sensorLib.classifyStopFinality({ payload, repoRoot: tmpdir(), scan }),
-        { verdict: 'unpromotable', reason: 'payload-surface-unobservable' },
-        `payload ${JSON.stringify(payload)} must be unpromotable`,
-      );
-    }
-    strictEqual(scanCalls, 0, 'row 3 must not run when the payload surface is unobservable (§2 + hot-path cost)');
-  });
-
-  it('one observable empty field is enough to reach row 3 even when the sibling field is malformed', () => {
-    const scan = () => ({ live: false, complete: true });
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({
-        payload: { background_tasks: [], session_crons: 'garbage' },
-        repoRoot: tmpdir(),
-        scan,
-      }),
-      { verdict: 'final', reason: 'no-interim-evidence' },
-    );
-  });
-
-  it('row 1/2 interim evidence short-circuits BEFORE the ledger scan (no wasted row-3 work)', () => {
-    let scanCalls = 0;
-    const scan = () => { scanCalls += 1; return { live: false, complete: true }; };
-    sensorLib.classifyStopFinality({
-      payload: { background_tasks: [{ status: 'running' }], session_crons: [] },
-      repoRoot: tmpdir(),
-      scan,
-    });
-    strictEqual(scanCalls, 0);
-  });
-
-  it('row 3 verdict wiring: live ⇒ interim, incomplete ⇒ unpromotable with the scan reason, hostile scan results fail closed', () => {
-    const supported = { background_tasks: [], session_crons: [] };
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({ payload: supported, repoRoot: tmpdir(), scan: () => ({ live: true, complete: false }) }),
-      { verdict: 'interim', reason: 'peer-run-live' },
-    );
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({
-        payload: supported,
-        repoRoot: tmpdir(),
-        scan: () => ({ live: false, complete: false, reason: 'home-unreadable:engineer' }),
-      }),
-      { verdict: 'unpromotable', reason: 'scan-incomplete:home-unreadable:engineer' },
-    );
-    // A hostile/broken injected scan (wrong shape, throw) degrades to
-    // unpromotable — never a false final, never a throw to the hook.
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({ payload: supported, repoRoot: tmpdir(), scan: () => null }),
-      { verdict: 'unpromotable', reason: 'scan-incomplete:unknown' },
-    );
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({ payload: supported, repoRoot: tmpdir(), scan: () => { throw new Error('boom'); } }),
-      { verdict: 'unpromotable', reason: 'classifier-error' },
-    );
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({
-        payload: supported,
-        repoRoot: tmpdir(),
-        scan: () => ({ live: 'yes', complete: 'yes' }), // non-boolean truthy — must not promote
-      }),
-      { verdict: 'unpromotable', reason: 'scan-incomplete:unknown' },
-    );
-    // Promotion requires live === false EXPLICITLY: a result missing the
-    // field, or carrying a truthy non-boolean, is malformed — never final
-    // (Codex review MINOR).
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({ payload: supported, repoRoot: tmpdir(), scan: () => ({ complete: true }) }),
-      { verdict: 'unpromotable', reason: 'scan-incomplete:unknown' },
-    );
-    deepStrictEqual(
-      sensorLib.classifyStopFinality({
-        payload: supported,
-        repoRoot: tmpdir(),
-        scan: () => ({ live: 'no', complete: true }),
-      }),
-      { verdict: 'unpromotable', reason: 'scan-incomplete:unknown' },
-    );
-  });
-
-  // ── row 3: the real ledger scan over fixture repos ──
-
-  describe('scanPeerRunLedgers (fixture repos)', () => {
-    let repo;
-    const CANON_ENGINEER = '.agentic-plugins/state/engineer/peer-runs';
-    const LEGACY_ENGINEER = '.claude/agentic-engineer/peer-runs';
-
-    async function seedHandle(homeRel, runId, handle, { mtime } = {}) {
-      const dir = join(repo, homeRel, runId);
-      await mkdir(dir, { recursive: true });
-      const file = join(dir, 'handle.json');
-      await writeFile(file, typeof handle === 'string' ? handle : JSON.stringify(handle));
-      if (mtime) await utimes(dir, mtime, mtime);
-    }
-
-    function freshHandle(overrides = {}) {
-      return {
-        schema_version: '1.0',
-        run_id: 'r',
-        status: 'completed',
-        pid: null,
-        updated_at: new Date().toISOString(),
-        ...overrides,
-      };
-    }
-
-    before(async () => {
-      repo = await mkdtemp(join(tmpdir(), 'attention-ledger-'));
-    });
-    after(async () => {
-      await rm(repo, { recursive: true, force: true });
-    });
-    async function resetRepo() {
-      await rm(join(repo, '.agentic-plugins'), { recursive: true, force: true });
-      await rm(join(repo, '.claude'), { recursive: true, force: true });
-    }
-
-    it('absent homes everywhere ⇒ complete, nothing live (ENOENT is zero runs, not unreadable)', async () => {
-      await resetRepo();
-      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: false, complete: true });
-    });
-
-    it('all five terminal statuses read not-live; a full terminal ledger scan completes ⇒ classifier promotes', async () => {
-      await resetRepo();
-      let i = 0;
-      for (const status of sensorLib.PEER_RUN_TERMINAL_STATUSES) {
-        await seedHandle(CANON_ENGINEER, `run-${i += 1}`, freshHandle({ status }));
-      }
-      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: false, complete: true });
-      deepStrictEqual(
-        sensorLib.classifyStopFinality({ payload: { background_tasks: [], session_crons: [] }, repoRoot: repo }),
-        { verdict: 'final', reason: 'no-interim-evidence' },
-      );
-    });
-
-    it('running with a LIVE recorded pid ⇒ live (kill(pid,0) probe; the classifier reads interim)', async () => {
-      await resetRepo();
-      await seedHandle(CANON_ENGINEER, 'run-live', freshHandle({ status: 'running', pid: process.pid }));
-      const result = sensorLib.scanPeerRunLedgers({ repoRoot: repo });
-      deepStrictEqual(result, { live: true, complete: false });
-      deepStrictEqual(
-        sensorLib.classifyStopFinality({ payload: { background_tasks: [], session_crons: [] }, repoRoot: repo }),
-        { verdict: 'interim', reason: 'peer-run-live' },
-      );
-    });
-
-    it('running with a DEAD pid ⇒ not live (ESRCH); EPERM-style probe answers ⇒ live (PID-reuse reads interim)', async () => {
-      await resetRepo();
-      // A just-exited child pid is reliably dead. Spawn+reap one.
-      const child = spawnSync(process.execPath, ['-e', 'process.exit(0)']);
-      strictEqual(child.status, 0);
-      await seedHandle(CANON_ENGINEER, 'run-dead', freshHandle({ status: 'running', pid: child.pid }));
-      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: false, complete: true });
-      // EPERM path via injected probe (a foreign-owner pid answers the probe).
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, probePid: () => true }),
-        { live: true, complete: false },
-      );
-    });
-
-    it('running/cancel_requested WITHOUT a recorded pid is a malformed handle ⇒ scan incomplete (never a guess)', async () => {
-      for (const status of ['running', 'cancel_requested']) {
-        await resetRepo();
-        await seedHandle(CANON_ENGINEER, 'run-nopid', freshHandle({ status, pid: null }));
-        deepStrictEqual(
-          sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
-          { live: false, complete: false, reason: 'handle-pid-missing:engineer' },
-        );
-      }
-    });
-
-    it('queued/spawning are PID-less BY DESIGN: live inside the ledger stale-grace window (boundary inclusive, sweep parity), stale beyond it', async () => {
-      const nowMs = Date.now();
-      for (const status of ['queued', 'spawning']) {
-        await resetRepo();
-        await seedHandle(CANON_ENGINEER, 'run-q', freshHandle({
-          status,
-          updated_at: new Date(nowMs - 1_000).toISOString(),
-        }));
-        deepStrictEqual(
-          sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: () => nowMs }),
-          { live: true, complete: false },
-          `${status} fresh must be live`,
-        );
-        await resetRepo();
-        await seedHandle(CANON_ENGINEER, 'run-q', freshHandle({
-          status,
-          updated_at: new Date(nowMs - sensorLib.PEER_RUN_STALE_GRACE_MS).toISOString(),
-        }));
-        deepStrictEqual(
-          sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: () => nowMs }),
-          { live: true, complete: false },
-          `${status} at exactly the grace boundary is still live (sweep: stale is strictly-greater)`,
-        );
-        await resetRepo();
-        await seedHandle(CANON_ENGINEER, 'run-q', freshHandle({
-          status,
-          updated_at: new Date(nowMs - sensorLib.PEER_RUN_STALE_GRACE_MS - 1).toISOString(),
-        }));
-        deepStrictEqual(
-          sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: () => nowMs }),
-          { live: false, complete: true },
-          `${status} past the grace window is not live`,
-        );
-      }
-    });
-
-    it('hostile handles fail the scan closed: malformed JSON, non-object, unknown status, malformed/future updated_at, missing handle', async () => {
-      const cases = [
-        ['{not json', 'handle-malformed:engineer'],
-        ['[1,2]', 'handle-malformed:engineer'],
-        // Ledger identity core: a JSON object WITHOUT schema_version/run_id
-        // is a non-ledger artifact, not a torn write (writeHandle is atomic
-        // and refuses to persist without them) — never judged, scan blocked.
-        [{ status: 'completed', updated_at: new Date().toISOString() }, 'handle-identity-missing:engineer'],
-        [freshHandle({ schema_version: '' }), 'handle-identity-missing:engineer'],
-        [freshHandle({ run_id: 42 }), 'handle-identity-missing:engineer'],
-        [freshHandle({ status: 'exploded' }), 'handle-status-unknown:engineer'],
-        [freshHandle({ status: 42 }), 'handle-status-unknown:engineer'],
-        [freshHandle({ updated_at: 'yesterday' }), 'handle-updated-at-malformed:engineer'],
-        [freshHandle({ updated_at: '2026-07-21 12:00:00' }), 'handle-updated-at-malformed:engineer'],
-        [freshHandle({ updated_at: new Date(Date.now() + 10 * 60_000).toISOString() }), 'handle-future-skew:engineer'],
-      ];
-      for (const [handle, reason] of cases) {
-        await resetRepo();
-        await seedHandle(CANON_ENGINEER, 'run-x', handle);
-        deepStrictEqual(
-          sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
-          { live: false, complete: false, reason },
-          `handle ${JSON.stringify(handle).slice(0, 60)} must fail closed with ${reason}`,
-        );
-      }
-      // A run directory with NO handle.json (mid-write/mid-sweep race) also
-      // blocks promotion rather than being silently skipped.
-      await resetRepo();
-      await mkdir(join(repo, CANON_ENGINEER, 'run-empty'), { recursive: true });
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
-        { live: false, complete: false, reason: 'handle-unreadable:engineer' },
-      );
-    });
-
-    it('a small future skew within FUTURE_SKEW_MS is tolerated (concurrent writer), far-future is malformed', async () => {
-      await resetRepo();
-      const nowMs = Date.now();
-      await seedHandle(CANON_ENGINEER, 'run-skew', freshHandle({
-        status: 'completed',
-        updated_at: new Date(nowMs + sensorLib.FUTURE_SKEW_MS - 1_000).toISOString(),
-      }));
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: () => nowMs }),
-        { live: false, complete: true },
-      );
-    });
-
-    it('a FIFO planted at a handle path degrades via the bounded-read guard (never blocks, scan incomplete)', async (t) => {
-      await resetRepo();
-      const dir = join(repo, CANON_ENGINEER, 'run-fifo');
-      await mkdir(dir, { recursive: true });
-      const mkfifo = spawnSync('mkfifo', [join(dir, 'handle.json')]);
-      if (mkfifo.status !== 0) {
-        t.skip('mkfifo unavailable on this platform');
-        return;
-      }
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
-        { live: false, complete: false, reason: 'handle-nonregular:engineer' },
-      );
-    });
-
-    it('ambiguous dual-home state (runs in BOTH engineer homes) fail-closes the scan — the peer-runner mirror', async () => {
-      await resetRepo();
-      await seedHandle(CANON_ENGINEER, 'run-a', freshHandle());
-      await seedHandle(LEGACY_ENGINEER, 'run-b', freshHandle());
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
-        { live: false, complete: false, reason: 'ambiguous-dual-home:engineer' },
-      );
-    });
-
-    it('dual-home populated is ANY-entry, not directories-only: clutter-only canonical + populated legacy is ambiguous (directoryHasEntries mirror)', async () => {
-      await resetRepo();
-      await mkdir(join(repo, CANON_ENGINEER), { recursive: true });
-      await writeFile(join(repo, CANON_ENGINEER, 'stray.tmp'), 'x'); // file, not a run dir
-      await seedHandle(LEGACY_ENGINEER, 'run-b', freshHandle());
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
-        { live: false, complete: false, reason: 'ambiguous-dual-home:engineer' },
-        'the peer-runner counts ANY entry when detecting dual-home ambiguity — the scanner must not be more permissive',
-      );
-    });
-
-    it('a symlinked handle.json is refused at open (O_NOFOLLOW) — external state never judged, scan blocked', async () => {
-      await resetRepo();
-      const outside = join(repo, 'outside-handle.json');
-      await writeFile(outside, JSON.stringify(freshHandle()));
-      const dir = join(repo, CANON_ENGINEER, 'run-link');
-      await mkdir(dir, { recursive: true });
-      await symlink(outside, join(dir, 'handle.json'));
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
-        { live: false, complete: false, reason: 'handle-unreadable:engineer' },
-      );
-    });
-
-    it('a symlink ENTRY in a home is unscannable — a symlinked run dir hiding a live handle must not read complete', async () => {
-      await resetRepo();
-      const realRun = join(repo, 'outside-run');
-      await mkdir(realRun, { recursive: true });
-      await writeFile(join(realRun, 'handle.json'), JSON.stringify(freshHandle({ status: 'running', pid: process.pid })));
-      await mkdir(join(repo, CANON_ENGINEER), { recursive: true });
-      await symlink(realRun, join(repo, CANON_ENGINEER, 'run-sym'));
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
-        { live: false, complete: false, reason: 'home-entry-unscannable:engineer' },
-      );
-    });
-
-    it('a pid probe error beyond ESRCH/EPERM fail-closes the scan (unproven death never underwrites promotion)', async () => {
-      await resetRepo();
-      await seedHandle(CANON_ENGINEER, 'run-odd', freshHandle({ status: 'running', pid: 12345 }));
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, probePid: () => { throw new Error('EINVAL-ish'); } }),
-        { live: false, complete: false, reason: 'pid-probe-failed:engineer' },
-      );
-      // A truthy non-boolean probe answer is not proof of life either — it
-      // must read dead-or-alive strictly by boolean contract (=== true).
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, probePid: () => 'alive' }),
-        { live: false, complete: true },
-      );
-    });
-
-    it('the stat pass of an over-cap home is deadline-checked per entry (budget beats cap in a pathological backlog)', async () => {
-      await resetRepo();
-      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle());
-      await seedHandle(CANON_ENGINEER, 'run-2', freshHandle());
-      await seedHandle(CANON_ENGINEER, 'run-3', freshHandle());
-      // Clock: deadline base, canonical home check, legacy home check pass;
-      // the FIRST stat-loop check then lands past the deadline.
-      const ticks = [0, 100, 200, 1_500];
-      const clock = () => (ticks.length > 1 ? ticks.shift() : ticks[0]);
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, perPersonaCap: 1, budgetMs: 1_000, now: clock, personas: ['engineer'] }),
-        { live: false, complete: false, reason: 'budget-exhausted' },
-        'over-cap stat enumeration must hit the wall-clock bound, not run to completion (cap-exhausted) first',
-      );
-    });
-
-    it('a scan that exhausted its budget never reports complete — final deadline check (deterministic clock)', async () => {
-      await resetRepo();
-      // The handle timestamp must live in the SAME clock domain as the
-      // injected ticks (a wall-clock updated_at against a small-integer
-      // clock reads as future skew before the final check is reached).
-      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle({ updated_at: new Date(300).toISOString() }));
-      // Clock sequence for personas:['engineer']: deadline base (0), two
-      // home checks (100, 200), the handle deadline check (300), the handle
-      // liveness nowMs (400) — all inside the budget — then the FINAL check
-      // lands past it. Every intermediate gate passed; complete must still
-      // be refused.
-      const ticks = [0, 100, 200, 300, 400, 1_500];
-      const clock = () => (ticks.length > 1 ? ticks.shift() : ticks[0]);
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, budgetMs: 1_000, now: clock, personas: ['engineer'] }),
-        { live: false, complete: false, reason: 'budget-exhausted' },
-      );
-    });
-
-    it('a legacy-only engineer home IS scanned (pre-ADR-0025 repos stay modeled)', async () => {
-      await resetRepo();
-      await seedHandle(LEGACY_ENGINEER, 'run-live', freshHandle({ status: 'running', pid: process.pid }));
-      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: true, complete: false });
-    });
-
-    it('founder/designer are canonical-only: a live handle planted in a NEVER-EXISTED legacy home is not read', async () => {
-      await resetRepo();
-      await seedHandle('.claude/agentic-founder/peer-runs', 'run-live', freshHandle({ status: 'running', pid: process.pid }));
-      await seedHandle('.claude/agentic-designer/peer-runs', 'run-live', freshHandle({ status: 'running', pid: process.pid }));
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
-        { live: false, complete: true },
-        'homes that never existed for a persona are deliberately not modeled (ADR-0036 SD5 / ADR-0042 SD7)',
-      );
-    });
-
-    it('per-persona cap: over-cap ⇒ incomplete; a live handle inside the NEWEST-first truncation still reads live', async () => {
-      await resetRepo();
-      const nowS = Math.floor(Date.now() / 1000);
-      // Three all-terminal runs against cap 2 ⇒ cap-exhausted, no promotion.
-      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle(), { mtime: nowS - 300 });
-      await seedHandle(CANON_ENGINEER, 'run-2', freshHandle(), { mtime: nowS - 200 });
-      await seedHandle(CANON_ENGINEER, 'run-3', freshHandle(), { mtime: nowS - 100 });
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, perPersonaCap: 2 }),
-        { live: false, complete: false, reason: 'cap-exhausted:engineer' },
-      );
-      // The NEWEST run is live ⇒ the truncated scan still discovers it.
-      await seedHandle(CANON_ENGINEER, 'run-4', freshHandle({ status: 'running', pid: process.pid }), { mtime: nowS - 10 });
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, perPersonaCap: 2 }),
-        { live: true, complete: false },
-      );
-      // At exactly the cap the scan is complete (bound not EXHAUSTED).
-      await resetRepo();
-      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle());
-      await seedHandle(CANON_ENGINEER, 'run-2', freshHandle());
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, perPersonaCap: 2 }),
-        { live: false, complete: true },
-      );
-    });
-
-    it('wall-clock budget exhaustion ⇒ incomplete (deterministic injected clock)', async () => {
-      await resetRepo();
-      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle());
-      let tick = 0;
-      const clock = () => { tick += 600; return tick; }; // every call advances 600ms
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: clock, budgetMs: 1_000 }),
-        { live: false, complete: false, reason: 'budget-exhausted' },
-      );
-    });
-
-    it('non-directory clutter (lock files, temp files) inside a home is a non-candidate, not a malformed handle', async () => {
-      await resetRepo();
-      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle());
-      await writeFile(join(repo, CANON_ENGINEER, 'sweep.lock'), 'x');
-      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: false, complete: true });
-    });
-
-    it('bad args fail closed', () => {
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({}),
-        { live: false, complete: false, reason: 'bad-args' },
-      );
-      deepStrictEqual(
-        sensorLib.scanPeerRunLedgers({ repoRoot: repo, personas: ['engineer', 'intruder'] }),
-        { live: false, complete: false, reason: 'unknown-persona:intruder' },
-      );
-    });
   });
 });
 
 describe('plugins/attention — ADR-0044 §2 Stop hot-path budget contract values', () => {
-  it('pins the per-slot / batch / capture / aggregate budgets', () => {
-    // Contract values, not tunables: notification batching may already consume
-    // two full 12s slots (ADR-0043 §3); the capture spawn adds AT MOST one more
-    // slot ahead of it. Changing any value is a contract change.
-    strictEqual(sensorLib.EMIT_SLOT_MS, 12_000);
-    strictEqual(sensorLib.TERMINAL_BATCH_DEADLINE_MS, 24_000);
-    strictEqual(sensorLib.TERMINAL_BATCH_DEADLINE_MS, 2 * sensorLib.EMIT_SLOT_MS);
+  it('pins the capture slot and the aggregate budget', () => {
+    // Contract values, not tunables: the capture spawn is the Stop hook's
+    // only child, so the aggregate is its one slot. Changing either value is
+    // a contract change.
     strictEqual(sensorLib.PUBLISH_SESSION_TIMEOUT_MS, 12_000);
     strictEqual(
       sensorLib.STOP_HOT_PATH_BUDGET_MS,
-      sensorLib.PUBLISH_SESSION_TIMEOUT_MS + sensorLib.TERMINAL_BATCH_DEADLINE_MS,
-      'aggregate Stop budget = one capture slot + the two-slot notification batch deadline',
+      sensorLib.PUBLISH_SESSION_TIMEOUT_MS,
+      'aggregate Stop budget = one capture slot',
     );
-    strictEqual(sensorLib.STOP_HOT_PATH_BUDGET_MS, 36_000);
+  });
+});
+
+describe('plugins/attention — ADR-0064 Decision 1: the notification group is removed', () => {
+  it('the sensor lib exports no notify builder, classifier, or emit seam', () => {
+    for (const name of [
+      'NOTIFY_KINDS',
+      'buildEvent',
+      'buildEventId',
+      'deriveRepoIdent',
+      'deriveHeadlineToken',
+      'classifyStopFinality',
+      'scanPeerRunLedgers',
+      'responseSignalRuntimeReady',
+      'emitEvent',
+      'emitTerminalEvents',
+      'EMIT_SLOT_MS',
+      'TERMINAL_BATCH_DEADLINE_MS',
+      'RESPONSE_SIGNAL_MIN_RUNTIME_VERSION',
+    ]) {
+      ok(!Object.hasOwn(sensorLib, name), `sensor.mjs must not export ${name}`);
+    }
   });
 
-  it('emitTerminalEvents defaults are wired to the contract constants', async () => {
-    // Injected fake emit records the slot each emission receives; the default
-    // deadline must admit exactly TERMINAL_BATCH_DEADLINE_MS / EMIT_SLOT_MS
-    // full slots (the pre-existing batching tests prove the drop behavior).
-    const calls = [];
-    let t = 0;
-    const result = await sensorLib.emitTerminalEvents({
-      repoRoot: '/r',
-      events: [{ event_id: 'a' }, { event_id: 'b' }, { event_id: 'c' }],
-      emit: async ({ timeoutMs }) => { calls.push(timeoutMs); t += sensorLib.EMIT_SLOT_MS; },
-      now: () => t,
-    });
-    deepStrictEqual(result, { emitted: 2, dropped: 1 });
-    ok(calls.every((slot) => slot === sensorLib.EMIT_SLOT_MS));
+  it('no attention script names the runtime emitter or the notify environment', async () => {
+    const { readdir } = await import('node:fs/promises');
+    const files = (await readdir(PLUGIN_ROOT, { recursive: true }))
+      .filter((rel) => rel.endsWith('.mjs'));
+    ok(files.length >= 4, 'the scan must see the hook sensors and the libs');
+    for (const rel of files) {
+      const src = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      const code = src.split('\n').filter((line) => !/^\s*(\/\/|\*)/.test(line)).join('\n');
+      ok(!code.includes('notify.mjs'), `${rel} must not reference notify.mjs outside comments`);
+      ok(!code.includes('AGENTIC_NOTIFY'), `${rel} must not read an AGENTIC_NOTIFY_* variable`);
+    }
   });
 });
 
@@ -2276,9 +919,8 @@ describe('plugins/attention — ADR-0044 §2 spawnPublishSession (unit)', () => 
       join(root, '.claude-plugin/plugin.json'),
       JSON.stringify({ name: 'runtime', version, description: 'stub' }),
     );
-    // The discovery ladder gates on notify.mjs (the notify floor's marker);
-    // the capture path additionally requires context.mjs at the SAME root.
-    await writeFile(join(root, 'scripts/notify.mjs'), '// stub\n');
+    // Discovery is manifest-identified; the capture path requires
+    // context.mjs at the resolved root and nothing else.
     if (withContext) {
       await writeFile(join(root, 'scripts/context.mjs'), contextSource);
     }
@@ -2405,41 +1047,13 @@ describe('plugins/attention — ADR-0044 §2 spawnPublishSession (unit)', () => 
     deepStrictEqual(captures[0].git_env, [], 'no GIT_* variable may be inherited by the publisher');
   });
 
-  it('emitEvent scrubs GIT_* from the notify child too (mirror of the capture scrub)', async () => {
-    // notify.mjs runs no git subprocess today, but the two spawn seams must
-    // not diverge — a future emitter probe would silently re-open the same
-    // repo-misdirection hole the capture scrub closes.
-    const root = await makePublisherStub('git-env-notify', '0.82.0');
-    const NOTIFY_RECORDING_STUB = [
-      '#!/usr/bin/env node',
-      "import fs from 'node:fs';",
-      'const chunks = [];',
-      'for await (const chunk of process.stdin) chunks.push(chunk);',
-      'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
-      "  tool: 'notify',",
-      "  git_env: Object.keys(process.env).filter((k) => k.startsWith('GIT_')).sort(),",
-      "}) + '\\n');",
-    ].join('\n');
-    await writeFile(join(root, 'scripts/notify.mjs'), NOTIFY_RECORDING_STUB);
-    const result = await sensorLib.emitEvent({
-      repoRoot: '/repo/x',
-      event: { event_id: 'x', kind: 'turn-complete', title: 't', body: '', urgency: 'normal' },
-      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile, GIT_DIR: '/somewhere/else/.git' },
-      home: stubHome,
-    });
-    deepStrictEqual(result, { emitted: true });
-    const captures = await takeUnitCaptures();
-    strictEqual(captures.length, 1);
-    deepStrictEqual(captures[0].git_env, [], 'no GIT_* variable may be inherited by the emitter');
-  });
-
-  it("all three sensor spawnSync seams pin killSignal: 'SIGKILL' (entry + capture + emit; source-level exact pin)", async () => {
+  it("both sensor spawnSync seams pin killSignal: 'SIGKILL' (entry + capture; source-level exact pin)", async () => {
     // The behavioral trap tests cannot enumerate every catchable signal;
     // this pins the exact spawn option so a weakening to any OTHER signal —
     // catchable or not — is a test failure, not a silent contract change.
     const sensorSrc = await readFile(resolve(PLUGIN_ROOT, 'scripts/lib/sensor.mjs'), 'utf8');
     const codeLines = sensorSrc.match(/^\s*killSignal: 'SIGKILL',$/gm) ?? [];
-    strictEqual(codeLines.length, 3, "sensor.mjs must carry exactly three spawnSync seams, each pinned to killSignal: 'SIGKILL'");
+    strictEqual(codeLines.length, 2, "sensor.mjs must carry exactly two spawnSync seams, each pinned to killSignal: 'SIGKILL'");
   });
 
   // Trap-and-sleep stub with a start sentinel: the sentinel write proves the
@@ -2471,25 +1085,7 @@ describe('plugins/attention — ADR-0044 §2 spawnPublishSession (unit)', () => 
     ok(elapsedMs < 10_000, `capture spawn took ${elapsedMs}ms — SIGKILL must bound a signal-trapping publisher`);
   });
 
-  it('emit spawn: a signal-trapping emitter cannot ride past the deadline — killSignal is SIGKILL (Stop-seam mirror of the entry-brief bound)', async () => {
-    const root = await makePublisherStub('sigterm-trap-emit', '0.82.0');
-    await writeFile(join(root, 'scripts/notify.mjs'), SIGNAL_TRAP_STUB);
-    const startedAt = Date.now();
-    const result = await sensorLib.emitEvent({
-      repoRoot: '/repo/x',
-      event: { event_id: 'x', kind: 'turn-complete', title: 't', body: '', urgency: 'normal' },
-      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
-      home: stubHome,
-      timeoutMs: 2_500,
-    });
-    const elapsedMs = Date.now() - startedAt;
-    deepStrictEqual(result, { emitted: true });
-    deepStrictEqual(await takeUnitCaptures(), [{ tool: 'trap-started' }], 'the emitter must have started and installed its traps before the kill');
-    ok(elapsedMs >= 2_400, `emit spawn returned in ${elapsedMs}ms — before the timeout, so the child cannot have been timeout-killed`);
-    ok(elapsedMs < 10_000, `emit spawn took ${elapsedMs}ms — SIGKILL must bound a signal-trapping emitter`);
-  });
-
-  it('below-floor runtime (0.81.0) skips silently — the notify floor alone never enables capture', async () => {
+  it('below-floor runtime (0.81.0) skips silently', async () => {
     const root = await makePublisherStub('below-floor', '0.81.0');
     const result = await sensorLib.spawnPublishSession({
       repoRoot: '/repo/x',
@@ -2498,6 +1094,36 @@ describe('plugins/attention — ADR-0044 §2 spawnPublishSession (unit)', () => 
     });
     deepStrictEqual(result, { spawned: false, reason: 'runtime-below-publisher-floor' });
     deepStrictEqual(await takeUnitCaptures(), []);
+  });
+
+  it('the newest cached runtime wins by manifest identity — an older build carrying notify.mjs is never chosen (ADR-0064 Decision 1)', async () => {
+    // Before ADR-0064 the capture resolved the newest runtime that still
+    // CARRIED scripts/notify.mjs, so once a runtime release drops the
+    // emitter, an older cached build would have published the capture.
+    const cacheHome = await mkdtemp(join(tmpdir(), 'attention-publish-newest-'));
+    try {
+      const cacheBase = join(cacheHome, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime');
+      for (const [version, withNotify] of [['0.99.0', true], ['0.100.0', false]]) {
+        const root = join(cacheBase, version);
+        await mkdir(join(root, '.claude-plugin'), { recursive: true });
+        await mkdir(join(root, 'scripts'), { recursive: true });
+        await writeFile(
+          join(root, '.claude-plugin/plugin.json'),
+          JSON.stringify({ name: 'runtime', version, description: 'stub' }),
+        );
+        await writeFile(join(root, 'scripts/context.mjs'), RECORDING_CONTEXT_STUB.replace("tool: 'context'", `tool: 'context-${version}'`));
+        if (withNotify) await writeFile(join(root, 'scripts/notify.mjs'), '// stub\n');
+      }
+      const result = await sensorLib.spawnPublishSession({
+        repoRoot: '/repo/x',
+        env: { ATTENTION_TEST_CAPTURE: captureFile },
+        home: cacheHome,
+      });
+      deepStrictEqual(result, { spawned: true });
+      deepStrictEqual((await takeUnitCaptures()).map((c) => c.tool), ['context-0.100.0']);
+    } finally {
+      await rm(cacheHome, { recursive: true, force: true });
+    }
   });
 
   it('capability drift: floor passes but scripts/context.mjs is absent → no-op, never a throw', async () => {
@@ -2541,329 +1167,10 @@ describe('plugins/attention — ADR-0044 §2 spawnPublishSession (unit)', () => 
   });
 });
 
-describe('plugins/attention — ADR-0047 §2/§3/§9 Stop response-needed (end-to-end, stub runtimes)', () => {
-  let repo;
-  let stub084;
-  let stub083;
-  let stub071;
-  let captureFile;
-  const E2E_HOSTNAME = 'e2e-host-47';
-
-  async function makeRuntimeStub(version) {
-    const root = join(repo, `runtime-stub-${version}`);
-    await mkdir(join(root, '.claude-plugin'), { recursive: true });
-    await mkdir(join(root, 'scripts'), { recursive: true });
-    await writeFile(
-      join(root, '.claude-plugin/plugin.json'),
-      JSON.stringify({ name: 'runtime', version, description: 'stub' }),
-    );
-    await writeFile(
-      join(root, 'scripts/notify.mjs'),
-      [
-        '#!/usr/bin/env node',
-        "import fs from 'node:fs';",
-        'const chunks = [];',
-        'for await (const chunk of process.stdin) chunks.push(chunk);',
-        'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
-        '  argv: process.argv.slice(2),',
-        "  event: JSON.parse(Buffer.concat(chunks).toString('utf8')),",
-        "}) + '\\n');",
-      ].join('\n'),
-    );
-    return root;
-  }
-
-  before(async () => {
-    repo = await mkdtemp(join(tmpdir(), 'attention-rn-e2e-'));
-    await mkdir(join(repo, '.git'), { recursive: true });
-    captureFile = join(repo, 'capture.json');
-    stub084 = await makeRuntimeStub('0.84.0');
-    stub083 = await makeRuntimeStub('0.83.0');
-    stub071 = await makeRuntimeStub('0.71.0');
-  });
-  after(async () => {
-    await rm(repo, { recursive: true, force: true });
-  });
-
-  function runStop(payload, { runtimeRoot } = {}) {
-    return spawnSync(
-      process.execPath,
-      [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/stop.mjs')],
-      {
-        input: JSON.stringify(payload),
-        env: {
-          ...process.env,
-          AGENTIC_RUNTIME_ROOT: runtimeRoot ?? stub084,
-          ATTENTION_TEST_CAPTURE: captureFile,
-          AGENTIC_NOTIFY_HOSTNAME: E2E_HOSTNAME,
-        },
-        encoding: 'utf8',
-        timeout: 30_000,
-      },
-    );
-  }
-
-  async function takeCaptures() {
-    let text = '';
-    try {
-      text = await readFile(captureFile, 'utf8');
-    } catch {
-      return [];
-    }
-    await rm(captureFile, { force: true });
-    return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  }
-
-  const FINAL_PAYLOAD_FIELDS = { background_tasks: [], session_crons: [] };
-
-  it('final verdict ⇒ EXACTLY ONE response-needed: your-turn headline, canonical event_id, default fired status, accepted by the canonical validateEvent', async () => {
-    const result = runStop({
-      cwd: repo, session_id: 'sess-rn', prompt_id: 'prompt-rn', ...FINAL_PAYLOAD_FIELDS,
-    });
-    strictEqual(result.status, 0);
-    strictEqual(result.stdout, '');
-    const captures = await takeCaptures();
-    strictEqual(captures.length, 1, '§3 no-duplicate default: exactly one bare signal class per Stop');
-    const { argv, event } = captures[0];
-    deepStrictEqual(argv, ['emit', '--repo-root', sensorLib.resolveRepoRoot(repo)]);
-    strictEqual(event.kind, 'response-needed');
-    strictEqual(event.headline, 'your-turn');
-    strictEqual(event.urgency, 'normal', 'approval stays the only urgent-by-contract kind (§1)');
-    strictEqual(event.title, `Response needed — ${basename(sensorLib.resolveRepoRoot(repo))}`);
-    // §1 — same subject shape as turn-complete (the two documented common
-    // fields), status defaulted to the fixed token by KINDS_WITH_DEFAULT_STATUS.
-    strictEqual(
-      event.event_id,
-      canonical.buildEventId({
-        repoIdent: canonical.deriveRepoIdent(sensorLib.resolveRepoRoot(repo)),
-        kind: 'response-needed',
-        subject: canonical.turnCompleteSubject({ sessionId: 'sess-rn', promptId: 'prompt-rn' }),
-        hostname: E2E_HOSTNAME,
-      }),
-    );
-    ok(event.event_id.endsWith(':fired'));
-    // The CANONICAL (0.84.0+) contract accepts the event — the §9 floor is
-    // what guarantees the resolving runtime is at least this contract.
-    strictEqual(canonical.validateEvent(event).ok, true);
-    strictEqual(event.hostname, E2E_HOSTNAME);
-  });
-
-  it('interim evidence (running background task / session cron) ⇒ turn-complete, no headline', async () => {
-    for (const fields of [
-      { background_tasks: [{ id: 'b1', type: 'shell', status: 'running', command: 'sleep 45' }], session_crons: [] },
-      { background_tasks: [], session_crons: [{ id: 'c1', schedule: '*/10 * * * *', recurring: true, prompt: 'noop' }] },
-    ]) {
-      const result = runStop({ cwd: repo, session_id: 's', prompt_id: 'p', ...fields });
-      strictEqual(result.status, 0);
-      const captures = await takeCaptures();
-      strictEqual(captures.length, 1);
-      strictEqual(captures[0].event.kind, 'turn-complete');
-      strictEqual('headline' in captures[0].event, false);
-    }
-  });
-
-  it('pre-2.1.145 payload (fields absent) ⇒ turn-complete (conservative row 4 — never promoted on an unobservable surface)', async () => {
-    const result = runStop({ cwd: repo, session_id: 's', prompt_id: 'p' });
-    strictEqual(result.status, 0);
-    const captures = await takeCaptures();
-    strictEqual(captures.length, 1);
-    strictEqual(captures[0].event.kind, 'turn-complete');
-    strictEqual('headline' in captures[0].event, false);
-  });
-
-  it('a live peer-run handle in the repo ⇒ turn-complete (row 3 repo-scoped fallback)', async () => {
-    const runDir = join(repo, '.agentic-plugins/state/engineer/peer-runs/run-live');
-    await mkdir(runDir, { recursive: true });
-    await writeFile(join(runDir, 'handle.json'), JSON.stringify({
-      schema_version: '1.0', run_id: 'run-live', status: 'running', pid: process.pid,
-      updated_at: new Date().toISOString(),
-    }));
-    try {
-      const result = runStop({ cwd: repo, session_id: 's', prompt_id: 'p', ...FINAL_PAYLOAD_FIELDS });
-      strictEqual(result.status, 0);
-      const captures = await takeCaptures();
-      strictEqual(captures.length, 1);
-      strictEqual(captures[0].event.kind, 'turn-complete');
-    } finally {
-      await rm(join(repo, '.agentic-plugins'), { recursive: true, force: true });
-    }
-  });
-
-  it('§3 precedence: a fresh terminal projection emits workflow-terminal ONLY — no response-needed, no turn-complete', async () => {
-    const dir = join(repo, '.agentic-plugins', 'state', 'engineer');
-    await mkdir(dir, { recursive: true });
-    const wfId = 'compose-20260721T121515Z-abc123';
-    await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({
-      workflow_kind: 'engineer', workflow_id: wfId, phase: 'summary-complete',
-      next_action: 'Commit', archive_gate: 'ready_to_archive',
-    }));
-    await writeFile(
-      join(dir, 'last-session-handoff.json.footer-rendered'),
-      JSON.stringify({ workflow_id: wfId, status: 'rendered', at: new Date().toISOString() }),
-    );
-    try {
-      const result = runStop({ cwd: repo, session_id: 's', prompt_id: 'p', ...FINAL_PAYLOAD_FIELDS });
-      strictEqual(result.status, 0);
-      const captures = await takeCaptures();
-      strictEqual(captures.length, 1, 'exactly one signal class per Stop (§3)');
-      strictEqual(captures[0].event.kind, 'workflow-terminal');
-    } finally {
-      await rm(join(repo, '.agentic-plugins'), { recursive: true, force: true });
-    }
-  });
-
-  it('§9 graceful degradation: below the floor the SAME final-looking payload stays a bare turn-complete with no headline', async () => {
-    for (const runtimeRoot of [stub071, stub083]) {
-      const result = runStop(
-        { cwd: repo, session_id: 's', prompt_id: 'p', ...FINAL_PAYLOAD_FIELDS },
-        { runtimeRoot },
-      );
-      strictEqual(result.status, 0);
-      const captures = await takeCaptures();
-      strictEqual(captures.length, 1, 'the bare notification itself still fires (notify floor satisfied)');
-      strictEqual(captures[0].event.kind, 'turn-complete');
-      strictEqual('headline' in captures[0].event, false);
-    }
-  });
-
-  it('responseSignalRuntimeReady: true at 0.84.0, false below, false on a void root (unit)', async () => {
-    strictEqual(await sensorLib.responseSignalRuntimeReady({ env: { AGENTIC_RUNTIME_ROOT: stub084 } }), true);
-    strictEqual(await sensorLib.responseSignalRuntimeReady({ env: { AGENTIC_RUNTIME_ROOT: stub083 } }), false);
-    strictEqual(await sensorLib.responseSignalRuntimeReady({ env: { AGENTIC_RUNTIME_ROOT: stub071 } }), false);
-    strictEqual(await sensorLib.responseSignalRuntimeReady({ env: { AGENTIC_RUNTIME_ROOT: join(repo, 'nowhere') } }), false);
-  });
-
-  it('emitEvent minVersion threading (§9 belt-and-suspenders): a 0.83.x runtime resolves for the notify floor but refuses the response-signal floor', async () => {
-    const env = { ...process.env, AGENTIC_RUNTIME_ROOT: stub083, ATTENTION_TEST_CAPTURE: captureFile };
-    const eventBase = {
-      repoIdent: 'repo-x', kind: 'turn-complete', subject: 'session:s:p',
-      title: 't', urgency: 'normal',
-    };
-    const ok083 = await sensorLib.emitEvent({ repoRoot: repo, env, event: sensorLib.buildEvent(eventBase) });
-    strictEqual(ok083.emitted, true, 'default (notify) floor accepts 0.83.x');
-    await takeCaptures();
-    const refused = await sensorLib.emitEvent({
-      repoRoot: repo,
-      env,
-      minVersion: sensorLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION,
-      event: sensorLib.buildEvent({ ...eventBase, kind: 'response-needed' }),
-    });
-    deepStrictEqual(refused, { emitted: false, reason: 'runtime-unresolved' },
-      'a cache swap to a pre-contract runtime cannot receive a response-needed event');
-    deepStrictEqual(await takeCaptures(), []);
-  });
-
-  it('the Notification sensor borns needs-approval on permission_prompt (ADR-0047 §4) — floor-independent optional field', async () => {
-    const result = spawnSync(
-      process.execPath,
-      [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/notification.mjs')],
-      {
-        input: JSON.stringify({
-          cwd: repo, session_id: 'sess-a', notification_type: 'permission_prompt', message: 'Allow Bash?',
-        }),
-        env: {
-          ...process.env,
-          // Deliberately the OLD notify-floor stub: headline is a
-          // backward-compatible OPTIONAL field (the ADR-0041 §3a shipped
-          // precedent) — Guard 2 validate-or-drop lives runtime-side.
-          AGENTIC_RUNTIME_ROOT: stub071,
-          ATTENTION_TEST_CAPTURE: captureFile,
-          AGENTIC_NOTIFY_HOSTNAME: E2E_HOSTNAME,
-        },
-        encoding: 'utf8',
-        timeout: 30_000,
-      },
-    );
-    strictEqual(result.status, 0);
-    strictEqual(result.stdout, '');
-    const captures = await takeCaptures();
-    strictEqual(captures.length, 1);
-    strictEqual(captures[0].event.kind, 'approval');
-    strictEqual(captures[0].event.headline, 'needs-approval');
-    strictEqual(captures[0].event.urgency, 'urgent');
-    strictEqual(canonical.validateEvent(captures[0].event).ok, true);
-  });
-
-  it('the idle_prompt path stays headline-free (§4)', async () => {
-    const result = spawnSync(
-      process.execPath,
-      [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/notification.mjs')],
-      {
-        input: JSON.stringify({
-          cwd: repo, session_id: 'sess-a', notification_type: 'idle_prompt', message: 'waiting',
-        }),
-        env: {
-          ...process.env,
-          AGENTIC_RUNTIME_ROOT: stub084,
-          ATTENTION_TEST_CAPTURE: captureFile,
-          AGENTIC_NOTIFY_HOSTNAME: E2E_HOSTNAME,
-        },
-        encoding: 'utf8',
-        timeout: 30_000,
-      },
-    );
-    strictEqual(result.status, 0);
-    const captures = await takeCaptures();
-    strictEqual(captures.length, 1);
-    strictEqual(captures[0].event.kind, 'idle');
-    strictEqual('headline' in captures[0].event, false);
-  });
-
-  it('capture + response-needed compose on one Stop: the ADR-0044 capture spawn runs FIRST, then exactly one response-needed (peer suggestion)', async () => {
-    // A 0.84.0 stub carrying BOTH executors: the capture publisher stub
-    // appends a {publish} line, the notify stub appends the {event} line —
-    // shared capture file, so line order proves stage order.
-    const both = join(repo, 'runtime-stub-both');
-    await mkdir(join(both, '.claude-plugin'), { recursive: true });
-    await mkdir(join(both, 'scripts'), { recursive: true });
-    await writeFile(
-      join(both, '.claude-plugin/plugin.json'),
-      JSON.stringify({ name: 'runtime', version: '0.84.0', description: 'stub' }),
-    );
-    await writeFile(
-      join(both, 'scripts/notify.mjs'),
-      await readFile(join(stub084, 'scripts/notify.mjs'), 'utf8'),
-    );
-    await writeFile(
-      join(both, 'scripts/context.mjs'),
-      [
-        '#!/usr/bin/env node',
-        "import fs from 'node:fs';",
-        'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
-        '  publish: process.argv.slice(2),',
-        "}) + '\\n');",
-      ].join('\n'),
-    );
-    const result = runStop(
-      { cwd: repo, session_id: 'sess-cap', prompt_id: 'prompt-cap', ...FINAL_PAYLOAD_FIELDS },
-      { runtimeRoot: both },
-    );
-    strictEqual(result.status, 0);
-    strictEqual(result.stdout, '');
-    const captures = await takeCaptures();
-    strictEqual(captures.length, 2, 'one capture spawn + one notification, nothing else');
-    ok(Array.isArray(captures[0].publish), 'the capture spawn precedes the notification (ADR-0044 §2 stage order)');
-    strictEqual(captures[0].publish[0], 'publish-session');
-    strictEqual(captures[1].event.kind, 'response-needed');
-    strictEqual(captures[1].event.headline, 'your-turn');
-  });
-});
-
 describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.82.0 stub runtime)', () => {
   let repo;
   let captureFile;
 
-  const RECORDING_NOTIFY_STUB = [
-    '#!/usr/bin/env node',
-    "import fs from 'node:fs';",
-    'const chunks = [];',
-    'for await (const chunk of process.stdin) chunks.push(chunk);',
-    'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
-    "  tool: 'notify',",
-    '  argv: process.argv.slice(2),',
-    "  event: JSON.parse(Buffer.concat(chunks).toString('utf8')),",
-    "}) + '\\n');",
-  ].join('\n');
   const RECORDING_CONTEXT_STUB = [
     '#!/usr/bin/env node',
     "import fs from 'node:fs';",
@@ -2876,6 +1183,7 @@ describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.8
   before(async () => {
     repo = await mkdtemp(join(tmpdir(), 'attention-capture-e2e-'));
     await mkdir(join(repo, '.git'), { recursive: true });
+    await mkdir(join(repo, 'subdir'), { recursive: true });
     captureFile = join(repo, 'capture.ndjson');
   });
   after(async () => {
@@ -2890,24 +1198,23 @@ describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.8
       join(root, '.claude-plugin/plugin.json'),
       JSON.stringify({ name: 'runtime', version, description: 'stub' }),
     );
-    await writeFile(join(root, 'scripts/notify.mjs'), RECORDING_NOTIFY_STUB);
     if (withContext) {
       await writeFile(join(root, 'scripts/context.mjs'), contextSource);
     }
     return root;
   }
 
-  function runStop(payload, runtimeRoot) {
+  function runStop(payload, runtimeRoot, { input = undefined, cwd = undefined } = {}) {
     return spawnSync(
       process.execPath,
       [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/stop.mjs')],
       {
-        input: JSON.stringify(payload),
+        input: input ?? JSON.stringify(payload),
+        cwd,
         env: {
           ...process.env,
           AGENTIC_RUNTIME_ROOT: runtimeRoot,
           ATTENTION_TEST_CAPTURE: captureFile,
-          AGENTIC_NOTIFY_HOSTNAME: 'e2e-host',
         },
         encoding: 'utf8',
         timeout: 30_000,
@@ -2926,36 +1233,38 @@ describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.8
     return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   }
 
-  it('bare Stop: capture spawns BEFORE the notification emit, with the fixed argv', async () => {
+  async function seedFreshProjection(persona, wfId) {
+    const dir = join(repo, '.agentic-plugins', 'state', persona);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({
+      workflow_kind: persona, workflow_id: wfId,
+      workflow_path: `.agentic-plugins/state/${persona}/workflows/w.md`,
+      phase: 'summary-complete', next_action: 'n',
+      archive_gate: 'ready_to_archive', routing_recommendation: 'continue',
+    }));
+    await writeFile(
+      join(dir, 'last-session-handoff.json.footer-rendered'),
+      JSON.stringify({ workflow_id: wfId, status: 'rendered', at: new Date().toISOString() }),
+    );
+    return dir;
+  }
+
+  it('Stop spawns exactly one capture with the fixed argv, from a subdirectory cwd', async () => {
     const runtimeRoot = await makeRuntimeStub('rt-happy', '0.82.0');
-    const result = runStop({ cwd: repo, session_id: 'sess-1', prompt_id: 'prompt-1' }, runtimeRoot);
+    const result = runStop({ cwd: join(repo, 'subdir'), session_id: 'sess-1', prompt_id: 'prompt-1' }, runtimeRoot);
     strictEqual(result.status, 0);
     strictEqual(result.stdout, '');
     const captures = await takeCaptures();
-    deepStrictEqual(captures.map((c) => c.tool), ['context', 'notify'],
-      'capture must run before, and independent of, notification work (ADR-0044 §2)');
-    const expectedRepoRoot = sensorLib.resolveRepoRoot(repo);
+    deepStrictEqual(captures.map((c) => c.tool), ['context'], 'the capture is the Stop hook\'s only child');
     deepStrictEqual(captures[0].argv, [
       'publish-session',
-      '--repo-root', expectedRepoRoot,
+      '--repo-root', sensorLib.resolveRepoRoot(repo),
       '--host', 'claude',
       '--session-id', 'sess-1',
     ]);
-    strictEqual(captures[1].event.kind, 'turn-complete');
   });
 
-  it('notification short-circuit (missing prompt_id) still captures — nothing is emitted', async () => {
-    const runtimeRoot = await makeRuntimeStub('rt-shortcircuit', '0.82.0');
-    const result = runStop({ cwd: repo, session_id: 'sess-2' }, runtimeRoot);
-    strictEqual(result.status, 0);
-    strictEqual(result.stdout, '');
-    const captures = await takeCaptures();
-    deepStrictEqual(captures.map((c) => c.tool), ['context'],
-      'the bare-notification short-circuit must not skip or abort the capture spawn');
-    ok(captures[0].argv.includes('--session-id'));
-  });
-
-  it('notification short-circuit (no session identity at all) still captures, omitting --session-id', async () => {
+  it('no session identity at all still captures, omitting --session-id', async () => {
     const runtimeRoot = await makeRuntimeStub('rt-anonymous', '0.82.0');
     const result = runStop({ cwd: repo }, runtimeRoot);
     strictEqual(result.status, 0);
@@ -2965,38 +1274,106 @@ describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.8
     strictEqual(captures[0].argv.includes('--session-id'), false);
   });
 
-  it('fresh terminal projection: --workflow-evidence fresh AND the workflow-terminal notification both happen', async () => {
+  it('fresh terminal projection: --workflow-evidence fresh is relayed', async () => {
     const runtimeRoot = await makeRuntimeStub('rt-fresh', '0.82.0');
-    const dir = join(repo, '.agentic-plugins', 'state', 'engineer');
-    await mkdir(dir, { recursive: true });
-    const wfId = 'compose-20260719T000000Z-abcdef';
-    await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({
-      workflow_kind: 'engineer', workflow_id: wfId,
-      workflow_path: '.agentic-plugins/state/engineer/workflows/e.md',
-      phase: 'summary-complete', next_action: 'n',
-      archive_gate: 'ready_to_archive', routing_recommendation: 'continue',
-    }));
-    await writeFile(
-      join(dir, 'last-session-handoff.json.footer-rendered'),
-      JSON.stringify({ workflow_id: wfId, status: 'rendered', at: new Date().toISOString() }),
-    );
+    const dir = await seedFreshProjection('engineer', 'compose-20260719T000000Z-abcdef');
     try {
       const result = runStop({ cwd: repo, session_id: 'sess-3', prompt_id: 'prompt-3' }, runtimeRoot);
       strictEqual(result.status, 0);
       strictEqual(result.stdout, '');
       const captures = await takeCaptures();
-      deepStrictEqual(captures.map((c) => c.tool), ['context', 'notify']);
+      deepStrictEqual(captures.map((c) => c.tool), ['context']);
       const evIdx = captures[0].argv.indexOf('--workflow-evidence');
       ok(evIdx !== -1, 'a fresh projection must relay --workflow-evidence');
       strictEqual(captures[0].argv[evIdx + 1], 'fresh');
-      strictEqual(captures[1].event.kind, 'workflow-terminal');
-      strictEqual(captures[1].event.refs.workflow_id, wfId);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it('capture failure (publisher exits non-zero) never skips notification; the sensor stays exit-0 silent', async () => {
+  it('a stale marker is not evidence: the capture still runs, without --workflow-evidence', async () => {
+    const runtimeRoot = await makeRuntimeStub('rt-stale', '0.82.0');
+    const wfId = 'compose-20260719T000000Z-5ta1e0';
+    const dir = await seedFreshProjection('engineer', wfId);
+    await writeFile(
+      join(dir, 'last-session-handoff.json.footer-rendered'),
+      JSON.stringify({
+        workflow_id: wfId,
+        status: 'rendered',
+        at: new Date(Date.now() - sensorLib.HANDOFF_FRESHNESS_MS - 60_000).toISOString(),
+      }),
+    );
+    try {
+      const result = runStop({ cwd: repo, session_id: 'sess-s' }, runtimeRoot);
+      strictEqual(result.status, 0);
+      const captures = await takeCaptures();
+      deepStrictEqual(captures.map((c) => c.tool), ['context']);
+      strictEqual(captures[0].argv.includes('--workflow-evidence'), false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('composed producer→consumer: the REAL designer sidecar writes projection+marker, the REAL Stop sensor relays fresh evidence (ADR-0043 §3)', async () => {
+    // Producer half — a real designer set-terminal against the repo's own
+    // runtime renders the completion footer and upgrades the marker to
+    // rendered (the S4 contract as it exists in the wild, not a hand seed).
+    // Consumer half — the real attention Stop sensor reads that documented
+    // contract and relays --workflow-evidence fresh to the capture stub.
+    const composedRepo = await mkdtemp(join(tmpdir(), 'attention-composed-'));
+    try {
+      for (const args of [
+        ['init', '-q', '-b', 'feat/x'],
+        ['config', 'user.name', 't'],
+        ['config', 'user.email', 't@t'],
+        ['config', 'commit.gpgsign', 'false'],
+        ['commit', '-q', '--allow-empty', '-m', 'baseline', '--no-verify'],
+      ]) {
+        const r = spawnSync('git', args, { cwd: composedRepo, encoding: 'utf8' });
+        strictEqual(r.status, 0, `git ${args[0]}: ${r.stderr}`);
+      }
+      const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: composedRepo, encoding: 'utf8' }).stdout.trim();
+      const designerState = resolve(REPO_ROOT, 'plugins/designer/scripts/state.mjs');
+      const create = spawnSync(process.execPath, [
+        designerState, 'create', '--repo-root', composedRepo,
+        '--verb', 'compose', '--host', 'claude', '--persona', 'designer',
+        '--git-baseline-branch', 'feat/x', '--git-baseline-head', head,
+        '--status-digest', 'deadbeef', '--profile', 'general',
+        '--original-request', 'composed attention e2e',
+        '--current-phase', 'phase-2-presented', '--next-action', 'Run compose skill',
+      ], { encoding: 'utf8' });
+      strictEqual(create.status, 0, create.stderr);
+      const wfPath = create.stdout.trim();
+      const wfId = basename(wfPath, '.md');
+      const term = spawnSync(process.execPath, [
+        designerState, 'set-terminal', '--workflow-path', wfPath, '--host', 'claude',
+        '--terminal-phase', 'summary-complete', '--terminal-marker', 'true',
+        '--next-action', 'Hand the spec to the frontend (/engineer:start)', '--event', 'updated',
+      ], {
+        cwd: composedRepo,
+        encoding: 'utf8',
+        env: { ...process.env, AGENTIC_RUNTIME_ROOT: resolve(REPO_ROOT, 'plugins/runtime') },
+      });
+      strictEqual(term.status, 0, term.stderr);
+      ok(term.stderr.includes('Runtime completion footer'),
+        'the real designer footer must render so the marker upgrades to rendered');
+      ok(sensorLib.readFreshProjection({ repoRoot: sensorLib.resolveRepoRoot(composedRepo), persona: 'designer' })
+        ?.workflowId === wfId, 'precondition: the real designer projection passes the freshness gate');
+      const runtimeRoot = await makeRuntimeStub('rt-composed', '0.82.0');
+      const result = runStop({ cwd: composedRepo, session_id: 'sess-c', prompt_id: 'prompt-c' }, runtimeRoot);
+      strictEqual(result.status, 0);
+      strictEqual(result.stdout, '');
+      const captures = await takeCaptures();
+      deepStrictEqual(captures.map((c) => c.tool), ['context']);
+      const evIdx = captures[0].argv.indexOf('--workflow-evidence');
+      ok(evIdx !== -1, 'the composed designer terminal must relay --workflow-evidence');
+      strictEqual(captures[0].argv[evIdx + 1], 'fresh');
+    } finally {
+      await rm(composedRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('capture failure (publisher exits non-zero) leaves the sensor exit-0 silent', async () => {
     const FAILING_CONTEXT_STUB = [
       '#!/usr/bin/env node',
       "import fs from 'node:fs';",
@@ -3008,34 +1385,26 @@ describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.8
     const result = runStop({ cwd: repo, session_id: 'sess-4', prompt_id: 'prompt-4' }, runtimeRoot);
     strictEqual(result.status, 0);
     strictEqual(result.stdout, '');
-    const captures = await takeCaptures();
-    deepStrictEqual(captures.map((c) => c.tool), ['context', 'notify'],
-      'capture failure must not skip notification (ADR-0044 §2)');
-    strictEqual(captures[1].event.kind, 'turn-complete');
+    deepStrictEqual((await takeCaptures()).map((c) => c.tool), ['context']);
   });
 
-  it('below-floor runtime (0.81.0): capture silently skipped, notification still works at the notify floor', async () => {
+  it('below-floor runtime (0.81.0): capture silently skipped, exit 0', async () => {
     const runtimeRoot = await makeRuntimeStub('rt-below-floor', '0.81.0');
     const result = runStop({ cwd: repo, session_id: 'sess-5', prompt_id: 'prompt-5' }, runtimeRoot);
     strictEqual(result.status, 0);
     strictEqual(result.stdout, '');
-    const captures = await takeCaptures();
-    deepStrictEqual(captures.map((c) => c.tool), ['notify'],
-      'below the publisher floor attention skips the capture spawn while notifications keep working');
-    strictEqual(captures[0].event.kind, 'turn-complete');
+    deepStrictEqual(await takeCaptures(), []);
   });
 
-  it('capability drift (0.82.0 but context.mjs absent): capture no-ops without disabling notifications', async () => {
+  it('capability drift (0.82.0 but context.mjs absent): capture no-ops, exit 0', async () => {
     const runtimeRoot = await makeRuntimeStub('rt-drift', '0.82.0', { withContext: false });
     const result = runStop({ cwd: repo, session_id: 'sess-6', prompt_id: 'prompt-6' }, runtimeRoot);
     strictEqual(result.status, 0);
     strictEqual(result.stdout, '');
-    const captures = await takeCaptures();
-    deepStrictEqual(captures.map((c) => c.tool), ['notify']);
-    strictEqual(captures[0].event.kind, 'turn-complete');
+    deepStrictEqual(await takeCaptures(), []);
   });
 
-  it('non-git cwd: neither capture nor notification, exit 0 (repo-scoped v1)', async () => {
+  it('non-git cwd: no capture, exit 0 (repo-scoped v1)', async () => {
     const runtimeRoot = await makeRuntimeStub('rt-nogit', '0.82.0');
     const outside = await mkdtemp(join(tmpdir(), 'attention-nogit-'));
     try {
@@ -3048,46 +1417,25 @@ describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.8
     }
   });
 
-  it('empty/malformed stdin never captures — the cwd fallback must not publish an anonymous slot (Codex review MAJOR)', async () => {
-    // readStdinJson degrades malformed input to {}, and the repo-root cwd
-    // FALLBACK (process.cwd()) still serves the pre-ADR-0044 notification
-    // path — but an automatic WRITE keyed off a fallback would let invalid
-    // hook input inside a repo replace a valid session generation with an
-    // anonymous structural slot. Capture requires a payload-carried cwd.
+  it('empty/malformed stdin never captures — no process-cwd fallback may publish an anonymous slot (Codex review MAJOR)', async () => {
+    // readStdinJson degrades malformed input to {}; an automatic WRITE keyed
+    // off the process cwd would let invalid hook input inside a repo replace
+    // a valid session generation with an anonymous structural slot. Capture
+    // requires a payload-carried cwd.
     const runtimeRoot = await makeRuntimeStub('rt-badstdin', '0.82.0');
     for (const input of ['', '{not json', JSON.stringify({ session_id: 's', prompt_id: 'p' })]) {
-      const result = spawnSync(
-        process.execPath,
-        [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/stop.mjs')],
-        {
-          input,
-          cwd: repo, // the process-cwd fallback WOULD resolve this repo
-          env: {
-            ...process.env,
-            AGENTIC_RUNTIME_ROOT: runtimeRoot,
-            ATTENTION_TEST_CAPTURE: captureFile,
-            AGENTIC_NOTIFY_HOSTNAME: 'e2e-host',
-          },
-          encoding: 'utf8',
-          timeout: 30_000,
-        },
-      );
+      const result = runStop(null, runtimeRoot, { input, cwd: repo }); // the process cwd IS this repo
       strictEqual(result.status, 0, `exit ${result.status} on ${JSON.stringify(input)}`);
       strictEqual(result.stdout, '');
-      const captures = await takeCaptures();
-      deepStrictEqual(
-        captures.filter((c) => c.tool === 'context'),
-        [],
-        `no capture spawn without a payload cwd (input ${JSON.stringify(input)})`,
-      );
+      deepStrictEqual(await takeCaptures(), [], `no capture spawn without a payload cwd (input ${JSON.stringify(input)})`);
     }
   });
 
-  it('a FIFO planted at a projection path cannot block the sensor — capture and notification still run (Codex review MAJOR)', async () => {
+  it('a FIFO planted at a projection path cannot block the sensor — the capture still runs (Codex review MAJOR)', async () => {
     // readFreshProjection's projection/marker reads must be regular-file
     // gated: an unbounded readFileSync on a repo-controlled FIFO blocked the
-    // whole Stop sensor (before capture AND notification), making the budget
-    // constants arithmetic rather than an enforced ceiling.
+    // whole Stop sensor before capture, making the budget constants
+    // arithmetic rather than an enforced ceiling.
     const runtimeRoot = await makeRuntimeStub('rt-fifo', '0.82.0');
     const dir = join(repo, '.agentic-plugins', 'state', 'engineer');
     await mkdir(dir, { recursive: true });
@@ -3102,18 +1450,17 @@ describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.8
       strictEqual(result.stdout, '');
       ok(elapsedMs < 10_000, `sensor took ${elapsedMs}ms — a FIFO projection must not block it`);
       const captures = await takeCaptures();
-      deepStrictEqual(captures.map((c) => c.tool), ['context', 'notify'],
-        'the FIFO persona degrades to null; capture and the bare notification both proceed');
-      strictEqual(captures[1].event.kind, 'turn-complete');
+      deepStrictEqual(captures.map((c) => c.tool), ['context'], 'the FIFO persona degrades to no evidence; the capture proceeds');
+      strictEqual(captures[0].argv.includes('--workflow-evidence'), false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it('a hung publisher is killed at its slot and notification still runs (real-timeout end-to-end)', async () => {
+  it('a hung publisher is killed at its slot — the hook exits within the Stop budget (real-timeout end-to-end)', async () => {
     // Slow by construction: the stub sleeps far past the 12s capture slot.
-    // The sensor must kill it at PUBLISH_SESSION_TIMEOUT_MS and proceed to
-    // the notification stage — exit 0, nothing on stdout. (~12s test.)
+    // The sensor must kill it at PUBLISH_SESSION_TIMEOUT_MS — exit 0,
+    // nothing on stdout. (~12s test.)
     const HANG_CONTEXT_STUB = [
       '#!/usr/bin/env node',
       'await new Promise((resolveHang) => setTimeout(resolveHang, 60_000));',
@@ -3126,10 +1473,7 @@ describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.8
     strictEqual(result.stdout, '');
     ok(elapsedMs < 25_000, `sensor took ${elapsedMs}ms — the capture slot must bound a hung publisher`);
     ok(elapsedMs >= 10_000, `sensor took ${elapsedMs}ms — expected to ride out the full capture slot`);
-    const captures = await takeCaptures();
-    deepStrictEqual(captures.map((c) => c.tool), ['notify'],
-      'capture timed out (recorded nothing); notification still ran');
-    strictEqual(captures[0].event.kind, 'turn-complete');
+    deepStrictEqual(await takeCaptures(), [], 'the timed-out capture recorded nothing');
   });
 });
 
@@ -3139,8 +1483,7 @@ describe('plugins/attention — ADR-0044 §2 Stop capture against the REAL 0.82.
   // block runs the real Stop sensor against the repo's own runtime plugin
   // (source version 0.82.0): a real git fixture repo, session_capture opted
   // in via the repo config layer, HOME isolated so no user-global layer
-  // interferes. The real notify.mjs runs too (notify_channel default none ⇒
-  // silent no-op) — capture evidence is the published slot/entry pair.
+  // interferes — capture evidence is the published slot/entry pair.
   let fixtureRepo;
   let fixtureHome;
   const realRuntimeRoot = resolve(REPO_ROOT, 'plugins/runtime');
@@ -3207,7 +1550,7 @@ describe('plugins/attention — ADR-0044 §2 Stop capture against the REAL 0.82.
     strictEqual(slot.repo_recent_terminal_evidence, 'none');
   });
 
-  it('the bare-notification short-circuit still publishes through the real publisher (no prompt_id)', async () => {
+  it('a Stop without prompt_id still publishes through the real publisher', async () => {
     const result = runStopReal({ cwd: fixtureRepo, session_id: 'real-sess-2' });
     strictEqual(result.status, 0, result.stderr);
     strictEqual(result.stdout, '');
@@ -3365,7 +1708,7 @@ describe('plugins/attention — ADR-0045 §7 spawnEntryBrief (dispatcher, unit)'
     `process.stdout.write(${JSON.stringify(`${VALID_LINE}\n`)});`,
   ].join('\n');
 
-  async function makeEntryStub(name, version, { withContext = true, withNotify = true, contextSource = RECORDING_ENTRY_STUB } = {}) {
+  async function makeEntryStub(name, version, { withContext = true, contextSource = RECORDING_ENTRY_STUB } = {}) {
     const root = join(stubHome, name);
     await mkdir(join(root, '.claude-plugin'), { recursive: true });
     await mkdir(join(root, 'scripts'), { recursive: true });
@@ -3373,11 +1716,8 @@ describe('plugins/attention — ADR-0045 §7 spawnEntryBrief (dispatcher, unit)'
       join(root, '.claude-plugin/plugin.json'),
       JSON.stringify({ name: 'runtime', version, description: 'stub' }),
     );
-    // Entry discovery is manifest-identified (capability-neutral) — notify.mjs
-    // is NOT required on this seam; the flag exists to prove exactly that.
-    if (withNotify) {
-      await writeFile(join(root, 'scripts/notify.mjs'), '// stub\n');
-    }
+    // Entry discovery is manifest-identified (capability-neutral): the stub
+    // ships only the executor the seam probes.
     if (withContext) {
       await writeFile(join(root, 'scripts/context.mjs'), contextSource);
     }
@@ -3442,7 +1782,7 @@ describe('plugins/attention — ADR-0045 §7 spawnEntryBrief (dispatcher, unit)'
   });
 
   it('a runtime at the PUBLISHER floor is below the ENTRY floor — capability-specific gate (never a shared constant)', async () => {
-    // 0.82.0 passes the notify AND publisher floors; the entry spawn must
+    // 0.82.0 passes the publisher floor; the entry spawn must
     // still refuse it. This is the test a shared floor constant would fail.
     const root = await makeEntryStub('publisher-only', '0.82.0');
     deepStrictEqual(
@@ -3458,7 +1798,7 @@ describe('plugins/attention — ADR-0045 §7 spawnEntryBrief (dispatcher, unit)'
       { line: null, reason: 'runtime-below-entry-floor' },
     );
     // A prerelease of a HIGHER core postdates the floor release and passes
-    // (SemVer ordering — same semantics as the notify/publisher gates).
+    // (SemVer ordering — same semantics as the publisher gate).
     const newer = await makeEntryStub('newer-prerelease', '0.84.0-beta.1');
     deepStrictEqual(
       await sensorLib.spawnEntryBrief({
@@ -3477,19 +1817,6 @@ describe('plugins/attention — ADR-0045 §7 spawnEntryBrief (dispatcher, unit)'
       await sensorLib.spawnEntryBrief({ repoRoot: '/repo/x', env: { AGENTIC_RUNTIME_ROOT: root }, home: stubHome }),
       { line: null, reason: 'entry-executor-absent' },
     );
-  });
-
-  it('a runtime carrying context.mjs WITHOUT notify.mjs is still discoverable (capability-specific discovery, not notify gating — Codex Plan-verify HIGH)', async () => {
-    const root = await makeEntryStub('no-notify', '0.83.0', { withNotify: false });
-    deepStrictEqual(
-      await sensorLib.spawnEntryBrief({
-        repoRoot: '/repo/x',
-        env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
-        home: stubHome,
-      }),
-      { line: VALID_LINE },
-    );
-    await takeEntryCaptures();
   });
 
   it('the newest build wins and its missing executor is NEVER healed by an older capable build (no stale-cache fallback, §18 mirror)', async () => {
@@ -3623,7 +1950,6 @@ describe('plugins/attention — SessionStart entry sensor (black-box)', () => {
       join(root, '.claude-plugin/plugin.json'),
       JSON.stringify({ name: 'runtime', version, description: 'stub' }),
     );
-    await writeFile(join(root, 'scripts/notify.mjs'), '// stub\n');
     await writeFile(join(root, 'scripts/context.mjs'), contextSource);
     return root;
   }
