@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed (2026-09-29). Drafted 2026-09-25 in the owner's handoff package,
+Accepted (2026-10-04) by the owner. The commit that accepted it applied
+[§Amendment cascade](#amendment-cascade-apply-verbatim-on-acceptance).
+Proposed 2026-09-29. Drafted 2026-09-25 in the owner's handoff package,
 outside this repository, from the owner's item-by-item review, and realigned
 before adoption to ADR-0060's implementation and ADR-0059–0062. Proposed
 alongside [ADR-0063](0063-autopilot-fresh-session-driver.md); the two are
@@ -632,8 +634,10 @@ was already amended by ADR-0060 D4, and §7's registry by ADR-0060 as well.
 ```markdown
 > **Amendment ([ADR-0064](0064-runtime-surface-reduction.md), <date>):**
 > `runtime:doctor --sandbox-permission-probe` is removed (never executed in 87
-> recorded doctor runs). `--permission-proof` is unaffected. Decision 8 (no
-> permission-relaxing Guard Hook) is unaffected.
+> recorded doctor runs), and so is the `plugins/attention`
+> `Notification/permission_prompt` matcher, with the rest of notification.
+> `--permission-proof` is unaffected. Decision 8 (no permission-relaxing Guard
+> Hook) is unaffected.
 ```
 
 **8. ADR-0005 / ADR-0007 / ADR-0012 — status note:**

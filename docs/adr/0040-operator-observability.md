@@ -2,7 +2,10 @@
 
 ## Status
 
-**Proposed to be superseded** by [ADR-0064](0064-runtime-surface-reduction.md) (proposed 2026-09-29) **except §6** (`runtime:dashboard`, minus its Tier-2 notify/egress rows) **and except §3 as re-chartered by ADR-0044** (attention as the Claude lifecycle sensor for session capture and the entry brief); this line becomes `Superseded by ADR-0064 (except …)` in the same commit that flips ADR-0064 to Accepted. The ADR-0061 line below is unaffected.
+Superseded by [ADR-0064](0064-runtime-surface-reduction.md) (2026-10-04) **except
+§6** (`runtime:dashboard`, minus its Tier-2 notify/egress rows) **and except §3
+as re-chartered by ADR-0044** (attention as the Claude lifecycle sensor for
+session capture and the entry brief). §1, §2, §4, §5 and §7 are removed.
 
 Superseded by [ADR-0061](0061-codex-installs-pinned-to-release-commits.md) — the Codex rung of the §3 discovery ladder and, for a Codex-hosted caller, its host order only, including its use by the §4 receiver shuttle and the §5 peer-run self-sensor (2026-09-24)
 

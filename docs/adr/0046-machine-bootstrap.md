@@ -15,6 +15,12 @@ S8c released-`0.81.0` acceptance slice shipped against this decision)
 > available-update field, `claude plugin update` has no check-only mode)
 > carry them on their own.
 
+> **Amendment ([ADR-0064](0064-runtime-surface-reduction.md), 2026-10-04):** the
+> portable machine profile is removed — `profile export`, `profile seed`,
+> `plan --profile-file`, the `agentic-machine-profile` schema and the
+> `~/.agentic-plugins/profiles/` home (§1 verb list, §4, §7, §8's
+> profile-seeded default, Context §7). The bootstrap lifecycle itself stands.
+
 <!--
 Merged as `Proposed` (macro subtask S7) per AGENTS.md §ADR process; flipped
 to `Accepted` on 2026-07-18 after the S8 implementation series and the S8c

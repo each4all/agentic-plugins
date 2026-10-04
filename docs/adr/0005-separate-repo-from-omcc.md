@@ -4,6 +4,10 @@
 
 Accepted
 
+> **Completed ([ADR-0064](0064-runtime-surface-reduction.md), 2026-10-04):** the
+> omcc cutover is complete and `runtime:cutover` is retired. This ADR is kept
+> as history; nothing in it is re-decided.
+
 ## Context
 
 omcc (`github.com/e16tae/omcc`) is the existing Claude Code plugin

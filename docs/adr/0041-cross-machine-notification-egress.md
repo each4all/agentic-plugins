@@ -4,7 +4,10 @@
 
 Accepted (2026-07-06)
 
-**Proposed to be superseded** in full by [ADR-0064](0064-runtime-surface-reduction.md) (proposed 2026-09-29); this line becomes `Superseded by ADR-0064` in the same commit that flips ADR-0064 to Accepted.
+Superseded by [ADR-0064](0064-runtime-surface-reduction.md) (2026-10-04), in full.
+The E1 egress tier, the Telegram channel, the headline, and the egress launcher
+are removed; historical proofs under docs/release-proofs/adr0041-* are
+unchanged.
 
 *Amended 2026-07-07 ([decide-headline] / macro `…85bdad`, subtask `adr-amend`):
 §3a adds the opt-in, closed-vocabulary `headline` status token as a

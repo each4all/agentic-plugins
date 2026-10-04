@@ -4,6 +4,13 @@
 
 Accepted (2026-07-23)
 
+> **Amendment ([ADR-0064](0064-runtime-surface-reduction.md), 2026-10-04):**
+> Stage 5 is "statusline" only; its notification and egress steps are removed
+> (their ids stay readable as historical in retained runs). §3 (egress evidence
+> vocabulary, with the `attest` verb that recorded receipt testimony) and §4
+> (egress credential boundary) are retired with E1. §2 (statusline shim policy)
+> is unchanged.
+
 <!--
 This ADR sits inside the ADR-0024 runtime/operator control-plane track and is
 the decision gate of the bootstrap/statusline/observability macro

@@ -318,6 +318,13 @@ them is advisor machinery.** Each is named here for the same reason ADR-0056
 | `runtime:doctor --sandbox-permission-probe` (`doctor.mjs:130`, `:347`, `:443`, `buildSandboxPermissionProbeSection`) | a read-only preflight over CLI / auth / feature-surface / companion-script readiness. Verified: it takes `{requested, readiness}` and reads `readiness.<direction>.sandbox_permission` — **no advisor input**. Survives. |
 | `runtime:doctor --permission-proof` / `--execute-permission-proof` | the ADR-0035 §4 boundary proof — Decision 5. Survives, decoupled. |
 
+> **Amendment ([ADR-0064](0064-runtime-surface-reduction.md), 2026-10-04):**
+> `runtime:doctor --sandbox-permission-probe` is removed (never executed in 87
+> recorded doctor runs), and so is the `plugins/attention`
+> `Notification/permission_prompt` matcher, with the rest of notification.
+> `--permission-proof` is unaffected. Decision 8 (no permission-relaxing Guard
+> Hook) is unaffected.
+
 Historical evidence records, changelog entries and retained advisory artifacts
 are likewise left alone: they record what was observed at the time.
 
