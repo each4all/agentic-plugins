@@ -67,6 +67,16 @@ describe('stream-json hosting', () => {
     strictEqual(w.exitCode, 0);
   });
 
+  it('the step\'s report is the follow-up turn\'s, not the one taken while the task was pending', async () => {
+    // The worker prompt tells the model a report filed while it waits is
+    // provisional and only the last one counts; this is the host side of that.
+    const first = { outcome: 'failed', workflow: 'refine-x', next_step: null, awaiting_owner: null, summary: 'provisional: waiting for the peer' };
+    const last = { outcome: 'completed', workflow: 'refine-x', next_step: { kind: 'commit', verb: null, confidence: 'HIGH' }, awaiting_owner: null, summary: 'settled' };
+    const { w } = await run('background', {}, { FAKE_FIRST_REPORT: JSON.stringify(first), FAKE_REPORT: JSON.stringify(last) });
+    strictEqual(w.turns, 2);
+    deepStrictEqual(w.report, last);
+  });
+
   it('waits out a background task and a follow-up turn that each outlast the 2 s close debounce', async () => {
     const { w, lines } = await run('background-slow');
     strictEqual(w.turns, 2, 'stdin stayed open for the follow-up turn');
@@ -285,6 +295,8 @@ describe('the posture (D5)', () => {
     ok(!verb.includes('--model') && !verb.includes('--effort'), 'the owner\'s default when the plan says so');
     deepStrictEqual([valueOf(argsFor('verb', { model: 'sonnet', effort: 'low' }), '--model'), valueOf(argsFor('verb', { model: 'sonnet', effort: 'low' }), '--effort')], ['sonnet', 'low']);
     ok(!/CLAUDE_PLUGIN_ROOT is NOT set|plugin roots/i.test(valueOf(verb, '--append-system-prompt')), 'SHIM-3 is gone (S0 released)');
+    ok(valueOf(verb, '--append-system-prompt').includes('A report the host takes when you end a turn to wait for a background task is provisional'), 'a report taken mid-wait does not end the step');
+    ok(valueOf(verb, '--append-system-prompt').includes('Only the last report counts.'));
   });
 
   it('refuses any escalation', () => {

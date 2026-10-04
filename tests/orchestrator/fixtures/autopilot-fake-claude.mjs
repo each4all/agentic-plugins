@@ -57,6 +57,9 @@ const defaultReport = {
   outcome: 'completed', workflow: null, next_step: null, awaiting_owner: null, summary: 'fake step',
 };
 const report = process.env.FAKE_REPORT ? JSON.parse(process.env.FAKE_REPORT) : defaultReport;
+// background modes: the report of the turn that ends while the task is
+// pending, when it differs from the follow-up turn's.
+const firstReport = process.env.FAKE_FIRST_REPORT ? JSON.parse(process.env.FAKE_FIRST_REPORT) : report;
 const plugins = process.env.FAKE_PLUGINS ? JSON.parse(process.env.FAKE_PLUGINS) : [];
 const result = (cost, structured = report) => ({
   type: 'result', subtype: 'success', is_error: false, total_cost_usd: cost, num_turns: 1,
@@ -76,7 +79,7 @@ readline.createInterface({ input: process.stdin })
     if (mode === 'background' || mode === 'background-slow') {
       const slow = mode === 'background-slow';
       emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 't1' }] });
-      emit(result(0.10));
+      emit(result(0.10, firstReport));
       setTimeout(() => {
         emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
         emit({ type: 'system', subtype: 'task_notification', task_id: 't1', status: 'completed' });
