@@ -35,7 +35,7 @@
 import { parse as parsePath, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { safeOperatorText } from './lib/egress-intent-wal.mjs';
+import { safeOperatorText } from './lib/operator-text.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
 
 // The workflow-storage half — the M1 MUTATOR, which imports node:child_process

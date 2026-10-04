@@ -28,7 +28,6 @@ import {
   evaluateQuietHours,
   loadNotifyConfig,
   redactEvent,
-  resolveRepoRoot,
   runEmit,
   TELEGRAM_API_TIMEOUT_MS,
   TELEGRAM_FALLBACK_RESERVE_MS,
@@ -189,30 +188,6 @@ function redirectError() {
   const e = new TypeError('fetch failed: redirect count exceeded');
   return e;
 }
-
-// ---------------------------------------------------------------------------
-// resolveRepoRoot
-// ---------------------------------------------------------------------------
-
-describe('notify resolveRepoRoot', () => {
-  it('prefers the explicit root over cwd discovery', () => {
-    const root = makeRepo();
-    const other = makeRepo();
-    assert.equal(resolveRepoRoot({ cwd: other, explicit: root }), path.resolve(root));
-  });
-
-  it('walks up from cwd to the nearest .git marker', () => {
-    const root = makeRepo();
-    const nested = path.join(root, 'a', 'b');
-    fs.mkdirSync(nested, { recursive: true });
-    assert.equal(resolveRepoRoot({ cwd: nested }), fs.realpathSync(root));
-  });
-
-  it('returns null when no repo marker exists upward', () => {
-    const loose = makeTempDir('notify-noroot-');
-    assert.equal(resolveRepoRoot({ cwd: loose }), null);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Config resolution (OFFICIAL settings notify_* keys — no private parsing)

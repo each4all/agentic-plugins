@@ -49,7 +49,8 @@ import { isClaimExpired, isLockStale, notifyDedupeDir, notifyStateDir } from './
 import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
 import { NOTIFY_KEY_DEFAULTS } from './lib/runtime-config.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
-import { loadNotifyConfig, resolveRepoRoot, NOTIFY_LOG_ROTATE_LOCK_STALE_MS } from './notify.mjs';
+import { loadNotifyConfig, NOTIFY_LOG_ROTATE_LOCK_STALE_MS } from './notify.mjs';
+import { resolveRepoRoot } from './lib/repo-root.mjs';
 import {
   inspectConsensusRuns,
   inspectRuntimeArtifactInventory,

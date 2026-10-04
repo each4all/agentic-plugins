@@ -14,7 +14,7 @@ import { RUNTIME_VERSION } from './version.mjs';
 // Rejected argv reaches stderr, which is outside every report defuser and
 // just as forgeable. The dispatcher learned this; this entry point is its
 // sibling.
-import { safeOperatorText } from './lib/egress-intent-wal.mjs';
+import { safeOperatorText } from './lib/operator-text.mjs';
 
 export const MIGRATION_SCHEMA_VERSION = 'workflow-storage-migration-1.0';
 export const MIGRATION_ID = 'workflow-storage-v1';

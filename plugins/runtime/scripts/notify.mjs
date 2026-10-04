@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { resolveRepoRoot } from './lib/repo-root.mjs';
 import {
   claimDedupe,
   kindEnabled,
@@ -75,10 +76,10 @@ import {
   classifyTelegramResult,
   mapActivationReasonToOutcome,
   renderEgressText,
-  scrubSecrets,
   validateTelegramChatId,
   validateTelegramToken,
 } from './lib/egress-channel.mjs';
+import { scrubSecrets } from './lib/secret-scrub.mjs';
 import { fileURLToPath } from 'node:url';
 
 export const NOTIFY_LOG_MAX_BYTES = 1024 * 1024;
@@ -109,27 +110,8 @@ const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
 const SPAWN_ENV_ALLOWLIST = Object.freeze(['HOME', 'LANG', 'LC_ALL', 'LOGNAME', 'TMPDIR', 'USER']);
 
 // ---------------------------------------------------------------------------
-// Repo root + config resolution
+// Config resolution
 // ---------------------------------------------------------------------------
-
-// Explicit --repo-root wins; otherwise walk up from cwd to the nearest .git
-// marker (dir or worktree file) with pure fs — the emitter spawns nothing to
-// find its own state home.
-export function resolveRepoRoot({ cwd = process.cwd(), explicit = null } = {}) {
-  if (explicit) return path.resolve(explicit);
-  let current = path.resolve(cwd);
-  try {
-    current = fs.realpathSync(current);
-  } catch {
-    return null;
-  }
-  for (;;) {
-    if (fs.existsSync(path.join(current, '.git'))) return current;
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-}
 
 // Effective notify config over repo → user → shipped default, validated per
 // key by the OFFICIAL settings validators. The emitter validates EFFECTIVE

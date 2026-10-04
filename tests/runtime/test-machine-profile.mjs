@@ -13,7 +13,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
-  EGRESS_CREDENTIAL_ENV_VAR,
   PROFILE_SESSION_KEYS,
   UNSAFE_CLAUDE_MODES,
   assertProfileWritable,
@@ -27,6 +26,7 @@ import {
 } from '../../plugins/runtime/scripts/lib/machine-profile.mjs';
 import { loadSchema, makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 import { USER_SCOPE_ONLY_CONFIG_KEYS } from '../../plugins/runtime/scripts/lib/runtime-config.mjs';
+import { EGRESS_CREDENTIAL_ENV_VAR } from '../../plugins/runtime/scripts/lib/egress-config.mjs';
 import {
   readUserGlobalClaudePermission,
   readUserGlobalCodexPermission,
@@ -516,7 +516,7 @@ describe('runtime machine profile — loader isolation (#7, §4.3 guard 3)', () 
 
   it('the dependency runs the other way — the profile engine imports the loaders, never the reverse', async () => {
     const src = await readFile(resolve(RUNTIME_SCRIPTS, 'lib/machine-profile.mjs'), 'utf8');
-    ok(/from '\.\/egress-channel\.mjs'/.test(src), 'the engine reuses the egress scrub');
+    ok(/from '\.\/secret-scrub\.mjs'/.test(src), 'the engine reuses the shared secret scrub');
     // And it writes nothing: no host-config path, no credential read.
     ok(!/settings\.json|config\.local\.toml|config\.toml/.test(src.replace(/\/\/[^\n]*/g, '')), 'the engine names no host-config file');
     ok(!/process\.env/.test(src), 'the engine reads no environment — its inputs are injected');

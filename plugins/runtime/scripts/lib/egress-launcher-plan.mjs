@@ -28,10 +28,11 @@
 // loadEgressActivation's `credentialPresent` boolean — never the token value.
 // As defense-in-depth, a final scrubSecrets() pass over the serialized artifact
 // fail-closes the write if any secret-shaped value ever reached it. scrubSecrets
-// is imported from egress-channel.mjs, the NETWORK-FREE helper half of the E1
-// channel (it performs no network/fs I/O and holds no fetch primitive), so this
-// import adds NO fetch surface to the settings module graph (the executor
-// global-fetch-gate has nothing to flag here).
+// is imported from secret-scrub.mjs and validateTelegramChatId from
+// egress-channel.mjs, the NETWORK-FREE helper half of the E1 channel; neither
+// performs network/fs I/O or holds a fetch primitive, so these imports add NO
+// fetch surface to the settings module graph (the executor global-fetch-gate
+// has nothing to flag here).
 
 import { mkdir, writeFile, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -48,7 +49,8 @@ import {
   EGRESS_HEADLINE_ENV_KEY,
   EGRESS_HEADLINE_LOCAL_KEY,
 } from './egress-config.mjs';
-import { scrubSecrets, validateTelegramChatId } from './egress-channel.mjs';
+import { validateTelegramChatId } from './egress-channel.mjs';
+import { scrubSecrets } from './secret-scrub.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

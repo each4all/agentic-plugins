@@ -194,8 +194,9 @@ export async function readUserGlobalClaudePermission({ homeDir, env = {} }) {
 // `projectTrusted`: that boolean is keyed on repoRoot, so it is per-repo, not
 // machine-invariant, and must not enter a portable profile (§4.4).
 /**
- * PROJECTION from an already-read `$CODEX_HOME/config.toml`. The notification
- * gather reads the same file for the Codex notify + statusline judges, and two
+ * PROJECTION from an already-read `$CODEX_HOME/config.toml`. Bootstrap reads the
+ * file once (`readCodexConfigToml`, lib/codex-config.mjs) and projects that read
+ * for the Codex permission, notify and statusline judges, because two
  * independent reads could observe an atomic replacement between them — the same
  * race the Claude settings snapshot exists to prevent. `read` is a
  * `readTextIfExists` result; `usingOverride` must be derived from the SAME env

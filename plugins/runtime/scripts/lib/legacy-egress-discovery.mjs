@@ -49,7 +49,8 @@ import { lstat as defaultLstat, opendir as defaultOpendir, realpath as defaultRe
 import { homedir as defaultHomedir, hostname as defaultHostname, userInfo } from 'node:os';
 import { join, parse as parsePath } from 'node:path';
 
-import { EGRESS_INTENT_DIR_SUFFIX, egressIntentDir, safeOperatorText, safeRecordName } from './egress-intent-wal.mjs';
+import { EGRESS_INTENT_DIR_SUFFIX, egressIntentDir, safeRecordName } from './egress-intent-wal.mjs';
+import { safeOperatorText } from './operator-text.mjs';
 // `sameDirectory` is deliberately NOT used here. It re-stats both paths, and
 // this scanner already holds the candidate's identity from the `stat` that
 // established it was a directory — asking twice opens a window in which a path

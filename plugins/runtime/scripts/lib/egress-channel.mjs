@@ -11,10 +11,12 @@
 //      or urgency — ADR-0040's title/body are for LOCAL channels only. This is
 //      the mechanical guarantee behind "a notification is a trigger + context,
 //      the detail is pulled by opening the session".
-//   2. scrubSecrets (§5) — an egress-only secret-scrub (bearer / credential-URL /
-//      key-shaped patterns) applied atop the enumerated+capped fields as
-//      defense-in-depth. It REDUCES exposure; it is not a proof (the proof is the
-//      enumerated field set + no free text in §3).
+//   2. the §5 secret-scrub (bearer / credential-URL / key-shaped patterns,
+//      lib/secret-scrub.mjs `scrubSecrets`) applied to every enumerated field
+//      before its cap, as defense-in-depth. It REDUCES exposure; it is not a
+//      proof (the proof is the enumerated field set + no free text in §3). The
+//      rule set has no bare long-run rule, so session_hint (a hash by §4) and a
+//      long workflow_id survive it.
 //   3. renderEgressText / buildTelegramSendBody — the plain-text Telegram
 //      message (NO parse_mode — ADR-0041 §4, so no escaping surface) and the
 //      fixed { chat_id, text } sendMessage body, with a bounded body-size cap.
@@ -36,6 +38,7 @@
 // and is unit-testable in isolation (test-egress-channel.mjs).
 
 import { EGRESS_OUTCOMES } from './egress-semantics.mjs';
+import { scrubSecrets } from './secret-scrub.mjs';
 import {
   OPTIONAL_ROUTING_FIELDS,
   ROUTING_FIELD_CAPS,
@@ -146,41 +149,6 @@ export function buildEgressPayload(event = {}, { headlineOptIn = false } = {}) {
     payload[OPTIONAL_HEADLINE_FIELD] = scrubCap(event[OPTIONAL_HEADLINE_FIELD], HEADLINE_FIELD_CAP);
   }
   return payload;
-}
-
-// ---------------------------------------------------------------------------
-// §5 — egress-only secret-scrub (defense-in-depth)
-// ---------------------------------------------------------------------------
-
-// Redact FORMATTED secrets — bearer tokens, credential-bearing URLs, and
-// recognized key shapes — from a string before egress. This is NOT a proof no
-// secret escapes (§3's enumerated field set is that); it reduces the residual
-// risk of a secret-FORMATTED value that slipped into an enumerated field.
-//
-// Deliberately NO bare "long high-entropy run" rule: the egress body carries
-// ONLY structured enumerated ids (§3), and session_hint (a hash by §4,
-// ROUTING_FIELD_CAPS 32) and a long workflow_id (cap 128, e.g.
-// `investigate-<ts>-<hash>` > 32 chars) are indistinguishable from a raw secret
-// by length alone — a `{32,}` rule would redact the very routing fields the
-// notification exists to show (breaking §4 session/workflow distinction). The
-// structured rules below key on distinguishing markers (scheme://, bearer,
-// <digits>:, sk-/ghp-/AKIA prefixes) a hash/id does not carry, so they scrub real
-// secret formats without eating the enumerated fields. Order matters: URL
-// credentials first (so user:pass@ is caught before another rule fragments it).
-export function scrubSecrets(text) {
-  let out = String(text ?? '');
-  // scheme://user:secret@host → scheme://[redacted]@host
-  out = out.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[redacted]@');
-  // Authorization: Bearer <token> / bearer <token>
-  out = out.replace(/\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'bearer [redacted]');
-  // Telegram-bot-token shape <digits>:<20+ base64ish> (never egress the token).
-  out = out.replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}/g, '[redacted]');
-  // Common provider key prefixes (sk-, pk-, ghp_, xoxb-, …) + a long run.
-  out = out.replace(/\b(?:sk|pk|rk|ghp|gho|ghs|xox[baprs])[-_][A-Za-z0-9_-]{16,}/g, '[redacted]');
-  // AWS access-key ids: AKIA (long-term) AND ASIA (temporary/session) — the
-  // repo's other sanitizers cover both, so the egress scrub must too (peer MAJOR).
-  out = out.replace(/\b(?:AKIA|ASIA)[0-9A-Z]{12,}/g, '[redacted]');
-  return out;
 }
 
 // ---------------------------------------------------------------------------
