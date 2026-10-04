@@ -3,7 +3,8 @@
 // `consensus.mjs` used to call `runDoctor` to obtain two filesystem-derived values —
 // the companion script to spawn, and the model/effort to hand it. That cost ~3.1s of
 // host-CLI probing consensus never read, and handed the ambient egress credential to all
-// 14 probe processes, the very thing settings.mjs strips before its own runDoctor call.
+// 14 probe processes, the very thing settings.mjs then stripped before its own runDoctor
+// call (the strip went with egress, ADR-0064 Decision 1).
 //
 // The seam takes no `env`, no `runner` and no `now`, so it cannot spawn anything. A
 // `child_process` source scan is NOT enough to hold that line: the module could import

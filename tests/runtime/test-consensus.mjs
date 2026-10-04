@@ -12,7 +12,7 @@ import {
 
 const RUN_ID = 'consensus-20260513T000000Z-abcdef';
 
-// Module-load scrub (the tests/runtime/test-notify.mjs pattern). Several tests hand
+// Module-load scrub (the pattern the former tests/runtime/test-notify.mjs set). Several tests hand
 // consensus `process.env` or a spread of it; an ambient AGENTIC_COMPANIONS_ROOT (the
 // documented development override, ADR-0061 §Decision 3) would replace the fixture
 // caches, and an ambient CODEX_HOME would move the Codex cache off the fixture home.
@@ -379,10 +379,10 @@ describe('runtime consensus', () => {
       ok(call.args[call.args.indexOf('--prompt-file') + 1].endsWith('.md'), 'the prompt-file value is a path');
     }
 
-    // (2) The companion DELIBERATELY receives the WHOLE ambient env. The token has to
-    // reach the peer session so its attention Stop hook can egress (attention sensor.mjs
-    // -> notify.mjs reads process.env; ADR-0041 sec.3), and PATH/host config must survive
-    // too. Scrubbing here would silently disable cross-machine notifications for peers.
+    // (2) The companion DELIBERATELY receives the WHOLE ambient env: PATH and host
+    // config must survive, and the peer session's own hooks read their environment.
+    // (The first reason was the egress token attention's notify path needed, ADR-0041
+    // sec.3; ADR-0064 removed that path, and the pass-through stays.)
     for (const call of calls) {
       deepStrictEqual(call.env, ambientEnv, 'the companion launch must receive the ambient env unchanged');
     }

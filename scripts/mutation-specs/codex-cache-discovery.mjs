@@ -20,7 +20,11 @@
 // mutations of `cutover-audit.mjs`, went with it. Its R3 slice removed
 // founder's and designer's notify ladder, and C9, which broke that ladder's
 // capability filter, went with it: on the footer ladder alone it is an
-// equivalent mutation.
+// equivalent mutation. Its R4n2 slice deleted `scripts/notify.mjs`, the Codex
+// notify shuttle and `test-notification-plan.mjs`, and took with them E4 (the
+// emitter's CLI entry guard), V1–V6, V11 and V12 (the shuttle's ladder) and G2
+// (the guard over the shuttle's Codex rung — V7 makes the same edit to the
+// statusline's rung and runs the same guard). The ids are not reused.
 
 const T_LIB = 'tests/companions/test-discover-peer.mjs';
 const T_BOOT = 'tests/companions/test-companion-bootstrap.mjs';
@@ -32,7 +36,6 @@ const T_PEC = 'tests/runtime/test-peer-execution-context.mjs';
 const T_CONSENSUS = 'tests/runtime/test-consensus.mjs';
 const T_DOCTOR = 'tests/runtime/test-doctor.mjs';
 const T_ROOT_DOCS = 'tests/plugin-shape/test-codex-plugin-root-contract.mjs';
-const T_NOTIFY = 'tests/runtime/test-notification-plan.mjs';
 const T_STATUSLINE = 'tests/runtime/test-statusline-plan.mjs';
 const T_INVENTORY = 'tests/runtime/test-receiver-inventory.mjs';
 const T_IDENTITY = 'tests/runtime/test-codex-install-identity.mjs';
@@ -48,7 +51,6 @@ const IMAGE = 'plugins/image/scripts/compose-dispatch.mjs';
 const RUNNER = 'plugins/engineer/scripts/peer-runner.mjs';
 const ENG_RUNTIME = 'plugins/engineer/scripts/discover-runtime.mjs';
 const PEC = 'plugins/runtime/scripts/lib/peer-execution-context.mjs';
-const SHUTTLE = 'plugins/runtime/receivers/codex-notify-shuttle.mjs';
 const STATUSLINE = 'plugins/runtime/receivers/agentic-statusline.mjs';
 const PROBE = 'plugins/runtime/scripts/lib/machine-probe.mjs';
 const IDENTITY = 'plugins/runtime/scripts/lib/codex-install-identity.mjs';
@@ -58,7 +60,7 @@ const SETTINGS = 'plugins/runtime/scripts/settings.mjs';
 const ORDER = "const order = caller === 'codex' ? ['codex', 'claude'] : ['claude', 'codex'];";
 const ORDER_FIXED = "const order = ['claude', 'codex'];";
 
-export const TESTS = [T_LIB, T_BOOT, T_GUARD, T_SIBLINGS, T_WRITEBACK, T_PEC, T_ROOT_DOCS, T_NOTIFY, T_STATUSLINE, T_INVENTORY, T_IDENTITY, T_DOCTOR, T_SETTINGS, T_PLAN, T_BOOTSTRAP];
+export const TESTS = [T_LIB, T_BOOT, T_GUARD, T_SIBLINGS, T_WRITEBACK, T_PEC, T_ROOT_DOCS, T_STATUSLINE, T_INVENTORY, T_IDENTITY, T_DOCTOR, T_SETTINGS, T_PLAN, T_BOOTSTRAP];
 
 export const MUTATIONS = [
   // ---- L: the canonical library ------------------------------------------
@@ -208,12 +210,6 @@ export const MUTATIONS = [
     from: "const ENV_OVERRIDE = 'AGENTIC_COMPANIONS_ROOT';",
     to: "const ENV_OVERRIDE = 'AGENTIC_COMPANIONS_ROOT';\nconst CLONE = ['.tmp', 'marketplaces'];",
     why: 'a new clone reference appears in a file that S1 cleared',
-  },
-  {
-    id: 'G2', file: SHUTTLE, tests: [T_GUARD, T_NOTIFY],
-    from: "    path.join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime'),",
-    to: "    path.join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'runtime'),",
-    why: "the notify shuttle's Codex rung reverts to the marketplace clone",
   },
   {
     id: 'G3', file: ENG_RUNTIME, tests: [T_GUARD],
@@ -371,15 +367,16 @@ export const MUTATIONS = [
   },
 
   // ---- E: CLI entry guards on the paths the resolvers hand out ------------
+  // Ids are pinned rather than derived from the position: E4 (notify.mjs) went
+  // with the emitter in R4n2, and E5/E6 keep the names they were scored under.
   ...[
-    'plugins/orchestrator/scripts/state.mjs',
-    'plugins/engineer/scripts/state.mjs',
-    'plugins/engineer/scripts/dispatch-peer.mjs',
-    'plugins/runtime/scripts/notify.mjs',
-    'plugins/engineer/scripts/discover-runtime.mjs',
-    'plugins/orchestrator/scripts/discover-engineer.mjs',
-  ].map((file, i) => ({
-    id: `E${i + 1}`, file, tests: [T_SIBLINGS],
+    ['E1', 'plugins/orchestrator/scripts/state.mjs'],
+    ['E2', 'plugins/engineer/scripts/state.mjs'],
+    ['E3', 'plugins/engineer/scripts/dispatch-peer.mjs'],
+    ['E5', 'plugins/engineer/scripts/discover-runtime.mjs'],
+    ['E6', 'plugins/orchestrator/scripts/discover-engineer.mjs'],
+  ].map(([id, file]) => ({
+    id, file, tests: [T_SIBLINGS],
     from: 'if (invokedAsCli()) {',
     to: 'if (import.meta.url === `file://${process.argv[1]}`) {',
     why: `${file} compares argv[1] as spelled again, so it does nothing from an escaped path or a symlink`,
@@ -472,42 +469,8 @@ export const MUTATIONS = [
   },
 
   // ---- V: the home-rendered receivers (S3) ----------------------------------
-  {
-    id: 'V1', file: SHUTTLE, tests: [T_NOTIFY],
-    from: "  if (codex.state === 'ok') return { root: canonical(codex.root), version: codex.version, crossHost: false };",
-    to: "  if (false) return { root: canonical(codex.root), version: codex.version, crossHost: false };",
-    why: 'the Codex notify shuttle never takes the Codex install cache',
-  },
-  {
-    id: 'V2', file: SHUTTLE, tests: [T_NOTIFY],
-    from: "    if (!manifest || manifest.name !== 'runtime') continue;",
-    to: '    if (!manifest) continue;',
-    why: 'the shuttle accepts a cache directory whose manifest names another plugin',
-  },
-  {
-    id: 'V3', file: SHUTTLE, tests: [T_NOTIFY],
-    from: "  if (codex.state === 'unusable') {",
-    to: '  if (false) {',
-    why: 'a Codex runtime without notify.mjs crosses to the Claude cache instead of failing closed',
-  },
-  {
-    id: 'V4', file: SHUTTLE, tests: [T_NOTIFY],
-    from: '  if (resolved.crossHost) {',
-    to: '  if (false) {',
-    why: 'the shuttle takes the Claude cache silently',
-  },
-  {
-    id: 'V5', file: SHUTTLE, tests: [T_NOTIFY],
-    from: '  const runtimeVersion = resolved.version;',
-    to: '  const runtimeVersion = readManifestVersion(runtimeRoot);',
-    why: "the floor is judged on the other host's manifest, not the one the selection read",
-  },
-  {
-    id: 'V6', file: SHUTTLE, tests: [T_NOTIFY],
-    from: "  if (codex.state === 'ok') return { root: canonical(codex.root),",
-    to: "  if (codex.state === 'ok') return { root: codex.root,",
-    why: 'a root reached through a symlinked CODEX_HOME is returned in its link spelling',
-  },
+  // V1–V6, V11 and V12 were the Codex notify shuttle's; it was deleted in
+  // ADR-0064 R4n2, and the statusline is the one receiver left.
   {
     id: 'V7', file: STATUSLINE, tests: [T_STATUSLINE, T_GUARD],
     from: "    path.join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'runtime'),",
@@ -672,12 +635,6 @@ export const MUTATIONS = [
     to: '  if (false) {',
     why: 'a due repair never reaches the manual follow-ups aggregate',
   },
-  {
-    id: 'V11', file: SHUTTLE, tests: [T_NOTIFY],
-    from: '  if (diagnosed) return;\n',
-    to: '',
-    why: 'a cross-host note and a failed spawn make two stderr lines',
-  },
 
   // ---- S3 review round 2 (Codex) -------------------------------------------
   {
@@ -757,12 +714,6 @@ export const MUTATIONS = [
     from: "    if (path.includes('\\uFFFD')) return unverifiedIdentity('a path could not be decoded losslessly, so it cannot be compared');\n",
     to: '',
     why: 'two different file names that decode to the same replacement character compare equal',
-  },
-  {
-    id: 'V12', file: SHUTTLE, tests: [T_NOTIFY],
-    from: '  for (let i = 0; i < Math.max(ia.length, ib.length); i += 1) {\n',
-    to: '  return 0;\n  for (let i = 0; i < Math.max(ia.length, ib.length); i += 1) {\n',
-    why: 'the shuttle treats every prerelease of a core as equal',
   },
   {
     id: 'V13', file: STATUSLINE, tests: [T_STATUSLINE],

@@ -24,8 +24,8 @@
 //
 // WHAT IT READS, and why that is legitimate. `plugin.<name>.<host>.installed` /
 // `plugin.<name>.codex.enabled` rows carrying `status: 'declined'` — the same
-// manifest-legitimate field the reducer already reads for `fragment_applied` and the
-// egress opt-in. The judge never GENERATES `declined`; it only restores one an
+// manifest-legitimate field the reducer already reads for `fragment_applied` (and,
+// until ADR-0064 removed it, for the egress opt-in). The judge never GENERATES `declined`; it only restores one an
 // operator answer wrote (§6.2), so the status traces back to a person.
 //
 // WHAT IT REFUSES TO DO. It never narrows past declinability: a decline recorded

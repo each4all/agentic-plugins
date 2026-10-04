@@ -1417,9 +1417,9 @@ async function readObservedCodexHookConfig({ codexHome }) {
   // projection re-split the errno and disagreed with this flat status on an EACCES
   // machine — the live report said `missing` while the persisted evidence said
   // `unreadable`, two derivations of one read). Plain absence follows the repo's
-  // ENOENT||ENOTDIR rule (lib/notification-plan.mjs isNotificationReadBlocked
-  // precedent — a $CODEX_HOME component that is a regular file is absence, not an
-  // I/O failure); anything else is `unreadable`: the state is unknown, which is a
+  // ENOENT||ENOTDIR rule (the precedent the notification plan's
+  // isNotificationReadBlocked set before ADR-0064 removed it — a $CODEX_HOME
+  // component that is a regular file is absence, not an I/O failure); anything else is `unreadable`: the state is unknown, which is a
   // different operator recovery than "no hook was ever trusted".
   const readAbsent = currentText.reason === 'ENOENT' || currentText.reason === 'ENOTDIR';
   return {

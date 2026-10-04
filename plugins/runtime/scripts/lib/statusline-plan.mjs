@@ -33,7 +33,8 @@
 // runs through a SHELL (Git Bash when installed, PowerShell otherwise —
 // host-truth §2), unlike Codex's shell-less notify spawn — so `node` resolves
 // via PATH on both shells and no per-OS execPath split is needed here (the
-// documented asymmetry with expectedCodexNotifyArgv). The path is always
+// asymmetry with the Codex notify argv builder, expectedCodexNotifyArgv, until
+// ADR-0064 removed it). The path is always
 // forward-slash (Git Bash eats unquoted backslashes) and SINGLE-quoted —
 // literal in both Git Bash and PowerShell; double quotes interpolate in both
 // (Review peer BLOCKER: `$(...)`/backticks in a home path would execute).
@@ -159,9 +160,9 @@ export function renderInlineClaudeCommand(policy) {
 // Replace a placeholder that must occur EXACTLY once — zero or duplicate
 // occurrences mean template drift (or an earlier substitution injected the
 // token), and rendering a half-substituted receiver would be worse than
-// failing the plan. Moved here from lib/notification-plan.mjs, whose Codex
-// notify receivers also render through it until ADR-0064 Decision 1 removes
-// them (Decision 2, item 4).
+// failing the plan. Moved here from lib/notification-plan.mjs (ADR-0064
+// Decision 2, item 4), whose Codex notify receivers rendered through it until
+// Decision 1 removed them.
 export function substituteOnce(template, placeholder, replacement, label) {
   const first = template.indexOf(placeholder);
   if (first === -1 || template.indexOf(placeholder, first + placeholder.length) !== -1) {
@@ -248,7 +249,7 @@ export function renderAgenticStatuslineShim({
     'STATUSLINE_ITEMS',
   );
   // The shim delegates to the packaged receiver API, so it carries a runtime
-  // floor exactly as the Codex shuttle does (renderCodexNotifyShuttleScript).
+  // floor, as the former Codex notify shuttle did.
   // substituteOnce is fail-closed on a missing or repeated token, so a template
   // that stopped carrying this placeholder fails the render rather than
   // shipping a shim whose floor is the literal placeholder — which versionGte

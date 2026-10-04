@@ -27,38 +27,19 @@
 // the co-location precedent of `tests/cross-host/_helpers.mjs`.
 // Behaviour is gated by `tests/acceptance/test-acceptance-helpers.mjs`.
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { strictEqual } from 'node:assert/strict';
 
-/** Egress vars whose ambient presence would activate a real Telegram dispatch. */
-export const AMBIENT_EGRESS_KEYS = Object.freeze([
-  'AGENTIC_NOTIFY_EGRESS_CHANNEL',
-  'TELEGRAM_CHAT_ID',
-  'TELEGRAM_BOT_TOKEN',
-  'AGENTIC_NOTIFY_EGRESS_HEADLINE',
-]);
-
-/**
- * Delete the ambient egress vars from this process's own env.
- *
- * `hermeticEnv` covers child processes, but the suites also call `runEmit` in
- * process, and `runEmit` defaults `env = process.env`. Both layers are needed;
- * this is the in-process one. Call it once at module load.
- */
-export function scrubAmbientEgressEnv(env = process.env) {
-  for (const key of AMBIENT_EGRESS_KEYS) delete env[key];
-}
-
 /**
  * Ambient config no acceptance child needs, scrubbed from every child env.
  *
- * A developer may export the `AGENTIC_EGRESS_REAL_SMOKE` opt-in, but it is read IN
- * PROCESS -- by the (K) real-smoke test -- never by a child spawned here. Scrubbing
- * the whole prefix therefore costs nothing and buys CI parity: a local child sees the
- * same empty ambient surface a CI child sees.
+ * A child that needs an `AGENTIC_*` value receives it as an explicit override, and
+ * the `TELEGRAM_*` variables are what a machine that used the egress removed by
+ * ADR-0064 may still export. Scrubbing both prefixes therefore costs nothing and buys
+ * CI parity: a local child sees the same empty ambient surface a CI child sees.
  */
 const AMBIENT_PREFIX = /^(?:AGENTIC_|TELEGRAM_)/;
 
@@ -71,7 +52,7 @@ const AMBIENT_PREFIX = /^(?:AGENTIC_|TELEGRAM_)/;
  */
 export const DEFAULT_TIMEOUT_MS = 60_000;
 
-/** Mirrors `spawnSync`'s own default, so the sync and async helpers agree. */
+/** Mirrors `spawnSync`'s own default. */
 export const DEFAULT_MAX_BUFFER = 1024 * 1024;
 
 /**
@@ -93,10 +74,9 @@ let shimDir = null;
 /**
  * A bin directory holding only a `node` symlink.
  *
- * Children need bare `node` on PATH -- `peer-runner.mjs` spawns `'node'`, and the
- * rendered notification receiver runs under `/usr/bin/env node`. The interpreter's
- * own directory cannot be reused for that: on a developer machine it also holds
- * `codex`, which is exactly what we are hiding.
+ * Children need bare `node` on PATH -- `peer-runner.mjs` spawns `'node'`. The
+ * interpreter's own directory cannot be reused for that: on a developer machine it
+ * also holds `codex`, which is exactly what we are hiding.
  */
 function shimBin() {
   if (shimDir) return shimDir;
@@ -120,10 +100,9 @@ function shimBin() {
  * The CI-parity child environment.
  *
  * Scrubs the *base* and applies `overrides` *afterwards* -- scrubbing the merged
- * env would strip the egress values the suites deliberately inject. An override
- * whose value is `undefined` means "ensure absent", matching the `egressEnv`
- * idiom the egress suite already uses. Callers therefore pass DELTAS, never
- * `{ ...process.env, ... }`; spreading the ambient env would defeat the scrub.
+ * env would strip the `AGENTIC_*` values a suite deliberately injects. An override
+ * whose value is `undefined` means "ensure absent". Callers therefore pass DELTAS,
+ * never `{ ...process.env, ... }`; spreading the ambient env would defeat the scrub.
  */
 export function hermeticEnv(overrides = {}) {
   const env = {};
@@ -232,87 +211,3 @@ export function runGit(args, { cwd, timeoutMs, maxBuffer = DEFAULT_MAX_BUFFER } 
   return res.stdout.trim();
 }
 
-/**
- * Async `node <args>`, for the one call site that must not block the event loop.
- *
- * The timer only flags and kills; the `close` handler performs the single settle,
- * so stdio is drained and the child reaped before the promise resolves. Error
- * listeners are attached before the stdin write, because writing to a child that
- * already exited raises EPIPE.
- *
- * Output is capped like `spawnSync`'s `maxBuffer`. Without the cap, a child that
- * floods stdout grows the accumulator past V8's max string length and the resulting
- * RangeError is thrown inside a `'data'` handler — outside the Promise executor, so
- * it cannot reject and instead crashes the whole `node --test` worker. A hang by
- * flooding is precisely the failure class this guard exists to report, so it must
- * surface as an ENOBUFS `SpawnInfraError` like its synchronous sibling.
- *
- * The cap counts UTF-8 BYTES, not string length, so the two helpers agree on
- * non-ASCII output: 500k CJK characters are 1.5 MB to `spawnSync` but only 500k JS
- * code units. Bytes >= code units, so a byte cap also bounds the retained string.
- */
-export function runNodeAsync(args, { env = {}, cwd, input, timeoutMs, maxBuffer = DEFAULT_MAX_BUFFER } = {}) {
-  const budgetMs = resolveTimeoutMs(timeoutMs);
-  const startedAt = Date.now();
-
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, {
-      env: hermeticEnv(env),
-      ...(cwd ? { cwd } : {}),
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    let bytes = 0;
-    let timedOut = false;
-    let overflowed = false;
-    let settled = false;
-    let timer;
-
-    const settleOnce = (fn) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      fn();
-    };
-    const infra = (code, signal) => new SpawnInfraError({
-      argv: ['node', ...args], budgetMs, elapsedMs: Date.now() - startedAt, code, signal, stdout, stderr,
-    });
-
-    timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, budgetMs);
-
-    // Stop accumulating the moment the cap is crossed, then kill: the retained
-    // prefix is what the error report needs, and nothing beyond it is useful.
-    const collect = (append) => (chunk) => {
-      if (overflowed) return;
-      append(chunk);
-      bytes += Buffer.byteLength(chunk, 'utf8');
-      if (bytes <= maxBuffer) return;
-      overflowed = true;
-      child.kill('SIGKILL');
-    };
-
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', collect((d) => { stdout += d; }));
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', collect((d) => { stderr += d; }));
-
-    child.on('error', (err) => settleOnce(() => reject(infra(err.code ?? err.message, null))));
-    // The child may exit before we finish writing; EPIPE here is not a failure.
-    child.stdin.on('error', () => {});
-
-    child.on('close', (status, signal) => settleOnce(() => {
-      if (overflowed) reject(infra('ENOBUFS', signal));
-      else if (timedOut) reject(infra('ETIMEDOUT', signal));
-      else if (status === null) reject(infra('KILLED', signal));
-      else resolve({ status, stdout, stderr });
-    }));
-
-    if (input !== undefined) child.stdin.write(input);
-    child.stdin.end();
-  });
-}

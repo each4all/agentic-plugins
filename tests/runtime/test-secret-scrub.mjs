@@ -1,6 +1,6 @@
 // Tests for lib/secret-scrub.mjs scrubSecrets, moved with the function out of
 // test-egress-channel.mjs (ADR-0064 Decision 2, item 2). The egress payload
-// builder's use of it is still tested there, through buildEgressPayload.
+// builder that also used it went with ADR-0064 Decision 1.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 

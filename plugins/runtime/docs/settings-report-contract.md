@@ -26,15 +26,16 @@ Line references below are anchors observed at decision time
 
 - **Flag name: `--skip-host-cli-probes`.** Names the evidence axis and aligns
   with the report's `skipped` status vocabulary. Rejected: `--plan-only`
-  (misleading — settings is *already* a dry-run planner, and the retained plan
-  flags write M1 artifacts while `dry_run=true`; the name conflates the
+  (misleading — settings is *already* a dry-run planner, and the plan flags it
+  then had wrote M1 artifacts while `dry_run=true`; the name conflates the
   mutation axis with the evidence axis, which is the root cause this contract
   removes); `--no-host-cli-probes` (reserved by the analysis for a
   strict-R0 variant that was not chosen); `--local-only`/`--offline` (reads as
   a network property; the probes are local subprocesses).
 - **Composition (owner lever, ratified 2026-07-10): allow `--apply` and the
-  two plan flags; reject the three evidence-consuming executors and their
-  exclusive modifiers.** The gate rule is derivable, not enumerative in
+  plan flags; reject the three evidence-consuming executors and their
+  exclusive modifiers.** (No plan flag remains: ADR-0057 and ADR-0064 removed
+  them with the surfaces they planned.) The gate rule is derivable, not enumerative in
   spirit: *a flag is rejected under `--skip-host-cli-probes` iff its effect
   consumes host-CLI probe evidence, or it exclusively parameterizes a rejected
   flag.* Applied to the current surface:
@@ -47,13 +48,13 @@ Line references below are anchors observed at decision time
     consumer is the settings execution artifact writer, and
     `--expected-plan-hash` only guards the plugin-management/cleanup executor).
   - **Allowed**: `--format`, `--host`, `--target`, `--repo-root`, every config
-    flag (`--model`/`--effort`/direction-specific/`--notify-*`), `--apply`
-    (`applyConfigPlans` consumes zero doctor evidence — it is a pure
-    filesystem diff against `.agentic-plugins/config.toml`),
-    `--notification-plan`, and `--egress-launcher-plan` (both plan builders
-    take `{repoRoot, homeDir, env, now[, host]}` and never read doctor
-    output). ADR-0057 removed a third, `--permission-plan`, with the
-    permission advisor.
+    flag (`--model`/`--effort`/direction-specific/session) and `--unset`,
+    and `--apply` (`applyConfigPlans` consumes zero doctor evidence — it is a
+    pure filesystem diff against `.agentic-plugins/config.toml`). The plan
+    flags allowed at decision time took `{repoRoot, homeDir, env, now[, host]}`
+    and never read doctor output. ADR-0057 removed `--permission-plan` with the
+    permission advisor, and ADR-0064 removed `--notification-plan` and
+    `--egress-launcher-plan` with the notification and egress surfaces.
   - Rejected-alternative posture: a strict output-only mode (also rejecting
     `--apply` + the plan flags) was scored and declined — it re-couples the
     two axes (the `--plan-only` conflation, mirrored) and pushes the primary
@@ -68,9 +69,9 @@ Line references below are anchors observed at decision time
   2026-07-10 baseline recovery just paid down), and the mutation policy needs
   no amendment (§3.4 already covers the rejections).
 - **Semantics wording**: the mode skips **host-CLI subprocess probes**; it is
-  *not* "host-state-free". The allowed plan builders and the peer-execution
-  context still read local host files (e.g. `~/.codex/config.toml`,
-  activation state) read-only.
+  *not* "host-state-free". The peer-execution context and the readiness
+  diagnoses still read local host files (e.g. the host plugin caches)
+  read-only, as the plan builders did until their removal.
 
 ## 2. Behavioral contract
 
@@ -92,14 +93,16 @@ Line references below are anchors observed at decision time
   exit codes unchanged, text output byte-identical, JSON output changed only
   by the additive discriminator keys in §3. **Scope erratum (2026-07-10,
   Plan-verify)**: byte-compatibility is scoped to full-mode runs **without
-  plan flags** — when a plan flag is requested, the §3
-  `mutation_boundary.writes_allowed` honesty fix changes that value (and its
-  text rendering) by design, in both modes.
-- Non-transactional ordering (ADR-0035 §3.10 disclosure): config apply runs
-  before the plan-artifact writers, so a later plan-write failure can leave
-  an applied config and earlier plan artifacts behind. This is deliberate —
+  plan flags** — when a plan flag was requested, the §3
+  `mutation_boundary.writes_allowed` honesty fix changed that value (and its
+  text rendering) by design, in both modes. With the last plan flags removed
+  (ADR-0064), the scope covers every full-mode run.
+- Non-transactional ordering (ADR-0035 §3.10 disclosure): config apply ran
+  before the plan-artifact writers, so a later plan-write failure could leave
+  an applied config and earlier plan artifacts behind. This was deliberate —
   each write is independently idempotent and re-runnable; recovery is re-run,
-  not rollback. The probe-free mode does not change this ordering.
+  not rollback. The probe-free mode did not change this ordering, and the
+  plan-artifact writers left with ADR-0057 and ADR-0064.
   - **Superseded, narrowly, for the plugin-management and cleanup executors**
     ([machine-bootstrap-contract.md §1.5](machine-bootstrap-contract.md),
     ADR-0046 §5): those two H2 executors are now **write-ahead**. They persist
@@ -111,7 +114,7 @@ Line references below are anchors observed at decision time
     interrupted, never as a clean run). Recovery is still re-run, not rollback —
     nothing is auto-uninstalled — but the record is no longer written only
     *after* the mutation. The "re-run, not rollback" ordering above still governs
-    config apply and every other plan-artifact writer.
+    config apply.
   - **Plan/executor drift** (§1.6): `--expected-plan-hash <sha256>` guards
     execution — the executor recomputes the mode-invariant executable-action
     hash and, on divergence, refuses (terminal `refused`, no action) and
@@ -120,7 +123,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.26`)
+## 3. Report schema contract (`runtime-settings-1.27`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -134,8 +137,8 @@ so it is `null` alongside its section in `local_plan` mode; then
 list-authoritative per-plugin) and `attested_plugins` the completion reducer
 re-validates, alongside the retained legacy `plugin_versions`; then
 `runtime-settings-1.19` → `runtime-settings-1.20` (additive, ADR-0044 S2) when
-the `session` config family landed: `report.session_settings` (same shape as
-`notify_settings`, evaluated in both modes), `config.key_families.session`,
+the `session` config family landed: `report.session_settings` (the shape
+`notify_settings` had, evaluated in both modes), `config.key_families.session`,
 `overall.session_warnings` (numeric in both modes), the `session_settings`
 `section_presence` row, and the fail-closed config-target hardening
 (`config.targets[*].status` gains `unreadable` with a `read_error` field —
@@ -191,8 +194,19 @@ the readiness **status** exactly like `session_readiness_warnings`).
 Same observed-current semantics and the same additive-section erratum
 scope (1.23 `entry_readiness` appends its own text block in both
 scopes).
-`runtime-settings-1.25` → `runtime-settings-1.26` is **non-additive** — the only
-such bump in this contract's history. ADR-0057 §Decision 11 deleted
+`runtime-settings-1.26` → `runtime-settings-1.27` is **non-additive** too,
+a minor bump for the reason given for 1.26 below (ADR-0064 Decision 7). ADR-0064
+removed the notification emitter and the egress surfaces, and with them
+`notify_settings`, `notification_plan`, `egress_launcher_plan`,
+`overall.notify_warnings`, the three matching `section_presence` rows, the
+`notify` entry of `config.key_families`, and the `--notify-*`,
+`--notification-plan` and `--egress-launcher-plan` flags. A leftover
+`notify_*` config line is now an unknown key the reader drops, so it is inert;
+`--unset` refuses to name it, and removing the line is a manual edit
+(ADR-0064 Decision 9). Nothing pins the settings report version, so a
+partially upgraded host pair has no skew to resolve.
+`runtime-settings-1.25` → `runtime-settings-1.26` was the first
+**non-additive** bump in this contract's history. ADR-0057 §Decision 11 deleted
 `permission_plan` and `permission_plan_codex` with the permission advisor that
 produced them, and a field DELETION is not describable as an additive minor: a
 1.25 reader meeting a 1.26 report finds two keys gone, and the version is what
@@ -208,9 +222,10 @@ through which the captured `tui_notifications_raw` must be read. The raw
 alone is misleading: a duplicated `[tui]` table, a trailing-junk line, or
 a key whose identity the scan cannot pin down all capture
 canonical-looking text out of a config Codex will not load. The same
-field rides the `runtime-notification-plan-1.1` plan artifact, where it
-is validated on the write path; here it is observed-current and additive,
-with the text renderer appending `(form=…)` to the read-check line.
+field rode the `runtime-notification-plan-1.1` plan artifact, where it
+was validated on the write path; here it was observed-current and additive,
+with the text renderer appending `(form=…)` to the read-check line, until
+1.27 removed the section.
 The execution artifact
 carries the same hash plus the `planned_actions`/`journal[]` write-ahead fields, and
 the same additive `codex_hook_review` canonical fields,
@@ -223,13 +238,14 @@ distinguishable only by what it lacks:
 - `host_cli_probes`: `{ status: "run", flag: null }` in full mode;
   `{ status: "skipped", flag: "--skip-host-cli-probes" }` in probe-free mode.
 - `section_presence`: a map over every top-level report section, with enum
-  `evaluated | not_evaluated | not_requested | local_only`:
+  `evaluated | not_evaluated | local_only`. (`not_requested` was carried only
+  by the opt-in plan sections, `evaluated` when requested; 1.27 removed the
+  last of them.)
 
   | Section | full | local_plan |
   |---|---|---|
   | `clis`, `plugins`, `plugin_command_surface`, `plugin_management`, `plugin_cleanup`, `hook_settings`, `codex_hook_review` | `evaluated` | `not_evaluated` (value `null`) |
-  | `config`, `companion_settings`, `notify_settings`, `session_settings`, `session_readiness`, `entry_readiness`, `mutation_boundary`, `artifacts`, `limits`, `overall` | `evaluated` | `evaluated` |
-  | `notification_plan`, `egress_launcher_plan` | `evaluated` when requested, else `not_requested` | same |
+  | `config`, `companion_settings`, `session_settings`, `session_readiness`, `entry_readiness`, `receivers`, `receiver_reinstall`, `mutation_boundary`, `artifacts`, `limits`, `overall` | `evaluated` | `evaluated` |
   | `recommendations` | `evaluated` | `local_only` |
 
 - **Null, never empty**: probe-derived sections are `null` when skipped —
@@ -240,7 +256,7 @@ distinguishable only by what it lacks:
   `Object.values(undefined)`; the discriminator carries the semantics, `null`
   carries the ergonomics).
 - `recommendations` in `local_plan` mode is rebuilt from evaluated inputs only
-  (config-derived hints, `companion_settings`, `notify_settings`,
+  (config-derived hints, `companion_settings`,
   `session_settings`, `session_readiness`, `entry_readiness` — erratum 2026-07-10: the
   config-area hints are evaluated-derived and stay) and marked
   `local_only` in `section_presence` — it MUST NOT silently present as full
@@ -248,16 +264,17 @@ distinguishable only by what it lacks:
 - `overall`: gains `scope: "full" | "local_plan"`. The `status` enum is
   unchanged (`pass` | `warning`) and is computed over evaluated sections only.
   **Erratum (2026-07-10, Plan-verify)**: in `local_plan` mode, "evaluated
-  sections" includes requested plan sections — a requested plan section whose
-  own `status` is `blocked` (or failed) yields `status: "warning"`, never an
-  unqualified local pass. (Full mode has the same pre-existing gap — a
-  blocked notification plan does not warn — deliberately unchanged by this
-  contract and recorded as a follow-up.)
+  sections" included requested plan sections — a requested plan section whose
+  own `status` was `blocked` (or failed) yielded `status: "warning"`, never an
+  unqualified local pass. (Full mode had the same pre-existing gap — a
+  blocked notification plan did not warn — deliberately unchanged by this
+  contract and recorded as a follow-up.) 1.27 removed the last plan sections,
+  so neither clause has a subject left.
   Probe-derived counters are `null` (not `0`) in `local_plan` mode:
   `plugin_recommendations`, `hook_warnings`, `hook_review_warnings`,
   `auth_warnings`, `plugin_cleanup_warnings`, `plugin_management_executed`,
   `plugin_management_failed`. Evaluated counters (`planned_config_writes`,
-  `applied_config_targets`, `setting_warnings`, `notify_warnings`,
+  `applied_config_targets`, `setting_warnings`,
   `session_warnings`, `session_readiness_warnings`,
   `entry_readiness_warnings`) stay numeric. (`summarizeSettings`, today `settings.mjs:2096`, dereferences
   `report.clis`/`report.plugins`/`report.plugin_management` unconditionally
@@ -268,8 +285,10 @@ distinguishable only by what it lacks:
   families. It used to report `"none; dry-run only"` even while a requested
   plan wrote its artifact. "Dry run" must never render as "no writes" while
   plan artifacts are being written. (The example that surfaced this was
-  `--permission-plan`, removed by ADR-0057; the rule outlives it and still
-  governs `--notification-plan` and `--egress-launcher-plan`.)
+  `--permission-plan`, removed by ADR-0057; the rule outlived it and governed
+  `--notification-plan` and `--egress-launcher-plan` until ADR-0064 removed
+  them. No settings flag writes a plan artifact now, and the rule binds any
+  that is added.)
 
 ## 4. Rendering contract
 
@@ -300,13 +319,14 @@ distinguishable only by what it lacks:
   the single writer (`writeSettingsExecutionArtifact`, gated at
   `settings.mjs:321-328` on the three rejected executor/attest flags) is
   unreachable in this mode; a regression test pins the invariant regardless.
-- The plan-artifact families (notification and egress-launcher) are
-  unaffected: when their flags are requested they write their own families
-  exactly as in full mode. Their artifact pointers live inside each plan
+- The plan-artifact families (notification and egress-launcher) were
+  unaffected: when their flags were requested they wrote their own families
+  exactly as in full mode. Their artifact pointers lived inside each plan
   section (`notification_plan.artifact`, `egress_launcher_plan.artifact`) — **not** in `report.artifacts`, which
   carries only `settings_execution` (erratum 2026-07-10) — and
-  `mutation_boundary.writes_allowed` must enumerate the requested families
-  (§3).
+  `mutation_boundary.writes_allowed` enumerated the requested families
+  (§3). ADR-0064 removed both flags; their retained runs stay on disk as
+  history (ADR-0064 Decision 8).
 
 ## 6. Test obligations (S2B)
 
@@ -319,22 +339,24 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.26` report constant and the
+4. Schema-version lockstep: the `runtime-settings-1.27` report constant and the
    `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
-   both constants; `test-notification-plan.mjs` and `test-settings.mjs` pin the
-   report version; `test-settings.mjs` pins the artifact version), updated
-   together.
+   both constants; `test-settings.mjs` pins the report version and the artifact
+   version), updated together.
 5. Conflict rejection: each rejected flag, exercised through the **exported
    `runSettings` API** (not only argv), rejects before any probe, config
    write, or artifact write.
 6. Artifact-family exclusion: seed an earlier failed settings execution
-   artifact, run every allowed probe-free combination (`--apply`, each plan
-   flag, combinations), and assert the `runs/settings` directory, its latest
-   pointer, and the doctor/dashboard latest-run selection are unchanged
-   (non-masking).
+   artifact, run every allowed probe-free combination (`--apply`, and each
+   plan flag and their combinations while plan flags existed), and assert the
+   `runs/settings` directory, its latest pointer, and the doctor/dashboard
+   latest-run selection are unchanged (non-masking).
 7. `mutation_boundary` honesty: with a plan flag requested,
-   `writes_allowed` enumerates the plan-artifact family (both modes).
+   `writes_allowed` enumerated the plan-artifact family (both modes). With
+   no plan flag left (1.27), the suite instead pins that the removed plan and
+   `--notify-*` flags are refused and that a report carries none of the
+   removed sections.
 
 ## 7. Non-goals
 

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, parse, relative, resolve, sep, dirname } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { isUnder, resolveContained, resolveContainedSync, sameDirectory } from '../../plugins/runtime/scripts/lib/path-containment.mjs';
@@ -112,19 +112,23 @@ describe('runtime path identity (sameDirectory)', () => {
   });
 
   it('is the ONE identity predicate — a second private copy is the mirror', async () => {
-    // The same guard test-bootstrap.mjs applies to isUnder. Identity is a
-    // security predicate now (it decides whether the LIVE egress fence is
-    // reported as deletable legacy state), so a second copy is the failure mode.
+    // The same guard test-bootstrap.mjs applies to isUnder. Identity was a
+    // security predicate for doctor's egress fence (removed by ADR-0064), and a
+    // second copy is still the failure mode, so the sweep covers every lib module.
     const PRIVATE_COPY = /function sameDirectory\s*\(/;
-    for (const rel of ['egress-config.mjs', 'bootstrap-artifacts.mjs']) {
+    const names = (await readdir(LIB)).filter((name) => name.endsWith('.mjs') && name !== 'path-containment.mjs');
+    ok(names.includes('bootstrap-artifacts.mjs') && names.length > 20, `the sweep reached the lib modules (${names.length})`);
+    for (const rel of names) {
       const src = await readFile(join(LIB, rel), 'utf8');
       ok(!PRIVATE_COPY.test(src), `${rel} does not define a private sameDirectory`);
     }
+    ok(PRIVATE_COPY.test(await readFile(join(LIB, 'path-containment.mjs'), 'utf8')), 'the pattern matches the one real definition');
   });
 
   it('leaves isUnder pure — the containment predicate still touches no filesystem', async () => {
-    // isUnder is loaded on the notify emit path through egress-config. It must
-    // stay answerable without syscalls; identity is the part that needs them.
+    // isUnder was written for the notify emit path (removed by ADR-0064) and
+    // keeps its property: it stays answerable without syscalls; identity is the
+    // part that needs them.
     ok(isUnder('/a/b', '/a'));
     ok(!isUnder('/ab', '/a'));
     const src = await readFile(join(LIB, 'path-containment.mjs'), 'utf8');

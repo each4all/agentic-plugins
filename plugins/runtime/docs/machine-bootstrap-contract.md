@@ -1392,6 +1392,13 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   Both `v1` shapes are registered in `data/released-receiver-shapes.json`, so an
   installed `v1` reads as `legacy` until the operator re-renders it; a runtime
   release does not rewrite home copies.
+  *Amended 2026-10-05 ([ADR-0064](../../../docs/adr/0064-runtime-surface-reduction.md)
+  Decision 1, slice R4n2):* the notify shuttle and its chain receiver were
+  removed with their templates and their `data/released-receiver-shapes.json`
+  entries. The registry now holds the statusline shapes alone, and the
+  inventory classifies `agentic-statusline.mjs` only, so a shuttle or chain
+  file left in `~/.agentic-plugins/bin` is no longer a kind it reports
+  (ADR-0064 Decision 9 leaves its removal to the operator).
 - **Desired-seat discipline (applies to every fragment-bearing exact probe)**:
   the plan's expectation freezes into `steps[].desired` on FIRST render and is
   never silently re-bound; §7 version invalidation clears it with the
@@ -2024,6 +2031,11 @@ branch, `PROOF_EXECUTE_FLAGS` and `DOCTOR_SECTION_BY_KIND` name the directional
 kinds only, and bootstrap no longer forwards a doctor intent-WAL warning or
 egress retry advice. Doctor's own egress proof section is removed by a later slice
 (R4n2). Git history holds the specification of the executor and its WAL.
+*Removed 2026-10-05 (slice R4n2):* doctor's `egress_ack_proof` section went
+too, with `--egress-ack-proof`, `--execute-egress-ack-proof`, the
+`AGENTIC_EGRESS_REAL_SMOKE` gate and the intent WAL. Records left under
+`~/.agentic-plugins/runs/doctor/egress-intents/` are history that no runtime
+code writes or reads ([artifact-policy.md](artifact-policy.md) §Inventory).
 
 ### 8.3 One-host operators — a documented limitation, stated exactly
 

@@ -1,16 +1,17 @@
 ---
-description: Explicit workflow storage migration from legacy .claude/agentic-* homes to .agentic-plugins/state, plus read-only cross-checkout legacy egress-intent discovery
-argument-hint: "workflow-storage [--plugin all|engineer|orchestrator] [--apply] | legacy-egress-intents [--root <path>] [--skip <path>]"
+description: Explicit workflow storage migration from legacy .claude/agentic-* homes to .agentic-plugins/state
+argument-hint: "[workflow-storage] [--plugin all|engineer|orchestrator] [--apply]"
 ---
 
 # Runtime - Migrate
 
 $ARGUMENTS
 
-Two subcommands. `workflow-storage` (the default) is the ADR-0025
-migration planner: dry-run by default, mutating only with `--apply`.
-`legacy-egress-intents` is the ADR-0048 residual (d) discovery: **always
-read-only**, and there is no `--apply` for it.
+One subcommand, `workflow-storage` (the default): the ADR-0025 migration
+planner, dry-run by default and mutating only with `--apply`. The read-only
+`legacy-egress-intents` discovery went with the egress subsystem
+(ADR-0064 Decision 1); the command refuses that name, exit 1, and runs
+nothing.
 
 The arguments above reach the command through an args file, never through
 the shell (ADR-0059): typed text spliced into a command line is cut at `;`,
@@ -72,71 +73,3 @@ Notes:
   ignored migration manifest.
 - The command does not rewrite workflow schemas, peer-run handle schemas,
   host-native config, authentication, secrets, sandbox, or permission settings.
-
-## legacy-egress-intents (read-only)
-
-A one-time, machine-scoped inventory of **pre-upgrade, repo-scoped** egress
-intent WALs. The WAL moved from `<checkout>/.agentic-plugins/runs/doctor/
-egress-intents/` to `$HOME`, and `runtime:doctor` fences only the checkout it
-is run from — so an old proof sent from a *different* checkout is invisible
-to it and could still permit a re-send.
-
-```bash
-RUNTIME_ROOT="${AGENTIC_RUNTIME_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$RUNTIME_ROOT" ] || RUNTIME_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/runtime -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-node "$RUNTIME_ROOT/scripts/migrate.mjs" --repo-root "$REPO_ROOT" legacy-egress-intents
-```
-
-- Scans `$HOME` by default. `--root <path>` **replaces** that root (repeatable);
-  `--skip <path>` excludes a subtree by device/inode identity (repeatable).
-- `--max-depth` and `--time-budget-ms` bound the walk. Defaults are 6 and
-  120000ms, chosen against a measured `$HOME` walk. A slow network mount can
-  dominate the budget; `--skip` is the lever for that, and the report names the
-  directories the budget left unwalked.
-
-> **`--skip` costs coverage, and this is not hypothetical.** Nothing under a
-> skipped path is examined. On the first machine this command ran on, the ONLY
-> real pre-upgrade record was inside the very mount that a `--skip` example in
-> this file had recommended excluding, and the run reported
-> `no_findings_in_scanned_scope`. A separate checkout is exactly the sort of
-> thing that lives on a slow mount. Reach for `--skip` only after a run has
-> actually exhausted its budget, and read the caveat the report then adds to its
-> guidance.
-- Exit codes: `0` nothing found in the scanned scope, `2` locations found,
-  `1` the scan did not complete.
-- Writes nothing, reads no record body, and never emits a shell command for the
-  operator to run. The scan itself spawns no subprocess; the wrapper above runs
-  `git rev-parse` to resolve the repo root, as every runtime command does.
-
-**How to act on a finding — read `overall.guidance`; it is state-dependent.**
-The program withholds removal guidance in the states where acting would be
-unsafe (an incomplete scan, a location whose records were never listed, an
-absent or unidentifiable live fence), so the report's own guidance is the
-authority rather than this paragraph.
-
-When it does offer removal, the unit is the individual record, never the
-directory: a pre-upgrade record may carry no process identity, and this runtime
-reads a missing identity as *unknown*, not dead, so an older sender may still be
-in flight. Make sure no older proof is running, check the phone, then manually
-remove only the specific records you reviewed — never the directory as a whole,
-and never records the scan did not list.
-
-Check `live_wal.state` before acting on anything. It names what the scan treated
-as the live fence; if it is not `present`, a location listed as a finding may BE
-that fence — most often because `$HOME` differed from the one the proof ran
-under.
-
-The live machine-global WAL is excluded by device/inode identity and is never
-reported. The current checkout's own legacy directory **is** reported, annotated
-as already fenced by this checkout's doctor — reporting every location is the
-point, and excluding the familiar one would be a false clean.
-
-Residuals are stated in every output, and `residual[]` is the authority — not
-this paragraph. Three are worth knowing before reading a finding. Checkouts
-outside the scanned roots are not covered at all. The identity check that
-re-asks whether a pathname still reports the classified identity is **detection,
-not a binding**: it catches a replacement that persists past the check, and
-cannot see one that is undone before it, or one that arrives at the same
-dev/ino. And every record listing is a **point-in-time snapshot** — `record_count`
-means "this many when it was read", so a location reported as holding nothing is
-not a promise that nothing has been written there since.

@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 // receiver-api.mjs — the stable packaged API that agentic-plugins' installed
-// receivers delegate to (ADR-0048 §2 as amended, ADR-0040 §4).
+// receiver delegates to (ADR-0048 §2 as amended).
 //
-// WHY THIS EXISTS. The two receivers under plugins/runtime/receivers/ are
-// TEMPLATES: the plan renders them into ~/.agentic-plugins/bin/ and the USER
-// installs and runs them. Whatever logic those rendered files carry is frozen
-// at install time and cannot be updated by upgrading the plugin — the exact
-// hazard recorded in the shuttle's own header, where an ADR-0047 §5 mapping
-// change left older installed shuttles emitting a superseded event kind.
+// WHY THIS EXISTS. The receiver under plugins/runtime/receivers/ is a
+// TEMPLATE: bootstrap renders it for ~/.agentic-plugins/bin/ and the USER
+// installs and runs it. Whatever logic a rendered file carries is frozen at
+// install time and cannot be updated by upgrading the plugin — the hazard the
+// former Codex notify shuttle recorded in its own header, where an ADR-0047 §5
+// mapping change left older installed shuttles emitting a superseded event
+// kind. (ADR-0064 removed the shuttle, its chain receiver and the payload
+// mapping they delegated here.)
 //
-// So the volatile behaviour lives HERE, in the plugin, and the installed files
-// keep only what must bootstrap: find the runtime, gate it, delegate.
+// So the volatile behaviour lives HERE, in the plugin, and the installed file
+// keeps only what must bootstrap: find the runtime, gate it, delegate.
 //
 // WHAT THIS MODULE MAY NOT DO. It is imported into the statusline shim's own
 // process, so it inherits the ADR-0048 §2 shim contract in full: read-only,
@@ -26,9 +28,7 @@
 // guard is untouched.
 
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import path from 'node:path';
 
 // Per-receiver capability majors, checked in ADDITION to the manifest version
 // gate — a semver floor only proves which release answered, not that this build
@@ -41,11 +41,13 @@ import path from 'node:path';
 // the shim fails closed instead of calling something whose contract it does not
 // know.
 //
-// The two receivers are versioned SEPARATELY so a change to one does not force
-// the other's installed copies to be re-rendered.
+// Each receiver is versioned SEPARATELY so a change to one does not force
+// another's installed copies to be re-rendered. `codexNotify` went with the
+// Codex notify receivers (ADR-0064 Decision 1): an installed shuttle resolves
+// only a runtime that still carries `scripts/notify.mjs`, so this build is
+// never the one it calls.
 export const RECEIVER_API_MAJORS = Object.freeze({
   statusline: 1,
-  codexNotify: 1,
 });
 
 const STDIN_MAX_BYTES = 256 * 1024;
@@ -183,80 +185,7 @@ export function statuslineRendererIds() {
   return Object.keys(RENDERERS);
 }
 
-/**
- * Map a raw Codex `notify=` payload to a runtime notify event.
- *
- * The shuttle used to build this event itself, which is what froze the
- * superseded `turn-complete` kind into installed copies. Handing the RAW
- * payload here means the mapping upgrades with the plugin.
- *
- * Returns { repoRoot, event } or null when there is nothing to emit (not in a
- * repository, unparseable payload, or a payload variant this build does not
- * map). Never throws.
- */
-export async function mapCodexNotifyPayload({ payloadText, cwd = process.cwd() } = {}) {
-  if (typeof payloadText !== 'string' || payloadText.length === 0) return null;
-  let payload;
-  try { payload = JSON.parse(payloadText); } catch { return null; }
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
-  // Only variant at the pinned Codex version; future variants no-op silently.
-  if (payload.type !== 'agent-turn-complete') return null;
-  const repoRoot = resolveRepoRoot(cwd);
-  if (!repoRoot) return null; // outside a repository — no notify state home
-  const turnId = typeof payload['turn-id'] === 'string' && payload['turn-id'].length > 0
-    ? payload['turn-id']
-    : null;
-  const lastMessage = typeof payload['last-assistant-message'] === 'string'
-    ? payload['last-assistant-message']
-    : '';
-  // The repo-ident contract has exactly ONE implementation
-  // (lib/notify-schema.mjs, ADR-0040 §1). It is imported LAZILY rather than at
-  // module top so the statusline path — which never maps a payload — does not
-  // pay for the notify graph on every prompt render. Re-implementing it here to
-  // stay leaf-light would only move the duplicate from installed bytes into
-  // packaged bytes, which is the problem this module exists to remove.
-  const { deriveRepoIdent } = await import('./lib/notify-schema.mjs');
-  const subject = turnId !== null
-    ? 'codex-turn:' + turnId
-    : 'codex-turn:payload-' + createHash('sha256').update(payloadText).digest('hex').slice(0, 12);
-  return {
-    repoRoot,
-    event: {
-      // <repo-ident>:<kind>:<subject>:<status> — 'fired' is the §1 default
-      // status token for response-needed (a kind without a natural terminal
-      // status), matching buildEventId's default.
-      //
-      // ADR-0047 §5: agent-turn-complete maps to response-needed as an
-      // ACCEPTED APPROXIMATION (a completed Codex turn with nobody watching is
-      // at worst an early your-turn, never a lost one) — kind only; the
-      // codex-turn subject namespace, fired status, codex-notify source, and
-      // the no-headline posture are preserved.
-      event_id: deriveRepoIdent(repoRoot) + ':response-needed:' + subject + ':fired',
-      source: 'codex-notify',
-      kind: 'response-needed',
-      urgency: 'normal',
-      title: 'Codex turn complete',
-      body: lastMessage,
-      refs: { path: repoRoot },
-    },
-  };
-}
-
-// Walk up from cwd to the nearest .git marker (dir or worktree file).
-function resolveRepoRoot(cwd) {
-  let current;
-  try { current = fs.realpathSync(path.resolve(cwd)); } catch { return null; }
-  for (;;) {
-    if (fs.existsSync(path.join(current, '.git'))) return current;
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-}
-
-
-
-/** Bounded stdin read, shared by the receivers that consume a host JSON document. */
+/** Bounded stdin read, for a receiver that consumes a host JSON document. */
 export function readStdinBounded(fd = 0) {
   try {
     const chunks = [];

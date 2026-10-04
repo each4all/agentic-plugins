@@ -459,12 +459,12 @@ describe('a resolved root runs its CLI under a symlinked CODEX_HOME (ADR-0061 S2
 // must behave the same from the repository, from a directory whose name needs
 // URL escaping, and through a symlink — with and without
 // --preserve-symlinks-main, which keeps the link in import.meta.url.
+// (runtime's notify.mjs was on this list until ADR-0064 R4n2 deleted it.)
 describe('CLI entry points run from any install spelling (ADR-0061 S2)', () => {
   const CLIS = [
     'plugins/orchestrator/scripts/state.mjs',
     'plugins/engineer/scripts/state.mjs',
     'plugins/engineer/scripts/dispatch-peer.mjs',
-    'plugins/runtime/scripts/notify.mjs',
     'plugins/engineer/scripts/discover-runtime.mjs',
     'plugins/orchestrator/scripts/discover-runtime.mjs',
     'plugins/founder/scripts/discover-runtime.mjs',

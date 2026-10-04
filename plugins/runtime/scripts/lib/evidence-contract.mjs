@@ -19,16 +19,14 @@
 //      receipt attestation. Their files stay in retained runs as history; the
 //      proof/ reader skips them by name and nothing validates or credits them.
 //
-// One egress item stays until ADR-0064's R4n2 slice: the domain-separated
-// ACTIVATION FINGERPRINT and its two domain constants, whose last consumer is
-// doctor's egress ack proof. Bootstrap no longer reads them.
+// The domain-separated egress ACTIVATION FINGERPRINT and its two domain
+// constants went with doctor's egress ack proof, their last consumer
+// (ADR-0064 Decision 1, slice R4n2).
 //
 // Deliberately NOT here: file I/O (bootstrap-artifacts.mjs owns the proof/
 // directory) and aggregate recomputation (completion-reducer.mjs).
 // Imports schema-validate.mjs only — reducer and artifacts both import THIS,
 // never each other through it, so the writer/reducer dependency stays acyclic.
-
-import { createHash } from 'node:crypto';
 
 import { makeDefValidator } from './schema-validate.mjs';
 
@@ -129,27 +127,4 @@ export async function validateEvidenceRecord({ kind, record, pluginRoot }) {
   if (!structural.ok) return { ok: false, errors: structural.errors };
   const issues = evidenceKindIssues(kind, record);
   return issues.length > 0 ? { ok: false, errors: issues } : { ok: true, errors: [] };
-}
-
-// ---------------------------------------------------------------------------
-// Doctor's egress ack proof — domain-separated identity hashes (until R4n2)
-// ---------------------------------------------------------------------------
-
-export const EGRESS_ACTIVATION_FINGERPRINT_DOMAIN = 'egress-activation-v1';
-// The synthetic-attempt identity domain. GENERATION belongs to doctor's
-// egress-proof executor (it owns the closed-vocab synthetic event).
-export const EGRESS_ATTEMPT_HASH_DOMAIN = 'egress-attempt-v1';
-
-/**
- * The activation fingerprint doctor's egress ack proof records: full SHA-256
- * over the sanitized activation identity. Inputs are the channel, the
- * recipient, and the credential env var NAME — never the credential value, so
- * credential ROTATION is invisible to it by design. NUL separators prevent
- * concatenation ambiguity; the domain prefix prevents a value collision with
- * any other sha256 in the artifact family.
- */
-export function deriveActivationFingerprint({ channel = '', recipient = '', credentialEnvVar = '' } = {}) {
-  return createHash('sha256')
-    .update([EGRESS_ACTIVATION_FINGERPRINT_DOMAIN, String(channel), String(recipient), String(credentialEnvVar)].join('\u0000'))
-    .digest('hex');
 }

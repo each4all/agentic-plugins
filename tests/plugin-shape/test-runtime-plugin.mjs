@@ -281,22 +281,8 @@ describe('plugins/runtime bootstrap surface', () => {
     }
   });
 
-  // ADR-0046 Context §2 — the egress env-var names appeared in ZERO markdown
-  // files before the bootstrap track; the root README Stage 0 section is their
-  // first consistent operator-facing home. Import EGRESS_ENV_KEYS from
-  // egress-config.mjs (the code authority — PLUGIN_NAMES precedent) so a
-  // rename cannot leave the README documenting dead variables, and pin the
-  // ADR-0041 safety semantics that ride with the names.
-  it('documents the canonical egress env-var names in the root README', async () => {
-    const { EGRESS_ENV_KEYS } = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/lib/egress-config.mjs')).href);
-    deepStrictEqual(Object.keys(EGRESS_ENV_KEYS).sort(), ['channel', 'credential', 'recipient'], 'EGRESS_ENV_KEYS carries the three canonical roles');
-    const rootReadme = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8');
-    for (const [role, name] of Object.entries(EGRESS_ENV_KEYS)) {
-      ok(rootReadme.includes(name), `root README.md documents the egress ${role} env var ${name}`);
-    }
-    ok(/default is off/i.test(rootReadme), 'root README states the egress default-off posture');
-    ok(/env-only/i.test(rootReadme), 'root README states the env-only credential rule');
-  });
+  // The root README's egress env-var test went with egress-config.mjs, the
+  // code authority it imported the names from (ADR-0064 R4n2).
 });
 
 describe('plugins/runtime settings surface', () => {
@@ -463,74 +449,22 @@ describe('plugins/runtime migrate surface', () => {
     }
   });
 
-  it('the legacy-egress-intents subcommand is surfaced as READ-ONLY on every surface', async () => {
-    // The mutation boundary is the safety property, so it is pinned at the
-    // surface an operator (or a model reading the skill) actually sees — not
-    // only in the implementation.
-    //
-    // Prose is compared with whitespace COLLAPSED. These are wrapped markdown
-    // paragraphs, and pinning where a sentence happens to break would make an
-    // editorial reflow look like a contract change while a real deletion of the
-    // sentence would still be caught.
-    const flat = (text) => text.replace(/\s+/g, ' ');
+  // The `legacy-egress-intents` subcommand, doctor's legacy-intent blocker and
+  // the egress intent WAL went with egress (ADR-0064 R4n2), and so did the
+  // tests that pinned their read-only surface, quiesce wording and single WAL
+  // definition. The operator-text half of that last guard stays below.
 
-    const command = flat(await readFile(resolve(PLUGIN_ROOT, 'commands/migrate.md'), 'utf-8'));
-    ok(command.includes('legacy-egress-intents'));
-    ok(/read-only/i.test(command));
-    ok(command.includes('there is no `--apply`'), 'the command states the absence of an apply mode');
-
-    const skill = flat(await readFile(skillsPath(PLUGIN_ROOT, 'migrate/SKILL.md'), 'utf-8'));
-    ok(skill.includes('legacy-egress-intents'));
-    ok(skill.includes('ADR-0048'));
-    ok(/no `--apply`/.test(skill));
-    // The quiesce contract, not "verify the phone then delete".
-    ok(skill.includes('no older proof running'));
-    ok(skill.includes('check the phone'));
-    ok(skill.includes('never generate a shell command'));
-    ok(skill.includes('already_fenced_by_current_doctor'), 'the current checkout is a finding, not an exclusion');
-    // The relay must be STATE-DEPENDENT. An earlier version stated the
-    // no-removal rule and then told the model to relay removal guidance "for
-    // every location" unconditionally, which recreates in the model-facing
-    // surface exactly the instruction the renderer withholds.
-    ok(skill.includes('Relay `overall.guidance` verbatim. Do not compose your own.'));
-    ok(!/for every location/.test(skill), 'the unconditional relay instruction must be gone');
-    ok(skill.includes('coverage decision, not a performance tweak'), '--skip must state what it costs');
-
-    const agent = flat(await readFile(skillsPath(PLUGIN_ROOT, 'migrate/agents/openai.yaml'), 'utf-8'));
-    ok(agent.includes('$runtime:migrate legacy-egress-intents'));
-    ok(/read-only/i.test(agent));
-
-    // The direct workflow-storage entry point must NOT claim the new
-    // subcommand — it does not dispatch it.
-    const legacyEntry = await readFile(resolve(PLUGIN_ROOT, 'scripts/migrate-workflow-storage.mjs'), 'utf-8');
-    ok(!legacyEntry.includes('legacy-egress-intents'));
-  });
-
-  it('the doctor legacy blocker still carries the quiesce wording', async () => {
-    // The BEHAVIOURAL assertion — that the emitted blocker names
-    // `runtime:migrate legacy-egress-intents` — lives in tests/runtime/
-    // test-doctor.mjs, against the produced string. This one only pins the
-    // wording, and deliberately does not re-assert the command name: a
-    // whole-source scan is satisfied by a mention in a comment.
-    const doctor = await readFile(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'), 'utf-8');
-    ok(doctor.includes('Make sure no older proof is running, check the phone, then remove the specific records you reviewed'));
-  });
-
-  it('the shared egress WAL and operator-text primitives have exactly ONE definition each', async () => {
-    // T1's guard. The extraction exists because `doctor.mjs` had grown a second
-    // inline copy of the four-component WAL path; without this, nothing stops a
-    // third from appearing in the next file that needs one, and a safety fix
-    // landing on one copy while the other keeps shipping is the failure this
-    // repository has hit repeatedly. `safeOperatorText` moved to its own module
-    // because its migrate consumers outlive the WAL (ADR-0064 Decision 2).
+  it('the shared operator-text primitive has exactly ONE definition', async () => {
+    // T1's guard. A safety fix landing on one copy while another keeps
+    // shipping is the failure this repository has hit repeatedly.
+    // `safeOperatorText` moved to its own module because its migrate consumers
+    // outlived the egress intent WAL it was extracted beside (ADR-0064
+    // Decision 2).
     const dirs = ['scripts', 'scripts/lib'];
     const home = {
-      egressIntentDir: 'scripts/lib/egress-intent-wal.mjs',
-      safeRecordName: 'scripts/lib/egress-intent-wal.mjs',
       safeOperatorText: 'scripts/lib/operator-text.mjs',
     };
     const definitions = Object.fromEntries(Object.keys(home).map((symbol) => [symbol, []]));
-    const inlinePathShape = [];
     for (const dir of dirs) {
       const abs = resolve(PLUGIN_ROOT, dir);
       for (const name of await readdir(abs)) {
@@ -540,17 +474,11 @@ describe('plugins/runtime migrate surface', () => {
           const defined = new RegExp(`(?:^|\\n)\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${symbol}\\s*\\(|(?:^|\\n)\\s*(?:export\\s+)?const\\s+${symbol}\\s*=`);
           if (defined.test(source)) definitions[symbol].push(`${dir}/${name}`);
         }
-        // The path SHAPE spelled inline, which is the copy that actually
-        // appeared. `egress-intent-wal.mjs` is where it legitimately lives.
-        if (name !== 'egress-intent-wal.mjs' && /'runs'\s*,\s*'doctor'\s*,\s*'egress-intents'/.test(source)) {
-          inlinePathShape.push(`${dir}/${name}`);
-        }
       }
     }
     for (const [symbol, files] of Object.entries(definitions)) {
       deepStrictEqual(files, [home[symbol]], `${symbol} must be defined once, in ${home[symbol]} (found in: ${files.join(', ') || 'nowhere'})`);
     }
-    deepStrictEqual(inlinePathShape, [], 'the egress-intent directory shape is spelled inline outside the shared lib');
   });
 });
 

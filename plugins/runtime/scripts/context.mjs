@@ -491,9 +491,9 @@ export async function publishSessionCapture(options = {}) {
     return publishSkipReport('no-repo-root');
   }
 
-  // Config gate (contract §1), evaluated INSIDE the publisher — the
-  // notify_channel shape: shipped default off, fail-closed loader, so a
-  // broken config never turns capture on. Gate-off mutates NOTHING — no
+  // Config gate (contract §1), evaluated INSIDE the publisher — the shape
+  // the former notify_channel key had: shipped default off, fail-closed
+  // loader, so a broken config never turns capture on. Gate-off mutates NOTHING — no
   // mkdir, no lock, no sweep.
   const gate = loadSessionConfig({ repoRoot, ...(options.homeDir ? { homeDir: options.homeDir } : {}) });
   if (!gate.ok) return publishSkipReport('config-fail-closed');
@@ -2516,7 +2516,7 @@ async function main() {
   // ADR-0044 §9 output-mode split, made explicit: operator invocations stay on
   // the reporter path (stdout report, exit 1 on error) while the hook/sidecar
   // modes are fail-closed silent: exit 0 always, nothing on stdout, at most
-  // ONE stderr line (the notify.mjs emit discipline). note opts in via
+  // ONE stderr line (the discipline the former notify.mjs emitter kept). note opts in via
   // --hook-grade; publish-session is hook-grade BY COMMAND (the publisher
   // path has no operator reporter mode, contract §1). Both are detected on
   // the RAW argv too, so even a parseArgs failure cannot make a hook

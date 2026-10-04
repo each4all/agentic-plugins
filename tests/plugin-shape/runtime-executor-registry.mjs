@@ -65,15 +65,8 @@ export const CAPABILITY_IMPORTERS = {
   // source-snapshot.mjs:109 execFile('git', ['-C', root, ...readArgs]) — git
   // read snapshot (rev-parse / status). Tier R0/M1.
   'source-snapshot.mjs': { modules: ['node:child_process'], primitives: ['execFile'] },
-  // notify.mjs dispatchOsascript → spawn('/usr/bin/osascript', <fixed argv>) —
-  // the ADR-0040 §2 notification-emit executor. The ONLY non-companion
-  // external-process execution outside the host-CLI/git wrappers; ADR-0040
-  // authorizes exactly the fixed-template shape pinned in
-  // ARGV_VERB_ALLOWLIST['/usr/bin/osascript'] below and nothing broader
-  // (§4 ceiling untouched; §3 invariants 1/5/8 narrowly amended for this one
-  // surface — config-key gating via notify_channel=none default, detached+
-  // unref fire-and-forget, fail-closed silent emit path).
-  'notify.mjs': { modules: ['node:child_process'], primitives: ['spawn'] },
+  // notify.mjs (the ADR-0040 §2 osascript notification emitter, spawn) was an
+  // entry here until ADR-0064 R4n2 deleted it with the rest of notification.
   // retention-planner.mjs defaultGitTrackedFiles → execFile('git', ['-C', repoRoot,
   // 'ls-files', '-z']) — the ADR-0047 §7 read-only tracked-file enumeration for the
   // citation pin scan. Tier R0: read-only, injectable (tests pass gitTrackedFiles
@@ -102,7 +95,8 @@ export const RAW_PROCESS_PRIMITIVES = [
 
 // Network primitive member calls (on an http/https/net binding). They are allowed
 // only in a network CAPABILITY_IMPORTERS entry, and there is none today (see the
-// note on CAPABILITY_IMPORTERS).
+// note on CAPABILITY_IMPORTERS). Since ADR-0064 retired tier E1, no runtime
+// script reaches the network at all, through any of the gates below.
 // `fetch` is included so a `binding.fetch(` member call inside a network-importer
 // is also gated; the GLOBAL `fetch` (a bare call with no import to anchor on) is
 // handled separately by the global-fetch-gate (ADR-0041 §2d).
@@ -129,7 +123,7 @@ export const NETWORK_PRIMITIVES = ['get', 'request', 'connect', 'createConnectio
 // in an arbitrary USE position (`https.request(...)`) is the documented
 // deliberate-obfuscation residual — a general static check would false-positive on
 // legitimate `\u`-bearing regex character classes (the `/[\u0000-\u001F]/` control
-// scrub in notify.mjs itself), so §2b behavioral validation is the sound check.
+// scrub notify.mjs carried), so §2b behavioral validation is the sound check.
 // unit test (ADR-0041 §2b — it observes the actual URL/method/redirect/timeout
 // fetch received). This gate's job is to catch accidental / review-visible fetch
 // additions and to fail closed on anything it cannot recognize as the exact
@@ -146,6 +140,9 @@ export const NETWORK_PRIMITIVES = ['get', 'request', 'connect', 'createConnectio
 // as a fail-closed tripwire: it now rejects ANY `fetch` reference in EVERY runtime
 // script (registry never looser than code — an entry for a fetch that no longer
 // exists would authorize a re-added fetch that the swap deliberately removed).
+// ADR-0064 then retired tier E1 (ADR-0035 §4: "a future egress would need a new
+// ADR") and deleted notify.mjs, so this table has no subject left; an entry
+// needs that new ADR.
 //
 // Spec fields (retained for a FUTURE fetch user, if any) — a registered file may
 // reference `fetch` ONLY as the callee of a DIRECT `fetch(url, init)` call (no
@@ -214,16 +211,16 @@ export const GLOBAL_FETCH_USERS = {};
 //     loop around a SINGLE `<binding>.request(...)` call site (varying only the
 //     non-pinned `family` option), never a second call site — which both keeps the
 //     egress bound and structurally reflects "a written body is never retried".
-export const PINNED_HTTPS_USERS = {
-  'notify.mjs': {
-    module: 'node:https',
-    endpointPrefix: 'https://api.telegram.org/bot',
-    endpointSuffix: '/sendMessage',
-    method: 'POST',
-    requireTimeout: true,
-    maxCalls: 1,
-  },
-};
+//
+// EMPTY since ADR-0064 R4n2. Its one entry was notify.mjs, pinned to
+// `https://api.telegram.org/bot<TOKEN>/sendMessage`, POST, bounded, maxCalls 1;
+// ADR-0064 retired tier E1 and deleted the file, and ADR-0035 §4 now says a
+// future egress needs a new ADR. With no entry, the import-gate rejects a
+// `node:https` import in EVERY runtime script. The gate and its validator stay
+// as infrastructure (the CAPABILITY_IMPORTERS network-gate precedent): their
+// tests run against an injected registry that re-registers the old spec under
+// a synthetic file name, and a control proves the same source fails here.
+export const PINNED_HTTPS_USERS = {};
 
 // ---------------------------------------------------------------------------
 // Command origin (what binary is launched)
@@ -237,10 +234,10 @@ export const EXEC_CALL_NAMES = [
   'runCommand', 'runner', 'runGit', 'execGit', 'defaultRunner', 'commandSpec',
 ];
 
-// The only binaries runtime may launch as a literal command. The osascript
-// entry is deliberately the ABSOLUTE path: it pins the system binary (no PATH
-// resolution surface) for the ADR-0040 §2 fixed-argv notification dispatch.
-export const ALLOWED_COMMAND_LITERALS = ['claude', 'codex', 'git', '/usr/bin/osascript'];
+// The only binaries runtime may launch as a literal command. `/usr/bin/osascript`
+// (the ADR-0040 §2 fixed-argv notification dispatch in notify.mjs) left the list,
+// and its ARGV_VERB_ALLOWLIST entry with it, when ADR-0064 R4n2 deleted notify.mjs.
+export const ALLOWED_COMMAND_LITERALS = ['claude', 'codex', 'git'];
 
 // Node itself, used to run agentic-plugins-owned scripts (engineer state.mjs,
 // companions) inside ephemeral temp repos. Recognised as a member expression
@@ -416,16 +413,6 @@ export const ARGV_VERB_ALLOWLIST = {
     // clone root, 40-hex sha and plugin path are the three '*' positions.
     ['--no-optional-locks', '-C', '*', 'ls-tree', '-r', '-z', '*', '--', '*'],
   ],
-  // notify.mjs macos-osascript channel (ADR-0040 §2): ONE verb-path pinning
-  // the FIXED AppleScript program byte-for-byte, arity-locked. The program
-  // reads `on run argv`; the two trailing '*' are the title/body payload —
-  // data positions only, never program material (interpolating payload into
-  // an -e expression is the classic osascript injection and normalizes to a
-  // '*' program token here, which fails this exact-literal path). Any change
-  // to the program text or arity fails closed until re-registered.
-  '/usr/bin/osascript': [
-    ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', '*', '*'],
-  ],
 };
 
 // Argv tokens that are NEVER legitimate in a runtime-built host-CLI argv array
@@ -531,12 +518,9 @@ export const ALLOWED_PID_LIVENESS_SITES = [
     justification:
       'stale family-lock reclaim needs to know whether the owning pid is gone; machine-bootstrap-contract.md §13 fixes this exact probe (ESRCH ⇒ gone, EPERM ⇒ exists) as the staleness rule, alongside the 10-minute age bound (ADR-0035 §4 — a liveness read, not a mutation)',
   },
-  {
-    file: 'doctor.mjs',
-    form: 'process.kill(pid, 0)',
-    justification:
-      'egress intent-WAL blocker WORDING ONLY, never takeover (ADR-0048 residual (a) — classifyClaimHolder). This entry is deliberately NOT a second staleness authority: unlike the bootstrap family lock above, nothing in doctor.mjs ever breaks, reclaims, or overwrites a claim on the strength of this answer. It chooses between two operator messages — "another attempt is in flight, wait" versus "check the phone, then delete" — because those have opposite remedies and telling an operator to delete a LIVE claim would free the fence for a second send to their phone. The operator remains the only reclaim authority (ADR-0035 §4 — a liveness read, not a mutation)',
-  },
+  // doctor.mjs had a second entry for the egress intent-WAL blocker wording
+  // (classifyClaimHolder, ADR-0048 residual (a)) until ADR-0064 R4n2 removed
+  // the WAL; the same probe in doctor.mjs is a kill-gate finding again.
 ];
 
 // ---------------------------------------------------------------------------
@@ -601,10 +585,13 @@ export const FS_MUTATION_USERS = {
   },
   // doctor run artifacts + ephemeral temp-repo probes (mkdtemp under the OS
   // tmpdir, recursively removed — the pinned recursive-removal site below).
+  // `link`, `open` and `unlink` left this entry with the ADR-0048 residual
+  // (a)/(b) egress intent WAL, and the egress-ack-proof temp repo with the
+  // proof, when ADR-0064 R4n2 removed egress.
   'doctor.mjs': {
-    primitives: ['link', 'mkdir', 'mkdtemp', 'open', 'rename', 'rm', 'unlink', 'writeFile'],
+    primitives: ['mkdir', 'mkdtemp', 'rename', 'rm', 'writeFile'],
     stateRoots: ['.agentic-plugins/runs/doctor', 'os-tmpdir'],
-    justification: 'doctor run artifacts (temp+rename atomic writeDoctorArtifact — the artifact bytes are hash-linked evidence, ADR-0048 §3) + self-created mkdtemp temp-repo teardown (workflow-continuation AND egress-ack-proof temp repos) + the ADR-0048 residual (a)/(b) egress intent WAL, which is APPEND-ONLY: `open` in exactly two literal-flag shapes (exclusive-create for the durable temp, read-only for the directory fsync), `link` to publish BOTH WAL records exclusively — the per-activation claim `<fp>.json` and the per-attempt terminal record `<fp>.<owner_token>.terminal.json` — because link fails EEXIST where rename would silently replace and hand two processes one activation, and `unlink` ONLY to drop this process’s own staged temp file. `rename` is listed for the doctor ARTIFACT writer alone; the WAL no longer renames anything. Four review rounds established why: remove, take-aside-then-verify, and replace-in-place each need to decide that the record at a pathname is still yours, which cannot be atomic on a pathname — so no code path here mutates or removes a published record, and every destructive step touches only a temp name this attempt invented',
+    justification: 'doctor run artifacts (temp+rename atomic writeDoctorArtifact — the artifact bytes are hash-linked evidence, ADR-0048 §3; `rm` drops only the staged temp when the publish fails) + the self-created mkdtemp workflow-continuation proof repo and its teardown',
   },
   // ADR-0045 S7a entry-brief read layer: `open` is imported ONLY for
   // read-only TOCTOU-safe handle reads (O_RDONLY|O_NOFOLLOW|O_NONBLOCK +
@@ -631,12 +618,6 @@ export const FS_MUTATION_USERS = {
     stateRoots: ['.agentic-plugins/state'],
     justification: 'ADR-0025 explicit workflow-storage migration: legacy→canonical renames, non-recursive collision removal, migration receipt',
   },
-  // notify emit path: file-log channel append + rotation, dedupe lock dirs.
-  'notify.mjs': {
-    primitives: ['appendFileSync', 'renameSync', 'rmSync', 'mkdirSync'],
-    stateRoots: ['.agentic-plugins/state/runtime/notify'],
-    justification: 'ADR-0040 notify-owned state: log.ndjson append/rotate + reclaim-lock removal',
-  },
   'settings.mjs': {
     primitives: ['mkdir', 'realpath', 'rename', 'rm', 'writeFile'],
     stateRoots: ['.agentic-plugins/config.toml', 'HOME:.agentic-plugins/config.toml', '.agentic-plugins/runs/settings'],
@@ -658,31 +639,10 @@ export const FS_MUTATION_USERS = {
     stateRoots: ['HOME:.agentic-plugins'],
     justification: 'ADR-0046 machine-global bootstrap run/profile artifacts: temp+rename writes, hardlink family locks, bounded lock/temp cleanup',
   },
-  'egress-config.mjs': {
-    primitives: ['openSync'],
-    stateRoots: [],
-    justification: 'read-only O_RDONLY|O_NOFOLLOW credential open (no write flags) — registered because openSync is a watched primitive; the fs-open-gate pins it read-only',
-  },
-  'egress-launcher-plan.mjs': {
-    primitives: ['mkdir', 'writeFile', 'rename'],
-    stateRoots: ['.agentic-plugins/runs'],
-    justification: 'ADR-0041 §12 egress launcher plan artifacts (temp+rename) under runs/',
-  },
-  'egress-semantics.mjs': {
-    primitives: ['writeFileSync', 'unlinkSync', 'mkdirSync'],
-    stateRoots: ['.agentic-plugins/state/runtime/notify/egress-throttle'],
-    justification: 'egress throttle records under the notify state home + their bounded expiry removal',
-  },
-  'notification-plan.mjs': {
-    primitives: ['mkdir', 'writeFile', 'rename'],
-    stateRoots: ['.agentic-plugins/runs'],
-    justification: 'ADR-0040 §4 notification-channel plan artifacts (temp+rename) under runs/',
-  },
-  'notify-schema.mjs': {
-    primitives: ['writeFileSync', 'writeSync', 'rmSync', 'unlinkSync', 'mkdirSync', 'openSync', 'utimesSync', 'renameSync'],
-    stateRoots: ['.agentic-plugins/state/runtime/notify'],
-    justification: 'ADR-0040 §1 dedupe claims: wx exclusive create + fd writeSync of the claim record, mkdir reclaim locks + their removal, claim touch/expiry (the bounded retention-deletion grant); ADR-0047 §6 renameSync for capture-verified stale-lock tombstoning and the wx-temp+rename sweep cursor',
-  },
+  // notify.mjs and lib/{egress-config, egress-launcher-plan, egress-semantics,
+  // notification-plan, notify-schema}.mjs were entries here until ADR-0064 R4n2
+  // deleted them; with them went every registered state root under
+  // state/runtime/notify and the only `openSync`/`writeSync`/`utimesSync` users.
 };
 
 // The only recursive removals runtime may perform, pinned to the exact
@@ -692,96 +652,57 @@ export const FS_MUTATION_USERS = {
 // every legitimate site removes something the same file provably created.
 export const ALLOWED_RECURSIVE_REMOVALS = {
   'doctor.mjs': [
-    // The same pinned `rm(tempRepo, ...)` shape covers BOTH executor temp
-    // repos: the workflow-continuation proof workspace and the egress-ack
-    // proof's ephemeral notify-state repo (ADR-0048 §3 — the egress proof
-    // exercises user-global+default policy against a scratch repo so the
-    // consumer repo's operational notify state — mirror log, dedupe claims,
-    // throttle — is never touched and its teardown removes only what this
-    // file's own mkdtemp created seconds earlier).
-    { callee: 'rm', target: 'tempRepo', justification: 'teardown of the self-created mkdtemp temp repos used for workflow-continuation and egress-ack proofs' },
+    // The pinned `rm(tempRepo, ...)` shape is the workflow-continuation proof
+    // workspace's teardown. It also covered the egress-ack proof's ephemeral
+    // notify-state repo until ADR-0064 R4n2 removed that proof.
+    { callee: 'rm', target: 'tempRepo', justification: 'teardown of the self-created mkdtemp temp repo used for the workflow-continuation proof' },
   ],
-  'notify.mjs': [
-    { callee: 'rmSync', target: 'lockDir', justification: 'own dedupe reclaim-lock dir removal (ADR-0040 §1 bounded retention deletion)' },
-  ],
-  'notify-schema.mjs': [
-    { callee: 'rmSync', target: 'lockDir', justification: 'own dedupe reclaim-lock dir removal in the claim lifecycle (ADR-0040 §1)' },
-    { callee: 'rmSync', target: 'tombstone', justification: 'ADR-0047 §6 capture-verified stale-lock removal: rm acts only on the atomically-renamed nonce-unique tombstone (never the live lock path), plus leaked-tombstone GC (isLockStale-gated, name-shape-pinned, per-entry contained)' },
-  ],
+  // notify.mjs (lockDir) and notify-schema.mjs (lockDir, tombstone) were
+  // entries here until ADR-0064 R4n2 deleted both files.
   'retention-apply.mjs': [
     { callee: 'rmSync', target: 'runDir', justification: 'ADR-0047 §7 the ONE enumerated deletion: recursive removal of an unpinned/over-cap/age-cleared run directory under runs/<family>, gated by dry-run default + plan-hash binding + scan_complete + family lock + write-ahead receipt + containment/no-follow re-validated at the destructive boundary (validateDeletionTarget). Containment and no-follow are proven by the behavioral/mutation tests, not this static scan (ADR-0047 §7 enforcement-honesty)' },
   ],
 };
 
 // ---------------------------------------------------------------------------
-// Delegated egress emitters (ADR-0048 §3) — network reach WITHOUT a network
-// import, pinned as data
+// Retired with tier E1 (ADR-0064 R4n2) — delegated emitters, credential readers
 // ---------------------------------------------------------------------------
 
-// The egress-ack-proof executor gives doctor.mjs a path to the network that no
-// import-anchored gate above can see: it imports `runEmit` from notify.mjs and
-// calls it in-process, and notify.mjs (a PINNED_HTTPS_USERS entry) owns the
-// one pinned api.telegram.org request. That delegation is deliberate — the
-// pinned call site must stay inside notify.mjs, never be duplicated into
-// doctor — but an UNREGISTERED runEmit import elsewhere would be a silent new
-// network reach. This table pins the delegation the same way every other
-// capability is pinned: the guard asserts the set of runtime scripts importing
-// `runEmit` equals EXACTLY these keys (fail-closed on a new importer), and
-// that each registered file really does import it (registry never looser than
-// code — a dead entry would pre-authorize a re-added import).
-export const DELEGATED_EGRESS_EMITTERS = {
-  'doctor.mjs': {
-    module: './notify.mjs',
-    binding: 'runEmit',
-    justification: 'ADR-0048 §3 egress-ack-proof executor: doctor reaches the network ONLY by delegating one in-process runEmit against an ephemeral temp repo; the pinned api.telegram.org call site stays inside notify.mjs (PINNED_HTTPS_USERS) and doctor imports no network capability of its own for it',
-  },
-};
+// DELEGATED_EGRESS_EMITTERS pinned doctor.mjs's in-process `runEmit` import
+// from notify.mjs (ADR-0048 §3, the egress-ack-proof executor's network reach
+// without a network import). ADR-0064 R4n2 deleted notify.mjs and the proof, so
+// the table and its guard went with them: no module exports `runEmit` any more.
 
-// ---------------------------------------------------------------------------
-// Named credential readers (ADR-0048 §4) — the egress credential key allowlist
-// ---------------------------------------------------------------------------
-
-// ADR-0048 §4: "Only the named E1 activation checker may inspect the value for
-// presence/collision, and only the pinned E1 emitter may consume it." This is
-// the static named-reader allowlist that section mandates, in two tiers:
+// Named credential readers (ADR-0048 §4). That section allowlisted, in two
+// tiers, the files whose source may read the egress credential VALUE out of an
+// environment object (the E1 activation checker egress-config.mjs and the
+// pinned emitter notify.mjs) and the files that may mention its KEY at all
+// (those two, doctor.mjs's activation-fingerprint name input and
+// egress-launcher-plan.mjs's placeholder rendering). ADR-0064 retired §4 with
+// E1 and deleted or cleaned every one of those files, so both tiers are EMPTY.
+// The guard stays: until the owner's cleanup (ADR-0064 Decision 9) the
+// credential is still exported into the processes runtime runs in, and
+// ADR-0048 §2 still requires the statusline shim to be credential-free. With
+// empty tiers it asserts that no runtime script or receiver references the key
+// or reads the value; a new entry needs a new ADR, as a new egress would.
 //
-//   - VALUE READERS — files whose source may read the credential VALUE out of
-//     an environment object (`env[EGRESS_ENV_KEYS.credential]` and spelling
-//     variants). Exactly the two §4 names.
-//   - KEY REFERENCERS — files that may mention the credential KEY at all
-//     (the constant's definition, scrub-at-spawn deletes, fingerprint NAME
-//     input, placeholder-command rendering). Referencing the key without
-//     reading the value is how §4's "never asks for or handles the value"
-//     stays auditable: a NEW file mentioning the key fails closed and gets
-//     reviewed into one tier or rejected.
-//
-// Like every table here this is a tripwire, not a sandbox: an allowlisted
-// key-referencer could still alias the key into a computed read the regex
-// cannot see — the value-reader gate binds the files a reviewer must hold to
-// the §4 reading, and the behavioral credential-leak scans (acceptance (H))
-// stay the sound check.
-export const CREDENTIAL_VALUE_READERS = {
-  'egress-config.mjs': { justification: 'the named E1 activation checker — reads the value for presence/collision only (ADR-0041 §2c; ADR-0048 §4 first name)' },
-  'notify.mjs': { justification: 'the pinned E1 emitter — consumes the value to validate and issue the one provider request (ADR-0048 §4 second name)' },
-};
+// Like every table here this is a tripwire, not a sandbox: an alias of the key
+// into a computed read is invisible to the regex.
+export const CREDENTIAL_VALUE_READERS = {};
 
-export const CREDENTIAL_KEY_REFERENCING_FILES = {
-  'doctor.mjs': { justification: 'activation-fingerprint env-var NAME input for the egress ack proof (deriveActivationFingerprint) — never a value read; the send is delegated to notify.mjs runEmit' },
-  'egress-config.mjs': { justification: 'defines EGRESS_ENV_KEYS and EGRESS_CREDENTIAL_ENV_VAR (the key NAME, derived from EGRESS_ENV_KEYS.credential) and performs the §4 activation-checker value read' },
-  'egress-launcher-plan.mjs': { justification: 'renders operator-facing placeholder export commands with the key NAME; the plan states the value is never read' },
-  'notify.mjs': { justification: 'performs the §4 pinned-emitter value read via EGRESS_ENV_KEYS.credential' },
-};
+export const CREDENTIAL_KEY_REFERENCING_FILES = {};
 
 // The runtime scripts the guard scans. Anything matching plugins/runtime/scripts
 // recursively; listed explicitly so a deleted/renamed executor is visible.
 export const RUNTIME_SCRIPT_GLOB_ROOT = 'plugins/runtime/scripts';
 
-// ADR-0048 §4 — the operator-home receiver/shim template directory (statusline
-// shim + Codex notify receivers). The credential guard scans it alongside
-// scripts/ with a `receivers/`-qualified name: receivers install into the
-// operator's ~/.agentic-plugins home and MUST stay credential-free ("statusline
-// inline commands and shims MUST NOT read the credential variable"), so no
-// receiver may ever appear in either credential tier above — a receiver
-// referencing the key or reading the value fails closed with no allowlist row
-// to hide behind.
+// The operator-home receiver/shim template directory — the statusline shim
+// since ADR-0064 R4n2 deleted the Codex notify receivers. The credential guard
+// scans it alongside scripts/ with a `receivers/`-qualified name: receivers
+// install into the operator's ~/.agentic-plugins home and MUST stay
+// credential-free (ADR-0048 §2's "credential-free" shim; the retired §4 said
+// "statusline inline commands and shims MUST NOT read the credential
+// variable"), so no receiver may ever appear in either credential tier above —
+// a receiver referencing the key or reading the value fails closed with no
+// allowlist row to hide behind.
 export const RUNTIME_RECEIVER_GLOB_ROOT = 'plugins/runtime/receivers';

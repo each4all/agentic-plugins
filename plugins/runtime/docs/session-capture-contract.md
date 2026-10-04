@@ -31,7 +31,8 @@ The session-capture surface is:
 - **Config-gated, default off** — the `session` config family carries
   `session_capture` (enum `off | stop-hook`, shipped default `off`). The
   gate is evaluated **inside the publisher executor**, never in the
-  attention sensor (the `notify_channel` shape; ADR-0044 §3). The value is
+  attention sensor (the shape `notify_channel` had until ADR-0064 removed
+  the notify family; ADR-0044 §3). The value is
   an enum, not a boolean, so a future origin can join without a schema
   break. Effective value resolves repo → user-global → shipped default via
   the shared `lib/runtime-config.mjs` loader (`loadSessionConfig`), which
@@ -350,7 +351,8 @@ S2 (this slice) — all mutation-verified:
   `CONFIG_KEYS`; settings plan/report/help carry the family.
 - `loadSessionConfig`: repo overrides user overrides default; unreadable
   layer fail-closes; invalid effective value fail-closes; notify loader
-  behavior unchanged on the shared core.
+  behavior unchanged on the shared core (an S2 obligation with no subject
+  since ADR-0064 removed the notify loader, slice R4n2, 2026-10-05).
 - Schemas: each of the three families loads through `loadSchema`, accepts
   a canonical-valid document, and rejects mutations (unknown key, wrong
   type, multi-line where single-line is required, bad schema id).
@@ -369,7 +371,9 @@ null, `dirty_count` a non-negative integer when non-null, `content_hash`
 matching the exact content bytes, and slot/entry `fingerprint` equality
 within a committed generation; injection clamps; hostile-path and
 `note --file` FIFO/oversize/symlink rejection; non-git no-op;
-capture-before-notification ordering (attention side, S5).
+capture-before-notification ordering (attention side, S5; no longer an
+obligation once ADR-0064 removed attention's notification stage, which left
+the Stop hook nothing to order the capture before).
 
 S4 (the readiness slice) adds, all mutation-verified: shared readiness
 assessment — gate off ⇒ informational `off` (never a warning); config

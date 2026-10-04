@@ -1,11 +1,11 @@
 ---
 name: dashboard
-description: "Read-only ADR-0040 runtime operator dashboard. Use when the user wants one aggregate view of agentic state (three-persona active workflows, peer runs with stale emphasis, orchestrator macro subtask progress, consensus runs, and the ADR-0045 snapshot-only arbitrated entry advisory) plus operator health (doctor freshness, the historical compatibility-assurance projection over retained doctor artifacts, settings and Codex hook-attestation recency, artifact attention items, notify-state health, recent file-log notifications), optionally re-rendered with --watch."
+description: "Read-only ADR-0040 runtime operator dashboard. Use when the user wants one aggregate view of agentic state (three-persona active workflows, peer runs with stale emphasis, orchestrator macro subtask progress, consensus runs, and the ADR-0045 snapshot-only arbitrated entry advisory) plus operator health (doctor freshness, the historical compatibility-assurance projection over retained doctor artifacts, settings and Codex hook-attestation recency, artifact attention items), optionally re-rendered with --watch."
 ---
 
 # Dashboard (runtime framework primitive)
 
-`runtime:dashboard` renders the ADR-0040 §6 aggregate operator view: Tier 1 agentic state and Tier 2 operator health in one R0 read-only snapshot. It reads filesystem state — recorded doctor/settings artifacts, persona workflow/peer-run ledgers, consensus runs, and runtime notify state — and never probes host CLIs or mutates anything. One declared exception to the no-spawn shape (ADR-0045 §7/§11): the snapshot-mode entry advisory pays the entry arbiter's bounded git probes through the shared `runtime:context entry-brief` executor; `--watch` never does.
+`runtime:dashboard` renders the ADR-0040 §6 aggregate operator view: Tier 1 agentic state and Tier 2 operator health in one R0 read-only snapshot. It reads filesystem state — recorded doctor/settings artifacts, persona workflow/peer-run ledgers, and consensus runs — and never probes host CLIs or mutates anything. One declared exception to the no-spawn shape (ADR-0045 §7/§11): the snapshot-mode entry advisory pays the entry arbiter's bounded git probes through the shared `runtime:context entry-brief` executor; `--watch` never does.
 
 ## When invoked by command (`/runtime:dashboard` or `$runtime:dashboard`)
 
@@ -15,7 +15,7 @@ description: "Read-only ADR-0040 runtime operator dashboard. Use when the user w
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/dashboard.mjs" --repo-root "$REPO_ROOT" --host codex [--format text|json] [--watch] [--interval-seconds <n>] [--watch-count <n>] [--recent <n>]
+node "<runtime-plugin-root>/scripts/dashboard.mjs" --repo-root "$REPO_ROOT" --host codex [--format text|json] [--watch] [--interval-seconds <n>] [--watch-count <n>]
 ```
 
 Pass the subcommand and options above through an args file, never on the
@@ -37,7 +37,7 @@ message. The command removes the args file and its directory once it has
 read them.
 
 3. Present only the rendered snapshot.
-   - Keep attention rows (stale peer runs, artifact-cap breaches, notify-state issues, stale doctor evidence) visible.
+   - Keep attention rows (stale peer runs, artifact-cap breaches, stale doctor evidence) visible.
    - When the operator needs a live host diagnosis rather than recorded evidence, route to `/runtime:doctor` instead of re-running the dashboard.
 
 ## Scope
@@ -46,7 +46,7 @@ Dashboard reports:
 
 - Tier 1: active workflows for engineer, orchestrator, AND founder (persona-generic namespace reads; doctor's `{engineer, orchestrator}` ledger contract stays untouched); peer runs with stale/non-terminal emphasis; orchestrator macro subtask progress parsed from macro workflow frontmatter; consensus run states.
 - Tier 1 also carries the **entry advisory** (ADR-0045 §7(ii)): the same arbitrated, pointer-only entry brief `runtime:context entry-brief` computes for the current branch — snapshot mode only, excluded from `--watch` before the arbiter can run; requires the wrapper-threaded trusted `--host` (this skill threads `--host codex`, so synthesized commands render `$`-localized) and reports `skipped (host-not-threaded)` without one; arbitrates over all four personas without changing the Tier-1 persona rows; the `entry_brief` gate is informational here (it binds only the SessionStart hook surface).
-- Tier 2: recorded doctor artifact recency and runtime-version match (the compat-run and host-parity-baseline rows were removed with host-version tracking, ADR-0060); the newest recorded doctor run's HISTORICAL assurance projection (`tier2.doctor.latest.historical_assurance`) — ADR-0056 removed the assurance layer, so no run written after it carries the section and this is archaeology over the retained corpus, labelled with its `schema_era` and never mapped onto a current status; latest settings execution/attestation artifact recency (plan-only and probe-free settings runs record no execution artifact) plus the newest Codex hook-review attestation; artifact-inventory attention items; notify config status and notify-state health (expired dedupe claims, stale reclaim/rotation locks, unreadable state); recent `file-log` notifications when configured.
+- Tier 2: recorded doctor artifact recency and runtime-version match (the compat-run and host-parity-baseline rows were removed with host-version tracking, ADR-0060); the newest recorded doctor run's HISTORICAL assurance projection (`tier2.doctor.latest.historical_assurance`) — ADR-0056 removed the assurance layer, so no run written after it carries the section and this is archaeology over the retained corpus, labelled with its `schema_era` and never mapped onto a current status; latest settings execution/attestation artifact recency (plan-only and probe-free settings runs record no execution artifact) plus the newest Codex hook-review attestation; artifact-inventory attention items. The notify config, notify-state health and recent-notification rows were removed with notification and egress (ADR-0064), and leftover notify state is not read.
 - `--watch`: filesystem-only re-render on a bounded poll interval (default 2s, floor 1s) with an explicit exit (SIGINT/SIGTERM or `--watch-count`); with `--format json` the stream is framed as NDJSON (one report per line).
 
 ## Boundaries

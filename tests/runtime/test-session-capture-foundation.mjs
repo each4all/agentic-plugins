@@ -158,7 +158,7 @@ describe('loadSessionConfig (repo → user → shipped default)', () => {
   });
 
   it('shares the generic core: loadEffectiveConfig honors explicit keys and defaults', async () => {
-    const fx = await makeConfigFixture({ userToml: 'session_capture = "stop-hook"\nnotify_channel = "file-log"\n' });
+    const fx = await makeConfigFixture({ userToml: 'session_capture = "stop-hook"\nmodel = "some-model"\n' });
     try {
       const loaded = loadEffectiveConfig({
         repoRoot: fx.repoRoot,

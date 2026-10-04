@@ -1,6 +1,6 @@
 ---
 name: settings
-description: "Dry-run settings planner for agentic-plugins config and host readiness. Use when the user wants to inspect marketplace, plugin, and CLI readiness; plan repo-local or user-global model/effort defaults; plan notification (notify_*) keys, the session_capture opt-in, and the user-scope-only entry-brief keys; read the session_readiness and entry_readiness hook-chain diagnoses; render the Codex notification-channel or egress launcher plans as artifacts; run a probe-free filesystem-only local plan; execute allowlisted plugin install/update commands; clean up retired agentic-plugins Claude plugins; check Codex plugin-hook readiness; or record a Codex /hooks review attestation. Plans render artifacts and never host config. It mutates agentic-plugins-owned config only when --apply is explicit, and runs plugin management, cleanup, or attestation only under their own explicit flags. It never writes Codex host config — hook enablement is manual per ADR-0035."
+description: "Dry-run settings planner for agentic-plugins config and host readiness. Use when the user wants to inspect marketplace, plugin, and CLI readiness; plan repo-local or user-global model/effort defaults; plan the session_capture opt-in and the user-scope-only entry-brief keys; read the session_readiness and entry_readiness hook-chain diagnoses; run a probe-free filesystem-only local plan; execute allowlisted plugin install/update commands; clean up retired agentic-plugins Claude plugins; check Codex plugin-hook readiness; or record a Codex /hooks review attestation. It mutates agentic-plugins-owned config only when --apply is explicit, and runs plugin management, cleanup, or attestation only under their own explicit flags. It never writes Codex host config — hook enablement is manual per ADR-0035."
 ---
 
 # Settings (runtime framework primitive)
@@ -15,7 +15,7 @@ description: "Dry-run settings planner for agentic-plugins config and host readi
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>] [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>] [--session-capture off|stop-hook] [--entry-brief off|startup] [--entry-brief-empty silent|report] [--model-effort-fallback host-native] [--unset <key>[,<key>...]] [--notification-plan] [--egress-launcher-plan] [--skip-host-cli-probes] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--expected-plan-hash <sha256>] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
+node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--session-capture off|stop-hook] [--entry-brief off|startup] [--entry-brief-empty silent|report] [--model-effort-fallback host-native] [--unset <key>[,<key>...]] [--skip-host-cli-probes] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--expected-plan-hash <sha256>] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
 ```
 
 Pass the subcommand and options above through an args file, never on the
@@ -43,9 +43,9 @@ read them.
      subprocess probes — model/effort and companion directions resolve from
      the filesystem-only peer-execution context, snapshotted before any
      `--apply` write. Evidence collection is orthogonal to mutation:
-     `--apply` and the two plan flags stay allowed; the execute/attest
+     `--apply` stays allowed; the execute/attest
      flags and their exclusive modifiers (`--plugin-management-host`,
-     `--plugin-management-timeout-ms`, `--run-id`) are rejected before any
+     `--plugin-management-timeout-ms`, `--run-id`, `--expected-plan-hash`) are rejected before any
      probe, config write, or artifact write. The report is discriminated
      (`report_scope=local_plan`, `host_cli_probes.status=skipped`,
      `section_presence` map, `null` probe-derived sections, qualified
@@ -75,9 +75,10 @@ Settings reports and plans:
   unavailable. Settings reports host-native installation guidance but never
   installs the host CLIs itself.
 - **Runtime never writes host config** — not Claude's, not Codex's, and not
-  with `--apply` (which reaches only `.agentic-plugins/config.toml`). Plan
-  flags render fragments into agentic-plugins-owned artifacts; applying one is
-  always an explicit user action. Since ADR-0057 removed the permission
+  with `--apply` (which reaches only `.agentic-plugins/config.toml`). The
+  plan flags that rendered fragments into agentic-plugins-owned artifacts
+  left with the surfaces they planned (ADR-0057, ADR-0064), so settings
+  renders no fragment artifacts. Since ADR-0057 removed the permission
   advisor, runtime offers no opinion about host permission configuration at
   all, and ADR-0038 §6's refusal to ship a permission-relaxing Guard Hook is
   carried forward as binding.
@@ -89,61 +90,17 @@ Settings reports and plans:
 - Effective projected companion defaults after repo-local and user-global
   precedence. Warn when a lower-precedence write would not actually affect
   companion invocation.
-- ADR-0040 §2 notification config keys (`notify_channel`,
-  `notify_quiet_hours`, `notify_quiet_hours_tz`, `notify_dedupe_ttl_seconds`,
-  `notify_urgent_bypass_quiet_hours`, `notify_kinds`) with per-key validation
-  (channel enum, `HH:MM-HH:MM` window, IANA timezone, positive-integer TTL,
-  `"true"`/`"false"`, and kind names checked against the notify-schema lib's
-  kind enum). During the ADR-0047 §8 `response-needed` migration keep a
-  `notify_kinds` filter listing **both** `turn-complete` and
-  `response-needed` (or leave the filter unset) until every producer on the
-  machine — including a re-rendered Codex shuttle — is verified upgraded: a
-  single-kind filter silently loses the other side of the mixed-producer
-  window, and the `response-needed` token on a pre-ADR-0047 runtime is a
-  parse error that fail-closes the whole notify pipeline. Effective
-  projection over the same repo -> user precedence
-  chain with shipped defaults (`notify_channel = "none"` keeps the emitter
-  disabled until the operator opts in), and warnings for shadowed requests or
-  invalid existing values the notify emitter would fail closed on.
-- The ADR-0040 §4 Codex notification-channel M1 plan behind
-  `--notification-plan`: a `notify=` fragment for the user-layer
-  `~/.codex/config.toml` only (resolved via `$CODEX_HOME`; the project layer
-  denylists the key, profile tables reject it) and a `tui.notifications`
-  approval fragment with its documented limits (TUI-only, default-unfocused,
-  OSC 9/BEL terminal-dependent, no external program, no payload). The plan
-  read-checks any existing `notify` value first — the key is a single-key
-  full replace — and an existing notifier produces a wrapper-chaining plan
-  (chain script preserves the prior notifier) instead of a clobber. The
-  read-check also classifies any existing `[tui] notifications` value
-  (`absent | true | false | array | invalid`, fail-closed to `invalid`) and
-  reports that form beside the raw: an assignment under a duplicated `[tui]`
-  table or a trailing-junk line captures a canonical-LOOKING raw, so the raw
-  alone must never be read as an observed value. The
-  fragment invokes a rendered receiver shuttle via the per-OS canonical argv (`/usr/bin/env node` on POSIX; the machine's own node executable path on Windows); the
-  shuttle re-resolves the runtime root per the discovery ladder on every
-  invocation (never a version-pinned plugin cache path) and delegates to
-  `notify.mjs emit`. Fragments and receiver scripts are rendered + recorded
-  in an `.agentic-plugins/runs/notification/` plan artifact only; host
-  config is never written and installing the receiver at
-  `~/.agentic-plugins/bin/` is an explicit user action.
-- The ADR-0041 §12 first-class egress launcher plan behind
-  `--egress-launcher-plan`: a read-only read of the current egress activation
-  state (`loadEgressActivation`) plus a read-only scan of the personal
-  `~/.claude/settings.json` prototype hooks, computed into a state-aware mode
-  (`activate` / `partial` / `prototype-retire-only` / `already-active`) and a
-  per-machine activation runbook — the `~/.agentic-plugins/config.local.toml`
-  content (channel + chat-id; recommended layout, env-all shown as an
-  alternative), the env credential line, the exact prototype hook entries to
-  remove, verify, rollback, and the per-machine repeat — recorded in an
-  `.agentic-plugins/runs/egress-launcher/` plan artifact only. Host config,
-  `~/.agentic-plugins/config.local.toml`, the credential, and
-  `~/.claude/settings.json` are never written (ADR-0041 §2c: a launcher that
-  wrote activation would be the egress-activation vector §2c closes); the
-  credential value is never read (only its presence), a boundary-invariant
-  validator refuses to write unless every `boundary.writes_*` flag is false, and
-  a `scrubSecrets` pass fail-closes the write on any secret-shaped value. It
-  emits no network effect, so it stays below the E1 ceiling; applying the plan is
-  an explicit user action.
+- The ADR-0044 §3 session family (`session_capture`, and the user-scope-only
+  `entry_brief` / `entry_brief_empty` of ADR-0045 §7) with per-key validation,
+  effective projection over the same repo -> user precedence chain with
+  shipped defaults, and warnings for shadowed requests or invalid existing
+  values the consuming executor would fail closed on.
+- `--unset <key>[,<key>...]` removes a runtime config key from the selected
+  layer(s); it is the only way back to an unset posture. It names runtime
+  config keys only. ADR-0064 retired the `notify_*` keys with the
+  notification emitter: a leftover `notify_*` line is inert (the reader drops
+  it), `--unset` refuses to name it and says so, and removing the line is a
+  manual edit.
 - Dry-run plugin management plans and, behind `--execute-plugin-management`,
   execution metadata, retry classification, and durable sanitized artifacts for
   allowlisted Claude/Codex plugin install/update commands.

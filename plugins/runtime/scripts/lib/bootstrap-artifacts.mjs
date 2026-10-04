@@ -30,9 +30,9 @@
 //   * $HOME-is-the-repo — refused, not softened. The machine home's entire premise
 //     is that it is outside every repository (artifact-policy.md); in a devcontainer
 //     where $HOME IS the checkout, that premise is false and the write would land in
-//     the repo. The egress config's verified-ignored-local reader already
-//     established this exact posture (`inside-repo` → refuse); bootstrap does not
-//     invent a softer one.
+//     the repo. The egress config's verified-ignored-local reader (removed by
+//     ADR-0064) had already established this exact posture (`inside-repo` →
+//     refuse); bootstrap does not invent a softer one.
 //   * Symlink refusal + canonical containment — per COMPONENT, not just the leaf.
 //     A symlinked parent redirects every path below it, so checking only the final
 //     name would be checking the one component a misconfiguration does not need.
@@ -267,8 +267,8 @@ export function bootstrapLockFile(homeDir) {
 // `null` to assert "no repository context". Omitting it fails closed
 // ('repo-root-required'), because a caller that forgot it looks identical to a
 // caller running inside the repo that $HOME points at, and the whole containment
-// check is exactly that distinction. (The egress verified-ignored-local reader
-// fails closed on a missing repoRoot for the same reason.)
+// check is exactly that distinction. (The former egress verified-ignored-local
+// reader failed closed on a missing repoRoot for the same reason.)
 export async function resolveMachineArtifactHome({ homeDir, repoRoot }) {
   if (typeof homeDir !== 'string' || homeDir.trim() === '') {
     return { ok: false, reason: 'home-required', root: null, diagnostic: 'No home directory resolved; bootstrap artifacts have no machine-global home to write to.' };
@@ -415,7 +415,7 @@ async function assertSecurePath({ root, path }) {
 // Create a directory (0700) with the security gates applied, then RE-verify
 // containment against the canonical path. The re-verify closes the window between
 // the check and the mkdir — the same bind-the-decision-to-what-you-actually-got
-// discipline the egress reader applies with its dev/ino recheck.
+// discipline the former egress reader applied with its dev/ino recheck.
 async function ensureSecureDir({ root, path }) {
   const gate = await assertSecurePath({ root, path });
   if (!gate.ok) return gate;
@@ -985,8 +985,8 @@ async function tryBreakStaleLock({ lockPath, nowMs, staleMs, isPidAlive, diagnos
 // so deleting it frees the lock NAME while that holder still believes it holds
 // the family — two holders, the one outcome this lock exists to prevent. Merging
 // them is the fix rather than patching each: a second copy is how the first
-// survived a review, and the egress WAL take in doctor.mjs was written from this
-// code and inherited it a third time.
+// survived a review, and the egress WAL take in doctor.mjs (removed by ADR-0064)
+// was written from this code and inherited it a third time.
 //
 // `link(2)`, never `rename(2)`: if the lock name has been claimed again while we
 // held the record aside, link fails EEXIST and the newcomer keeps it, where a

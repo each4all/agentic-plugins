@@ -1,11 +1,11 @@
 // plugins/runtime/scripts/lib/toml.mjs
 //
 // TOML rendering primitives shared by the runtime planners that emit config.toml
-// fragments (notification, egress launcher, statusline).
+// fragments (bootstrap's Codex statusline fragment).
 //
 // This leaf exists because the escaper had drifted into two byte-identical copies —
-// one private to scripts/settings.mjs, one exported from lib/notification-plan.mjs with
-// no importers. Lifting the permission planner (machine-bootstrap-contract.md §1.3)
+// one private to scripts/settings.mjs, one exported from the notification plan
+// (removed by ADR-0064) with no importers. Lifting the permission planner (machine-bootstrap-contract.md §1.3)
 // forced the question of where its copy should live, and a third home in lib/ would
 // have made a duplicate permanent rather than fixed it. Escaping rules are the kind of
 // thing that gets patched in one place and not the other, so there is one place.
@@ -39,22 +39,15 @@ export function tomlBasicString(value) {
 // The ONE Codex `[tui]` table composer (ADR-0048 statusline slice)
 // ---------------------------------------------------------------------------
 
-// Render a SINGLE `[tui]` table carrying whichever of the two runtime-planned
-// keys are present. This composer exists because two planners each emitting
-// their own `[tui]` header (notifications — the notification plan;
-// status_line — the statusline plan) handed the operator two headers for one
-// table: merged naively that is a TOML table redefinition (invalid), and
-// merged carelessly one key clobbers the other. Every fragment that touches
-// `[tui]` renders through here, so what the operator merges is always one
-// well-formed table containing exactly the planned keys.
-export function renderCodexTuiTableToml({ notifications = null, statusLine = null } = {}) {
-  const lines = ['[tui]'];
-  if (Array.isArray(notifications)) {
-    lines.push(`notifications = [${notifications.map((item) => tomlBasicString(item)).join(', ')}]`);
-  }
-  if (Array.isArray(statusLine)) {
-    lines.push(`status_line = [${statusLine.map((item) => tomlBasicString(item)).join(', ')}]`);
-  }
-  if (lines.length === 1) throw new Error('renderCodexTuiTableToml requires at least one of notifications/statusLine');
-  return `${lines.join('\n')}\n`;
+// Render a SINGLE `[tui]` table carrying the runtime-planned `status_line`.
+// This composer exists because two planners each emitting their own `[tui]`
+// header (notifications — the notification plan; status_line — the statusline
+// plan) once handed the operator two headers for one table: merged naively
+// that is a TOML table redefinition (invalid), and merged carelessly one key
+// clobbers the other. ADR-0064 removed the notification plan and with it the
+// `notifications` arm; every fragment that touches `[tui]` still renders
+// through here, so what the operator merges is one well-formed table.
+export function renderCodexTuiTableToml({ statusLine = null } = {}) {
+  if (!Array.isArray(statusLine)) throw new Error('renderCodexTuiTableToml requires statusLine');
+  return `[tui]\nstatus_line = [${statusLine.map((item) => tomlBasicString(item)).join(', ')}]\n`;
 }

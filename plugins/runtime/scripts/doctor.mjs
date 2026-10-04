@@ -9,25 +9,18 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants, realpathSync } from 'node:fs';
-import { access, link, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
 import { sanitizeValue } from './lib/sanitize.mjs';
-import { runEmit } from './notify.mjs';
-import { buildEventId, deriveRepoIdent } from './lib/notify-schema.mjs';
-import { EGRESS_CREDENTIAL_ENV_VAR, EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
-import { sameDirectory } from './lib/path-containment.mjs';
 import { inspectInstalledReceivers } from './lib/receiver-inventory.mjs';
-import { egressIntentDir, safeRecordName } from './lib/egress-intent-wal.mjs';
-import { EGRESS_ATTEMPT_HASH_DOMAIN, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
 import {
   artifactTimestampMs,
   inspectConsensusRuns,
   inspectRuntimeArtifactInventory,
   inspectWorkflowNamespace,
-  machinePointer,
   pointer,
   readJsonIfExists,
   readBytesIfExists,
@@ -60,7 +53,6 @@ import {
 } from './lib/machine-probe.mjs';
 import { semverCompare } from './lib/semver.mjs';
 import { parseCodexCatalogTarget, selectInstalledCacheDir } from './lib/codex-install-identity.mjs';
-import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
 import { expandArgsFile } from './lib/args-file.mjs';
 
 export { RUNTIME_VERSION };
@@ -98,8 +90,8 @@ const DOCTOR_RUN_ID_RE = /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // inner report alone moved `doctor_runs` from `available malformed=0` to
 // `blocked malformed=70`. So the READABLE lists below are the load-bearing half,
 // and the producer constants are only their newest members.
-const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.3';
-const DOCTOR_REPORT_SCHEMA_VERSION = 'runtime-doctor-1.3';
+const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.4';
+const DOCTOR_REPORT_SCHEMA_VERSION = 'runtime-doctor-1.4';
 // ⚠ MATCHED PAIRS, NOT TWO INDEPENDENT ALLOWLISTS. The outer artifact and the
 // inner report bump together, so exactly two tuples were ever written. Checking
 // each half against its own list would additionally admit `(artifact-1.1,
@@ -128,6 +120,13 @@ const READABLE_DOCTOR_SCHEMA_PAIRS = Object.freeze([
   // doctor row blocked (measured 2026-09-28 against the 1.2 dashboard reader)
   // until that host is updated too. Install on both hosts, then record.
   Object.freeze({ artifact: 'runtime-doctor-artifact-1.3', report: 'runtime-doctor-1.3' }),
+  // 1.4 — ADR-0064 removed notification and egress, and the report lost
+  // `egress_ack_proof` and the Codex notify shuttle and chain receiver kinds
+  // (slice R4n2). Its Decision 7 makes this ONE bump for one runtime release:
+  // slice R4s then removes `sandbox_permission_probe` and the per-direction
+  // `sandbox_permission` members under the same, still unreleased, pair rather
+  // than moving it again. The same-release warning on 1.3 above applies.
+  Object.freeze({ artifact: 'runtime-doctor-artifact-1.4', report: 'runtime-doctor-1.4' }),
 ]);
 function isReadableDoctorSchemaPair(artifactSchema, reportSchema) {
   return READABLE_DOCTOR_SCHEMA_PAIRS.some((pair) => pair.artifact === artifactSchema && pair.report === reportSchema);
@@ -151,14 +150,6 @@ export async function runDoctor({
   permissionProof = false,
   executePermissionProof = false,
   permissionProofTimeoutMs = DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
-  egressAckProof = false,
-  executeEgressAckProof = false,
-  // Test seam ONLY: production always uses the real in-process runEmit (no
-  // fetch double — real transport is the point, acceptance-(K) precedent).
-  egressEmitImpl = null,
-  // Test-only seam for the legacy-WAL identity re-check (see
-  // buildEgressAckProofSection). Defaults to the real predicate.
-  egressSameDirectoryImpl = sameDirectory,
   workflowContinuationProof = false,
   executeWorkflowContinuationProof = false,
   workflowContinuationProofTimeoutMs = DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS,
@@ -172,9 +163,6 @@ export async function runDoctor({
   if (executeDeepPeerSmoke && !deepPeerSmoke) {
     throw new Error('--execute-deep-peer-smoke requires --deep-peer-smoke');
   }
-  if (executeEgressAckProof && !egressAckProof) {
-    throw new Error('--execute-egress-ack-proof requires --egress-ack-proof');
-  }
   if (executePermissionProof && !permissionProof) {
     throw new Error('--execute-permission-proof requires --permission-proof');
   }
@@ -185,14 +173,9 @@ export async function runDoctor({
   const resolvedHomeDir = resolve(homeDir);
   const startedAt = now.toISOString();
 
-  // ADR-0041 §2b/§2c: the egress credential must not ride into CONTROL-PLANE probes.
-  // Every caller used to be responsible for this and only `settings.mjs` did it, so a
-  // direct `runtime:doctor` run and `cutover-audit.mjs` handed the token to all 14
-  // `claude`/`codex` probe processes. Scrub it here, at the point of use.
-  // The raw `env` is deliberately retained for the explicitly-executed proofs below:
-  // they spawn companions/workflows whose own attention hooks need the credential to
-  // egress notifications (ADR-0041 §3).
-  const probeEnv = redactEgressCredentialFromEnv(env);
+  // The probes run in the environment doctor was given. The egress-credential scrub
+  // that stood here went with egress (ADR-0064 Decision 1); Decision 9 states what
+  // that leaves on a machine whose shell still injects the credential.
   const resolvedCodexHome = resolveCodexHome(env, resolvedHomeDir);
 
   // The MACHINE half — host CLI presence/auth/feature-surface, installed rows, plugin
@@ -203,7 +186,7 @@ export async function runDoctor({
   const machine = await probeMachineHostState({
     homeDir: resolvedHomeDir,
     codexHome: resolvedCodexHome,
-    env: probeEnv,
+    env,
     cwd: tmpdir(),
     runner,
     timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -352,16 +335,6 @@ export async function runDoctor({
     runner,
     timeoutMs: permissionProofTimeoutMs,
   });
-  const egressAckProofSection = await buildEgressAckProofSection({
-    requested: egressAckProof,
-    execute: executeEgressAckProof,
-    repoRoot: resolvedRepoRoot,
-    homeDir: resolvedHomeDir,
-    env,
-    now,
-    emitImpl: egressEmitImpl,
-    sameDirectoryImpl: egressSameDirectoryImpl,
-  });
   const deepPeerSmokeSection = await buildDeepPeerSmokeSection({
     requested: deepPeerSmoke,
     execute: executeDeepPeerSmoke,
@@ -419,19 +392,18 @@ export async function runDoctor({
     host,
     read_only: true,
     // Precise effect claims (Plan-verify peer): `read_only` keeps its
-    // host-state meaning (no host trust/auth/config/permission mutation —
-    // still true), while the egress ack executor MAY perform ONE pinned
-    // network request through the E1 emitter. The fact is taken from the
-    // section — a blocked execute, or an attempt suppressed before dispatch
-    // (kinds-filter, quiet-hours, body-cap), sent nothing, and claiming
-    // otherwise here would overstate the run's blast radius.
+    // host-state meaning (no host trust/auth/config/permission mutation).
+    // `network_request_performed` counts requests doctor itself issues, and
+    // since the egress ack executor was removed (ADR-0064 Decision 1) it issues
+    // none: the explicit proofs spawn host CLIs whose own traffic is theirs.
+    // The member stays so the report's shape changes only where ADR-0064
+    // Decision 7 says it does.
     effects: {
       host_config_mutated: false,
-      network_request_performed: egressAckProofSection.network_request_performed === true,
+      network_request_performed: false,
     },
     sandbox_permission_probe: sandboxPermissionProbeSection,
     permission_proof: permissionProofSection,
-    egress_ack_proof: egressAckProofSection,
     deep_peer_smoke: deepPeerSmokeSection,
     workflow_continuation_proof: workflowContinuationProofSection,
     clis: {
@@ -3523,967 +3495,6 @@ function classifyOperatorActionText(text) {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Egress provider-ack proof (ADR-0048 §3, macro egress-proof-executor slice)
-// ---------------------------------------------------------------------------
-//
-// The ONE explicitly-executed networked proof: doctor delegates a single
-// synthetic notification to the E1 emitter (in-process runEmit — the pinned
-// api.telegram.org call site stays inside notify.mjs, per the executor
-// guard), against an EPHEMERAL temp repo (operational notify state — mirror
-// log, dedupe claims, throttle — untouched; the consumer repo's notify
-// config is DELIBERATELY not consulted: the proof exercises user-global +
-// default policy, documented in the contract).
-//
-// TRIPLE consent to reach the network: the --egress-ack-proof plan flag, the
-// --execute-egress-ack-proof execute flag, AND AGENTIC_EGRESS_REAL_SMOKE=1 in
-// the environment (the production realization of the subtask's REAL_SMOKE
-// gate — the same switch that gates the live acceptance suite governs every
-// real send).
-//
-// AMBIGUOUS-ATTEMPT rule (Plan-verify peer BLOCKER): an intent record is
-// written BEFORE the send and resolved after. A crash between them leaves a
-// pending intent; the next execute REFUSES to auto-resend (the phone may
-// already have the message) until the operator removes the named intent file
-// after checking their phone. Telegram has no idempotency key — this is the
-// honest recovery.
-export const EGRESS_ACK_OUTCOME_REASONS = Object.freeze([
-  'dispatched', 'kinds-filter', 'quiet-hours', 'dedupe-duplicate', 'throttled',
-  'missing-token', 'missing-recipient', 'invalid-local-activation', 'provider-error',
-  'provider-rejected', 'timeout', 'redirect-error', 'body-cap', 'channel-none',
-  'emit-error', 'mirror-missing', 'mirror-ambiguous',
-]);
-
-// The pre-wire outcome reasons: the attempt provably stopped before any network
-// I/O (pipeline suppression, activation/config failure, or body-cap). Nothing
-// reached the phone; a terminal intent carrying one of these is safe to clear.
-const EGRESS_NO_WIRE_REASONS = Object.freeze([
-  'kinds-filter', 'quiet-hours', 'dedupe-duplicate', 'throttled',
-  'missing-token', 'missing-recipient', 'invalid-local-activation',
-  'body-cap', 'channel-none',
-]);
-
-// The outcome reasons that mean the pinned request reached the wire even when
-// the emitter returned a non-dispatched status (a failure AT/AFTER the socket),
-// plus the dispatched-mirror variants (which only arise when dispatched=true).
-const EGRESS_WIRE_REASONS = Object.freeze([
-  'dispatched', 'provider-error', 'provider-rejected', 'timeout',
-  'redirect-error', 'mirror-missing', 'mirror-ambiguous',
-]);
-
-// Classify whether an egress attempt touched the network. THREE states so the
-// re-send gate can fence the ambiguous case without the effects claim
-// overstating it - the gate-block key and the honesty claim are DIFFERENT
-// predicates:
-//   - 'no-wire'  provably pre-wire (whitelisted above); safe to clear.
-//   - 'wire'     the request was issued. effects.network_request_performed is
-//                exactly this.
-//   - 'unknown'  emit-error (a runEmit no-throw-contract breach that could be
-//                post-wire) OR ANY UNRECOGNIZED reason. Defaulting to unknown is
-//                deliberate fail-closed (Codex review MAJOR): a new or drifted
-//                outcome reason must fence a resend, never silently permit one.
-//                test-doctor.mjs pins the full-enum partition so drift is caught.
-export function classifyWireDisposition(dispatched, outcomeReason) {
-  if (dispatched || EGRESS_WIRE_REASONS.includes(outcomeReason)) return 'wire';
-  if (EGRESS_NO_WIRE_REASONS.includes(outcomeReason)) return 'no-wire';
-  return 'unknown';
-}
-
-// `egressIntentDir` is imported from ./lib/egress-intent-wal.mjs. Passed
-// homedir() it is the machine-global WAL (NOT repo-scoped, so a bootstrap run
-// resumed from a different repo checkout still sees a prior attempt's fence,
-// gap ②); passed repoRoot it is the pre-upgrade legacy one. The doctor --record
-// artifact stays repo-scoped; only this side-effect WAL is machine-global.
-// It moved out of this file because `runtime:migrate legacy-egress-intents`
-// needs the same path shape, and this file had already grown a second inline
-// copy of it for the legacy directory.
-
-// The two names one attempt publishes, and the ONLY two the WAL protocol knows.
-//
-//   claim     <fingerprint>.json                     — one per activation; the fence
-//   terminal  <fingerprint>.<owner_token>.terminal.json — one per ATTEMPT; its outcome
-//
-// The claim's name is the activation, so creating it is the exclusion. The
-// terminal's name additionally carries the owner token, so it belongs to exactly
-// one attempt and no attempt can ever land on another's name. That is what makes
-// the protocol append-only: there is no name two writers contend for after the
-// claim, so no write ever has to decide whether what is already there is its own.
-//
-// The suffix is what the scan reads to tell the two roles apart, so it is a
-// constant rather than three inlined string literals that could drift apart.
-const EGRESS_TERMINAL_SUFFIX = '.terminal.json';
-const egressClaimName = (fingerprint) => `${fingerprint}.json`;
-const egressTerminalName = (fingerprint, ownerToken) => `${fingerprint}.${ownerToken}${EGRESS_TERMINAL_SUFFIX}`;
-
-// An owner token is 12 random bytes (24 lowercase hex). The scan validates the
-// shape before it pairs on it: a token is a JOIN KEY here, and a malformed one
-// must fail closed rather than silently match nothing (which would read as
-// "no terminal" — i.e. as a pending attempt — and then be judged by pid).
-const EGRESS_OWNER_TOKEN_RE = /^[0-9a-f]{24}$/;
-const EGRESS_FINGERPRINT_RE = /^[0-9a-f]{64}$/;
-
-// The activation a record's NAME scopes it to, or null when the name carries
-// none (a legacy claim named by the correlation suffix rather than the
-// fingerprint). Both record names begin with the fingerprint, so one parse
-// serves both roles.
-//
-// This exists because scope was decided from the BODY alone, and that was
-// fail-open in exactly one direction: a file NAMED for this activation whose
-// body named a DIFFERENT valid activation was dropped by the scope filter
-// before the name/body agreement check could fence it. Measured — the scan
-// returned no findings at all for a `wire` terminal record sitting at this
-// activation's own name, and with a `no-wire` record beside it the operator was
-// told deleting was safe while the wire record was never mentioned. The
-// mismatch check was already there; it was simply unreachable from one side.
-function egressNameFingerprint(name) {
-  const base = name.endsWith(EGRESS_TERMINAL_SUFFIX)
-    ? name.slice(0, -EGRESS_TERMINAL_SUFFIX.length)
-    : name.slice(0, -'.json'.length);
-  const head = base.split('.')[0];
-  return EGRESS_FINGERPRINT_RE.test(head) ? head : null;
-}
-
-// How long a pending claim can still be read as "in flight". Past it, the
-// blocker reverts to the check-the-phone-then-delete wording — NOT to any
-// automatic action.
-//
-// This MUST stay comfortably above the send budget, or a legitimately running
-// attempt would be advertised as deletable and an operator could free the fence
-// under a live send. The whole dispatch is bounded by notify.mjs
-// TELEGRAM_API_TIMEOUT_MS (8s at the time of writing), so this is ~100x the
-// window it has to cover. If that budget ever grows, this bound grows with it.
-const EGRESS_CLAIM_IN_FLIGHT_MS = 15 * 60 * 1000;
-
-// Is a pending claim's holder still running? This predicate exists for exactly
-// ONE purpose: choosing which blocker text a later contender sees. It NEVER
-// authorizes breaking, reclaiming, or overwriting a claim — the operator is the
-// only reclaim authority, which is what ADR-0048 residual (a)'s "no unsafe
-// stale-lock takeover" asks for, taken to its end. If a future reader is
-// tempted to add an automatic takeover here because the liveness answer is
-// already available: that is the door residual (a) closed on purpose.
-//
-// Both legs are required. The age bound is here because pid REUSE can make an
-// unrelated live process read as the holder; the bound limits how long that
-// misreading can block an operator. It does not make the reading true.
-// Classify a pending claim's holder. THREE states, not a boolean, because the
-// two inputs answer different questions and collapsing them loses the one that
-// matters most.
-//
-//   'live'       the pid is alive and the claim is recent — an attempt is running
-//   'live-stale' the pid is alive but the claim is unusually old — something is
-//                there, and we cannot tell whether it is still working
-//   'gone'       no usable holder identity, or the pid is provably gone
-//
-// Peer MAJOR (resolved as a design conflict): age must NEVER downgrade a
-// CONFIRMED live pid to 'gone'. The earlier version returned on the age gate
-// before probing at all, so a paused, suspended or debugged holder was
-// advertised as deletable — and an operator who follows that advice frees the
-// fence for a second message to their phone. But the age bound cannot simply be
-// dropped either: it is what stops a REUSED pid from blocking an activation
-// forever. So age qualifies the wording instead of overriding the evidence.
-//
-// AGE AUTHORITY IS THE FILE MTIME MEASURED AGAINST A REAL WALL CLOCK — not the
-// body's `acquired_at`, and not `runDoctor`'s injected `now`. Both halves of the
-// comparison have to come from the same world or the result means nothing, and
-// an earlier cut got this half-right: it read the kernel's mtime and then
-// compared it against the caller's LOGICAL report clock, under a comment that
-// cited the injected clock as a reason to prefer the mtime. Measured: the same
-// fresh claim held by a live pid reads `in flight` on a wall clock and flips to
-// `live-stale` — which offers the deletion — with `now` an hour ahead, so a
-// report timestamp could decide safety advice about someone else's running
-// send. `Date.now()` is used directly and NO test seam is offered, because the
-// tests that need an old claim age the FILE with `utimes`, which is the real
-// thing (the same reason bootstrap-artifacts.mjs gives for its own seam being a
-// last resort). The forged-`acquired_at` reason below is unchanged.
-// `link(2)` publishes the claim preserving the temp file's mtime, set
-// microseconds earlier, so the mtime is an honest creation time. An UNKNOWN age
-// (the stat failed) is treated as recent rather than as old, because "I could
-// not tell" must not become the deletable answer. NOT covered by a regression:
-// provoking a stat failure on a file we just read successfully is a race, not a
-// fixture.
-function classifyClaimHolder(intent, mtimeMs, wallNowMs) {
-  const pid = Number.isInteger(intent?.pid) && intent.pid > 0 ? intent.pid : null;
-  // No usable holder identity is UNKNOWN, never proof of death. This mattered
-  // immediately: the previous release's pending record carries no `pid` at all,
-  // so reading absence as `gone` advertises a STILL-RUNNING older sender as
-  // crashed and hands the operator the flat delete instruction — which frees the
-  // fence for a second message to the same phone. That is the rollback path the
-  // original request named, arrived at from the other direction (peer round-3
-  // MAJOR). Age deliberately does NOT resolve it: an old record with no identity
-  // is still an unknown, not a corpse.
-  if (pid === null) return 'unidentified';
-  let alive;
-  try {
-    // Liveness READ only (ADR-0035 §4): signal 0 asks whether the process
-    // exists and delivers nothing. ESRCH ⇒ gone. EPERM ⇒ it exists under
-    // another uid, which counts as alive — "I could not tell" must never read
-    // as "safe to proceed past someone else's fence".
-    process.kill(pid, 0);
-    alive = true;
-  } catch (err) {
-    alive = err?.code !== 'ESRCH';
-  }
-  if (!alive) return 'gone';
-  const aged = Number.isFinite(mtimeMs) && wallNowMs - mtimeMs >= EGRESS_CLAIM_IN_FLIGHT_MS;
-  return aged ? 'live-stale' : 'live';
-}
-
-// Fence severities, WORST FIRST. The order is not decoration — it is the
-// precedence rule, and getting it wrong is a defect that has now been found
-// three times, at three levels, in the same shape: a guard that answers for SOME
-// of the cases and silently takes the permissive branch for the rest.
-//
-//   round 4  `clearable && unresolved.length === 0` named ONE of four dangerous
-//            states, so `clearable` won over the other three — including
-//            `unidentified`, i.e. a possibly-live sender.
-//   round 5  the table replaced that guard, and the UNLISTED case then fell
-//            through `find()` to whatever listed severity happened to be
-//            present. Paired with `clearable` that produced the safe-to-delete
-//            sentence AND dropped the unclassifiable record from the message.
-//
-// `clearable` is last because its message is the only one here that tells an
-// operator a deletion is SAFE. `unclassified` is FIRST for the mirror reason: a
-// record this runtime cannot interpret is the most severe thing in the WAL,
-// because "I do not know what this is" must never resolve to "go ahead".
-const EGRESS_FENCE_SEVERITIES = Object.freeze(['unclassified', 'in-flight', 'live-stale', 'unidentified', 'unresolved', 'clearable']);
-
-// The severities that must NEVER be accompanied by an instruction to remove
-// anything: something may be running, or may be beyond this runtime's
-// understanding, and an operator acting on a removal instruction in either state
-// can free a fence under a live send.
-const EGRESS_NO_REMOVAL_ADVICE = Object.freeze(['unclassified', 'in-flight']);
-
-// Judge a record that carries an OUTCOME (a terminal record, or a claim-shaped
-// record left by a runtime whose protocol this is not) on its own disposition.
-// Fail-closed: only the explicit 'no-wire' is clearable, and everything else —
-// including an absent disposition — is treated as possibly on the phone.
-// Record names and outcome reasons reach OPERATOR TEXT, and both come out of an
-// untrusted place: a name is whatever bytes are in the directory, and a reason is
-// whatever bytes are in the body. Peer-measured, both were forgeable — a filename
-// carrying a newline and an ANSI escape rendered a fake instruction line, and a
-// reason that merely LOOKED enum-shaped (`delete-all-records-now` passes
-// `[a-z-]{1,40}`) was echoed verbatim. A shape test is not a membership test.
-//
-// The reason is therefore checked against the closed enum, and the name against
-// the alphabet this WAL actually writes (hex and dots). A name outside it is
-// rendered defused AND SAID to be: silently mangling it would leave an operator
-// unable to copy the name they need to remove, which is worse than telling them
-// the name is not one of ours.
-// `safeRecordName` is imported from ./lib/egress-intent-wal.mjs — the same
-// defusing the discovery scanner applies, so a hazard class learned by either
-// reader is known to both.
-const safeOutcomeReason = (reason) => (EGRESS_ACK_OUTCOME_REASONS.includes(reason) ? reason : 'unknown');
-
-function judgeEgressOutcomeRecord(add, record, files, validFp) {
-  const scopeNote = validFp ? '' : ', unscopable fingerprint';
-  const disposition = record.intent?.wire_disposition;
-  const safeReason = safeOutcomeReason(record.intent?.outcome_reason);
-  const shown = safeRecordName(record.name);
-  if (disposition === 'no-wire') {
-    add('clearable', `${shown}: a previous attempt stopped before sending (${safeReason}${scopeNote})`, files);
-  } else if (disposition === 'unknown') {
-    add('unresolved', `${shown}: wire disposition unknown (emit invariant breach${scopeNote})`, files);
-  } else {
-    add('unresolved', `${shown}: network request performed (${safeReason}${scopeNote})`, files);
-  }
-}
-
-/**
- * Read the WAL and pair every claim to its terminal record by owner token.
- *
- * The pairing is what the append-only protocol buys. A claim names an
- * ACTIVATION and a terminal record names an ATTEMPT, so the two together say
- * what happened without either one having to be overwritten:
- *
- *   claim + its terminal  → resolved; the terminal's disposition decides fencing
- *   claim, no terminal    → pending; the holder's liveness decides the wording
- *   terminal, no claim    → orphaned; judged on its own disposition
- *
- * An orphaned terminal is not a curiosity — it is precisely the state that used
- * to be a duplicate-send bug. When an operator deletes a live claim and a
- * successor claims the freed name, the first attempt's terminal record lands at
- * its OWN name and the successor's claim is untouched; the scan then reports the
- * successor as pending and the orphan separately, instead of reading the
- * overwritten record and announcing that deletion is safe while the successor's
- * message is on the phone.
- *
- * Returns a flat findings list. Composition is a separate pure function so the
- * precedence rule can be tested without a filesystem.
- */
-export async function scanEgressIntents({ intentEntries, intentDir, activationFingerprint }) {
-  const findings = [];
-  const add = (severity, label, files) => findings.push({ severity, label, files });
-  const claims = [];
-  const terminals = [];
-
-  for (const name of intentEntries) {
-    if (!name.endsWith('.json')) continue;
-    let intent = null;
-    try {
-      intent = JSON.parse(await readFile(join(intentDir, name), 'utf8'));
-    } catch {
-      add('unresolved', `${safeRecordName(name)}: unparseable (fail-closed)`, [name]);
-      continue;
-    }
-    // Every operator-facing rendering of this name goes through the defused
-    // form; `name` itself stays exact, because it is what the filesystem calls
-    // are made with and what an operator must copy to remove the record.
-    const shownName = safeRecordName(name);
-    const fp = intent?.activation_fingerprint;
-    const validFp = typeof fp === 'string' && EGRESS_FINGERPRINT_RE.test(fp);
-    const nameFp = egressNameFingerprint(name);
-    // IN SCOPE when the NAME says this activation, or the BODY does, or the body
-    // cannot be scoped at all. Only a record that BOTH halves place elsewhere is
-    // genuinely another phone's business.
-    //
-    // Reading the body alone was the fail-open half: a record occupying a name
-    // that scopes it to THIS activation was skipped whenever its body named a
-    // different valid one, so the disagreement check below never ran. An absent
-    // or malformed body fingerprint remains unscopable and stays in scope,
-    // fail-closed (Codex review MINOR, unchanged).
-    if (nameFp !== activationFingerprint && validFp && fp !== activationFingerprint) continue;
-    const token = typeof intent?.owner_token === 'string' && EGRESS_OWNER_TOKEN_RE.test(intent.owner_token) ? intent.owner_token : null;
-    if (name.endsWith(EGRESS_TERMINAL_SUFFIX)) {
-      // A terminal record's NAME encodes the attempt it belongs to, so the name
-      // and the body are two statements of the same fact and must agree. If they
-      // do not — or either half is unusable — the record cannot be attributed to
-      // an attempt, and an unattributable record is fenced rather than paired or
-      // dismissed. Reconstructing the expected name from the BODY is one
-      // comparison that covers both halves at once.
-      if (!validFp || token === null || name !== egressTerminalName(fp, token)) {
-        add('unresolved', `${shownName}: a terminal record whose name does not match the attempt its body describes (fail-closed)`, [name]);
-        continue;
-      }
-      terminals.push({ name, intent, token });
-    } else {
-      // The same disagreement for a claim, but NOT the same handling — and the
-      // difference is the whole lesson of this round.
-      //
-      // The first cut answered a mismatched claim with a flat `unresolved`,
-      // which reads as "crashed before resolve" and carries "check the phone,
-      // then delete". Peer-measured: a claim whose recorded pid was ALIVE was
-      // then advertised as deletable, and following that instruction frees the
-      // exclusive name for a successor to claim and send — the exact
-      // duplicate-delivery path this slice exists to close, reintroduced by the
-      // fix for a different fail-open. A mismatch may make a record more
-      // suspicious; it must never make a LIVE sender look deletable.
-      //
-      // So the mismatch travels with the claim as an ANNOTATION, and liveness
-      // still decides the severity. A LEGACY claim carries no fingerprint in its
-      // name (nameFp === null) and is exempt — there is nothing to disagree with.
-      const mismatched = nameFp !== null && (!validFp || nameFp !== fp);
-      claims.push({ name, shownName, intent, token, validFp, mismatched });
-    }
-  }
-
-  const terminalByToken = new Map(terminals.map((terminal) => [terminal.token, terminal]));
-  const paired = new Set();
-
-  for (const claim of claims) {
-    // A mismatched claim never PAIRS. Pairing resolves a claim — it hands the
-    // verdict to a terminal record matched on a token the claim may not own —
-    // and a record we cannot attribute must not be resolved that way.
-    const terminal = (claim.token === null || claim.mismatched) ? undefined : terminalByToken.get(claim.token);
-    if (terminal) {
-      paired.add(terminal.name);
-      // BOTH files are the operator's unit of work: the claim occupies the name
-      // the next attempt needs, so clearing only the terminal would leave the
-      // activation fenced and the next run reporting a pending claim instead.
-      judgeEgressOutcomeRecord(add, terminal, [claim.name, terminal.name], claim.validFp);
-      continue;
-    }
-    if (claim.intent?.status !== 'pending') {
-      // Claim-shaped, not pending, no terminal: written by a runtime that
-      // resolved records in place (the pre-append-only format) or edited by
-      // hand. There is no liveness question for a record that says it finished,
-      // so a mismatch here IS fail-closed on its own; otherwise its disposition
-      // is the only thing that can say whether anything reached the phone.
-      if (claim.mismatched) {
-        add('unresolved', `${claim.shownName}: a finished record whose name and body name different activations (fail-closed)`, [claim.name]);
-        continue;
-      }
-      judgeEgressOutcomeRecord(add, claim, [claim.name], claim.validFp);
-      continue;
-    }
-    // G1: a pending claim whose holder is still ALIVE is an attempt in flight,
-    // not a crash. The distinction exists ONLY to choose the wording — never to
-    // authorize breaking the claim — because the two states have opposite
-    // remedies and this repo already carries both instructions in different
-    // places ("delete the intent file(s)" here, "do not delete the lock by hand"
-    // for the bootstrap family lock). An operator told to delete while a send is
-    // in flight can free the name for a third sender, so the live case must not
-    // mention deletion at all. The mtime is read from the SAME name we just
-    // parsed; a stat failure passes NaN through, and the predicate treats an
-    // unknown age as "do not judge by age" rather than as "not live".
-    const claimMtimeMs = await stat(join(intentDir, claim.name)).then((st) => st.mtimeMs).catch(() => Number.NaN);
-    const holder = classifyClaimHolder(claim.intent, claimMtimeMs, Date.now());
-    // The annotation, never a severity of its own. A mismatch is reported so an
-    // operator knows the record is not trustworthy; the SEVERITY still comes
-    // from whether somebody is sending right now.
-    const scopeNote = claim.mismatched
-      ? ', and its name and body name different activations'
-      : claim.validFp ? '' : ', unscopable fingerprint';
-    const shown = claim.shownName;
-    if (holder === 'live') add('in-flight', `${shown}: an attempt is running${scopeNote}`, [claim.name]);
-    else if (holder === 'live-stale') add('live-stale', `${shown}: its process is alive but the claim is unusually old${scopeNote}`, [claim.name]);
-    else if (holder === 'unidentified') add('unidentified', `${shown}: pending with no recorded process identity${scopeNote}`, [claim.name]);
-    else add('unresolved', `${shown}: pending (crashed before resolve${scopeNote})`, [claim.name]);
-  }
-
-  for (const terminal of terminals) {
-    if (paired.has(terminal.name)) continue;
-    judgeEgressOutcomeRecord(add, terminal, [terminal.name], true);
-  }
-  return findings;
-}
-
-const egressFileList = (findings) => [...new Set(findings.flatMap((finding) => finding.files))].sort().map(safeRecordName).join(', ');
-const egressLabels = (findings) => findings.map((finding) => finding.label).join('; ');
-
-/**
- * Turn the findings into ONE operator message, or null when the WAL is clear.
- *
- * Two rules, and they are the whole point of this being a separate function:
- *
- *  1. The MOST CAUTIOUS finding decides the wording. A live attempt outranks
- *     everything, and no message may advise deleting anything while one is
- *     running.
- *  2. Every other finding is still NAMED. Reporting only the winner is how a
- *     WAL holding a no-wire record and a possibly-live pending record came to
- *     report just "nothing reached the phone" — true of one record, fatally
- *     wrong as advice about the directory.
- */
-export function composeEgressFenceBlocker(findings, dirPointer) {
-  if (!Array.isArray(findings) || findings.length === 0) return null;
-  // RANK FIRST, and rank an unrecognized severity as the WORST rather than
-  // skipping past it. `find()` over the table used to answer "is any listed
-  // severity present", which is a different question: with an unlisted finding
-  // beside a `clearable` one it answered `clearable`, produced the
-  // safe-to-delete sentence, and dropped the unclassifiable record from the
-  // message entirely (measured). Normalizing into a real top-ranked severity is
-  // what makes the table TOTAL over its input instead of over its own list.
-  const ranked = findings.map((finding) => (EGRESS_FENCE_SEVERITIES.includes(finding.severity)
-    ? finding
-    : { ...finding, severity: 'unclassified' }));
-  const top = EGRESS_FENCE_SEVERITIES.find((severity) => ranked.some((finding) => finding.severity === severity));
-  const winners = ranked.filter((finding) => finding.severity === top);
-  const rest = ranked.filter((finding) => finding.severity !== top);
-  const labels = egressLabels(winners);
-  const files = egressFileList(winners);
-  // Two shapes for the tail, and which one is used follows the SAME rule as the
-  // main wording: a message that must not advise removal must not advise it for
-  // the other records either.
-  const alsoHolds = rest.length === 0
-    ? ''
-    : EGRESS_NO_REMOVAL_ADVICE.includes(top)
-      ? ` This activation also has other records here (${egressLabels(rest)}); leave them alone until the state above is resolved, then re-run to get the right instruction for them.`
-      : ` This is not the whole WAL for this activation: it also holds ${egressLabels(rest)}. A fresh send needs every one of these records gone (${egressFileList(ranked)}), and the most cautious instruction above governs all of them.`;
-
-  if (top === 'unclassified') {
-    return `the egress intent WAL under ${dirPointer} holds records this runtime cannot classify (${labels}); refusing a send that cannot be fenced against them. Do NOT remove anything on the strength of this message — an unclassifiable record may be a completed send, a running attempt, or neither, and this runtime cannot tell which. Check the phone, and resolve these records with a runtime that understands them.${alsoHolds}`;
-  }
-  if (top === 'in-flight') {
-    return `another egress proof attempt for this activation is in flight under ${dirPointer} (${labels}); wait for it to finish and re-run. Do NOT delete any record for this activation while an attempt is running — that would free the fence for a second send to the same phone.${alsoHolds}`;
-  }
-  if (top === 'live-stale') {
-    return `the egress proof attempt recorded for this activation is still running (its process is alive) but its claim under ${dirPointer} is unusually old (${labels}) — a send is bounded to seconds, so it is either stuck or the recorded pid has been reused by an unrelated process. Prefer waiting. Only if you are certain no proof is running: check the phone, then delete ${files} to consent to a fresh send.${alsoHolds}`;
-  }
-  if (top === 'unidentified') {
-    return `a previous egress proof record for this activation under ${dirPointer} (${labels}) carries no process identity — it was written by a runtime that did not record one — so whether its sender is still running cannot be determined here. Treat it as possibly in flight: check the phone, and delete ${files} only if you are certain no proof is running. Automatic resend is prohibited.${alsoHolds}`;
-  }
-  if (top === 'unresolved') {
-    return `a previous egress attempt for this activation is unresolved and may already be on the phone (${labels}) under ${dirPointer}; check the phone, then delete ${files} to consent to a fresh send. Automatic resend is prohibited.${alsoHolds}`;
-  }
-  // 'clearable' — the ONLY sentence in this file that calls a deletion safe.
-  // `rest` is necessarily empty here: clearable is LAST in the severity order,
-  // so anything else in the WAL would have taken the top and this branch would
-  // be unreachable. That is the precedence property expressed as structure
-  // rather than as a guard someone has to remember to widen.
-  return `a previous egress attempt for this activation stopped BEFORE any message was sent (${labels}) under ${dirPointer}. Nothing reached the phone, so deleting ${files} is safe and is all that is needed to retry. Nothing is removed automatically: this code never mutates or removes a published record — each one is written once, at a name only its own attempt can produce — which is what keeps a concurrent attempt's fence intact.`;
-}
-
-// `sameDirectoryImpl` is an INJECTED SEAM, not a convenience. The property it
-// exists for — that a legacy WAL which changes identity while it is being read
-// is refused rather than described — is a race, and a race that only a real
-// filesystem can produce is a property no test can pin. The seam is how the
-// swap becomes deterministic.
-async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDir, env, now, emitImpl, sameDirectoryImpl = sameDirectory }) {
-  if (!requested) {
-    return { requested: false, executed: false, mode: 'not_requested', status: 'not_requested', provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false, blockers: [], limits: [] };
-  }
-
-  const limits = [
-    'The proof exercises user-global + default notify policy against an ephemeral temp repo; the consumer repo\u2019s repo-layer notify config is deliberately not consulted.',
-    'The mirror row is not provider evidence \u2014 the provider ack is the HTTP 2xx + ok:true classification \u2014 but a missing/ambiguous mirror makes the attempt unverifiable and the proof fails closed.',
-    'Credential rotation is invisible to the activation fingerprint by design (contract \u00a78.1); a rotated token surfaces as this executor\u2019s next real attempt failing.',
-  ];
-
-  // Activation preflight. The resolved channel/recipient are later PINNED into
-  // the env overlay handed to the emitter, so what this preflight observed is
-  // what the send uses.
-  //
-  // This used to read "the SAME env object is later handed to the emitter, so
-  // TOCTOU is closed by sharing the snapshot". That was true only for
-  // env-sourced activation: `runEmit` resolves activation independently, and
-  // resolveEgressScalars falls back to a MUTABLE verified-local TOML file that
-  // sharing an env object has no bearing on. See the pin at the emit call.
-  const activation = loadEgressActivation({ repoRoot, homeDir, env });
-  const blockers = [];
-  if (!activation.active) {
-    blockers.push(`egress activation is not active (${activation.reason}) \u2014 channel+recipient+credential must all resolve (token alone and channel alone are both inert; unknown-egress-channel and credential-collision also land here)`);
-  }
-  const consent = env?.AGENTIC_EGRESS_REAL_SMOKE === '1';
-  if (execute && !consent) {
-    blockers.push('AGENTIC_EGRESS_REAL_SMOKE=1 is not set \u2014 the real-network send needs this third consent alongside the two flags (export it in the shell that runs the executor)');
-  }
-
-  if (!execute) {
-    return {
-      requested: true,
-      executed: false,
-      mode: 'plan_only_preflight',
-      status: blockers.length > 0 ? 'blocked' : 'ready',
-      provider_ack: null,
-      outcome_reason: null,
-      mirror_correlated: false,
-      network_request_performed: false,
-      blockers,
-      limits,
-    };
-  }
-  if (blockers.length > 0) {
-    return { requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked', provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false, blockers, limits };
-  }
-
-  // Re-send fence (gap 1 + gap 2): before a new send, refuse if THIS activation
-  // has an unresolved prior attempt. "Unresolved" = crashed before resolve
-  // (pending) OR an attempt that touched / may have touched the wire
-  // (wire_disposition is not 'no-wire'); the phone may already carry that
-  // message, and only an explicit operator `rm` consents to a fresh send. Scope
-  // is the machine-global WAL keyed by activation_fingerprint (recipients can
-  // differ between shells, so "one phone per machine" is false); an unparseable
-  // OR fingerprint-less record cannot be scoped and blocks globally, fail-closed.
-  const intentDir = egressIntentDir(homeDir);
-  const activationFingerprint = deriveActivationFingerprint({ channel: activation.channel, recipient: activation.recipient, credentialEnvVar: EGRESS_CREDENTIAL_ENV_VAR });
-  const blockedSection = (blockerList) => ({
-    requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked',
-    provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false,
-    blockers: blockerList, limits,
-  });
-  let intentEntries = null;
-  try {
-    intentEntries = await readdir(intentDir);
-  } catch (err) {
-    // ENOENT (no WAL yet) is the ONLY clear-to-proceed error; any other readdir
-    // failure (EACCES, ENOTDIR, I/O) leaves the fence unscannable, so fail closed.
-    if (err?.code !== 'ENOENT') {
-      return blockedSection([`the egress intent WAL at ${machinePointer(homeDir, intentDir)} is unscannable (${err?.code ?? 'error'}); refusing a send that cannot be fenced against a prior attempt. Resolve the directory, then retry.`]);
-    }
-  }
-  if (intentEntries) {
-    const scan = await scanEgressIntents({ intentEntries, intentDir, activationFingerprint });
-    const blocker = composeEgressFenceBlocker(scan, machinePointer(homeDir, intentDir));
-    if (blocker) return blockedSection([blocker]);
-  }
-
-  // Upgrade compatibility (Codex review CRITICAL): the WAL moved from the
-  // repo-scoped path to the machine-global home. A pre-upgrade intent under the
-  // OLD repo path is invisible to the home scan above, so a crashed pending or a
-  // dispatched-mirror-lost 'failed' recorded by the prior version could permit a
-  // resend. Scan the legacy dir too and refuse until it is cleared; the old
-  // format carries no wire_disposition to classify, so every legacy record is
-  // treated fail-closed.
-  const legacyIntentDir = egressIntentDir(repoRoot);
-  // IDENTITY, not spelling. This was `resolve(a) !== resolve(b)`, and the two
-  // paths are derived from different roots (repoRoot vs homeDir), so nothing
-  // guarantees they spell a shared directory the same way — a symlinked checkout
-  // or a case-variant on a case-folding volume reaches one directory by two
-  // names. The string compare then said "different", the LIVE WAL was re-read as
-  // clearable legacy state, and the message below told the operator to remove it.
-  // Freeing that fence is the duplicate send this whole WAL exists to prevent.
-  //
-  // `unknown` is neither branch: a filesystem that will not answer must not be
-  // resolved by guessing. Guessing "different" re-opens the resend path;
-  // guessing "same" silently drops a legitimate legacy fence.
-  const legacyIsLive = await sameDirectoryImpl(legacyIntentDir, intentDir);
-  if (legacyIsLive.unknown) {
-    // The reason embeds a raw path (path-containment.mjs builds it that way).
-    // `safeRecordName` is the wrong tool for a path, so the message carries the
-    // pointer it already renders safely and the CODE only — the scanner defuses
-    // this same reason and this branch did not (cross-host review).
-    return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} cannot be told apart from the machine-global one at ${machinePointer(homeDir, intentDir)} (${safeRecordName(String(legacyIsLive.code ?? 'error'))}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
-  }
-  if (!legacyIsLive.same) {
-    // BIND THE LISTING TO THE DIRECTORY THAT WAS JUDGED.
-    //
-    // `sameDirectory` decided "not the live WAL" by observing the path; the
-    // `readdir` below re-opens the same PATHNAME. A component swapped in between
-    // means the names listed belong to a different directory than the one that
-    // was cleared — possibly the live fence, whose records would then be printed
-    // with review-and-remove wording. This is the identity-window defect that
-    // was fixed in the discovery scanner and left standing here; a second copy
-    // is how the first survives (cross-host review CRITICAL).
-    //
-    // The binding is by DETECTION: re-check identity after the listing and
-    // refuse to report anything if it moved.
-    //
-    // STATED LIMIT, because the discovery scanner's residual list says the same
-    // thing about its own copy and this one is weaker. The question asked here is
-    // RELATIONAL — "is the legacy directory still a different directory from the
-    // live one?" — not "is it still the SAME directory I classified?". Every
-    // distinct→distinct and absent→distinct transition therefore answers
-    // `same: false` at both observations and is invisible, and the names below
-    // belong to whatever the pathname resolved to at listing time.
-    //
-    // An EMPTY listing is the unsafe outcome in both directions, and the first
-    // wording of this note named only one of them (cross-host review). Records
-    // may have been moved away before the listing, or may arrive after it; in
-    // either case the block does not fire, and the proof proceeds to the emit
-    // path while real pre-upgrade records exist somewhere.
-    //
-    // Not closed here on purpose (owner decision, option (a) on this slice): it
-    // needs write access inside the operator's own checkout to provoke, and an
-    // adversary with that could delete the legacy records outright for the same
-    // effect. Closing it means capturing the legacy directory's OWN identity
-    // before the listing and comparing that identity afterwards — what
-    // `legacy-egress-discovery.mjs` does — which is a different seam than
-    // `sameDirectoryImpl` and is deferred rather than done silently.
-    let legacyNames = [];
-    try {
-      legacyNames = (await readdir(legacyIntentDir)).filter((n) => n.endsWith('.json'));
-    } catch (err) {
-      if (err?.code !== 'ENOENT') {
-        return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} is unscannable (${err?.code ?? 'error'}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
-      }
-    }
-    const stillDistinct = await sameDirectoryImpl(legacyIntentDir, intentDir);
-    if (stillDistinct.unknown || stillDistinct.same) {
-      return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} changed identity while it was being read; refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
-    }
-    if (legacyNames.length > 0) {
-      // Names go through the same defusing rule the modern scan uses. They were
-      // interpolated raw here, which is the injection the WAL scan already
-      // fences: a filename carrying a newline and an ANSI escape forges an
-      // instruction line in an operator-facing message.
-      const shown = legacyNames.map(safeRecordName).join(', ');
-      // The advice is NOT "delete that directory", and the difference is a
-      // safety property rather than wording. The legacy format carries no
-      // wire_disposition and a pre-upgrade pending record may carry no pid — and
-      // this runtime deliberately reads a missing process identity as UNKNOWN
-      // rather than dead (see classifyClaimHolder). So an old sender may still be
-      // running, and a flat delete instruction can free the name for a second
-      // delivery to the same phone. Directory-level removal is worse again: it
-      // takes records this runtime never examined.
-      // The last sentence names the command that closes this scan's own blind
-      // spot. Saying "other checkouts need the same review" without saying HOW
-      // left the operator to invent a search — and the obvious invention is a
-      // `find` plus a bulk delete, which is precisely the unsafe shape the
-      // wording above exists to avoid.
-      return blockedSection([`legacy egress intents predating the machine-global WAL move are present at ${pointer(repoRoot, legacyIntentDir)} (${shown}); an attempt recorded by the older runtime may already have reached the phone, and — because that format records no process identity — one may still be in flight. Make sure no older proof is running, check the phone, then remove the specific records you reviewed; the WAL now lives at ${machinePointer(homeDir, intentDir)}. This scan only sees the CURRENT checkout: run \`runtime:migrate legacy-egress-intents\` for the read-only machine-scoped inventory of the other checkouts, and apply the same review to whatever it reports.`]);
-    }
-  }
-
-  // Synthetic event: closed-vocab kind response-needed (urgency NORMAL by
-  // contract — approval is the only urgent-by-contract kind, and a proof that
-  // bypassed quiet hours would prove the wrong thing), unique subject →
-  // unique event_id (structurally bypasses dedupe and inherits a fresh
-  // throttle key), 12-hex correlation token carried in the ENUMERATED topic
-  // field so the operator can match the phone message (event_id/title/body
-  // never reach the provider payload).
-  // The random suffix is the PHONE CORRELATION token (it rides in the subject
-  // and is surfaced as `subject_suffix`). It is deliberately no longer the WAL
-  // filename: the intent is named by the activation fingerprint so that creating
-  // it is an exclusive claim per activation (G1). The two roles were only ever
-  // sharing a value by accident.
-  const suffix = randomBytes(6).toString('hex');
-  const ownerToken = randomBytes(12).toString('hex');
-  // Self-review finding: this sat outside every try, so an unwritable or missing
-  // temp dir escaped as an exception and crashed runDoctor rather than reporting
-  // `blocked` — the same defect class the durable-publish rewiring closed on the
-  // WAL writes. Nothing has been created yet at this point, so there is nothing
-  // to clean up on the failure path.
-  let tempRepo;
-  try {
-    tempRepo = await mkdtemp(join(tmpdir(), 'agentic-egress-proof-'));
-  } catch (err) {
-    return blockedSection([`the ephemeral temp repo for the proof could not be created (${err?.code ?? 'error'}); no send was attempted.`]);
-  }
-  let section;
-  try {
-    const repoIdent = deriveRepoIdent(tempRepo);
-    const subject = `egress-proof-${suffix}`;
-    const eventId = buildEventId({ repoIdent, kind: 'response-needed', subject });
-    const ranAt = now.toISOString();
-    const attemptHash = createHash('sha256').update([EGRESS_ATTEMPT_HASH_DOMAIN, eventId, ranAt].join('\u0000')).digest('hex');
-    // activationFingerprint is computed once at the re-send gate above and reused
-    // here for the WAL writes + provider_ack (the gate scopes the fence by it).
-    const event = {
-      event_id: eventId,
-      source: 'runtime:doctor',
-      title: 'agentic-plugins egress proof (synthetic)',
-      kind: 'response-needed',
-      urgency: 'normal',
-      topic: subject,
-    };
-
-    // WRITE-AHEAD intent, then send, then resolve — but the write-ahead is a
-    // CLAIM, not a plain write (G1, ADR-0048 residuals (a)+(b)). The record is
-    // named by the activation fingerprint and published with link(2), so the act
-    // that establishes the fence is the same act that excludes a concurrent
-    // sender: there is no separate lock, and therefore no stale-takeover policy
-    // to get wrong. `owner_token`/`pid`/`acquired_at` ride along for exactly two
-    // purposes — choosing the blocker wording a later contender sees, and NAMING
-    // this attempt's terminal record so it can never land on another attempt's.
-    // They are NEVER takeover authority: nothing in this file breaks, replaces or
-    // removes a record, whether or not it made it.
-    const intentPath = join(intentDir, egressClaimName(activationFingerprint));
-    const claim = await publishJsonExclusive(intentPath, {
-      status: 'pending',
-      subject,
-      attempt_hash: attemptHash,
-      ran_at: ranAt,
-      activation_fingerprint: activationFingerprint,
-      owner_token: ownerToken,
-      pid: process.pid,
-      acquired_at: ranAt,
-      // The machine home is the anchor: everything below it on the way to the
-      // intent dir is created by this code and must be proven durable, and the
-      // home itself is the caller's precondition rather than its own artifact.
-    }, { ancestorAnchor: homeDir });
-    if (!claim.ok) {
-      // No durable claim ⇒ no send. Every path here returns rather than throws:
-      // a read-only or full home used to escape this function as an exception
-      // and crash `runDoctor` instead of reporting `blocked`.
-      if (claim.reason === 'name-taken') {
-        // The scan found nothing to fence yet the name is taken, so another
-        // attempt claimed it between the two. This is the ONLY way that can
-        // happen: a claim is never removed by this code, so the name cannot have
-        // been re-occupied by anything but a genuinely concurrent attempt (or an
-        // operator putting something there by hand, which reads the same).
-        return blockedSection([`another egress proof attempt claimed this activation concurrently under ${machinePointer(homeDir, intentDir)}; re-run once it completes. Automatic resend is prohibited.`]);
-      }
-      return blockedSection([`the egress intent could not be recorded durably before the send (${claim.reason}: ${claim.diagnostic}); refusing to send without a fence that would survive a crash.`]);
-    }
-    if (claim.limit) limits.push(claim.limit);
-
-    // PIN the activation (G1 / T1). The fence, the WAL fingerprint and the
-    // recipient actually sent to must describe ONE activation, and until now
-    // they only did so by luck: doctor resolves activation at preflight, and
-    // `runEmit` resolves it AGAIN, independently, from a loader whose
-    // channel/recipient fall back to a MUTABLE verified-local TOML file
-    // (egress-config.mjs resolveEgressScalars). An edit between the two reads
-    // would let this process hold a claim keyed on activation A while the send
-    // went to B — and a second process could legitimately hold B's claim and
-    // send to B too. Neither the claim nor a lock closes that; only pinning does.
-    //
-    // The pin rides in an env OVERLAY rather than a new emitter parameter,
-    // because resolveEgressScalars is env-FIRST: setting the two scalars makes
-    // what doctor resolved authoritative for the emitter's own resolve, without
-    // touching the ADR-0041 §2c override rule or every other runEmit caller.
-    // The overlay is a COPY — mutating the shared `env` would leak the pin into
-    // the control-plane probe environment. The credential is env-only by
-    // contract (it has no file source, so it cannot drift) and is copied through
-    // untouched; its value is never read here.
-    const emitEnv = {
-      ...env,
-      [EGRESS_ENV_KEYS.channel]: activation.channel,
-      [EGRESS_ENV_KEYS.recipient]: activation.recipient,
-    };
-    const emit = emitImpl ?? runEmit;
-    let emitResult;
-    try {
-      emitResult = await emit({ eventText: JSON.stringify(event), repoRoot: tempRepo, homeDir, env: emitEnv });
-    } catch (err) {
-      emitResult = { status: 'failed', stage: 'egress', reason: `emit-error:${err?.code ?? 'exception'}` };
-    }
-
-    // Correlated mirror: EXACTLY one well-formed dispatched row for this
-    // event id in the temp repo\u2019s log. The mirror is best-effort inside the
-    // emitter, so its absence after a dispatched return is fail-closed \u2014 the
-    // attempt is unverifiable, not passed.
-    let mirrorCorrelated = false;
-    let mirrorReason = 'mirror-missing';
-    try {
-      const logText = await readFile(join(tempRepo, '.agentic-plugins', 'state', 'runtime', 'notify', 'log.ndjson'), 'utf8');
-      const rows = logText.split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return null; } });
-      const matches = rows.filter((row) => row && row.event_id === eventId && row.egress_channel === 'telegram' && row.egress_phase === 'outcome');
-      if (matches.length === 1 && matches[0].egress_status === 'dispatched' && matches[0].egress_outcome === 'dispatched') {
-        mirrorCorrelated = true;
-        mirrorReason = 'dispatched';
-      } else if (matches.length > 1) {
-        mirrorReason = 'mirror-ambiguous';
-      }
-    } catch { /* mirror-missing */ }
-
-    const dispatched = emitResult?.status === 'dispatched';
-    const acked = dispatched && mirrorCorrelated;
-    // Closed-enum reason projection — never the raw emitter reason string
-    // (full-report sanitization: the artifact records enums and hashes only).
-    // runEmit's egress-path reasons carry an `egress-` prefix
-    // (`egress-missing-token`, `egress-throttled`); its pipeline-suppression
-    // reasons do not (`kinds-filter`, `dedupe-duplicate`, `channel-none`).
-    // Strip the prefix before matching so both families project onto the enum
-    // instead of collapsing to emit-error.
-    const rawReason = String(emitResult?.reason ?? '');
-    const strippedReason = rawReason.startsWith('egress-') ? rawReason.slice('egress-'.length) : rawReason;
-    const projected = EGRESS_ACK_OUTCOME_REASONS.find((candidate) => strippedReason === candidate || strippedReason.startsWith(`${candidate}`))
-      ?? (dispatched ? 'mirror-missing' : 'emit-error');
-    const outcomeReason = acked ? 'dispatched' : dispatched ? mirrorReason : projected;
-
-    // Wire disposition is the SINGLE source that separates the effects honesty
-    // claim (network_request_performed = provably 'wire') from the re-send gate
-    // block key ('wire' OR 'unknown' both fence a resend). Computed BEFORE the
-    // terminal write so the WAL records it (gap 1: the gate blocks on the
-    // disposition, not only on a crash-pending), scoped by activation_fingerprint
-    // (gap 2). A dispatched return (mirror questions notwithstanding, a lost
-    // mirror still sent the message) or a failure at/after the wire
-    // (provider-error/rejected, timeout, redirect-error) is 'wire'; an emit-error
-    // is 'unknown' (runEmit no-throw breach, could be post-wire); everything else
-    // stopped before any network I/O.
-    const wireDisposition = classifyWireDisposition(dispatched, outcomeReason);
-    const networkPerformed = wireDisposition === 'wire';
-
-    // Terminal write: an APPEND, at this attempt's own name. Not a replace of
-    // the claim, not a removal of it — a second exclusive create, at
-    // `<fingerprint>.<owner_token>.terminal.json`, a name no other attempt can
-    // produce. Nothing published is ever mutated, so there is no ownership
-    // question to answer and no window in which the answer could go stale.
-    //
-    // That is the end of a four-round argument, and the shape of the argument is
-    // worth more than the conclusion. Each round kept the goal ("do not let a
-    // second message reach the phone") and changed HOW the record at the
-    // canonical name was updated: remove it, take it aside and verify, replace
-    // it in place. Each was refuted by the same impossibility from a new angle —
-    // deciding that the record at a pathname is still yours cannot be atomic. The
-    // last one is the instructive one, because it looked airtight: rename(2)
-    // never leaves the name absent, so the fence was continuously OCCUPIED. It
-    // was still wrong, because occupancy was never the guarantee — CONTENT is. An
-    // operator deletion plus a successor's claim, and a stale terminal record
-    // would overwrite that successor's live claim with a `no-wire` outcome; the
-    // next scan would then read `no-wire` and tell the operator deletion was
-    // safe, while the successor's message was already on the phone.
-    //
-    // Writing to a name only this attempt can produce removes the question
-    // instead of answering it faster.
-    //
-    // The cost is stated rather than hidden: the claim is never cleared either,
-    // so after ANY completed attempt — including a pre-wire one that sent
-    // nothing — the activation stays fenced until an operator removes both
-    // records. The scan tells them which files and whether it is safe.
-    //
-    // D1(α): a terminal-write failure here does NOT change the proof verdict.
-    // The provider ack + mirror correlation are independently true facts, and
-    // ADR-0048 §3 defines `passed` as exactly those; folding WAL bookkeeping
-    // into the verb would also trip bootstrap's acked-consistency matrix and
-    // refuse the import, forcing a SECOND message to the phone to record a proof
-    // for one that already arrived. It surfaces as a limit + an overall warning.
-    const terminalName = egressTerminalName(activationFingerprint, ownerToken);
-    const terminal = await publishJsonExclusive(join(intentDir, terminalName), {
-        status: acked ? 'acked' : 'failed',
-        subject,
-        attempt_hash: attemptHash,
-        ran_at: ranAt,
-        outcome_reason: outcomeReason,
-        wire_disposition: wireDisposition,
-        network_request_performed: networkPerformed,
-        activation_fingerprint: activationFingerprint,
-        owner_token: ownerToken,
-      }, { ancestorAnchor: homeDir });
-    const walDurability = aggregateWalDurability(claim, terminal);
-    if (terminal.limit) limits.push(terminal.limit);
-    if (!terminal.ok) {
-      // What still fences is no longer a question the primitive has to answer:
-      // the claim was never touched, so it stands in every failure case. Only
-      // the terminal record's own fate varies, and the primitive's diagnostic
-      // says which (staged-but-not-published, or published-but-not-durable).
-      limits.push(terminal.reason === 'name-taken'
-        ? `the terminal WAL record for this attempt could not be written because its name was already occupied (${terminal.diagnostic}) — that name carries this attempt's own owner token, so nothing legitimate can have produced it. The provider outcome above stands; the pending claim still fences this activation, and the WAL does not record how this attempt ended.`
-        : `the intent WAL could not record this attempt's outcome durably (${terminal.reason}: ${terminal.diagnostic}). The provider outcome above stands; the pending claim still fences this activation${terminal.published ? '' : ', so the next attempt is blocked until an operator resolves it'}.`);
-    }
-    if (wireDisposition === 'no-wire') {
-      // The mandatory-cleanup instruction, on the FIRST result rather than the
-      // next scan. This attempt stopped before the wire, so its records now fence
-      // an activation that nothing was ever sent for — and under an append-only
-      // protocol no code will clear them. Saying so here is what makes the
-      // friction a stated cost instead of a surprise met one run later.
-      //
-      // Gated on PUBLICATION, not on `ok`. A post-link directory-fsync failure
-      // returns ok:false with published:true — the record IS at its name, only
-      // its durability claim failed — and withholding the instruction there
-      // would reintroduce the very lateness this branch exists to remove, in
-      // exactly one branch.
-      //
-      // COVERAGE, STATED: no test separates the two gates. Mutation-measured —
-      // changing `terminal.published` back to `terminal.ok` here fails nothing.
-      // Reaching the difference needs a publish that links and then fails its
-      // directory fsync, and `runDoctor` exposes no seam for the WAL's ops
-      // (deliberately: the injectable-ops surface is the primitive's, not the
-      // verb's). The measured darwin behaviour makes it unreachable with real
-      // ops too — `open(dir,'r')+sync()` succeeds even against a mode-0500
-      // directory, which is why EACCES here is treated as a fault rather than a
-      // platform limit. What differs between the two gates is one operator
-      // sentence in an already-degraded branch, not the fence.
-      limits.push(terminal.published
-        ? `this attempt stopped BEFORE any message was sent (${outcomeReason}), and its two WAL records (${egressClaimName(activationFingerprint)}, ${terminalName}) under ${machinePointer(homeDir, intentDir)} now fence this activation. Nothing reached the phone, so deleting BOTH is safe and is all that is needed to retry. They are not removed automatically: this code never removes a published record, which is what keeps a concurrent attempt's fence intact.`
-        // Nothing was published, so this message may NOT name a file to remove.
-        // The fact is about this ATTEMPT; a removal instruction would be about a
-        // NAME, and by the time an operator acted on it the claim could belong
-        // to a different attempt — check-then-act moved into their hands, which
-        // is the same mistake this whole slice exists to stop making in code.
-        : `this attempt stopped BEFORE any message was sent (${outcomeReason}), but its outcome could not be recorded, so the WAL cannot say so on its own: the next run will read the pending claim and report it as unresolved. Nothing reached the phone from THIS attempt. Re-run to get an instruction computed from the WAL's actual state rather than from this message.`);
-    }
-
-    section = {
-      requested: true,
-      executed: true,
-      mode: 'explicit_egress_executor',
-      status: acked ? 'passed' : 'failed',
-      // Every COMPLETED attempt carries provider_ack (a failed attempt is
-      // evidence too — omitting it would degrade an executed failure to
-      // \u201cabsent\u201d at the reducer).
-      // `provider_ack.result` records the PROVIDER FACT only — the schema's
-      // providerAck $def pins it as "proves exactly that the pinned provider
-      // request returned HTTP 2xx + {ok:true}", and the limits above say the
-      // mirror is not provider evidence. A dispatched return with a lost
-      // mirror is therefore result=acked inside a FAILED proof (status +
-      // outcome_reason carry the mirror fail-close); folding the mirror into
-      // `result` would overwrite an independent true fact.
-      provider_ack: {
-        result: dispatched ? 'acked' : 'failed',
-        attempt_hash: attemptHash,
-        activation_fingerprint: activationFingerprint,
-        ran_at: ranAt,
-      },
-      outcome_reason: outcomeReason,
-      mirror_correlated: mirrorCorrelated,
-      network_request_performed: networkPerformed,
-      // D1(α) — the WAL's own health, reported ALONGSIDE the verdict rather than
-      // folded into it. `durable` = claim and terminal record both reached disk;
-      // `degraded` = published but the directory entry could not be fsynced on
-      // this platform; `failed` = the terminal record was not written.
-      wal_durability: walDurability,
-      // Reported SEPARATELY from durability, because it is a different fact: the
-      // record reached disk and the fence stands, but a temp file this code
-      // created could not be removed and now sits in a directory retention is
-      // forbidden to sweep. Folding it into `wal_durability` would have made the
-      // existing warning ("the fence for a future attempt may not [stand]")
-      // false. Peer round-6 MINOR: without a field of its own it reached only
-      // `limits`, and `bootstrap resume` forwards overall warnings — so the one
-      // consumer that would act on it never saw it.
-      wal_debris: Boolean(claim.debris || terminal.debris),
-      // Phone correlation: the operator matches this token against the
-      // message\u2019s topic line; the raw event id stays in ephemeral/local
-      // state only, never in durable artifacts.
-      subject_suffix: suffix,
-      blockers: [],
-      limits,
-    };
-  } finally {
-    await rm(tempRepo, { recursive: true, force: true }).catch(() => {});
-  }
-  return section;
-}
-
 async function buildDeepPeerSmokeSection({
   requested,
   execute,
@@ -5660,12 +4671,6 @@ function summarizeOverall(report) {
   if (report.permission_proof.executed && !['passed', 'operator_action_required'].includes(report.permission_proof.status)) {
     hardFailures.push(`permission proof ${report.permission_proof.status}`);
   }
-  // Egress ack proof: an EXECUTED attempt that did not ack is a hard failure —
-  // a real network send happened and the evidence says it did not land as
-  // dispatched+mirrored (the failed provider_ack is still recorded evidence).
-  if (report.egress_ack_proof.executed && report.egress_ack_proof.status !== 'passed') {
-    hardFailures.push(`egress ack proof ${report.egress_ack_proof.status} (${report.egress_ack_proof.outcome_reason ?? 'no-outcome'})`);
-  }
   if (report.workflow_continuation_proof.executed && !['passed', 'operator_action_required'].includes(report.workflow_continuation_proof.status)) {
     hardFailures.push(`workflow continuation proof ${report.workflow_continuation_proof.status}`);
   }
@@ -5762,31 +4767,6 @@ function summarizeOverall(report) {
   }
   if (report.permission_proof.executed && report.permission_proof.status === 'operator_action_required') {
     warnings.push('permission proof requires operator action outside runtime:doctor');
-  }
-  // A blocked egress executor is a warning, not a hard failure: no network
-  // request happened. The blockers themselves say what the operator must do
-  // (set AGENTIC_EGRESS_REAL_SMOKE=1, resolve a pending intent, fix
-  // activation) — plan-only `ready` stays silent.
-  if (report.egress_ack_proof.requested && !report.egress_ack_proof.executed && report.egress_ack_proof.status === 'blocked') {
-    warnings.push(report.egress_ack_proof.mode === 'explicit_egress_executor'
-      ? 'egress ack proof execute was requested but blocked before any send (see egress_ack_proof.blockers)'
-      : 'egress ack proof preflight is blocked (see egress_ack_proof.blockers)');
-  }
-  // G1 / D1(α) — WAL durability is reported ALONGSIDE the verdict, never folded
-  // into it: `passed` means the provider acked and the mirror correlated
-  // (ADR-0048 §3), both still true when the bookkeeping write failed. A warning
-  // is how a passed proof with a shaky fence stays visible; making it a hard
-  // failure would contradict the evidence vocabulary, and making it silent
-  // would hide the one condition under which a future execute is unfenced.
-  if (report.egress_ack_proof.executed && report.egress_ack_proof.wal_durability
-      && report.egress_ack_proof.wal_durability !== 'durable') {
-    warnings.push(`egress intent WAL ${report.egress_ack_proof.wal_durability} — the provider outcome stands, but the fence for a future attempt may not (see egress_ack_proof.limits)`);
-  }
-  // A separate condition, not an extra clause on the one above: debris leaves a
-  // DURABLE fence and a dirty directory, so it must not borrow a sentence that
-  // says the fence may not stand.
-  if (report.egress_ack_proof.executed && report.egress_ack_proof.wal_debris) {
-    warnings.push('egress intent WAL left a temp file behind — the fence itself is intact, but the leftover sits in a directory retention must never sweep (see egress_ack_proof.limits)');
   }
   if (report.workflow_continuation_proof.executed && report.workflow_continuation_proof.status === 'operator_action_required') {
     warnings.push('workflow continuation proof requires operator action outside runtime:doctor');
@@ -6000,20 +4980,6 @@ export function formatText(report) {
     for (const limit of report.permission_proof.limits) lines.push(`- limit: ${limit}`);
     lines.push('');
   }
-  if (report.egress_ack_proof.requested) {
-    lines.push('Egress Ack Proof');
-    lines.push(`- mode: ${report.egress_ack_proof.mode}; requested=${report.egress_ack_proof.requested}; executed=${report.egress_ack_proof.executed}; status=${report.egress_ack_proof.status}; outcome=${report.egress_ack_proof.outcome_reason ?? '<none>'}; mirror-correlated=${report.egress_ack_proof.mirror_correlated}`);
-    if (report.egress_ack_proof.provider_ack) {
-      const ack = report.egress_ack_proof.provider_ack;
-      lines.push(`- provider-ack: result=${ack.result}; attempt-hash=${ack.attempt_hash}; activation-fingerprint=${ack.activation_fingerprint}; ran-at=${ack.ran_at}`);
-    }
-    if (report.egress_ack_proof.subject_suffix) {
-      lines.push(`- correlation-token: ${report.egress_ack_proof.subject_suffix} (match this against the topic line of the phone message; the raw event id never leaves local state)`);
-    }
-    for (const blocker of report.egress_ack_proof.blockers) lines.push(`  blocker: ${blocker}`);
-    for (const limit of report.egress_ack_proof.limits) lines.push(`- limit: ${limit}`);
-    lines.push('');
-  }
   if (report.deep_peer_smoke.requested) {
     lines.push('Deep Peer Smoke');
     lines.push(`- mode: ${report.deep_peer_smoke.mode}; requested=${report.deep_peer_smoke.requested}; executed=${report.deep_peer_smoke.executed}; peer-execution=${report.deep_peer_smoke.peer_execution}; status=${report.deep_peer_smoke.status}`);
@@ -6135,7 +5101,7 @@ export function formatText(report) {
       if (entry.state !== 'current') lines.push(`  ${entry.detail}`);
     }
     if (report.receivers.reinstall_recommended) {
-      lines.push('- next: runtime:settings --notification-plan renders the current receivers and names the re-install + rollback steps.');
+      lines.push('- next: runtime:bootstrap plan renders the current statusline shim in its Stage 5 fragment; back up the installed file first (the backup is the rollback).');
     }
     lines.push('');
   }
@@ -6431,300 +5397,6 @@ function validateDoctorRunId(value) {
   return value;
 }
 
-// ---------------------------------------------------------------------------
-// Durable WAL publication (ADR-0048 residual (b) + (a), G1)
-// ---------------------------------------------------------------------------
-//
-// ONE primitive, used twice. Every record this WAL publishes — the claim before
-// the send and the terminal record after it — is created by `link(2)` at a name
-// no other attempt can produce, and NOTHING here ever renames over, replaces, or
-// removes a published record. That is the whole protocol, and it is append-only
-// for a reason that four review rounds each rediscovered from a different angle:
-//
-//   deciding that the record at a pathname is still the one YOU published cannot
-//   be made atomic on a pathname.
-//
-// Round 1 removed the record (compare-and-unlink) — a contender past its own scan
-// claimed the freed name and sent a second message. Round 2 took the record aside
-// first and verified afterwards (rename-to-a-token-unique-name, then restore) —
-// the fence was absent for the width of the verify, twice over. Round 3 kept the
-// canonical name occupied at all times but still REPLACED what stood there
-// (read-then-rename) — measured: after an operator deleted a live claim, a stale
-// terminal overwrote a successor's claim, and the next scan then told the operator
-// that deleting it was safe while the successor's message was already on the
-// phone. Occupancy was never the guarantee; CONTENT is. So the operation is not
-// performed at all: two names, two exclusive creates, no mutation.
-//
-// A record is therefore removed only by an OPERATOR, told by a blocker exactly
-// which files to remove and what is true about them. `buildEgressAckProofSection`
-// carries the scan that decides that wording.
-//
-// The publication performs the ordering residual (b) names: same-directory temp
-// file, write, fsync, close, atomic publish by link(2), directory fsync (plus the
-// ancestor chain the caller did not create). It is named for what it does rather
-// than given a generic `writeJson`-shaped name, because a durable write costs an
-// fsync per call and the next caller should opt into that knowingly instead of
-// inheriting it from a name that does not say so. (The plain `writeJson` helper
-// that used to live here had exactly two callers, both of them this WAL, and was
-// removed with them rather than left as a dead general-purpose write nobody had
-// reviewed for a new use.)
-
-// Directory-fsync failures that mean the PLATFORM cannot do it, as opposed to
-// this machine refusing to. Measured on darwin/APFS (node 24, this repo's
-// probe): `open(dir, 'r')` + `sync()` succeeds even against a mode-0500
-// directory — so EACCES/EPERM here are NOT capability limits, they are real
-// permission or I/O faults and MUST fail closed. Swallowing them would void the
-// exact guarantee this step exists to establish (and would hide ENOSPC/EIO).
-// Windows cannot open a directory handle this way at all; Node surfaces that as
-// EISDIR. That Windows behaviour is UNMEASURED here (no Windows machine was
-// available) and is recorded as a limit rather than claimed as tested.
-const DIR_FSYNC_UNSUPPORTED_CODES = Object.freeze(['EISDIR', 'ENOTSUP', 'EOPNOTSUPP', 'EINVAL', 'ENOSYS']);
-
-// link(2) failures that mean hard links are unavailable on this filesystem.
-// POSIX gives EPERM for "the filesystem does not support links", which is a
-// CAPABILITY answer; the directory-permission answer measured by the probe is
-// EACCES, and that stays a write failure. Everything not listed is a write
-// failure too — a claim that cannot be made is never downgraded to a replace.
-const LINK_UNSUPPORTED_CODES = Object.freeze(['ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EXDEV', 'EMLINK']);
-
-// The two `open` shapes are named separately rather than passed a flags
-// argument. That is not decoration: the runtime executor registry validates
-// every open SITE for a literal read-only or exclusive-create flag, and a
-// generic passthrough would hand it a bare parameter it must fail closed on.
-// Splitting them makes the two intents explicit at the call site too.
-//
-// The bag holds exactly the five operations the publication performs. `rename`
-// and `readFile` used to sit here for the replace-shaped terminal write; they
-// left with it rather than staying as capabilities the primitive no longer uses.
-// An ops bag is a capability grant, and an unused grant is how a mutation nobody
-// reviewed gets reintroduced later without touching this comment.
-const DEFAULT_PUBLISH_OPS = Object.freeze({
-  mkdir,
-  openDirForSync: (dirPath) => open(dirPath, 'r'),
-  createExclusive: (filePath, mode) => open(filePath, 'wx', mode),
-  link,
-  unlink,
-});
-
-async function fsyncDirectory(dirPath, ops) {
-  let handle;
-  try {
-    handle = await ops.openDirForSync(dirPath);
-  } catch (err) {
-    if (DIR_FSYNC_UNSUPPORTED_CODES.includes(err?.code)) return { ok: true, degraded: true, code: err?.code };
-    return { ok: false, degraded: false, code: err?.code ?? 'error' };
-  }
-  try {
-    await handle.sync();
-    return { ok: true, degraded: false, code: null };
-  } catch (err) {
-    if (DIR_FSYNC_UNSUPPORTED_CODES.includes(err?.code)) return { ok: true, degraded: true, code: err?.code };
-    return { ok: false, degraded: false, code: err?.code ?? 'error' };
-  } finally {
-    await handle.close().catch(() => {});
-  }
-}
-
-// Stage the payload as a fully-written, fsynced, closed temp file NEXT TO the
-// target. Same-directory is not a style choice: link(2)/rename(2) are only
-// atomic within one filesystem. O_EXCL on the temp defeats stale-temp reuse and
-// a crafted-symlink redirect through a predictable `.tmp` slot.
-async function writeDurableTemp(targetPath, value, ops) {
-  let text;
-  try {
-    text = `${JSON.stringify(value, null, 2)}\n`;
-  } catch {
-    return { ok: false, reason: 'unserializable', code: null, tmpPath: null, debris: null };
-  }
-  const tmpPath = join(dirname(targetPath), `.tmp-${randomBytes(6).toString('hex')}`);
-  let handle;
-  try {
-    handle = await ops.createExclusive(tmpPath, 0o600);
-  } catch (err) {
-    return { ok: false, reason: 'write-failed', code: err?.code ?? 'error', tmpPath: null, debris: null };
-  }
-  try {
-    await handle.writeFile(text, { encoding: 'utf8' });
-    await handle.sync();
-    // close() is part of the ordering, not cleanup. Some filesystems (NFS
-    // notably) surface a delayed writeback error only here, so swallowing it
-    // and publishing anyway would report `durable` for bytes that never landed
-    // — the exact claim this primitive exists to make honest.
-    await handle.close();
-  } catch (err) {
-    await handle.close().catch(() => {});          // best-effort on the failure path only
-    // The staged file's own removal, reported rather than swallowed — the same
-    // shape, in its third location. Fixing the post-publish copy and leaving
-    // this one is precisely how one swallow survived three review rounds.
-    let debris = null;
-    try {
-      await ops.unlink(tmpPath);
-    } catch (cleanupErr) {
-      debris = `the abandoned staged file ${basename(tmpPath)} could not be removed (${cleanupErr?.code ?? 'error'})`;
-    }
-    return { ok: false, reason: 'write-failed', code: err?.code ?? 'error', tmpPath: null, debris };
-  }
-  return { ok: true, reason: 'ok', code: null, tmpPath, debris: null };
-}
-
-// Persist the directory ENTRIES of the bounded chain between an anchor the
-// caller did NOT create and the leaf directory it did.
-//
-// Peer MAJOR: fsyncing only the leaf leaves every ancestor's entry unpersisted,
-// so on a cold home a power loss can lose the very directory the claim was
-// reported durable in. A directory's entry lives in ITS parent, so the chain to
-// sync is every directory from the anchor down to the leaf's PARENT; the leaf
-// itself is synced by the caller after the record is published, which is the
-// fsync that persists the record's own entry.
-//
-// Deliberately UNCONDITIONAL rather than keyed on what `mkdir` reports creating.
-// `mkdir(..., {recursive:true})` resolves to the first path it created and to
-// `undefined` when everything already existed, which is exactly backwards for a
-// RETRY: a run whose chain sync failed leaves the directories in place but not
-// durable, so the next run sees nothing created, skips the sync, and the gap
-// survives precisely the retry meant to close it. Existence is not proof of
-// durability — only the fsync is, and it is cheap enough to repeat.
-//
-// Degradation composes the same way a single directory fsync does — one
-// unsupported link in the chain degrades the whole claim rather than being
-// silently dropped, and a permission or I/O fault anywhere fails closed.
-async function fsyncAncestorChain(leafDir, anchorDir, ops) {
-  const rel = relative(resolve(anchorDir), resolve(leafDir));
-  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    // Without a real anchor the walk has no bound, and syncing every directory
-    // up to the filesystem root is not a decision this primitive may take on
-    // its own. Fail closed rather than guess at the caller's intent.
-    return { ok: false, degraded: false, code: 'anchor-not-ancestor' };
-  }
-  let degraded = false;
-  let degradedCode = null;
-  let cur = resolve(anchorDir);
-  for (const segment of rel.split(sep).filter(Boolean)) {   // shallowest first
-    const res = await fsyncDirectory(cur, ops);
-    if (!res.ok) return res;
-    if (res.degraded) { degraded = true; degradedCode = res.code; }
-    cur = join(cur, segment);
-  }
-  return { ok: true, degraded, code: degradedCode };
-}
-
-function degradedLimit(what, code) {
-  return `the directory entry for ${what} could not be fsynced on this platform (${code}); the record is written but its directory entry is not proven durable across a power loss`;
-}
-
-/**
- * Publish a JSON record durably at a name NOTHING may already occupy — the
- * publication succeeds only if the name is free, and the record is never
- * mutated afterwards.
- *
- * Both egress WAL publications go through this one function. For the claim, the
- * EEXIST failure IS the per-activation mutual exclusion residual (a) asks for:
- * the write that establishes the fence is the same act that excludes a
- * concurrent sender, so there is no separate lock and therefore no
- * stale-takeover policy to get wrong. For the terminal record, whose name
- * carries the attempt's own owner token, EEXIST cannot arise from an honest
- * concurrent attempt at all — so it is an anomaly the caller reports rather than
- * a race it recovers from.
- *
- * link(2), not rename(2), for the reason bootstrap-artifacts.mjs already states
- * for the family lock: rename silently REPLACES, which would hand two processes
- * the same activation, while link fails EEXIST — "claim it only if unclaimed".
- * link also publishes a fully-populated file (content exists before the name),
- * so a concurrent reader can never observe a created-but-empty record.
- *
- * `ancestorAnchor` is REQUIRED: it is the deepest directory the caller does not
- * create, and it bounds the chain whose entries this publication proves durable.
- * There is no default, because every default is a silent answer to a question
- * only the caller can answer — and an absent anchor would quietly shrink the
- * durability claim to the leaf, which is the defect the chain sync exists to
- * close. Making it explicit also means a call site that stops passing it FAILS
- * rather than degrades.
- *
- * The diagnostics are deliberately ROLE-NEUTRAL. One primitive serving two roles
- * must not assert which one it is serving — the caller knows whether a failure
- * means "no fence, do not send" or "the send happened but the WAL is one record
- * short", and it is the caller that words the operator-facing consequence.
- *
- * @returns {Promise<{ok: boolean, reason: string, published: boolean, durable: boolean, limit: string|null, diagnostic: string|null}>}
- */
-export async function publishJsonExclusive(targetPath, value, { ops = DEFAULT_PUBLISH_OPS, ancestorAnchor = null } = {}) {
-  const dir = dirname(targetPath);
-  const name = basename(targetPath);
-  const fail = (reason, diagnostic, published = false) => ({ ok: false, reason, published, durable: false, limit: null, diagnostic, debris: null });
-  if (typeof ancestorAnchor !== 'string' || ancestorAnchor.length === 0) {
-    return fail('anchor-missing', `no ancestor anchor was given for ${name}, so the directory chain holding it cannot be proven durable; refusing to publish a record whose durability is unstated`);
-  }
-  try {
-    await ops.mkdir(dir, { recursive: true });
-  } catch (err) {
-    return fail('write-failed', `could not create the directory for ${name} (${err?.code ?? 'error'})`);
-  }
-  const chainSync = await fsyncAncestorChain(dir, ancestorAnchor, ops);
-  if (!chainSync.ok) {
-    return fail('dir-fsync-failed', `the directory chain holding ${name} was created but could not be fsynced (${chainSync.code}); refusing to treat the record as durable`);
-  }
-  const staged = await writeDurableTemp(targetPath, value, ops);
-  if (!staged.ok) {
-    const res = fail(staged.reason, `could not stage a durable record for ${name} (${staged.code ?? staged.reason})${staged.debris ? `; additionally, ${staged.debris}` : ''}`);
-    return { ...res, debris: staged.debris };
-  }
-  // Dropping our own staged temp is the one removal this function performs, and
-  // it is safe because the name is one this call invented. But a FAILED drop is
-  // reported, not swallowed: the leftover `.tmp-*` is invisible to the scan (it
-  // does not end in `.json`), so silence turns it into debris that accumulates
-  // in a directory retention is forbidden to sweep. This is the same swallow the
-  // family lock's restore carried — fixing one copy and leaving the other is how
-  // that bug survived three rounds in the first place.
-  const dropStagedTemp = async () => {
-    try {
-      await ops.unlink(staged.tmpPath);
-      return null;
-    } catch (err) {
-      return `the staged temp file ${basename(staged.tmpPath)} could not be removed (${err?.code ?? 'error'})`;
-    }
-  };
-  try {
-    await ops.link(staged.tmpPath, targetPath);
-  } catch (err) {
-    const debris = await dropStagedTemp();
-    const tail = debris ? `; additionally, ${debris}` : '';
-    if (err?.code === 'EEXIST') {
-      return { ...fail('name-taken', `${name} is already occupied${tail}`), debris };
-    }
-    if (LINK_UNSUPPORTED_CODES.includes(err?.code)) {
-      // Never fall back to a replace-shaped publish. An exclusive create that
-      // only looks exclusive is worse than an honest refusal to proceed.
-      return { ...fail('link-unsupported', `this filesystem cannot create hard links (${err?.code}), so ${name} cannot be published exclusively${tail}`), debris };
-    }
-    return { ...fail('write-failed', `could not publish ${name} (${err?.code ?? 'error'})${tail}`), debris };
-  }
-  const debris = await dropStagedTemp();
-  const dirSync = await fsyncDirectory(dir, ops);
-  if (!dirSync.ok) {
-    // `published: true` — the record IS at its name; only the durability claim
-    // failed. The caller needs that distinction: a record on disk still fences,
-    // and telling an operator it was not written would be false.
-    return { ...fail('dir-fsync-failed', `${name} was published but its directory could not be fsynced (${dirSync.code}); the record is in place but is not proven durable across a power loss${debris ? `; additionally, ${debris}` : ''}`, true), debris };
-  }
-  const degraded = dirSync.degraded || chainSync.degraded;
-  const limits = [];
-  if (degraded) limits.push(degradedLimit(name, dirSync.code ?? chainSync.code));
-  if (debris) limits.push(`${debris}; ${name} itself is correct, but the leftover sidecar stays in a directory retention is forbidden to sweep`);
-  return { ok: true, reason: 'ok', published: true, durable: !degraded, limit: limits.length > 0 ? limits.join('; ') : null, diagnostic: null, debris };
-}
-
-// Worst-wins across BOTH publication phases: failed > degraded > durable.
-//
-// Peer MINOR: computing this from the terminal result alone reported `durable`
-// when the CLAIM had degraded and only the terminal was clean, which also
-// suppressed the overall warning that exists to surface exactly that state.
-// Exported because it is otherwise reachable only through paths that cannot
-// inject a degraded claim, and an untestable aggregation is one nobody checks.
-export function aggregateWalDurability(claim, terminal) {
-  if (!terminal?.ok) return 'failed';
-  return (terminal.durable && claim?.durable) ? 'durable' : 'degraded';
-}
-
 async function assertInside(root, target) {
   const rel = relative(resolve(root), resolve(target));
   if (rel === '..' || rel.startsWith(`..${sep}`) || rel === '') {
@@ -6801,13 +5473,14 @@ function exitCodeName(code) {
 
 // Every report section that can carry an explicit proof executor. Pinned by
 // tests/runtime/test-doctor-exit.mjs against a LIVE report: the set of top-level
-// sections carrying a `mode` field is exactly these four plus
+// sections carrying a `mode` field is exactly these three plus
 // `sandbox_permission_probe`, which is excluded because its mode vocabulary is
-// `read_only_preflight` / `not_requested` and it proves nothing.
+// `read_only_preflight` / `not_requested` and it proves nothing. A fourth,
+// `egress_ack_proof`, was removed with the egress executor (ADR-0064
+// Decision 1).
 export const EXIT_PROOF_SECTIONS = Object.freeze([
   'permission_proof',
   'deep_peer_smoke',
-  'egress_ack_proof',
   'workflow_continuation_proof',
 ]);
 
@@ -6824,12 +5497,12 @@ export const EXIT_PROOF_SECTIONS = Object.freeze([
  * strings are stored in recorded artifacts, and changing them would rewrite what
  * every stored proof means.
  *
- * `egress_ack_proof` has no directions — one attempt, one verdict — so the
- * section itself is the lane. Its executor can also refuse BEFORE sending
- * (`executed: false` with `mode: 'explicit_egress_executor'`), which is the
- * exact case the cross-host review caught escaping as exit 0: doctor treats a
- * pre-send refusal as a warning because no network request happened, and a
- * warning alone would not raise the code.
+ * A section with no lanes is its own lane: its status when it executed, and
+ * `not_executed` when an executor was requested but refused before running,
+ * which then reads as incomplete rather than escaping as exit 0. Every section
+ * in EXIT_PROOF_SECTIONS has `directions` today. The fallback was written for
+ * `egress_ack_proof` (one attempt, one verdict), removed by ADR-0064
+ * Decision 1, and stays as the fail-closed answer for an empty `directions`.
  */
 function proofLaneStatuses(section) {
   const directions = section?.directions;
@@ -6844,13 +5517,13 @@ function proofLaneStatuses(section) {
 /** 'not-requested' | 'passed' | 'operator-action' | 'incomplete'. */
 function proofVerdict(section) {
   // `mode` is the one field that separates "an executor was requested" from a
-  // plan-only preflight, across all four sections. It is deliberately not
-  // `requested` (true for plan-only too) nor `executed` (false for a pre-send
-  // egress refusal, and true for a permission run whose every lane was skipped).
-  // The mode strings differ per section — `explicit_permission_executor`,
-  // `explicit_executor`, `explicit_engineer_workflow_executor`,
-  // `explicit_egress_executor` — so the prefix is the contract, and the only
-  // other vocabulary is `not_requested` / `plan_only_preflight`.
+  // plan-only preflight, across all three sections. It is deliberately not
+  // `requested` (true for plan-only too) nor `executed` (false for an executor
+  // refused before it ran, and true for a permission run whose every lane was
+  // skipped). The mode strings differ per section — `explicit_permission_executor`,
+  // `explicit_executor`, `explicit_engineer_workflow_executor` — so the prefix
+  // is the contract, and the only other vocabulary is `not_requested` /
+  // `plan_only_preflight`.
   if (typeof section?.mode !== 'string' || !section.mode.startsWith('explicit_')) return 'not-requested';
   const statuses = proofLaneStatuses(section);
   if (statuses.every((status) => status === 'passed')) return 'passed';
@@ -6905,7 +5578,7 @@ export function doctorExitCode(report, { strict = false } = {}) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--record] [--run-id <doctor-run-id>] [--strict]
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--record] [--run-id <doctor-run-id>] [--strict]
 Exit codes: 0 ok; 1 unexpected (no report); 2 invalid usage (no report); 10 findings (overall=fail, or overall=warning under --strict); 20 a requested proof produced no usable verdict; 30 a requested proof needs operator action outside doctor; 40 --record could not persist the artifact. Codes 10 and above still write the complete report to stdout.
 `;
 }
@@ -6924,8 +5597,6 @@ export function parseArgs(argv) {
     permissionProof: false,
     executePermissionProof: false,
     permissionProofTimeoutMs: DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
-    egressAckProof: false,
-    executeEgressAckProof: false,
     workflowContinuationProof: false,
     executeWorkflowContinuationProof: false,
     workflowContinuationProofTimeoutMs: DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS,
@@ -6966,15 +5637,6 @@ export function parseArgs(argv) {
       opts.executePermissionProof = true;
     } else if (arg === '--permission-proof-timeout-ms') {
       opts.permissionProofTimeoutMs = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
-    } else if (arg === '--egress-ack-proof') {
-      opts.egressAckProof = true;
-    } else if (arg === '--execute-egress-ack-proof') {
-      opts.executeEgressAckProof = true;
-      // Deliberately NO --egress-ack-proof-timeout-ms (Plan-verify peer): the
-      // send is already time-bounded inside the pinned emitter
-      // (AbortSignal.timeout on the one node:https request); a second outer
-      // timeout could abandon a request whose body reached the wire — exactly
-      // the ambiguous attempt the intent WAL exists to prevent.
     } else if (arg === '--workflow-continuation-proof') {
       opts.workflowContinuationProof = true;
     } else if (arg === '--execute-workflow-continuation-proof') {
@@ -7005,9 +5667,6 @@ export function parseArgs(argv) {
   }
   if (opts.executePermissionProof && !opts.permissionProof) {
     throw new Error('--execute-permission-proof requires --permission-proof');
-  }
-  if (opts.executeEgressAckProof && !opts.egressAckProof) {
-    throw new Error('--execute-egress-ack-proof requires --egress-ack-proof');
   }
   if (opts.executeWorkflowContinuationProof && !opts.workflowContinuationProof) {
     throw new Error('--execute-workflow-continuation-proof requires --workflow-continuation-proof');

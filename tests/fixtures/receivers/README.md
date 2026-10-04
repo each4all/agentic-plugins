@@ -1,7 +1,8 @@
 # Released receiver templates (test fixtures)
 
 Verbatim copies of receiver **templates** as they shipped in a past
-`plugin-runtime` release, one pair per generation:
+`plugin-runtime` release, one per generation. (The Codex notify shuttle's
+copies were removed with the receiver itself, ADR-0064 Decision 1.)
 
 - `*.v0.91.2.template.mjs` — `plugin-runtime-v0.91.2`, the last release before
   the receivers became delegating shims.
