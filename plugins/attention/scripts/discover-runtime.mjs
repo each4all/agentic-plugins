@@ -1,31 +1,30 @@
 #!/usr/bin/env node
 // plugins/attention/scripts/discover-runtime.mjs
 //
-// ADR-0039 §5 ladder, applied to the ADR-0040 §3 attention sensors. Every
-// attention hook sensor (Notification / Stop / SubagentStop) resolves the
-// runtime plugin root through this resolver and shells out to the runtime's
-// `scripts/notify.mjs emit` — the only component that touches notification
-// channels. Locating `notify.mjs` at the installed runtime plugin root
-// requires this resolver.
+// ADR-0039 §5 ladder, applied to the attention hook sensors. The Stop
+// sensor (session capture, ADR-0044) and the SessionStart sensor (entry
+// brief, ADR-0045) resolve the runtime plugin root through this resolver and
+// spawn the runtime's `scripts/context.mjs` — `publish-session` and
+// `entry-brief` respectively.
 //
-// COPY-NOT-IMPORT (ADR-0010 §5). notify.mjs is L1 runtime; attention is a
+// COPY-NOT-IMPORT (ADR-0010 §5). context.mjs is L1 runtime; attention is a
 // separate L1 plugin. A cross-plugin `import` would break SemVer independence,
 // so this module lives INSIDE attention and discovers the runtime plugin root
-// by filesystem inspection only; the eventual notify.mjs invocation goes
-// through `child_process`. It is a deliberate sibling copy of engineer's
+// by filesystem inspection only; the executors are invoked through
+// `child_process`. It is a deliberate sibling copy of engineer's
 // `discover-runtime.mjs` (itself derived from orchestrator's
 // `discover-engineer.mjs` ladder: env override → the caller's own host install
-// cache → the other host's cache → sibling checkout), re-gated on
-// `scripts/notify.mjs` instead of `scripts/footer.mjs`.
+// cache → the other host's cache → sibling checkout), identifying the runtime
+// by its manifest instead of gating on a capability file.
 //
-// The resolver runs IN-PROCESS on hook hot paths (no CLI boundary), so the
-// version gate is folded into `discoverRuntimePluginRoot` — it returns a root
-// only when notify.mjs exists AND the runtime is new enough. A missing OR
-// too-old runtime is a silent fail-closed (null), with NO fall-back to a stale
-// cache (ADR-0039 §5): the ladder resolves ONE best root, then that root is
-// version-gated; it is never re-discovered to find an older-but-present copy.
+// The resolver runs IN-PROCESS on hook hot paths (no CLI boundary). It
+// resolves ONE newest root, and each caller then gates that root on its own
+// capability floor (runtimeVersionAtLeast) and executor-existence probe. A
+// missing OR too-old runtime is a silent fail-closed no-op, with NO fall-back
+// to a stale cache (ADR-0039 §5): the root is never re-discovered to find an
+// older-but-capable copy.
 //
-// Candidates follow ADR-0061 §Decision 3, for both resolvers below:
+// Candidates follow ADR-0061 §Decision 3:
 //   - each host's candidate is its versioned install cache —
 //     ~/.claude/plugins/cache/agentic-plugins/runtime/<version>/ and
 //     <CODEX_HOME or ~/.codex>/plugins/cache/agentic-plugins/runtime/<version>/,
@@ -53,59 +52,30 @@ import { homedir } from 'node:os';
 
 const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
 
-// The floor runtime version whose `notify.mjs emit` interface exists at all.
-// ADR-0040's release-gate subtask pinned this to the FIRST RELEASED runtime
-// version shipping notify.mjs: plugin-runtime-v0.71.0 (macro checkpoint
-// 2026-07-04, tag plugin-runtime-v0.71.0). A planned-but-unreleased version
-// must never be pinned here — release-please owns the bump, and the gate
-// below fail-closes on anything older (missing/too-old ⇒ silent no-op).
-export const MIN_RUNTIME_VERSION = '0.71.0';
-
-// The SEPARATE capability floor for the ADR-0044 §2 capture spawn: the first
-// RELEASED runtime version shipping `context.mjs publish-session` —
+// The capability floor for the ADR-0044 §2 capture spawn: the first RELEASED
+// runtime version shipping `context.mjs publish-session` —
 // plugin-runtime-v0.82.0, recorded by the S4a release-proof gate (ADR-0044
-// §Status, 2026-07-19). The two gates never share a constant (ADR-0044 §2
-// dual-floor rule): below THIS floor the Stop sensor silently skips the
-// capture spawn while notifications keep working at MIN_RUNTIME_VERSION.
-// The §13 declaration the plugin ships (data/runtime-floors.json,
-// floors.publish_session) must agree with this constant byte-for-byte —
-// the plugin-shape test pins the pair.
+// §Status, 2026-07-19). Below THIS floor the Stop sensor silently skips the
+// capture spawn. The §13 declaration the plugin ships
+// (data/runtime-floors.json, floors.publish_session) must agree with this
+// constant byte-for-byte — the plugin-shape test pins the pair.
 export const PUBLISH_SESSION_MIN_RUNTIME_VERSION = '0.82.0';
 
-// The THIRD capability floor, for the ADR-0045 §7 SessionStart entry-brief
-// spawn: the first RELEASED runtime version shipping `context.mjs
-// entry-brief` — plugin-runtime-v0.83.0, recorded by the S8a release-proof
-// gate (ADR-0045 §Status, 2026-07-20). The notify, publisher, and
-// entry-brief floors never share a constant (ADR-0045 §12 / ADR-0043
-// released-floor rule): below THIS floor the SessionStart sensor silently
-// skips the entry-brief spawn while notifications and capture keep their
-// own gates. Prerelease semantics are the shared strict `versionGte` below
-// — a prerelease of the floor core (`0.83.0-beta.1`) fails, a prerelease of
-// a higher core passes — matching the runtime-side §18 diagnosis, whose
-// declaration validation (`CLEAN_RELEASE_SEMVER_RE` in
+// The capability floor for the ADR-0045 §7 SessionStart entry-brief spawn:
+// the first RELEASED runtime version shipping `context.mjs entry-brief` —
+// plugin-runtime-v0.83.0, recorded by the S8a release-proof gate (ADR-0045
+// §Status, 2026-07-20). The publisher and entry-brief floors never share a
+// constant (ADR-0045 §12 / ADR-0043 released-floor rule): below THIS floor
+// the SessionStart sensor silently skips the entry-brief spawn while capture
+// keeps its own gate. Prerelease semantics are the shared strict `versionGte`
+// below — a prerelease of the floor core (`0.83.0-beta.1`) fails, a
+// prerelease of a higher core passes — matching the runtime-side §18
+// diagnosis, whose declaration validation (`CLEAN_RELEASE_SEMVER_RE` in
 // session-readiness.mjs) refuses any non-clean-`X.Y.Z` declared floor. The
 // §18 declaration this plugin ships (data/runtime-floors.json,
 // floors.entry_brief — an additive sibling key) must agree with this
 // constant byte-for-byte — the plugin-shape test pins the pair.
 export const ENTRY_BRIEF_MIN_RUNTIME_VERSION = '0.83.0';
-
-// The FOURTH capability floor, for the ADR-0047 §2/§9 response-needed
-// classifier/producer path: the first RELEASED runtime version whose
-// notify-schema carries the `response-needed` kind contract (schema +
-// filter vocabulary + shuttle remap template) — plugin-runtime-v0.84.0,
-// Release A of the ADR-0047 §8 two-release rollout, recorded by the
-// `signal-runtime-release` macro subtask (2026-07-21). It deliberately
-// does NOT raise the notify floor above (ADR-0044 "two gates never share
-// a constant"): below THIS floor the Stop sensor takes the pre-ADR-0047
-// bare path (turn-complete, no classifier, no headline) while
-// notifications keep working at MIN_RUNTIME_VERSION — graceful
-// degradation, never an error, and never a kind the resolving runtime's
-// validateEvent would reject (§8 enable-sequence failure 1). Prerelease
-// semantics are the shared strict `versionGte` below. The §9 declaration
-// this plugin ships (data/runtime-floors.json, floors.response_signal —
-// an additive sibling key) must agree with this constant byte-for-byte —
-// the plugin-shape test pins the pair.
-export const RESPONSE_SIGNAL_MIN_RUNTIME_VERSION = '0.84.0';
 
 async function fileExists(path) {
   try {
@@ -142,12 +112,12 @@ function semverCompare(a, b) {
   return 0;
 }
 
-// Strict floor gate: a prerelease of the floor version (e.g. `0.71.0-beta.1`)
-// must NOT satisfy `>= 0.71.0` — the prerelease precedes its release. `min` is
-// a clean release (MIN_RUNTIME_VERSION). Cores compared numerically; on an
+// Strict floor gate: a prerelease of the floor version (e.g. `0.82.0-beta.1`)
+// must NOT satisfy `>= 0.82.0` — the prerelease precedes its release. `min` is
+// a clean release (one of the floors above). Cores compared numerically; on an
 // equal core, a prerelease `version` is treated as BELOW. A prerelease of a
-// HIGHER core (e.g. `0.72.0-beta.1`) deliberately passes — it postdates the
-// floor release and therefore carries notify.mjs (SemVer ordering; same
+// HIGHER core (e.g. `0.83.0-beta.1`) deliberately passes — it postdates the
+// floor release and therefore carries its capability (SemVer ordering; same
 // semantics as the engineer sibling copy).
 function versionGte(version, min) {
   // Same build-metadata-first strip as semverCompare: `X.Y.Z+build-5` is a
@@ -383,36 +353,6 @@ function reportCrossHostFallback(located, stderr) {
 }
 
 /**
- * Resolve the runtime plugin root containing `scripts/notify.mjs`, WITHOUT the
- * version gate, and report where it came from.
- *
- * @param {object} [args]
- * @param {Record<string,string>} [args.env=process.env]
- * @param {string} [args.home=homedir()]
- * @param {string} [args.selfUrl=import.meta.url]
- * @returns {Promise<{root: ?string, source: ?string, host: ?string,
- *   callerHost: string, crossHostFallback: boolean, version?: string,
- *   reason?: string}>} `source` is 'env', 'claude-cache', 'codex-cache',
- *   'sibling', or null when nothing resolved; `callerHost` is 'codex',
- *   'claude' or 'checkout'.
- */
-export async function locateRuntimePluginRoot({
-  env = process.env,
-  home = homedir(),
-  selfUrl = import.meta.url,
-} = {}) {
-  const capabilityRel = join('scripts', 'notify.mjs');
-  return locate({
-    env,
-    home,
-    selfUrl,
-    accepts: (root) => fileExists(join(root, capabilityRel)),
-    capabilityRel,
-    describe: 'with scripts/notify.mjs',
-  });
-}
-
-/**
  * Read the runtime plugin's declared version from either manifest layout
  * (mirrors version.mjs: source checkouts and host caches keep a manifest beside
  * the scripts dir). Returns a SemVer string, or null when neither manifest is
@@ -436,77 +376,26 @@ async function readRuntimeVersion(root) {
 }
 
 /**
- * True when the runtime plugin at `root` declares a version >= `min`. A
- * missing/unreadable version is treated as too-old (fail-closed): we will not
- * emit against a runtime we cannot vouch for.
+ * True when the runtime plugin at `root` declares a version >= `min` (one of
+ * the floors above). A missing/unreadable version is treated as too-old
+ * (fail-closed): no executor is spawned from a runtime we cannot vouch for.
  */
-export async function runtimeVersionAtLeast(root, min = MIN_RUNTIME_VERSION) {
+export async function runtimeVersionAtLeast(root, min) {
+  if (typeof min !== 'string' || min.length === 0) return false;
   const version = await readRuntimeVersion(root);
   if (!version) return false;
   return versionGte(version, min);
 }
 
 /**
- * Resolve the runtime plugin root directory containing `scripts/notify.mjs`,
- * WITHOUT the version gate: `locateRuntimePluginRoot` without the provenance.
- * Returns the absolute path, or `null` if nothing resolves.
- *
- * @param {object} args
- * @param {Record<string,string>} [args.env=process.env]
- * @param {string} [args.home=homedir()]
- * @param {string} [args.selfUrl=import.meta.url]
- * @param {{write:(s:string)=>void}} [args.stderr=process.stderr] — receives
- *   the cross-host fallback report
- * @returns {Promise<?string>}
- */
-export async function resolveRuntimePluginRoot({
-  env = process.env,
-  home = homedir(),
-  selfUrl = import.meta.url,
-  stderr = process.stderr,
-} = {}) {
-  const located = await locateRuntimePluginRoot({ env, home, selfUrl });
-  reportCrossHostFallback(located, stderr);
-  return located.root;
-}
-
-/**
- * Resolve the runtime plugin root, version-gated. Returns the absolute root
- * ONLY when `scripts/notify.mjs` exists AND the runtime declares a version >=
- * `minVersion`. A missing OR too-old runtime returns `null` — the attention
- * sensors then fail-close silently (no notification, the hook exits 0 and the
- * host lifecycle proceeds), with NO fall-back to a stale cache (ADR-0039 §5).
- *
- * @param {object} [args]
- * @param {Record<string,string>} [args.env=process.env]
- * @param {string} [args.home=homedir()]
- * @param {string} [args.selfUrl=import.meta.url]
- * @param {string} [args.minVersion=MIN_RUNTIME_VERSION]
- * @param {{write:(s:string)=>void}} [args.stderr=process.stderr]
- * @returns {Promise<?string>}
- */
-export async function discoverRuntimePluginRoot({
-  env = process.env,
-  home = homedir(),
-  selfUrl = import.meta.url,
-  minVersion = MIN_RUNTIME_VERSION,
-  stderr = process.stderr,
-} = {}) {
-  const located = await locateRuntimePluginRoot({ env, home, selfUrl });
-  if (!located.root) return null;
-  if (!(await runtimeVersionAtLeast(located.root, minVersion))) return null;
-  reportCrossHostFallback(located, stderr);
-  return located.root;
-}
-
-/**
  * Locate the NEWEST runtime plugin root by manifest identity alone — the
- * ADR-0045 §7 capability-neutral rung for the entry-brief dispatcher. The
- * notify-gated resolver above requires `scripts/notify.mjs` before it will
- * even consider a root, which is capability-specific GATING, not the
- * capability-specific DISCOVERY the entry seam needs (a runtime build
- * carrying `context.mjs` but not `notify.mjs` must still be discoverable —
- * Codex Plan-verify reproduction), and it disagrees with the §18 readiness
+ * capability-neutral rung both attention seams use: the ADR-0045 §7
+ * entry-brief dispatcher and, since ADR-0064 Decision 1, the ADR-0044 capture
+ * spawn. A resolver that required a capability file before it would even
+ * consider a root would be capability-specific GATING, not the
+ * capability-specific DISCOVERY these seams need (a runtime build carrying
+ * `context.mjs` must be discoverable whatever else it ships — Codex
+ * Plan-verify reproduction), and it would disagree with the §18 readiness
  * diagnosis, which stats `context.mjs` in the NEWEST installed build.
  *
  * Candidates are directories whose manifest declares `name: "runtime"` —
@@ -515,9 +404,9 @@ export async function discoverRuntimePluginRoot({
  * caller then applies its own floor gate and executor-existence probe to
  * THAT root and no-ops when either fails, never re-descending to an
  * older-but-capable build (exactly the dispatcher shape §18 mirrors).
- * Ladder (same order as locateRuntimePluginRoot): env override (absolute,
- * manifest-identified) → the caller's own host cache → the other host's
- * cache → sibling checkout (manifest-identified).
+ * Ladder: env override (absolute, manifest-identified) → the caller's own
+ * host cache → the other host's cache → sibling checkout
+ * (manifest-identified).
  *
  * @param {object} [args]
  * @param {Record<string,string>} [args.env=process.env]
@@ -582,8 +471,8 @@ async function readRuntimeManifestName(root) {
 
 // -----------------------------------------------------------------------------
 // CLI surface — a thin `discover` shim for manual sanity checks + debugging.
-// The attention sensors call `discoverRuntimePluginRoot` in-process, so this
-// CLI is not on any hook's critical path; it mirrors engineer's
+// The attention sensors call `resolveNewestRuntimePluginRoot` in-process, so
+// this CLI is not on any hook's critical path; it mirrors engineer's
 // discover-runtime.mjs `discover` subcommand shape (empty stdout + exit 0
 // means "not resolved"). `--json` prints the resolution with its provenance
 // instead, so a diagnostic can report where the root came from.
@@ -598,11 +487,13 @@ async function cliMain(argv) {
         'Usage:',
         '',
         '  discover [--json]',
-        '    Resolve the runtime plugin root (env override → this host\'s install',
-        '    cache → the other host\'s cache → sibling checkout), version-gated to',
-        '    >= ' + MIN_RUNTIME_VERSION + ', and print the absolute path on stdout. Empty stdout',
-        '    + exit 0 if not resolved or too old. --json prints one JSON object',
-        '    with the root and where it came from.',
+        '    Resolve the newest runtime plugin root by manifest identity (env',
+        '    override → this host\'s install cache → the other host\'s cache →',
+        '    sibling checkout) and print the absolute path on stdout. Empty stdout',
+        '    + exit 0 if not resolved. No capability floor is applied here: the',
+        '    capture (>= ' + PUBLISH_SESSION_MIN_RUNTIME_VERSION + ') and entry-brief (>= ' + ENTRY_BRIEF_MIN_RUNTIME_VERSION + ') seams gate',
+        '    the root themselves. --json prints one JSON object with the root',
+        '    and where it came from.',
         '',
       ].join('\n'),
     );
@@ -615,23 +506,23 @@ async function cliMain(argv) {
       return 2;
     }
     if (rest.includes('--json')) {
-      const located = await locateRuntimePluginRoot();
-      const gated = located.root !== null && !(await runtimeVersionAtLeast(located.root));
+      const located = await locateNewestRuntimePluginRoot();
       process.stdout.write(`${JSON.stringify({
-        root: gated ? null : located.root,
+        root: located.root,
         source: located.source,
         host: located.host,
         caller_host: located.callerHost,
         cross_host_fallback: located.crossHostFallback,
         ...(located.version ? { version: located.version } : {}),
-        min_version: MIN_RUNTIME_VERSION,
-        ...(gated
-          ? { reason: `runtime at ${located.root} is below the ${MIN_RUNTIME_VERSION} floor` }
-          : located.reason ? { reason: located.reason } : {}),
+        floors: {
+          publish_session: PUBLISH_SESSION_MIN_RUNTIME_VERSION,
+          entry_brief: ENTRY_BRIEF_MIN_RUNTIME_VERSION,
+        },
+        ...(located.reason ? { reason: located.reason } : {}),
       })}\n`);
       return 0;
     }
-    const root = await discoverRuntimePluginRoot();
+    const root = await resolveNewestRuntimePluginRoot();
     if (root) process.stdout.write(`${root}\n`);
     return 0;
   }
