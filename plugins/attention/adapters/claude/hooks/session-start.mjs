@@ -47,9 +47,7 @@ async function main() {
   // payload without one means malformed/empty hook input — and this sensor
   // INJECTS into model context, so malformed input must degrade to
   // injecting nothing, exactly as the capture spawn's payload-cwd rule
-  // (stop.mjs) keys its write off real hook input. The Stop NOTIFICATION
-  // path keeps its historical process-cwd fallback; this surface is
-  // stricter by design.
+  // (stop.mjs) keys its write off real hook input.
   const payloadCwd = typeof payload.cwd === 'string' && payload.cwd.length > 0 ? payload.cwd : null;
   if (!payloadCwd) return;
   // Repo-scoped (contract §14: non-git cwd ⇒ silent no-op) — skip the spawn
