@@ -81,7 +81,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import { scrubSecrets } from './egress-channel.mjs';
+import { scrubSecrets } from './secret-scrub.mjs';
 import { EVIDENCE_FAMILIES, EVIDENCE_KINDS, validateEvidenceRecord } from './evidence-contract.mjs';
 import { isUnder } from './path-containment.mjs';
 import { makeValidator } from './schema-validate.mjs';

@@ -108,7 +108,7 @@ import {
   recomputeHookAttestation,
   reduceCompletion,
 } from './lib/completion-reducer.mjs';
-import { EGRESS_CREDENTIAL_ENV_VAR, buildMachineProfile, canonicalProfile, profileHash, profileWriteGate, seedProposals } from './lib/machine-profile.mjs';
+import { buildMachineProfile, canonicalProfile, profileHash, profileWriteGate, seedProposals } from './lib/machine-profile.mjs';
 import {
   projectClaudePermission,
   projectClaudeStatusline,
@@ -126,13 +126,16 @@ import {
 // the credential-independent §4.4 export shape. Only loadEgressActivation may
 // inspect the credential (for presence/collision, in-process); the value never
 // reaches this module. EGRESS_ENV_KEYS is imported for the recovery TEXT (the
-// key NAME as a placeholder procedure), never for an env read here.
-import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
+// key NAME as a placeholder procedure), and EGRESS_CREDENTIAL_ENV_VAR for the
+// control-plane scrub and the fingerprint's name input — never for an env read
+// here.
+import { EGRESS_CREDENTIAL_ENV_VAR, EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 // §6.1 Stage 4 — the declarable model/effort postures. Imported (not restated)
 // so the judge, the settings validator and the contract cannot drift apart.
 import { CONFIG_KEY_VALIDATORS, ENTRY_BRIEF_ENV_KEYS, MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
 import { FINDINGS_MAX_PER_ARTIFACT, loadSchema, makeValidator } from './lib/schema-validate.mjs';
-import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
+import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId } from './lib/notification-plan.mjs';
+import { parseCodexConfigToml, readCodexConfigToml } from './lib/codex-config.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
 import { gatherEgressLauncherInputs, buildEgressLauncherPlanSection, egressFragmentApplyGuidance, makeEgressLauncherRunId } from './lib/egress-launcher-plan.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
@@ -2101,14 +2104,16 @@ async function readUserGlobalReaders(ctx) {
   // projections equal the readers they replaced, not that only one read happens.
   // A future reader-injection seam would make it testable; until then the guard
   // is this comment and the shape of the code.
-  const [claudeSettingsSnapshot, runtimeConfigSnapshot, codexNotifyGathered] = await Promise.all([
+  const [claudeSettingsSnapshot, runtimeConfigSnapshot, codexConfig] = await Promise.all([
     readUserGlobalClaudeSettings({ homeDir: ctx.homeDir, env: ctx.env }),
     readUserGlobalRuntimeConfig({ homeDir: ctx.homeDir }),
-    // ADR-0048 §1 — the Codex-side notify WIRING for notify.codex.configured,
-    // gathered here (rather than below) because its read is now ALSO the
-    // permission judge's bytes.
-    gatherCodexNotificationInputs({ homeDir: ctx.homeDir, env: ctx.env }),
+    // The ONE $CODEX_HOME/config.toml read. The Codex permission, notify and
+    // statusline judges below all project it.
+    readCodexConfigToml({ homeDir: ctx.homeDir, env: ctx.env }),
   ]);
+  // ADR-0048 §1 — the Codex-side notify WIRING for notify.codex.configured,
+  // handed the read above rather than reading the file again.
+  const codexNotifyGathered = await gatherCodexNotificationInputs({ homeDir: ctx.homeDir, env: ctx.env, codexConfig });
   const modelEffort = projectModelEffort(runtimeConfigSnapshot);
   const notify = projectNotify(runtimeConfigSnapshot);
   // The THIRD family of the same one snapshot (profile 1.2). Projected here rather
@@ -2132,14 +2137,14 @@ async function readUserGlobalReaders(ctx) {
   const sessionEnvShadow = Object.fromEntries(
     Object.entries(ENTRY_BRIEF_ENV_KEYS).map(([key, envName]) => [key, typeof ctx.env?.[envName] === 'string']),
   );
-  // The override flag is derived from the SAME env the gather resolved
+  // The override flag is derived from the SAME env the read resolved
   // $CODEX_HOME with, so the reported provenance describes the bytes read.
-  // Provenance comes from the GATHER that produced the bytes, not from a second
+  // Provenance comes from the READ that produced the bytes, not from a second
   // look at `ctx.env`: the env object is caller-supplied on the programmatic
   // surface, and re-deriving it could label an override-path read as the default
   // one (Refine-verify peer).
-  const codexPermission = projectCodexPermission(codexNotifyGathered.read, {
-    codexHomeSource: codexNotifyGathered.codexHomeSource,
+  const codexPermission = projectCodexPermission(codexConfig.read, {
+    codexHomeSource: codexConfig.codexHomeSource,
   });
   const claudePermission = projectClaudePermission(claudeSettingsSnapshot);
   const egress = readUserGlobalEgress({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
@@ -2149,29 +2154,29 @@ async function readUserGlobalReaders(ctx) {
   // while `egressActivation` feeds egress.configured (channel alone must NOT
   // satisfy — the false-pass this split repairs). Two readers, two questions.
   const egressActivation = loadEgressActivation({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
-  // The gather above (hoisted so the permission judge shares its bytes) is the
-  // same notification-plan gather the Stage-5 fragment builder uses — §1.1 keeps
-  // bootstrap off the repo-scoped state-readers seam (test #1) — and it is read
-  // once per probe alongside every other user-global reader because judgeSteps
-  // is synchronous. Shape:
+  // The Codex config read above is the same read the notification-plan gather
+  // makes for the Stage-5 fragment builder — §1.1 keeps bootstrap off the
+  // repo-scoped state-readers seam (test #1) — and it is made once per probe
+  // alongside every other user-global reader because judgeSteps is synchronous.
+  // The notify judge's shape:
   //   readable  — the config file could be read (missing file reads as an
   //               empty config: readable, nothing present);
   //   present   — a top-level `notify =` key exists;
   //   argv      — the parsed string elements, or null when the value is
   //               present but not a parseable string array (fail-safe null
   //               from the TOML scanner — never a guess).
-  const codexNotifyRead = codexNotifyGathered.read;
+  const codexNotifyRead = codexConfig.read;
   // ADR-0048 statusline slice — both statusline probes, gathered here because
   // judgeSteps is synchronous. Claude projects the ONE shared settings
   // snapshot (peer G9: permission and statusline judge the same bytes);
-  // Codex reuses the SAME config read the notify gather already performed.
+  // Codex reuses the SAME config read the notify judge projects.
   const statuslineClaude = {
     ...projectClaudeStatusline(claudeSettingsSnapshot),
     expectedCommand: expectedClaudeStatuslineCommand({ homeDir: ctx.homeDir }),
   };
-  const statuslineCodexParsed = codexNotifyRead.ok ? parseCodexNotifyConfigToml(codexNotifyRead.text) : null;
+  const statuslineCodexParsed = codexConfig.read.ok ? parseCodexConfigToml(codexConfig.read.text) : null;
   const statuslineCodex = {
-    readable: codexNotifyRead.ok || codexNotifyRead.reason === 'ENOENT' || codexNotifyRead.reason === 'ENOTDIR',
+    readable: codexConfig.read.ok || codexConfig.read.reason === 'ENOENT' || codexConfig.read.reason === 'ENOTDIR',
     present: statuslineCodexParsed?.tuiStatusLine?.present === true,
     items: statuslineCodexParsed?.tuiStatusLine?.values ?? null,
     expectedItems: expectedCodexStatusLineItems(),
@@ -2195,7 +2200,7 @@ async function readUserGlobalReaders(ctx) {
   const NO_TUI_NOTIFICATIONS = { present: false, form: 'absent', values: null };
   let codexNotify;
   if (codexNotifyRead.ok) {
-    const parsed = parseCodexNotifyConfigToml(codexNotifyRead.text);
+    const parsed = parseCodexConfigToml(codexNotifyRead.text);
     codexNotify = {
       readable: true,
       present: parsed.notify.present,

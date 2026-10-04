@@ -1518,7 +1518,7 @@ no approval attention records that by declining — the decline *is* the
 declaration, and no new config key is needed to carry it.
 
 **The value is read through a typed classification, never from its raw text.**
-`parseCodexNotifyConfigToml` returns
+`parseCodexConfigToml` (`lib/codex-config.mjs`) returns
 `form ∈ absent | true | false | array | invalid`, exhaustive and fail-closed to
 `invalid`. A boolean "the capture is clean" flag is **not** sufficient and was
 rejected on measurement: the structural facts alone report `["a" "b"]` and

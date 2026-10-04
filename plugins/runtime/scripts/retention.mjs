@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import { RETENTION_FAMILIES, planRetention, projectRetentionAttention } from './lib/retention-planner.mjs';
 import { applyRetention, resolveOpenReceipt, computeExpectedHashHex, RETENTION_APPLY_VERSIONS } from './lib/retention-apply.mjs';
-import { resolveRepoRoot } from './notify.mjs';
+import { resolveRepoRoot } from './lib/repo-root.mjs';
 import { ArgsFileError, expandArgsFile } from './lib/args-file.mjs';
 
 function parseArgs(argv) {

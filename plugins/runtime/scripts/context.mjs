@@ -24,7 +24,7 @@ import {
 // inspection leaf (ADR-0045 S7a) so entry-brief-readers can share the gate
 // sequence without importing context.mjs back (cycle).
 export { NOTE_CONTENT_MAX_BYTES };
-import { resolveRepoRoot } from './notify.mjs';
+import { resolveRepoRoot } from './lib/repo-root.mjs';
 import { buildSourceFreshness, formatSourceFreshness, observeCurrentBranch, observeSessionGitFacts, observeWorktreeDirtyCount, resolveGitTopLevel, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { collectEntrySources } from './lib/entry-brief-readers.mjs';
 import { ENTRY_BRIEF_SCHEMA_ID, arbitrateEntryBrief, semanticEntryBriefViolation } from './lib/entry-brief-arbiter.mjs';
@@ -307,7 +307,7 @@ export async function noteContext(options = {}) {
 
   // Repo scoping (contract §1): walk up to the nearest .git marker from the
   // explicit --repo-root (which may be a subdirectory) or the cwd. The
-  // pure-fs walk-up is notify.mjs's resolveRepoRoot — one copy, no spawn.
+  // pure-fs walk-up is lib/repo-root.mjs's resolveRepoRoot — one copy, no spawn.
   const startDir = options.repoRoot ? resolve(options.repoRoot) : resolve(options.cwd ?? process.cwd());
   const repoRoot = resolveRepoRoot({ cwd: startDir });
   if (!repoRoot) {

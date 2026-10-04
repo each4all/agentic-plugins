@@ -16,7 +16,6 @@ import {
   classifyTelegramResult,
   mapActivationReasonToOutcome,
   renderEgressText,
-  scrubSecrets,
   validateTelegramChatId,
   validateTelegramToken,
 } from '../../plugins/runtime/scripts/lib/egress-channel.mjs';
@@ -84,56 +83,6 @@ describe('egress buildEgressPayload (§2f/§3)', () => {
   it('tolerates a missing/invalid refs object', () => {
     assert.deepEqual(buildEgressPayload({ kind: 'idle', refs: null }), { kind: 'idle' });
     assert.deepEqual(buildEgressPayload({ kind: 'idle', refs: ['x'] }), { kind: 'idle' });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// scrubSecrets — §5 defense-in-depth
-// ---------------------------------------------------------------------------
-
-describe('egress scrubSecrets (§5)', () => {
-  it('redacts a credential-bearing URL', () => {
-    const out = scrubSecrets('see https://user:hunter2pw@host.example/path now');
-    assert.ok(!out.includes('hunter2pw'));
-    assert.match(out, /https:\/\/\[redacted\]@host\.example/);
-  });
-
-  it('redacts a bearer token', () => {
-    const out = scrubSecrets('Authorization: Bearer abcDEF123456ghiJKL');
-    assert.ok(!out.includes('abcDEF123456ghiJKL'));
-    assert.match(out, /bearer \[redacted\]/i);
-  });
-
-  it('redacts a Telegram-bot-token shape', () => {
-    const out = scrubSecrets('token 123456789:AAA_bbbCCCdddEEEfffGGGhhhIII here');
-    assert.ok(!out.includes('123456789:AAA'));
-    assert.match(out, /\[redacted\]/);
-  });
-
-  it('redacts common provider key prefixes incl. AWS AKIA and ASIA (temporary)', () => {
-    for (const key of ['sk-abcdef1234567890ABCDEF', 'ghp_abcdefghijklmnop1234', 'AKIAABCDEFGHIJKLMNOP', 'ASIAIOSFODNN7EXAMPLE']) {
-      assert.match(scrubSecrets(`k=${key}`), /\[redacted\]/, `${key} should be redacted`);
-      assert.ok(!scrubSecrets(`k=${key}`).includes(key), `${key} must not survive`);
-    }
-  });
-
-  it('leaves ordinary short text untouched', () => {
-    assert.equal(scrubSecrets('approval · @mba · repo:main'), 'approval · @mba · repo:main');
-  });
-
-  it('does NOT redact structured routing ids (a long workflow_id / session hash is not a secret)', () => {
-    // The bare "long high-entropy run" rule was deliberately dropped: session_hint
-    // (a §4 hash, cap 32) and a long workflow_id (cap 128) are the routing fields
-    // the notification exists to show, and are indistinguishable from a raw secret
-    // by length. A `{32,}` rule would eat them.
-    const wf = 'investigate-20260705T124630Z-53da47c9f1';
-    const hash = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6';
-    assert.equal(scrubSecrets(`wf ${wf} · ${hash}`), `wf ${wf} · ${hash}`);
-  });
-
-  it('is null/undefined-safe', () => {
-    assert.equal(scrubSecrets(undefined), '');
-    assert.equal(scrubSecrets(null), '');
   });
 });
 

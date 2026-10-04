@@ -17,12 +17,11 @@ import { RUNTIME_VERSION } from './version.mjs';
 import { sanitizeValue } from './lib/sanitize.mjs';
 import { runEmit } from './notify.mjs';
 import { buildEventId, deriveRepoIdent } from './lib/notify-schema.mjs';
-import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
+import { EGRESS_CREDENTIAL_ENV_VAR, EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 import { sameDirectory } from './lib/path-containment.mjs';
 import { inspectInstalledReceivers } from './lib/receiver-inventory.mjs';
 import { egressIntentDir, safeRecordName } from './lib/egress-intent-wal.mjs';
 import { EGRESS_ATTEMPT_HASH_DOMAIN, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
-import { EGRESS_CREDENTIAL_ENV_VAR } from './lib/machine-profile.mjs';
 import {
   artifactTimestampMs,
   inspectConsensusRuns,

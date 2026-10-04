@@ -519,14 +519,20 @@ describe('plugins/runtime migrate surface', () => {
     ok(doctor.includes('Make sure no older proof is running, check the phone, then remove the specific records you reviewed'));
   });
 
-  it('the shared egress WAL primitives have exactly ONE definition each', async () => {
+  it('the shared egress WAL and operator-text primitives have exactly ONE definition each', async () => {
     // T1's guard. The extraction exists because `doctor.mjs` had grown a second
     // inline copy of the four-component WAL path; without this, nothing stops a
     // third from appearing in the next file that needs one, and a safety fix
     // landing on one copy while the other keeps shipping is the failure this
-    // repository has hit repeatedly.
+    // repository has hit repeatedly. `safeOperatorText` moved to its own module
+    // because its migrate consumers outlive the WAL (ADR-0064 Decision 2).
     const dirs = ['scripts', 'scripts/lib'];
-    const definitions = { egressIntentDir: [], safeRecordName: [], safeOperatorText: [] };
+    const home = {
+      egressIntentDir: 'scripts/lib/egress-intent-wal.mjs',
+      safeRecordName: 'scripts/lib/egress-intent-wal.mjs',
+      safeOperatorText: 'scripts/lib/operator-text.mjs',
+    };
+    const definitions = Object.fromEntries(Object.keys(home).map((symbol) => [symbol, []]));
     const inlinePathShape = [];
     for (const dir of dirs) {
       const abs = resolve(PLUGIN_ROOT, dir);
@@ -545,7 +551,7 @@ describe('plugins/runtime migrate surface', () => {
       }
     }
     for (const [symbol, files] of Object.entries(definitions)) {
-      deepStrictEqual(files, ['scripts/lib/egress-intent-wal.mjs'], `${symbol} must be defined once, in the shared lib (found in: ${files.join(', ') || 'nowhere'})`);
+      deepStrictEqual(files, [home[symbol]], `${symbol} must be defined once, in ${home[symbol]} (found in: ${files.join(', ') || 'nowhere'})`);
     }
     deepStrictEqual(inlinePathShape, [], 'the egress-intent directory shape is spelled inline outside the shared lib');
   });

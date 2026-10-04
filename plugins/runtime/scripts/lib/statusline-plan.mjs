@@ -49,13 +49,15 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { STATUSLINE_PRESET_AGENTIC_6 } from './machine-profile.mjs';
-import { substituteOnce } from './notification-plan.mjs';
 import { resolveContainedSync } from './path-containment.mjs';
 import { RUNTIME_VERSION } from '../version.mjs';
 import { renderCodexTuiTableToml } from './toml.mjs';
 
-export { STATUSLINE_PRESET_AGENTIC_6 };
+// ADR-0048 §2.1 — the owner-adopted six-item statusline set, carried in the
+// machine profile as a SCALAR preset id (1.1-additive). The id names a policy;
+// the canonical ordered item definition is the table below. Moved here from
+// lib/machine-profile.mjs, which only defined it (ADR-0064 Decision 2, item 5).
+export const STATUSLINE_PRESET_AGENTIC_6 = 'agentic-6';
 
 export const STATUSLINE_SHIM_BASENAME = 'agentic-statusline.mjs';
 export const STATUSLINE_SHIM_INSTALL_DIR_POINTER = '~/.agentic-plugins/bin';
@@ -155,6 +157,20 @@ export function renderInlineClaudeCommand(policy) {
 // ---------------------------------------------------------------------------
 // 3. Rendered forms
 // ---------------------------------------------------------------------------
+
+// Replace a placeholder that must occur EXACTLY once — zero or duplicate
+// occurrences mean template drift (or an earlier substitution injected the
+// token), and rendering a half-substituted receiver would be worse than
+// failing the plan. Moved here from lib/notification-plan.mjs, whose Codex
+// notify receivers also render through it until ADR-0064 Decision 1 removes
+// them (Decision 2, item 4).
+export function substituteOnce(template, placeholder, replacement, label) {
+  const first = template.indexOf(placeholder);
+  if (first === -1 || template.indexOf(placeholder, first + placeholder.length) !== -1) {
+    throw new Error(`receiver template drift: expected exactly one ${label} placeholder`);
+  }
+  return template.slice(0, first) + replacement + template.slice(first + placeholder.length);
+}
 
 /** Forward-slash absolute shim install path for this home. */
 export function statuslineShimInstallPath({ homeDir }) {

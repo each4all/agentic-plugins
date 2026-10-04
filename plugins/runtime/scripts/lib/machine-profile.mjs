@@ -27,17 +27,13 @@
 
 import { createHash } from 'node:crypto';
 
-import { scrubSecrets } from './egress-channel.mjs';
+import { EGRESS_CREDENTIAL_ENV_VAR } from './egress-config.mjs';
+import { scrubSecrets } from './secret-scrub.mjs';
 import { hasCredentialShape, sanitizeValue } from './sanitize.mjs';
 import { CONFIG_KEY_FAMILIES, USER_SCOPE_ONLY_CONFIG_KEYS } from './runtime-config.mjs';
 import { canonicalize } from './schema-validate.mjs';
 
 export const MACHINE_PROFILE_SCHEMA_VERSION = 'agentic-machine-profile-1.3';
-export const EGRESS_CREDENTIAL_ENV_VAR = 'TELEGRAM_BOT_TOKEN';
-// ADR-0048 §2.1 — the owner-adopted six-item statusline set, carried in the
-// profile as a SCALAR preset id (1.1-additive). The id names a policy; the
-// canonical ordered item definition belongs to the statusline adapter.
-export const STATUSLINE_PRESET_AGENTIC_6 = 'agentic-6';
 
 // 1.2 — the session-config family (ADR-0044 §3 `session_capture`, ADR-0045 §7
 // `entry_brief` / `entry_brief_empty`), carried as TRAILING BARE SCALARS for the

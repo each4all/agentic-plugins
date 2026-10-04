@@ -27,7 +27,7 @@ import {
   shimTemplateRendererIds,
   statuslineShimInstallPath,
 } from '../../plugins/runtime/scripts/lib/statusline-plan.mjs';
-import { parseCodexNotifyConfigToml } from '../../plugins/runtime/scripts/lib/notification-plan.mjs';
+import { parseCodexConfigToml } from '../../plugins/runtime/scripts/lib/codex-config.mjs';
 import { renderCodexTuiTableToml } from '../../plugins/runtime/scripts/lib/toml.mjs';
 import { judgeSteps, runBootstrap } from '../../plugins/runtime/scripts/bootstrap.mjs';
 
@@ -62,7 +62,7 @@ describe('statusline policy — the one agentic-6 definition (ADR-0048 §2.1)', 
   it('the Codex fragment and the probe expectation are the SAME value through the shared [tui] composer', () => {
     const fragment = renderCodexStatusLineFragmentToml();
     strictEqual(fragment, renderCodexTuiTableToml({ statusLine: NORMATIVE_AGENTIC_6 }));
-    const parsed = parseCodexNotifyConfigToml(fragment);
+    const parsed = parseCodexConfigToml(fragment);
     deepStrictEqual(parsed.tuiStatusLine.values, NORMATIVE_AGENTIC_6, 'render → parse → expect round-trips');
   });
 });
@@ -504,7 +504,7 @@ describe('statusline end-to-end — plan renders fragments, desired seats, the n
 
     // The Codex fragment is ONE [tui] table carrying BOTH planned keys (peer B3).
     const codexFragment = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'fragments', 'statusline-codex.fragment'), 'utf8'));
-    const parsedTable = parseCodexNotifyConfigToml(codexFragment.fragment_toml);
+    const parsedTable = parseCodexConfigToml(codexFragment.fragment_toml);
     deepStrictEqual(parsedTable.tuiStatusLine.values, NORMATIVE_AGENTIC_6);
     ok(parsedTable.tuiNotifications.present, 'notifications rides the same single table');
     strictEqual((codexFragment.fragment_toml.match(/\[tui\]/g) ?? []).length, 1, 'exactly one [tui] header');

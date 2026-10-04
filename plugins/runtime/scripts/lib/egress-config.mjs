@@ -73,6 +73,13 @@ export const EGRESS_ENV_KEYS = Object.freeze({
   credential: 'TELEGRAM_BOT_TOKEN',
 });
 
+// The credential's env-var NAME, for code that names the key without reading
+// its value: bootstrap's control-plane scrub, the activation fingerprint, and
+// the machine profile's write-gate (ADR-0048 §4). Moved here from the profile
+// engine, which spelled the same name a second time (ADR-0064 Decision 2,
+// item 7); the dependency runs from the engine to this loader, never back.
+export const EGRESS_CREDENTIAL_ENV_VAR = EGRESS_ENV_KEYS.credential;
+
 // Verified-ignored-local file keys (activation + recipient only; NEVER the
 // credential). Distinct from runtime-config's CONFIG_KEYS on purpose.
 export const EGRESS_LOCAL_KEYS = Object.freeze({
