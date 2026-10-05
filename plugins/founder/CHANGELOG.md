@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.14](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.13...plugin-founder-v0.4.14) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/founder:** stop state.mjs truncating piped output at 64 KiB (C70) ([8aba0cd](https://github.com/each4all/agentic-plugins/commit/8aba0cd6c0d3146bd944dba4273cb426ec177470))
+
 ## [0.4.13](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.12...plugin-founder-v0.4.13) (2026-10-04)
 
 
