@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.16](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.15...plugin-designer-v0.3.16) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/designer:** generate the checkpoint, resume and peer-now runbooks (ADR-0066 Stage 2a) ([9028f5f](https://github.com/each4all/agentic-plugins/commit/9028f5ffc141874764770f5060712ad81308e7fc))
+
 ## [0.3.15](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.14...plugin-designer-v0.3.15) (2026-10-05)
 
 
