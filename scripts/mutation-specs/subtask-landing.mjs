@@ -90,8 +90,8 @@ export const MUTATIONS = [
   },
   {
     id: 'U3', file: STATE, tests: [T_PLAN],
-    from: '    if (frontmatter.terminal_marker === true) {',
-    to: '    if (false) {',
+    from: "    if (frontmatter.terminal_marker === true) {\n      throw new Error(\n        `setPlan: this terminal macro",
+    to: "    if (false) {\n      throw new Error(\n        `setPlan: this terminal macro",
     why: 'a terminal macro is revised and strands its marker',
   },
   {
@@ -280,8 +280,8 @@ export const MUTATIONS = [
   },
   {
     id: 'W3', file: STOP, tests: [T_STOP],
-    from: '    try {\n      await writebackParent({',
-    to: '    if (frontmatter.parent_writeback_at) return { archived: true, to: archiveResult.to };\n    try {\n      await writebackParent({',
+    from: '  try {\n    await writebackParent({',
+    to: '  if (frontmatter.parent_writeback_at) return;\n  try {\n    await writebackParent({',
     why: 'the P10 marker gates the Stop call, so a crash after the marker loses the note',
   },
   {

@@ -90,12 +90,13 @@ export const MUTATIONS = [
     to: "  { name: 'positional parameter', re: /(?<!\\\\)\\$\\d/g },",
     why: 'the scanner skips the escaped form; the check against the port must notice',
   },
-  {
-    id: 'G2', file: 'plugins/runtime/commands/doctor.md', tests: [T_SHAPE],
-    from: 'node "$RUNTIME_ROOT/scripts/doctor.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS',
-    to: 'node "$RUNTIME_ROOT/scripts/doctor.mjs" --repo-root "$REPO_ROOT"',
-    why: 'a splice line goes but the list still names it — the list is exact, so it stays true as ADR-0059 lands',
-  },
+  // G2 is gone. It removed doctor.md's `$ARGUMENTS` splice line while the
+  // test's list still named it, to show the list was exact as ADR-0059 landed.
+  // ADR-0059 then moved doctor.md to an args file (14e7267b), and e578155f
+  // removed the last splice line, leaving the list empty: there is no named
+  // line left to remove.
+  // With an empty list, exactness can only fail by a line being added, which
+  // F8 covers, and args-file-transport.mjs R1 puts the doctor.md splice back.
   {
     id: 'G3', file: PORT, tests: [T_SHAPE],
     from: '    const token = tokens[parseInt(digits, 10)];\n    if (token === undefined) return whole;',
