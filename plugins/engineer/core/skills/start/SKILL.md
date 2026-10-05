@@ -72,7 +72,9 @@ refuses to bootstrap and presents four resolutions to the user:
 
 - **clean** — `git restore . ; git clean -fd` and re-run;
 - **stash** — `git stash push --include-untracked`, re-run, then `git stash pop`;
-- **worktree** — escalate to `/runtime:worktree apply` (ADR-0029);
+- **worktree** — `/runtime:worktree plan` (`$runtime:worktree` on Codex)
+  suggests the `git worktree add` command for a clean checkout once its
+  checks pass, without running it; re-run in the new worktree;
 - **accept-current-tree** — set `ACCEPT_CURRENT_TREE=1` in the environment
   before re-running. The workflow's commit will sweep whatever was in
   the tree; the user acknowledges this.
