@@ -1,5 +1,6 @@
 # Repository-state checks that are not test files: kit/lint over every plugin,
-# and the catalog, version and artifact validators. full-tests.yml runs the
+# the persona-pipeline drift check, and the catalog, version and artifact
+# validators. full-tests.yml runs the
 # test files, including the ones that assert these scripts' behavior.
 #
 # Same triggers as full-tests.yml, for the same reason (ADR-0033, 2026-10-03
@@ -47,6 +48,11 @@ jobs:
 
       - name: Lint every plugin (kit/lint)
         run: npm run lint:plugin-shape
+
+      # ADR-0066 Decision 4: every persona plugin's generated copy matches the
+      # canonical source in persona-pipeline/, and the declarations pass.
+      - name: Persona pipeline drift check
+        run: npm run sync:persona-pipeline
 
       - name: Validate both catalogs
         env:

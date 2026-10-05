@@ -62,6 +62,7 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
@@ -122,7 +123,8 @@ const SHARED_REFS = [
   'autopilot-mode.md',
 ];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
-const CLAUDE_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', '_shared.mjs'];
+// ADR-0066 D5 — the hook helpers moved to scripts/lib/hook-helpers.mjs (generated).
+const CLAUDE_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs'];
 const CODEX_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', 'run-node-hook.sh', 'hooks.json', 'README.md'];
 
 // Stale tokens that should NEVER appear in engineer SKILL/commands/refs.
@@ -1819,6 +1821,23 @@ describe('plugins/engineer — ADR-0031 session-handoff preflight Claude/Codex p
         refs >= 2,
         `${rel} should surface the preflight at 2 firing points (Phase 0 entry + Phase 7 completion); found ${refs} session-handoff.md reference(s)`,
       );
+    }
+  });
+});
+
+// ADR-0066 D5 — the hook helpers live in one generated module,
+// scripts/lib/hook-helpers.mjs, which both adapters import; no adapter carries
+// its own copy, so neither reaches into the other's tree.
+describe('plugins/engineer — one hook-helper module (ADR-0066 D5)', () => {
+  it('carries no adapters/*/hooks/_shared.mjs, and every hook imports scripts/lib/hook-helpers.mjs', async () => {
+    for (const host of ['claude', 'codex']) {
+      ok(!existsSync(resolve(PLUGIN_ROOT, `adapters/${host}/hooks/_shared.mjs`)),
+        `adapters/${host}/hooks/_shared.mjs must be gone: the hooks import scripts/lib/hook-helpers.mjs`);
+      for (const hook of ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs']) {
+        const text = await readFile(resolve(PLUGIN_ROOT, `adapters/${host}/hooks/${hook}`), 'utf8');
+        ok(text.includes("from '../../../scripts/lib/hook-helpers.mjs'"), `adapters/${host}/hooks/${hook} must import the shared helpers`);
+        ok(!text.includes('_shared.mjs'), `adapters/${host}/hooks/${hook} must not import an adapter-local helper`);
+      }
     }
   });
 });

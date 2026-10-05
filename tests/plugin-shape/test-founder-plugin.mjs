@@ -33,6 +33,7 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
@@ -199,8 +200,12 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     'scripts/session-handoff.mjs',
     // ADR-0043 S3 — runtime resolver (footer floor).
     'scripts/discover-runtime.mjs',
+    // ADR-0066 — the declaration and the generated lib modules every script reads.
+    'persona.json',
+    'scripts/lib/persona.mjs',
+    'scripts/lib/cli-entry.mjs',
+    'scripts/lib/hook-helpers.mjs',
     'hooks/hooks.json',
-    'adapters/claude/hooks/_shared.mjs',
     'adapters/claude/hooks/session-start.mjs',
     'adapters/claude/hooks/pre-compact.mjs',
     'adapters/claude/hooks/stop.mjs',
@@ -299,7 +304,7 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     const SOURCES = [
       'scripts/state.mjs',
       'scripts/stop-archive.mjs',
-      'adapters/claude/hooks/_shared.mjs',
+      'scripts/lib/hook-helpers.mjs',
       'adapters/claude/hooks/stop.mjs',
       'adapters/codex/hooks/stop.mjs',
     ];
@@ -841,6 +846,23 @@ describe('plugins/founder — session-handoff runbook (ADR-0043 S3)', () => {
         `${rel} must not carry the retired pre-S3 deferral prose`);
       ok(!/is future work, not\s*\npart of founder's surface/.test(text),
         `${rel} must not carry the retired pre-S3 skill deferral prose`);
+    }
+  });
+});
+
+// ADR-0066 D5 — the hook helpers live in one generated module,
+// scripts/lib/hook-helpers.mjs, which both adapters import; no adapter carries
+// its own copy, so neither reaches into the other's tree.
+describe('plugins/founder — one hook-helper module (ADR-0066 D5)', () => {
+  it('carries no adapters/*/hooks/_shared.mjs, and every hook imports scripts/lib/hook-helpers.mjs', async () => {
+    for (const host of ['claude', 'codex']) {
+      ok(!existsSync(resolve(PLUGIN_ROOT, `adapters/${host}/hooks/_shared.mjs`)),
+        `adapters/${host}/hooks/_shared.mjs must be gone: the hooks import scripts/lib/hook-helpers.mjs`);
+      for (const hook of ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs']) {
+        const text = await readFile(resolve(PLUGIN_ROOT, `adapters/${host}/hooks/${hook}`), 'utf8');
+        ok(text.includes("from '../../../scripts/lib/hook-helpers.mjs'"), `adapters/${host}/hooks/${hook} must import the shared helpers`);
+        ok(!text.includes('_shared.mjs'), `adapters/${host}/hooks/${hook} must not import an adapter-local helper`);
+      }
     }
   });
 });

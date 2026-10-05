@@ -7,8 +7,8 @@
 // ADR-0043 §5 shared-surface serialization). The per-plugin suites
 // (tests/engineer/test-footer-activation.mjs,
 // tests/orchestrator/test-footer-activation.mjs,
-// tests/founder/test-footer-activation.mjs,
-// tests/designer/test-footer-activation.mjs) prove each path's mechanics in
+// tests/persona-pipeline/test-footer-activation.mjs, parametrized over founder
+// and designer) prove each path's mechanics in
 // depth; THIS suite proves the same load-bearing acceptance criteria hold
 // UNIFORMLY across every persona terminal path × host, driven through each
 // plugin's REAL completion CLI (no direct imports of the persona internals — a
@@ -121,7 +121,7 @@ const PERSONAS = [
     // ADR-0043 S3 — founder onboarding row. Same set-terminal completion CLI;
     // the BASELINE_HEAD fixture differs from the repo's real HEAD, so the
     // head_moved gate passes and AC2 observes next-work-available (the
-    // publish-needed mapping is pinned in tests/founder/test-footer-activation.mjs).
+    // publish-needed mapping is pinned in tests/persona-pipeline/test-footer-activation.mjs).
     name: 'founder',
     state: resolve(REPO_ROOT, 'plugins/founder/scripts/state.mjs'),
     branch: 'feat/x',
@@ -143,7 +143,7 @@ const PERSONAS = [
     // matrix (§5 shared-surface serialization: the second of S3/S4 to land
     // extends this suite for its persona). Manually-published mapping like
     // founder; the publish-needed specifics are pinned in
-    // tests/designer/test-footer-activation.mjs.
+    // tests/persona-pipeline/test-footer-activation.mjs.
     name: 'designer',
     state: resolve(REPO_ROOT, 'plugins/designer/scripts/state.mjs'),
     branch: 'feat/x',

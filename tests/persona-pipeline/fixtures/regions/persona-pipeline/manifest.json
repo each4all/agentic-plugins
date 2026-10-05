@@ -1,0 +1,71 @@
+{
+  "schema": "persona-pipeline-manifest-1.0",
+  "personas": [
+    "alpha",
+    "beta"
+  ],
+  "units": [
+    {
+      "id": "tool",
+      "source": "files/scripts/tool.mjs",
+      "dest": "scripts/tool.mjs",
+      "personas": [
+        "alpha",
+        "beta"
+      ],
+      "requires": []
+    },
+    {
+      "id": "config",
+      "source": "files/data/config.json",
+      "dest": "data/config.json",
+      "personas": [
+        "alpha"
+      ],
+      "requires": []
+    }
+  ],
+  "regions": [
+    {
+      "id": "intro",
+      "template": "templates/intro.md",
+      "dest": "commands/run.md",
+      "personas": [
+        "alpha",
+        "beta"
+      ],
+      "substitutions": {
+        "noun": {
+          "field": "deliverable_noun",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "finalize",
+      "template": "templates/finalize.md",
+      "dest": "commands/run.md",
+      "personas": [
+        "alpha",
+        "beta"
+      ],
+      "substitutions": {
+        "noun": {
+          "field": "deliverable_noun",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "text"
+        }
+      }
+    }
+  ],
+  "extension_points": [
+    {
+      "id": "persona-steps",
+      "dest": "commands/run.md",
+      "max": 1
+    }
+  ]
+}

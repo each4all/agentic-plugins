@@ -61,7 +61,7 @@ const PERSONAS = ['designer', 'engineer', 'founder'];
 // Both producer families are exercised, because they answer different
 // questions and could regress independently:
 //   * `runCleanBaselineCheck` (scripts/state.mjs) -> clean/dirty CLASSIFY
-//   * `gitStatusDigest` (adapters/*/hooks/_shared.mjs) -> the status DIGEST
+//   * `gitStatusDigest` (scripts/lib/hook-helpers.mjs; orchestrator's adapters/claude/hooks/_shared.mjs) -> the status DIGEST
 describe('drift-digest — clean-baseline gates see untracked files under status.showUntrackedFiles=no', () => {
   for (const persona of PERSONAS) {
     describe(persona, () => {
@@ -121,13 +121,13 @@ describe('drift-digest — clean-baseline gates see untracked files under status
 });
 
 describe('drift-digest — hook status digests see untracked files, and clean-tree digest bytes are unchanged', () => {
-  // One digest producer per package (the hook _shared / stop copies are the
-  // digest family; the persona gates above are the classify family).
+  // One digest producer per package (the hook helpers are the digest family;
+  // the persona gates above are the classify family). The persona plugins'
+  // helpers are one generated module, scripts/lib/hook-helpers.mjs (ADR-0066 D5).
   const DIGEST_PRODUCERS = [
-    ['designer', 'plugins/designer/adapters/claude/hooks/_shared.mjs'],
-    ['designer-codex', 'plugins/designer/adapters/codex/hooks/_shared.mjs'],
-    ['engineer', 'plugins/engineer/adapters/claude/hooks/_shared.mjs'],
-    ['founder', 'plugins/founder/adapters/claude/hooks/_shared.mjs'],
+    ['designer', 'plugins/designer/scripts/lib/hook-helpers.mjs'],
+    ['engineer', 'plugins/engineer/scripts/lib/hook-helpers.mjs'],
+    ['founder', 'plugins/founder/scripts/lib/hook-helpers.mjs'],
     ['orchestrator', 'plugins/orchestrator/adapters/claude/hooks/_shared.mjs'],
   ];
 

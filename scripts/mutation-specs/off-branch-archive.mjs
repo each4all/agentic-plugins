@@ -15,8 +15,11 @@
 // copies, G the /orchestrator:done scans.
 
 const T_ENG = 'tests/engineer/test-stop-archive.mjs';
-const T_DES = 'tests/designer/test-stop-archive.mjs';
-const T_FOU = 'tests/founder/test-stop-archive.mjs';
+// designer's and founder's stop-archive is one canonical source generated into
+// both (ADR-0066); its suite is parametrized over both, so a defect in one
+// persona's copy fails that persona's cases.
+const T_DES = 'tests/persona-pipeline/test-stop-archive.mjs';
+const T_FOU = 'tests/persona-pipeline/test-stop-archive.mjs';
 const T_DONE = 'tests/orchestrator/test-done-runbook.mjs';
 
 const ENG = 'plugins/engineer/scripts/stop-archive.mjs';
@@ -25,7 +28,7 @@ const FOU = 'plugins/founder/scripts/stop-archive.mjs';
 const stateOf = (file) => file.replace('stop-archive.mjs', 'state.mjs');
 const DONE = 'plugins/orchestrator/commands/done.md';
 
-export const TESTS = [T_ENG, T_DES, T_FOU, T_DONE];
+export const TESTS = [T_ENG, T_DES, T_DONE];
 
 const keptBranchPath = (id, file, tests, persona) => [
   {

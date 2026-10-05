@@ -22,7 +22,8 @@
     "validate:artifacts": "node scripts/validate-artifacts.mjs",
     "mutate": "node scripts/mutation-harness.mjs",
     "sync:companions": "node scripts/sync-companion-bundles.mjs",
-    "sync:marketplace": "node scripts/sync-marketplace-versions.mjs"
+    "sync:marketplace": "node scripts/sync-marketplace-versions.mjs",
+    "sync:persona-pipeline": "node scripts/sync-persona-pipeline.mjs"
   },
   "bin": {
     "claude-companion": "./companions/claude-companion.mjs",

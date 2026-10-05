@@ -60,6 +60,7 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
@@ -259,8 +260,12 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
     'scripts/stop-archive.mjs',
     'scripts/validate-commit.mjs',
     'scripts/discover-runtime.mjs',
+    // ADR-0066 — the declaration and the generated lib modules every script reads.
+    'persona.json',
+    'scripts/lib/persona.mjs',
+    'scripts/lib/cli-entry.mjs',
+    'scripts/lib/hook-helpers.mjs',
     'hooks/hooks.json',
-    'adapters/claude/hooks/_shared.mjs',
     'adapters/claude/hooks/session-start.mjs',
     'adapters/claude/hooks/pre-compact.mjs',
     'adapters/claude/hooks/stop.mjs',
@@ -268,7 +273,6 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
     'adapters/codex/hooks/session-start.mjs',
     'adapters/codex/hooks/pre-compact.mjs',
     'adapters/codex/hooks/stop.mjs',
-    'adapters/codex/hooks/_shared.mjs',
     'adapters/codex/hooks/run-node-hook.sh',
     'adapters/codex/hooks/README.md',
   ];
@@ -286,11 +290,10 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
     'scripts/discover-runtime.mjs',
   ];
   const ALL_HOOK_SCRIPTS = [
-    'adapters/claude/hooks/_shared.mjs',
+    'scripts/lib/hook-helpers.mjs',
     'adapters/claude/hooks/session-start.mjs',
     'adapters/claude/hooks/pre-compact.mjs',
     'adapters/claude/hooks/stop.mjs',
-    'adapters/codex/hooks/_shared.mjs',
     'adapters/codex/hooks/session-start.mjs',
     'adapters/codex/hooks/pre-compact.mjs',
     'adapters/codex/hooks/stop.mjs',
@@ -358,7 +361,7 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
 
   it('the Codex hook source files never import from the Claude adapter tree', async () => {
     const CODEX_HOOK_SOURCES = [
-      'adapters/codex/hooks/_shared.mjs',
+      'scripts/lib/hook-helpers.mjs',
       'adapters/codex/hooks/session-start.mjs',
       'adapters/codex/hooks/pre-compact.mjs',
       'adapters/codex/hooks/stop.mjs',
@@ -1412,9 +1415,10 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
     }
     deepStrictEqual(documented, EXPECTED_PROFILE_PRESET_MAP,
       'the orchestration.md L4 table must map each profile to exactly the preset the code map does');
-    // The doc must point at the code map rather than re-declaring it as data.
-    match(text, /PROFILE_PRESET_MAP/,
-      'orchestration.md must name PROFILE_PRESET_MAP as the single source of truth for the map');
+    // The doc must point at the declared map rather than re-declaring it as data
+    // (ADR-0066 V6: decide.profile_presets in persona.json).
+    match(text, /decide\.profile_presets/,
+      'orchestration.md must name decide.profile_presets as the single source of truth for the map');
     match(text, /accessibility[\s\S]{0,200}?veto gate/i,
       'orchestration.md must state accessibility is the veto gate in every preset');
     // The L4 archetype must not be conflated with the state.mjs skill-profile.
@@ -1433,10 +1437,11 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
   it('every L4 profile resolves to a preset the SD3 registry defines (ADR-0042 SD3, DEFERRED from PR4)', async () => {
     const mod = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
     const { registry } = mod.loadRegistry({});
-    ok(mod.PROFILE_PRESET_MAP, 'decide-registry.mjs must export PROFILE_PRESET_MAP (the §1.5(3) profile slot)');
-    deepStrictEqual({ ...mod.PROFILE_PRESET_MAP }, EXPECTED_PROFILE_PRESET_MAP,
+    const map = mod.profilePresetMap();
+    ok(map, 'decide-registry.mjs must expose the declared L4 map (the §1.5(3) profile slot; profile_presets on)');
+    deepStrictEqual({ ...map }, EXPECTED_PROFILE_PRESET_MAP,
       'the shipped L4 profile → preset map must match the ADR-0042 SD6 contract');
-    for (const [profile, presetId] of Object.entries(mod.PROFILE_PRESET_MAP)) {
+    for (const [profile, presetId] of Object.entries(map)) {
       ok(Object.hasOwn(registry.presets, presetId),
         `L4 profile "${profile}" maps to preset "${presetId}", which decision-axes.yml does not define`);
       // and it must actually resolve, with the veto gate intact.
@@ -1461,11 +1466,15 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
       match(text, /stale/i,
         `${rel} must warn that a stale ambient export leaks into an unrelated standalone /designer:decide`);
     }
-    // The resolver must actually emit the provenance diagnostic the docs promise.
-    const registry = await readFile(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs'), 'utf8');
-    match(registry, /L4 profile "\$\{profileOverride\}" \(AGENTIC_DESIGNER_PROFILE\) resolved preset/,
+    // The resolver must actually emit the provenance diagnostic the docs promise,
+    // and warn when an explicit --size drops the archetype — run, not grepped
+    // (the reader is generated from persona-pipeline/, ADR-0066).
+    const mod = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
+    const viaProfile = mod.resolvePreset({ profileOverride: 'cta' });
+    ok(viaProfile.diagnostics.some((d) => d.includes('L4 profile "cta" (AGENTIC_DESIGNER_PROFILE) resolved preset "conversion"')),
       'decide-registry.mjs must emit a provenance diagnostic when an archetype changes the resolved preset');
-    match(registry, /outranks the L4 profile/,
+    const viaSize = mod.resolvePreset({ profileOverride: 'cta', sizeExplicit: true, sizeValue: 'minor' });
+    ok(viaSize.diagnostics.some((d) => d.includes('outranks the L4 profile')),
       'decide-registry.mjs must warn when an explicit --size silently drops the archetype');
   });
 
@@ -1920,7 +1929,7 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
     deepStrictEqual(counts, { balanced: 7, conversion: 5, experience: 5, clarity: 5 },
       'the shipped axis counts are 7/5/5/5 — if this changes, ADR-0042 SD3\'s table must change with it');
     // Every L4 profile still resolves to a defined preset (SD3 shape invariant).
-    for (const [profile, presetId] of Object.entries(mod.PROFILE_PRESET_MAP)) {
+    for (const [profile, presetId] of Object.entries(mod.profilePresetMap())) {
       ok(registry.presets[presetId], `L4 profile "${profile}" must resolve to a defined preset`);
     }
   });
@@ -2087,6 +2096,23 @@ describe('plugins/designer — session-handoff runbook (ADR-0043 S4)', () => {
         `${rel} must not carry the retired pre-S4 deferral prose`);
       ok(!/is future work, not part/.test(text),
         `${rel} must not carry the retired pre-S4 skill deferral prose`);
+    }
+  });
+});
+
+// ADR-0066 D5 — the hook helpers live in one generated module,
+// scripts/lib/hook-helpers.mjs, which both adapters import; no adapter carries
+// its own copy, so neither reaches into the other's tree.
+describe('plugins/designer — one hook-helper module (ADR-0066 D5)', () => {
+  it('carries no adapters/*/hooks/_shared.mjs, and every hook imports scripts/lib/hook-helpers.mjs', async () => {
+    for (const host of ['claude', 'codex']) {
+      ok(!existsSync(resolve(PLUGIN_ROOT, `adapters/${host}/hooks/_shared.mjs`)),
+        `adapters/${host}/hooks/_shared.mjs must be gone: the hooks import scripts/lib/hook-helpers.mjs`);
+      for (const hook of ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs']) {
+        const text = await readFile(resolve(PLUGIN_ROOT, `adapters/${host}/hooks/${hook}`), 'utf8');
+        ok(text.includes("from '../../../scripts/lib/hook-helpers.mjs'"), `adapters/${host}/hooks/${hook} must import the shared helpers`);
+        ok(!text.includes('_shared.mjs'), `adapters/${host}/hooks/${hook} must not import an adapter-local helper`);
+      }
     }
   });
 });

@@ -1,0 +1,322 @@
+{
+  "schema": "persona-pipeline-manifest-1.0",
+  "personas": [
+    "designer",
+    "engineer",
+    "founder"
+  ],
+  "units": [
+    {
+      "id": "lib-persona",
+      "source": "files/scripts/lib/persona.mjs",
+      "dest": "scripts/lib/persona.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "lib-cli-entry",
+      "source": "files/scripts/lib/cli-entry.mjs",
+      "dest": "scripts/lib/cli-entry.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "lib-yaml-mini",
+      "source": "files/scripts/lib/yaml-mini.mjs",
+      "dest": "scripts/lib/yaml-mini.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "lib-decide-args",
+      "source": "files/scripts/lib/decide-args.mjs",
+      "dest": "scripts/lib/decide-args.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "lib-decide-weights",
+      "source": "files/scripts/lib/decide-weights.mjs",
+      "dest": "scripts/lib/decide-weights.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "lib-decide-scores",
+      "source": "files/scripts/lib/decide-scores.mjs",
+      "dest": "scripts/lib/decide-scores.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": [
+        "decide"
+      ]
+    },
+    {
+      "id": "lib-decide-sensitivity",
+      "source": "files/scripts/lib/decide-sensitivity.mjs",
+      "dest": "scripts/lib/decide-sensitivity.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": [
+        "decide"
+      ]
+    },
+    {
+      "id": "decide-registry",
+      "source": "files/scripts/decide-registry.mjs",
+      "dest": "scripts/decide-registry.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": [
+        "decide.fallback",
+        "decide.size_presets"
+      ]
+    },
+    {
+      "id": "validate-commit",
+      "source": "files/scripts/validate-commit.mjs",
+      "dest": "scripts/validate-commit.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "dispatch-peer",
+      "source": "files/scripts/dispatch-peer.mjs",
+      "dest": "scripts/dispatch-peer.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "state",
+      "source": "files/scripts/state.mjs",
+      "dest": "scripts/state.mjs",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "requires": [],
+      "off_only": [
+        "dispatch_target",
+        "commit_surface",
+        "legacy_homes"
+      ]
+    },
+    {
+      "id": "stop-archive",
+      "source": "files/scripts/stop-archive.mjs",
+      "dest": "scripts/stop-archive.mjs",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "requires": [],
+      "off_only": [
+        "dispatch_target",
+        "commit_surface",
+        "legacy_homes"
+      ]
+    },
+    {
+      "id": "session-handoff",
+      "source": "files/scripts/session-handoff.mjs",
+      "dest": "scripts/session-handoff.mjs",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "requires": [
+        "deliverable_noun"
+      ],
+      "off_only": [
+        "dispatch_target",
+        "commit_surface",
+        "legacy_homes"
+      ]
+    },
+    {
+      "id": "discover-runtime",
+      "source": "files/scripts/discover-runtime.mjs",
+      "dest": "scripts/discover-runtime.mjs",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "requires": [
+        "runtime_footer_floor"
+      ]
+    },
+    {
+      "id": "peer-runner",
+      "source": "files/scripts/peer-runner.mjs",
+      "dest": "scripts/peer-runner.mjs",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "requires": [],
+      "off_only": [
+        "legacy_homes"
+      ]
+    },
+    {
+      "id": "lib-hook-helpers",
+      "source": "files/scripts/lib/hook-helpers.mjs",
+      "dest": "scripts/lib/hook-helpers.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hooks-claude",
+      "source": "files/hooks/hooks.json",
+      "dest": "hooks/hooks.json",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hook-claude-session-start",
+      "source": "files/adapters/claude/hooks/session-start.mjs",
+      "dest": "adapters/claude/hooks/session-start.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hook-claude-pre-compact",
+      "source": "files/adapters/claude/hooks/pre-compact.mjs",
+      "dest": "adapters/claude/hooks/pre-compact.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hook-claude-stop",
+      "source": "files/adapters/claude/hooks/stop.mjs",
+      "dest": "adapters/claude/hooks/stop.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hooks-codex",
+      "source": "files/adapters/codex/hooks/hooks.json",
+      "dest": "adapters/codex/hooks/hooks.json",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hooks-codex-readme",
+      "source": "files/adapters/codex/hooks/README.md",
+      "dest": "adapters/codex/hooks/README.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hooks-codex-runner",
+      "source": "files/adapters/codex/hooks/run-node-hook.sh",
+      "dest": "adapters/codex/hooks/run-node-hook.sh",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hook-codex-session-start",
+      "source": "files/adapters/codex/hooks/session-start.mjs",
+      "dest": "adapters/codex/hooks/session-start.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hook-codex-pre-compact",
+      "source": "files/adapters/codex/hooks/pre-compact.mjs",
+      "dest": "adapters/codex/hooks/pre-compact.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    },
+    {
+      "id": "hook-codex-stop",
+      "source": "files/adapters/codex/hooks/stop.mjs",
+      "dest": "adapters/codex/hooks/stop.mjs",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "requires": []
+    }
+  ],
+  "regions": [],
+  "extension_points": []
+}

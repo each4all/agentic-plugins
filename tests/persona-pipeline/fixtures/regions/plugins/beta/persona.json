@@ -1,0 +1,44 @@
+{
+  "schema": "persona-declaration-1.0",
+  "name": "beta",
+  "deliverable_noun": "beta's deliverable",
+  "runtime_footer_floor": "0.79.0",
+  "capabilities": {
+    "dispatch_target": false,
+    "commit_surface": false,
+    "legacy_homes": false,
+    "profile_presets": false
+  },
+  "decide": {
+    "fallback": {
+      "preset_id": "default",
+      "axes": [
+        {
+          "id": "essence",
+          "labels": {
+            "en": "Essence",
+            "ko": "본질"
+          },
+          "question": "Does it solve the root problem?",
+          "role": "decisive",
+          "gate": false
+        },
+        {
+          "id": "foundation",
+          "labels": {
+            "en": "Foundation",
+            "ko": "근본"
+          },
+          "question": "Is it a sound base?",
+          "role": "decisive",
+          "gate": false
+        }
+      ]
+    },
+    "size_presets": {
+      "minor": "default",
+      "standard": "default",
+      "major": "default"
+    }
+  }
+}

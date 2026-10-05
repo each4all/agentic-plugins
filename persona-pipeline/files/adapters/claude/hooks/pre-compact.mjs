@@ -1,0 +1,48 @@
+#!/usr/bin/env node
+// adapters/claude/hooks/pre-compact.mjs
+//
+// Claude Code PreCompact hook for a persona plugin per ADR-0011 §4 (one copy
+// for every persona, generated from persona-pipeline/, ADR-0066).
+// Updates the active workflow's last_snapshot + appends a host_history
+// snapshot entry (event: snapshot, trigger: pre-compact). Hook absence
+// is non-fatal — silently no-ops on any error rather than blocking
+// compaction.
+
+import { findActiveWorkflow, snapshot } from '../../../scripts/state.mjs';
+import { hookPersona, readStdinJson, gitTopLevel, gitStatusDigest } from '../../../scripts/lib/hook-helpers.mjs';
+
+async function main() {
+  // Validate the persona declaration first, before any other work: when it is
+  // missing or broken the hook does nothing and exits 0 (ADR-0066 Decision 2;
+  // hooks stay non-fatal, ADR-0011 §4).
+  const persona = hookPersona();
+  if (!persona) return 0;
+  const payload = await readStdinJson();
+  const cwd = payload.cwd || process.cwd();
+  const repoRoot = gitTopLevel(cwd);
+  if (!repoRoot) return 0;
+
+  let active;
+  try {
+    active = await findActiveWorkflow(repoRoot);
+  } catch {
+    return 0;
+  }
+  if (!active) return 0;
+
+  const statusDigest = gitStatusDigest(repoRoot);
+  try {
+    await snapshot({
+      workflowPath: active,
+      host: 'claude',
+      trigger: 'pre-compact',
+      statusDigest,
+    });
+  } catch (err) {
+    process.stderr.write(`${persona.name}/pre-compact: ${err.message}\n`);
+  }
+  return 0;
+}
+
+const code = await main();
+process.exit(code);
