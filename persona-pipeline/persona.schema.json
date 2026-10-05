@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "persona-pipeline/persona.schema.json",
+  "title": "Persona declaration, plugins/<persona>/persona.json (ADR-0066 Decision 2)",
+  "description": "Stage 1 fields: identity, the deliverable noun, the runtime footer floor, the capabilities and the decide data. Profiles, verb parameters, artifact templates and peer policy arrive in Stage 2 with a minor format bump. Cross-field rules the schema cannot state (the decide fallback equals the registry preset, profile_presets needs its map, tie_break names a fallback axis, each enrolled unit's fields are present) are checked by scripts/sync-persona-pipeline.mjs. Validated with the closed keyword subset of plugins/runtime/scripts/lib/schema-validate.mjs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "name", "capabilities", "decide"],
+  "properties": {
+    "schema": {
+      "description": "The declaration format, persona-declaration-<major>.<minor>.",
+      "type": "string",
+      "pattern": "^persona-declaration-1\\.(0|[1-9][0-9]*)$"
+    },
+    "name": {
+      "description": "The persona name; equals the plugin directory and the plugin manifests' name. The state directory, command prefix, re-injection marker, peer-run handle and self-sensor source are derived from it.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "maxLength": 32
+    },
+    "deliverable_noun": {
+      "description": "The deliverable as user-facing messages name it, e.g. 'business deliverable' (V2).",
+      "type": "string",
+      "pattern": "^[a-z][a-z '/-]*[a-z]$",
+      "maxLength": 64
+    },
+    "runtime_footer_floor": {
+      "description": "The oldest runtime whose footer this persona accepts (V18).",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "capabilities": {
+      "description": "Every flag is required, so no capability reads as off by absence (ADR-0066 Decision 3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dispatch_target", "commit_surface", "legacy_homes", "profile_presets"],
+      "properties": {
+        "dispatch_target": { "type": "boolean" },
+        "commit_surface": { "type": "boolean" },
+        "legacy_homes": { "type": "boolean" },
+        "profile_presets": { "type": "boolean" }
+      }
+    },
+    "decide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fallback", "size_presets"],
+      "properties": {
+        "fallback": {
+          "description": "The in-code fallback preset (V4); must equal the registry preset of the same id.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["preset_id", "axes"],
+          "properties": {
+            "preset_id": { "$ref": "#/$defs/id" },
+            "axes": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 16,
+              "items": { "$ref": "#/$defs/axis" }
+            }
+          }
+        },
+        "size_presets": {
+          "description": "--size tier -> preset id (V5).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minor", "standard", "major"],
+          "properties": {
+            "minor": { "$ref": "#/$defs/id" },
+            "standard": { "$ref": "#/$defs/id" },
+            "major": { "$ref": "#/$defs/id" }
+          }
+        },
+        "profile_presets": {
+          "description": "L4 profile -> preset id (V6); present exactly when capabilities.profile_presets is on.",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9-]*$": { "$ref": "#/$defs/id" }
+          }
+        },
+        "tie_break": {
+          "description": "Axes ranked first when aggregates tie, in order (V8).",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "maxLength": 64
+    },
+    "axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "labels", "question", "role", "gate"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["en", "ko"],
+          "properties": {
+            "en": { "type": "string", "maxLength": 128 },
+            "ko": { "type": ["string", "null"], "maxLength": 128 }
+          }
+        },
+        "question": { "type": "string", "maxLength": 2048 },
+        "role": { "type": "string", "enum": ["decisive", "supporting"] },
+        "gate": { "type": "boolean" }
+      }
+    }
+  }
+}

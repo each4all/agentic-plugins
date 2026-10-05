@@ -23,7 +23,9 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-import { loadRegistry, resolvePreset, PROFILE_PRESET_MAP } from "../../plugins/designer/scripts/decide-registry.mjs";
+import { loadRegistry, resolvePreset, profilePresetMap } from "../../plugins/designer/scripts/decide-registry.mjs";
+
+const PROFILE_PRESET_MAP = profilePresetMap();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..");

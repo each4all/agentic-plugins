@@ -548,6 +548,9 @@ async function importSchema13Reader(dir) {
   const reader = src.replace(keyOrderLine, '').replace(emit, "export const SCHEMA_VERSION = '1.3';");
   await writeFile(join(dir, 'state.mjs'), reader);
   await copyFile(resolve(REPO_ROOT, 'plugins/engineer/scripts/validate-commit.mjs'), join(dir, 'validate-commit.mjs'));
+  // state.mjs's CLI entry guard (ADR-0066 D1) lives in the generated lib.
+  await mkdir(join(dir, 'lib'));
+  await copyFile(resolve(REPO_ROOT, 'plugins/engineer/scripts/lib/cli-entry.mjs'), join(dir, 'lib', 'cli-entry.mjs'));
   return import(pathToFileURL(join(dir, 'state.mjs')).href);
 }
 

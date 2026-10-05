@@ -1,0 +1,17 @@
+schema: "1.0"
+presets:
+  default:
+    description: "Fixture preset"
+    axes:
+      - id: essence
+        labels:
+          en: "Essence"
+          ko: "본질"
+        question: "Does it solve the root problem?"
+        role: decisive
+      - id: foundation
+        labels:
+          en: "Foundation"
+          ko: "근본"
+        question: "Is it a sound base?"
+        role: decisive

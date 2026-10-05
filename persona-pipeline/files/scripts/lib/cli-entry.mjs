@@ -1,0 +1,40 @@
+// scripts/lib/cli-entry.mjs — the canonical-path CLI entry guard (ADR-0066 D1).
+//
+// A script runs its CLI only when it is the process entry point. The old guard,
+// import.meta.url === `file://${process.argv[1]}`, compared a URL with a path:
+// it was false, and the CLI silently did nothing (exit 0), whenever the script
+// was reached through a symlink or sat under a directory whose name needs URL
+// escaping — a space, '#', non-ASCII. Comparing pathToFileURL(argv[1]) fixed
+// the escaping but not the symlink. Comparing both sides canonical, as paths,
+// fixes both, with or without --preserve-symlinks-main (#812, ADR-0061 S2).
+//
+// Comparing canonical paths alone is not enough, though. Under
+// --preserve-symlinks-main the entry module keeps its symlinked URL, while a
+// module it imports reaches the same file through its real path: two instances
+// of one file, and both pass the comparison. state.mjs `set-terminal` imports
+// session-handoff.mjs, which imports state.mjs again, so the CLI ran twice. So
+// the first instance of a file to ask claims the entry for the process, and
+// any later instance of the same file is not the entry.
+
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const CLAIMS = Symbol.for('agentic-plugins.cli-entry.claims');
+
+/** Whether the module at `importMetaUrl` is the process entry point. */
+export function isCliEntry(importMetaUrl, argv1 = process.argv[1]) {
+  if (!argv1) return false;
+  let entry;
+  let self;
+  try {
+    entry = realpathSync(argv1);
+    self = realpathSync(fileURLToPath(importMetaUrl));
+  } catch {
+    return false;
+  }
+  if (entry !== self) return false;
+  const claims = (globalThis[CLAIMS] ??= new Set());
+  if (claims.has(self)) return false;
+  claims.add(self);
+  return true;
+}
