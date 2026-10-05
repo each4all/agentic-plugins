@@ -16,8 +16,7 @@
 //     exit 0 — extracted
 //     exit 2 — the file, or the text in it, is outside the grammar (stderr says which)
 
-import { realpathSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from './lib/cli-entry.mjs';
 
 import { ArgsFileError, extractStartArguments, readArgsFile, soleArgsFilePath } from './lib/args-file.mjs';
 
@@ -36,19 +35,13 @@ export function runStartArgs(argv) {
   }
 }
 
-// Run as a CLI only when this file is the entry point, compared canonically so
-// an install reached through a symlink or a path that needs URL escaping still
-// runs (the state.mjs guard, ADR-0061 S2).
-function invokedAsCli() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (invokedAsCli()) {
+// Run as a CLI only when this file is the entry point. scripts/lib/cli-entry.mjs
+// compares both sides canonical and as paths, so an install reached through a
+// symlink (with or without --preserve-symlinks-main), or under a directory
+// whose name needs URL escaping (a space, '#', non-ASCII), still runs; and it
+// lets only one instance of this file run the CLI when --preserve-symlinks-main
+// loads it twice (ADR-0066 D1).
+if (isCliEntry(import.meta.url)) {
   const { code, stdout, stderr } = runStartArgs(process.argv.slice(2));
   if (stdout) process.stdout.write(stdout);
   if (stderr) process.stderr.write(stderr);

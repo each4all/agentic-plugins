@@ -49,6 +49,7 @@ import { stat, readdir, readFile as fsReadFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { join, isAbsolute, resolve, dirname, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from './lib/cli-entry.mjs';
 import { homedir } from 'node:os';
 
 const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
@@ -481,19 +482,12 @@ async function cliMain(argv) {
   return 2;
 }
 
-// Run as a CLI only when this file is the entry point. Both sides are compared
-// canonical and as paths, so an install reached through a symlink (with or
-// without --preserve-symlinks-main), or under a directory whose name needs URL
-// escaping (a space, '#', non-ASCII), still runs (ADR-0061 S2).
-function invokedAsCli() {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (invokedAsCli()) {
+// Run as a CLI only when this file is the entry point. scripts/lib/cli-entry.mjs
+// compares both sides canonical and as paths, so an install reached through a
+// symlink (with or without --preserve-symlinks-main), or under a directory
+// whose name needs URL escaping (a space, '#', non-ASCII), still runs; and it
+// lets only one instance of this file run the CLI when --preserve-symlinks-main
+// loads it twice (ADR-0066 D1).
+if (isCliEntry(import.meta.url)) {
   cliMain(process.argv.slice(2)).then((code) => process.exit(code ?? 0));
 }

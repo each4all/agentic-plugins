@@ -1,0 +1,75 @@
+{
+  "schema": "persona-declaration-1.0",
+  "name": "engineer",
+  "capabilities": {
+    "dispatch_target": true,
+    "commit_surface": true,
+    "legacy_homes": true,
+    "profile_presets": false
+  },
+  "decide": {
+    "fallback": {
+      "preset_id": "default",
+      "axes": [
+        {
+          "id": "essence",
+          "labels": {
+            "en": "Essence",
+            "ko": "본질"
+          },
+          "question": "Does this solve the fundamental problem, or just a symptom?",
+          "role": "decisive",
+          "gate": false
+        },
+        {
+          "id": "foundation",
+          "labels": {
+            "en": "Foundation",
+            "ko": "근본"
+          },
+          "question": "Is this architecturally sound as a long-term base?",
+          "role": "decisive",
+          "gate": false
+        },
+        {
+          "id": "standards",
+          "labels": {
+            "en": "Standards",
+            "ko": "표준"
+          },
+          "question": "Does it align with industry standards and specifications?",
+          "role": "supporting",
+          "gate": false
+        },
+        {
+          "id": "best-practice",
+          "labels": {
+            "en": "Best Practice",
+            "ko": "정석"
+          },
+          "question": "Is it the canonical approach recommended by authoritative sources?",
+          "role": "supporting",
+          "gate": false
+        },
+        {
+          "id": "practical-fit",
+          "labels": {
+            "en": "Practical Fit",
+            "ko": "실용성"
+          },
+          "question": "Is it the best choice for this project's specific constraints?",
+          "role": "supporting",
+          "gate": false
+        }
+      ]
+    },
+    "size_presets": {
+      "minor": "compact",
+      "standard": "default",
+      "major": "nine-axis"
+    },
+    "tie_break": [
+      "practical-fit"
+    ]
+  }
+}
