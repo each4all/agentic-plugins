@@ -1,166 +1,96 @@
 # agentic-plugins — Development Guidance for AI Agents
 
-This document is for AI coding agents (Claude Code, Codex CLI, Cursor, etc.)
-assisting with agentic-plugins development. It is the **primary** development
-guidance file. `CLAUDE.md` references this file rather than duplicating
-content — keeping a single source of truth across hosts is a core agentic-plugins
-principle (see "Dogfooding" below).
+This is the **primary** guidance for AI coding agents (Claude Code, Codex CLI,
+Cursor, etc.) working on agentic-plugins. `CLAUDE.md` only points here, so both
+hosts read one source (principle 1). It holds the rules you act on; reasons,
+procedures and history live in the documents it links.
 
 ---
 
 ## What agentic-plugins is
 
-agentic-plugins is a **cross-host AI agent collaboration framework**. Two faces:
-
-1. **External face** — what consumers install:
-   - Bidirectional companion CLIs (`companions/`)
-   - Reference plugins that work natively in Claude Code AND Codex CLI (`plugins/`)
-   - Plugin authoring toolkit (`kit/`)
-   - Two marketplace catalogs (`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`)
-2. **Internal face** — how agentic-plugins is itself developed:
-   - This `AGENTS.md` and supporting docs
-   - Future internal dev plugins (planned, see `docs/DEVELOPMENT.md`)
-   - Tests that validate the adapter contract and companion contract
-   - CI gates for both Claude Code and Codex CLI environments
-
-Both faces are equal-priority. agentic-plugins is built so it can build itself.
+A **cross-host AI agent collaboration framework**: plugins native to both
+Claude Code and Codex CLI, where each host can call the other as a peer. It
+has two faces of equal priority. The **external** face is what consumers
+install: the companion CLIs (`companions/`), the dual-host plugins
+(`plugins/`), the plugin authoring toolkit (`kit/`) and two marketplace
+catalogs. The **internal** face is how it is developed: this file, `docs/`,
+the tests that hold the adapter and companion contracts, and CI. agentic-plugins
+is built with its own plugins (principle 4).
 
 ---
 
 ## Repository layout
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the rationale, and
-the directory tree below for the literal locations:
-
 ```
 agentic-plugins/
-├── README.md                       # Charter for consumers
-├── AGENTS.md                       # This file — dev guidance
-├── CLAUDE.md                       # References AGENTS.md
-├── .gitignore
-├── .claude-plugin/
-│   └── marketplace.json            # Claude Code marketplace catalog
-├── .agents/
-│   └── plugins/
-│       └── marketplace.json        # Codex CLI marketplace catalog
-├── companions/                     # Bidirectional bridges (first-party, source of truth)
-│   ├── README.md
-│   ├── contract.md                 # Wire-spec v0.1.1 (ADR-0009)
-│   ├── claude-companion.mjs        # Codex → Claude bridge
-│   ├── codex-companion.mjs         # Claude → Codex bridge
-│   └── tests/                      # unit + smoke (COMPANIONS_SMOKE=1)
-├── kit/                            # Plugin authoring toolkit
-│   ├── README.md
-│   └── lint/                       # Plugin shape conformance checks
-├── plugins/                        # Reference dual-host plugins (4-layer per ADR-0010)
-│   ├── README.md
-│   ├── attention/                  # L1 framework primitive — HOOK-ONLY plugin (ADR-0040 §3,
-│   │                               # amended by ADR-0044 §2 + ADR-0045 §2, reduced by ADR-0064):
-│   │                               # the Claude Stop sensor spawning the session-capture
-│   │                               # publisher and the SessionStart entry sensor relaying the
-│   │                               # ADR-0045 entry-brief line — both via a manifest-identity
-│   │                               # discover-runtime ladder with two capability floors; no
-│   │                               # skills/verbs/state.
-│   │                               # Claude hook registration is manifest-declared at
-│   │                               # adapters/claude/hooks/ (NOT the Codex default-discovery
-│   │                               # path) and the Codex manifest declares no hooks → zero Codex
-│   │                               # hook surface (§3 amendment)
-│   ├── companions/                 # L1 framework primitive — script-only library plugin (ADR-0008).
-│   │                               # As of v0.3.0 also bundles canonical companion discovery
-│   │                               # library (scripts/discover-peer.mjs); Stage 2 Deliverable B
-│   │                               # absorbed discovery into this plugin per ADR-0010 §6 trigger
-│   │                               # evaluation (high cohesion, no separate plugin spawned)
-│   ├── designer/                   # L3 persona — code-first design/UX decision & quality workbench
-│   │                               # (ADR-0042 Accepted 2026-07-09; third L3 persona: 6 verbs + start macro
-│   │                               # + 3 meta skills + 5 L4 profiles; post-code critique loop with an
-│   │                               # accessibility veto gate; non-dispatch, composes image L2, no Figma)
-│   ├── engineer/                   # L3 persona — 6-verb workbench (Stage 2 complete 2026-05-06).
-│   │                               # research capability folded in via investigate's cited-brief
-│   │                               # profile per ADR-0014 + ADR-0015 (Stage 2.5+); plugins/research
-│   │                               # archived at commit 28b5eb8
-│   ├── founder/                    # L3 persona — new-business planning workbench (ADR-0036, 6 verbs
-│   │                               # + start macro + 3 meta skills; second L3 persona, Accepted 2026-06-15)
-│   └── image/                      # L2 capability — cross-host image generation via Codex gpt-image
-│                                   # (ADR-0037, lean L2: 6 verbs + dispatch helpers, no continuity machinery;
-│                                   # generation only through Codex's integrated gpt-image, never a direct API)
-├── scripts/
-│   ├── sync-companion-bundles.mjs  # drift-checked companion script copy
-│   └── validate-marketplace.mjs    # marketplace catalog validation
-├── tests/
-│   └── plugin-shape/               # per-plugin shape conformance tests
-└── docs/
-    ├── ARCHITECTURE.md             # Overall design overview (4-layer per ADR-0010)
-    ├── DEVELOPMENT.md              # How agentic-plugins is itself developed
-    └── adr/                        # Architecture Decision Records
-        ├── README.md               # ADR index
-        ├── template.md             # Standard ADR template
-        └── 0001..0017-*.md         # Decisions (0013 reserved, 0014 superseded by 0015 timeline portion)
+├── AGENTS.md · CLAUDE.md · README.md  # this guidance · its Claude hook · consumer charter
+├── release-please-config.json         # the package registry (keys of `packages`)
+├── .claude-plugin/marketplace.json    # Claude Code catalog
+├── .agents/plugins/marketplace.json   # Codex CLI catalog, pinned to release commits (ADR-0061)
+├── companions/        # the two bridges (Claude → Codex, Codex → Claude), contract.md v0.1.1 (ADR-0009)
+├── plugins/           # dual-host plugins, 4-layer model (ADR-0010)
+│   ├── attention/     # L1 hook-only: Claude Stop + SessionStart sensors for runtime (ADR-0040, 0045, 0064)
+│   ├── companions/    # L1 script library: bundled companions + peer discovery (ADR-0008)
+│   ├── runtime/       # L1 host readiness and operator control (ADR-0024, 0064)
+│   ├── orchestrator/  # L2 macro plans, engineer dispatch, autopilot (ADR-0018, 0019, 0062, 0063)
+│   ├── image/         # L2 image generation through Codex's integrated gpt-image only (ADR-0037)
+│   ├── engineer/      # L3 software-engineering workbench (ADR-0010, 0020)
+│   ├── founder/       # L3 new-business planning workbench (ADR-0036)
+│   └── designer/      # L3 code-first design/UX workbench, accessibility veto (ADR-0042)
+├── kit/lint/          # plugin shape conformance checks
+├── scripts/           # catalog/version/artifact validators, sync helpers, mutation harness
+├── tests/             # node --test suite: per plugin, plus plugin-shape/, scripts/, cross-host/, acceptance/
+├── .github/workflows/ # full-tests.yml, validate.yml, release-please.yml
+└── docs/              # ARCHITECTURE.md · DEVELOPMENT.md (stage history) · adr/ (index: README.md)
+                       # · runbooks/ · frozen records: assurance/, audits/, release-proofs/ (ADR-0065)
 ```
+
+Each plugin carries a `README.md`, both host manifests (`.claude-plugin/`,
+`.codex-plugin/`) and its own `CHANGELOG.md`. ADR-0013 is reserved for a
+future Codex CLI command-integration mechanism.
 
 ---
 
 ## Architecture in one paragraph
 
-agentic-plugins uses **Hexagonal architecture (ports and adapters)** applied to
-AI agent plugins (ADR-0001), extended with a **4-layer composition model**
-per ADR-0010:
+agentic-plugins uses **Hexagonal architecture (ports and adapters)** applied
+to AI agent plugins (ADR-0001), extended with a **4-layer composition model**
+(ADR-0010); dependencies point down, L4 → L3 → L2 → L1:
 
-1. **Layer 1 — Framework primitive** (`plugins/companions`): cross-host
-   peer-agent invocation infrastructure
-2. **Layer 2 — Capability** (`plugins/orchestrator` Stage 3+):
-   persona-agnostic activities reusable by multiple personas. The
-   first multi-verb L2 occupant is `plugins/orchestrator` (Stage 3+
-   first shipped as a plan-only MVP per
-   [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
-   §sub-decision-1, then expanded by [ADR-0019](docs/adr/0019-cross-plugin-invocation-contract.md)
-   and [ADR-0023](docs/adr/0023-peer-runner-supervisor-layer.md) into
-   macro planning, supervised Plan-verify peer dispatch, same-host
-   engineer dispatch, completion recorded when the work lands
-   ([ADR-0062](docs/adr/0062-subtask-completion-recorded-at-landing.md)),
-   finalize/abort, and macro auto-archive. The Stage 1 `plugins/research` incumbent was
-   retired at Stage 2.5+ ([ADR-0014](docs/adr/0014-plugins-research-deprecation.md)),
-   its cited-brief contract absorbed into `engineer:investigate`'s
-   cited-brief profile. `plugins/image` shipped as an L2 capability
-   ([ADR-0037](docs/adr/0037-image-capability-plugin.md), lean L2 —
-   gpt-image via the companion bridge); `decision` remains future work.
-3. **Layer 3 — Persona / workbench** (`plugins/engineer` Stage 2,
-   `plugins/founder` ADR-0036 second L3 persona, `plugins/designer`
-   ADR-0042 third L3 persona): user-facing install unit, composes
-   capabilities through profiles
-4. **Layer 4 — Profile** (sub-discipline within persona, e.g.,
-   `engineer:backend`, `designer:cta`): configuration data carrying
-   discipline-specific context
+1. **Layer 1 — Framework primitive**: `companions` (cross-host peer
+   invocation), `runtime` (host readiness, operator control), `attention`
+   (the hooks that feed runtime).
+2. **Layer 2 — Capability**, persona-agnostic and reusable: `orchestrator`
+   (macro planning and dispatch), `image`; `decision` is a reserved slot.
+3. **Layer 3 — Persona / workbench**, the user-facing install unit composing
+   capabilities through profiles: `engineer`, `founder`, `designer`.
+4. **Layer 4 — Profile**: sub-discipline configuration data within a persona
+   (e.g. `engineer:backend`, `designer:cta`).
 
-Skills inside each L3/L2 plugin follow the **6 universal cognitive
-verbs**: Investigate / Frame / Decide / Compose / Critique / Refine
-(ADR-0010). Canonical names per layer:
+Skills in L2/L3 plugins follow the **6 universal cognitive verbs**:
+Investigate / Frame / Decide / Compose / Critique / Refine (ADR-0010). Names:
+`<persona>:<verb>` for L3 (`/engineer:investigate`), `<capability>:<verb>`
+for L2 (`/image:compose`), and `<capability>:<capability>` for a single-verb
+capability (ADR-0010 §3; the retired `/research:research`, ADR-0014, was the
+precedent). Profile and topic flow as arguments. Verb-level sugar aliases
+within a plugin are permitted (`/engineer:audit` ≡ `/engineer:critique
+--profile=full-codebase`); plugin-name level marketplace aliases are not
+(ADR-0011 §Non-Goals item 9). Each host's **adapter** implements that host's
+runtime model (manifests, hook events and payloads, orchestration,
+continuity); the **companion** layer holds two bridges, one per direction.
 
-- **L3 persona plugins** use `<persona>:<verb>` (e.g.,
-  `/engineer:investigate`, `/designer:critique`)
-- **L2 capability plugins** use `<capability>:<verb>` (e.g.,
-  future `/decision:decide`, `/decision:critique`)
-- **Single-verb capability plugins** are a special case where
-  plugin name and verb collide: `<capability>:<capability>`. The
-  Stage 1 `plugins/research` was the precedent for this pattern
-  (its single command was `/research:research`); the plugin was
-  retired at Stage 2.5+ per [ADR-0014](docs/adr/0014-plugins-research-deprecation.md),
-  but the rule itself stands for any future single-verb L2
-  capability. See ADR-0010 §3 for the special-case rule
-
-Profile and topic flow as arguments. Verb-level sugar aliases
-within a plugin are permitted (ADR-0010 §3); plugin-name level
-marketplace aliases are not (ADR-0011 §Non-Goals item 9).
-
-The **adapter** sub-layer per host implements the host's runtime
-model (manifest schemas, hook event/payload mapping, orchestration
-patterns, continuity protocols). The **companion** layer (Layer 1)
-holds two bridges — one in each direction — for peer-agent
-invocation. See ADRs 0001–0024 for the specifics (0013 remains
-reserved pending Codex CLI commands integration trigger; 0014 was
-superseded by 0015 for the `plugins/research` archive timeline only;
-0017–0023 cover continuity, orchestrator, command-surface parity, and
-peer-runner supervision follow-ups; 0024 accepts the runtime/operator
-control-plane track).
+**Runtime commands** (table: `plugins/runtime/README.md` §Commands):
+`doctor`, `settings`, `context`, `bootstrap`, `dashboard`, `retention`,
+`migrate`, `consensus` and `worktree`. `runtime:consensus` runs a bounded
+multi-peer consensus on a real conflict (plan → `execute --execute` →
+synthesize → `next-round` → decide, ratify or cancel; two rounds by default,
+three at most, then the owner decides), and `runtime:worktree plan` lays out
+how to isolate a slice in its own git worktree. Both are kept capabilities,
+the tools for peers that conflict and for work that splits into independent
+lanes. Runtime never loops consensus without bound, relaxes a host's
+permissions, mutates a host session's context or Codex trust state, or puts
+raw peer output in the main session.
 
 ---
 
@@ -173,10 +103,9 @@ control-plane track).
 Types: `feat`, `fix`, `docs`, `ci`, `refactor`, `chore`, `test`
 Scope: subsystem name (e.g., `companions`, `kit`, `plugin/<name>`, `adr`, `docs`)
 
-Examples:
-- `feat(companions): add claude-companion XML output parser`
-- `docs(adr): finalize ADR-0007 cutover plan`
-- `test(kit): add adapter-contract conformance tests`
+Examples: `feat(companions): add claude-companion XML output parser`,
+`docs(adr): finalize ADR-0007 cutover plan`,
+`test(kit): add adapter-contract conformance tests`.
 
 ### Branching — never commit to main
 
@@ -187,204 +116,105 @@ Examples:
 
 ### Pull strategy
 
-Use **merge** for `git pull`. Run `git pull --no-rebase` explicitly. Do
-not rely on bare `git pull` since `pull.rebase=true` in any config layer
-silently rewrites history.
+Use **merge** for `git pull`. Run `git pull --no-rebase` explicitly. Do not
+rely on bare `git pull` since `pull.rebase=true` in any config layer silently
+rewrites history.
 
 ### Versioning
 
-SemVer (MAJOR.MINOR.PATCH). MAJOR for breaking changes (companion
-contract, adapter contract, manifest schema). MINOR for new plugins or
-new adapter features. PATCH for fixes and docs.
+SemVer (MAJOR.MINOR.PATCH). MAJOR for breaking changes (companion contract,
+adapter contract, manifest schema). MINOR for new plugins or new adapter
+features. PATCH for fixes and docs.
 
 ### Release process
 
-release-please owns per-package version automation. It tracks each
-package via `release-please-config.json` and writes new versions into
-`.release-please-manifest.json` plus each package's
-`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` (per the
-`extra-files` mapping).
+release-please versions each package, writing `.release-please-manifest.json`
+and each plugin package's two `plugin.json` manifests (`extra-files`). The root
+catalogs are deliberately not `extra-files` targets: after each release the
+release-please workflow runs `scripts/sync-marketplace-versions.mjs`, which
+writes each Claude entry's `version` and advances each Codex pin (ADR-0061).
 
-The two root catalogs are **deliberately not** `extra-files` targets.
-Keeping `.claude-plugin/marketplace.json` under release-please
-management would couple every plugin package to commits that touch any
-catalog entry, producing no-op version bumps on unrelated plugins. The
-Codex catalog, `.agents/plugins/marketplace.json`, has a second reason:
-each entry pins the commit its release tag peels to, so its pin can be
-derived only once release-please has cut that tag
-([ADR-0061](docs/adr/0061-codex-installs-pinned-to-release-commits.md)
-§Decision 2). Instead, `scripts/sync-marketplace-versions.mjs` syncs
-both catalogs after each release. It writes each Claude entry's
-`version`, and it advances a Codex entry's `ref` and `sha` only when
-that package's manifest version has moved past its pin. It plans every
-package before writing anything, so one package it cannot pin blocks
-both catalogs. The release-please GitHub Action runs that sync as a
-follow-up step automatically and validates what it wrote before
-pushing. When the sync refuses, and for how the pins were first
-activated, see
-[`docs/runbooks/codex-pin-activation.md`](docs/runbooks/codex-pin-activation.md).
-Recovery is a new dispatch or a forward release, never a revert to
-`local`.
+- **Only the release commit may show its catalogs trailing the manifest**
+  (ADR-0065 Decision 8); every other commit is validated strictly. A commit
+  that lands on `main` while the release job runs stays red until the
+  catalogs sync. Retry with a manual dispatch,
+  `gh workflow run release-please.yml --ref main`, never a re-run of the
+  failed job: release-please reports `releases_created` only once, so a
+  re-run skips the sync.
+- **A change under `plugins/runtime/data/` carries a release-routing type
+  (`feat` or `fix`) on its squash subject.** Runtime commands read
+  `plugin-set.json` and `schemas/**` from the *installed* plugin, so an
+  unreleased edit changes nothing anyone runs. Review enforces this; nothing
+  checks that the release happened (ADR-0065 Decision 5). Roll such an asset
+  back with a forward patch, never by reusing or lowering a version.
+- **On Codex, any package edit reaches an installed plugin only through a
+  release and its pin**, on each machine that has passed ADR-0061 §Decision 5
+  (b). Exercising an unreleased change there takes a release or a deliberate
+  local override, which never enters the catalog. On a machine that has not
+  passed it, "an unreleased edit changes nothing anyone runs" holds on Claude
+  Code only, and there only for a version already materialized and not
+  replaced.
+- **After installing a `plugin-runtime` release on a host, run
+  `runtime:doctor` with its proofs there** (`--permission-proof
+  --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke
+  --workflow-continuation-proof --execute-workflow-continuation-proof`) and
+  fix a failure forward. It is a habit, not a gate, and leaves no repository
+  record (ADR-0065 Decision 2). Before `--record`, install the release on
+  both hosts: they share `.agentic-plugins/runs/doctor/`, and an older runtime
+  counts a newer artifact `malformed`. After a hook-bearing upgrade on Codex,
+  review and trust the hooks in `/hooks`, then record it with
+  `runtime:settings --attest-codex-hook-review`.
 
-**Only the release commit may show its catalogs trailing the
-manifest** ([ADR-0065](docs/adr/0065-release-ceremony-reduction.md)
-Decision 8). The validators decide that from the commit's content, not
-from its branch: in a commit that changes a package's version in
-`.release-please-manifest.json` from v0 to v1, that package's Claude
-catalog version and Codex pin may stand at exactly v0, and a package
-with no release tag reachable from the commit's first parent may have
-no Codex entry yet. Every other commit is checked strictly, and so is
-the sync's own validation. No test reads a catalog's version, ref or
-sha, or which entries the Codex catalog lists, so the release commit's
-run is green. Three things follow:
+Merge hygiene and squash messages:
 
-- **The catalog sync commit gets no CI run of its own.** It is pushed
-  with `GITHUB_TOKEN`, and a push made that way starts no workflow. The
-  sync validated it before the push, and the next push to `main` checks
-  it strictly.
-- **A commit that lands on `main` while the release job runs is red**
-  until the catalogs are synced, and the bot's push is then rejected as
-  non-fast-forward. That red is the true signal that the retry is due.
-- **The retry path is a manual dispatch** of `release-please.yml`
-  (`gh workflow run release-please.yml --ref main`). It checks out
-  current `main`, re-runs the sync and validates strictly, also when
-  there is nothing to write. Do not re-run the failed job: release-please
-  reports `releases_created` only once, so a re-run skips the sync.
-
-**After installing a `plugin-runtime` release on a host, run
-`runtime:doctor` with its proofs there** (`--permission-proof
---execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke
---workflow-continuation-proof --execute-workflow-continuation-proof`), and
-treat a failure as a defect to fix forward. It is the one step that runs
-the released bytes as installed, and it has found defects in released code
-that no test did. It is a habit, not a gate: `main` does not wait on it,
-no document restates its result, and the repository keeps no record of it
-([ADR-0065](docs/adr/0065-release-ceremony-reduction.md) Decision 2). If
-you record the proof (`--record`), install the release on both hosts
-first. Both hosts read the same `.agentic-plugins/runs/doctor/`, and an
-older runtime counts a newer artifact `malformed` (see
-`READABLE_DOCTOR_SCHEMA_PAIRS` in `plugins/runtime/scripts/doctor.mjs`).
-
-**Some `plugins/runtime` assets do not take effect until a release ships
-them.** `runtime` commands resolve `plugins/runtime/data/plugin-set.json`
-and `plugins/runtime/data/schemas/**` from the *installed* plugin, not
-from the repository, so editing them on `main` changes nothing anyone
-runs until a release is tagged. **A change under `plugins/runtime/data/`
-therefore carries a release-routing type (`feat` or `fix`) on its squash
-subject**, which is what release-please routes on, so the change is
-released. Like the commit-splitting rule below, this is a convention
-enforced by review: nothing checks that the release happened
-([ADR-0065](docs/adr/0065-release-ceremony-reduction.md) Decision 5). The
-counterexample `16b1833` was typed `docs:`, routed nothing, and left
-released and repository bytes apart for 54 hours. Roll such an asset back
-with a forward patch, never by reusing or lowering a version: a reused
-version would name two different trees.
-
-**On Codex this premise holds machine by machine.** The Codex mechanism
-was measured on 2026-09-24 with codex-cli 0.156.1. When the marketplace is
-added from Git without a ref, a `codex exec` or app-server start can
-upgrade the marketplace clone once `main` has moved, and then
-force-reinstalls every configured plugin from it without a version change.
-While the Codex catalog's entries were `local`, an installed Codex plugin
-therefore ran `main`'s bytes under its released version.
-[ADR-0061](docs/adr/0061-codex-installs-pinned-to-release-commits.md) pins
-each Codex catalog entry to its release commit and moves cross-plugin
-discovery to the installed cache. Its publisher activation (§Decision 5
-(a)) landed on 2026-09-26 in `3006c8b`. A machine receives the pinned
-catalog at its next successful marketplace refresh. From then on, on the
-measured version, the reinstall that follows a move of `main`
-materializes the pinned commits, and a materialization that fails leaves
-the older cache in place (§Decision 6, §Decision 7). The marketplace
-clone keeps tracking `main`. Codex materializes the pinned commits from
-it, but its checked-out package files are `main`'s, can hold unreleased
-changes, and are not an install surface. The premise holds on a machine
-only once that machine passes §Decision 5 (b):
-
-- its installed packages meet the migration floors;
-- its home receivers are re-rendered;
-- a fresh Codex session resolves each sibling under the Codex installed
-  cache;
-- the operator has run the §Decision 8 checks on that machine: a fresh
-  `runtime:doctor` proof, each resolved sibling root, the receivers'
-  state, and the eight-package cache comparison. They leave no
-  repository record (ADR-0065 Decision 2).
-
-On a machine past it, every package edit, including a `docs`- or
-`test`-typed one, reaches an installed Codex plugin only through a
-release and the pin that follows it. Exercising an unreleased change
-there takes a release or a deliberate local override, which never enters
-the catalog (§Decision 7). On a machine that has not passed it, "editing
-them on `main` changes nothing anyone runs" holds on Claude Code only,
-and on Claude only for a version already materialized and not replaced.
-
-Release-please changelog hygiene depends on merge shape. For a
-single-package PR, prefer a squash merge whose final message is the one
-intended changelog entry. When preserving multiple release-routed
-commits is necessary, use rebase merge if available or avoid a merge
-commit body that repeats the same conventional headline. A GitHub merge
-commit that embeds a conventional PR title can be parsed alongside the
-original branch commit, producing duplicate changelog entries for the
-same change.
-
-**The squash message comes from the PR, not from the branch commits.**
-The repository is configured `squash_merge_commit_title=PR_TITLE` and
-`squash_merge_commit_message=PR_BODY`. GitHub's default for the latter
-is `COMMIT_MESSAGES`, which concatenates every branch commit as a
-`* <subject>` bullet plus its full body — two failure modes at once.
-It re-emits each branch commit's conventional headline into the body,
-which is the duplicate-changelog hazard described above; and on any
-branch with a propose → review → revise trajectory it preserves the
-**superseded** commit bodies as assertions in the permanent record. That
-happened on `85fee0a` (ADR-0049): the review had disproved the first
-commit's rationale, and the squash carried it onto `main` anyway. See
-the correction on [#646](https://github.com/each4all/agentic-plugins/pull/646).
-
-Two consequences for authors:
-
-- The PR body **is** the commit body. Write it as the record you want,
-  and update it after a review changes the decision — do not leave a
-  stale description standing.
+- For a single-package PR, prefer a squash merge whose message is the one
+  intended changelog entry. When several release-routed commits must survive,
+  use rebase merge if available, or keep the merge commit body from repeating
+  the conventional headline: a merge commit that embeds a conventional PR
+  title can be parsed alongside the branch commit, duplicating the changelog
+  entry.
+- **The squash message comes from the PR, not from the branch commits**
+  (`squash_merge_commit_title=PR_TITLE`, `squash_merge_commit_message=PR_BODY`).
+  The PR body **is** the commit body: write it as the record you want, and
+  update it after a review changes the decision.
 - Do not put a literal `BREAKING CHANGE:` line, or a bare conventional
-  headline at the start of a line, into a PR body unless you mean
-  release-please to route it. Prose that merely mentions a breaking
-  change is fine; a footer-shaped line is not.
+  headline at the start of a line, into a PR body unless release-please should
+  route it. Prose that mentions a breaking change is fine; a footer-shaped
+  line is not.
+- Merging from the CLI, pass both parts explicitly —
+  `gh pr merge <n> --squash --subject "<title>" --body-file <path>` — so the
+  message is correct even if the repository setting drifts.
 
-When merging from the CLI, pass both parts explicitly rather than
-relying on the setting — `gh pr merge <n> --squash --subject "<title>"
---body-file <path>` — so the message is correct even if the repository
-setting drifts.
+The mechanics and incidents behind these rules (how the sync plans and
+validates, why the release commit's CI is green, how a pin reaches a Codex
+machine, the `16b1833` and `85fee0a` cases) are in
+[`docs/runbooks/release-process.md`](docs/runbooks/release-process.md); pin
+activation and sync refusals in
+[`docs/runbooks/codex-pin-activation.md`](docs/runbooks/codex-pin-activation.md).
 
 ### Cross-package commit splitting
 
-release-please routes a commit's footer (`feat`, `fix`,
-BREAKING CHANGE, etc.) to **every** package whose tracked path the
-commit touches — Conventional Commits scope is a label, not a
-routing override. When a single commit modifies files in 2+
-release-please package paths, **split into per-package commits
-before pushing**. Per-package commits stage only that package's
-files (`git add <package-path> && git commit`).
+release-please routes a commit's footer (`feat`, `fix`, BREAKING CHANGE, etc.)
+to **every** package whose tracked path the commit touches — Conventional
+Commits scope is a label, not a routing override. When a single commit
+modifies files in 2+ release-please package paths, **split into per-package
+commits before pushing**, each staging only its package's files
+(`git add <package-path> && git commit`).
 
-The package paths are the keys of `release-please-config.json`
-`packages` — currently `companions`, `plugins/attention`,
-`plugins/companions`, `plugins/designer`, `plugins/engineer`,
-`plugins/founder`, `plugins/image`, `plugins/orchestrator`, and `plugins/runtime`. Files **outside**
-every package key prefix are exempt: root files (`AGENTS.md`,
-`README.md`, `package.json`, etc.),
-`docs/`, `scripts/`, `tests/`, `kit/`, `.claude-plugin/`,
-`.agents/`, `.github/`, and any other unlisted path. Root-level
-docs may be folded into any per-package commit or a separate
-docs-only commit at author's discretion. The exemption is
-structural — it is determined by `release-please-config.json` and
-shrinks automatically if a new package's path overlaps a previously
-exempt area.
-
-This is a convention enforced by reviewer attention, not a CI gate.
-A violation surfaces as an incorrect release-please PR (e.g., a
-BREAKING bump on a package the change did not target). See
-[ADR-0016](docs/adr/0016-cross-package-commit-splitting.md) for the
-full rationale, the originating `28b5eb8` incident, and rejected
-alternatives (pre-commit lint hook, monorepo decomposition, scope
-as routing override).
+The package paths are the keys of `release-please-config.json` `packages` —
+currently `companions`, `plugins/attention`, `plugins/companions`,
+`plugins/designer`, `plugins/engineer`, `plugins/founder`, `plugins/image`,
+`plugins/orchestrator` and `plugins/runtime`. Files outside every package key
+prefix are exempt: root files (`AGENTS.md`, `README.md`, `package.json`,
+etc.), `docs/`, `scripts/`, `tests/`, `kit/`, `.claude-plugin/`, `.agents/`,
+`.github/` and any other unlisted path. Root-level docs may be folded into any
+per-package commit or a separate docs-only commit at the author's discretion.
+The exemption is structural, so it shrinks
+automatically if a new package's path overlaps a previously exempt area.
+Reviewers enforce this, not CI; a violation surfaces as a wrong release-please
+PR (e.g. a BREAKING bump on an untargeted package). Rationale, the originating
+`28b5eb8` incident and rejected alternatives:
+[ADR-0016](docs/adr/0016-cross-package-commit-splitting.md).
 
 ### ADR process
 
@@ -397,125 +227,116 @@ as routing override).
 
 ## Development principles
 
-These are repo-wide rules. Plugin-specific conventions go in each
-plugin's own `CLAUDE.md`/`AGENTS.md`.
+These are repo-wide rules. Plugin-specific conventions go in each plugin's own
+`CLAUDE.md`/`AGENTS.md`.
 
 ### 1. Standards-aligned core
 
-When the same capability has both a host-specific implementation and an
-open-standard implementation, the standard goes in `core/`, the host
-specific goes in the adapter. Examples:
-- Skills → Agent Skills standard (agentskills.io) → core
-- Tools → MCP standard → core
-- Hooks → host-specific event names → adapter
-- Subagents → persona description in core, host-format (markdown+YAML or TOML) generated in adapter
+When a capability has both a host-specific and an open-standard
+implementation, the standard goes in `core/` and the host-specific one in the
+adapter: Skills → Agent Skills standard (agentskills.io) → core; Tools → MCP
+→ core; Hooks → host-specific event names → adapter; Subagents → persona
+description in core, host format (markdown+YAML or TOML) generated in the
+adapter.
 
 ### 2. Layered separation, not thin adapter
 
-Adapters are **as thin as possible, but no thinner**. They contain
-whatever is necessary to honor core intent within the host's runtime
-model. Some adapters will be substantial (e.g., orchestration patterns
-that require host-specific subagent invocation). Do not force false
-unification.
+Adapters are **as thin as possible, but no thinner**: they contain whatever
+honoring core intent within the host's runtime model takes, and some are
+substantial (e.g. orchestration that needs host-specific subagent
+invocation). Do not force false unification.
 
 ### 3. Companion contract is the framework
 
-The two companions (`claude-companion`, `codex-companion`) implement the
-same `companions/contract.md`. This contract — XML prompt structure,
-output parsing, error semantics — is the inviolable contract. Both
-adapters call companions through this contract; no adapter calls a
-companion through ad-hoc shell wrapping.
+Both companions (`claude-companion`, `codex-companion`) implement
+`companions/contract.md` — XML prompt structure, output parsing, error
+semantics — the inviolable contract. Adapters call companions only through it,
+never through ad-hoc shell wrapping.
 
 ### 4. Dogfooding
 
-agentic-plugins is developed using AI coding agents. Initially Claude Code
-(this session). As soon as agentic-plugins' first plugin is stable enough to
-self-serve, agentic-plugins switches to using its own plugin for further
-development — that switch event is itself a milestone. See
-`docs/DEVELOPMENT.md` for the dogfooding plan.
+agentic-plugins is developed with its own plugins, as it has been since
+`plugins/engineer` drove its own development at the Stage 2 exit: one
+deliverable through `/engineer:start` (or a single verb), several through
+`/orchestrator:plan`, then `/orchestrator:next` per subtask. Real-use findings
+feed the next change. History: `docs/DEVELOPMENT.md`.
 
 ### 5. Honest scope
 
-If a feature cannot be made native+canonical in both hosts, the project
-documents the limit rather than forcing false unification. This applies
-in particular to host-specific runtime semantics (auto-delegation,
-context lifecycle events, statusline, etc.). See ADR-0001 final note.
+If a feature cannot be made native+canonical in both hosts, document the limit
+rather than force false unification — in particular for host-specific runtime
+semantics (auto-delegation, context lifecycle events, statusline, etc.). See
+ADR-0001 final note.
 
 ---
 
 ## Build / test / CI
 
-Primary local commands:
+- `npm test` — full Node test suite via `node --test` discovery (ADR-0033);
+  conventionally-named new test files are picked up automatically.
+  `npm test -- <files>` runs a subset (`npm test -- tests/cross-host/test-*.mjs`).
+- `npm run test:smoke` — the companion smoke tests
+  (`companions/tests/*.smoke.mjs`, outside discovery).
+- `npm run lint:plugin-shape` — validate every plugin directory with `kit/lint`.
+- `npm run validate:marketplace`, `validate:versions`, `validate:artifacts` —
+  catalog, release-please manifest and generated-artifact ignore policy
+  consistency. `validate:marketplace` also checks the Codex catalog's ADR-0061
+  Decision 2 phase against `scripts/data/codex-pin-floors.json`; it needs full
+  history and tags and fails closed without them, and `-- --base <rev>` adds
+  the monotonic-pin comparison against a baseline catalog.
+- `npm run sync:companions`, `npm run sync:marketplace` — drift correction.
+- `npm run mutate -- <spec>` — run a mutation spec from
+  `scripts/mutation-specs/`. A green suite is not evidence that it tests
+  anything; the harness breaks the tree on purpose and scores each defect
+  against a stated expectation. Each mutation runs in its own disposable copy
+  of HEAD **plus the working tree** (the gates derive their repo root from
+  `import.meta.url`, so editing in place or changing cwd proves nothing). It
+  refuses to score an edit whose anchor drifted, or anything when the
+  unmutated control is not green. How the copy is made: the header of
+  `scripts/mutation-harness.mjs`.
 
-- `npm test` — full Node test suite via `node --test` discovery (ADR-0033). New conventionally-named test files are picked up automatically; smoke tests live in the non-discoverable `companions/tests/*.smoke.mjs` namespace and run only via `npm run test:smoke`.
-- `npm test -- <files>` — a subset of the suite, e.g. `npm test -- tests/cross-host/test-*.mjs`.
-- `npm run lint:plugin-shape` — validate all plugin directories with `kit/lint`.
-- `npm run validate:marketplace`, `npm run validate:versions`, and
-  `npm run validate:artifacts` — catalog, release-please manifest, and
-  generated-artifact ignore policy consistency. `validate:marketplace` also
-  checks the Codex catalog's
-  [ADR-0061](docs/adr/0061-codex-installs-pinned-to-release-commits.md)
-  Decision 2 phase against the migration floors in
-  `scripts/data/codex-pin-floors.json`. It needs full history and tags and
-  fails closed without them. `-- --base <rev>` adds the monotonic-pin
-  comparison against a baseline catalog. CI passes main's previous commit
-  on a push to `main`, and the branch's fork point on `main` on a push to
-  any other branch.
-- `npm run sync:companions` and `npm run sync:marketplace` — drift-correction helpers.
-- `npm run mutate -- <spec>` — run a mutation spec from `scripts/mutation-specs/`.
-  A green suite is not evidence that the suite tests anything, and this
-  repository has shipped guards that passed because they matched nothing; the
-  harness produces that evidence by breaking the tree on purpose and scoring
-  each defect against a stated expectation. Every mutation gets its own
-  disposable copy of HEAD **plus the working tree** (the gates derive their repo
-  root from `import.meta.url`, so editing in place or changing cwd proves
-  nothing), written through a separate `GIT_INDEX_FILE` so the real index is
-  never touched. It refuses to score an edit whose anchor drifted, and refuses
-  to score at all when the unmutated control is not green.
-
-GitHub Actions run on Node 24, in three workflows.
-
-- `full-tests.yml` runs the full discovery-based `npm test` once, with no
-  path filter. It is the only workflow that runs tests, and the repo-level
-  coverage authority (ADR-0033).
-- `validate.yml` runs the checks that are not test files:
-  `lint:plugin-shape` and the catalog, version and artifact validators.
-- `release-please.yml` runs on a push to `main` and on manual dispatch.
-
-The first two run on a push to any branch and on `workflow_dispatch`, and
-never on `pull_request`. release-please updates its PR with
-`GITHUB_TOKEN`, and GitHub starts `pull_request` runs for such a PR in an
-approval-required state, so they used to fail with zero jobs. A pull
-request shows its head commit's push run. Fork pull requests get no CI.
-Branches cut before 2026-10-03 get no automatic run until they are
-rebased onto `main` or merge it; a manual dispatch still works. See the
-ADR-0033 amendment of that date.
+GitHub Actions run on Node 24. `full-tests.yml` runs the full `npm test` once,
+with no path filter: it is the only workflow that runs tests, and the
+repo-level coverage authority (ADR-0033). `validate.yml` runs the non-test
+checks: `lint:plugin-shape` and the three validators, with `--base` set to
+main's previous commit on a push to `main` and to the branch's fork point on
+`main` on a push to any other branch (a manual dispatch compares no
+baseline). Both run on a push to any branch and on `workflow_dispatch`,
+never on `pull_request` (GitHub holds those runs for approval on
+release-please's `GITHUB_TOKEN`-updated PR, where they failed with zero jobs).
+A pull request shows its head commit's push run; fork pull requests get no CI;
+a branch cut before 2026-10-03 needs a rebase onto `main`, a merge of it, or a
+manual dispatch (ADR-0033 amendment of that date). `release-please.yml` runs on
+a push to `main` and on manual dispatch.
 
 ---
 
 ## Current state and next session
 
-**Stage 0 (Scaffolding)** — complete (2026-04 to 2026-05-02). All 7 ADRs accepted (0001–0007), tooling decided, LICENSE in place.
+Stages 0–2 are complete, and the owner declared the omcc → agentic-plugins
+cutover on 2026-06-03 (ADR-0007, ADR-0012). Stage 2.5+ resumes with ADR-0013
+when its trigger fires (a Codex CLI plugin-commands schema lands, or another
+mechanism is designed); Stage 3+ continues in small PRs, with the
+runtime/operator track (ADR-0024) fed by real-use findings. Stage history,
+exit evidence and the cutover record are in `docs/DEVELOPMENT.md`; shipped
+versions in `.release-please-manifest.json`, the package changelogs and the
+release tags.
 
-**Stage 1 (Reference plugin + companion contract)** — complete (2026-05-05). Shipped `plugins/companions` (script-only library) and `plugins/research` (single-skill capability with bidirectional companion ensemble; retired at Stage 2.5+ per [ADR-0014](docs/adr/0014-plugins-research-deprecation.md), cited-brief contract absorbed into `engineer:investigate`). Round-trip verification at the time: bidirectional companion calls succeeded in both directions; per-host CI gates (`claude-tests.yml`, `codex-tests.yml`) green on every push. The two reference brief artifacts (`output/` directory, gitignored locally) demonstrated the protocol but were not committed evidence — exit verification was the green CI runs and the protocol acceptance documented in `docs/DEVELOPMENT.md` §Stage 1 exit evidence.
+To start a session:
 
-**Stage 2 (Self-development plugin)** — complete (2026-05-06). ADRs 0010 (plugin boundary policy + 4-layer composition + 6 universal verbs), 0011 (workflow continuity Option III storage), and 0012 (omcc + codex-plugin-cc removal preconditions) accepted. Shipped `plugins/engineer` (canonical L3 persona name; plugin-name level marketplace aliases like `/dev:` are a Stage 2 non-goal per ADR-0011 §9). Verb-level aliases inside the plugin (e.g., `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`) are permitted (ADR-0010 §3). All five deliverables (A foundation → B kit/discovery absorbed into `plugins/companions` per ADR-0010 §6 high-cohesion evaluation → C plugin core + 6 verb skills → D adapters + minimal continuity → E validation + dogfood) merged. Stage 2 exit gate met: `plugins/engineer` drives its own development without omcc-dev (see `docs/DEVELOPMENT.md` §Stage 2 exit evidence). Per-condition progress is tracked via the [ADR-0012](docs/adr/0012-omcc-removal-preconditions.md) four-condition matrix in `docs/DEVELOPMENT.md`; all four conditions reached `satisfied` on 2026-06-03 (conditions 3 and 4 by owner determination), and the owner declared the omcc → agentic-plugins cutover per ADR-0007 the same day (see `docs/DEVELOPMENT.md` §Cutover status).
+1. Read this file, then `docs/ARCHITECTURE.md`, then the ADRs your change
+   touches (index: `docs/adr/README.md`). The usual ones: 0010 (plugin
+   boundaries, layers, verbs), 0016 (release routing), 0019 (orchestrator ↔
+   engineer dispatch), 0024 (runtime), 0062 (subtask completion at landing),
+   0063 (autopilot), 0065 (release ceremony).
+2. Resume the active workflow with `/engineer:resume` or
+   `/orchestrator:resume` (on Claude Code, the SessionStart entry brief names
+   it when the owner has enabled it).
 
-**Stage 2.5+ / Stage 3+ continuity cascade** — active but mostly shipped through ADR-0023. ADR-0014/0015 archived `plugins/research` and folded cited-brief into `engineer:investigate`; ADR-0017 accepted and implemented engineer resume/checkpoint/peer-now plus `ensemble_results` and Stop auto-archive; ADR-0018 shipped `plugins/orchestrator` as the first multi-verb L2 capability; ADR-0019 shipped orchestrator→engineer same-host dispatch, `/done`, `/finalize`, `/abort`, and macro auto-archive; ADR-0020–0022 added `/engineer:start` and Codex macro/meta skill parity without waiting on ADR-0013; ADR-0023 added peer-runner supervision for monitoring, cancellation, sweep, and bounded ledger retention. ADR-0024 accepts the immediate runtime/operator control-plane track: `doctor`, `settings`, dynamic peer consensus, context hygiene, model/effort resolution, and host-readiness diagnosis. ADR-0013 remains reserved for a future Codex CLI command integration mechanism.
-
-> **User-environment cleanup note**: users of agentic-plugins versions
-> ≤0.3.x may have a stale `research@agentic-plugins 0.1.0` cache from
-> the pre-archive era. Run `claude plugin uninstall research@agentic-plugins`
-> (or the equivalent Codex command) to remove it — the plugin is no
-> longer in either marketplace catalog (per ADR-0014/0015).
-
-**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024 and actively shipping through `plugins/runtime`. Runtime provides the L1 framework primitive for host readiness and operator control (the shipped version is read from `.release-please-manifest.json`, the package changelogs and the release tags; the stage-by-stage surface lives in `docs/ARCHITECTURE.md` and `docs/DEVELOPMENT.md`): `doctor` (with stage-aware Codex `plugin_hooks` readiness, ADR-0030), `settings`, explicit workflow continuation proof through engineer state and dispatch, explicit consensus execution with role-explicit peer lanes, quality-first consensus policy, explicit consensus round policy (default 2 total rounds, hard cap 3, then `owner-decision-required`), owner-decision artifacts for exhausted or otherwise unresolved consensus, converged-run owner-ratification artifacts (`runtime:consensus ratify`) that record the owner's resolution of a synthesis-flagged residual owner lever without rewriting `consensus.json` or `convergence_state`, artifact-only consensus cancellation for stopped or abandoned runs with a `--confirm-no-active-process` boundary and pointer-only status/footer output, `runtime:consensus status --latest-open` selection for the newest non-terminal consensus run while preserving cancelled, converged, and owner-decided runs as audit artifacts, convergence taxonomy and contradiction-aware rebuttal prompts, context hygiene scaffolding, workflow-storage migration, observed experience-parity scoring, read-only Codex plugin hook readiness diagnosis (the former explicit `plugin_hooks` settings apply was removed per ADR-0035 §6), sandbox-limited host auth diagnosis, retired plugin cleanup planning and explicit cleanup execution, semantic plugin-management failure classification including sandboxed peer proof failures, Claude plugin CLI preflight/execution with slash `/plugin` observed only as host asymmetry, manual follow-up checklists for host-native `claude plugin ...` cleanup commands when cleanup is not executed or cannot complete, Codex `/hooks` manual review/trust follow-ups when packaged hooks are ready, per-plugin hook review target checklists, explicit disabled hook-state diagnostics, explicit `Trust: New hook - review required` and `Active=0` blocker guidance, manifest-declared Codex hook command-portability diagnostics including bare `node` hook command detection, settings artifact attestation after the operator completes review/trust, the explicit non-interactive Codex hook trust-query boundary, and an advisory completion footer with conservative completion-state next actions. Host-version tracking — the host-parity baseline, `runtime:compat` and the scheduled drift check — was removed by [ADR-0060](docs/adr/0060-remove-host-version-tracking.md): doctor reports host versions as facts with no verdict. `runtime:cutover`, the omcc cutover audit, and the footer's cutover record guidance were retired by [ADR-0064](docs/adr/0064-runtime-surface-reduction.md) §Decision 5: the owner's 2026-06-03 cutover declaration is final. `plugins/designer` shipped as the third L3 persona ([ADR-0042](docs/adr/0042-designer-persona-design-ux-workbench.md) Accepted 2026-07-09) under the same 4-layer composition, redesigned from omcc-designer experience rather than ported; it was never the active next-step trigger for ADR-0012 condition 3.
-
-Next steps:
-
-1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0024 (especially 0010 for plugin boundary policy, 0012 for omcc removal gates, 0016 for release-please routing, 0018/0019 for orchestrator, 0020–0022 for engineer command-surface parity, 0023 for peer-runner supervision, and 0024 for runtime/operator control-plane scope).
-2. Stage 2.5+ continuation: ADR-0013 authoring when its trigger fires (Codex CLI plugin-commands schema lands or an alternative mechanism is designed).
-3. Stage 3+ runtime/operator dogfood: continue ADR-0024 in small PRs from the current shipped surface. The next high-value slice is dogfooding `runtime:consensus plan → execute --execute → synthesize → next-round → decide/cancel` on real conflicts, then tightening bounded rebuttal UX, selection/retention details, and context/footer integration while preserving the explicit no-unbounded-loops, no-host-permission-relaxation, no-host-session-mutation boundaries. ADR-0012 conditions 1–4 are all satisfied and the ADR-0007 owner cutover declaration landed on 2026-06-03; ongoing dogfood now feeds real-use feedback (a `runtime:doctor` run after installing a runtime release, Codex `/hooks` re-attestation after hook-bearing upgrades) rather than condition promotion.
+A stale `research@agentic-plugins` 0.1.0 install from agentic-plugins ≤0.3.x
+is reported by `runtime:doctor`; remove it with
+`claude plugin uninstall research@agentic-plugins` (or the Codex equivalent).
+The plugin left both catalogs with ADR-0014/0015.
 
 ---
 
