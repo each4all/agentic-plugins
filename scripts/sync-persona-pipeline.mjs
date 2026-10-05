@@ -17,7 +17,9 @@
 //   4. an owned output exists that the manifest no longer generates, or the
 //      ledger (persona-pipeline/owned.json) disagrees with what is generated;
 //   5. a declaration fails its schema or a cross-field rule (its decide
-//      fallback differs from its registry, ...);
+//      fallback differs from its registry, a verb's default profile is not one
+//      of its profiles, an enrolled region reads a field it lacks, ...); no
+//      region renders from such a declaration;
 //   6. the personas found (plugins/*/persona.json) differ from the manifest's,
 //      by identity.
 //
@@ -67,7 +69,7 @@ import {
 } from './lib/persona-pipeline.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DECLARATION_FAMILY = 'persona-declaration-1.0';
+const DECLARATION_FAMILY = 'persona-declaration-1.1';
 const REGISTRY_REL = 'core/skills/decide/references/decision-axes.yml';
 
 async function loadValidator() {
@@ -115,7 +117,7 @@ function sameJson(a, b) {
  * The cross-field rules the schema cannot state (ADR-0066 Decision 2 and 3).
  * Returns a list of failure messages.
  */
-function crossFieldFailures({ persona, declaration, registry, units }) {
+function crossFieldFailures({ persona, declaration, registry, units, regions }) {
   const failures = [];
   const d = declaration;
   const where = `plugins/${persona}/persona.json`;
@@ -142,10 +144,14 @@ function crossFieldFailures({ persona, declaration, registry, units }) {
         failures.push(`${where}: decide.fallback differs from the registry preset ${JSON.stringify(fb.preset_id)} (ids, labels, questions, roles, gates must be equal)`);
       }
     }
-    for (const [size, id] of Object.entries(decide.size_presets ?? {})) {
-      if (!presets[id]) failures.push(`${where}: decide.size_presets.${size} names ${JSON.stringify(id)}, which is not a registry preset`);
+    // Only the keys the format defines: a newer minor's extra scalar, which
+    // both readers ignore, is not a preset reference.
+    for (const size of ['minor', 'standard', 'major']) {
+      const id = decide.size_presets?.[size];
+      if (id !== undefined && !presets[id]) failures.push(`${where}: decide.size_presets.${size} names ${JSON.stringify(id)}, which is not a registry preset`);
     }
     for (const [profile, id] of Object.entries(decide.profile_presets ?? {})) {
+      if (!/^[a-z][a-z0-9-]*$/.test(profile)) continue;
       if (!presets[id]) failures.push(`${where}: decide.profile_presets.${profile} names ${JSON.stringify(id)}, which is not a registry preset`);
     }
   }
@@ -164,6 +170,32 @@ function crossFieldFailures({ persona, declaration, registry, units }) {
     for (const cap of unit.off_only ?? []) {
       if (caps[cap] === true) {
         failures.push(`${where}: unit ${unit.id} (${unit.dest}) carries only the off path of ${cap}, but ${persona} declares it on`);
+      }
+    }
+  }
+
+  // Format 1.1: a verb's default profile is one of its profiles, and the two
+  // come together.
+  for (const [verb, v] of Object.entries(isPlainObject(d.verbs) ? d.verbs : {})) {
+    if (!isPlainObject(v)) continue;
+    if ((v.profiles === undefined) !== (v.default_profile === undefined)) {
+      failures.push(`${where}: verbs.${verb} declares ${v.profiles === undefined ? 'default_profile without profiles' : 'profiles without default_profile'}; declare both or neither`);
+    } else if (Array.isArray(v.profiles) && !v.profiles.includes(v.default_profile)) {
+      failures.push(`${where}: verbs.${verb}.default_profile ${JSON.stringify(v.default_profile)} is not one of its profiles (${v.profiles.join(', ')})`);
+    }
+  }
+
+  // A region enrolled for this persona reads only fields the declaration has,
+  // so a missing one is the declaration's failure, reported before any render.
+  const rendering = renderingDeclaration(d);
+  for (const region of regions) {
+    if (!region.personas.includes(persona)) continue;
+    for (const [name, sub] of Object.entries(region.substitutions ?? {})) {
+      if (!Object.hasOwn(sub, 'field')) continue;
+      let cur = rendering;
+      for (const part of sub.field.split('.')) cur = isPlainObject(cur) && Object.hasOwn(cur, part) ? cur[part] : undefined;
+      if (cur === undefined || cur === null) {
+        failures.push(`${where}: region ${region.id} (${region.dest}) reads ${sub.field} for {{${name}}}, which the declaration lacks`);
       }
     }
   }
@@ -294,8 +326,9 @@ export async function runSync({ root = REPO_ROOT, write = false, adopt = false, 
       continue;
     }
     const registry = readRegistry(yaml, join(pluginsDir, persona, REGISTRY_REL));
-    for (const f of crossFieldFailures({ persona, declaration, registry, units: manifest.units })) fatal.push(f);
-    declarations[persona] = declaration;
+    const failures = crossFieldFailures({ persona, declaration, registry, units: manifest.units, regions: manifest.regions });
+    for (const f of failures) fatal.push(f);
+    if (failures.length === 0) declarations[persona] = declaration;
   }
 
   // ---- canonical sources ----------------------------------------------------

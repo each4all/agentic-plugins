@@ -119,6 +119,46 @@ describe('region rendering', () => {
       "make the alpha deliverable\n```bash\nN='alpha deliverable'\n```\noff\n");
   });
 
+  // A list of lines (declaration 1.1's phase-note artifact sections) renders
+  // one line per item, verbatim, in markdown or text only (PC2a2 T1').
+  describe('list values', () => {
+    const listSubs = {
+      lines: { field: 'verbs.compose.artifact', context: 'markdown' },
+      shellLines: { field: 'verbs.compose.artifact', context: 'shell' },
+    };
+    const withLines = (artifact) => ({ declaration: declaration({ verbs: { compose: { artifact } } }), substitutions: listSubs });
+    const hostileLines = ['### Artifact', '', '$(touch /tmp/pwned) `id` "${HOME}"', "it's \\", '  indented — 디자인'];
+
+    it('renders each item on its own line with the placeholder line\'s indentation; an empty item is a blank line', () => {
+      strictEqual(renderTemplate('```markdown\n{{lines}}\n```', withLines(hostileLines)),
+        `\`\`\`markdown\n${hostileLines.join('\n')}\n\`\`\``);
+      strictEqual(renderTemplate('> intro\n  {{lines}}\nend', withLines(['a', '', 'b'])), '> intro\n  a\n\n  b\nend');
+    });
+    it('refuses a value that opens or closes a code fence, so a later markdown value cannot land in a shell block', () => {
+      const subsWithNoun = { ...listSubs, noun: { field: 'deliverable_noun', context: 'markdown' } };
+      const opts = (artifact, noun = 'x') => ({ declaration: declaration({ deliverable_noun: noun, verbs: { compose: { artifact } } }), substitutions: subsWithNoun });
+      // Codex review of PC2a2: ["```", "```bash"] closed the markdown fence and
+      // opened a shell one, and {{noun}} then rendered into bash verbatim.
+      throws(() => renderTemplate('```markdown\n{{lines}}\n{{noun}}\n```', opts(['```', '```bash'], '$(touch /tmp/pwned)')), /opens or closes a code fence/);
+      throws(() => renderTemplate('{{lines}}', opts(['~~~'])), /opens or closes a code fence/);
+      throws(() => renderTemplate('{{noun}}', opts(['a'], 'a\n```sh')), /opens or closes a code fence/);
+      strictEqual(renderTemplate('```markdown\n{{lines}}\n```', opts(['a ``` b', '`code`'])), '```markdown\na ``` b\n`code`\n```');
+    });
+    it('refuses a list that does not stand alone on its line', () => {
+      throws(() => renderTemplate('Artifact: {{lines}}', withLines(['a'])), /a list renders one line per item, so it stands alone on its line/);
+    });
+    it('refuses a list as a shell value, and a list placeholder inside a shell block', () => {
+      throws(() => renderTemplate('```bash\nX=\n{{shellLines}}\n```', withLines(['a'])), /verbs\.compose\.artifact is a list, and a shell value is one literal/);
+      throws(() => renderTemplate('```bash\n{{lines}}\n```', withLines(['a'])), /markdown value inside a shell block/);
+    });
+    it('refuses an item that is not a string, holds a line break, or holds "{{"', () => {
+      throws(() => renderTemplate('{{lines}}', withLines(['a', 3])), /verbs\.compose\.artifact\[1\] is not a string/);
+      throws(() => renderTemplate('{{lines}}', withLines(['a\nb'])), /artifact\[0\] holds a line break/);
+      throws(() => renderTemplate('{{lines}}', withLines(['a\rb'])), /artifact\[0\] holds a line break/);
+      throws(() => renderTemplate('{{lines}}', withLines(['{{noun}}'])), /holds "\{\{"/);
+    });
+  });
+
   it('fails on an unresolved or undeclared placeholder', () => {
     throws(() => renderTemplate('{{nope}}', { declaration: declaration(), substitutions: subs }), /unresolved placeholder \{\{nope\}\}/);
     throws(() => renderTemplate('{{noun}}', {
@@ -355,7 +395,10 @@ describe('regions in authored files (fixture)', () => {
     match(check.err, /plugins\/alpha\/commands\/other\.md: region intro is unknown to the manifest for alpha/);
   });
 
-  it('fails a render whose placeholder the declaration cannot resolve', async () => {
+  // The render-time form of this failure is the renderTemplate case above
+  // ("the declaration has no deliverable_noun"); the generator reports it
+  // earlier, as the declaration's own failure, and renders nothing from it.
+  it('fails a declaration that lacks a field an enrolled region reads, before any render', async () => {
     const root = fixtureCopy();
     const declPath = join(root, 'plugins/beta/persona.json');
     const d = JSON.parse(readFileSync(declPath, 'utf8'));
@@ -363,6 +406,7 @@ describe('regions in authored files (fixture)', () => {
     writeFileSync(declPath, `${JSON.stringify(d, null, 2)}\n`);
     const check = await sync(root);
     strictEqual(check.code, 1);
-    match(check.err, /region intro: .*unresolved placeholder \{\{noun\}\}: the declaration has no deliverable_noun/);
+    match(check.err, /plugins\/beta\/persona\.json: region intro \(commands\/run\.md\) reads deliverable_noun for \{\{noun\}\}, which the declaration lacks/);
+    ok(!/unresolved placeholder/.test(check.err), check.err);
   });
 });

@@ -14,7 +14,7 @@ committed, so every plugin keeps its own complete copy and runs alone
 | `manifest.json` | Every canonical unit, its destination inside a plugin, and the personas it is generated into (the enrollment matrix). Also the region and extension-point declarations. |
 | `files/<plugin path>` | The canonical files. Each is copied whole into every enrolled persona, with a generated-file notice; its git mode is the generated mode. |
 | `regions/<block>.md` | The canonical region templates: a block of a runbook, rendered into each enrolled persona's authored file between its region markers. |
-| `persona.schema.json` | The schema of `plugins/<persona>/persona.json`, each persona's declaration of who it is and what differs: name, deliverable noun, runtime footer floor, capabilities, decide data. |
+| `persona.schema.json` | The schema of `plugins/<persona>/persona.json`, each persona's declaration of who it is and what differs: name, deliverable noun, runtime footer floor, capabilities, decide data, and from format 1.1 its verbs (see [The declaration](#the-declaration)). |
 | `owned.json` | Generated: every plugin path the pipeline has written, per persona. It is how the write mode knows what it may replace or remove. Do not edit it. |
 
 The canonical scripts are persona-neutral. Each reads its persona from the
@@ -35,6 +35,34 @@ Stage 2a (PC2a) begins the runbook regions. founder and designer's
 `checkpoint`, `resume` and `peer-now` commands hold generated regions: the
 plugin-root paragraph and every shell block. The prose around them, the
 privacy gate included, stays authored.
+
+## The declaration
+
+`plugins/<persona>/persona.json` names its format, `persona-declaration-1.<minor>`.
+Format 1.0 holds identity, the deliverable noun, the runtime footer floor, the
+capabilities and the decide data. Format 1.1 adds `verbs`, what differs per
+verb: its `profiles` and `default_profile`, the `request_placeholder` its
+bootstrap describes, its `ensemble_type` where personas differ, the phase
+note's `artifact` sections (a list, one item per line), the proposal's
+`rationale_gate` and `evidence_pointers`, the `next_action` it records, and for
+`refine` and `start` whether the terminal write waits for a converged
+re-critique (`terminal_requires_convergence`). founder and designer declare
+1.1; engineer declares 1.0, with no verbs. Until the verb runbooks hold
+regions, the declared values are copies of their text, and
+`tests/persona-pipeline/test-declaration-verbs.mjs` keeps the two in step;
+`tests/persona-pipeline/test-verb-runbook-characterization.mjs` records what
+those runbooks do (`fixtures/verb-runbooks.json`), so moving their blocks into
+regions changes only what its fixture lists as allowed.
+
+Two readers read a declaration, the schema validator (the generator, the
+tests) and each plugin's `scripts/lib/persona.mjs`, and they agree at every
+depth: a key the format does not know is refused, except a scalar in a
+declaration of a newer minor than the reader's, which is ignored; an unknown
+object or list is refused at any minor. The generator adds the rules the
+schema cannot state: the decide fallback equals the registry preset, a verb's
+`default_profile` is one of its `profiles` (both or neither), and every field
+an enrolled unit or region reads is present. A declaration that fails one is
+reported as its own failure, and no region renders from it.
 
 ## Regions
 
@@ -57,6 +85,12 @@ substitutions. A template holds only `{{name}}` placeholders and
   block. A persona value that a double-quoted argument needs goes through a
   shell variable set from a literal first (`PERSONA='founder'`, then
   `"${PERSONA}"`).
+- A `markdown` or `text` value may be a list of strings (a verb's `artifact`):
+  its placeholder stands alone on its line, and each item renders on its own
+  line with that line's indentation. A `shell` value is never a list, and an
+  item holding a line break fails the render. So does any value that opens or
+  closes a code fence: placement is checked on the template, so a value may
+  not move text into or out of a shell block.
 - A value holding `{{`, a placeholder the region does not declare or the
   placement check cannot read (one spanning lines included), and any `{{`
   left after rendering fail the render.

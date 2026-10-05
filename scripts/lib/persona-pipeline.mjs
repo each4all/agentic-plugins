@@ -572,7 +572,8 @@ const BLOCK_CLOSE_RE = /^\{\{\/capability\}\}$/;
  * Templates hold two constructs and nothing else:
  *   - `{{name}}` — a substitution the manifest declares for this region, with
  *     a field path into the declaration and a context (`shell`: emitted as a
- *     single-quoted literal; `text` / `markdown`: verbatim);
+ *     single-quoted literal; `text` / `markdown`: verbatim — a list of strings
+ *     too, when the placeholder stands alone on its line: one line per item);
  *   - `{{#capability <cap>}}` … `{{/capability}}` (included when the persona has
  *     <cap> on) and `{{^capability <cap>}}` … `{{/capability}}` (when off), each
  *     marker alone on its line, never nested.
@@ -629,7 +630,7 @@ export function renderTemplate(template, { declaration, substitutions = {}, labe
       throw new PipelineError(`${label}: {{${name}}} is a ${sub.context} value inside a shell block; give it the shell context or move it to the prose`);
     }
   }
-  const rendered = text.replace(PLACEHOLDER_RE, (_, name) => {
+  const valueOf = (name) => {
     if (!Object.hasOwn(substitutions, name)) {
       throw new PipelineError(`${label}: unresolved placeholder {{${name}}} (not declared for this region)`);
     }
@@ -638,11 +639,40 @@ export function renderTemplate(template, { declaration, substitutions = {}, labe
     if (value === undefined || value === null) {
       throw new PipelineError(`${label}: unresolved placeholder {{${name}}}: the declaration has no ${sub.field}`);
     }
-    if (typeof value !== 'string') {
-      throw new PipelineError(`${label}: placeholder {{${name}}}: ${sub.field ?? 'its value'} is not a string`);
+    // A list of lines (a phase note's artifact sections) is a markdown or text
+    // value only: a shell value is one literal, never a list.
+    const items = Array.isArray(value) ? value : [value];
+    if (Array.isArray(value) && sub.context === 'shell') {
+      throw new PipelineError(`${label}: placeholder {{${name}}}: ${sub.field ?? 'its value'} is a list, and a shell value is one literal`);
     }
-    if (value.includes('{{')) {
-      throw new PipelineError(`${label}: placeholder {{${name}}}: the value holds "{{", which a later reader would take for a placeholder`);
+    items.forEach((item, i) => {
+      const what = Array.isArray(value) ? `${sub.field ?? 'its value'}[${i}]` : (sub.field ?? 'its value');
+      if (typeof item !== 'string') {
+        throw new PipelineError(`${label}: placeholder {{${name}}}: ${what} is not a string`);
+      }
+      if (Array.isArray(value) && /[\n\r\0]/.test(item)) {
+        throw new PipelineError(`${label}: placeholder {{${name}}}: ${what} holds a line break; a list renders one line per item`);
+      }
+      if (item.includes('{{')) {
+        throw new PipelineError(`${label}: placeholder {{${name}}}: the value holds "{{", which a later reader would take for a placeholder`);
+      }
+    });
+    return { sub, value };
+  };
+  // A list stands alone on its line and renders one line per item, each with
+  // that line's indentation (an empty item is a blank line).
+  const LIST_LINE_RE = /^([ \t]*)\{\{[ \t]*([^{}\n]*?)[ \t]*\}\}[ \t]*$/;
+  const expanded = text.split('\n').map((line) => {
+    const m = LIST_LINE_RE.exec(line);
+    if (!m) return line;
+    const { value } = valueOf(m[2]);
+    if (!Array.isArray(value)) return line;
+    return value.map((item) => (item === '' ? '' : `${m[1]}${item}`)).join('\n');
+  }).join('\n');
+  const rendered = expanded.replace(PLACEHOLDER_RE, (_, name) => {
+    const { sub, value } = valueOf(name);
+    if (Array.isArray(value)) {
+      throw new PipelineError(`${label}: placeholder {{${name}}}: a list renders one line per item, so it stands alone on its line`);
     }
     if (sub.context === 'shell') return shellQuote(value);
     return value;
@@ -650,7 +680,19 @@ export function renderTemplate(template, { declaration, substitutions = {}, labe
   if (rendered.includes('{{')) {
     throw new PipelineError(`${label}: unresolved "{{" left after rendering`);
   }
+  // Placement was checked on the template, so a substituted value must not
+  // change which text is in which code block: a value line that opens or
+  // closes a fence (a list item "```bash") would put the next value, read as
+  // markdown, into a shell block (Codex review of PC2a2).
+  if (JSON.stringify(fenceLines(rendered)) !== JSON.stringify(fenceLines(text))) {
+    throw new PipelineError(`${label}: a substituted value opens or closes a code fence`);
+  }
   return rendered;
+}
+
+/** The fence marker lines of a text, in order (a placeholder never sits on one). */
+function fenceLines(text) {
+  return text.split('\n').map((l) => l.trim()).filter((l) => /^(`{3,}|~{3,})/.test(l));
 }
 
 const PLACE_TEXT = {
