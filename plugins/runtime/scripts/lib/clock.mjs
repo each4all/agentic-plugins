@@ -6,6 +6,7 @@
 // three age computations and the already-correct treatment in a fourth:
 //
 //   cutover-audit.mjs  ageHoursSince      Math.max(0, now - t)  → future reads FRESH
+//                      (the file was retired with runtime:cutover, ADR-0064 Decision 5)
 //   dashboard.mjs      ageMinutes         Math.max(0, now - t)  → future renders "0m ago"
 //   state-readers.mjs  oldest_age_minutes Math.max(0, now - t)  → future reads NEWEST
 //   context.mjs        farFuture branch   bounded, correct — and its constant was private

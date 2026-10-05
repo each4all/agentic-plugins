@@ -33,7 +33,7 @@ import { loadPluginSet } from '../../plugins/runtime/scripts/lib/plugin-set.mjs'
 import { createBootstrapRun, scanBootstrapRuns, writeBootstrapProof } from '../../plugins/runtime/scripts/lib/bootstrap-artifacts.mjs';
 
 const RUNTIME_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', 'runtime');
-const READER = 'agentic-machine-profile-1.0';
+const READER = 'runtime-toy-1.0';
 
 // A minimal schema in the supported subset, for the validator's own unit tests.
 const TOY = {
@@ -44,7 +44,7 @@ const TOY = {
     // Pins family+major and leaves the MINOR free — the same shape the packaged
     // schemas use, and for the same reason: a `const` on the full version string
     // would reject the newer-minor documents §4.1's forward-compat rule accepts.
-    schema: { type: 'string', pattern: '^agentic-machine-profile-1\\.[0-9]+$' },
+    schema: { type: 'string', pattern: '^runtime-toy-1\\.[0-9]+$' },
     name: { type: 'string', maxLength: 8 },
     tags: { type: 'array', maxItems: 2, items: { type: 'string' } },
     nested: {
@@ -120,13 +120,13 @@ describe('runtime schema validator — the keyword subset is closed', () => {
 
 describe('runtime schema validator — version gate (#18)', () => {
   it('parses and compares schema versions', () => {
-    deepStrictEqual(parseSchemaVersion('agentic-machine-profile-1.0'), { family: 'agentic-machine-profile', major: 1, minor: 0, version: 'agentic-machine-profile-1.0' });
+    deepStrictEqual(parseSchemaVersion('runtime-toy-1.0'), { family: 'runtime-toy', major: 1, minor: 0, version: 'runtime-toy-1.0' });
     strictEqual(parseSchemaVersion('nope'), null);
-    strictEqual(parseSchemaVersion('agentic-machine-profile-1'), null, 'a bare major is not a schema version — the minor is what the forward-compat rule turns on');
+    strictEqual(parseSchemaVersion('runtime-toy-1'), null, 'a bare major is not a schema version — the minor is what the forward-compat rule turns on');
   });
 
   it('an unknown MAJOR is rejected with a diagnostic, never read as if it were known', () => {
-    const result = validateAgainstSchema({ ...toy(), schema: 'agentic-machine-profile-2.0' }, TOY, { readerVersion: READER });
+    const result = validateAgainstSchema({ ...toy(), schema: 'runtime-toy-2.0' }, TOY, { readerVersion: READER });
     strictEqual(result.ok, false);
     strictEqual(result.version.reason, 'unknown-major');
     match(result.errors[0], /major 2 is not readable|upgrade the runtime plugin/);
@@ -134,7 +134,7 @@ describe('runtime schema validator — version gate (#18)', () => {
 
   it('an ADDITIVE minor is accepted, and its unknown SCALAR keys are ignored with a warning', () => {
     const result = validateAgainstSchema(
-      { schema: 'agentic-machine-profile-1.7', name: 'ok', future_scalar: 'hello', another: 42 },
+      { schema: 'runtime-toy-1.7', name: 'ok', future_scalar: 'hello', another: 42 },
       TOY,
       { readerVersion: READER },
     );
@@ -146,9 +146,9 @@ describe('runtime schema validator — version gate (#18)', () => {
 
   it('a newer minor does NOT forgive an unknown STRUCTURAL key, at any depth', () => {
     for (const doc of [
-      { schema: 'agentic-machine-profile-1.7', name: 'ok', future_object: { a: 1 } },
-      { schema: 'agentic-machine-profile-1.7', name: 'ok', future_array: [1] },
-      { schema: 'agentic-machine-profile-1.7', name: 'ok', nested: { deep: null, future_object: { a: 1 } } },
+      { schema: 'runtime-toy-1.7', name: 'ok', future_object: { a: 1 } },
+      { schema: 'runtime-toy-1.7', name: 'ok', future_array: [1] },
+      { schema: 'runtime-toy-1.7', name: 'ok', nested: { deep: null, future_object: { a: 1 } } },
     ]) {
       const result = validateAgainstSchema(doc, TOY, { readerVersion: READER });
       strictEqual(result.ok, false, `structural key refused: ${JSON.stringify(doc)}`);
@@ -157,14 +157,14 @@ describe('runtime schema validator — version gate (#18)', () => {
   });
 
   it('a same-or-older minor has no excuse for an unknown key, even a scalar', () => {
-    for (const version of ['agentic-machine-profile-1.0', 'agentic-machine-profile-1.0']) {
+    for (const version of ['runtime-toy-1.0', 'runtime-toy-1.0']) {
       const result = validateAgainstSchema({ schema: version, name: 'ok', stray: 'x' }, TOY, { readerVersion: READER });
       strictEqual(result.ok, false);
       match(result.errors.join(' '), /is not newer than this runtime's/);
     }
   });
 
-  it('a wrong family is rejected — a profile is not a run manifest', () => {
+  it('a wrong family is rejected — a toy document is not a run manifest', () => {
     const result = validateAgainstSchema({ ...toy(), schema: 'runtime-bootstrap-run-1.0' }, TOY, { readerVersion: READER });
     strictEqual(result.ok, false);
     strictEqual(result.version.reason, 'wrong-family');
@@ -246,11 +246,11 @@ describe('runtime schema validator — canonical order (§4.1)', () => {
   });
 
   it('keys the schema does not name are SORTED, not left in builder order', () => {
-    const doc = { name: 'ok', zz: 'last', schema: 'agentic-machine-profile-1.7', aa: 'also' };
+    const doc = { name: 'ok', zz: 'last', schema: 'runtime-toy-1.7', aa: 'also' };
     deepStrictEqual(Object.keys(canonicalize(doc, TOY)), ['schema', 'name', 'aa', 'zz']);
     // Two builders that assembled the same facts in different orders must hash alike —
     // which is the entire reason canonicalization exists.
-    const other = { schema: 'agentic-machine-profile-1.7', aa: 'also', zz: 'last', name: 'ok' };
+    const other = { schema: 'runtime-toy-1.7', aa: 'also', zz: 'last', name: 'ok' };
     strictEqual(canonicalJson(doc, TOY), canonicalJson(other, TOY));
   });
 
@@ -258,7 +258,7 @@ describe('runtime schema validator — canonical order (§4.1)', () => {
   // after Object.prototype members. `key in out` walks the prototype chain, so those
   // read as "already emitted" and vanish: silent data loss in a hashing path.
   it('does not drop keys that collide with Object.prototype names', () => {
-    const doc = { schema: 'agentic-machine-profile-1.7', name: 'ok', constructor: 'future', toString: 'v', hasOwnProperty: 'z' };
+    const doc = { schema: 'runtime-toy-1.7', name: 'ok', constructor: 'future', toString: 'v', hasOwnProperty: 'z' };
     const out = canonicalize(doc, TOY);
     for (const key of ['constructor', 'toString', 'hasOwnProperty']) {
       ok(Object.hasOwn(out, key), `${key} survives canonicalization`);
@@ -490,7 +490,7 @@ describe('runtime schema validator — the disclosure invariant (§3.2)', () => 
       additionalProperties: false,
       required: ['schema'],
       properties: {
-        schema: { type: 'string', pattern: '^agentic-machine-profile-1\\.[0-9]+$' },
+        schema: { type: 'string', pattern: '^runtime-toy-1\\.[0-9]+$' },
         flag: { const: false },
         mode: { enum: ['fast', 'slow'] },
         id: { type: 'string', pattern: '^[a-f0-9]{6}$' },
@@ -530,7 +530,7 @@ describe('runtime schema validator — the disclosure invariant (§3.2)', () => 
     const foreign = validateAgainstSchema({ schema: 'sk-live-deadbeef-1.0' }, TOY, { readerVersion: READER });
     strictEqual(foreign.ok, false);
     ok(!foreign.errors.join('\n').includes('sk-live'), 'a foreign family is withheld');
-    match(foreign.errors.join('\n'), /does not match the expected 'agentic-machine-profile'/, 'the EXPECTED family is named');
+    match(foreign.errors.join('\n'), /does not match the expected 'runtime-toy'/, 'the EXPECTED family is named');
   });
 
   it('the locator substitutes an ordinal for a document-supplied key, and keeps schema-DECLARED names', () => {
@@ -541,7 +541,7 @@ describe('runtime schema validator — the disclosure invariant (§3.2)', () => 
     ok(!sameMinor.errors.join('\n').includes('SECRET'), 'the unknown-key ERROR names no document key');
     match(sameMinor.errors.join('\n'), /\$\.member\[2\]/, 'it names the member ORDINAL instead');
 
-    const newerMinor = validateAgainstSchema({ schema: 'agentic-machine-profile-1.7', name: 'ok', [SECRET]: 'x' }, TOY, { readerVersion: READER });
+    const newerMinor = validateAgainstSchema({ schema: 'runtime-toy-1.7', name: 'ok', [SECRET]: 'x' }, TOY, { readerVersion: READER });
     strictEqual(newerMinor.ok, true, 'a newer minor still forgives an unknown scalar');
     ok(!newerMinor.warnings.join('\n').includes('SECRET'), 'the unknown-key WARNING names no document key');
     match(newerMinor.warnings.join('\n'), /\$\.member\[2\]/);
@@ -564,7 +564,7 @@ describe('runtime schema validator — the disclosure invariant (§3.2)', () => 
       type: 'object',
       additionalProperties: false,
       required: ['schema'],
-      properties: { schema: { type: 'string', pattern: '^agentic-machine-profile-1\\.[0-9]+$' } },
+      properties: { schema: { type: 'string', pattern: '^runtime-toy-1\\.[0-9]+$' } },
       patternProperties: { '^x': { type: 'number' } },
     };
     const result = validateAgainstSchema({ schema: READER, [`x${SECRET}`]: 'not-a-number' }, SCHEMA, { readerVersion: READER });
@@ -574,7 +574,7 @@ describe('runtime schema validator — the disclosure invariant (§3.2)', () => 
   });
 
   it('findings are bounded per artifact, the counts stay honest, and the verdict comes from the FULL count', () => {
-    const flood = { schema: 'agentic-machine-profile-1.7', name: 'ok' };
+    const flood = { schema: 'runtime-toy-1.7', name: 'ok' };
     for (let i = 0; i < 4000; i += 1) flood[`k${i}-${SECRET}`] = `v${i}`;
     const before = Buffer.byteLength(JSON.stringify(flood), 'utf8');
     const forgiven = validateAgainstSchema(flood, TOY, { readerVersion: READER, maxBytes: null });
@@ -604,7 +604,7 @@ describe('runtime schema validator — the disclosure invariant (§3.2)', () => 
       additionalProperties: false,
       required: ['schema'],
       properties: {
-        schema: { type: 'string', pattern: '^agentic-machine-profile-1\\.[0-9]+$' },
+        schema: { type: 'string', pattern: '^runtime-toy-1\\.[0-9]+$' },
         mode: { enum: members },
       },
     };

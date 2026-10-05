@@ -229,6 +229,16 @@ describe('plugins/runtime bootstrap surface', () => {
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/bootstrap.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'bootstrap.mjs has executable bit');
+
+    // ADR-0064 removed the portable machine profile (Decision 3) and the egress
+    // receipt testimony (Decisions 1 and 6): neither stays advertised on a public
+    // surface. The parser's refusal of each is pinned in test-bootstrap-cli.mjs.
+    for (const [label, surface] of [['commands/bootstrap.md', command], [`${SKILLS_REL}/bootstrap/SKILL.md`, skill], ['bootstrap agent yaml', agent]]) {
+      ok(!surface.includes('--profile-file'), `${label} no longer advertises the removed plan --profile-file`);
+      ok(!/\bprofile (export|seed)\b/.test(surface), `${label} no longer advertises the removed profile verbs`);
+      ok(!surface.includes('attest-receipt'), `${label} no longer advertises the removed attest-receipt answer`);
+    }
+    ok(!/\battest\b/.test(argumentHint), 'commands/bootstrap.md argument-hint no longer advertises the removed attest verb');
   });
 
   // machine-bootstrap-contract.md §11.3 — the packaged contract is asserted BY
@@ -403,7 +413,6 @@ describe('plugins/runtime settings surface', () => {
     for (const token of [
       '## Machine-global artifacts',
       '~/.agentic-plugins/runs/bootstrap/<run-id>/run.json',
-      '~/.agentic-plugins/profiles/<name>.json',
       '~/.agentic-plugins/.locks/bootstrap.lock',
       '### Security',
       '### Pointers',
@@ -415,7 +424,6 @@ describe('plugins/runtime settings surface', () => {
     ok(/fails? closed/i.test(policy), 'the $HOME-is-the-repo fail-closed posture is documented');
     ok(/0700/.test(policy) && /0600/.test(policy), 'the filesystem modes are documented');
     ok(/never auto-deleted/i.test(policy), 'the no-auto-delete retention posture is documented');
-    ok(/retention-exempt|retention pressure/i.test(policy), 'profile retention exemption is documented');
 
     // Doc/code agreement, not just doc existence: the machine cap and the repo cap
     // are both stated, and the machine one matches the constant the inventory uses.

@@ -933,8 +933,16 @@ describe('runtime completion reducer — the importer drops egress-only members 
   });
 
   it('the retired egress kind is not an importable kind', () => {
-    const r = importProofMetadata({ kind: 'egress-provider-ack', status: 'passed', bound_versions: current, ran_at: AT });
+    // A record the 1.4 importer accepted (provider_ack plus mirror_correlated, no
+    // directions), so the refusal can only be the retirement, not a shape error.
+    const r = importProofMetadata({
+      kind: 'egress-provider-ack', status: 'passed',
+      provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'f'.repeat(64), ran_at: AT },
+      mirror_correlated: true,
+      artifact_pointer: null, artifact_hash: null, bound_versions: current, ran_at: AT,
+    });
     strictEqual(r.ok, false);
+    deepStrictEqual(r.errors, ['kind (not a known proof kind)']);
   });
 });
 

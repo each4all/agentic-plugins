@@ -211,6 +211,9 @@ Independent of any flag, runtime MUST NOT:
 > **Retired ([ADR-0064](0064-runtime-surface-reduction.md), 2026-10-04):** tier E1
 > (network egress) no longer has an executor. The ceiling and every other tier
 > are unchanged; a future egress would need a new ADR.
+> *Implemented 2026-10-05:* `notify.mjs`, the one file the E1 amendment above
+> permitted the pinned request in, was deleted, and the executor scan now
+> permits `node:https` in no runtime script (`PINNED_HTTPS_USERS` is empty).
 
 > **Cross-reference — domain S1 (owner-launched fresh-session spawn),
 > [ADR-0063](0063-autopilot-fresh-session-driver.md):** the "hidden host

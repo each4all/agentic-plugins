@@ -12,8 +12,9 @@ eleven commands only — measured with Claude Code 2.1.280's own accounting
 after it. The token figure is that release's own estimate and does not travel
 between environments; the counts and the controls below do.
 
-Runtime's eleven commands and eleven skills share their names, so the count
-alone cannot say which set survived. The two fixtures established on designer
+Runtime's commands and skills share their names (eleven of each at the move;
+nine since ADR-0060 removed `runtime:compat` and ADR-0064 retired
+`runtime:cutover`), so the count alone cannot say which set survived. The two fixtures established on designer
 settle it here too, and both readings were taken on this plugin: with
 `commands/` removed the plugin reads `Skills (0)` / `~0 tok`, and with
 `core/skills/` removed instead it reads the same `Skills (11)` / `~989 tok` as
@@ -67,5 +68,5 @@ This is a different rule from the empty-`skills/` placeholders in
 `plugins/companions` and `plugins/attention`: those plugins have no skills at
 all and still declare the conventional root
 ([ADR-0008 §(a)](../../../docs/adr/0008-companion-distribution-model.md) Codex
-spec-compliance carve-out). This one has eleven skills and declares a relocated
+spec-compliance carve-out). This one has nine skills and declares a relocated
 root.

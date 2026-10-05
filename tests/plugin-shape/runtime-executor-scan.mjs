@@ -296,8 +296,9 @@ function blankStrings(code) {
 //                            `const/let/var/function fetch`);
 //   anyUse: bool           — directCalls.length > 0 || indirect.
 // Residual (documented, out of scope for a token scanner): string-concatenated
-// obfuscation like `globalThis['fet'+'ch']`. The SOUND behavioral check is the
-// channel slice's fetchImpl-injection unit test (ADR-0041 §2b).
+// obfuscation like `globalThis['fet'+'ch']`. The SOUND behavioral check was the
+// egress channel's fetchImpl-injection unit test (ADR-0041 §2b), deleted with
+// egress by ADR-0064; a future fetch user owes its own.
 export function analyzeFetchUse(code) {
   const codeNoStr = blankStrings(code);
   // Count REAL bare `fetch(` calls on the BLANKED code so a `fetch(` written
@@ -327,7 +328,8 @@ export function analyzeFetchUse(code) {
   // subcommand 'fetch' in an allowlist array — `, 'fetch',` / `, 'fetch']`) is not
   // over-flagged. Residual (documented): deeper indirection (a helper returning
   // the global, string-concat obfuscation) is out of scope for a token scanner —
-  // the SOUND check is the channel slice's fetchImpl test (§2b).
+  // the SOUND check was the egress channel's fetchImpl test (§2b), deleted
+  // with egress by ADR-0064.
   const computedFetch = /\[\s*(['"`])fetch\1\s*\]/.test(code);
   const reflectiveFetch = /,\s*(['"`])fetch\1\s*\)/.test(code);
   const shadowFetch = /\b(?:const|let|var|function\s*\*?)\s+fetch\b/.test(codeNoStr);
@@ -1082,9 +1084,10 @@ export function scanFile({ fileName, source, registry }) {
   // direct pinned `fetch(url, init)` call in a GLOBAL_FETCH_USERS file. A fetch
   // reference in a non-registered file, or any indirect/member/computed/aliased/
   // `.call`/shadowed fetch anywhere, is a violation. The ADR-0041 §11 keystone
-  // that must land before any fetch use. The SOUND behavioral check of the pinned
-  // request is the channel slice's fetchImpl unit test (ADR-0041 §2b); this gate
-  // is the fail-closed CI tripwire + defense-in-depth (see registry header).
+  // that must land before any fetch use. The SOUND behavioral check of a pinned
+  // request was the egress channel's fetchImpl unit test (ADR-0041 §2b), deleted
+  // with egress by ADR-0064; this gate is the fail-closed CI tripwire +
+  // defense-in-depth (see registry header).
   const fetchUse = analyzeFetchUse(code); // hoisted: the pinned-https-gate cross-checks it
   {
     if (fetchUse.anyUse) {

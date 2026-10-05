@@ -1731,8 +1731,9 @@ function priorJudgeMapOf(stepList) {
 }
 
 /**
- * The operator-facing sentence for a lapsed refusal. ONE wording, because four
- * verbs surface it and a second copy is how they would drift; the resume-side
+ * The operator-facing sentence for a lapsed refusal. ONE wording, because three
+ * verbs (status, verify, resume) surface it and a second copy is how they would
+ * drift; the resume-side
  * post-executor convergence says the same thing about a later window.
  */
 function selectionRestoredWarnings(selectionRestored, { window, consequence }) {

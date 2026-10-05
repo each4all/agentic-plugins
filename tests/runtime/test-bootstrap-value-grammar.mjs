@@ -752,6 +752,9 @@ describe('review remediation — the fixes that only exist across verbs', () => 
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
     const path = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
     const manifest = JSON.parse(await readFile(path, 'utf8'));
+    // Stamped 1.4: the step was live at that minor, so its row is a real
+    // retained decision rather than one the document's minor never knew.
+    manifest.schema = 'runtime-bootstrap-run-1.4';
     manifest.choices = [{ step_id: RETIRED_KINDS, answer: 'set:notify_kinds=approval', at: '2026-01-01T00:00:00Z' }];
     await writeFile(path, JSON.stringify(manifest, null, 2));
 

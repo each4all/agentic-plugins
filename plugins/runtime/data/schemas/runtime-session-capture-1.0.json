@@ -28,7 +28,7 @@
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
     },
     "origin": {
-      "description": "Producing path. The auto slot knows only the Stop-hook origin; the enum (not a boolean) leaves room for future origins without a schema break (the notify_channel shape rationale).",
+      "description": "Producing path. The auto slot knows only the Stop-hook origin; the enum (not a boolean) leaves room for future origins without a schema break (the shape rationale of the `notify_channel` key, which ADR-0064 retired).",
       "type": "string",
       "enum": ["stop-hook"]
     },

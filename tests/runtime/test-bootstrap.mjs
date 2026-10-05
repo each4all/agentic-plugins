@@ -1135,6 +1135,15 @@ describe('runtime bootstrap artifacts — fragment + proof writers', () => {
     strictEqual(bad.ok, false);
     match(bad.errors.join(' '), /unknown evidence kind/);
     deepStrictEqual([...bad.retired].sort(), ['egress-provider-ack.json', 'egress-receipt-attestation.json']);
+
+    // Only the EXACT retired names are skipped: a near-miss is an ordinary
+    // unrecognized entry, reported by ordinal and not credited as retired.
+    await rm(join(proofDir, 'mystery.json'));
+    await writeFile(join(proofDir, 'egress-provider-ack.json.bak'), '{}');
+    const nearMiss = await readBootstrapProofRecords({ homeDir, runId: created.run_id });
+    strictEqual(nearMiss.ok, false);
+    ok(nearMiss.errors.some((e) => /^entry\[\d+\]: not a \.json evidence file$/.test(e)), nearMiss.errors.join('; '));
+    deepStrictEqual([...nearMiss.retired].sort(), ['egress-provider-ack.json', 'egress-receipt-attestation.json']);
     await rm(homeDir, { recursive: true, force: true });
   });
 });

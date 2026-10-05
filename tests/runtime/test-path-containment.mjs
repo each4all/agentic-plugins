@@ -168,7 +168,8 @@ describe('sameDirectory — identity precision', () => {
 // contract.mjs, where the packaged baseline was the asset being located. ADR-0060
 // deleted that document and its resolver; the predicate survives, and now guards
 // the plugin manifests, the plugin set, the packaged schemas, the session-readiness
-// floors and the rendered statusline and notification templates. Each case is
+// floors and the rendered statusline template (the notification templates went
+// with ADR-0064 Decision 1). Each case is
 // therefore anchored on the predicate itself, with a neutral relative path.
 //
 // Every refusal below was reproduced against the pre-fix code before it was
