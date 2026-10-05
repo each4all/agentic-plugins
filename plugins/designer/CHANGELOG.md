@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.15](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.14...plugin-designer-v0.3.15) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/designer:** generate the persona pipeline from one canonical source (ADR-0066 Stage 1) ([69cd634](https://github.com/each4all/agentic-plugins/commit/69cd6346a217136acdf6926f3af900720c193a47))
+
 ## [0.3.14](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.13...plugin-designer-v0.3.14) (2026-10-05)
 
 
