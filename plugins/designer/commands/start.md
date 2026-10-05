@@ -134,7 +134,8 @@ Record the Design Task Profile per
 is the L4 archetype; it selects the decision preset at Phase 1c:
 `general`/`flow` → `balanced`; `ui` → `experience`; `cta` → `conversion`;
 `content` → `clarity`. The map's single source of truth is
-`PROFILE_PRESET_MAP` in `scripts/decide-registry.mjs`. An explicit
+`decide.profile_presets` in `persona.json`, which `scripts/decide-registry.mjs`
+reads. An explicit
 `--preset` / `--size` still wins (ADR-0027 §1.5). This is **not** the
 `state.mjs` skill-profile field.
 

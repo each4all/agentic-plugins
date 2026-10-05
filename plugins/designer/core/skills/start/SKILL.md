@@ -116,8 +116,8 @@ Record the Design Task Profile per
 `../_shared/references/orchestration.md` § Step 1 before Phase 1. Its
 `Profile` field is the L4 archetype: `general`/`flow` → `balanced`;
 `ui` → `experience`; `cta` → `conversion`; `content` → `clarity`. The
-map's single source of truth is `PROFILE_PRESET_MAP` in
-`../../../scripts/decide-registry.mjs`. An explicit `--preset` / `--size` at
+map's single source of truth is `decide.profile_presets` in
+`../../../persona.json`, which `../../../scripts/decide-registry.mjs` reads. An explicit `--preset` / `--size` at
 Phase 1c still wins (ADR-0027 §1.5) — and because designer's size→preset
 map is degenerate, an explicit `--size` **drops** the archetype (the
 resolver says so on stderr).

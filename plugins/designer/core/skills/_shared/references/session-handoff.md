@@ -162,8 +162,9 @@ consumes this documentation, not the implementation):
   workflow's** claim replaces it; a `claimed` marker is still removed on
   consumption.
 
-Pinned by `tests/designer/test-footer-activation.mjs` and
-`tests/designer/test-handoff-backstop.mjs`.
+Pinned by `tests/persona-pipeline/test-footer-activation.mjs` and
+`tests/persona-pipeline/test-handoff-backstop.mjs`, which run for every
+persona the session-handoff script is generated into (ADR-0066).
 
 ## Completion-flag mapping (publish-needed; completion-output contract §2)
 
