@@ -638,7 +638,7 @@ boundary between them:
   - **Enforcement honesty**: the recursive-removal capability is registered
     in the ADR-0035 §4 executor-registry static scan (callee +
     first-argument identity, as that scanner actually checks —
-    `runtime-executor-scan.mjs:1415-1422`); the containment and no-follow
+    `runtime-executor-scan.mjs:1019-1026`); the containment and no-follow
     predicates are proven by behavioral/mutation tests, which the static
     scanner explicitly delegates to. The ADR claims no stronger static
     proof than the scanner provides.

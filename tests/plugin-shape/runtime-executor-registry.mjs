@@ -95,134 +95,40 @@ export const RAW_PROCESS_PRIMITIVES = [
 
 // Network primitive member calls (on an http/https/net binding). They are allowed
 // only in a network CAPABILITY_IMPORTERS entry, and there is none today (see the
-// note on CAPABILITY_IMPORTERS). Since ADR-0064 retired tier E1, no runtime
-// script reaches the network at all, through any of the gates below.
-// `fetch` is included so a `binding.fetch(` member call inside a network-importer
-// is also gated; the GLOBAL `fetch` (a bare call with no import to anchor on) is
-// handled separately by the global-fetch-gate (ADR-0041 §2d).
+// note on CAPABILITY_IMPORTERS). `fetch` is included so a `binding.fetch(` member
+// call inside a network importer is also gated; the GLOBAL `fetch` (a bare call
+// with no import to anchor on) is the global-fetch-gate's (Network egress below).
 export const NETWORK_PRIMITIVES = ['get', 'request', 'connect', 'createConnection', 'createServer', 'fetch'];
 
 // ---------------------------------------------------------------------------
-// Global fetch (ADR-0041 §2d E1 egress) — a NON-import-anchored network capability
+// Network egress — none permitted
 // ---------------------------------------------------------------------------
 
-// `fetch` is a runtime GLOBAL (Node built-in): there is no import to anchor the
-// import/network gates on, so a bare `fetch(...)` or any indirection slips past
-// every import-anchored gate above. The global-fetch-gate
-// (runtime-executor-scan.mjs) is deliberately FAIL-CLOSED — it flags EVERY
-// reference to `fetch` (bare/member/computed/aliased/`.call`/Reflect/shadowing)
-// in a runtime script and permits ONLY a direct pinned `fetch(url, init)` call
-// in a GLOBAL_FETCH_USERS entry. It is a CI tripwire + defense-in-depth, NOT a
-// sound sandbox: a determined author could still obfuscate past a token scanner
-// (e.g. `globalThis['fet'+'ch']`, a string-concatenated or UNICODE-ESCAPED
-// identifier in USE position, deep reflection, or `eval`) or edit this registry,
-// so the SOUND behavioral validation of a pinned request was the egress
-// channel's fetchImpl-injection unit test (ADR-0041 §2b — it observed the actual
-// URL/method/redirect/timeout fetch received). ADR-0064 deleted that channel and
-// its test with egress; with no fetch user registered, this gate is the only
-// check, and a future user owes its own behavioral test under the new ADR it
-// needs. This gate's job is to catch accidental / review-visible fetch
-// additions and to fail closed on anything it cannot recognize as the exact
-// pinned shape. (Codex review: the previous recognize-safe-forms design was
-// fail-OPEN — many indirections evaded it. Now inverted to flag-everything.)
-// [residual boundary] Escaped identifiers in IMPORT and MODULE-SPECIFIER position
-// ARE caught (a clean statement-anchored check exists there); an escaped identifier
-// in an arbitrary USE position (`https.request(...)`) is the documented
-// deliberate-obfuscation residual — a general static check would false-positive on
-// legitimate `\u`-bearing regex character classes (the `/[\u0000-\u001F]/` control
-// scrub notify.mjs carried), so a behavioral test of the request is the sound check.
-
-// The ONLY runtime scripts permitted to call the global `fetch`, each with the
-// pinned-request conformance spec its ONE direct call must satisfy. As of the
-// ADR-0041 §2d transport fix ([impl-transport], ratified 2026-07-06) this is
-// EMPTY: the E1 egress transport was swapped from a global `fetch` to an in-process
-// `node:https` request (undici silently failed to deliver on the owner's
-// IPv6-broken host — see PINNED_HTTPS_USERS below), so no runtime script uses the
-// global `fetch` and none is registered here. The global-fetch-gate stays active
-// as a fail-closed tripwire: it now rejects ANY `fetch` reference in EVERY runtime
-// script (registry never looser than code — an entry for a fetch that no longer
-// exists would authorize a re-added fetch that the swap deliberately removed).
-// ADR-0064 then retired tier E1 (ADR-0035 §4: "a future egress would need a new
-// ADR") and deleted notify.mjs, so this table has no subject left; an entry
-// needs that new ADR.
+// No runtime script reaches the network since ADR-0064 retired tier E1, and the
+// scanner holds that with rejections only:
+//   - the import-gate rejects a static network module import in every file
+//     that is not a CAPABILITY_IMPORTERS entry for that module (none is), and
+//     the dynamic, escaped, createRequire and getBuiltinModule forms in every
+//     file;
+//   - the global-fetch-gate rejects every reference to the global `fetch`,
+//     which has no import to anchor on (direct, aliased, member, computed or
+//     reflective);
+//   - the global-websocket-gate rejects a bare reference to the global
+//     `WebSocket`; a member reference (`globalThis.WebSocket`) is not caught.
+// These are a CI tripwire, not a sandbox: a determined author can still hide a
+// reference from a token scanner (`globalThis['fet'+'ch']`, an escaped
+// identifier in a USE position, `eval`) or edit this registry. Escaped
+// identifiers in IMPORT and MODULE-SPECIFIER position are caught; a general
+// check for them in a use position would flag legitimate `\u`-bearing regex
+// character classes.
 //
-// Spec fields (retained for a FUTURE fetch user, if any) — a registered file may
-// reference `fetch` ONLY as the callee of a DIRECT `fetch(url, init)` call (no
-// member/computed/alias/`.call`/shadow — all rejected), taking EXACTLY two args:
-//   - `endpointPrefix` / `endpointSuffix`: the URL is a lone string/template
-//     literal (no `&&`/`||`/ternary/concatenation — the value must equal the
-//     text) that STARTS WITH endpointPrefix and ENDS WITH endpointSuffix, pinning
-//     the full host+path shape (token interpolated only in between) — ADR-0041 §2b;
-//   - `method` / `redirect`: the init object's top-level `method`/`redirect`
-//     properties must be exactly these string literals (parsed as real object
-//     keys, never a token buried in a nested string); redirect:'error' is what
-//     makes host-pinning egress-bounding (fetch follows redirects by default);
-//   - `requireTimeout`: the init object must set a bounded timeout (a `signal`
-//     of `AbortSignal.timeout(...)` or a numeric `timeout`) so a slow/hung
-//     endpoint cannot wedge the hook path (§2e).
-//   - `maxCalls`: the max number of direct pinned fetch calls the file may make.
-export const GLOBAL_FETCH_USERS = {};
-
-// ---------------------------------------------------------------------------
-// Pinned in-process HTTPS egress (ADR-0041 §2d node:https transport) — an
-// IMPORT-ANCHORED network capability scoped to the pinned request
-// ---------------------------------------------------------------------------
-
-// The E1 egress transport was originally a global `fetch` (GLOBAL_FETCH_USERS
-// above). The [decide-transport] fix (ADR-0041 §2d, ratified 2026-07-06) swaps it
-// to an in-process `node:https` request: the bundled `fetch` (undici) does not
-// fast-fail a dead IPv6 SYN on the owner's IPv6-broken host and times out, whereas
-// `node:https` with an explicit IPv4 family delivers. ADR-0041 §2d authorizes this
-// as "a network CAPABILITY_IMPORTER for notify.mjs scoped to the pinned request";
-// `curl` stays OUT of ALLOWED_COMMAND_LITERALS (no external-process egress).
-//
-// This registry is that scoped capability. Unlike CAPABILITY_IMPORTERS (whose
-// `modules` are drift-checked to require an actual `import` — so a node:https entry
-// there could not land before the impl slice adds the import), PINNED_HTTPS_USERS is
-// NOT drift-checked and is INERT until the import + call actually appear: it grants
-// nothing on its own (registry never looser than code), so it lands in the guard
-// slice — the ADR-0041 §11 keystone, scanner-gate-before-use — BEFORE the impl slice
-// adds the transport, exactly as GLOBAL_FETCH_USERS was registered before the fetch.
-//
-// Being registered here does two things, both enforced by the pinned-https-gate and
-// the import-gate (runtime-executor-scan.mjs):
-//   1. authorizes the file to `import <binding> from 'node:https'` (import-gate honors
-//      a PINNED_HTTPS_USERS entry as it honors a CAPABILITY_IMPORTERS entry); and
-//   2. obligates EVERY use of that binding to be the single pinned request — a direct
-//      `<binding>.request(url, options)` whose url is the pinned host+endpoint literal,
-//      method POST, with a bounded timeout — and rejects every other shape (a non-POST,
-//      a non-allowlisted origin, a missing timeout, an indirect/aliased/computed/`.call`
-//      request, any OTHER https member method, or a SECOND request call).
-//
-// Spec fields (parallel to GLOBAL_FETCH_USERS; see validatePinnedHttpsRequest):
-//   - `module`: the capability module this file may import for the pinned request
-//     (v1: 'node:https'); the import-gate honors ONLY this module for this file.
-//   - `endpointPrefix` / `endpointSuffix`: the request URL must be a lone string/
-//     template literal that STARTS WITH endpointPrefix and ENDS WITH endpointSuffix,
-//     pinning `https://api.telegram.org/bot<TOKEN>/sendMessage` (token interpolated
-//     only in between) — ADR-0041 §2b.
-//   - `method`: the options object's top-level `method` must be exactly this literal.
-//   - `requireTimeout`: the options must bound the request — either
-//     `signal: AbortSignal.timeout(<…>)` (fetch-parity auto-abort) or a `timeout:`
-//     option set to a positive value — so a hung endpoint cannot wedge the hook path
-//     (§2e). Note: `node:https.request` does NOT follow redirects (unlike `fetch`), so
-//     there is no `redirect` key to pin; redirect-FOLLOWING would require a SECOND
-//     request to a Location, which `maxCalls` forbids.
-//   - `maxCalls`: the max number of direct pinned request calls the file may make
-//     (v1: 1). The IPv4-preferred→fallback retry (ADR-0041 §2d) must therefore be a
-//     loop around a SINGLE `<binding>.request(...)` call site (varying only the
-//     non-pinned `family` option), never a second call site — which both keeps the
-//     egress bound and structurally reflects "a written body is never retried".
-//
-// EMPTY since ADR-0064 R4n2. Its one entry was notify.mjs, pinned to
-// `https://api.telegram.org/bot<TOKEN>/sendMessage`, POST, bounded, maxCalls 1;
-// ADR-0064 retired tier E1 and deleted the file, and ADR-0035 §4 now says a
-// future egress needs a new ADR. With no entry, the import-gate rejects a
-// `node:https` import in EVERY runtime script. The gate and its validator stay
-// as infrastructure (the CAPABILITY_IMPORTERS network-gate precedent): their
-// tests run against an injected registry that re-registers the old spec under
-// a synthetic file name, and a control proves the same source fails here.
-export const PINNED_HTTPS_USERS = {};
+// Two tables used to permit one pinned request each: GLOBAL_FETCH_USERS (a
+// direct `fetch(url, init)`) and PINNED_HTTPS_USERS (a `node:https` request,
+// ADR-0041 §2d). notify.mjs was the last user of either, so they left with it,
+// together with their validators and the pinned-https-gate. A future network
+// user needs its own ADR and its own behavioral test of the request it sends
+// (ADR-0035 §4): a static scan can tell that a file reaches the network, not
+// where its request goes.
 
 // ---------------------------------------------------------------------------
 // Command origin (what binary is launched)

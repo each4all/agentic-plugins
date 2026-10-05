@@ -214,6 +214,16 @@ Independent of any flag, runtime MUST NOT:
 > *Implemented 2026-10-05:* `notify.mjs`, the one file the E1 amendment above
 > permitted the pinned request in, was deleted, and the executor scan now
 > permits `node:https` in no runtime script (`PINNED_HTTPS_USERS` is empty).
+> *Guard reduced 2026-10-05:* the executor scan then dropped the machinery
+> that could permit a request: the empty `GLOBAL_FETCH_USERS` and
+> `PINNED_HTTPS_USERS` tables, their pinned-request validators and the
+> pinned-https gate. Every rejection stayed. A network module import, a
+> reference to the global `fetch` (bare, aliased, member, computed or
+> reflective), a bare reference to the global `WebSocket`, and the dynamic,
+> escaped, `createRequire` and `getBuiltinModule` loads still fail in every
+> runtime script. A future network user needs its own ADR and its own
+> behavioral test of the request it sends: a static scan can show that a file
+> reaches the network, not where the request goes.
 
 > **Cross-reference — domain S1 (owner-launched fresh-session spawn),
 > [ADR-0063](0063-autopilot-fresh-session-driver.md):** the "hidden host
