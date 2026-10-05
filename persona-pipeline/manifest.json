@@ -541,6 +541,380 @@
           "context": "shell"
         }
       }
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "compose-phase-0",
+      "template": "regions/verb-phase-0.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "compose-bootstrap",
+      "template": "regions/verb-bootstrap-profiled.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "compose",
+          "context": "shell"
+        },
+        "request_placeholder": {
+          "field": "verbs.compose.request_placeholder",
+          "context": "markdown"
+        },
+        "default_profile": {
+          "field": "verbs.compose.default_profile",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "compose-resume",
+      "template": "regions/verb-resume-profiled.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "compose",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "compose-dispatch",
+      "template": "regions/verb-dispatch.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "compose",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "plan-verify",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "compose-finalize",
+      "template": "regions/verb-finalize.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "compose",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "plan-verify",
+          "context": "shell"
+        },
+        "phase_label": {
+          "value": "Phase 1: Compose (synthesized)",
+          "context": "shell"
+        },
+        "next_action": {
+          "field": "verbs.compose.next_action",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "launched": {
+          "value": "compose",
+          "context": "markdown"
+        },
+        "synthesis": {
+          "value": "compose (profile=<profile>)",
+          "context": "markdown"
+        },
+        "artifact": {
+          "field": "verbs.compose.artifact",
+          "context": "markdown"
+        },
+        "rationale_gate": {
+          "field": "verbs.compose.rationale_gate",
+          "context": "markdown"
+        },
+        "evidence_pointers": {
+          "field": "verbs.compose.evidence_pointers",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "compose-completion-footer",
+      "template": "regions/verb-completion-footer.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/frame.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "frame-phase-0",
+      "template": "regions/verb-phase-0.md",
+      "dest": "commands/frame.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "frame-bootstrap",
+      "template": "regions/verb-bootstrap.md",
+      "dest": "commands/frame.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "frame",
+          "context": "shell"
+        },
+        "request_placeholder": {
+          "field": "verbs.frame.request_placeholder",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "frame-resume",
+      "template": "regions/verb-resume.md",
+      "dest": "commands/frame.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "frame",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "frame-dispatch",
+      "template": "regions/verb-dispatch.md",
+      "dest": "commands/frame.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "frame",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "frame",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "frame-finalize",
+      "template": "regions/verb-finalize.md",
+      "dest": "commands/frame.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "frame",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "frame",
+          "context": "shell"
+        },
+        "phase_label": {
+          "value": "Phase 1: Frame (synthesized)",
+          "context": "shell"
+        },
+        "next_action": {
+          "field": "verbs.frame.next_action",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "launched": {
+          "value": "frame",
+          "context": "markdown"
+        },
+        "synthesis": {
+          "value": "frame",
+          "context": "markdown"
+        },
+        "artifact": {
+          "field": "verbs.frame.artifact",
+          "context": "markdown"
+        },
+        "rationale_gate": {
+          "field": "verbs.frame.rationale_gate",
+          "context": "markdown"
+        },
+        "evidence_pointers": {
+          "field": "verbs.frame.evidence_pointers",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "frame-completion-footer",
+      "template": "regions/verb-completion-footer.md",
+      "dest": "commands/frame.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
     }
   ],
   "extension_points": []

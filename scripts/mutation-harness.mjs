@@ -39,13 +39,19 @@
 // A spec module exports:
 //   TESTS      string[]   test files (repo-relative) run when a mutation names none
 //   MUTATIONS  object[]   { id, why, prepare?, file?, from?, to?, count?,
-//                           tests?, expect? }
+//                           tests?, expect?, killed_by? }
 //
 // `prepare(copy, tools)` mutates the copy freely; `file`/`from`/`to` is the
 // common single-anchor case. `expect` defaults to `'KILLED'` — a mutation with
 // no stated expectation is a defect injection, and a fixture that must keep
 // PASSING has to say `expect: 'SURVIVED'` out loud. Exit status is 0 only when
 // every mutation matched its expectation.
+//
+// `killed_by` (a RegExp, or a list of them) names the tests that must catch the
+// defect: each pattern must match the name of a failing test, nested ones
+// included, or its path (`suite > test`, to tie a contract to a suite). A run that fails only elsewhere — a harness-level crash, a test
+// the defect breaks by accident — is scored KILLED-ELSEWHERE, not KILLED: a
+// nonzero exit alone does not show that the intended contract caught it.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -183,11 +189,50 @@ function runTests(copy, tests) {
   if (res.status === null) {
     throw new MutationHarnessError(`test run did not exit (signal ${res.signal}) — treat as no verdict`);
   }
+  const failed = failingTests(res.stdout || '');
   return {
     status: res.status,
-    failing: [...(res.stdout || '').matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1].trim()),
+    failing: failed.map((f) => f.name),
+    failingPaths: failed.map((f) => f.path),
     stdout: res.stdout || '',
   };
+}
+
+/**
+ * The failing tests of a TAP stream, nested subtests included: each `{ name,
+ * path }`, the path naming its ancestors (`suite > test`). Read as records, not
+ * as lines: a test point counts only outside the YAML diagnostics that follow
+ * one, where an error message may hold any text (a peer made an unrelated
+ * failure's message read as a killer), and names are unescaped (`\\#`).
+ */
+export function failingTests(tap) {
+  const unescape = (s) => s.replace(/\\([\\#])/g, '$1');
+  const out = [];
+  const stack = []; // open subtests: { indent, name }
+  let yaml = null; // indent of an open diagnostics block
+  for (const line of tap.split('\n')) {
+    const indent = line.length - line.trimStart().length;
+    const body = line.trim();
+    if (yaml !== null) {
+      if (body === '...' && indent === yaml) yaml = null;
+      continue;
+    }
+    if (body === '---') { yaml = indent; continue; }
+    const sub = /^# Subtest: (.*)$/.exec(body);
+    if (sub) {
+      while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
+      stack.push({ indent, name: unescape(sub[1]) });
+      continue;
+    }
+    const point = /^(not ok|ok) \d+ - (.*?)(?: # (?:SKIP|TODO)\b.*)?$/.exec(body);
+    if (!point) continue;
+    while (stack.length > 0 && stack[stack.length - 1].indent > indent) stack.pop();
+    const name = unescape(point[2]);
+    const ancestors = stack.filter((s) => s.indent < indent).map((s) => s.name);
+    if (point[1] === 'not ok') out.push({ name, path: [...ancestors, name].join(' > ') });
+    if (stack.length > 0 && stack[stack.length - 1].indent === indent) stack.pop();
+  }
+  return out;
 }
 
 /**
@@ -247,7 +292,11 @@ export async function runSpec(specPath, options = {}) {
     const dir = join(workDir, mutation.id);
     makeDisposableCopy(repoRoot, dir);
     const expect = mutation.expect ?? 'KILLED';
+    const killers = [mutation.killed_by ?? []].flat();
     try {
+      if (killers.some((re) => !(re instanceof RegExp))) throw new MutationHarnessError('killed_by takes a RegExp or a list of them');
+      if (killers.some((re) => re.global || re.sticky)) throw new MutationHarnessError('killed_by patterns carry no g or y flag (their lastIndex would carry over)');
+      if (killers.length > 0 && expect !== 'KILLED') throw new MutationHarnessError('killed_by names who catches a defect; a survivor has none');
       if (mutation.prepare) mutation.prepare(dir, tools);
       if (mutation.from !== undefined) applyEdit(dir, mutation);
     } catch (err) {
@@ -257,14 +306,20 @@ export async function runSpec(specPath, options = {}) {
       continue;
     }
     const out = runTests(dir, mutation.tests ?? spec.TESTS ?? []);
-    const verdict = out.status === 0 ? 'SURVIVED' : 'KILLED';
+    let verdict = out.status === 0 ? 'SURVIVED' : 'KILLED';
+    // A pattern may name a test or its path (`suite > test`).
+    const missed = verdict === 'KILLED'
+      ? killers.filter((re) => !out.failing.some((name) => re.test(name)) && !out.failingPaths.some((path) => re.test(path)))
+      : [];
+    if (missed.length > 0) verdict = 'KILLED-ELSEWHERE';
     const agrees = verdict === expect;
-    results.push({ id: mutation.id, verdict, expect, agrees, failing: out.failing });
+    results.push({ id: mutation.id, verdict, expect, agrees, failing: out.failing, missed: missed.map(String) });
     log(
       `${mutation.id.padEnd(6)} ${verdict.padEnd(9)} `
       + `${(agrees ? 'as-expected' : `UNEXPECTED (wanted ${expect})`).padEnd(26)} ${mutation.why}`,
     );
     log(`       └─ ${out.failing.slice(0, 3).join(' | ') || '(no named failure)'}`);
+    if (missed.length > 0) log(`       └─ no failing test matched ${missed.join(', ')}`);
   }
 
   const unexpected = results.filter((r) => !r.agrees);

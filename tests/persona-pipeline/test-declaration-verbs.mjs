@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { MANIFEST, declaration, pluginRoot } from './_personas.mjs';
-import { shellBlocks, stripComments } from './_verb-runbooks.mjs';
+import { noteScaffold, shellBlocks, stripComments } from './_verb-runbooks.mjs';
 
 const runbook = (persona, verb) => readFileSync(join(pluginRoot(persona), 'commands', `${verb}.md`), 'utf8');
 const count = (text, needle) => text.split(needle).length - 1;
@@ -111,16 +111,22 @@ for (const persona of ['founder', 'designer']) {
       it(`${verb}: request placeholder, note artifact, rationale, evidence and next action`, () => {
         const text = runbook(persona, verb);
         const v = verbs[verb];
-        strictEqual(count(text, `--original-request "\${AGENTIC_TOPIC:-<${v.request_placeholder}>}"`), 1, 'request placeholder');
-        const note = /^NOTE="([\s\S]*?)^"$/m.exec(text);
-        ok(note, 'the finalize block holds a NOTE scaffold');
+        // An authored bootstrap holds the placeholder in the block; a generated
+        // one (PC2a2 PD3) names it in the prose above a persona-neutral one.
+        const inBlock = count(text, `--original-request "\${AGENTIC_TOPIC:-<${v.request_placeholder}>}"`);
+        const inProse = count(text.replace(/\s+/g, ' '), `\`<the original request described above>\` with a ${v.request_placeholder};`);
+        strictEqual(inBlock + inProse, 1, 'request placeholder');
+        if (inProse === 1) strictEqual(count(text, '--original-request "${AGENTIC_TOPIC:-<the original request described above>}"'), 1, 'the block names the prose');
+        const note = noteScaffold(text);
+        ok(note !== null, 'the finalize step holds a phase-note scaffold');
         // The artifact sections are exactly the note text between the breakdown
         // and the proposal heading: nothing left out, nothing added.
-        strictEqual(count(note[1], `<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n${v.artifact.join('\n')}\n\n### Active next-action proposal\n`), 1, 'artifact sections');
-        strictEqual(count(note[1], `- rationale:             <why best — ${v.rationale_gate}>\n`), 1, 'rationale');
-        strictEqual(count(note[1], `- evidence_pointers:     <${v.evidence_pointers} — pointers only>\n`), 1, 'evidence pointers');
+        strictEqual(count(note, `<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n${v.artifact.join('\n')}\n\n### Active next-action proposal\n`), 1, 'artifact sections');
+        strictEqual(count(note, `- rationale:             <why best — ${v.rationale_gate}>\n`), 1, 'rationale');
+        strictEqual(count(note, `- evidence_pointers:     <${v.evidence_pointers} — pointers only>\n`), 1, 'evidence pointers');
         const listed = LISTED_CHANGES[`${persona}/${verb}/next_action`] ?? ((s) => s);
-        const actions = [...text.matchAll(/--next-action "([^"]*)" \\$/gm)].map((m) => listed(m[1]));
+        // Double-quoted as authored, single-quoted as generated (Decision 4).
+        const actions = [...text.matchAll(/--next-action (?:"([^"]*)"|'([^']*)') \\$/gm)].map((m) => listed(m[1] ?? m[2]));
         strictEqual(actions.filter((a) => a === v.next_action).length, 2, `the finalize append and finish write record ${JSON.stringify(v.next_action)}`);
       });
     }

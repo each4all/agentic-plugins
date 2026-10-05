@@ -10,13 +10,15 @@
 // `${NAME}` inside double quotes expands to a literal assigned earlier in the
 // same block (`NAME='compose'`).
 
+import { strictEqual } from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { pluginRoot } from './_personas.mjs';
+import { REPO_ROOT, pluginRoot } from './_personas.mjs';
 
 export const VERB_RUNBOOK_PERSONAS = Object.freeze(['designer', 'founder']);
 export const VERB_RUNBOOK_VERBS = Object.freeze(['compose', 'decide', 'frame', 'investigate']);
+export const FIXTURE = JSON.parse(readFileSync(join(REPO_ROOT, 'tests/persona-pipeline/fixtures/verb-runbooks.json'), 'utf8'));
 
 /** The fenced shell blocks of a runbook, de-indented to their fence, in order. */
 export function shellBlocks(text) {
@@ -254,10 +256,46 @@ export function scriptCalls(block) {
   return calls;
 }
 
-/** The phase-note scaffold: the `NOTE="…"` literal, read as the shell reads it. */
+/** The line a generated finalize block reads the filled-in phase note with (PC2a2 PD2). */
+export const NOTE_READER = `IFS= read -r -d '' NOTE <<'PHASE_NOTE' || true`;
+
+/**
+ * The phase-note scaffold: the `NOTE="…"` literal, read as the shell reads it;
+ * or, in a generated finalize region (PC2a2 PD2), the markdown fence nearest
+ * above the block that reads the note from a quoted heredoc — the text the
+ * agent fills in and the heredoc then carries unread.
+ */
 export function noteScaffold(text) {
   const m = /^NOTE=("(?:[^"\\]|\\.)*")$/m.exec(text);
-  return m ? readWord(m[1], {}) : null;
+  if (m) return readWord(m[1], {});
+  const lines = text.split('\n');
+  const reader = lines.indexOf(NOTE_READER);
+  if (reader < 0) return null;
+  let found = null;
+  for (let i = 0; i < reader; i++) {
+    if (lines[i] !== '```markdown') continue;
+    let e = i + 1;
+    while (e < lines.length && lines[e] !== '```') e++;
+    if (e < reader) found = `${lines.slice(i + 1, e).join('\n')}\n`;
+    i = e;
+  }
+  return found;
+}
+
+/**
+ * The prefix of each `RUN_ID=` assignment, read as the shell reads it: a
+ * `${NAME}` assigned a literal earlier in the block expands, so a generated
+ * block's `RUN_ID="${ENSEMBLE_TYPE}-$(date …"` reads like the literal form.
+ * Only a double-quoted value counts: in single quotes the `$(date …)` would
+ * not run, and the id would be a literal the runner refuses (Codex review of
+ * PC2a2b).
+ */
+function runIdPrefixes(code) {
+  const assignments = literalAssignments(code);
+  return [...code.matchAll(/^RUN_ID=("[^\n]*")$/gm)]
+    .map((m) => /^([a-z][a-z-]*)-\$\(date /.exec(readWordValue(m[1], varsAt(assignments, m.index)).text))
+    .filter(Boolean)
+    .map((m) => m[1]);
 }
 
 /**
@@ -275,7 +313,7 @@ export function characterize(text) {
   const all = blocks.map((b) => b.code).join('\n');
   return {
     calls: blocks.flatMap((b) => scriptCalls(b.text)),
-    run_id_prefixes: [...all.matchAll(/^RUN_ID="([a-z][a-z-]*)-\$\(date /gm)].map((m) => m[1]),
+    run_id_prefixes: blocks.flatMap((b) => runIdPrefixes(b.code)),
     mktemp_templates: blocks.flatMap((b) => [...b.code.matchAll(/mktemp (?:-d )?-t ((?:'[^']*'|"[^"]*"|[^\s)"'])+)/g)]
       .map((m) => readWord(m[1], varsAt(literalAssignments(b.code), m.index)))),
     guards: {
@@ -289,4 +327,43 @@ export function characterize(text) {
 
 export function runbookText(persona, verb) {
   return readFileSync(join(pluginRoot(persona), 'commands', `${verb}.md`), 'utf8');
+}
+
+/**
+ * The recorded value an allowed difference names, as a getter and a setter:
+ * `call:<script> <sub>:<flag>` (that call must be the only one), `guards.<name>`
+ * or `note`.
+ */
+function locate(record, where) {
+  const call = /^call:(\S+) (\S+):(--[a-z-]+)$/.exec(where);
+  if (call) {
+    const calls = record.calls.filter((c) => c.script === call[1] && c.sub === call[2]);
+    strictEqual(calls.length, 1, `${where}: one such call`);
+    const args = calls[0].args.filter(([f]) => f === call[3]);
+    strictEqual(args.length, 1, `${where}: the flag once`);
+    return [() => args[0][1], (v) => { args[0][1] = v; }];
+  }
+  const guard = /^guards\.([a-z_]+)$/.exec(where);
+  if (guard && typeof record.guards[guard[1]] === 'string') return [() => record.guards[guard[1]], (v) => { record.guards[guard[1]] = v; }];
+  if (where === 'note' && typeof record.note === 'string') return [() => record.note, (v) => { record.note = v; }];
+  throw new Error(`allowed difference names no recorded value: ${where}`);
+}
+
+/**
+ * What a runbook must do now: the recorded characterization with each change a
+ * region makes on purpose applied. A difference applies only where its `from`
+ * occurs exactly once, so a stale or widened entry fails instead of passing.
+ * `{persona}` stands for the runbook's persona.
+ */
+export function expectedFor(key) {
+  const expected = structuredClone(FIXTURE.runbooks[key]);
+  const persona = key.split('/')[0];
+  for (const d of FIXTURE.allowed_differences.filter((x) => x.runbooks.includes(key))) {
+    const [get, set] = locate(expected, d.where);
+    const from = d.from.split('{persona}').join(persona);
+    const to = d.to.split('{persona}').join(persona);
+    strictEqual(get().split(from).length - 1, 1, `${key}: allowed difference at ${d.where} finds ${JSON.stringify(from)} once`);
+    set(get().replace(from, () => to));
+  }
+  return expected;
 }

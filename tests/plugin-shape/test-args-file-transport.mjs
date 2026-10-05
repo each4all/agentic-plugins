@@ -33,7 +33,7 @@
 // and the amendment of 2026-09-29 that moved the cleanup out of a shell trap).
 
 import { test } from 'node:test';
-import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
+import { deepStrictEqual, fail, ok, strictEqual, throws } from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -41,7 +41,11 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { replayTopic } from '../_args-file-replay.mjs';
-import { substituteClaudeArguments } from '../_claude-command-substitution.mjs';
+import {
+  argsFileRunbookProblems,
+  argsFileTypedTextProblems,
+  investigateProfilePlaceholderProblems,
+} from '../_runbook-checks.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const PLUGINS = join(REPO_ROOT, 'plugins');
@@ -679,6 +683,10 @@ test('the CLIs read the args file, and the text reaches them intact', async (t) 
 });
 
 // ── 6. The runbooks and the Codex skills ────────────────────────────────────
+//
+// The pins each runbook keeps are per-document checks in
+// tests/_runbook-checks.mjs, so they can also run over a runbook assembled in
+// memory; the lists of runbooks they apply to stay here.
 
 // The runbooks ADR-0059 counted, plus designer's start, whose Phase 1c
 // illustrates the decide call.
@@ -718,29 +726,22 @@ test('the runbooks and skills pass typed text by --args-file', async (t) => {
     const naming = all.filter((f) => readFileSync(join(REPO_ROOT, f), 'utf8').includes('--args-file')).sort();
     deepStrictEqual(naming, [...ARGS_FILE_RUNBOOKS, ...ARGS_FILE_SKILLS].sort());
   });
+  // Each check fails on its document's first finding, with that finding as
+  // the message.
   await t.test('every runbook creates the directory, writes the file, and passes the option', () => {
     for (const f of ARGS_FILE_RUNBOOKS.filter((r) => !r.endsWith('designer/commands/start.md'))) {
-      const text = readFileSync(join(REPO_ROOT, f), 'utf8');
-      ok(text.includes('mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"'), `${f}: no mktemp step`);
-      ok(text.includes('{"agentic_args": 1, "text": "…"}'), `${f}: no file-writing step`);
-      ok(text.includes('--args-file "$ARGS_DIR/args.json"'), `${f}: the CLI is not given the file`);
+      for (const problem of argsFileRunbookProblems(readFileSync(join(REPO_ROOT, f), 'utf8'), f)) fail(problem);
     }
   });
   await t.test('every runbook shows the typed text above the steps that copy it', () => {
-    // The model transcribes what Claude substituted into the body, so the text
-    // has to be on the page, in prose, before step 1 asks for it.
-    const SENTINEL = 'ADR0059TYPEDTEXT';
     for (const f of ARGS_FILE_RUNBOOKS.filter((r) => !r.endsWith('designer/commands/start.md'))) {
-      const body = readFileSync(join(REPO_ROOT, f), 'utf8').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '');
-      const rendered = substituteClaudeArguments(body, SENTINEL, { appendIfUnused: false });
-      const shown = rendered.indexOf(SENTINEL);
-      ok(shown >= 0 && shown < rendered.indexOf('mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"'), `${f}: the typed text is not shown before the steps`);
+      for (const problem of argsFileTypedTextProblems(readFileSync(join(REPO_ROOT, f), 'utf8'), f)) fail(problem);
     }
   });
   await t.test('the investigate profile placeholders no longer carry host-substituted text', () => {
     for (const p of CONVERTED_PERSONAS) {
-      const text = readFileSync(join(PLUGINS, p, 'commands', 'investigate.md'), 'utf8');
-      ok(text.includes('<profile from the arguments above — '), `plugins/${p}/commands/investigate.md`);
+      const f = `plugins/${p}/commands/investigate.md`;
+      for (const problem of investigateProfilePlaceholderProblems(readFileSync(join(REPO_ROOT, f), 'utf8'), f)) fail(problem);
     }
   });
 });

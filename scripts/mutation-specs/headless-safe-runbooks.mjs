@@ -16,6 +16,9 @@ import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const T_HEADLESS = 'tests/plugin-shape/test-headless-safe-runbooks.mjs';
+// The resolver lines T_HEADLESS expects, and runs in each shell, are spelled
+// in the shared per-document checks (ADR-0066 Stage 2a).
+const RUNBOOK_CHECKS = 'tests/_runbook-checks.mjs';
 const T_PORT = 'tests/plugin-shape/test-runbook-shell-portability.mjs';
 const T_RUNBOOK = 'tests/orchestrator/test-abort-finalize-runbook.mjs';
 const T_DONE = 'tests/orchestrator/test-done-runbook.mjs';
@@ -117,11 +120,11 @@ export const MUTATIONS = [
         const text = readFileSync(path, 'utf8');
         if (text.includes(filter)) { writeFileSync(path, text.split(filter).join('')); changed += 1; }
       }
-      const test = join(copy, T_HEADLESS);
-      const source = readFileSync(test, 'utf8');
+      const checks = join(copy, RUNBOOK_CHECKS);
+      const source = readFileSync(checks, 'utf8');
       const spelled = " | grep -E '/(0|[1-9][0-9]*)\\\\.(0|[1-9][0-9]*)\\\\.(0|[1-9][0-9]*)(\\\\+[0-9A-Za-z-]+(\\\\.[0-9A-Za-z-]+)*)?$'";
       if (changed < 40 || source.split(spelled).length !== 2) throw new Error(`H12 prepare matched ${changed} runbooks`);
-      writeFileSync(test, source.split(spelled).join(''));
+      writeFileSync(checks, source.split(spelled).join(''));
     },
     why: 'the cache fallback sorts every directory again, so a prerelease or a stray name outranks the newest release (Refine-verify finding)',
   },
@@ -157,11 +160,11 @@ export const MUTATIONS = [
         const text = readFileSync(path, 'utf8');
         if (text.includes(strict)) { writeFileSync(path, text.split(strict).join(loose)); changed += 1; }
       }
-      const test = join(copy, T_HEADLESS);
-      const source = readFileSync(test, 'utf8');
+      const checks = join(copy, RUNBOOK_CHECKS);
+      const source = readFileSync(checks, 'utf8');
       const spelled = "(\\\\+[0-9A-Za-z-]+(\\\\.[0-9A-Za-z-]+)*)?$'";
       if (changed < 40 || source.split(spelled).length !== 2) throw new Error(`H15 prepare matched ${changed} runbooks`);
-      writeFileSync(test, source.split(spelled).join("(\\\\+[0-9A-Za-z.-]+)?$'"));
+      writeFileSync(checks, source.split(spelled).join("(\\\\+[0-9A-Za-z.-]+)?$'"));
     },
     why: 'build metadata with an empty identifier (2.0.0+build..1) counts as a release and outranks the newest real one (Refine-verify finding)',
   },

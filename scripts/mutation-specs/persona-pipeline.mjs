@@ -84,7 +84,7 @@ const regionDests = (template) => [...new Set(MANIFEST.regions.filter((r) => r.t
  * `only`, put every other persona's region files and the template back, so
  * exactly one persona's committed runbook carries the defect.
  */
-function templateDefect(copy, tools, { template, from, to, only = null }) {
+function templateDefect(copy, tools, { template, from, to, edits = [{ from, to }], only = null }) {
   const keep = {};
   for (const persona of regionPersonas(template)) {
     if (only === null || persona === only) continue;
@@ -92,13 +92,61 @@ function templateDefect(copy, tools, { template, from, to, only = null }) {
   }
   const source = join(copy, 'persona-pipeline', template);
   const canonical = readFileSync(source, 'utf8');
-  tools.applyEdit(copy, { file: `persona-pipeline/${template}`, from, to });
+  for (const edit of edits) tools.applyEdit(copy, { file: `persona-pipeline/${template}`, ...edit });
   regenerate(copy);
   for (const [rel, text] of Object.entries(keep)) writeFileSync(join(copy, rel), text);
   // With `only`, the template goes back too: every other persona's committed
   // and assembled runbook is then clean, so a kill names `only` (Codex review).
   if (only !== null) writeFileSync(source, canonical);
 }
+
+// The templates that open their shell blocks with the resolver, listed by name
+// (G13 edits each). The list must be every such template: one the list misses
+// would keep the errexit-safe form while the case reports a kill.
+const RESOLVER_TEMPLATES = [
+  'regions/checkpoint-set.md', 'regions/locate-active.md', 'regions/peer-now-dispatch.md',
+  'regions/peer-now-locate.md', 'regions/peer-now-note.md', 'regions/resume-archive.md',
+  'regions/resume-marker.md', 'regions/resume-read.md', 'regions/verb-bootstrap-profiled.md',
+  'regions/verb-bootstrap.md', 'regions/verb-dispatch.md', 'regions/verb-finalize.md',
+  'regions/verb-phase-0.md', 'regions/verb-resume-profiled.md', 'regions/verb-resume.md',
+];
+{
+  const bearing = [...new Set(MANIFEST.regions.map((r) => r.template))]
+    .filter((template) => readFileSync(new URL(`../../persona-pipeline/${template}`, import.meta.url), 'utf8').includes('printenv {{root_env}}'))
+    .sort();
+  if (JSON.stringify(bearing) !== JSON.stringify([...RESOLVER_TEMPLATES].sort())) {
+    throw new MutationHarnessError(`RESOLVER_TEMPLATES is not the set of resolver-bearing templates: ${bearing.join(', ')}`);
+  }
+}
+
+// PC2a2b: the finalize template and its ensemble-commit step, moved whole by M1/M2.
+const FINALIZE = 'regions/verb-finalize.md';
+const COMMIT_STEP = [
+  '# ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.',
+  'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \\',
+  '  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\',
+  '  --phase {{verb}} --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" \\',
+  '  --verdict "$VERDICT" --summary "$SUMMARY" \\',
+  '  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
+  '',
+  '',
+].join('\n');
+
+/**
+ * The tests a defect in a verb template must fail: the named contract (a
+ * pattern anchored at the test name's start) inside the committed runbook's
+ * suite of every enrolled persona, compose and frame alike — matched by path,
+ * so a contract failing in one suite and an unrelated test failing in
+ * another does not pass for both (Codex review of PC2a2b).
+ */
+const inSuite = (suite, contract) => new RegExp(
+  `(?:^| > )${suite.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} > ${contract.source.replace(/^\^/, '')}`,
+);
+const IDENTITY = /^identity: persona, verb, phase, ensemble type and run-id prefix/;
+const PRIVACY = /^privacy: the prohibition sentence precedes the dispatch/;
+const verbCaught = (contract) => ['founder', 'designer'].flatMap((p) => ['compose', 'frame'].map((v) => new RegExp(
+  `(?:^| > )${`${p}/commands/${v}.md (committed)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} > ${contract.source.replace(/^\^/, '')}`,
+)));
 
 const CHECKPOINT_TARGET = {
   template: 'regions/checkpoint-set.md',
@@ -313,7 +361,7 @@ export const MUTATIONS = [
   {
     id: 'G13', tests: [T_HEADLESS, T_CONTRACT],
     prepare: (copy, tools) => {
-      for (const template of [...new Set(MANIFEST.regions.map((r) => r.template))].filter((t) => t !== 'regions/plugin-root.md')) {
+      for (const template of RESOLVER_TEMPLATES) {
         tools.applyEdit(copy, { file: `persona-pipeline/${template}`, from: 'printenv {{root_env}} || true)', to: 'printenv {{root_env}})' });
       }
       regenerate(copy);
@@ -381,15 +429,15 @@ export const MUTATIONS = [
   },
   {
     id: 'K1', tests: [T_CHAR], file: 'plugins/founder/commands/compose.md',
-    from: '  --phase compose --ensemble-type plan-verify --run-id "$RUN_ID" \\\n  --verdict',
-    to: '  --phase compose --ensemble-type brainstorm --run-id "$RUN_ID" \\\n  --verdict',
+    from: "  --phase 'compose' --ensemble-type 'plan-verify' --run-id \"$RUN_ID\" \\\n  --verdict",
+    to: "  --phase 'compose' --ensemble-type 'brainstorm' --run-id \"$RUN_ID\" \\\n  --verdict",
     why: 'founder compose commits its ensemble result under another type than it dispatched (the T0 characterization must fail)',
   },
   {
     id: 'K2', tests: [T_CHAR], file: 'plugins/designer/commands/frame.md', expect: 'SURVIVED',
-    from: '--persona designer \\',
-    to: "--persona 'designer' \\",
-    why: 'a quoting change alone (Decision 4 renders persona values as single-quoted literals) is not a difference the characterization reports',
+    from: "--persona 'designer' \\",
+    to: '--persona designer \\',
+    why: 'a quoting change alone (the generated literal \'designer\' read as the bare word it was) is not a difference the characterization reports',
   },
   // Codex review of PC2a2: each of these passed the first version of the tests.
   {
@@ -409,6 +457,13 @@ export const MUTATIONS = [
     from: '  exit 1\nelif [ "$RESOLVE_RC" -ne 0 ]; then',
     to: 'elif [ "$RESOLVE_RC" -ne 0 ]; then',
     why: 'founder decide goes on after the resolver rejected its arguments',
+  },
+  {
+    id: 'K6', tests: [T_CHAR], file: 'plugins/founder/commands/decide.md',
+    from: `RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"`,
+    to: "RUN_ID='brainstorm-$(date -u +%Y%m%dT%H%M%SZ)'",
+    killed_by: /^does what the fixture recorded, with the listed changes/,
+    why: 'founder decide single-quotes its run id, so the date never runs and the runner refuses the literal (Codex review of PC2a2b)',
   },
   {
     id: 'V8', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
@@ -454,6 +509,184 @@ export const MUTATIONS = [
     from: '      if (Array.isArray(value) && /[\\n\\r\\0]/.test(item)) {',
     to: '      if (false) {',
     why: 'a list item holding a line break renders as more lines than the list declares',
+  },
+
+  // ---- M: the compose and frame runbook regions (PC2a2b T8) -------------------------
+  // A canonical template defect regenerates into both personas, and each case
+  // names the contract that must catch it in both (killed_by): a nonzero exit
+  // from some other test is not that contract working.
+  {
+    id: 'M1', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, edits: [
+      { from: COMMIT_STEP, to: '' },
+      { from: '  --next-action {{next_action}} \\\n  --event updated\n```', to: `  --next-action {{next_action}} \\\n  --event updated\n\n${COMMIT_STEP.trimEnd()}\n\`\`\`` },
+    ] }),
+    killed_by: verbCaught(/^the dispatch, the note, ensemble-commit and the terminal write run in that order/),
+    why: 'the terminal write runs before ensemble-commit: the workflow archives with its ensemble result still pending',
+  },
+  {
+    id: 'M2', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, edits: [
+      { from: COMMIT_STEP, to: '' },
+      { from: 'nothing was written." >&2; exit 1; }\n\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n', to: `nothing was written." >&2; exit 1; }\n\n${COMMIT_STEP}node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n` },
+    ] }),
+    killed_by: verbCaught(/^the dispatch, the note, ensemble-commit and the terminal write run in that order/),
+    why: 'ensemble-commit runs before the phase note is written',
+  },
+  {
+    id: 'M3', tests: [T_CONTRACT],
+    prepare: (copy, tools) => {
+      for (const template of ['regions/verb-bootstrap.md', 'regions/verb-bootstrap-profiled.md']) {
+        tools.applyEdit(copy, { file: `persona-pipeline/${template}`, from: ' skill")" || exit $?\n', to: ' skill")"\n' });
+      }
+      regenerate(copy);
+    },
+    killed_by: verbCaught(/^bootstrap and resume write the workflow Phase 0 found/),
+    why: 'a failed create no longer stops the block: the verb runs on with an empty $ACTIVE (PD6)',
+  },
+  {
+    id: 'M4', tests: [T_CONTRACT],
+    prepare: (copy, tools) => {
+      for (const template of ['regions/verb-resume.md', 'regions/verb-resume-profiled.md']) {
+        tools.applyEdit(copy, { file: `persona-pipeline/${template}`, from: ' --event resumed || exit $?\n', to: ' --event resumed\n' });
+      }
+      regenerate(copy);
+    },
+    killed_by: verbCaught(/^bootstrap and resume write the workflow Phase 0 found/),
+    why: 'a failed resume append no longer stops the block (PD6)',
+  },
+  {
+    id: 'M5', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '  --event updated || exit $?\n', to: '  --event updated\n' }),
+    killed_by: [...verbCaught(/^the dispatch, the note, ensemble-commit and the terminal write run in that order/), /^bash: the finalize block hands a hostile note to state\.mjs byte for byte/],
+    why: 'a failed phase-note append no longer stops the block, which goes on to commit and archive (PD6; the run case shows it)',
+  },
+  {
+    id: 'M6', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-phase-0.md', from: '  exit "$FIND_RC"\n', to: '' }),
+    killed_by: verbCaught(/^Phase 0 names the persona before its guard/),
+    why: 'a failed find-active no longer stops Phase 0',
+  },
+  {
+    id: 'M7', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-bootstrap-profiled.md', from: '--persona {{name}} \\', to: "--persona 'founder' \\" }),
+    killed_by: [inSuite('designer/commands/compose.md (committed)', IDENTITY), inSuite('designer/commands/compose.md (assembled from the templates)', IDENTITY)],
+    why: 'the bootstrap names one persona for every persona: designer compose creates founder workflows',
+  },
+  {
+    id: 'M8', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: 'RUN_ID="${ENSEMBLE_TYPE}-$(date', to: 'RUN_ID="ensemble-$(date' }),
+    killed_by: verbCaught(/^identity: persona, verb, phase, ensemble type and run-id prefix/),
+    why: 'the run id no longer carries the ensemble type the dispatch and the commit name',
+  },
+  {
+    id: 'M9', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: '  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" \\\n', to: '  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" --image "$SCREENSHOT" \\\n' }),
+    killed_by: verbCaught(/^privacy: the prohibition sentence precedes the dispatch/),
+    why: 'the dispatch passes a screenshot to a companion path that has no image channel',
+  },
+  {
+    id: 'M10', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '{{artifact}}\n\n', to: '' }),
+    killed_by: verbCaught(/^the phase note: the scaffold right above the finalize block is the recorded one/),
+    why: 'the phase-note scaffold loses its artifact sections',
+  },
+  {
+    id: 'M11', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: "NOTE <<'PHASE_NOTE' || true", to: 'NOTE <<PHASE_NOTE || true' }),
+    // bash only: the suite runs the other shells only where they are installed.
+    killed_by: [/^bash: the finalize block hands a hostile note to state\.mjs byte for byte/, ...verbCaught(/^the phase note: the scaffold right above the finalize block/)],
+    why: 'the heredoc is unquoted: the shell expands $(…), backticks and $VARS in the note the agent wrote (the ADR-0059 class)',
+  },
+  {
+    id: 'M12', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy) => {
+      const path = join(copy, 'persona-pipeline/manifest.json');
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      const subs = manifest.regions.filter((r) => r.dest === 'commands/compose.md' && r.substitutions?.ensemble_type);
+      if (subs.length !== 2) throw new MutationHarnessError(`compose ensemble_type substitutions: ${subs.length}`);
+      for (const r of subs) r.substitutions.ensemble_type.value = 'review';
+      writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+      regenerate(copy);
+    },
+    killed_by: [inSuite('founder/commands/compose.md (committed)', IDENTITY), inSuite('designer/commands/compose.md (committed)', IDENTITY)],
+    why: 'the manifest gives compose another ensemble type; the expected one comes from the T0 map, not the manifest',
+  },
+  {
+    id: 'M13', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy) => {
+      const path = join(copy, 'persona-pipeline/manifest.json');
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      const swap = { compose: 'frame', frame: 'compose' };
+      let swapped = 0;
+      for (const r of manifest.regions.filter((x) => ['commands/compose.md', 'commands/frame.md'].includes(x.dest))) {
+        if (r.substitutions?.verb) { r.substitutions.verb.value = swap[r.substitutions.verb.value]; swapped++; }
+      }
+      if (swapped !== 8) throw new MutationHarnessError(`verb substitutions swapped: ${swapped}`);
+      writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+      regenerate(copy);
+    },
+    killed_by: [inSuite('founder/commands/frame.md (committed)', IDENTITY), inSuite('designer/commands/compose.md (committed)', IDENTITY)],
+    why: 'compose and frame swap their verb values: each runbook runs the other verb',
+  },
+  {
+    id: 'M14', tests: [T_CONTRACT], file: 'plugins/founder/commands/compose.md',
+    from: 'Genericize before the peer prompt; the\npre-genericization value MUST never leave the local host. ',
+    to: '',
+    killed_by: inSuite('founder/commands/compose.md (committed)', PRIVACY),
+    why: 'founder compose loses the privacy prohibition before its dispatch (authored text outside the regions)',
+  },
+  {
+    id: 'M15', tests: [T_CONTRACT], file: 'plugins/designer/commands/frame.md',
+    from: '**Screenshots are sensitive by default**',
+    to: 'Screenshots may be shared',
+    killed_by: inSuite('designer/commands/frame.md (committed)', PRIVACY),
+    why: 'designer frame loses the screenshot sentence before its dispatch (authored text outside the regions)',
+  },
+  // The repository-wide gates' rules (T4a), run on the assembled runbook too.
+  {
+    id: 'M16', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the\n', to: '# On Claude the Stop hook fires when the session ends, so the\n' }),
+    killed_by: verbCaught(/^the shared runbook checks hold/),
+    why: 'the terminal write\'s archive-timing note says the gates wait for the session end (the disproved claim)',
+  },
+  {
+    id: 'M17', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '- rationale:             <why best', to: '- reasoning:             <why best' }),
+    killed_by: verbCaught(/^the shared runbook checks hold/),
+    why: 'the phase note\'s next-action proposal loses its canonical rationale key',
+  },
+  // Codex review of PC2a2b: each of these passed the reviewed version of the tests.
+  {
+    id: 'M18', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }\n', to: '' }),
+    killed_by: [/^dash: a shell whose read has no -d stops the finalize block before any write/, ...verbCaught(/^the phase note: the scaffold right above the finalize block/)],
+    why: 'a shell whose read has no -d records an empty note and archives the workflow',
+  },
+  {
+    id: 'M19', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-phase-0.md', from: '  exit "$FIND_RC"\nfi\n', to: '  exit "$FIND_RC"\nfi\nACTIVE=""\n' }),
+    killed_by: verbCaught(/^Phase 0, run: \$ACTIVE holds what find-active printed/),
+    why: 'Phase 0 discards the workflow find-active found, so every verb bootstraps a new one',
+  },
+  {
+    id: 'M20', tests: [T_CONTRACT], file: 'plugins/founder/commands/compose.md',
+    from: 'Empty `$ACTIVE` → bootstrap with verb=compose:', to: 'Non-empty `$ACTIVE` → bootstrap with verb=compose:',
+    killed_by: inSuite('founder/commands/compose.md (committed)', /^the authored conditions route an empty \$ACTIVE to the bootstrap/),
+    why: 'founder compose bootstraps a new workflow over the one it found (authored text outside the regions)',
+  },
+  {
+    id: 'M21', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'so when the note itself holds\nsuch a line, replace both `PHASE_NOTE` delimiters with a word no line of the\nnote consists of.', to: 'so keep it short.' }),
+    killed_by: verbCaught(/^the phase note: the scaffold right above the finalize block/),
+    why: 'the agent is no longer told to rename a delimiter its note holds: such a note runs its tail as shell',
+  },
+  {
+    id: 'D5', tests: [T_SYNC], file: 'plugins/founder/commands/compose.md',
+    from: "  --terminal-marker true \\\n  --next-action 'Critique the composed planning artifact' \\\n",
+    to: "  --terminal-marker true --force \\\n  --next-action 'Critique the composed planning artifact' \\\n",
+    killed_by: /^the repository is clean$/,
+    why: 'a hand edit inside a generated region of compose.md (the drift check must fail)',
   },
 
   // ---- C: control -------------------------------------------------------------------

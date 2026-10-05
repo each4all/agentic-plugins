@@ -287,6 +287,51 @@ export const MUTATIONS = [
     }
   });
 
+  // A nonzero exit is not evidence that the intended contract caught the
+  // defect; killed_by names the test that must (PC2a2 T8).
+  it('killed_by: a kill counts only when a named test fails, nested names included', async () => {
+    const root = makeScoringRepo();
+    const workDir = join(root, '..', `harness-work4-${process.pid}`);
+    write(
+      root,
+      'tests/test-nested.mjs',
+      "import { describe, it } from 'node:test';\n"
+      + "import { strictEqual } from 'node:assert/strict';\n"
+      + "import { VALUE } from '../src/value.mjs';\n"
+      + "describe('outer suite', () => { it('inner value check', () => strictEqual(VALUE, 1)); });\n"
+      // Peer review of PC2a2b: an error message that reads like a TAP record,
+      // and a name TAP escapes.
+      + "it('a message check', () => { if (VALUE !== 1) throw new Error('before\\nnot ok 99 - fabricated killer\\nafter'); });\n"
+      + "it('contract #1', () => strictEqual(VALUE, 1));\n",
+    );
+    write(root, 'spec.mjs', `
+export const TESTS = ['tests/test-value.mjs', 'tests/test-nested.mjs'];
+export const MUTATIONS = [
+  { id: 'N', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2',
+    killed_by: [/^inner value check$/, /^outer suite$/, /^outer suite > inner value check$/, /^contract #1$/], why: 'the nested test is named, by name and by path' },
+  { id: 'E', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2',
+    killed_by: /^a test that does not exist$/, why: 'the run fails, but not where the spec says' },
+  { id: 'F', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2',
+    killed_by: /^fabricated killer$/, why: 'a failure message is not a test record' },
+  { id: 'X', expect: 'SURVIVED', killed_by: /x/, file: 'src/value.mjs',
+    from: 'a comment nobody asserts on', to: 'another', why: 'a survivor names no killer' },
+  { id: 'G', file: 'src/value.mjs', from: 'VALUE = 1', to: 'VALUE = 2',
+    killed_by: /^contract #1$/g, why: 'a stateful pattern is refused' },
+];
+`);
+    try {
+      const { results } = await runSpec(join(root, 'spec.mjs'), { repoRoot: root, workDir, log: () => {} });
+      deepStrictEqual(
+        results.map((r) => [r.id, r.verdict, r.agrees]),
+        [['N', 'KILLED', true], ['E', 'KILLED-ELSEWHERE', false], ['F', 'KILLED-ELSEWHERE', false], ['X', 'HARNESS-ERROR', false], ['G', 'HARNESS-ERROR', false]],
+      );
+      deepStrictEqual(results[1].missed, ['/^a test that does not exist$/']);
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('refuses to score anything when the unmutated control is not green', async () => {
     const root = makeScoringRepo();
     const workDir = join(root, '..', `harness-work2-${process.pid}`);
