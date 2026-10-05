@@ -137,9 +137,15 @@ export function validateManifest(manifest) {
       const sw = `${w}.substitutions.${name}`;
       if (!/^[a-z][a-z0-9_]*$/.test(name)) fail(sw, 'invalid placeholder name');
       if (!isPlainObject(sub)) fail(sw, 'is not an object');
-      onlyKeys(sub, ['field', 'context'], sw);
-      if (typeof sub.field !== 'string' || !/^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$/.test(sub.field)) {
+      onlyKeys(sub, ['field', 'value', 'context'], sw);
+      // A substitution reads a declaration field, or carries a literal the
+      // manifest fixes for this region (the verb a shared block runs for).
+      if (Object.hasOwn(sub, 'field') === Object.hasOwn(sub, 'value')) fail(sw, 'needs exactly one of field and value');
+      if (Object.hasOwn(sub, 'field') && (typeof sub.field !== 'string' || !/^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$/.test(sub.field))) {
         fail(sw, 'field must be a dotted declaration path');
+      }
+      if (Object.hasOwn(sub, 'value') && (typeof sub.value !== 'string' || sub.value.length === 0)) {
+        fail(sw, 'value must be a non-empty string');
       }
       if (!CONTEXTS.has(sub.context)) fail(sw, `context must be one of ${[...CONTEXTS].join(', ')}`);
     }
@@ -389,7 +395,174 @@ function lookupField(declaration, field) {
   return cur;
 }
 
-const PLACEHOLDER_RE = /\{\{\s*([^{}]*?)\s*\}\}/g;
+/**
+ * The fields a template may read besides the declaration's own: values the
+ * pipeline derives from the persona's name, the way the runtime derives its
+ * state directory and command prefix (ADR-0066 Decision 2). They sit under
+ * `derived`, a key the declaration schema does not allow, so they never
+ * shadow a declared field.
+ */
+export function derivedFields(declaration) {
+  const name = declaration?.name;
+  if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*$/.test(name)) return {};
+  return { root_env: `AGENTIC_${name.toUpperCase().split('-').join('_')}_ROOT` };
+}
+
+/** The declaration as templates read it: the declaration plus `derived`. */
+export function renderingDeclaration(declaration) {
+  return { ...declaration, derived: derivedFields(declaration) };
+}
+
+const SHELL_INFO = new Set(['bash', 'sh', 'zsh', 'shell']);
+
+/**
+ * Where each `{{…}}` of a template sits (ADR-0066 Decision 4, placement).
+ * Returns one entry per occurrence, in order: `{ name, where }`, where `where`
+ * is `prose` (outside any fence), `fence` (a fence that is not shell),
+ * `word` (a shell fence, unquoted: the only place a single-quoted literal
+ * means what it says), or `shell-<state>` for every other shell position —
+ * `single`, `ansi` (inside `$'…'`, where `\\'` does not end the string),
+ * `double`, `param` (inside `${…}`), `arith` (inside `$((…))` or `((…))`,
+ * which expands a command substitution in it), `backtick`, `comment`,
+ * `heredoc` (any delimiter; an unparsable one makes the rest of the block a
+ * heredoc), `escaped` (right after a backslash, which would escape the
+ * literal's opening quote). A command substitution `$(…)` opens a fresh
+ * unquoted context, even inside double quotes, as the shell does. A
+ * placeholder never spans lines.
+ */
+export function placeholderPlacements(template) {
+  const out = [];
+  const lines = template.split('\n');
+  let fence = null; // { mark, shell }
+  let heredocs = []; // queued { delim, strip }; delim null: unparsable, the rest of the block
+  let stack = null; // shell lexer state inside a shell fence, carried across lines
+  const record = (line, at, where) => {
+    const close = line.indexOf('}}', at + 2);
+    const name = (close === -1 ? line.slice(at + 2) : line.slice(at + 2, close)).trim();
+    out.push({ name, where });
+    return close === -1 ? line.length : close + 2;
+  };
+  const proseLine = (line, where) => {
+    let at = line.indexOf('{{');
+    while (at !== -1) {
+      const next = record(line, at, where);
+      at = line.indexOf('{{', next);
+    }
+  };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const f = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
+    if (!fence) {
+      if (f) {
+        const info = f[2].trim().split(/\s+/)[0].toLowerCase();
+        fence = { mark: f[1], shell: SHELL_INFO.has(info) };
+        stack = [{ kind: 'code', depth: 0 }];
+        heredocs = [];
+        continue;
+      }
+      proseLine(line, 'prose');
+      continue;
+    }
+    if (f && f[1][0] === fence.mark[0] && f[1].length >= fence.mark.length && f[2].trim() === '') {
+      fence = null;
+      continue;
+    }
+    if (!fence.shell) {
+      proseLine(line, 'fence');
+      continue;
+    }
+    if (heredocs.length > 0) {
+      const h = heredocs[0];
+      const body = h.strip ? line.replace(/^\t+/, '') : line;
+      if (h.delim !== null && body === h.delim) heredocs.shift();
+      else proseLine(line, 'shell-heredoc');
+      continue;
+    }
+    const top = () => stack[stack.length - 1];
+    for (let i = 0; i < line.length;) {
+      const st = top();
+      const c = line[i];
+      if (line.startsWith('{{', i)) {
+        i = record(line, i, st.kind === 'code' ? 'word' : `shell-${st.kind}`);
+        continue;
+      }
+      if (st.kind === 'single') {
+        if (c === "'") stack.pop();
+        i++;
+        continue;
+      }
+      if (c === '\\' && line.startsWith('{{', i + 1)) {
+        i = record(line, i + 1, 'shell-escaped');
+        continue;
+      }
+      if (st.kind === 'ansi') {
+        if (c === '\\') i += 2;
+        else { if (c === "'") stack.pop(); i++; }
+        continue;
+      }
+      if (c === '\\') { i += 2; continue; }
+      if (st.kind === 'code' && c === '#' && (i === 0 || /[\s;&|(]/.test(line[i - 1]))) {
+        proseLine(line.slice(i), 'shell-comment');
+        break;
+      }
+      if (st.kind === 'arith') {
+        if (c === '(') st.depth++;
+        else if (c === ')') {
+          if (st.depth > 0) st.depth--;
+          else { stack.pop(); i += line[i + 1] === ')' ? 2 : 1; continue; }
+        }
+        i++;
+        continue;
+      }
+      if (c === '$' && line[i + 1] === "'" && st.kind !== 'double') { stack.push({ kind: 'ansi' }); i += 2; continue; }
+      if (c === '$' && line.startsWith('((', i + 1)) { stack.push({ kind: 'arith', depth: 0 }); i += 3; continue; }
+      if (c === '$' && line[i + 1] === '(') { stack.push({ kind: 'code', depth: 0 }); i += 2; continue; }
+      if (c === '$' && line[i + 1] === '{') { stack.push({ kind: 'param', depth: 0 }); i += 2; continue; }
+      if (st.kind === 'param') {
+        if (c === '{') st.depth++;
+        else if (c === '}') { if (st.depth === 0) stack.pop(); else st.depth--; }
+        else if (c === '"') stack.push({ kind: 'double' });
+        else if (c === "'") stack.push({ kind: 'single' });
+        i++;
+        continue;
+      }
+      if (c === '`') {
+        if (st.kind === 'backtick') stack.pop();
+        else stack.push({ kind: 'backtick' });
+        i++;
+        continue;
+      }
+      if (st.kind === 'double') {
+        if (c === '"') stack.pop();
+        i++;
+        continue;
+      }
+      // code or backtick
+      if (c === "'") { stack.push({ kind: 'single' }); i++; continue; }
+      if (c === '"') { stack.push({ kind: 'double' }); i++; continue; }
+      if (c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+        // A heredoc: its body starts on the next line. Any delimiter word is
+        // read; one that cannot be read makes the rest of the block a heredoc.
+        const h = /^<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|((?:\\.|[^\s;&|<>()'"`])+))/.exec(line.slice(i));
+        if (!h) { heredocs.push({ delim: null, strip: false }); i += 2; continue; }
+        const delim = h[2] ?? h[3] ?? h[4].replace(/\\(.)/g, '$1');
+        heredocs.push({ delim, strip: h[1] === '-' });
+        i += h[0].length;
+        continue;
+      }
+      if (c === '(' && line[i + 1] === '(') { stack.push({ kind: 'arith', depth: 0 }); i += 2; continue; }
+      if (c === '(') st.depth = (st.depth ?? 0) + 1;
+      else if (c === ')') {
+        if (st.depth > 0) st.depth--;
+        else if (stack.length > 1) stack.pop();
+      }
+      i++;
+    }
+  }
+  return out;
+}
+
+const PLACEHOLDER_RE = /\{\{[ \t]*([^{}\n]*?)[ \t]*\}\}/g;
 const BLOCK_OPEN_RE = /^\{\{([#^])capability ([a-z_]+)\}\}$/;
 const BLOCK_CLOSE_RE = /^\{\{\/capability\}\}$/;
 
@@ -434,19 +607,62 @@ export function renderTemplate(template, { declaration, substitutions = {}, labe
   }
   if (block) throw new PipelineError(`${label}:${block.line + 1}: capability block has no {{/capability}}`);
 
-  return kept.join('\n').replace(PLACEHOLDER_RE, (_, name) => {
+  const text = kept.join('\n');
+  // Placement (ADR-0066 Decision 4): a shell value is a single-quoted literal,
+  // which means what it says only at an unquoted position of a shell block —
+  // inside "…" a `$(…)` in the value would run. Text and markdown values are
+  // verbatim, so they never enter a shell block at all.
+  const placed = placeholderPlacements(text);
+  const matched = [...text.matchAll(PLACEHOLDER_RE)].map((m) => m[1]);
+  // Every replacement must be a placement the lexer read, in the same order:
+  // a "{{" the lexer stepped over would otherwise be replaced unchecked.
+  if (placed.length !== (text.split('{{').length - 1) || JSON.stringify(placed.map((p) => p.name)) !== JSON.stringify(matched)) {
+    throw new PipelineError(`${label}: a placeholder the placement check could not read (a "{{" it stepped over, one spanning lines, or one left open)`);
+  }
+  for (const { name, where } of placed) {
+    const sub = Object.hasOwn(substitutions, name) ? substitutions[name] : null;
+    if (!sub) continue; // reported as unresolved below
+    if (sub.context === 'shell' && where !== 'word') {
+      throw new PipelineError(`${label}: {{${name}}} is a shell value but sits ${PLACE_TEXT[where] ?? where}; put it at an unquoted word position of a shell block`);
+    }
+    if (sub.context !== 'shell' && (where === 'word' || where.startsWith('shell-'))) {
+      throw new PipelineError(`${label}: {{${name}}} is a ${sub.context} value inside a shell block; give it the shell context or move it to the prose`);
+    }
+  }
+  const rendered = text.replace(PLACEHOLDER_RE, (_, name) => {
     if (!Object.hasOwn(substitutions, name)) {
       throw new PipelineError(`${label}: unresolved placeholder {{${name}}} (not declared for this region)`);
     }
-    const { field, context } = substitutions[name];
-    const value = lookupField(declaration, field);
+    const sub = substitutions[name];
+    const value = Object.hasOwn(sub, 'value') ? sub.value : lookupField(declaration, sub.field);
     if (value === undefined || value === null) {
-      throw new PipelineError(`${label}: unresolved placeholder {{${name}}}: the declaration has no ${field}`);
+      throw new PipelineError(`${label}: unresolved placeholder {{${name}}}: the declaration has no ${sub.field}`);
     }
     if (typeof value !== 'string') {
-      throw new PipelineError(`${label}: placeholder {{${name}}}: ${field} is not a string`);
+      throw new PipelineError(`${label}: placeholder {{${name}}}: ${sub.field ?? 'its value'} is not a string`);
     }
-    if (context === 'shell') return shellQuote(value);
+    if (value.includes('{{')) {
+      throw new PipelineError(`${label}: placeholder {{${name}}}: the value holds "{{", which a later reader would take for a placeholder`);
+    }
+    if (sub.context === 'shell') return shellQuote(value);
     return value;
   });
+  if (rendered.includes('{{')) {
+    throw new PipelineError(`${label}: unresolved "{{" left after rendering`);
+  }
+  return rendered;
 }
+
+const PLACE_TEXT = {
+  prose: 'in prose, outside a shell block',
+  fence: 'in a code block that is not shell',
+  'shell-single': "inside '…'",
+  'shell-ansi': "inside $'…'",
+  'shell-arith': 'inside an arithmetic expansion',
+  'shell-escaped': 'right after a backslash',
+  'shell-double': 'inside "…"',
+  'shell-param': 'inside ${…}',
+  'shell-backtick': 'inside backticks',
+  'shell-comment': 'in a shell comment',
+  'shell-heredoc': 'in a heredoc',
+};

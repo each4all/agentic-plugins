@@ -122,6 +122,27 @@ function resolverLines(plugin) {
   ];
 }
 
+/**
+ * The opening lines a generated persona-pipeline block carries instead
+ * (ADR-0066 Decision 4, PC2a DD1): the persona's name reaches the shell only
+ * as a single-quoted literal, so the override is read with printenv and the
+ * cache path quotes the name. Same resolution order as resolverLines.
+ */
+const GENERATED_RESOLVER_PLUGINS = new Set(['founder', 'designer']);
+function generatedResolverLines(plugin) {
+  const env = `AGENTIC_${plugin.toUpperCase()}_ROOT`;
+  return [
+    `ROOT_OVERRIDE="$(printenv '${env}' || true)"`,
+    'CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"',
+    resolverLines(plugin)[1].replace(`agentic-plugins/${plugin} `, `agentic-plugins/'${plugin}' `),
+  ];
+}
+
+/** Every resolver form a block of `plugin` may open with. */
+function resolverForms(plugin) {
+  return GENERATED_RESOLVER_PLUGINS.has(plugin) ? [resolverLines(plugin), generatedResolverLines(plugin)] : [resolverLines(plugin)];
+}
+
 const FILES = markdownFiles();
 const COMMAND_FILES = FILES.filter((f) => /^plugins\/[^/]+\/commands\/[^/]+\.md$/.test(rel(f)));
 
@@ -192,14 +213,19 @@ test('every command block that uses the plugin root resolves it first', async (t
   const offenders = [];
   for (const f of COMMAND_FILES) {
     const plugin = rel(f).split('/')[1];
-    const [first, second] = resolverLines(plugin);
     for (const block of fencedBlocks(readFileSync(f, 'utf8'))) {
       const uses = (l) => isCode(l) && (PLUGIN_ROOT_USE.test(l) || (plugin === 'runtime' && RUNTIME_ROOT_USE.test(l)));
-      const at = block.lines.findIndex((l) => l.trim() === first);
-      const firstUse = block.lines.findIndex((l, i) => i !== at && uses(l));
+      // The form the block opens with: its first line, then the rest in order.
+      const opened = resolverForms(plugin).map((form) => {
+        const at = block.lines.findIndex((l) => l.trim() === form[0]);
+        const whole = at >= 0 && form.every((line, k) => (block.lines[at + k] ?? '').trim() === line);
+        return { at, form, whole };
+      }).find((o) => o.at >= 0) ?? { at: -1, form: [], whole: false };
+      const own = (i) => opened.at >= 0 && i >= opened.at && i < opened.at + opened.form.length - 1;
+      const firstUse = block.lines.findIndex((l, i) => !own(i) && uses(l));
       if (firstUse < 0) continue;
       checked.push(`${rel(f)}:${block.start}`);
-      if (at < 0 || at > firstUse || (block.lines[at + 1] ?? '').trim() !== second) {
+      if (opened.at < 0 || opened.at > firstUse || !opened.whole) {
         offenders.push(`${rel(f)}:${block.start + Math.max(firstUse, 0)}: ${block.lines[firstUse].trim()}`);
       }
       // Nothing may reassign the root from the retired fallbacks.
@@ -217,6 +243,9 @@ test('every command block that uses the plugin root resolves it first', async (t
       'plugins/runtime/commands/doctor.md',
       'plugins/founder/commands/start.md',
       'plugins/designer/commands/decide.md',
+      // generated resolver form (persona-pipeline regions, PC2a)
+      'plugins/founder/commands/checkpoint.md',
+      'plugins/designer/commands/peer-now.md',
       'plugins/image/commands/compose.md',
     ]) ok(files.has(f), `${f} has no block that uses the plugin root`);
   });
@@ -290,8 +319,9 @@ test('the resolver picks the override, then the path Claude writes in, then the 
     for (const shell of ['sh', 'bash', 'zsh']) {
       const available = spawnSync(shell, ['-c', 'exit 0']).status === 0;
       await t.test(shell, { skip: available ? false : `${shell} is not installed` }, () => {
-        for (const plugin of plugins) {
-          const [first, second] = resolverLines(plugin);
+        for (const plugin of plugins) for (const lines of resolverForms(plugin)) {
+          const first = lines.slice(0, -1).join('\n');
+          const second = lines[lines.length - 1];
           const v = plugin === 'runtime' ? 'RUNTIME_ROOT' : 'CLAUDE_PLUGIN_ROOT';
           const env = `AGENTIC_${plugin.toUpperCase()}_ROOT`;
           const pick = (home, line1, extra = {}) => spawnSync(shell, ['-c', `${line1}\n${second}\nprintf '%s' "$${v}"`], {
@@ -305,6 +335,12 @@ test('the resolver picks the override, then the path Claude writes in, then the 
           strictEqual(pick(homes[0], loaded), '/loaded/root', `${plugin}: the path Claude wrote in`);
           strictEqual(pick(homes[0], first, { CLAUDE_PLUGIN_ROOT: '/exported/root' }), '/exported/root', `${plugin}: the root a dispatcher exported`);
           strictEqual(pick(homes[0], loaded, { [env]: '/override/root' }), '/override/root', `${plugin}: the override`);
+          // Both forms agree where they could differ (PC2a DD1): an empty override is
+          // no override, and an override holding a space survives whole.
+          strictEqual(pick(homes[0], loaded, { [env]: '' }), '/loaded/root', `${plugin}: an empty override`);
+          strictEqual(pick(homes[0], loaded, { [env]: '/over ride/root' }), '/over ride/root', `${plugin}: an override with a space`);
+          // An unset override is not a failure, even under errexit (Codex review of PC2a).
+          strictEqual(pick(homes[0], `set -e\n${loaded}`), '/loaded/root', `${plugin}: an unset override under set -e`);
         }
       });
     }

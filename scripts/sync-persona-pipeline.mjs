@@ -59,6 +59,7 @@ import {
   regionBody,
   renderLedger,
   renderTemplate,
+  renderingDeclaration,
   replaceRegionBodies,
   validateLedger,
   validateManifest,
@@ -526,7 +527,7 @@ export async function runSync({ root = REPO_ROOT, write = false, adopt = false, 
         }
         try {
           const rendered = renderTemplate(template, {
-            declaration: declarations[persona],
+            declaration: renderingDeclaration(declarations[persona]),
             substitutions: region.substitutions ?? {},
             label: `persona-pipeline/${region.template}`,
           });

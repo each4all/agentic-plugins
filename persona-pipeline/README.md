@@ -11,8 +11,9 @@ committed, so every plugin keeps its own complete copy and runs alone
 
 | Path | What it is |
 |---|---|
-| `manifest.json` | Every canonical unit, its destination inside a plugin, and the personas it is generated into (the enrollment matrix). Also the region and extension-point declarations (none in production until Stage 2). |
+| `manifest.json` | Every canonical unit, its destination inside a plugin, and the personas it is generated into (the enrollment matrix). Also the region and extension-point declarations. |
 | `files/<plugin path>` | The canonical files. Each is copied whole into every enrolled persona, with a generated-file notice; its git mode is the generated mode. |
+| `regions/<block>.md` | The canonical region templates: a block of a runbook, rendered into each enrolled persona's authored file between its region markers. |
 | `persona.schema.json` | The schema of `plugins/<persona>/persona.json`, each persona's declaration of who it is and what differs: name, deliverable noun, runtime footer floor, capabilities, decide data. |
 | `owned.json` | Generated: every plugin path the pipeline has written, per persona. It is how the write mode knows what it may replace or remove. Do not edit it. |
 
@@ -29,6 +30,41 @@ shares unchanged (the decide libraries and registry, `validate-commit`,
 `peer-runner.mjs` and capability modules stay hand-maintained until Stage 3.
 `scripts/lib/args-file.mjs` is not a unit: five packages share it, and
 `tests/plugin-shape/test-args-file-transport.mjs` keeps them byte-equal.
+
+Stage 2a (PC2a) begins the runbook regions. founder and designer's
+`checkpoint`, `resume` and `peer-now` commands hold generated regions: the
+plugin-root paragraph and every shell block. The prose around them, the
+privacy gate included, stays authored.
+
+## Regions
+
+A region is the text between `<!-- pipeline:begin <id> -->` and
+`<!-- pipeline:end <id> -->` in an authored file. The manifest gives each
+`(dest, id)` a template under `regions/`, the personas enrolled, and its
+substitutions. A template holds only `{{name}}` placeholders and
+`{{#capability x}}` / `{{^capability x}}` blocks (ADR-0066 Decision 4).
+
+- A substitution reads a declaration field (`field`, a dotted path) or carries
+  a literal the manifest fixes for that region (`value`, e.g. the verb a
+  shared block runs for). `derived.root_env` is the persona's
+  `AGENTIC_<NAME>_ROOT`, derived from `name`.
+- Its `context` decides how the value lands. `shell`: a single-quoted
+  literal, and only at an unquoted word position of a shell block, never
+  inside `"…"`, `'…'`, `$'…'`, `${…}`, an arithmetic expansion, backticks, a
+  comment or a heredoc, nor right after a backslash, where it would not mean
+  what it says (a `$(…)` opens a fresh unquoted position, as
+  in the shell). `markdown` / `text`: verbatim, and never inside a shell
+  block. A persona value that a double-quoted argument needs goes through a
+  shell variable set from a literal first (`PERSONA='founder'`, then
+  `"${PERSONA}"`).
+- A value holding `{{`, a placeholder the region does not declare or the
+  placement check cannot read (one spanning lines included), and any `{{`
+  left after rendering fail the render.
+
+To give a file regions, put each pair of markers, empty, where the block
+goes, enroll the region in the manifest, and run the write: it fills the
+bodies. The write repairs a body only; a missing marker or enrollment is an
+authored fix.
 
 ## Editing
 
@@ -61,5 +97,9 @@ is to be taken over, which is how a hand-maintained copy joins the pipeline.
 (`personasFor(dest)` in `_personas.mjs`), the region engine on fixtures, the
 declaration and its loader, the generator, the CLI entry guard, and the
 off-capability, broken-declaration and isolation behavior.
+`test-runbook-contracts.mjs` holds the runbook contracts (call order, the
+workflow each write targets, the privacy gate before the dispatch, no image to
+the peer) over each persona's committed runbook and over the runbook assembled
+from the templates, so a defect the drift check cannot see still fails.
 `scripts/mutation-specs/persona-pipeline.mjs` puts defects into the canonical
 source, regenerates them, and expects a contract test to fail.
