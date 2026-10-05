@@ -15,11 +15,13 @@ point type) — never ask the user whether to invoke the peer, and never
 direct them to run companion CLIs manually. When the companions plugin or
 peer CLI is unavailable, the ensemble degrades silently to local-only.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_FOUNDER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 > **founder is not an orchestrator dispatch target** (ADR-0036 Non-Goal
 > 3): unlike the engineer commands, this command does NOT read
@@ -33,77 +35,86 @@ shell variable does not outlive a Bash call.
 
 Determine workflow state via the host-shared canonical I/O module:
 
-1. **Find active workflow**:
+<!-- pipeline:begin investigate-phase-0 -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='founder'
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+GIT_BRANCH="$(git branch --show-current)"
+# ADR-0018 §sub-2 — the persona's workflows are anchored to a branch.
+if [ -z "$GIT_BRANCH" ]; then
+  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "  Switch to a branch first: git switch <branch>" >&2
+  exit 1
+fi
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+  find-active --repo-root "$REPO_ROOT")"
+FIND_RC=$?
+if [ "$FIND_RC" -ne 0 ]; then
+  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
+  exit "$FIND_RC"
+fi
+```
+<!-- pipeline:end investigate-phase-0 -->
 
-   ```bash
-   CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-   REPO_ROOT="$(git rev-parse --show-toplevel)"
-   GIT_BRANCH="$(git branch --show-current)"
-   # ADR-0018 §sub-2 — founder workflows are anchored to a branch;
-   # detached HEAD has no branch context to anchor to.
-   if [ -z "$GIT_BRANCH" ]; then
-     echo "✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
-     echo "  Switch to a branch first: git switch <branch>" >&2
-     exit 1
-   fi
-   # ADR-0036 SD5 — founder requires a git workspace (recommended: a
-   # per-venture content repository). git rev-parse above fails outside a
-   # repo; if so, refuse with manual-init guidance:
-   #   git init   # or: cd into your venture content repo
-   ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-     find-active --repo-root "$REPO_ROOT")"
-   FIND_RC=$?
-   if [ "$FIND_RC" -ne 0 ]; then
-     echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
-     exit "$FIND_RC"
-   fi
-   ```
+founder requires a git workspace (ADR-0036 SD5; recommended: a
+per-venture content repository). If `git rev-parse` fails, refuse with
+manual-init guidance (git init, or cd into your venture content repo).
+`find-active` exits 1 on a per-branch duplicate (corruption or an external
+mutation); the block surfaces the diagnostic and aborts.
 
-   - Empty `$ACTIVE` → no active workflow on this branch → bootstrap (Step 2).
-   - Non-empty path → active workflow on this branch → append-on-resume (Step 3).
-   - `find-active` exits 1 on per-branch duplicate (corruption / external mutation); the snippet surfaces the diagnostic and aborts.
+Empty `$ACTIVE` → bootstrap a new workflow with verb=investigate:
 
-2. **Bootstrap** (no active workflow):
+<!-- pipeline:begin investigate-bootstrap -->
+In the block, replace the profile placeholder with the profile the arguments
+name, and `<the original request described above>` with a
+one-line genericized business topic; `AGENTIC_PROFILE` and `AGENTIC_TOPIC` take their
+places when they are set.
 
-   ```bash
-   CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-   GIT_BRANCH="$(git branch --show-current)"
-   GIT_HEAD="$(git rev-parse HEAD)"
-   STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
-   ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
-     --repo-root "$REPO_ROOT" \
-     --verb investigate --host "${AGENTIC_HOST:-claude}" \
-     --persona founder \
-     --git-baseline-branch "$GIT_BRANCH" \
-     --git-baseline-head "$GIT_HEAD" \
-     --status-digest "$STATUS_DIGEST" \
-     --profile "${AGENTIC_PROFILE:-<profile from the arguments above — business-brief; default 'business-brief'>}" \
-     --original-request "${AGENTIC_TOPIC:-<one-line genericized business topic>}" \
-     --current-phase phase-0-bootstrap \
-     --next-action "Run investigate skill")"
-   ```
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='investigate'
+DEFAULT_PROFILE='business-brief'
+GIT_BRANCH="$(git branch --show-current)"
+GIT_HEAD="$(git rev-parse HEAD)"
+STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
+  --repo-root "$REPO_ROOT" \
+  --verb 'investigate' --host "${AGENTIC_HOST:-claude}" --persona 'founder' \
+  --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
+  --status-digest "$STATUS_DIGEST" \
+  --profile "${AGENTIC_PROFILE:-<profile from the arguments above — default ${DEFAULT_PROFILE}>}" \
+  --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
+  --current-phase phase-0-bootstrap \
+  --next-action "Run ${VERB} skill")" || exit $?
+```
+<!-- pipeline:end investigate-bootstrap -->
 
-   `state.mjs create` enforces the directory-level lock + single-active
-   invariant per ADR-0011 §3, and writes only persona `founder`
-   (canonical-home guard).
+`state.mjs create` enforces the directory-level lock + single-active
+invariant per ADR-0011 §3, and writes only persona `founder`
+(canonical-home guard).
 
-3. **Append-on-resume** (active workflow exists):
+Non-empty `$ACTIVE` → append-on-resume:
 
-   ```bash
-   CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-   [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-     --verb investigate \
-     --profile "<profile or empty>" \
-     --phase-label "Phase 0: Resume into investigate" \
-     --phase-note "Resumed from prior verb. Profile=<...>." \
-     --current-phase phase-0-resume \
-     --next-action "Run investigate skill" \
-     --event resumed
-   ```
+<!-- pipeline:begin investigate-resume -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='investigate'
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb 'investigate' \
+  --profile "<profile or empty>" \
+  --phase-label "Phase 0: Resume into ${VERB}" \
+  --phase-note "Resumed from prior verb. Profile=<...>." \
+  --current-phase phase-0-resume \
+  --next-action "Run ${VERB} skill" --event resumed || exit $?
+```
+<!-- pipeline:end investigate-resume -->
 
 ---
 
@@ -158,21 +169,26 @@ Construction (it carries the genericized topic, confirmed sub-questions,
 scope, jurisdiction, and the `<citation_contract>` + `<privacy_contract>`
 XML blocks) and spawn the peer in the background:
 
+<!-- pipeline:begin investigate-dispatch -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-PROMPT_FILE="$(mktemp -t founder-investigate-prompt.XXXXXX).xml"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ENSEMBLE_TYPE='research-scan'
+PROMPT_FILE="$(mktemp -t 'founder'-'investigate'-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
-RUN_ID="research-scan-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-# ... LLM writes the research-scan XML prompt to $PROMPT_FILE (privacy gate must have passed) ...
+RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# ... LLM writes the prompt to $PROMPT_FILE (the privacy gate above must have
+#     passed; the prompt carries only genericized text) ...
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
-  --workflow-path "$ACTIVE" --phase investigate \
+  --workflow-path "$ACTIVE" --phase 'investigate' \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
-  --ensemble-type research-scan --run-id "$RUN_ID" \
+  --ensemble-type 'research-scan' --run-id "$RUN_ID" \
   > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
+<!-- pipeline:end investigate-dispatch -->
 
 `--prompt-file` keeps user-controlled material (topic, sub-questions) out
 of shell parsing and process argv per `companions/contract.md` § 2.2. Use
@@ -200,10 +216,11 @@ phase notes MAY carry source-of-discovery labels (`[Both]` / `[Local]` /
 `core/skills/investigate/references/business-brief-spec.md` § Ensemble Label
 Policy.
 
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-NOTE="### Ensemble launched: research-scan at <iso-utc>
+<!-- pipeline:begin investigate-finalize -->
+The phase note this step records — fill in every `<…>`:
+
+```markdown
+### Ensemble launched: research-scan at <iso-utc>
 
 ### Ensemble synthesis: business-brief verdict=<agreed|concerns|conflict>
 
@@ -220,21 +237,42 @@ NOTE="### Ensemble launched: research-scan at <iso-utc>
 - rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>
 - evidence_pointers:     <brief path / sub-questions / Open Questions — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /founder:<verb> … or \$founder:<verb> for a verb>
-"
+- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>
+```
+
+Then run the block with the filled-in note in place of its placeholder line,
+between the two `PHASE_NOTE` lines. The quoted heredoc hands the note to
+`state.mjs` as written: no quote, `$`, backtick or backslash in it is read by
+the shell. The first line that reads `PHASE_NOTE` alone ends the note, and
+the shell runs every line after it as a command, so when the note itself holds
+such a line, replace both `PHASE_NOTE` delimiters with a word no line of the
+note consists of.
+
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# Where read takes no -d (dash) it assigns nothing, so clear NOTE first: a
+# value the shell inherited must not stand in for the note.
+unset NOTE
+IFS= read -r -d '' NOTE <<'PHASE_NOTE' || true
+<the phase note above, filled in>
+PHASE_NOTE
+# A shell whose read has no -d (dash) reads nothing: stop before any write.
+[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --phase-label "Phase 1: Investigate (synthesized)" \
+  --phase-label 'Phase 1: Investigate (synthesized)' \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
-  --next-action "<one-sentence imperative for next verb>" \
-  --event updated
+  --next-action '<one-sentence imperative for next verb>' \
+  --event updated || exit $?
 
 # ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --phase investigate --ensemble-type research-scan --run-id "$RUN_ID" \
+  --phase 'investigate' --ensemble-type 'research-scan' --run-id "$RUN_ID" \
   --verdict "$VERDICT" --summary "$SUMMARY" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -245,10 +283,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # Active Next-Action Proposal. The value shown is the typical-case
 # default; override it when the verb's result selects a different next
 # step (e.g. the owner publish/commit step).
-# ADR-0017 §sub-decision 5 — atomic terminal write. Bumps current_phase
-# into the auto-archive whitelist + sets terminal_marker=true so the Stop
-# hook can archive (the HEAD-moved gate still enforces real progress
-# before the archive triggers).
+# ADR-0017 §sub-decision 5 — atomic terminal write.
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # archive gates are evaluated at the end of THIS turn, not at session close;
 # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
@@ -262,9 +297,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
   --terminal-marker true \
-  --next-action "<one-sentence imperative for next verb>" \
+  --next-action '<one-sentence imperative for next verb>' \
   --event updated
 ```
+<!-- pipeline:end investigate-finalize -->
 
 ---
 
@@ -312,8 +348,9 @@ Always include the workflow path so the user can inspect or resume:
 Workflow: <absolute path to workflow .md file>
 ```
 
+<!-- pipeline:begin investigate-completion-footer -->
 The runtime completion footer is **code-emitted** on this verb's terminal
-path (ADR-0039, enabled for founder by ADR-0043 S3): `state.mjs
+path (ADR-0039, enabled for founder by ADR-0043): `state.mjs
 set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
 to the runtime `footer.mjs` and prints the rendered footer — context
 state, completion state (founder's manually-published mapping surfaces
@@ -329,3 +366,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
 `core/skills/_shared/references/session-handoff.md`.
+<!-- pipeline:end investigate-completion-footer -->
