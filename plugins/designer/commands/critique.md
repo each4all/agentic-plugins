@@ -12,11 +12,13 @@ automatically (Review point type) — never ask the user whether to invoke the
 peer, and never direct them to run companion CLIs manually. When the companions
 plugin or peer CLI is unavailable, the ensemble degrades silently to local-only.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_DESIGNER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 > **designer is not an orchestrator dispatch target** (ADR-0042 Non-Goal
 > 2): this command does NOT read `AGENTIC_PARENT_WORKFLOW` /
@@ -28,14 +30,17 @@ shell variable does not outlive a Bash call.
 
 ## Phase 0 — Workflow continuity (per ADR-0011 §5)
 
+<!-- pipeline:begin critique-phase-0 -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='designer'
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
-# ADR-0018 §sub-2 — designer workflows are anchored to a branch.
+# ADR-0018 §sub-2 — the persona's workflows are anchored to a branch.
 if [ -z "$GIT_BRANCH" ]; then
-  echo "✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
@@ -47,39 +52,54 @@ if [ "$FIND_RC" -ne 0 ]; then
   exit "$FIND_RC"
 fi
 ```
+<!-- pipeline:end critique-phase-0 -->
 
-- Empty `$ACTIVE` → bootstrap with verb=critique:
+Empty `$ACTIVE` → bootstrap with verb=critique:
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  GIT_BRANCH="$(git branch --show-current)"
-  GIT_HEAD="$(git rev-parse HEAD)"
-  STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
-  ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
-    --repo-root "$REPO_ROOT" \
-    --verb critique --host "${AGENTIC_HOST:-claude}" --persona designer \
-    --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
-    --status-digest "$STATUS_DIGEST" \
-    --profile "${AGENTIC_PROFILE:-<lens from \$ARGUMENTS; default = all four active lenses>}" \
-    --original-request "${AGENTIC_TOPIC:-<one-line genericized critique target>}" \
-    --current-phase phase-0-bootstrap \
-    --next-action "Run critique skill")"
-  ```
+<!-- pipeline:begin critique-bootstrap -->
+In the block, replace the profile placeholder with the profile the arguments
+name, and `<the original request described above>` with a
+one-line genericized critique target; `AGENTIC_PROFILE` and `AGENTIC_TOPIC` take their
+places when they are set.
 
-- Non-empty `$ACTIVE` → append-on-resume:
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='critique'
+DEFAULT_PROFILE='all'
+GIT_BRANCH="$(git branch --show-current)"
+GIT_HEAD="$(git rev-parse HEAD)"
+STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
+  --repo-root "$REPO_ROOT" \
+  --verb 'critique' --host "${AGENTIC_HOST:-claude}" --persona 'designer' \
+  --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
+  --status-digest "$STATUS_DIGEST" \
+  --profile "${AGENTIC_PROFILE:-<profile from the arguments above — default ${DEFAULT_PROFILE}>}" \
+  --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
+  --current-phase phase-0-bootstrap \
+  --next-action "Run ${VERB} skill")" || exit $?
+```
+<!-- pipeline:end critique-bootstrap -->
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb critique \
-    --profile "<profile or empty>" \
-    --phase-label "Phase 0: Resume into critique" \
-    --phase-note "Resumed from prior verb. Profile=<...>." \
-    --current-phase phase-0-resume \
-    --next-action "Run critique skill" --event resumed
-  ```
+Non-empty `$ACTIVE` → append-on-resume:
+
+<!-- pipeline:begin critique-resume -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='critique'
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb 'critique' \
+  --profile "<profile or empty>" \
+  --phase-label "Phase 0: Resume into ${VERB}" \
+  --phase-note "Resumed from prior verb. Profile=<...>." \
+  --current-phase phase-0-resume \
+  --next-action "Run ${VERB} skill" --event resumed || exit $?
+```
+<!-- pipeline:end critique-resume -->
 
 ---
 
@@ -101,6 +121,7 @@ defined-but-inactive lenses (`desirability` / `content-clarity` / `feasibility`)
 falls back to the full active set with a one-line warning. The accessibility gate
 is evaluated even under a narrowed profile.
 
+<!-- pipeline:extension critique-dual-input -->
 **Dual input (ADR-0042 SD4)**: critique accepts a **pre-code** design spec
 (text; e.g. a `/designer:compose` artifact) and/or a **post-code** rendered
 screen (a screenshot) + the frontend code that produced it. Vision is
@@ -118,16 +139,23 @@ certified.
 
 ### Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible
-in screenshots, and secret-bearing frontend code pass an explicit privacy gate
-before BOTH web search AND peer-host dispatch. Genericize before the peer prompt;
-the pre-genericization value MUST never leave the local host. **Screenshots are
-sensitive by default** and are never sent to the peer as inline image bytes — the
-peer path is code/text-based, or a **verified-local absolute file path** the peer
-reads on its own host (the `plugins/image` critique-dispatch precedent);
-`codex-companion` has no `--image` flag, so vision-grounded critique stays
-same-host. When confidentiality is unclear, ask the user, or run local-only. See
-`core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:begin critique-privacy-gate -->
+PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize the artifact before the peer prompt; the pre-genericization value MUST never leave the local host.
+See `core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end critique-privacy-gate -->
+
+<!-- pipeline:begin critique-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end critique-privacy-no-image -->
+
+**Screenshots are sensitive by default** and are never sent to the peer as inline
+image bytes — the peer path is code/text-based, or a **verified-local absolute
+file path** the peer reads on its own host (the `plugins/image` critique-dispatch
+precedent); `codex-companion` has no `--image` flag, so vision-grounded critique
+stays same-host. When confidentiality is unclear, ask the user, or run local-only.
 
 ### Ensemble dispatch (Review point type)
 
@@ -141,23 +169,26 @@ template + synthesis contract land in
 shape mirrors the reference-scan dispatch in
 `core/skills/investigate/references/design-brief-ensemble.md`:
 
+<!-- pipeline:begin critique-dispatch -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-PROMPT_FILE="$(mktemp -t designer-critique-prompt.XXXXXX).xml"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ENSEMBLE_TYPE='review'
+PROMPT_FILE="$(mktemp -t 'designer'-'critique'-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
-RUN_ID="review-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-# ... LLM writes the Review XML prompt to $PROMPT_FILE (privacy gate must have
-#     passed; genericize the artifact; NO screenshot bytes — send code/text or a
-#     verified-local absolute file path only) ...
+RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# ... LLM writes the prompt to $PROMPT_FILE (the privacy gate above must have
+#     passed; the prompt carries only genericized text) ...
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
-  --workflow-path "$ACTIVE" --phase critique \
+  --workflow-path "$ACTIVE" --phase 'critique' \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
-  --ensemble-type review --run-id "$RUN_ID" \
+  --ensemble-type 'review' --run-id "$RUN_ID" \
   > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
+<!-- pipeline:end critique-dispatch -->
 
 Use `run_in_background: true` on the Bash tool. Note the dispatch above never
 passes `--image` — the peer path has no image channel. The peer supplies the
@@ -173,11 +204,14 @@ Graceful degradation: companion missing or exit code 3
 
 ---
 
+<!-- pipeline:begin critique-finalize-heading -->
 ## Phase 2 — State finalize
+<!-- pipeline:end critique-finalize-heading -->
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: critique (profile=<lens|all>) at <iso-utc>
 
 ### Ensemble synthesis: critique verdict=<agreed|concerns|conflict>
@@ -298,8 +332,9 @@ Always include the workflow path:
 Workflow: <absolute path to workflow .md file>
 ```
 
+<!-- pipeline:begin critique-completion-footer -->
 The runtime completion footer is **code-emitted** on this verb's terminal
-path (ADR-0039, enabled for designer by ADR-0043 S4): `state.mjs
+path (ADR-0039, enabled for designer by ADR-0043): `state.mjs
 set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
 to the runtime `footer.mjs` and prints the rendered footer — context
 state, completion state (designer's manually-published mapping surfaces
@@ -315,3 +350,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
 `core/skills/_shared/references/session-handoff.md`.
+<!-- pipeline:end critique-completion-footer -->

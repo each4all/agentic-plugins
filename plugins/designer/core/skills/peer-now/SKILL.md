@@ -93,12 +93,14 @@ determines which bridge fires based on the `--peer` flag.
 
 ## Claude/Codex command resolution
 
+<!-- pipeline:begin peer-now-command-resolution -->
 | Concern | Claude | Codex |
 |---------|--------|-------|
 | Plugin root | Each shell block of the Claude command sets `$CLAUDE_PLUGIN_ROOT` first: from `AGENTIC_DESIGNER_ROOT` when set, else from the plugin path Claude Code writes into the command body when it loads it, else from the newest release (`X.Y.Z`) under `~/.claude/plugins/cache/agentic-plugins/designer/` | For a mentioned `designer` skill, the plugin directory that contains it (inside `$designer:start`, the mentioned skill is `start`, which runs the six verb skills in place): Codex injects a mentioned skill with its absolute path (`<path>…/core/skills/<skill>/SKILL.md</path>`), and dropping `/core/skills/<skill>/SKILL.md` from it leaves the root, which holds `.codex-plugin/plugin.json`. If that path is no longer in context, for example after compaction, a new mention of the skill supplies it again. With the default Codex home and the `agentic-plugins` marketplace added from Git, the root is `~/.codex/plugins/cache/agentic-plugins/designer/<version>`, the versioned copy Codex loads skills from, and `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/designer` is the marketplace checkout, which tracks the repository's `main` branch, not that copy. |
 | Entry path | `/designer:peer-now --peer <claude\|codex> (--prompt-text "..." \| --prompt-file <path>)` | `$designer:peer-now --peer <claude\|codex> (--prompt-text "..." \| --prompt-file <path>)` |
 | Companion bridge invoked | `--peer codex` runs `<plugin-root>/scripts/peer-runner.mjs run --kind peer-now` → `companions/codex-companion.mjs` | `--peer claude` runs the same `peer-runner.mjs` → `companions/claude-companion.mjs` (only the bridge target differs) |
 | `state.mjs` host flag (when injecting `[Peer]` note) | `--host claude` | `--host codex` |
+<!-- pipeline:end peer-now-command-resolution -->
 
 ---
 
@@ -125,6 +127,7 @@ dispatch. Genericize, or decline.
 
 ## Phase 1 — Dispatch verbatim with operational tracking
 
+<!-- pipeline:begin peer-now-dispatch -->
 `peer-runner.mjs` supervises the companion process and writes a hidden
 repo-local ledger under `.agentic-plugins/state/designer/peer-runs/<run_id>/`.
 With `--kind peer-now`, it does NOT touch `pending_ensemble` or
@@ -136,8 +139,8 @@ stays verbatim in `stdout.log`.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 HOST="${AGENTIC_HOST:-claude}"  # Codex-side command-invoked mode uses codex.
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-RUN_JSON="$(mktemp -t designer-peer-now.XXXXXX).json"
-RUN_ERR="$(mktemp -t designer-peer-now.XXXXXX).err"
+RUN_JSON="$(mktemp -t 'designer'-peer-now.XXXXXX).json"
+RUN_ERR="$(mktemp -t 'designer'-peer-now.XXXXXX).err"
 
 node "<plugin-root>/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --kind peer-now \
@@ -160,11 +163,13 @@ exit non-zero.
 The run can be inspected / cancelled from another local session:
 `peer-runner.mjs status --run-id <id> --json` / `peer-runner.mjs cancel
 --run-id <id>`.
+<!-- pipeline:end peer-now-dispatch -->
 
 ---
 
 ## Phase 2 — Optional `[Peer]` label injection
 
+<!-- pipeline:begin peer-now-label -->
 Locate the active workflow with `state.mjs find-active`:
 
 - **Empty stdout** → no active workflow. Standalone mode: print the response
@@ -178,6 +183,7 @@ Locate the active workflow with `state.mjs find-active`:
   run in separate Bash calls.
 - **Per-branch duplicate error** → reject with a hint pointing at the
   `resume` meta skill. Do NOT pick a workflow yourself.
+<!-- pipeline:end peer-now-label -->
 
 ---
 

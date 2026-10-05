@@ -123,14 +123,21 @@ the investigate skill).
 
 ### Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary UI, unreleased features/flows, customer data
-visible in screenshots, and secret-bearing frontend code pass an explicit
-privacy gate before BOTH web search AND peer-host dispatch. Genericize
-before the peer prompt; the pre-genericization value MUST never leave the
-local host. **Screenshots are sensitive by default** and are never sent to
-the peer as bytes (the peer path is code/text-based; vision critique is a
-same-host `designer:critique` capability). See
-`core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:begin frame-privacy-gate -->
+PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize before the peer prompt; the pre-genericization value MUST never leave the local host.
+See `core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end frame-privacy-gate -->
+
+<!-- pipeline:begin frame-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end frame-privacy-no-image -->
+
+**Screenshots are sensitive by default** and are never sent to the peer as
+bytes (the peer path is code/text-based; vision critique is a same-host
+`designer:critique` capability).
 
 ### Ensemble dispatch (Frame point type)
 

@@ -199,17 +199,24 @@ grounded in markup, not only pixels.
 
 ### Step 3: Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible
-in screenshots, and secret-bearing frontend code pass an explicit privacy gate
-before BOTH web search AND peer-host dispatch. Genericize before any peer
-prompt; the pre-genericization value MUST never leave the local host.
+<!-- pipeline:begin critique-privacy-gate -->
+PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize the artifact before the peer prompt; the pre-genericization value MUST never leave the local host.
+See `../investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end critique-privacy-gate -->
+
+<!-- pipeline:begin critique-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end critique-privacy-no-image -->
+
 **Screenshots are sensitive by default** — a rendered screen is critiqued
 same-host (Claude natively; Codex via `codex exec --image`) and is **never sent
 to the peer as inline image bytes**; the peer path is code/text-based, or a
 verified-local absolute file path the peer reads on its own host. When
 confidentiality is unclear, ask the user, or run **local-only** (skip the peer
-and any web reference lookup). See
-`../investigate/references/design-brief-spec.md` § Privacy Gate.
+and any web reference lookup).
 
 ### Step 4: Peer ensemble parallel analysis (Review point type)
 

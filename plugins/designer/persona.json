@@ -1,5 +1,5 @@
 {
-  "schema": "persona-declaration-1.1",
+  "schema": "persona-declaration-1.2",
   "name": "designer",
   "deliverable_noun": "design deliverable",
   "runtime_footer_floor": "0.79.0",
@@ -167,11 +167,29 @@
       "evidence_pointers": "spec sections / flow states / brief path",
       "next_action": "Critique the composed design spec, and the rendered screen once built (/designer:critique)"
     },
+    "critique": {
+      "profiles": [
+        "all",
+        "usability",
+        "a11y",
+        "conversion",
+        "consistency"
+      ],
+      "default_profile": "all",
+      "request_placeholder": "one-line genericized critique target"
+    },
     "refine": {
+      "request_placeholder": "one-line genericized refine target",
       "terminal_requires_convergence": true
     },
     "start": {
+      "request_placeholder": "one-line genericized design topic",
       "terminal_requires_convergence": true
     }
+  },
+  "peer": {
+    "privacy_scope": "proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code",
+    "privacy_spec": "core/skills/investigate/references/design-brief-spec.md",
+    "images": false
   }
 }

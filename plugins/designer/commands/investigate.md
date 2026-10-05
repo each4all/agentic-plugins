@@ -152,20 +152,23 @@ Follow the investigate skill's "When invoked by command" mode at
 
 ### Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary UI, unreleased features/flows, customer data
-visible in screenshots, and secret-bearing frontend code pass an explicit
-privacy gate before BOTH web search AND peer-host dispatch. Genericize or
-remove proprietary content from the topic and sub-questions before
-WebSearch / WebFetch or peer dispatch; only the genericized form leaves
-the local host. **Screenshots are sensitive by default** — a raw
-screenshot of a real UI is never sent to web search or the peer; describe
-it in genericized terms (host-direct vision critique of a screenshot is a
-same-host `designer:critique` capability, not this reference-scan flow).
-Frontend code is redacted of secrets before any external send. If the
-topic cannot be genericized without losing the question, run local-only or
-abort at scoping. The pre-genericization value MUST never leave the local
-host. See `core/skills/investigate/references/design-brief-spec.md` § Privacy
-Gate.
+<!-- pipeline:begin investigate-privacy-gate -->
+PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize or remove proprietary content from the topic and sub-questions before WebSearch / WebFetch or peer dispatch; only the genericized form leaves the local host. If the topic cannot be genericized without losing the question, run local-only or abort at scoping. The pre-genericization value MUST never leave the local host.
+See `core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end investigate-privacy-gate -->
+
+<!-- pipeline:begin investigate-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end investigate-privacy-no-image -->
+
+**Screenshots are sensitive by default** — a raw screenshot of a real UI is
+never sent to web search or the peer; describe it in genericized terms
+(host-direct vision critique of a screenshot is a same-host `designer:critique`
+capability, not this reference-scan flow). Frontend code is redacted of secrets
+before any external send.
 
 ### Ensemble dispatch — concrete invocation
 

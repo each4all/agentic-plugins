@@ -13,11 +13,13 @@ the peer, and never direct them to run companion CLIs manually. When the
 companions plugin or peer CLI is unavailable, the ensemble degrades silently to
 local-only.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_DESIGNER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 > **designer is not an orchestrator dispatch target** (ADR-0042 Non-Goal
 > 2): this command does NOT read `AGENTIC_PARENT_WORKFLOW` /
@@ -29,14 +31,17 @@ shell variable does not outlive a Bash call.
 
 ## Phase 0 — Workflow continuity (per ADR-0011 §5)
 
+<!-- pipeline:begin refine-phase-0 -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='designer'
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
-# ADR-0018 §sub-2 — designer workflows are anchored to a branch.
+# ADR-0018 §sub-2 — the persona's workflows are anchored to a branch.
 if [ -z "$GIT_BRANCH" ]; then
-  echo "✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
@@ -48,37 +53,49 @@ if [ "$FIND_RC" -ne 0 ]; then
   exit "$FIND_RC"
 fi
 ```
+<!-- pipeline:end refine-phase-0 -->
 
-- Empty `$ACTIVE` → bootstrap with verb=refine (single-mode — **no `--profile`**):
+Empty `$ACTIVE` → bootstrap with verb=refine (single-mode — **no `--profile`**):
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  GIT_BRANCH="$(git branch --show-current)"
-  GIT_HEAD="$(git rev-parse HEAD)"
-  STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
-  ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
-    --repo-root "$REPO_ROOT" \
-    --verb refine --host "${AGENTIC_HOST:-claude}" --persona designer \
-    --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
-    --status-digest "$STATUS_DIGEST" \
-    --original-request "${AGENTIC_TOPIC:-<one-line genericized refine target>}" \
-    --current-phase phase-0-bootstrap \
-    --next-action "Run refine skill")"
-  ```
+<!-- pipeline:begin refine-bootstrap -->
+In the block, replace `<the original request described above>` with a
+one-line genericized refine target; `AGENTIC_TOPIC` takes its place when it is set.
 
-- Non-empty `$ACTIVE` → append-on-resume (refine is single-mode — no `--profile`):
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='refine'
+GIT_BRANCH="$(git branch --show-current)"
+GIT_HEAD="$(git rev-parse HEAD)"
+STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
+  --repo-root "$REPO_ROOT" \
+  --verb 'refine' --host "${AGENTIC_HOST:-claude}" --persona 'designer' \
+  --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
+  --status-digest "$STATUS_DIGEST" \
+  --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
+  --current-phase phase-0-bootstrap \
+  --next-action "Run ${VERB} skill")" || exit $?
+```
+<!-- pipeline:end refine-bootstrap -->
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb refine \
-    --phase-label "Phase 0: Resume into refine" \
-    --phase-note "Resumed from prior verb." \
-    --current-phase phase-0-resume \
-    --next-action "Run refine skill" --event resumed
-  ```
+Non-empty `$ACTIVE` → append-on-resume (refine is single-mode — no `--profile`):
+
+<!-- pipeline:begin refine-resume -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='refine'
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb 'refine' \
+  --phase-label "Phase 0: Resume into ${VERB}" \
+  --phase-note "Resumed from prior verb." \
+  --current-phase phase-0-resume \
+  --next-action "Run ${VERB} skill" --event resumed || exit $?
+```
+<!-- pipeline:end refine-resume -->
 
 ---
 
@@ -109,6 +126,7 @@ it. The candidate-only accessibility boundary holds (ADR-0042 Non-Goal 6): focus
 order, keyboard traversal, and screen-reader behavior need runtime testing and
 are reported as unverified, not certified.
 
+<!-- pipeline:extension refine-convergence-loop -->
 **The convergence loop (ADR-0042 SD4)**: critique → refine → re-critique until
 findings converge. After applying the revision + the Refine-verify ensemble,
 re-critique the revised artifact (for a post-code change, re-render + re-read the
@@ -121,16 +139,24 @@ well-specified design lands there rather than on `PASS`. See
 
 ### Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible
-in screenshots, and secret-bearing frontend code pass an explicit privacy gate
-before BOTH web search AND peer-host dispatch. Genericize the revision before the
-peer prompt; the pre-genericization value MUST never leave the local host.
+<!-- pipeline:begin refine-privacy-gate -->
+PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize the revision before the peer prompt; the pre-genericization value MUST never leave the local host.
+See `core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end refine-privacy-gate -->
+
+<!-- pipeline:begin refine-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end refine-privacy-no-image -->
+
 **Screenshots are sensitive by default** and are never sent to the peer as inline
 image bytes — the peer path is code/text-based, or a **verified-local absolute
 file path** the peer reads on its own host (the `plugins/image` critique-dispatch
 precedent); `codex-companion` has no `--image` flag, so vision-grounded
 re-critique stays same-host. When confidentiality is unclear, ask the user, or run
-local-only. See `core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+local-only.
 
 ### Ensemble dispatch (Refine-verify point type)
 
@@ -144,23 +170,26 @@ passed first. The prompt template + synthesis contract land in
 dispatch shape mirrors the reference-scan dispatch in
 `core/skills/investigate/references/design-brief-ensemble.md`:
 
+<!-- pipeline:begin refine-dispatch -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-PROMPT_FILE="$(mktemp -t designer-refine-prompt.XXXXXX).xml"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ENSEMBLE_TYPE='refine-verify'
+PROMPT_FILE="$(mktemp -t 'designer'-'refine'-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
-RUN_ID="refine-verify-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-# ... LLM writes the Refine-verify XML prompt to $PROMPT_FILE (privacy gate must
-#     have passed; genericize the before→after; NO screenshot bytes — send
-#     code/text or a verified-local absolute file path only) ...
+RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# ... LLM writes the prompt to $PROMPT_FILE (the privacy gate above must have
+#     passed; the prompt carries only genericized text) ...
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
-  --workflow-path "$ACTIVE" --phase refine \
+  --workflow-path "$ACTIVE" --phase 'refine' \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
-  --ensemble-type refine-verify --run-id "$RUN_ID" \
+  --ensemble-type 'refine-verify' --run-id "$RUN_ID" \
   > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
+<!-- pipeline:end refine-dispatch -->
 
 Use `run_in_background: true` on the Bash tool. Note the dispatch above never
 passes `--image` — the peer path has no image channel. The peer supplies the
@@ -172,6 +201,7 @@ AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT. A peer-flagged regression (a new
 inconsistency or a new accessibility barrier) pauses the refine for user
 direction. Loop apply → verify → re-critique until findings converge.
 
+<!-- pipeline:extension refine-convergence-bound -->
 **Bounded convergence (no unbounded loop).** Run at most a bounded number of
 apply → verify → re-critique passes (default 2, hard cap 3). If findings still do
 not converge — each pass exposes a fresh CRITICAL / MAJOR, or the peer keeps
@@ -195,11 +225,14 @@ Graceful degradation: companion missing or exit code 3
 
 ---
 
+<!-- pipeline:begin refine-finalize-heading -->
 ## Phase 2 — State finalize
+<!-- pipeline:end refine-finalize-heading -->
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_DESIGNER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/designer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: refine at <iso-utc>
 
 ### Ensemble synthesis: refine verdict=<resolved|concerns|regression|conflict>
@@ -343,8 +376,9 @@ Always include the workflow path:
 Workflow: <absolute path to workflow .md file>
 ```
 
+<!-- pipeline:begin refine-completion-footer -->
 The runtime completion footer is **code-emitted** on this verb's terminal
-path (ADR-0039, enabled for designer by ADR-0043 S4): `state.mjs
+path (ADR-0039, enabled for designer by ADR-0043): `state.mjs
 set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
 to the runtime `footer.mjs` and prints the rendered footer — context
 state, completion state (designer's manually-published mapping surfaces
@@ -360,3 +394,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
 `core/skills/_shared/references/session-handoff.md`.
+<!-- pipeline:end refine-completion-footer -->
