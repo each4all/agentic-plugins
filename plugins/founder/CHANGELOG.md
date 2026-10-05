@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.17](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.16...plugin-founder-v0.4.17) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/founder:** declare its verbs in persona declaration 1.1 (ADR-0066 Stage 2a) ([5d80681](https://github.com/each4all/agentic-plugins/commit/5d8068165bcb0304156d1a546948fb8d63ad1751))
+
 ## [0.4.16](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.15...plugin-founder-v0.4.16) (2026-10-05)
 
 

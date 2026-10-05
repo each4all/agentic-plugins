@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.17](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.16...plugin-designer-v0.3.17) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/designer:** declare its verbs in persona declaration 1.1 (ADR-0066 Stage 2a) ([fd6fc0c](https://github.com/each4all/agentic-plugins/commit/fd6fc0c533c960cb867a1d3f461a899a9b38954f))
+
 ## [0.3.16](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.15...plugin-designer-v0.3.16) (2026-10-05)
 
 
