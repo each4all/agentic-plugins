@@ -1,5 +1,5 @@
 {
-  "schema": "persona-declaration-1.0",
+  "schema": "persona-declaration-1.1",
   "name": "founder",
   "deliverable_noun": "business deliverable",
   "runtime_footer_floor": "0.79.0",
@@ -79,6 +79,82 @@
       "minor": "compact",
       "standard": "default",
       "major": "default"
+    }
+  },
+  "verbs": {
+    "investigate": {
+      "profiles": [
+        "business-brief"
+      ],
+      "default_profile": "business-brief",
+      "request_placeholder": "one-line genericized business topic",
+      "ensemble_type": "research-scan",
+      "artifact": [
+        "### Brief saved",
+        "",
+        "<absolute path to business_brief.md>"
+      ],
+      "rationale_gate": "본질/근본 (essence/foundation) + evidence-quality gate",
+      "evidence_pointers": "brief path / sub-questions / Open Questions",
+      "next_action": "<one-sentence imperative for next verb>"
+    },
+    "frame": {
+      "request_placeholder": "one-line genericized business topic",
+      "artifact": [
+        "### Opportunity model",
+        "",
+        "Problem / Opportunity: ...",
+        "Customer + Job-to-be-Done: ...",
+        "Value hypothesis: ...",
+        "Business-model sketch: ...",
+        "Constraints: ...",
+        "Validation criteria: ...",
+        "Key risks: ...",
+        "Out of scope: ..."
+      ],
+      "rationale_gate": "본질/근본 (essence/foundation) + evidence-quality gate",
+      "evidence_pointers": "opportunity-model fields / brief path",
+      "next_action": "Decide on a business direction given this frame"
+    },
+    "decide": {
+      "request_placeholder": "one-line genericized business decision",
+      "artifact": [
+        "### Directions compared",
+        "",
+        "<table or list of directions with tradeoffs across the resolved business axes>",
+        "",
+        "### Recommendation",
+        "",
+        "<chosen direction + rationale + gate verdict (regulatory/safety) + risks>"
+      ],
+      "rationale_gate": "decisive 시장성/단위경제 (market/unit-economics) + the regulatory/safety gate verdict",
+      "evidence_pointers": "phase notes / brief / artifacts",
+      "next_action": "Compose the planning artifact for the chosen direction"
+    },
+    "compose": {
+      "profiles": [
+        "plan",
+        "canvas",
+        "validation-plan"
+      ],
+      "default_profile": "plan",
+      "request_placeholder": "one-line genericized planning target",
+      "artifact": [
+        "### Artifact",
+        "",
+        "<the planning artifact: venture plan sections / lean canvas boxes /",
+        " validation-plan experiments — with [to be validated] markers on",
+        " unverified assumptions>"
+      ],
+      "rationale_gate": "본질/근본 (essence/foundation) + evidence-quality gate",
+      "evidence_pointers": "plan sections / brief path",
+      "next_action": "Critique the composed planning artifact"
+    },
+    "refine": {
+      "terminal_requires_convergence": false
+    },
+    "start": {
+      "terminal_requires_convergence": false
     }
   }
 }
