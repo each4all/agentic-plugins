@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.20](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.19...plugin-designer-v0.3.20) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/designer:** generate the critique, refine and start runbook blocks and the shared skill sections (ADR-0066 Stage 2a) ([3ac3c68](https://github.com/each4all/agentic-plugins/commit/3ac3c6827d3fd8bc510341b80ea162294aad5f86))
+
 ## [0.3.19](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.18...plugin-designer-v0.3.19) (2026-10-05)
 
 
