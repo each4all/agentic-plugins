@@ -128,8 +128,8 @@ export const MUTATIONS = [
   // ---- G: the owner gates ----------------------------------------------------
   {
     id: 'G1', file: STATE, tests: [T14],
-    from: '    if (current !== undefined && current !== gate) {',
-    to: '    if (false) {',
+    from: '  if (current !== undefined && current !== fields.awaiting_owner_gate) {',
+    to: '  if (false) {',
     why: 'a second gate overwrites the first',
   },
   {
@@ -159,8 +159,8 @@ export const MUTATIONS = [
 
   {
     id: 'G6', file: STATE, tests: [T14],
-    from: '    Object.assign(frontmatter, fields);\n    validateSchema14Fields(frontmatter);',
-    to: '    Object.assign(frontmatter, fields);\n    frontmatter.schema = SCHEMA_VERSION;\n    validateSchema14Fields(frontmatter);',
+    from: '  Object.assign(frontmatter, fields);\n',
+    to: '  Object.assign(frontmatter, fields);\n  frontmatter.schema = SCHEMA_VERSION;\n',
     why: 'awaiting-owner-set silently promotes a 1.3 file to 1.4',
   },
   {
@@ -177,8 +177,8 @@ export const MUTATIONS = [
   },
   {
     id: 'G9', file: STATE, tests: [T14],
-    from: '    awaiting_owner_since: since ?? isoUtc(now),',
-    to: "    awaiting_owner_since: since ?? '2000-01-01T00:00:00Z',",
+    from: '    awaiting_owner_since: ownerGate.since ?? isoUtc(now),',
+    to: "    awaiting_owner_since: ownerGate.since ?? '2000-01-01T00:00:00Z',",
     why: 'since defaults to a fixed instant instead of now',
   },
 
