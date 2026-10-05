@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.18](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.17...plugin-designer-v0.3.18) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/designer:** generate the compose and frame runbook blocks (ADR-0066 Stage 2a) ([3a7a056](https://github.com/each4all/agentic-plugins/commit/3a7a0564b14f4dd08769e7d78c5c7a62275d1b84))
+
 ## [0.3.17](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.16...plugin-designer-v0.3.17) (2026-10-05)
 
 

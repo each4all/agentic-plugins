@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.18](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.17...plugin-founder-v0.4.18) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/founder:** generate the compose and frame runbook blocks (ADR-0066 Stage 2a) ([270a17f](https://github.com/each4all/agentic-plugins/commit/270a17fdc89177e309b70bd65defea1faf333036))
+
 ## [0.4.17](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.16...plugin-founder-v0.4.17) (2026-10-05)
 
 
