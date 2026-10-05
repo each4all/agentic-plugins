@@ -18,11 +18,13 @@ from `ensemble_results` by design.
 `${CLAUDE_PLUGIN_ROOT}/core/skills/peer-now/SKILL.md`** per ADR-0022. This command
 file owns the Claude-host bash below.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_FOUNDER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 ---
 
@@ -57,22 +59,25 @@ the privacy gate above before dispatching.
 
 ## Phase 1 — Dispatch verbatim with operational tracking
 
+<!-- pipeline:begin peer-now-dispatch -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-RUN_JSON="$(mktemp -t founder-peer-now.XXXXXX).json"
-RUN_ERR="$(mktemp -t founder-peer-now.XXXXXX).err"
+RUN_JSON="$(mktemp -t 'founder'-peer-now.XXXXXX).json"
+RUN_ERR="$(mktemp -t 'founder'-peer-now.XXXXXX).err"
 # $PEER from --peer; $PROMPT_ARG is --prompt-text "<text>" or --prompt-file <path>
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --kind peer-now \
   --peer "$PEER" $PROMPT_ARG --output-format text \
-  --host claude --cwd "$REPO_ROOT" \
+  --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   > "$RUN_JSON" 2> "$RUN_ERR"
 RUN_RC=$?
 STDOUT_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stdout_path)||"")}catch{}' "$RUN_JSON")"
 ```
+<!-- pipeline:end peer-now-dispatch -->
 
 The dispatch is **synchronous** — `peer-runner.mjs run` blocks until the
 peer responds, and the response is read from `$STDOUT_PATH` immediately
@@ -87,30 +92,35 @@ surface the first `$RUN_ERR` line + exit code + run id; do not append a note.
 
 ## Phase 2 — Optional `[Peer]` label injection
 
+<!-- pipeline:begin peer-now-locate -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT" 2>/dev/null)"
 ```
+<!-- pipeline:end peer-now-locate -->
 
 - **Empty** → standalone: print the response from `$STDOUT_PATH`; no state
   mutation.
 - **Single path** → append a `[Peer]` note (cap the excerpt at `head -c 4000
-  "$STDOUT_PATH"`, include `run_id`), no phase mutation:
-
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-    --workflow-path "$ACTIVE" --host claude \
-    --phase-label "[Peer] $PEER consultation" \
-    --phase-note "run_id=$RUN_ID
-  $(head -c 4000 "$STDOUT_PATH")" \
-    --event updated
-  ```
-
+  "$STDOUT_PATH"`, include `run_id`), no phase mutation, with the block below.
 - **Per-branch duplicate error** → reject with a hint pointing at
   `/founder:resume`.
+
+<!-- pipeline:begin peer-now-note -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  --phase-label "[Peer] $PEER consultation" \
+  --phase-note "run_id=$RUN_ID
+$(head -c 4000 "$STDOUT_PATH")" \
+  --event updated
+```
+<!-- pipeline:end peer-now-note -->
 
 ---
 
