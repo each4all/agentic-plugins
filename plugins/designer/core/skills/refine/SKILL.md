@@ -194,16 +194,23 @@ explicitly — they carry the most load-bearing quality assumptions.
 
 ### Step 3: Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible
-in screenshots, and secret-bearing frontend code pass an explicit privacy gate
-before BOTH web search AND peer-host dispatch. Genericize the revision before the
-peer prompt; the pre-genericization value MUST never leave the local host.
+<!-- pipeline:begin refine-privacy-gate -->
+PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize the revision before the peer prompt; the pre-genericization value MUST never leave the local host.
+See `../investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end refine-privacy-gate -->
+
+<!-- pipeline:begin refine-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end refine-privacy-no-image -->
+
 **Screenshots are sensitive by default** — a rendered screen is re-critiqued
 same-host (Claude natively; Codex via `codex exec --image`) and is **never sent
 to the peer as inline image bytes**; the peer path is code/text-based, or a
 verified-local absolute file path the peer reads on its own host. When
 confidentiality is unclear, ask the user, or run **local-only** (skip the peer).
-See `../investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ### Step 4: Peer ensemble parallel verification (Refine-verify point type)
 

@@ -29,6 +29,7 @@ verbs (`/designer:investigate / :frame / :decide / :compose / :critique /
 
 ## Host availability (ADR-0022)
 
+<!-- pipeline:begin checkpoint-host-availability -->
 | Operation | Claude | Codex |
 |-----------|--------|-------|
 | `state.mjs checkpoint-set` (write `latest_checkpoint`) | `--host claude` | `--host codex` — same on-disk schema; the host flag distinguishes write provenance in `host_history` |
@@ -43,16 +44,19 @@ that active-session trust, Codex can still durably *write* the checkpoint
 and `$designer:resume` reads it manually. (Per ADR-0030/0035 the Codex hook
 model is generic `[features].hooks` + `/hooks` review/trust — there is no
 `plugin_hooks` settings key.)
+<!-- pipeline:end checkpoint-host-availability -->
 
 ---
 
 ## Claude/Codex command resolution
 
+<!-- pipeline:begin checkpoint-command-resolution -->
 | Concern | Claude | Codex |
 |---------|--------|-------|
 | Plugin root | Each shell block of the Claude command sets `$CLAUDE_PLUGIN_ROOT` first: from `AGENTIC_DESIGNER_ROOT` when set, else from the plugin path Claude Code writes into the command body when it loads it, else from the newest release (`X.Y.Z`) under `~/.claude/plugins/cache/agentic-plugins/designer/` | For a mentioned `designer` skill, the plugin directory that contains it (inside `$designer:start`, the mentioned skill is `start`, which runs the six verb skills in place): Codex injects a mentioned skill with its absolute path (`<path>…/core/skills/<skill>/SKILL.md</path>`), and dropping `/core/skills/<skill>/SKILL.md` from it leaves the root, which holds `.codex-plugin/plugin.json`. If that path is no longer in context, for example after compaction, a new mention of the skill supplies it again. With the default Codex home and the `agentic-plugins` marketplace added from Git, the root is `~/.codex/plugins/cache/agentic-plugins/designer/<version>`, the versioned copy Codex loads skills from, and `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/designer` is the marketplace checkout, which tracks the repository's `main` branch, not that copy. |
 | Entry path | `/designer:checkpoint <one-line summary>` | `$designer:checkpoint <one-line summary>` — this SKILL.md is the runbook; the skill-mention argument string is the `$ARGUMENTS` equivalent |
 | `state.mjs` host flag | `--host claude` | `--host codex` |
+<!-- pipeline:end checkpoint-command-resolution -->
 
 ---
 
@@ -109,6 +113,7 @@ Branch on the result:
 
 ## Phase 2 — Set checkpoint
 
+<!-- pipeline:begin checkpoint-set -->
 ```bash
 node "<plugin-root>/scripts/state.mjs" checkpoint-set \
   --workflow-path "$ACTIVE" --host <claude|codex> --summary "$SUMMARY"
@@ -127,11 +132,13 @@ already filtered that case.
 not survive across Bash tool invocations. If Phase 1 and Phase 2 run in
 separate Bash calls, re-resolve both values inside the second call — or
 combine them in a single Bash call.
+<!-- pipeline:end checkpoint-set -->
 
 ---
 
 ## Completion outcomes
 
+<!-- pipeline:begin checkpoint-outcomes -->
 - `✓ Checkpoint recorded: <summary>` — Phase 2 succeeded. Surface the
   absolute workflow path so the user can inspect by hand.
 - `✗ No active workflow; nothing to checkpoint.` — Phase 1 found nothing.
@@ -147,6 +154,7 @@ need to re-issue `resume` inside that window. The on-disk
 is read by either host; Codex re-injects it the same way once the plugin's
 hooks are enabled and `/hooks`-trusted, per the Host availability table.
 Outside the post-compact window, `resume` reads it manually.
+<!-- pipeline:end checkpoint-outcomes -->
 
 ---
 

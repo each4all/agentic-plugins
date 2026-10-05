@@ -85,6 +85,7 @@ is no `plugin_hooks` settings key.)
 
 ## When invoked by command (`/designer:start` Claude command or `$designer:start` Codex skill mention)
 
+<!-- pipeline:begin start-command-intro -->
 Phase 0 host-side bootstrap (argument intake, detached-HEAD guard,
 clean-baseline gate, active-workflow branching) is owned by the entry path:
 `commands/start.md` carries the canonical bash on the Claude side. Direct
@@ -109,7 +110,9 @@ inspects the returned `status` (`clean` / `dirty` / `accepted`). On `dirty`
 the gate refuses to bootstrap and presents resolutions: clean the tree,
 stash, or set `ACCEPT_CURRENT_TREE=1` to acknowledge the dirty tree.
 `.agentic-plugins/state/**` is excluded from the dirty check.
+<!-- pipeline:end start-command-intro -->
 
+<!-- pipeline:extension start-archetype -->
 ### Design Task Profile + the L4 profile
 
 Record the Design Task Profile per
@@ -136,17 +139,21 @@ stderr is how either is noticed.
 
 ### Privacy gate (applies to every phase that calls the peer or the web)
 
-PRIVACY GATE: proprietary UI, unreleased features/flows, customer data
-visible in screenshots, and secret-bearing frontend code pass an explicit
-privacy gate before BOTH web search AND peer-host dispatch. The lifecycle
-dispatches the peer ensemble at every phase boundary (always-max), and
-Phase 1 investigate runs web search — genericize before any external call;
-the pre-genericization value MUST never leave the local host.
+<!-- pipeline:begin start-privacy-gate -->
+PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+The lifecycle runs web search (Phase 1 investigate) and dispatches the peer ensemble at every phase boundary (always-max) — genericize before any external call; the pre-genericization value MUST never leave the local host. Each verb skill restates this gate; the macro inherits it at every phase.
+See `../investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end start-privacy-gate -->
+
+<!-- pipeline:begin start-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end start-privacy-no-image -->
+
 **Screenshots are sensitive by default**: a raw screenshot of a real UI is
 read host-direct and never leaves the local host as bytes; the companion
-peer path has no `--image` flag. Each verb skill restates this gate; the
-macro inherits it at every phase. See
-`../investigate/references/design-brief-spec.md` § Privacy Gate.
+peer path has no `--image` flag.
 
 ### Entry routing recommendation (before Phase 1)
 

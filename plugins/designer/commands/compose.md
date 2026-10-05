@@ -143,14 +143,21 @@ is an `image:compose` artifact handoff, never drawn here (see
 
 ### Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary UI, unreleased features/flows, customer data
-visible in screenshots, and secret-bearing frontend code pass an explicit
-privacy gate before BOTH web search AND peer-host dispatch. Genericize
-before the peer prompt; the pre-genericization value MUST never leave the
-local host. **Screenshots are sensitive by default** and are never sent to
-the peer as bytes (the peer path is code/text-based; vision critique is a
-same-host `designer:critique` capability). See
-`core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:begin compose-privacy-gate -->
+PRIVACY GATE: proprietary UI, unreleased features/flows, customer data visible in screenshots, and secret-bearing frontend code
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize before the peer prompt; the pre-genericization value MUST never leave the local host.
+See `core/skills/investigate/references/design-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end compose-privacy-gate -->
+
+<!-- pipeline:begin compose-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end compose-privacy-no-image -->
+
+**Screenshots are sensitive by default** and are never sent to the peer as
+bytes (the peer path is code/text-based; vision critique is a same-host
+`designer:critique` capability).
 
 ### Ensemble dispatch (Plan-verify point type)
 
