@@ -4538,7 +4538,9 @@ if (invokedAsCli()) {
   // top-level await" before exiting with code 13. The IIFE keeps the
   // dispatch asynchronous without making it top-level.
   (async () => {
-    const code = await cliMain(process.argv.slice(2));
-    process.exit(code);
+    // Set the exit code and let the process end on its own: process.exit()
+    // drops whatever a piped stdout has not flushed, and a reader then got
+    // exactly 65,536 bytes of a longer document (C70; Node's process.exit docs).
+    process.exitCode = await cliMain(process.argv.slice(2));
   })();
 }
