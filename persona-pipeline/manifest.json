@@ -631,6 +631,42 @@
       }
     },
     {
+      "id": "compose-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "Genericize before the peer prompt; the pre-genericization value MUST never leave the local host.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "peer.privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "compose-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "commands/compose.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
+      }
+    },
+    {
       "id": "compose-dispatch",
       "template": "regions/verb-dispatch.md",
       "dest": "commands/compose.md",
@@ -813,6 +849,42 @@
           "value": "frame",
           "context": "shell"
         }
+      }
+    },
+    {
+      "id": "frame-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "commands/frame.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "Genericize before the peer prompt; the pre-genericization value MUST never leave the local host.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "peer.privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "frame-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "commands/frame.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
       }
     },
     {
@@ -1002,6 +1074,42 @@
           "value": "investigate",
           "context": "shell"
         }
+      }
+    },
+    {
+      "id": "investigate-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "commands/investigate.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "Genericize or remove proprietary content from the topic and sub-questions before WebSearch / WebFetch or peer dispatch; only the genericized form leaves the local host. If the topic cannot be genericized without losing the question, run local-only or abort at scoping. The pre-genericization value MUST never leave the local host.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "peer.privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "investigate-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "commands/investigate.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
       }
     },
     {
@@ -1213,6 +1321,42 @@
       }
     },
     {
+      "id": "decide-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "Genericize before the peer prompt; the pre-genericization value MUST never leave the local host.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "peer.privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "decide-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
+      }
+    },
+    {
       "id": "decide-dispatch",
       "template": "regions/verb-dispatch.md",
       "dest": "commands/decide.md",
@@ -1312,7 +1456,875 @@
           "context": "markdown"
         }
       }
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "refine-phase-0",
+      "template": "regions/verb-phase-0.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "refine-bootstrap",
+      "template": "regions/verb-bootstrap.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "refine",
+          "context": "shell"
+        },
+        "request_placeholder": {
+          "field": "verbs.refine.request_placeholder",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "refine-resume",
+      "template": "regions/verb-resume.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "refine",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "refine-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "Genericize the revision before the peer prompt; the pre-genericization value MUST never leave the local host.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "peer.privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "refine-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
+      }
+    },
+    {
+      "id": "refine-dispatch",
+      "template": "regions/verb-dispatch.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "refine",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "refine-verify",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "refine-finalize-heading",
+      "template": "regions/verb-finalize-heading.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "refine-completion-footer",
+      "template": "regions/verb-completion-footer.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "critique-phase-0",
+      "template": "regions/verb-phase-0.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "critique-bootstrap",
+      "template": "regions/verb-bootstrap-profiled.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "critique",
+          "context": "shell"
+        },
+        "request_placeholder": {
+          "field": "verbs.critique.request_placeholder",
+          "context": "markdown"
+        },
+        "default_profile": {
+          "field": "verbs.critique.default_profile",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "critique-resume",
+      "template": "regions/verb-resume-profiled.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "critique",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "critique-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "Genericize the artifact before the peer prompt; the pre-genericization value MUST never leave the local host.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "peer.privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "critique-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
+      }
+    },
+    {
+      "id": "critique-dispatch",
+      "template": "regions/verb-dispatch.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "critique",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "review",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "critique-finalize-heading",
+      "template": "regions/verb-finalize-heading.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "critique-completion-footer",
+      "template": "regions/verb-completion-footer.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "start-phase-0",
+      "template": "regions/verb-phase-0.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "start-bootstrap",
+      "template": "regions/start-bootstrap.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "request_placeholder": {
+          "field": "verbs.start.request_placeholder",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "start-resume",
+      "template": "regions/start-resume.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "start-initial-verb",
+      "template": "regions/start-initial-verb.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "start-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "The lifecycle runs web search (Phase 1 investigate) and dispatches the peer ensemble at every phase boundary (always-max) — genericize before any external call; the pre-genericization value MUST never leave the local host.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "peer.privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "start-phase-boundary",
+      "template": "regions/start-phase-boundary.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "start-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
+      }
+    },
+    {
+      "id": "checkpoint-host-availability",
+      "template": "regions/skill-checkpoint-host-availability.md",
+      "dest": "core/skills/checkpoint/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "checkpoint-command-resolution",
+      "template": "regions/skill-checkpoint-command-resolution.md",
+      "dest": "core/skills/checkpoint/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "checkpoint-set",
+      "template": "regions/skill-checkpoint-set.md",
+      "dest": "core/skills/checkpoint/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "checkpoint-outcomes",
+      "template": "regions/skill-checkpoint-outcomes.md",
+      "dest": "core/skills/checkpoint/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "peer-now-command-resolution",
+      "template": "regions/skill-peer-now-command-resolution.md",
+      "dest": "core/skills/peer-now/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "peer-now-dispatch",
+      "template": "regions/skill-peer-now-dispatch.md",
+      "dest": "core/skills/peer-now/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "peer-now-label",
+      "template": "regions/skill-peer-now-label.md",
+      "dest": "core/skills/peer-now/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "resume-command-resolution",
+      "template": "regions/skill-resume-command-resolution.md",
+      "dest": "core/skills/resume/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "resume-intake",
+      "template": "regions/skill-resume-intake.md",
+      "dest": "core/skills/resume/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "resume-dirty-enrichment",
+      "template": "regions/skill-resume-dirty-enrichment.md",
+      "dest": "core/skills/resume/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "resume-marker",
+      "template": "regions/skill-resume-marker.md",
+      "dest": "core/skills/resume/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "compose-present",
+      "template": "regions/skill-verb-present.md",
+      "dest": "core/skills/compose/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "compose-state-write",
+      "template": "regions/skill-compose-state-write.md",
+      "dest": "core/skills/compose/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "decide-steps",
+      "template": "regions/skill-decide-steps.md",
+      "dest": "core/skills/decide/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "decide-approval-gate",
+      "template": "regions/skill-decide-approval-gate.md",
+      "dest": "core/skills/decide/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "frame-present",
+      "template": "regions/skill-verb-present-frame.md",
+      "dest": "core/skills/frame/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "start-command-intro",
+      "template": "regions/skill-start-command-intro.md",
+      "dest": "core/skills/start/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "critique-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "core/skills/critique/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "Genericize the artifact before the peer prompt; the pre-genericization value MUST never leave the local host.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "derived.skill_privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "critique-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "core/skills/critique/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
+      }
+    },
+    {
+      "id": "refine-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "core/skills/refine/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "Genericize the revision before the peer prompt; the pre-genericization value MUST never leave the local host.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "derived.skill_privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "refine-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "core/skills/refine/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
+      }
+    },
+    {
+      "id": "start-privacy-gate",
+      "template": "regions/verb-privacy-gate.md",
+      "dest": "core/skills/start/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "genericize": {
+          "value": "The lifecycle runs web search (Phase 1 investigate) and dispatches the peer ensemble at every phase boundary (always-max) — genericize before any external call; the pre-genericization value MUST never leave the local host. Each verb skill restates this gate; the macro inherits it at every phase.",
+          "context": "markdown"
+        },
+        "privacy_spec": {
+          "field": "derived.skill_privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "start-privacy-no-image",
+      "template": "regions/verb-privacy-no-image.md",
+      "dest": "core/skills/start/SKILL.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
+      }
     }
   ],
-  "extension_points": []
+  "extension_points": [
+    {
+      "id": "refine-convergence-loop",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer"
+      ],
+      "after": "refine-resume",
+      "before": "refine-privacy-gate",
+      "min": 1,
+      "max": 1
+    },
+    {
+      "id": "refine-convergence-bound",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer"
+      ],
+      "after": "refine-dispatch",
+      "before": "refine-finalize-heading",
+      "min": 1,
+      "max": 1
+    },
+    {
+      "id": "critique-dual-input",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer"
+      ],
+      "after": "critique-resume",
+      "before": "critique-privacy-gate",
+      "min": 1,
+      "max": 1
+    },
+    {
+      "id": "start-archetype",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer"
+      ],
+      "after": "start-resume",
+      "before": "start-privacy-gate",
+      "min": 1,
+      "max": 1
+    },
+    {
+      "id": "start-archetype",
+      "dest": "core/skills/start/SKILL.md",
+      "personas": [
+        "designer"
+      ],
+      "after": "start-command-intro",
+      "before": "start-privacy-gate",
+      "min": 1,
+      "max": 1
+    }
+  ]
 }

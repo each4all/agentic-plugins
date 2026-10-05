@@ -59,12 +59,31 @@
           "context": "shell"
         }
       }
+    },
+    {
+      "id": "no-image",
+      "template": "templates/no-image.md",
+      "dest": "commands/run.md",
+      "personas": [
+        "alpha"
+      ],
+      "when": {
+        "field": "peer.images",
+        "equals": false
+      }
     }
   ],
   "extension_points": [
     {
       "id": "persona-steps",
       "dest": "commands/run.md",
+      "personas": [
+        "alpha",
+        "beta"
+      ],
+      "after": "intro",
+      "before": "finalize",
+      "min": 1,
       "max": 1
     }
   ]

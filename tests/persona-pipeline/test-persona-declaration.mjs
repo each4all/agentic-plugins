@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,7 +14,7 @@ import { runSync } from '../../scripts/sync-persona-pipeline.mjs';
 import { MANIFEST, REPO_ROOT, declaration, personaInfo, personasFound } from './_personas.mjs';
 
 const SCHEMA = JSON.parse(readFileSync(join(REPO_ROOT, 'persona-pipeline/persona.schema.json'), 'utf8'));
-const validate = (doc) => validateAgainstSchema(doc, SCHEMA, { readerVersion: 'persona-declaration-1.1' });
+const validate = (doc) => validateAgainstSchema(doc, SCHEMA, { readerVersion: 'persona-declaration-1.2' });
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
 // Documents the schema rejects; the loader must reject each of them too.
@@ -44,6 +44,17 @@ const SCHEMA_REJECTS = {
   'an artifact line holding a newline': (d) => { d.verbs.decide.artifact = ['### Directions compared\n### Recommendation']; },
   'a profile that is not an id': (d) => { d.verbs.compose.profiles = ['Plan!']; },
   'a verbs value that is not an object': (d) => { d.verbs = ['compose']; },
+  // Format 1.2, the peer policy.
+  'an unknown peer key': (d) => { d.peer.surprise = 1; },
+  'a peer without images': (d) => { delete d.peer.images; },
+  'a peer images flag that is not a boolean': (d) => { d.peer.images = 'false'; },
+  'a null peer images flag': (d) => { d.peer.images = null; },
+  'a newline in the privacy scope': (d) => { d.peer.privacy_scope = 'venture concepts\nand more'; },
+  'an empty privacy scope': (d) => { d.peer.privacy_scope = ''; },
+  'an absolute privacy spec': (d) => { d.peer.privacy_spec = '/etc/passwd'; },
+  'a privacy spec that climbs out of the plugin': (d) => { d.peer.privacy_spec = '../engineer/README.md'; },
+  'a privacy spec with an empty segment': (d) => { d.peer.privacy_spec = 'core//spec.md'; },
+  'a peer value that is not an object': (d) => { d.peer = ['images']; },
   // Every field within its bounds, the document over the validator's 64 KiB
   // cap (Codex review of PC2a2: the loader had no cap).
   'a declaration larger than 64 KiB': (d) => {
@@ -138,7 +149,7 @@ describe('scripts/lib/persona.mjs — the loader', () => {
 
   // The two readers agree on forward compatibility (ADR-0034 §4.1), at every
   // depth: an unknown scalar is forgiven only in a declaration of a newer minor
-  // than they read (1.1); an unknown object or list never is.
+  // than they read (1.2); an unknown object or list never is.
   it('agrees with the schema on unknown keys: older/same/newer minor × scalar/object/list × every object depth', async () => {
     const at = {
       root: (d) => d,
@@ -151,9 +162,10 @@ describe('scripts/lib/persona.mjs — the loader', () => {
       verbs: (d) => d.verbs,
       'verbs.compose': (d) => d.verbs.compose,
       'verbs.refine': (d) => d.verbs.refine,
+      peer: (d) => d.peer,
     };
     const values = { scalar: 1, object: { x: 1 }, list: [1] };
-    const minors = { older: '1.0', same: '1.1', newer: '1.2' };
+    const minors = { older: '1.1', same: '1.2', newer: '1.3' };
     let forgiven = 0;
     let refused = 0;
     for (const [minorName, minor] of Object.entries(minors)) {
@@ -172,14 +184,14 @@ describe('scripts/lib/persona.mjs — the loader', () => {
         }
       }
     }
-    // Both verdicts occur, at every depth (10 forgiven, 80 refused).
+    // Both verdicts occur, at every depth (11 forgiven, 88 refused).
     strictEqual(forgiven, Object.keys(at).length);
     strictEqual(refused, Object.keys(at).length * 8);
   });
 
   it('agrees with the schema where keys are patterns or items are typed: profile_presets keys, artifact items', async () => {
     const cases = [];
-    for (const minor of ['1.0', '1.1', '1.2']) {
+    for (const minor of ['1.1', '1.2', '1.3']) {
       for (const value of [1, 'x', { x: 1 }]) {
         cases.push([`${minor}: a profile_presets key outside the id pattern holding ${JSON.stringify(value)}`, (d) => {
           d.schema = `persona-declaration-${minor}`;
@@ -209,10 +221,11 @@ describe('scripts/lib/persona.mjs — the loader', () => {
     deepStrictEqual([...verdicts].sort(), [false, true], 'both verdicts occur');
   });
 
-  it('a declaration without verbs (format 1.0, as engineer stays) still loads', async () => {
+  it('a declaration without verbs or peer (format 1.0, as engineer stays) still loads', async () => {
     const d = clone(declaration('founder'));
     d.schema = 'persona-declaration-1.0';
     delete d.verbs;
+    delete d.peer;
     ok(validate(d).ok);
     strictEqual((await load(loaderPlugin({ decl: d }))).loadPersona().name, 'founder');
   });
@@ -295,6 +308,8 @@ describe('cross-field rules (the generator check)', () => {
     'a default profile off its list': ['founder', (d) => { d.verbs.compose.default_profile = 'spec'; }, /verbs\.compose\.default_profile "spec" is not one of its profiles \(plan, canvas, validation-plan\)/],
     'profiles without a default profile': ['designer', (d) => { delete d.verbs.investigate.default_profile; }, /verbs\.investigate declares profiles without default_profile; declare both or neither/],
     'a default profile without profiles': ['designer', (d) => { delete d.verbs.compose.profiles; }, /verbs\.compose declares default_profile without profiles; declare both or neither/],
+    'a privacy spec the plugin does not hold': ['founder', (d) => { d.peer.privacy_spec = 'core/skills/investigate/references/design-brief-spec.md'; }, /peer\.privacy_spec names core\/skills\/investigate\/references\/design-brief-spec\.md, which plugins\/founder\/ does not hold/],
+    'a privacy spec that is a directory': ['designer', (d) => { d.peer.privacy_spec = 'core/skills/investigate/references'; }, /peer\.privacy_spec names core\/skills\/investigate\/references, which is not a regular file/],
   };
   for (const [what, [persona, edit, re]] of Object.entries(cases)) {
     it(`fails on ${what}`, async () => {
@@ -306,10 +321,35 @@ describe('cross-field rules (the generator check)', () => {
     });
   }
 
+  it('fails on a privacy spec that is a link leading out of the plugin', async () => {
+    const root = repoSubsetCopy();
+    writeFileSync(join(root, 'outside-spec.md'), '# not the plugin\'s\n');
+    symlinkSync(join(root, 'outside-spec.md'), join(root, 'plugins/founder/core/outside-spec.md'));
+    editDecl(root, 'founder', (d) => { d.peer.privacy_spec = 'core/outside-spec.md'; });
+    const { code, err } = await check(root);
+    strictEqual(code, 1);
+    match(err, /peer\.privacy_spec names core\/outside-spec\.md, which resolves outside plugins\/founder\//);
+  });
+
+  // The manifest side of the variant rule (DD2): the no-image regions follow
+  // peer.images, so dropping a persona that declares false fails.
+  it('fails when a persona that declares peer.images false is dropped from a no-image region', async () => {
+    const root = repoSubsetCopy();
+    const manifestPath = join(root, 'persona-pipeline/manifest.json');
+    const m = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const region = m.regions.find((r) => r.id === 'compose-privacy-no-image');
+    ok(region, 'compose-privacy-no-image is a region');
+    region.personas = region.personas.filter((p) => p !== 'founder');
+    writeFileSync(manifestPath, JSON.stringify(m, null, 2));
+    const { code, err } = await check(root);
+    strictEqual(code, 1);
+    match(err, /plugins\/founder\/persona\.json: declares peer\.images = false, so region compose-privacy-no-image \(commands\/compose\.md\) must enrol it/);
+  });
+
   it('a newer minor\'s extra scalar, which both readers ignore, is not read as a preset reference', async () => {
     const root = repoSubsetCopy();
-    editDecl(root, 'founder', (d) => { d.schema = 'persona-declaration-1.2'; d.decide.size_presets.future_label = 'later'; });
-    editDecl(root, 'designer', (d) => { d.schema = 'persona-declaration-1.2'; d.decide.profile_presets['Future Key'] = 'later'; });
+    editDecl(root, 'founder', (d) => { d.schema = 'persona-declaration-1.3'; d.decide.size_presets.future_label = 'later'; });
+    editDecl(root, 'designer', (d) => { d.schema = 'persona-declaration-1.3'; d.decide.profile_presets['Future Key'] = 'later'; });
     const { code, err } = await check(root);
     strictEqual(code, 0, err);
   });

@@ -1,17 +1,34 @@
 {
-  "description": "PC2a2 T0: what each founder and designer verb runbook did before its blocks became generated regions (tests/persona-pipeline/_verb-runbooks.mjs reads it). Written from the runbooks at 7e1db44d. A region that changes any of this must list the change in allowed_differences.",
+  "description": "PC2a2 T0 and PC2a3 T0': what each founder and designer verb runbook did before its blocks became generated regions (tests/persona-pipeline/_verb-runbooks.mjs reads it). compose, decide, frame and investigate were written from the runbooks at 7e1db44d; critique, refine and start from the runbooks at 85abc9c3. A region that changes any of this must list the change in allowed_differences.",
   "expected_ensemble_types": {
     "founder": {
       "compose": "plan-verify",
       "decide": "brainstorm",
       "frame": "frame",
-      "investigate": "research-scan"
+      "investigate": "research-scan",
+      "critique": "review",
+      "refine": "refine-verify"
     },
     "designer": {
       "compose": "plan-verify",
       "decide": "brainstorm",
       "frame": "frame",
-      "investigate": "reference-scan"
+      "investigate": "reference-scan",
+      "critique": "review",
+      "refine": "refine-verify"
+    }
+  },
+  "expected_commit_ensemble_types": {
+    "founder": {
+      "critique": "$ENSEMBLE_TYPE"
+    }
+  },
+  "expected_launched": {
+    "founder": {
+      "critique": "critique ($ENSEMBLE_TYPE)"
+    },
+    "designer": {
+      "critique": "critique (profile=<lens|all>)"
     }
   },
   "allowed_differences": [
@@ -174,6 +191,103 @@
       "from": "(profile=<spec|flow|wireframe>)",
       "to": "(profile=<profile>)",
       "why": "PC2a2 PD2: as for founder"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized refine target>",
+      "to": "<the original request described above>",
+      "why": "PC2a3 PD3: the request placeholder moves to the region prose above the block (verbs.refine.request_placeholder), as for compose"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine",
+        "founder/critique",
+        "designer/critique",
+        "founder/start",
+        "designer/start"
+      ],
+      "where": "guards.detached_head",
+      "from": "— {persona} workflows",
+      "to": "— ${PERSONA} workflows",
+      "why": "PC2a3 PD3/PD5: the generated Phase 0 names the persona through PERSONA, as in the PC2a2 runbooks"
+    },
+    {
+      "runbooks": [
+        "founder/critique"
+      ],
+      "where": "call:state.mjs create:--profile",
+      "from": "<default or red-team from $ARGUMENTS>",
+      "to": "<profile from the arguments above — default default>",
+      "why": "PC2a3 QD6: the profiled bootstrap names the declared default (verbs.critique.default_profile, recorded as default) through DEFAULT_PROFILE"
+    },
+    {
+      "runbooks": [
+        "designer/critique"
+      ],
+      "where": "call:state.mjs create:--profile",
+      "from": "<lens from $ARGUMENTS; default = all four active lenses>",
+      "to": "<profile from the arguments above — default all>",
+      "why": "PC2a3 QD6: as for founder; designer records all, its four active lenses"
+    },
+    {
+      "runbooks": [
+        "founder/critique"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized review target>",
+      "to": "<the original request described above>",
+      "why": "PC2a3 PD3: the request placeholder moves to the region prose above the block (verbs.critique.request_placeholder)"
+    },
+    {
+      "runbooks": [
+        "designer/critique"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized critique target>",
+      "to": "<the original request described above>",
+      "why": "PC2a3 PD3: as for founder"
+    },
+    {
+      "runbooks": [
+        "founder/critique"
+      ],
+      "where": "call:state.mjs append#1:--profile",
+      "from": "<default|red-team or empty>",
+      "to": "<profile or empty>",
+      "why": "PC2a3 QD6: the profiled resume names no profile list; the authored Profiles section does"
+    },
+    {
+      "runbooks": [
+        "founder/start"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized business topic from $ARGUMENTS>",
+      "to": "<the original request described above>",
+      "why": "PC2a3 QD9: the request placeholder moves to the region prose above the block (verbs.start.request_placeholder)"
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized design topic from $ARGUMENTS>",
+      "to": "<the original request described above>",
+      "why": "PC2a3 QD9: as for founder"
+    },
+    {
+      "runbooks": [
+        "founder/start",
+        "designer/start"
+      ],
+      "where": "guards.baseline_status",
+      "from": "— /{persona}:start gates",
+      "to": "— /${PERSONA}:start gates",
+      "why": "PC2a3 QD9: the message names the persona through PERSONA, a literal the bootstrap block assigns"
     }
   ],
   "runbooks": {
@@ -443,9 +557,287 @@
       "guards": {
         "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
         "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
-        "resolve_rc": null
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
       },
       "note": "### Ensemble launched: compose at <iso-utc>\n\n### Ensemble synthesis: compose (profile=<spec|flow|wireframe>) verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Artifact\n\n<the design artifact: IA / flow (with per-screen state set) / wireframe\n structure / component specs / CTA copy — every element annotated with its\n accessibility + consistency acceptance criteria, [to be validated] markers\n on unvalidated assumptions>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — how the artifact honors the confirmed frame + chosen direction, plus its accessibility + consistency acceptance criteria>\n- evidence_pointers:     <spec sections / flow states / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
+    },
+    "designer/critique": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "critique"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "designer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--profile",
+              "${AGENTIC_PROFILE:-<lens from $ARGUMENTS; default = all four active lenses>}"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized critique target>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run critique skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "critique"
+            ],
+            [
+              "--profile",
+              "<profile or empty>"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into critique"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb. Profile=<...>."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run critique skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "critique"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "review"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Critique (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "<compact selected_next + why + next_command — e.g. 'Address CRITICAL/MAJOR findings (/designer:refine)' OR 'No blocking findings, gate not FAIL (PASS or CONDITIONAL with named preconditions) — proceed to commit'>"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "critique"
+            ],
+            [
+              "--ensemble-type",
+              "review"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "<compact selected_next + why + next_command — e.g. 'Address CRITICAL/MAJOR findings (/designer:refine)' OR 'No blocking findings, gate not FAIL (PASS or CONDITIONAL with named preconditions) — proceed to commit'>"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "review"
+      ],
+      "mktemp_templates": [
+        "designer-critique-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": "if [ -n \"${RUN_ID:-}\" ] && [ -n \"${VERDICT:-}\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" ensemble-commit \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --phase critique --ensemble-type review --run-id \"$RUN_ID\" \\\n    --verdict \"$VERDICT\" --summary \"$SUMMARY\" \\\n    --completed-at \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\nfi",
+        "converged": null
+      },
+      "note": "### Ensemble launched: critique (profile=<lens|all>) at <iso-utc>\n\n### Ensemble synthesis: critique verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Review report\n\nGate verdict: 접근성 Accessibility [PASS/CONDITIONAL/FAIL] (candidate-level; focus-order / keyboard / screen-reader unverified — runtime)\n\n<severity-grouped findings: CRITICAL / MAJOR / MINOR / SUGGESTION, each\n [element/region] [lens] — [finding + failure signal + criteria ref]; plus Looks Strong>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — the decisive findings + the accessibility gate verdict>\n- evidence_pointers:     <finding sections / criteria refs / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
     },
     "designer/decide": {
       "calls": [
@@ -715,7 +1107,11 @@
       "guards": {
         "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
         "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
-        "resolve_rc": "RESOLVE_RC=$?\nif [ \"$RESOLVE_RC\" -eq 2 ]; then\n  echo \"✗ decide-registry rejected the argument list — fix the invocation and rerun.\" >&2\n  exit 1\nelif [ \"$RESOLVE_RC\" -ne 0 ]; then\n  echo \"✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above.\" >&2\n  exit 1\nfi"
+        "resolve_rc": "RESOLVE_RC=$?\nif [ \"$RESOLVE_RC\" -eq 2 ]; then\n  echo \"✗ decide-registry rejected the argument list — fix the invocation and rerun.\" >&2\n  exit 1\nelif [ \"$RESOLVE_RC\" -ne 0 ]; then\n  echo \"✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above.\" >&2\n  exit 1\nfi",
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
       },
       "note": "### Ensemble launched: decide at <iso-utc>\n\n### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Directions compared\n\n<table or list of directions with tradeoffs across the resolved design axes>\n\n### Recommendation\n\n<chosen direction + rationale + accessibility gate verdict + risks>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — decisive 사용성/archetype axis + the accessibility gate verdict>\n- evidence_pointers:     <phase notes / brief / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
     },
@@ -977,7 +1373,11 @@
       "guards": {
         "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
         "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
-        "resolve_rc": null
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
       },
       "note": "### Ensemble launched: frame at <iso-utc>\n\n### Ensemble synthesis: frame verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### UX problem model\n\nUX Problem / Opportunity: ...\nUsers + Job-to-be-Done: ...\nGoals: ...\nMeasurable UX success metrics: ...\nConstraints: ...\nKey risks: ...\nOut of scope: ...\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <UX-problem-model fields / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
     },
@@ -1247,9 +1647,415 @@
       "guards": {
         "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
         "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
-        "resolve_rc": null
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
       },
       "note": "### Ensemble launched: reference-scan at <iso-utc>\n\n### Ensemble synthesis: design-brief verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Brief saved\n\n<absolute path to design_brief.md>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <brief path / sub-questions / Open Questions — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
+    },
+    "designer/refine": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "refine"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "designer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized refine target>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run refine skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "refine"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into refine"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run refine skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "refine"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "refine-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Refine (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "<compact selected_next + why + next_command — e.g. 'Re-critique the revised artifact to confirm convergence (/designer:critique)' OR 'Converged, gate not FAIL — proceed / commit'>"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "refine"
+            ],
+            [
+              "--ensemble-type",
+              "refine-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "<compact selected_next + why + next_command — e.g. 'Re-critique the revised artifact to confirm convergence (/designer:critique)' OR 'Converged, gate not FAIL — proceed / commit'>"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "refine-verify"
+      ],
+      "mktemp_templates": [
+        "designer-refine-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": "if [ -n \"${RUN_ID:-}\" ] && [ -n \"${VERDICT:-}\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" ensemble-commit \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --phase refine --ensemble-type refine-verify --run-id \"$RUN_ID\" \\\n    --verdict \"$VERDICT\" --summary \"$SUMMARY\" \\\n    --completed-at \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\nfi",
+        "converged": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete \\\n    --terminal-marker true \\\n    --next-action \"$NEXT_ACTION\" \\\n    --event updated\nelse\n  echo \"→ Refine PAUSED (non-convergence / regression / vision re-critique unavailable) — workflow left ACTIVE, NOT marked terminal. Resolve the flagged item, then re-run /designer:refine or route to /designer:decide.\" >&2\nfi"
+      },
+      "note": "### Ensemble launched: refine at <iso-utc>\n\n### Ensemble synthesis: refine verdict=<resolved|concerns|regression|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Refinement summary\n\n- Applied: <N findings / 1 revision>\n- Verified: <downstream elements reconcile; accessibility gate exposure\n  unchanged; measurable success metrics intact; [to be validated] markers intact>\n- Render status (post-code only): <re-rendered screen read host-direct | re-render unavailable / broke — vision re-critique UNVERIFIED | N/A (pre-code)>\n- Re-critique: <converged — no new CRITICAL/MAJOR + accessibility gate not FAIL (PASS, or CONDITIONAL with named preconditions) | NOT converged — new findings / regression / gate FAIL / vision UNVERIFIED>\n- Convergence: <CONVERGED | PAUSED — bounded passes exhausted / regression / render unavailable → routed to owner decision | /designer:decide | /designer:investigate>\n- Deferred: <items not addressed and why>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — the design reconciles + the accessibility gate verdict>\n- evidence_pointers:     <revised elements / criteria refs / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
+    },
+    "designer/start": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "check-clean-baseline",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--workflow-type",
+              "start"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "designer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized design topic from $ARGUMENTS>}"
+            ],
+            [
+              "--current-phase",
+              "phase-1-discover"
+            ],
+            [
+              "--next-action",
+              "Run Phase 1 discover+frame+decide composite"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "read",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ]
+          ]
+        },
+        {
+          "script": "decide-registry.mjs",
+          "sub": "resolve",
+          "args": [
+            [
+              "--args-file",
+              "$ARGS_DIR/args.json"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [],
+      "mktemp_templates": [],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": "BASELINE_RC=$?\nif [ \"$BASELINE_RC\" -ne 0 ]; then\n  echo \"✗ clean-baseline check failed (exit $BASELINE_RC); its error is above.\" >&2; exit \"$BASELINE_RC\"\nfi",
+        "baseline_status": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /designer:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"  Resolve, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
+        "ensemble_launched": null,
+        "converged": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete --terminal-marker true \\\n    --next-action \"Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface\" \\\n    --event updated\nelse\n  echo \"→ Lifecycle PAUSED at Phase 4 (non-convergence / new accessibility barrier / vision re-critique unavailable) — workflow left ACTIVE, NOT marked terminal. Resolve the flagged item, then re-run /designer:refine or route to /designer:decide.\" >&2\nfi"
+      },
+      "note": null
     },
     "founder/compose": {
       "calls": [
@@ -1517,9 +2323,287 @@
       "guards": {
         "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
         "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
-        "resolve_rc": null
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
       },
       "note": "### Ensemble launched: compose at <iso-utc>\n\n### Ensemble synthesis: compose (profile=<plan|canvas|validation-plan>) verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Artifact\n\n<the planning artifact: venture plan sections / lean canvas boxes /\n validation-plan experiments — with [to be validated] markers on\n unverified assumptions>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <plan sections / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
+    },
+    "founder/critique": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "critique"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "founder"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--profile",
+              "${AGENTIC_PROFILE:-<default or red-team from $ARGUMENTS>}"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized review target>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run critique skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "critique"
+            ],
+            [
+              "--profile",
+              "<default|red-team or empty>"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into critique"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb. Profile=<...>."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run critique skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "critique"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "review"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Critique (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Refine the artifact to address the findings"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "critique"
+            ],
+            [
+              "--ensemble-type",
+              "$ENSEMBLE_TYPE"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Refine the artifact to address the findings"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "review"
+      ],
+      "mktemp_templates": [
+        "founder-critique-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
+      },
+      "note": "### Ensemble launched: critique ($ENSEMBLE_TYPE) at <iso-utc>\n\n### Ensemble synthesis: critique (profile=<default|red-team>) verdict=<sound|concerns|veto|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Review report\n\nGate verdict: 규제노출 <PASS|COND|FAIL> · 안전리스크 <PASS|COND|FAIL>\n<CRITICAL / MAJOR / MINOR / SUGGESTION findings by section/claim;\n 'Looks Strong' observations at the end>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + the gate verdict>\n- evidence_pointers:     <finding sections / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
     },
     "founder/decide": {
       "calls": [
@@ -1789,7 +2873,11 @@
       "guards": {
         "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
         "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
-        "resolve_rc": "RESOLVE_RC=$?\nif [ \"$RESOLVE_RC\" -eq 2 ]; then\n  echo \"✗ decide-registry rejected the argument list — fix the invocation and rerun.\" >&2\n  exit 1\nelif [ \"$RESOLVE_RC\" -ne 0 ]; then\n  echo \"✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above.\" >&2\n  exit 1\nfi"
+        "resolve_rc": "RESOLVE_RC=$?\nif [ \"$RESOLVE_RC\" -eq 2 ]; then\n  echo \"✗ decide-registry rejected the argument list — fix the invocation and rerun.\" >&2\n  exit 1\nelif [ \"$RESOLVE_RC\" -ne 0 ]; then\n  echo \"✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above.\" >&2\n  exit 1\nfi",
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
       },
       "note": "### Ensemble launched: decide at <iso-utc>\n\n### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Directions compared\n\n<table or list of directions with tradeoffs across the resolved business axes>\n\n### Recommendation\n\n<chosen direction + rationale + gate verdict (regulatory/safety) + risks>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — decisive 시장성/단위경제 (market/unit-economics) + the regulatory/safety gate verdict>\n- evidence_pointers:     <phase notes / brief / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
     },
@@ -2051,7 +3139,11 @@
       "guards": {
         "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
         "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
-        "resolve_rc": null
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
       },
       "note": "### Ensemble launched: frame at <iso-utc>\n\n### Ensemble synthesis: frame verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Opportunity model\n\nProblem / Opportunity: ...\nCustomer + Job-to-be-Done: ...\nValue hypothesis: ...\nBusiness-model sketch: ...\nConstraints: ...\nValidation criteria: ...\nKey risks: ...\nOut of scope: ...\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <opportunity-model fields / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
     },
@@ -2321,9 +3413,405 @@
       "guards": {
         "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
         "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
-        "resolve_rc": null
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
       },
       "note": "### Ensemble launched: research-scan at <iso-utc>\n\n### Ensemble synthesis: business-brief verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Brief saved\n\n<absolute path to business_brief.md>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <brief path / sub-questions / Open Questions — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
+    },
+    "founder/refine": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "refine"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "founder"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized refine target>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run refine skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "refine"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into refine"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run refine skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "refine"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "refine-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Refine (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Re-critique the revised artifact"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "refine"
+            ],
+            [
+              "--ensemble-type",
+              "refine-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Re-critique the revised artifact"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "refine-verify"
+      ],
+      "mktemp_templates": [
+        "founder-refine-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null
+      },
+      "note": "### Ensemble launched: refine at <iso-utc>\n\n### Ensemble synthesis: refine verdict=<resolved|concerns|regression|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Refinement summary\n\n- Applied: <N findings / 1 revision>\n- Verified: <downstream sections reconcile; gate exposure unchanged;\n  [to be validated] markers intact>\n- Deferred: <items not addressed and why>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + consistency/gate check>\n- evidence_pointers:     <revised sections / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
+    },
+    "founder/start": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "check-clean-baseline",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--workflow-type",
+              "start"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "founder"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized business topic from $ARGUMENTS>}"
+            ],
+            [
+              "--current-phase",
+              "phase-1-discover"
+            ],
+            [
+              "--next-action",
+              "Run Phase 1 discover+frame+decide composite"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "read",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Save/commit the business deliverable; optionally /founder:start the next item"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [],
+      "mktemp_templates": [],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": "BASELINE_RC=$?\nif [ \"$BASELINE_RC\" -ne 0 ]; then\n  echo \"✗ clean-baseline check failed (exit $BASELINE_RC); its error is above.\" >&2; exit \"$BASELINE_RC\"\nfi",
+        "baseline_status": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /founder:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"  Resolve, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
+        "ensemble_launched": null,
+        "converged": null
+      },
+      "note": null
     }
   }
 }

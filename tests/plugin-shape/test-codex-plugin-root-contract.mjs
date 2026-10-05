@@ -65,6 +65,7 @@ import { resolve, join, relative, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
+import { CHECKOUT, RETIRED, codexCellProblems, pluginRootRows, startClause } from '../_plugin-root-cell.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 
@@ -80,7 +81,6 @@ const PERSONAS = Object.keys(TABLES);
 // The plugins whose start macro runs the six verb skills in place, so their
 // cell names it.
 const START_MACRO = new Set(['engineer', 'designer', 'founder']);
-const startClause = (persona) => ` (inside \`$${persona}:start\`, the mentioned skill is \`start\`, which runs the six verb skills in place)`;
 
 // Engineer passages that send a Codex reader to the checkpoint table for the
 // root, each with the delimiters of its passage. The five non-decide verbs
@@ -114,42 +114,13 @@ const label = (path) => relative(REPO_ROOT, path).split(sep).join('/');
 // `core/skills` today; whatever the plugin's manifest declares tomorrow.
 const skillsRel = (persona) => relative(pluginDir(persona), resolveSkillsRoot(pluginDir(persona))).split(sep).join('/');
 
-const CHECKOUT = '.tmp/marketplaces';
+// The row, the cell's sentences and the retired claims live in
+// tests/_plugin-root-cell.mjs, shared with the persona pipeline's skill
+// contracts, which run the cell check per document (PC2a3).
 const SECTION = /^#{2,}\s.*command resolution\s*$/im;
 const SECTION_ALL = /^#{2,}\s.*command resolution\s*$/gim;
 const HEADING = /^#{1,6}\s/m;
-const ROW = /^\s*\|\s*(?:\*\*)?\s*Plugin root\b/i;
-
-// Retired claims, in the affirmative shapes the old sentences had (subject
-// included), so that the corrected text — which names the checkout as the
-// install source — and accurate corrections using the same words do not match.
-const RETIRED = [
-  [/\(Codex marketplace install layout per ADR-0008/i, 'calls the marketplace checkout the Codex install layout per ADR-0008'],
-  [/no versioned subdirectory, no glob needed/i, 'says the Codex install has no versioned subdirectory'],
-  [/command resolution,? (?:which )?records the default (?:Codex )?layout/i, 'says the checkpoint table records a default layout to assume'],
-  [/a non-default install root (?:means resolving|or marketplace name means the path must be|must be resolved)/i, 'treats the root as assumable unless the install is non-default'],
-  [/is the marketplace checkout Codex installs from/i, 'says the checkout is what Codex installs from (ADR-0061 pins installs to release commits)'],
-  [/\bCodex marketplace install path\b/i, 'calls the root the "Codex marketplace install path"'],
-];
 const POINTER = /(`[^`]*checkpoint\/SKILL\.md`) § Claude\/Codex command resolution/g;
-
-// A GFM row: strip the outer pipes, split on unescaped ones (the Claude
-// fallback carries `\|` inside a code span).
-const splitRow = (line) => line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim());
-
-function pluginRootRows(raw) {
-  const lines = raw.split(/\r?\n/);
-  const rows = [];
-  lines.forEach((line, i) => {
-    if (!ROW.test(line)) return;
-    let top = i;
-    while (top > 0 && lines[top - 1].trim().startsWith('|')) top -= 1;
-    const header = splitRow(lines[top]);
-    const cells = splitRow(line);
-    rows.push({ header, cells, codex: cells[header.indexOf('Codex')] ?? '' });
-  });
-  return rows;
-}
 
 function passage(text, { start, end }) {
   const from = text.indexOf(start);
@@ -212,26 +183,10 @@ describe('Codex plugin-root contract — engineer, designer, founder, orchestrat
         const [{ header, cells, codex }] = rows;
         ok(header.includes('Codex'), `${label(path)} Plugin root row must sit in a table with a Codex column`);
         strictEqual(cells.length, header.length, `${label(path)} Plugin root row must have as many cells as its header`);
-        const required = [
-          [`For a mentioned \`${persona}\` skill, the plugin directory that contains it`, 'scope the rule to a mentioned skill of this plugin'],
-          ...(START_MACRO.has(persona)
-            ? [[startClause(persona).trim().slice(1, -1), 'name start as the mentioned skill when it runs the verbs in place']]
-            : []),
-          ['Codex injects a mentioned skill with its absolute path', 'say where the root comes from'],
-          [`dropping \`/${rel}/<skill>/SKILL.md\` from it leaves the root, which holds \`.codex-plugin/plugin.json\``, `derive the root by dropping this plugin's declared skills root (/${rel}/<skill>/SKILL.md)`],
-          ['a new mention of the skill supplies it again', 'say how to recover the path once it has left the context'],
-          [`With the default Codex home and the \`agentic-plugins\` marketplace added from Git, the root is \`~/.codex/plugins/cache/agentic-plugins/${persona}/<version>\`, the versioned copy Codex loads skills from`, "name its own plugin's versioned cache as the location under the default Codex home and Git marketplace"],
-          [`\`~/.codex/.tmp/marketplaces/agentic-plugins/plugins/${persona}\` is the marketplace checkout, which tracks the repository's \`main\` branch, not that copy`, 'name the checkout as tracking main, not the loaded copy'],
-        ];
-        for (const [sentence, why] of required) {
-          ok(codex.includes(sentence), `${label(path)} Codex cell must ${why}: expected "${sentence}"`);
-        }
-        strictEqual(codex.split(CHECKOUT).length - 1, 1, `${label(path)} Codex cell must name the checkout once, as the install source only`);
-        for (const [pattern, why] of RETIRED) {
-          ok(!pattern.test(codex), `${label(path)} Codex cell ${why}`);
-        }
-        // orchestrator has no start macro; its cell is the same sentence without that clause.
-        ok(START_MACRO.has(persona) || !codex.includes(':start`'), `${label(path)} Codex cell must not name a start macro the plugin does not have`);
+        deepStrictEqual(
+          codexCellProblems(codex, persona, { skillsRel: rel, startMacro: START_MACRO.has(persona) }).map((p) => `${label(path)} ${p}`),
+          [],
+        );
         normalized.push(codex.replace(startClause(persona), '').replace(new RegExp(`\\b${persona}\\b`, 'g'), '<persona>'));
       }
     }

@@ -21,12 +21,15 @@
 //      into every enrolled persona: the region drift check stays clean, so a
 //      runbook contract test must fail;
 //   M  the verb runbook regions (PC2a2b compose and frame, PC2a2c investigate
-//      and decide): a template, manifest or declaration defect, or authored
+//      and decide, PC2a3 critique, refine and start) and the SKILL.md regions
+//      (PC2a3 T7): a template, manifest or declaration defect, or authored
 //      text removed, each with the contract that must catch it (killed_by);
-//   V  declaration format 1.1 (PC2a2): the loader's reader parity with the
-//      schema, the generator's cross-field rules, the declared verb fields
-//      bound to the runbooks; K, the verb runbook characterization (T0); L,
-//      the engine's list values;
+//   V  declaration format 1.1 (PC2a2) and 1.2 (PC2a3, peer): the loader's
+//      reader parity with the schema, the generator's cross-field rules, the
+//      declared verb fields bound to the runbooks; K, the verb runbook
+//      characterization (T0); L, the engine's list values;
+//   S  the extension slots (PC2a3 DD6): each slot check dropped; W, the
+//      variant rule (DD2) dropped;
 //   C  a control: an innocuous canonical edit, regenerated everywhere, keeps
 //      the drift check clean (expect SURVIVED).
 //
@@ -53,6 +56,7 @@ const T_CONTRACT = 'tests/persona-pipeline/test-runbook-contracts.mjs';
 const T_HEADLESS = 'tests/plugin-shape/test-headless-safe-runbooks.mjs';
 const T_VERBS = 'tests/persona-pipeline/test-declaration-verbs.mjs';
 const T_CHAR = 'tests/persona-pipeline/test-verb-runbook-characterization.mjs';
+const T_SKILL = 'tests/persona-pipeline/test-skill-contracts.mjs';
 
 export const TESTS = [T_SYNC];
 
@@ -110,7 +114,7 @@ const RESOLVER_TEMPLATES = [
   'regions/checkpoint-set.md', 'regions/decide-resolve.md', 'regions/locate-active.md',
   'regions/peer-now-dispatch.md', 'regions/peer-now-locate.md', 'regions/peer-now-note.md',
   'regions/resume-archive.md', 'regions/resume-marker.md', 'regions/resume-read.md',
-  'regions/verb-bootstrap-profiled.md',
+  'regions/start-bootstrap.md', 'regions/start-resume.md', 'regions/verb-bootstrap-profiled.md',
   'regions/verb-bootstrap.md', 'regions/verb-dispatch.md', 'regions/verb-finalize.md',
   'regions/verb-phase-0.md', 'regions/verb-resume-profiled.md', 'regions/verb-resume.md',
 ];
@@ -139,6 +143,20 @@ const COMMIT_STEP = [
   '',
 ].join('\n');
 
+// PC2a3: the privacy gate's two templates, and the per-verb sentence the
+// manifest gives the gate (a `value` substitution), edited in place.
+const PRIVACY_GATE = 'regions/verb-privacy-gate.md';
+const NO_IMAGE_RULE = 'regions/verb-privacy-no-image.md';
+function genericizeDefect(copy, verb, from, to, dest = `commands/${verb}.md`) {
+  const path = join(copy, 'persona-pipeline/manifest.json');
+  const manifest = JSON.parse(readFileSync(path, 'utf8'));
+  const sub = manifest.regions.find((r) => r.id === `${verb}-privacy-gate` && r.dest === dest)?.substitutions?.genericize;
+  if (!sub || !sub.value.includes(from)) throw new MutationHarnessError(`${verb}-privacy-gate (${dest}): no genericize value holding ${JSON.stringify(from)}`);
+  sub.value = sub.value.split(from).join(to);
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+  regenerate(copy);
+}
+
 /** The verb runbooks whose blocks are generated (PC2a2b, PC2a2c). */
 const VERB_RUNBOOKS = ['compose', 'frame', 'investigate', 'decide'];
 
@@ -157,6 +175,30 @@ const PRIVACY = /^privacy: the prohibition sentence precedes the dispatch/;
 const verbCaught = (contract, verbs = VERB_RUNBOOKS) => ['founder', 'designer'].flatMap((p) => verbs.map((v) => new RegExp(
   `(?:^| > )${`${p}/commands/${v}.md (committed)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} > ${contract.source.replace(/^\^/, '')}`,
 )));
+
+/**
+ * The (persona, runbook) pairs a template renders into, from its enrollment
+ * (PC2a3): a designer-only dispatch template is expected to fail designer's
+ * critique, not founder's, where verbCaught() would expand to both. `dests`
+ * narrows a template shared by runbooks and skills to the side the contract
+ * is about.
+ */
+const templateCaught = (template, contract, dests = () => true) => MANIFEST.regions
+  .filter((r) => r.template === template && dests(r.dest))
+  .flatMap((r) => r.personas.map((p) => new RegExp(
+    `(?:^| > )${`${p}/${r.dest} (committed)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} > ${contract.source.replace(/^\^/, '')}`,
+  )));
+
+const SKILL_PRIVACY = /^the privacy gate precedes the peer step/;
+const isSkill = (dest) => dest.startsWith('core/skills/');
+// The privacy contract of each runbook a privacy template renders into, from
+// its enrollment: start's has its own name (Codex review of PC2a3: the
+// verbCaught default left critique, refine and start unrequired).
+const START_PRIVACY = /^start privacy: the prohibition precedes the lifecycle/;
+const privacyCaught = (template) => [
+  ...templateCaught(template, PRIVACY, (d) => d.startsWith('commands/') && d !== 'commands/start.md'),
+  ...templateCaught(template, START_PRIVACY, (d) => d === 'commands/start.md'),
+];
 
 const CHECKPOINT_TARGET = {
   template: 'regions/checkpoint-set.md',
@@ -390,10 +432,10 @@ export const MUTATIONS = [
     id: 'V1', tests: [T_DECL],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/lib/persona.mjs',
-      from: 'const READER_MINOR = 1;',
-      to: 'const READER_MINOR = 0;',
+      from: 'const READER_MINOR = 2;',
+      to: 'const READER_MINOR = 1;',
     }),
-    why: 'the loader reads as 1.0 again and forgives an unknown scalar the schema refuses at the same minor (the readers disagree)',
+    why: 'the loader reads as 1.1 again and forgives an unknown scalar the schema refuses at the same minor (the readers disagree)',
   },
   {
     id: 'V2', tests: [T_DECL],
@@ -475,6 +517,25 @@ export const MUTATIONS = [
     killed_by: /^does what the fixture recorded, with the listed changes/,
     why: 'founder decide single-quotes its run id, so the date never runs and the runner refuses the literal (Codex review of PC2a2b)',
   },
+  // PC2a3 T0': critique, refine and start recorded before their regions.
+  {
+    id: 'K7', tests: [T_CHAR], file: 'plugins/designer/commands/critique.md',
+    from: 'if [ -n "${RUN_ID:-}" ] && [ -n "${VERDICT:-}" ]; then',
+    to: 'if [ -n "${RUN_ID:-}" ]; then',
+    why: 'designer critique records an ensemble result with no verdict (its D2 guard loses a condition)',
+  },
+  {
+    id: 'K8', tests: [T_CHAR], file: 'plugins/founder/commands/start.md',
+    from: '  *)\n    echo "✗ clean-baseline check returned an unrecognized status (\'$STATUS\') — refusing to bootstrap (fail-closed)." >&2\n    exit 1;;\n',
+    to: '',
+    why: 'founder start bootstraps on any baseline status it does not recognize (the gate fails open)',
+  },
+  {
+    id: 'K9', tests: [T_CHAR], file: 'plugins/designer/commands/start.md',
+    from: 'if [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: 'if [ "${CONVERGED:-yes}" = "yes" ]; then',
+    why: 'designer start closes the lifecycle when its convergence was never established (the guard fails open)',
+  },
   {
     id: 'V8', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
     from: '  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \\\n',
@@ -501,6 +562,66 @@ export const MUTATIONS = [
     from: "    for (const size of ['minor', 'standard', 'major']) {",
     to: '    for (const size of Object.keys(decide.size_presets ?? {})) {',
     why: 'the generator reads a newer minor\'s ignored scalar as a preset reference and refuses the declaration',
+  },
+  {
+    id: 'V12', tests: [T_DECL],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/lib/persona.mjs',
+      from: '  if (d.peer !== undefined) peerProblems(d.peer, unknown, no);\n',
+      to: '',
+    }),
+    why: 'the loader stops checking peer, so a declaration the schema rejects (images "false", an absolute privacy spec) authorizes writes',
+  },
+  {
+    id: 'V13', tests: [T_DECL], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '      failures.push(`${where}: peer.privacy_spec names ${spec}, which plugins/${persona}/ does not hold`);\n',
+    to: '',
+    killed_by: /^fails on a privacy spec the plugin does not hold$/,
+    why: 'a privacy spec the plugin does not hold passes, so the gate cites a file that is not there',
+  },
+
+  // ---- S: extension slots (PC2a3 DD6); W: variant regions (DD2) -------------
+  {
+    id: 'S1', tests: [T_REGION], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '        if (after && before && !(ext.line > after.end && ext.line < before.begin)) {',
+    to: '        if (false) {',
+    why: 'an extension marker outside its two bounding regions passes, so an extension could follow the terminal write',
+  },
+  {
+    id: 'S2', tests: [T_REGION], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '        if (!slot.personas.includes(persona)) {\n          fatal.push(',
+    to: '        if (false) {\n          fatal.push(',
+    why: 'a persona places a marker in a slot it does not own',
+  },
+  {
+    id: 'S3', tests: [T_REGION], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '        if (count < slot.min || count > slot.max) {',
+    to: '        if (count > slot.max) {',
+    why: 'a required extension (designer\'s render and vision loop) drops out silently',
+  },
+  {
+    id: 'S4', tests: [T_REGION], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '        if (count < slot.min || count > slot.max) {',
+    to: '        if (count < slot.min) {',
+    why: 'a slot holds more markers than it takes, each inside the bounds',
+  },
+  {
+    id: 'S5', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: '      if (order.indexOf(ext.after) >= order.indexOf(ext.before)) {',
+    to: '      if (false) {',
+    why: 'a slot whose bounds are swapped is accepted, so no marker can ever sit in it (or the bounds mean nothing)',
+  },
+  {
+    id: 'W1', tests: [T_REGION], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '  failures.push(...variantEnrolmentFailures({ persona, declaration: d, regions, where }));\n',
+    to: '',
+    why: 'a variant region\'s enrollment drifts from the declared value it follows (a persona that may send images still gets the no-image rule, or one that may not loses it)',
+  },
+  {
+    id: 'W2', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: '    } else if (value !== equals && enrolled) {',
+    to: '    } else if (value != equals && enrolled) {',
+    why: 'the variant rule compares loosely, so a declared 0 enrolls a persona in a region for false',
   },
   {
     id: 'L3', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
@@ -587,13 +708,13 @@ export const MUTATIONS = [
   {
     id: 'M8', tests: [T_CONTRACT, T_CHAR],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: 'RUN_ID="${ENSEMBLE_TYPE}-$(date', to: 'RUN_ID="ensemble-$(date' }),
-    killed_by: verbCaught(/^identity: persona, verb, phase, ensemble type and run-id prefix/),
+    killed_by: templateCaught('regions/verb-dispatch.md', /^identity: persona, verb, phase, ensemble type and run-id prefix/),
     why: 'the run id no longer carries the ensemble type the dispatch and the commit name',
   },
   {
     id: 'M9', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: '  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" \\\n', to: '  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" --image "$SCREENSHOT" \\\n' }),
-    killed_by: verbCaught(/^privacy: the prohibition sentence precedes the dispatch/),
+    killed_by: templateCaught('regions/verb-dispatch.md', /^privacy: the prohibition sentence precedes the dispatch/),
     why: 'the dispatch passes a screenshot to a companion path that has no image channel',
   },
   {
@@ -640,12 +761,20 @@ export const MUTATIONS = [
     killed_by: [inSuite('founder/commands/frame.md (committed)', IDENTITY), inSuite('designer/commands/compose.md (committed)', IDENTITY)],
     why: 'compose and frame swap their verb values: each runbook runs the other verb',
   },
+  // PC2a3 QD4: the prohibition and the no-image rule are generated (the
+  // privacy-gate templates, the per-verb sentence a manifest value); the
+  // screenshot sentences stay designer's authored text after the regions.
   {
-    id: 'M14', tests: [T_CONTRACT], file: 'plugins/founder/commands/compose.md',
-    from: 'Genericize before the peer prompt; the\npre-genericization value MUST never leave the local host. ',
-    to: '',
-    killed_by: inSuite('founder/commands/compose.md (committed)', PRIVACY),
-    why: 'founder compose loses the privacy prohibition before its dispatch (authored text outside the regions)',
+    id: 'M14', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: PRIVACY_GATE, from: '{{genericize}}\n', to: '' }),
+    killed_by: privacyCaught(PRIVACY_GATE),
+    why: 'the privacy gate template drops the per-verb prohibition: no verb says the pre-genericization value never leaves the host',
+  },
+  {
+    id: 'M35', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: NO_IMAGE_RULE, from: 'No dispatch passes `--image`:', to: 'A dispatch may pass `--image`:' }),
+    killed_by: privacyCaught(NO_IMAGE_RULE),
+    why: 'the no-image rule no longer forbids an image to the peer, in every persona that declares images off',
   },
   {
     id: 'M15', tests: [T_CONTRACT], file: 'plugins/designer/commands/frame.md',
@@ -721,15 +850,14 @@ export const MUTATIONS = [
     why: 'investigate\'s note headings swap the ensemble type and the profile (the launch line names the brief, the synthesis the scan)',
   },
   {
-    id: 'M24', tests: [T_CONTRACT], file: 'plugins/founder/commands/investigate.md',
-    from: 'Genericize or remove proprietary content\nfrom the topic and sub-questions before WebSearch / WebFetch or peer\ndispatch; only the genericized form leaves the local host. ',
-    to: '',
-    killed_by: inSuite('founder/commands/investigate.md (committed)', PRIVACY),
-    why: 'founder investigate loses the privacy prohibition before its dispatch (authored text outside the regions)',
+    id: 'M24', tests: [T_CONTRACT],
+    prepare: (copy) => genericizeDefect(copy, 'investigate', 'Genericize or remove proprietary content from the topic and sub-questions before WebSearch / WebFetch or peer dispatch; only the genericized form leaves the local host. ', ''),
+    killed_by: verbCaught(PRIVACY, ['investigate']),
+    why: 'investigate\'s manifest sentence loses the web-search prohibition, in both personas',
   },
   {
     id: 'M25', tests: [T_CONTRACT], file: 'plugins/designer/commands/investigate.md',
-    from: '**Screenshots are sensitive by default** — a raw\nscreenshot of a real UI is never sent to web search or the peer;',
+    from: '**Screenshots are sensitive by default** — a raw screenshot of a real UI is\nnever sent to web search or the peer;',
     to: 'Screenshots may be shared with the peer;',
     killed_by: inSuite('designer/commands/investigate.md (committed)', PRIVACY),
     why: 'designer investigate loses the screenshot sentence before its dispatch (authored text outside the regions)',
@@ -797,18 +925,335 @@ export const MUTATIONS = [
     why: 'the resolved context never reaches the block\'s output, so the skill body has nothing to read',
   },
   {
-    id: 'M31', tests: [T_CONTRACT], file: 'plugins/founder/commands/decide.md',
-    from: 'Genericize before the peer prompt; the\npre-genericization value MUST never leave the local host. ',
-    to: '',
-    killed_by: inSuite('founder/commands/decide.md (committed)', PRIVACY),
-    why: 'founder decide loses the privacy prohibition before its dispatch (authored text outside the regions)',
+    id: 'M31', tests: [T_CONTRACT],
+    prepare: (copy) => genericizeDefect(copy, 'decide', '; the pre-genericization value MUST never leave the local host.', '.'),
+    killed_by: verbCaught(PRIVACY, ['decide']),
+    why: 'decide\'s manifest sentence drops "MUST never leave the local host", in both personas',
   },
   {
     id: 'M32', tests: [T_CONTRACT], file: 'plugins/designer/commands/decide.md',
-    from: '**Screenshots are sensitive by default** and are never sent to\nthe peer as bytes',
-    to: 'Screenshots may be sent to\nthe peer',
+    from: '**Screenshots are sensitive by default** and are never sent to the peer as\nbytes',
+    to: 'Screenshots may be sent to the peer as\nbytes',
     killed_by: inSuite('designer/commands/decide.md (committed)', PRIVACY),
     why: 'designer decide loses the screenshot sentence before its dispatch (authored text outside the regions)',
+  },
+  // ---- M: refine (PC2a3 U4): generated blocks, authored finalize, two slots ---------
+  {
+    id: 'M36', tests: [T_CONTRACT],
+    prepare: (copy) => {
+      // The authored finalize block moves above the second extension marker:
+      // the marker stays in its slot, so only the QD8 contract can see it.
+      const path = join(copy, 'plugins/designer/commands/refine.md');
+      const text = readFileSync(path, 'utf8');
+      const block = /\n```bash\n(?:(?!```)[\s\S])*?state\.mjs" set-terminal \\\n[\s\S]*?\n```\n/.exec(text);
+      const marker = '<!-- pipeline:extension refine-convergence-bound -->\n';
+      if (!block || !text.includes(marker)) throw new MutationHarnessError('designer refine: no finalize block or marker');
+      // Function replacements: the block holds `$'`, which a string
+      // replacement would expand (Codex review of PC2a3: it corrupted the block,
+      // so the case died on "one block" before the ordering check).
+      const moved = text.replace(block[0], () => '\n').replace(marker, () => `${block[0].slice(1)}\n${marker}`);
+      if (moved.split(block[0].slice(1)).length !== 2 || moved.indexOf(block[0].slice(1)) > moved.indexOf(marker)) {
+        throw new MutationHarnessError('designer refine: the finalize block did not move whole above the marker');
+      }
+      writeFileSync(path, moved);
+    },
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^the authored finalize follows the finalize heading region and every extension/)],
+    why: 'designer refine\'s terminal write moves above its convergence-bound extension: the extension now follows the terminal write',
+  },
+  {
+    id: 'M37', tests: [T_CONTRACT],
+    prepare: (copy) => {
+      const path = join(copy, 'plugins/designer/commands/refine.md');
+      const text = readFileSync(path, 'utf8');
+      const para = /\*\*Bounded convergence \(no unbounded loop\)\.\*\*[\s\S]*?\n\n/.exec(text);
+      if (!para) throw new MutationHarnessError('designer refine: no bounded-convergence paragraph');
+      writeFileSync(path, text.replace(para[0], ''));
+    },
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^each extension holds the text its slot exists for/)],
+    why: 'designer refine keeps the extension marker but loses the bounded-convergence text it stands for',
+  },
+  {
+    id: 'M38', tests: [T_CONTRACT], file: 'plugins/designer/commands/refine.md',
+    from: 'if [ -n "${RUN_ID:-}" ] && [ -n "${VERDICT:-}" ]; then',
+    to: 'if true; then',
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^the authored finalize, run: /)],
+    why: 'designer refine records an ensemble result when the peer never launched (D2 dropped), fabricating a peer run',
+  },
+  {
+    id: 'M39', tests: [T_CONTRACT], file: 'plugins/designer/commands/refine.md',
+    from: 'if [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: 'if [ "${CONVERGED:-yes}" = "yes" ]; then',
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^the authored finalize, run: /)],
+    why: 'designer refine closes the workflow when CONVERGED was never assigned (the guard fails open)',
+  },
+  // ---- M: critique (PC2a3 U5): designer's dispatch generated, founder's authored (QD5) ----
+  {
+    id: 'M40', tests: [T_CONTRACT], file: 'plugins/founder/commands/critique.md',
+    from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json"',
+    to: '  --ensemble-type review --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json"',
+    killed_by: [inSuite('founder/commands/critique.md (committed)', /^founder critique, instantiated per profile/)],
+    why: 'founder critique dispatches review for red-team too: the adversarial scan never reaches the peer (QD5)',
+  },
+  {
+    id: 'M41', tests: [T_CONTRACT], file: 'plugins/founder/commands/critique.md',
+    from: '--phase critique --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID"',
+    to: '--phase critique --ensemble-type review --run-id "$RUN_ID"',
+    killed_by: [inSuite('founder/commands/critique.md (committed)', /^founder critique, instantiated per profile/)],
+    why: 'founder critique commits a red-team result under review, another type than it dispatched',
+  },
+  {
+    id: 'M42', tests: [T_CONTRACT],
+    prepare: (copy) => {
+      const path = join(copy, 'plugins/designer/commands/critique.md');
+      const text = readFileSync(path, 'utf8');
+      const para = /\*\*Dual input \(ADR-0042 SD4\)\*\*[\s\S]*?\n\n/.exec(text);
+      if (!para) throw new MutationHarnessError('designer critique: no dual-input paragraph');
+      writeFileSync(path, text.replace(para[0], ''));
+    },
+    killed_by: [inSuite('designer/commands/critique.md (committed)', /^each extension holds the text its slot exists for/)],
+    why: 'designer critique keeps its dual-input marker but loses the host-direct vision text it stands for',
+  },
+  {
+    id: 'M43', tests: [T_CONTRACT], file: 'plugins/designer/commands/critique.md',
+    from: 'if [ -n "${RUN_ID:-}" ] && [ -n "${VERDICT:-}" ]; then',
+    to: 'if true; then',
+    killed_by: [inSuite('designer/commands/critique.md (committed)', /^the authored finalize, run: /)],
+    why: 'designer critique records an ensemble result when the peer never launched (D2 dropped)',
+  },
+  // ---- M: start (PC2a3 U6): the clean-baseline bootstrap and the workflow_type read ----
+  {
+    id: 'M44', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-bootstrap.md', from: '  *)\n    echo "✗ clean-baseline check returned an unrecognized status (\'$STATUS\') — refusing to bootstrap (fail-closed)." >&2\n    exit 1;;\n', to: '' }),
+    killed_by: templateCaught('regions/start-bootstrap.md', /^start bootstrap, run: /),
+    why: 'start bootstraps on an empty, unknown or unparsable baseline status (the wildcard rejection is gone: the gate fails open)',
+  },
+  {
+    id: 'M45', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-bootstrap.md', from: '; exit "$BASELINE_RC"\n', to: '\n' }),
+    killed_by: templateCaught('regions/start-bootstrap.md', /^start bootstrap, run: /),
+    why: 'a failed clean-baseline check no longer stops start\'s bootstrap',
+  },
+  {
+    id: 'M46', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-resume.md', from: 'JSON.parse(s).workflow_type||"verb-chain"', to: 'JSON.parse(s).workflow_type||"start"' }),
+    killed_by: templateCaught('regions/start-resume.md', /^start resume, run: /),
+    why: 'a workflow without the discriminator reads as start, so start absorbs a verb-chain workflow',
+  },
+  {
+    id: 'M47', tests: [T_CONTRACT],
+    prepare: (copy) => {
+      const path = join(copy, 'plugins/designer/commands/start.md');
+      const text = readFileSync(path, 'utf8');
+      const from = text.indexOf('**The archetype is NOT durable state');
+      const to = text.indexOf('Two hazards this closes.');
+      if (from < 0 || to < from) throw new MutationHarnessError('designer start: no archetype carry text');
+      writeFileSync(path, text.slice(0, from) + text.slice(to));
+    },
+    killed_by: [inSuite('designer/commands/start.md (committed)', /^start: the terminal write follows every extension/)],
+    why: 'designer start keeps its archetype marker but loses the inline AGENTIC_DESIGNER_PROFILE carry it stands for',
+  },
+  // ---- M: the SKILL.md regions (PC2a3 U7, T7): one group of templates at a time -----
+  {
+    id: 'M48', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-set.md', from: '  --workflow-path "$ACTIVE" --host', to: '  --workflow-path "$WORKFLOW" --host' }),
+    killed_by: templateCaught('regions/skill-checkpoint-set.md', /^the checkpoint is written to the workflow Phase 1 found/),
+    why: 'the checkpoint skill writes its summary to a workflow Phase 1 never found',
+  },
+  {
+    id: 'M49', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-set.md', from: 'state.mjs" checkpoint-set \\', to: 'state.mjs" checkpoint-put \\' }),
+    killed_by: templateCaught('regions/skill-checkpoint-set.md', /^every state\.mjs subcommand a generated section names/),
+    why: 'the checkpoint skill names a state.mjs subcommand that does not exist',
+  },
+  {
+    id: 'M50', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-command-resolution.md', from: 'If that path is no longer in context, for example after compaction, a new mention of the skill supplies it again. ', to: '' }),
+    killed_by: templateCaught('regions/skill-checkpoint-command-resolution.md', /^the command-resolution table has one Plugin root row/),
+    why: 'the Codex plugin-root cell no longer says how to recover the injected path after compaction',
+  },
+  {
+    id: 'M51', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-peer-now-dispatch.md', from: '  > "$RUN_JSON" 2> "$RUN_ERR"\nRUN_RC=$?', to: '  > "$RUN_JSON" 2> "$RUN_ERR" &\nRUN_RC=$?' }),
+    killed_by: templateCaught('regions/skill-peer-now-dispatch.md', /^the dispatch is synchronous/),
+    why: 'peer-now runs the peer in the background and reads the exit code of the launch, not of the run',
+  },
+  {
+    id: 'M52', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-peer-now-dispatch.md', from: '; stop without appending a phase note and\nexit non-zero.', to: '.' }),
+    killed_by: templateCaught('regions/skill-peer-now-dispatch.md', /^the dispatch is synchronous/),
+    why: 'a failed peer-now run no longer stops before the phase note',
+  },
+  {
+    id: 'M53', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-resume-marker.md', from: 'via `state.mjs append --event resumed`', to: 'via `state.mjs append --event updated`' }),
+    killed_by: templateCaught('regions/skill-resume-marker.md', /^the resume marker is a host-history append/),
+    why: 'the resume skill records its marker as an ordinary update',
+  },
+  {
+    id: 'M54', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-decide-approval-gate.md', from: '**Wait for the user to choose a direction** — do not proceed without\nexplicit approval.', to: 'Proceed with the recommended direction.' }),
+    killed_by: templateCaught('regions/skill-decide-approval-gate.md', /^decide waits for the user's explicit choice/),
+    why: 'decide proceeds without the user\'s choice',
+  },
+  {
+    id: 'M55', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-host-availability.md', from: '`[{{persona}}-active-metadata]`', to: '`[{{persona}}-metadata]`' }),
+    killed_by: templateCaught('regions/skill-checkpoint-host-availability.md', /^the checkpoint is written to the workflow Phase 1 found/),
+    why: 'the checkpoint skill names a re-injection marker the persona\'s hook never prints',
+  },
+  {
+    id: 'M56', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-command-intro.md', from: 'detached-HEAD guard,\nclean-baseline gate', to: 'detached-HEAD guard,\nredundancy probe, clean-baseline gate' }),
+    killed_by: templateCaught('regions/skill-start-command-intro.md', /^start names only the Phase 0 steps its runbook runs/),
+    why: 'start\'s skill names a redundancy probe its runbook never runs (the founder text before PC2a3)',
+  },
+  // PC2a3 U7(b): the privacy gate critique, refine and start state in SKILL.md,
+  // the runbooks' template with the spec cited from the skill's directory.
+  {
+    id: 'M57', tests: [T_SKILL],
+    prepare: (copy, tools) => {
+      tools.applyEdit(copy, { file: 'scripts/lib/persona-pipeline.mjs', from: 'derived.skill_privacy_spec = `../${posix.relative(', to: 'derived.skill_privacy_spec = `${posix.relative(' });
+      regenerate(copy);
+    },
+    killed_by: templateCaught(PRIVACY_GATE, SKILL_PRIVACY, isSkill),
+    why: 'the skill privacy gate cites its spec relative to core/skills, so the path read from a skill\'s directory leads nowhere',
+  },
+  {
+    id: 'M58', tests: [T_SKILL],
+    prepare: (copy) => genericizeDefect(copy, 'critique', '; the pre-genericization value MUST never leave the local host.', '.', 'core/skills/critique/SKILL.md'),
+    killed_by: [inSuite('founder/core/skills/critique/SKILL.md (committed)', SKILL_PRIVACY), inSuite('designer/core/skills/critique/SKILL.md (committed)', SKILL_PRIVACY)],
+    why: 'the critique skill\'s gate no longer says the pre-genericization value never leaves the host (the manifest value)',
+  },
+  {
+    id: 'M59', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: NO_IMAGE_RULE, from: 'No dispatch passes `--image`:', to: 'A dispatch may pass `--image`:' }),
+    killed_by: templateCaught(NO_IMAGE_RULE, SKILL_PRIVACY, isSkill),
+    why: 'the skills\' no-image rule no longer forbids an image to the peer',
+  },
+  {
+    id: 'M60', tests: [T_SKILL], file: 'plugins/designer/core/skills/refine/SKILL.md',
+    from: 'and is **never sent\nto the peer as inline image bytes**',
+    to: 'and is **sent\nto the peer as inline image bytes**',
+    killed_by: inSuite('designer/core/skills/refine/SKILL.md (committed)', SKILL_PRIVACY),
+    why: 'designer refine\'s skill keeps its screenshot label but now sends the screen to the peer as bytes (authored text after the regions)',
+  },
+  // Codex review of PC2a3 (code step 3): each of these passed the reviewed tests.
+  {
+    id: 'M61', tests: [T_SKILL], file: 'plugins/designer/core/skills/start/SKILL.md',
+    from: '**Carry the archetype inline, not as durable state.**', to: '**Carry the archetype.**',
+    killed_by: inSuite('designer/core/skills/start/SKILL.md (committed)', /^each extension this persona's slots hold states the sentences it exists for/),
+    why: 'designer start\'s skill keeps its archetype marker but loses the inline-carry rule it stands for',
+  },
+  {
+    id: 'M62', tests: [T_SYNC], file: 'plugins/designer/core/skills/start/SKILL.md',
+    from: '<!-- pipeline:extension start-archetype -->\n', to: '',
+    killed_by: /^the repository is clean$/,
+    why: 'designer start\'s skill drops its required archetype extension (the slot takes one)',
+  },
+  {
+    id: 'M63', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-verb-present.md', from: 'and confirm before downstream verbs.', to: 'and continue to the next verb.' }),
+    killed_by: templateCaught('regions/skill-verb-present.md', /^compose confirms before any downstream verb/),
+    why: 'compose no longer confirms its artifact before a downstream verb',
+  },
+  {
+    id: 'M64', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-compose-state-write.md', from: 'This skill itself does not write workflow state.', to: 'This skill writes workflow state.' }),
+    killed_by: templateCaught('regions/skill-compose-state-write.md', /^compose confirms before any downstream verb/),
+    why: 'the compose skill claims to write workflow state itself',
+  },
+  {
+    id: 'M65', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-resume-dirty-enrichment.md', from: 'If the baseline commit object is not available, skip all four probes\nand tell the user', to: 'If the baseline commit object is not available, run the probes anyway\nand tell the user' }),
+    killed_by: templateCaught('regions/skill-resume-dirty-enrichment.md', /^the resume marker is a host-history append/),
+    why: 'resume runs its git probes against a baseline that is not there',
+  },
+  {
+    id: 'M66', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-checkpoint-set.md', from: ' --summary "$SUMMARY"\n```', to: '\n```' }),
+    killed_by: templateCaught('regions/skill-checkpoint-set.md', /^the checkpoint is written to the workflow Phase 1 found/),
+    why: 'the checkpoint call loses the summary state.mjs requires',
+  },
+  {
+    id: 'M67', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-peer-now-dispatch.md', from: '--run-id "$RUN_ID" --kind peer-now \\', to: '--run-id "$RUN_ID" --kind ensemble \\' }),
+    killed_by: templateCaught('regions/skill-peer-now-dispatch.md', /^the dispatch is synchronous/),
+    why: 'peer-now dispatches as an ensemble run, which the runner books against the workflow',
+  },
+  {
+    id: 'M68', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-phase-boundary.md', from: 'Each phase boundary writes state via', to: 'No phase boundary writes state via' }),
+    killed_by: templateCaught('regions/start-phase-boundary.md', /^start lifecycle: /),
+    why: 'start stops writing state at its phase boundaries',
+  },
+  {
+    id: 'M69', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-initial-verb.md', from: 'The initial `verb` is `investigate`', to: 'The initial `verb` is `frame`' }),
+    killed_by: templateCaught('regions/start-initial-verb.md', /^start lifecycle: /),
+    why: 'start says its workflow begins at frame, not where the bootstrap creates it',
+  },
+  {
+    id: 'M70', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-bootstrap.md', from: 'if [ "$BASELINE_RC" -ne 0 ]; then', to: 'if [ "$BASELINE_RC" -ne 0 ] && [ -z "$BASELINE" ]; then' }),
+    killed_by: templateCaught('regions/start-bootstrap.md', /^start bootstrap, run: /),
+    why: 'a failed clean-baseline check that printed a clean status creates the workflow',
+  },
+  {
+    id: 'M71', tests: [T_CONTRACT],
+    prepare: (copy) => {
+      const path = join(copy, 'plugins/designer/commands/critique.md');
+      const text = readFileSync(path, 'utf8');
+      const heading = /<!-- pipeline:begin critique-finalize-heading -->\n[\s\S]*?<!-- pipeline:end critique-finalize-heading -->\n/.exec(text);
+      const anchor = '<!-- pipeline:end critique-dispatch -->\n';
+      if (!heading || !text.includes(anchor)) throw new MutationHarnessError('designer critique: no finalize heading region or dispatch end');
+      const moved = text.replace(heading[0], () => '').replace(anchor, () => `${anchor}\n${heading[0]}`);
+      if (moved.split(heading[0]).length !== 2) throw new MutationHarnessError('designer critique: the heading did not move whole');
+      writeFileSync(path, moved);
+    },
+    killed_by: [inSuite('designer/commands/critique.md (committed)', /^the authored finalize follows the finalize heading region and every extension/)],
+    why: 'designer critique\'s finalize heading moves above the synthesis instruction: the note would be finalized before the peer result is synthesized',
+  },
+  {
+    id: 'M72', tests: [T_CONTRACT], file: 'plugins/designer/commands/refine.md',
+    from: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"', to: 'CONVERGED="yes"',
+    killed_by: inSuite('designer/commands/refine.md (committed)', /^the authored finalize, run: /),
+    why: 'designer refine\'s terminal block assigns convergence instead of taking it from the re-critique',
+  },
+  {
+    id: 'M73', tests: [T_CONTRACT],
+    prepare: (copy) => genericizeDefect(copy, 'investigate', ' If the topic cannot be genericized without losing the question, run local-only or abort at scoping.', ''),
+    killed_by: verbCaught(PRIVACY, ['investigate']),
+    why: 'investigate loses its fail-closed fallback when a topic cannot be genericized',
+  },
+  {
+    id: 'M74', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-bootstrap.md', from: 'REPO_ROOT="$(git rev-parse --show-toplevel)"\n', to: '' }),
+    killed_by: templateCaught('regions/start-bootstrap.md', /^start bootstrap, run: /),
+    why: 'start\'s bootstrap relies on a REPO_ROOT a fresh shell does not have',
+  },
+  {
+    id: 'M75', tests: [T_DECL], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '} else if (!statSync(real).isFile()) {', to: '} else if (false) {',
+    killed_by: /^fails on a privacy spec that is a directory$/,
+    why: 'the generator accepts a directory as the privacy spec',
+  },
+  {
+    id: 'M76', tests: [T_DECL], file: 'scripts/sync-persona-pipeline.mjs',
+    from: "if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {", to: "if (inside === '') {",
+    killed_by: /^fails on a privacy spec that is a link leading out of the plugin$/,
+    why: 'the generator follows a privacy-spec link out of the plugin',
+  },
+  {
+    id: 'M77', tests: [T_VERBS],
+    prepare: (copy) => {
+      const path = join(copy, 'plugins/designer/persona.json');
+      const d = JSON.parse(readFileSync(path, 'utf8'));
+      d.verbs.critique.profiles = [...d.verbs.critique.profiles, 'bogus-lens'];
+      writeFileSync(path, `${JSON.stringify(d, null, 2)}\n`);
+      regenerate(copy);
+    },
+    killed_by: /(?:^| > )designer: the declared verb fields are what the runbooks say > critique: the argument hint names the declared profiles/,
+    why: 'designer declares a critique lens its runbook never offers',
   },
   {
     id: 'D7', tests: [T_SYNC], file: 'plugins/designer/commands/decide.md',
