@@ -1,0 +1,84 @@
+{
+  "schema": "persona-declaration-1.0",
+  "name": "founder",
+  "deliverable_noun": "business deliverable",
+  "runtime_footer_floor": "0.79.0",
+  "capabilities": {
+    "dispatch_target": false,
+    "commit_surface": false,
+    "legacy_homes": false,
+    "profile_presets": false
+  },
+  "decide": {
+    "fallback": {
+      "preset_id": "default",
+      "axes": [
+        {
+          "id": "market-attractiveness",
+          "labels": {
+            "en": "Market Attractiveness",
+            "ko": "시장성"
+          },
+          "question": "Is there a real, reachable market of sufficient size, growth, and timing — a customer problem worth solving at scale, not just a feature nobody is asking for?",
+          "role": "decisive",
+          "gate": false
+        },
+        {
+          "id": "unit-economics",
+          "labels": {
+            "en": "Unit Economics",
+            "ko": "단위경제"
+          },
+          "question": "Do the unit economics work — can a customer be acquired and served for meaningfully less than the value captured, with a credible path to positive contribution margin?",
+          "role": "decisive",
+          "gate": false
+        },
+        {
+          "id": "willingness-to-pay",
+          "labels": {
+            "en": "Willingness to Pay",
+            "ko": "지불의사"
+          },
+          "question": "Is there behavioral evidence customers will actually pay (or engage at the required intensity) — demand demonstrated by action, not merely stated interest in a survey?",
+          "role": "supporting",
+          "gate": false
+        },
+        {
+          "id": "competitive-intensity",
+          "labels": {
+            "en": "Competitive Intensity",
+            "ko": "경쟁강도"
+          },
+          "question": "How crowded and defensible is the space — is there a wedge or unfair advantage that compounds, or is this a saturated, undifferentiated race to the bottom?",
+          "role": "supporting",
+          "gate": false
+        },
+        {
+          "id": "regulatory-exposure",
+          "labels": {
+            "en": "Regulatory Exposure",
+            "ko": "규제노출"
+          },
+          "question": "Does this clear licensing, compliance, and regulatory requirements for the target jurisdiction(s)? A hard regulatory blocker is a VETO gate, not a tradeoff — it overrides market and unit-economics strength until mitigated.",
+          "role": "supporting",
+          "gate": true
+        },
+        {
+          "id": "safety-risk",
+          "labels": {
+            "en": "Safety / Harm Risk",
+            "ko": "안전리스크"
+          },
+          "question": "Are safety, liability, privacy, and ethical-harm exposures acceptable and mitigable? An unmitigated safety or harm risk is a VETO gate that overrides market and unit-economics strength until addressed.",
+          "role": "supporting",
+          "gate": true
+        }
+      ]
+    },
+    "size_presets": {
+      "minor": "compact",
+      "standard": "default",
+      "major": "default"
+    }
+  }
+}
