@@ -13,11 +13,13 @@ to invoke the peer, and never direct them to run companion CLIs manually.
 When the companions plugin or peer CLI is unavailable, the ensemble
 degrades silently to local-only.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_FOUNDER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 > **founder is not an orchestrator dispatch target** (ADR-0036 Non-Goal
 > 3): this command does NOT read `AGENTIC_PARENT_WORKFLOW` /
@@ -29,14 +31,17 @@ shell variable does not outlive a Bash call.
 
 ## Phase 0 — Workflow continuity (per ADR-0011 §5)
 
+<!-- pipeline:begin decide-phase-0 -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='founder'
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
-# ADR-0018 §sub-2 — founder workflows are anchored to a branch.
+# ADR-0018 §sub-2 — the persona's workflows are anchored to a branch.
 if [ -z "$GIT_BRANCH" ]; then
-  echo "✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
@@ -48,42 +53,55 @@ if [ "$FIND_RC" -ne 0 ]; then
   exit "$FIND_RC"
 fi
 ```
+<!-- pipeline:end decide-phase-0 -->
 
-- Empty `$ACTIVE` → bootstrap with verb=decide:
+Empty `$ACTIVE` → bootstrap with verb=decide:
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  GIT_BRANCH="$(git branch --show-current)"
-  GIT_HEAD="$(git rev-parse HEAD)"
-  STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
-  ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
-    --repo-root "$REPO_ROOT" \
-    --verb decide --host "${AGENTIC_HOST:-claude}" --persona founder \
-    --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
-    --status-digest "$STATUS_DIGEST" \
-    --original-request "${AGENTIC_TOPIC:-<one-line genericized business decision>}" \
-    --current-phase phase-0-bootstrap \
-    --next-action "Run decide skill")"
-  ```
+<!-- pipeline:begin decide-bootstrap -->
+In the block, replace `<the original request described above>` with a
+one-line genericized business decision; `AGENTIC_TOPIC` takes its place when it is set.
 
-- Non-empty `$ACTIVE` → append-on-resume:
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='decide'
+GIT_BRANCH="$(git branch --show-current)"
+GIT_HEAD="$(git rev-parse HEAD)"
+STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
+  --repo-root "$REPO_ROOT" \
+  --verb 'decide' --host "${AGENTIC_HOST:-claude}" --persona 'founder' \
+  --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
+  --status-digest "$STATUS_DIGEST" \
+  --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
+  --current-phase phase-0-bootstrap \
+  --next-action "Run ${VERB} skill")" || exit $?
+```
+<!-- pipeline:end decide-bootstrap -->
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb decide \
-    --phase-label "Phase 0: Resume into decide" \
-    --phase-note "Resumed from prior verb." \
-    --current-phase phase-0-resume \
-    --next-action "Run decide skill" --event resumed
-  ```
+Non-empty `$ACTIVE` → append-on-resume:
+
+<!-- pipeline:begin decide-resume -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='decide'
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb 'decide' \
+  --phase-label "Phase 0: Resume into ${VERB}" \
+  --phase-note "Resumed from prior verb." \
+  --current-phase phase-0-resume \
+  --next-action "Run ${VERB} skill" --event resumed || exit $?
+```
+<!-- pipeline:end decide-resume -->
 
 ---
 
 ## Phase 0.5 — Resolve business decision axes from the registry (ADR-0036 SD3 / ADR-0027 §5.6)
 
+<!-- pipeline:begin decide-resolve -->
 Parse the arguments into flags + body and resolve the preset from
 `core/skills/decide/references/decision-axes.yml`. The block prints the
 resulting `ResolvedDecisionContext` JSON on stdout, and the skill body reads
@@ -95,12 +113,13 @@ The CLI reuses `scripts/lib/decide-args.mjs` internally so the same flag
 grammar applies: unknown flags, invalid `--size=<tier>` values, or
 malformed `--weights=<spec>` (non-numeric/negative/exponent weight,
 uppercase or duplicate axis-id, empty spec, whitespace) produce a parser
-error and exit 2 (we halt). `--preset=<id>` is shape-validated by the
-parser but semantically resolved by the registry per ADR-0027 §1.6
-graceful-degradation — an unknown preset id triggers
-`context.registry_fallback = true` + fall-back to the `default` preset
-(no halt). The body — everything after the flags, byte for byte — is
-threaded into `context.body`.
+error and exit 2 (we halt). `--preset=<id>` is passed through by the parser
+(not shape-validated there) and semantically resolved by the registry per
+ADR-0027 §1.6 graceful-degradation — an unknown preset id triggers
+`context.registry_fallback = true` + fall-back to the
+`default` preset with a diagnostic (no halt), while an empty one
+counts as no `--preset` at all. The body — everything after the flags, byte
+for byte — is threaded into `context.body`.
 
 The arguments above reach the resolver through an args file, never
 through the shell (ADR-0059): typed text spliced into a command line is cut
@@ -126,8 +145,9 @@ directory once it has read them.
 
 ```bash
 ARGS_DIR='<directory from step 1>'
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # stdout: the ResolvedDecisionContext JSON. stderr: the resolver's warnings
 # and diagnostics, shown as they are written.
 node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"
@@ -141,6 +161,7 @@ elif [ "$RESOLVE_RC" -ne 0 ]; then
   exit 1
 fi
 ```
+<!-- pipeline:end decide-resolve -->
 
 The skill body reads the `ResolvedDecisionContext` Phase 0.5 printed to obtain:
 
@@ -194,22 +215,26 @@ tempfile, and dispatch in the background. The prompt template (with the
 mirrors the research-scan dispatch in
 `core/skills/investigate/references/business-brief-ensemble.md`:
 
+<!-- pipeline:begin decide-dispatch -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-PROMPT_FILE="$(mktemp -t founder-decide-prompt.XXXXXX).xml"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ENSEMBLE_TYPE='brainstorm'
+PROMPT_FILE="$(mktemp -t 'founder'-'decide'-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
-RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-# ... LLM writes the Brainstorm XML prompt to $PROMPT_FILE (privacy gate
-#     must have passed; genericize the directions before the peer sees them) ...
+RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# ... LLM writes the prompt to $PROMPT_FILE (the privacy gate above must have
+#     passed; the prompt carries only genericized text) ...
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
-  --workflow-path "$ACTIVE" --phase decide \
+  --workflow-path "$ACTIVE" --phase 'decide' \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
-  --ensemble-type brainstorm --run-id "$RUN_ID" \
+  --ensemble-type 'brainstorm' --run-id "$RUN_ID" \
   > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
+<!-- pipeline:end decide-dispatch -->
 
 Use `run_in_background: true` on the Bash tool. `peer-runner.mjs run`
 records the matching `pending_ensemble` row before spawning the companion
@@ -226,10 +251,11 @@ Graceful degradation: companion missing or exit code 3
 
 ## Phase 2 — State finalize
 
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-NOTE="### Ensemble launched: decide at <iso-utc>
+<!-- pipeline:begin decide-finalize -->
+The phase note this step records — fill in every `<…>`:
+
+```markdown
+### Ensemble launched: decide at <iso-utc>
 
 ### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>
 
@@ -250,21 +276,42 @@ NOTE="### Ensemble launched: decide at <iso-utc>
 - rationale:             <why best — decisive 시장성/단위경제 (market/unit-economics) + the regulatory/safety gate verdict>
 - evidence_pointers:     <phase notes / brief / artifacts — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /founder:<verb> … or \$founder:<verb> for a verb>
-"
+- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>
+```
+
+Then run the block with the filled-in note in place of its placeholder line,
+between the two `PHASE_NOTE` lines. The quoted heredoc hands the note to
+`state.mjs` as written: no quote, `$`, backtick or backslash in it is read by
+the shell. The first line that reads `PHASE_NOTE` alone ends the note, and
+the shell runs every line after it as a command, so when the note itself holds
+such a line, replace both `PHASE_NOTE` delimiters with a word no line of the
+note consists of.
+
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# Where read takes no -d (dash) it assigns nothing, so clear NOTE first: a
+# value the shell inherited must not stand in for the note.
+unset NOTE
+IFS= read -r -d '' NOTE <<'PHASE_NOTE' || true
+<the phase note above, filled in>
+PHASE_NOTE
+# A shell whose read has no -d (dash) reads nothing: stop before any write.
+[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --phase-label "Phase 1: Decide (synthesized)" \
+  --phase-label 'Phase 1: Decide (synthesized)' \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
-  --next-action "Compose the planning artifact for the chosen direction" \
-  --event updated
+  --next-action 'Compose the planning artifact for the chosen direction' \
+  --event updated || exit $?
 
 # ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --phase decide --ensemble-type brainstorm --run-id "$RUN_ID" \
+  --phase 'decide' --ensemble-type 'brainstorm' --run-id "$RUN_ID" \
   --verdict "$VERDICT" --summary "$SUMMARY" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -289,9 +336,10 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
   --terminal-marker true \
-  --next-action "Compose the planning artifact for the chosen direction" \
+  --next-action 'Compose the planning artifact for the chosen direction' \
   --event updated
 ```
+<!-- pipeline:end decide-finalize -->
 
 ---
 
@@ -327,8 +375,9 @@ Always include the workflow path:
 Workflow: <absolute path to workflow .md file>
 ```
 
+<!-- pipeline:begin decide-completion-footer -->
 The runtime completion footer is **code-emitted** on this verb's terminal
-path (ADR-0039, enabled for founder by ADR-0043 S3): `state.mjs
+path (ADR-0039, enabled for founder by ADR-0043): `state.mjs
 set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
 to the runtime `footer.mjs` and prints the rendered footer — context
 state, completion state (founder's manually-published mapping surfaces
@@ -344,3 +393,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
 `core/skills/_shared/references/session-handoff.md`.
+<!-- pipeline:end decide-completion-footer -->

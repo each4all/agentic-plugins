@@ -247,6 +247,9 @@ note consists of.
 ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# Where read takes no -d (dash) it assigns nothing, so clear NOTE first: a
+# value the shell inherited must not stand in for the note.
+unset NOTE
 IFS= read -r -d '' NOTE <<'PHASE_NOTE' || true
 <the phase note above, filled in>
 PHASE_NOTE
