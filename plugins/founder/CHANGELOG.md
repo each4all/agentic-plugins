@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.16](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.15...plugin-founder-v0.4.16) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/founder:** generate the checkpoint, resume and peer-now runbooks (ADR-0066 Stage 2a) ([b51c1d0](https://github.com/each4all/agentic-plugins/commit/b51c1d0eb28eb7e8d1e762d37bdbe9dc9e363498))
+
 ## [0.4.15](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.14...plugin-founder-v0.4.15) (2026-10-05)
 
 
