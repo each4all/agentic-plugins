@@ -56,9 +56,9 @@ function terminalGuardedByConvergence(text) {
 }
 
 describe('declaration 1.1: which personas declare verbs', () => {
-  it('founder and designer declare verbs (format 1.1); engineer stays 1.0 without them (DD4)', () => {
+  it('founder and designer declare verbs (format 1.2, which adds peer); engineer stays 1.0 without them (DD4)', () => {
     deepStrictEqual(withVerbs, ['designer', 'founder']);
-    for (const p of withVerbs) strictEqual(declaration(p).schema, 'persona-declaration-1.1');
+    for (const p of withVerbs) strictEqual(declaration(p).schema, 'persona-declaration-1.2');
     strictEqual(declaration('engineer').schema, 'persona-declaration-1.0');
     strictEqual(declaration('engineer').verbs, undefined);
   });
@@ -73,6 +73,25 @@ describe('declaration 1.1: which personas declare verbs', () => {
     });
   }
 });
+
+const ALL_VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine', 'start'];
+
+// Format 1.2's peer policy, bound to the privacy gate every verb runbook states.
+for (const persona of ['founder', 'designer']) {
+  describe(`${persona}: the declared peer policy is what the privacy gates say`, () => {
+    const peer = declaration(persona).peer;
+    it('images is false: no runbook passes an image to the peer (QD3)', () => {
+      strictEqual(peer.images, false);
+    });
+    for (const verb of ALL_VERBS) {
+      it(`${verb}: the gate names the declared scope and cites the declared spec's Privacy Gate`, () => {
+        const flat = runbook(persona, verb).replace(/\s+/g, ' ');
+        strictEqual(count(flat, `PRIVACY GATE: ${peer.privacy_scope} pass an explicit`), 1, 'scope');
+        strictEqual(count(flat, `See \`${peer.privacy_spec}\` § Privacy Gate.`), 1, 'spec');
+      });
+    }
+  });
+}
 
 for (const persona of ['founder', 'designer']) {
   describe(`${persona}: the declared verb fields are what the runbooks say`, () => {
@@ -104,6 +123,14 @@ for (const persona of ['founder', 'designer']) {
       const generated = count(text, '<profile from the arguments above — default ${DEFAULT_PROFILE}>');
       strictEqual(authored + generated, 1, 'one profile placeholder');
       if (generated === 1) strictEqual(count(text, `\nDEFAULT_PROFILE='${def}'\n`), 1, 'the block assigns the declared default');
+    });
+
+    it('critique: the argument hint names the declared profiles besides the default, which the bootstrap block assigns (PC2a3 QD6)', () => {
+      const text = runbook(persona, 'critique');
+      const { profiles, default_profile: def } = verbs.critique;
+      ok(profiles.length > 1 && profiles.includes(def), 'the declared profiles');
+      strictEqual(count(text, `\nargument-hint: --profile=${profiles.filter((p) => p !== def).join('|')} | `), 1, 'the argument hint');
+      strictEqual(count(text, `\nDEFAULT_PROFILE='${def}'\n`), 1, 'the block assigns the declared default');
     });
 
     it('investigate: the ensemble type is the one its dispatch and ensemble-commit name', () => {

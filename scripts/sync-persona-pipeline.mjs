@@ -12,14 +12,17 @@
 //      renders for that persona (the executable bit included);
 //   2. a file lacks a region the manifest requires, or holds its regions out of
 //      the manifest's order;
-//   3. a region or extension id is unknown to the manifest, or the region
-//      grammar is broken;
+//   3. a region or extension id is unknown to the manifest, the region
+//      grammar is broken, or an extension marker sits in a slot its persona
+//      does not own, outside the slot's two bounding regions, or more or fewer
+//      times than the slot takes;
 //   4. an owned output exists that the manifest no longer generates, or the
 //      ledger (persona-pipeline/owned.json) disagrees with what is generated;
 //   5. a declaration fails its schema or a cross-field rule (its decide
 //      fallback differs from its registry, a verb's default profile is not one
-//      of its profiles, an enrolled region reads a field it lacks, ...); no
-//      region renders from such a declaration;
+//      of its profiles, an enrolled region reads a field it lacks, a variant
+//      region's enrollment differs from the declared value it follows, ...);
+//      no region renders from such a declaration;
 //   6. the personas found (plugins/*/persona.json) differ from the manifest's,
 //      by identity.
 //
@@ -42,13 +45,14 @@ import {
   lstatSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
   mkdirSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
@@ -65,11 +69,12 @@ import {
   replaceRegionBodies,
   validateLedger,
   validateManifest,
+  variantEnrolmentFailures,
   withNotice,
 } from './lib/persona-pipeline.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DECLARATION_FAMILY = 'persona-declaration-1.1';
+const DECLARATION_FAMILY = 'persona-declaration-1.2';
 const REGISTRY_REL = 'core/skills/decide/references/decision-axes.yml';
 
 async function loadValidator() {
@@ -117,7 +122,7 @@ function sameJson(a, b) {
  * The cross-field rules the schema cannot state (ADR-0066 Decision 2 and 3).
  * Returns a list of failure messages.
  */
-function crossFieldFailures({ persona, declaration, registry, units, regions }) {
+function crossFieldFailures({ persona, pluginDir, declaration, registry, units, regions }) {
   const failures = [];
   const d = declaration;
   const where = `plugins/${persona}/persona.json`;
@@ -184,6 +189,29 @@ function crossFieldFailures({ persona, declaration, registry, units, regions }) 
       failures.push(`${where}: verbs.${verb}.default_profile ${JSON.stringify(v.default_profile)} is not one of its profiles (${v.profiles.join(', ')})`);
     }
   }
+
+  // Format 1.2: the privacy spec the peer policy cites is a regular file of
+  // the plugin — not a directory, and not a link that leads out of it.
+  const spec = d.peer?.privacy_spec;
+  if (typeof spec === 'string') {
+    let real = null;
+    try {
+      real = realpathSync(join(pluginDir, spec));
+    } catch {
+      failures.push(`${where}: peer.privacy_spec names ${spec}, which plugins/${persona}/ does not hold`);
+    }
+    if (real !== null) {
+      const inside = relative(realpathSync(pluginDir), real);
+      if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+        failures.push(`${where}: peer.privacy_spec names ${spec}, which resolves outside plugins/${persona}/`);
+      } else if (!statSync(real).isFile()) {
+        failures.push(`${where}: peer.privacy_spec names ${spec}, which is not a regular file`);
+      }
+    }
+  }
+
+  // A variant region is enrolled exactly where the declaration says (DD2).
+  failures.push(...variantEnrolmentFailures({ persona, declaration: d, regions, where }));
 
   // A region enrolled for this persona reads only fields the declaration has,
   // so a missing one is the declaration's failure, reported before any render.
@@ -326,7 +354,9 @@ export async function runSync({ root = REPO_ROOT, write = false, adopt = false, 
       continue;
     }
     const registry = readRegistry(yaml, join(pluginsDir, persona, REGISTRY_REL));
-    const failures = crossFieldFailures({ persona, declaration, registry, units: manifest.units, regions: manifest.regions });
+    const failures = crossFieldFailures({
+      persona, pluginDir: join(pluginsDir, persona), declaration, registry, units: manifest.units, regions: manifest.regions,
+    });
     for (const f of failures) fatal.push(f);
     if (failures.length === 0) declarations[persona] = declaration;
   }
@@ -476,10 +506,10 @@ export async function runSync({ root = REPO_ROOT, write = false, adopt = false, 
 
   // ---- regions --------------------------------------------------------------
   const regionWrites = []; // { abs, rel, text }
-  const extensionPoints = new Map(); // dest -> Map(id -> max)
+  const extensionPoints = new Map(); // dest -> Map(id -> extension point)
   for (const ext of manifest.extension_points) {
     if (!extensionPoints.has(ext.dest)) extensionPoints.set(ext.dest, new Map());
-    extensionPoints.get(ext.dest).set(ext.id, ext.max);
+    extensionPoints.get(ext.dest).set(ext.id, ext);
   }
 
   // A persona whose declaration failed is already reported; its regions are
@@ -533,15 +563,40 @@ export async function runSync({ root = REPO_ROOT, write = false, adopt = false, 
         fatal.push(`${rel}: regions out of the canonical order (found ${foundIds.join(', ')}; expected ${declaredIds.join(', ')})`);
         structural = true;
       }
-      const allowed = extensionPoints.get(dest) ?? new Map();
+      // Extension slots (DD6): a marker sits only in a slot this file declares
+      // and this persona owns, strictly between the end of the slot's `after`
+      // region and the begin of its `before` region; each slot the persona
+      // owns holds min to max markers, so a required one cannot drop out. What
+      // the authored text after a marker says stays a review matter (Decision
+      // 4); the runbook contracts bind the text the slots exist for.
+      const slots = extensionPoints.get(dest) ?? new Map();
       const extCounts = new Map();
-      for (const ext of parsed.extensions) extCounts.set(ext.id, (extCounts.get(ext.id) ?? 0) + 1);
-      for (const [id, count] of extCounts) {
-        if (!allowed.has(id)) {
-          fatal.push(`${rel}: extension point ${id} is not declared for this file`);
+      for (const ext of parsed.extensions) {
+        const slot = slots.get(ext.id);
+        if (!slot) {
+          fatal.push(`${rel}:${ext.line + 1}: extension point ${ext.id} is not declared for this file`);
           structural = true;
-        } else if (count > allowed.get(id)) {
-          fatal.push(`${rel}: extension point ${id} appears ${count} times; the slot allows ${allowed.get(id)}`);
+          continue;
+        }
+        if (!slot.personas.includes(persona)) {
+          fatal.push(`${rel}:${ext.line + 1}: extension point ${ext.id} is not ${persona}'s (it belongs to ${slot.personas.join(', ')})`);
+          structural = true;
+          continue;
+        }
+        extCounts.set(ext.id, (extCounts.get(ext.id) ?? 0) + 1);
+        const after = parsed.regions.find((r) => r.id === slot.after);
+        const before = parsed.regions.find((r) => r.id === slot.before);
+        if (after && before && !(ext.line > after.end && ext.line < before.begin)) {
+          fatal.push(`${rel}:${ext.line + 1}: extension point ${ext.id} sits outside its slot (after region ${slot.after}, before region ${slot.before})`);
+          structural = true;
+        }
+      }
+      for (const slot of slots.values()) {
+        if (!slot.personas.includes(persona)) continue;
+        const count = extCounts.get(slot.id) ?? 0;
+        if (count < slot.min || count > slot.max) {
+          const range = slot.min === slot.max ? `${slot.min}` : `${slot.min} to ${slot.max}`;
+          fatal.push(`${rel}: extension point ${slot.id} appears ${count} time(s); the slot takes ${range}`);
           structural = true;
         }
       }

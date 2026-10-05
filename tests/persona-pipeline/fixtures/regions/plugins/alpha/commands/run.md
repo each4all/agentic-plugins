@@ -21,4 +21,7 @@ Authored prose between the regions. A marker inside a fence is not a marker:
 <!-- pipeline:begin finalize -->
 <!-- pipeline:end finalize -->
 
+<!-- pipeline:begin no-image -->
+<!-- pipeline:end no-image -->
+
 Authored prose after the last region.

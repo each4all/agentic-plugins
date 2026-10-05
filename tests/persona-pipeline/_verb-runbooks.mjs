@@ -1,6 +1,6 @@
-// What a verb runbook does, read from its text (PC2a2 T0): the ordered script
-// calls of its shell blocks with their argument values by flag, its guards,
-// and the phase-note scaffold its finalize step writes. The characterization
+// What a verb runbook does, read from its text (PC2a2 T0, PC2a3 T0'): the
+// ordered script calls of its shell blocks with their argument values by flag,
+// its guards, and the phase-note scaffold its finalize step writes. The characterization
 // test compares this reading with fixtures/verb-runbooks.json, written from
 // the runbooks as they stood before their blocks became generated regions, so
 // a region that changes what a runbook does fails unless the change is listed.
@@ -17,7 +17,10 @@ import { join } from 'node:path';
 import { REPO_ROOT, pluginRoot } from './_personas.mjs';
 
 export const VERB_RUNBOOK_PERSONAS = Object.freeze(['designer', 'founder']);
-export const VERB_RUNBOOK_VERBS = Object.freeze(['compose', 'decide', 'frame', 'investigate']);
+// The characterized runbooks. This is not the list of runbooks whose blocks
+// are generated (the contracts keep their own): critique, refine and start are
+// recorded here before theirs are (PC2a3 T0').
+export const VERB_RUNBOOK_VERBS = Object.freeze(['compose', 'critique', 'decide', 'frame', 'investigate', 'refine', 'start']);
 export const FIXTURE = JSON.parse(readFileSync(join(REPO_ROOT, 'tests/persona-pipeline/fixtures/verb-runbooks.json'), 'utf8'));
 
 /** The fenced shell blocks of a runbook, de-indented to their fence, in order. */
@@ -299,11 +302,12 @@ function runIdPrefixes(code) {
 }
 
 /**
- * A guard as written: from the line that opens it through its closing `fi`,
- * comments and blank lines dropped, or null when the runbook has none.
+ * A guard as written: from the line that opens it through its closing `fi`
+ * (or `esac`), comments and blank lines dropped, or null when the runbook has
+ * none.
  */
-function guardText(code, opener) {
-  const m = new RegExp(`^${opener}\\n[\\s\\S]*?^fi$`, 'm').exec(code);
+function guardText(code, opener, closer = 'fi') {
+  const m = new RegExp(`^${opener}\\n[\\s\\S]*?^${closer}$`, 'm').exec(code);
   return m ? m[0].split('\n').map((l) => l.trimEnd()).filter((l) => l.trim() !== '').join('\n') : null;
 }
 
@@ -320,6 +324,13 @@ export function characterize(text) {
       detached_head: guardText(all, 'if \\[ -z "\\$GIT_BRANCH" \\]; then'),
       find_rc: guardText(all, 'FIND_RC=\\$\\?'),
       resolve_rc: guardText(all, 'RESOLVE_RC=\\$\\?'),
+      // PC2a3 T0': start's clean-baseline gate (its status, then the admitted
+      // values), designer's ensemble-commit guard (D2) and its convergence
+      // guard on the terminal write (DD5).
+      baseline_rc: guardText(all, 'BASELINE_RC=\\$\\?'),
+      baseline_status: guardText(all, 'case "\\$STATUS" in', 'esac'),
+      ensemble_launched: guardText(all, 'if \\[ -n "\\$\\{RUN_ID:-\\}" \\] && \\[ -n "\\$\\{VERDICT:-\\}" \\]; then'),
+      converged: guardText(all, 'if \\[ "\\$\\{CONVERGED:-no\\}" = "yes" \\]; then'),
     },
     note: noteScaffold(text),
   };

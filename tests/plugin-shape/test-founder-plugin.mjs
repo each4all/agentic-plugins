@@ -58,8 +58,29 @@ const INCUBATING_MARKER = /incubating scaffold/i;
 // stated in the spec AND in the investigate prompt-guard surfaces; this
 // load-bearing invariant phrase guards against silent removal. Checked
 // whitespace-normalized so markdown line-wrapping does not break the match.
-const PRIVACY_SENTINEL =
+//
+// Two sentinels (ADR-0066, PC2a3): a runbook or skill whose privacy gate is a
+// generated region states the canonical wording ("an explicit privacy gate",
+// persona-pipeline/regions/verb-privacy-gate.md); founder's authored files keep
+// their own until they are generated too. Each list is explicit, and the
+// generated one is checked against the manifest below.
+const FOUNDER_PRIVACY_SENTINEL =
   'pass an explicit gate before BOTH web search AND peer-host dispatch';
+const CANONICAL_PRIVACY_SENTINEL =
+  'pass an explicit privacy gate before BOTH web search AND peer-host dispatch';
+const GENERATED_GATE_FILES = [
+  'commands/compose.md',
+  'commands/critique.md',
+  'commands/decide.md',
+  'commands/frame.md',
+  'commands/investigate.md',
+  'commands/refine.md',
+  'commands/start.md',
+  'core/skills/critique/SKILL.md',
+  'core/skills/refine/SKILL.md',
+  'core/skills/start/SKILL.md',
+];
+const privacySentinel = (rel) => (GENERATED_GATE_FILES.includes(rel) ? CANONICAL_PRIVACY_SENTINEL : FOUNDER_PRIVACY_SENTINEL);
 
 // founder is the first persona with NO omcc ancestor (ADR-0036 Context):
 // these stale tokens must never appear in its verb-surface files.
@@ -442,8 +463,22 @@ describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)'
     ];
     for (const rel of REQUIRED) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      ok(text.includes(PRIVACY_SENTINEL),
-        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+      ok(text.includes(privacySentinel(rel)),
+        `${rel} must carry the privacy-gate sentinel "${privacySentinel(rel)}"`);
+    }
+  });
+
+  it('the generated-gate list is exactly the founder files whose privacy gate is a region, and each says it once', async () => {
+    const manifest = JSON.parse(await readFile(resolve(PLUGIN_ROOT, '../../persona-pipeline/manifest.json'), 'utf8'));
+    const generated = manifest.regions
+      .filter((r) => r.template === 'regions/verb-privacy-gate.md' && r.personas.includes('founder'))
+      .map((r) => r.dest)
+      .sort();
+    deepStrictEqual(generated, GENERATED_GATE_FILES);
+    for (const rel of GENERATED_GATE_FILES) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      strictEqual(text.split(CANONICAL_PRIVACY_SENTINEL).length - 1, 1, rel);
+      ok(!text.includes(FOUNDER_PRIVACY_SENTINEL), `${rel} holds the canonical wording only`);
     }
   });
 
@@ -455,8 +490,8 @@ describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)'
     ];
     for (const rel of ALSO) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      ok(text.includes(PRIVACY_SENTINEL),
-        `${rel} should carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+      ok(text.includes(privacySentinel(rel)),
+        `${rel} should carry the privacy-gate sentinel "${privacySentinel(rel)}"`);
     }
   });
 });
@@ -523,8 +558,8 @@ describe('plugins/founder — ensemble protocol + privacy gate reach (PR5 / ADR-
     ];
     for (const rel of REQUIRED) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      ok(text.includes(PRIVACY_SENTINEL),
-        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+      ok(text.includes(privacySentinel(rel)),
+        `${rel} must carry the privacy-gate sentinel "${privacySentinel(rel)}"`);
     }
   });
 
@@ -620,8 +655,8 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
       'commands/start.md',
     ]) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      ok(text.includes(PRIVACY_SENTINEL),
-        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+      ok(text.includes(privacySentinel(rel)),
+        `${rel} must carry the privacy-gate sentinel "${privacySentinel(rel)}"`);
     }
   });
 

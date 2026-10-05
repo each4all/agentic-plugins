@@ -1188,7 +1188,7 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
     const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
     const dispatch = cmd.match(/peer-runner\.mjs[\s\S]*?&\s*\n/);
     ok(dispatch, 'commands/refine.md must dispatch the peer ensemble via peer-runner.mjs run');
-    ok(/--ensemble-type refine-verify/.test(dispatch[0]),
+    ok(/--ensemble-type 'refine-verify' /.test(dispatch[0]),
       'the refine dispatch must use the refine-verify ensemble point type');
     ok(!/--image/.test(dispatch[0]),
       'the peer-runner dispatch must never pass --image — the companion peer path has no image channel');

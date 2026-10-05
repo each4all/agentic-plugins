@@ -18,6 +18,7 @@ import {
   replaceRegionBodies,
   shellQuote,
   validateManifest,
+  variantEnrolmentFailures,
 } from '../../scripts/lib/persona-pipeline.mjs';
 import { runSync } from '../../scripts/sync-persona-pipeline.mjs';
 import { REPO_ROOT } from './_personas.mjs';
@@ -303,6 +304,14 @@ describe('region rendering', () => {
       throws(() => validateManifest(manifest({ value: '', context: 'shell' })), /non-empty string/);
       validateManifest(manifest({ value: 'a', context: 'shell' }));
     });
+    it('derives the privacy spec as a skill cites it, from any skill directory, and nothing without a spec', () => {
+      const derived = (privacy_spec) => renderingDeclaration(declaration({ name: 'alpha', ...(privacy_spec === undefined ? {} : { peer: { privacy_spec } }) })).derived;
+      strictEqual(derived('core/skills/investigate/references/spec.md').skill_privacy_spec, '../investigate/references/spec.md');
+      strictEqual(derived('docs/privacy.md').skill_privacy_spec, '../../../docs/privacy.md');
+      ok(!Object.hasOwn(derived(undefined), 'skill_privacy_spec'), 'no spec, no derived citation');
+      ok(!Object.hasOwn(derived(''), 'skill_privacy_spec'), 'an empty spec, no derived citation');
+      throws(() => renderTemplate('See {{spec}}.', { declaration: renderingDeclaration(declaration({ name: 'alpha' })), substitutions: { spec: { field: 'derived.skill_privacy_spec', context: 'markdown' } } }), /unresolved placeholder \{\{spec\}\}/);
+    });
   });
 
   it('refuses a newline in a shell context and keeps it verbatim in markdown', () => {
@@ -334,6 +343,10 @@ describe('regions in authored files (fixture)', () => {
     match(beta, /NOUN='beta'\\''s deliverable'/);
     match(beta, /There is no parent to record\./);
     ok(!beta.includes('Record the parent linkage'));
+    // The variant region (DD2): alpha declares peer.images false and is
+    // enrolled; beta, format 1.0 without peer, is outside the rule.
+    match(alpha, /<!-- pipeline:begin no-image -->\nNo dispatch passes an image: the peer reads text only\.\n<!-- pipeline:end no-image -->/);
+    ok(!beta.includes('pipeline:begin no-image'));
 
     // Everything outside the region bodies is exactly the authored text.
     const strip = (t) => t.replace(/(<!-- pipeline:begin (\w+) -->\n)[\s\S]*?(<!-- pipeline:end \2 -->)/g, '$1$3');
@@ -360,26 +373,39 @@ describe('regions in authored files (fixture)', () => {
     strictEqual(readFileSync(path, 'utf8'), good);
   });
 
+  const MARKER = '<!-- pipeline:extension persona-steps -->\n';
+  // Each case breaks one thing; the rest of the file stays valid, so the
+  // diagnostic it asserts is the one check that fails.
   const structural = {
-    'a missing required region': (t) => t.replace(/<!-- pipeline:begin intro -->\n[\s\S]*?<!-- pipeline:end intro -->\n/, ''),
-    'regions out of order': (t) => {
+    'a missing required region': [(t) => t.replace(/<!-- pipeline:begin intro -->\n[\s\S]*?<!-- pipeline:end intro -->\n/, '')],
+    'regions out of order': [(t) => {
       const intro = /<!-- pipeline:begin intro -->\n[\s\S]*?<!-- pipeline:end intro -->\n/.exec(t)[0];
       return t.replace(intro, '').replace('Authored prose after the last region.', `${intro}Authored prose after the last region.`);
-    },
-    'an unknown region id': (t) => `${t}\n<!-- pipeline:begin surprise -->\n<!-- pipeline:end surprise -->\n`,
-    'an undeclared extension point': (t) => `${t}\n<!-- pipeline:extension elsewhere -->\n`,
-    'an extension point over its slot count': (t) => `${t}\n<!-- pipeline:extension persona-steps -->\n`,
-    'a broken marker': (t) => t.replace('<!-- pipeline:end intro -->', '<!-- pipeline:end intro'),
+    }],
+    'an unknown region id': [(t) => `${t}\n<!-- pipeline:begin surprise -->\n<!-- pipeline:end surprise -->\n`],
+    'an undeclared extension point': [(t) => t.replace(MARKER, `${MARKER}<!-- pipeline:extension elsewhere -->\n`), /extension point elsewhere is not declared for this file/],
+    // Both markers inside the slot: only the count can fail it.
+    'an extension point over its slot count': [(t) => t.replace(MARKER, `${MARKER}\n${MARKER}`), /extension point persona-steps appears 2 time\(s\); the slot takes 1/],
+    'a required extension point missing': [(t) => t.replace(MARKER, ''), /extension point persona-steps appears 0 time\(s\); the slot takes 1/],
+    'an extension marker after its slot': [(t) => t.replace(MARKER, '').replace('Authored prose after the last region.', `${MARKER}Authored prose after the last region.`), /:\d+: extension point persona-steps sits outside its slot \(after region intro, before region finalize\)/],
+    'an extension marker before its slot': [(t) => t.replace(MARKER, '').replace('Authored prose before the first region.', `${MARKER}Authored prose before the first region.`), /extension point persona-steps sits outside its slot/],
+    'a broken marker': [(t) => t.replace('<!-- pipeline:end intro -->', '<!-- pipeline:end intro')],
   };
-  for (const [what, edit] of Object.entries(structural)) {
+  for (const [what, [edit, diagnostic]] of Object.entries(structural)) {
     it(`fails the check on ${what}, and the write refuses leaving authored text as it was`, async () => {
       const root = fixtureCopy();
+      strictEqual((await sync(root, { write: true })).code, 0, 'the fixture regenerates clean first');
       const path = join(root, 'plugins/beta/commands/run.md');
       const broken = edit(readFileSync(path, 'utf8'));
+      ok(broken !== readFileSync(path, 'utf8'), 'the edit applies');
       writeFileSync(path, broken);
       const check = await sync(root);
       strictEqual(check.code, 1);
       match(check.err, /plugins\/beta\/commands\/run\.md/);
+      if (diagnostic) {
+        match(check.err, diagnostic);
+        strictEqual(check.err.split('\n').filter((l) => l.startsWith('✗ ')).length, 1, `one failure, the one asserted: ${check.err}`);
+      }
       const write = await sync(root, { write: true });
       strictEqual(write.code, 1);
       match(write.err, /refused to write/);
@@ -408,5 +434,122 @@ describe('regions in authored files (fixture)', () => {
     strictEqual(check.code, 1);
     match(check.err, /plugins\/beta\/persona\.json: region intro \(commands\/run\.md\) reads deliverable_noun for \{\{noun\}\}, which the declaration lacks/);
     ok(!/unresolved placeholder/.test(check.err), check.err);
+  });
+});
+
+// Extension slots (PC2a3 DD6): owned, bounded on both sides, counted.
+describe('extension slots (DD6)', () => {
+  const FIXTURE_MANIFEST = JSON.parse(readFileSync(join(FIXTURE, 'persona-pipeline/manifest.json'), 'utf8'));
+  const withSlot = (edit) => {
+    const m = JSON.parse(JSON.stringify(FIXTURE_MANIFEST));
+    edit(m.extension_points[0], m);
+    return m;
+  };
+
+  it('the fixture slot validates', () => {
+    validateManifest(withSlot(() => {}));
+  });
+
+  const refused = {
+    'swapped bounds': [(e) => { e.after = 'finalize'; e.before = 'intro'; }, /after \(finalize\) does not come before before \(intro\) in commands\/run\.md for alpha/],
+    'the same region on both sides': [(e) => { e.before = 'intro'; }, /does not come before before/],
+    'an unknown bound': [(e) => { e.before = 'nowhere'; }, /extension_points\[0\]\.before: names no region of commands\/run\.md: "nowhere"/],
+    'a bound of another file': [(e, m) => { m.regions.push({ ...m.regions[0], id: 'elsewhere', dest: 'commands/other.md' }); e.after = 'elsewhere'; }, /names no region of commands\/run\.md: "elsewhere"/],
+    'a bound not enrolled for an owner': [(e, m) => { e.personas = ['alpha', 'beta']; e.before = 'no-image'; e.after = 'finalize'; }, /region no-image is not enrolled for beta in commands\/run\.md/],
+    'min greater than max': [(e) => { e.min = 2; e.max = 1; }, /min 2 is greater than max 1/],
+    'a negative min': [(e) => { e.min = -1; }, /min: must be an integer >= 0/],
+    'a zero max': [(e) => { e.min = 0; e.max = 0; }, /max: must be an integer >= 1/],
+    'a missing min': [(e) => { delete e.min; }, /min: must be an integer >= 0/],
+    'a missing bound': [(e) => { delete e.before; }, /before: must be a region id/],
+    'no owners': [(e) => { e.personas = []; }, /personas: must not be empty/],
+    'an owner the manifest does not name': [(e) => { e.personas = ['alpha', 'gamma']; }, /persona "gamma" is not in manifest\.personas/],
+    'an unknown key': [(e) => { e.position = 'end'; }, /unknown key "position"/],
+  };
+  for (const [what, [edit, re]] of Object.entries(refused)) {
+    it(`the manifest refuses ${what}`, () => {
+      throws(() => validateManifest(withSlot(edit)), re);
+    });
+  }
+
+  it('fails a marker in a slot its persona does not own, and only that marker', async () => {
+    const root = fixtureCopy();
+    strictEqual((await sync(root, { write: true })).code, 0);
+    const manifestPath = join(root, 'persona-pipeline/manifest.json');
+    writeFileSync(manifestPath, JSON.stringify(withSlot((e) => { e.personas = ['alpha']; })));
+    const check = await sync(root);
+    strictEqual(check.code, 1);
+    match(check.err, /plugins\/beta\/commands\/run\.md:19: extension point persona-steps is not beta's \(it belongs to alpha\)/);
+    strictEqual(check.err.split('\n').filter((l) => l.startsWith('✗ ')).length, 1, check.err);
+  });
+
+  it('a slot with min 0 passes with no marker', async () => {
+    const root = fixtureCopy();
+    strictEqual((await sync(root, { write: true })).code, 0);
+    writeFileSync(join(root, 'persona-pipeline/manifest.json'), JSON.stringify(withSlot((e) => { e.min = 0; })));
+    const path = join(root, 'plugins/beta/commands/run.md');
+    writeFileSync(path, readFileSync(path, 'utf8').replace('<!-- pipeline:extension persona-steps -->\n', ''));
+    strictEqual((await sync(root)).code, 0);
+  });
+});
+
+// Variant regions (PC2a3 DD2): enrollment follows a declared value, both ways.
+describe('variant regions (DD2)', () => {
+  const region = (personas, equals = false) => ({ id: 'no-image', dest: 'commands/run.md', personas, when: { field: 'peer.images', equals } });
+  const decl = (peer) => (peer === undefined ? { name: 'alpha' } : { name: 'alpha', peer });
+
+  it('passes an enrolled persona whose value matches, and one without the field that is not enrolled', () => {
+    deepStrictEqual(variantEnrolmentFailures({ persona: 'alpha', declaration: decl({ images: false }), regions: [region(['alpha'])] }), []);
+    deepStrictEqual(variantEnrolmentFailures({ persona: 'alpha', declaration: decl(), regions: [region(['beta'])] }), []);
+    deepStrictEqual(variantEnrolmentFailures({ persona: 'alpha', declaration: decl({ images: true }), regions: [region(['beta'])] }), []);
+  });
+
+  const failing = {
+    'an enrolled persona whose value differs': [decl({ images: true }), ['alpha'], false, /enrolled in region no-image \(commands\/run\.md\), but declares peer\.images = true, not false/],
+    'a matching persona left out': [decl({ images: false }), ['beta'], false, /declares peer\.images = false, so region no-image \(commands\/run\.md\) must enrol it/],
+    'an enrolled persona without the field': [decl(), ['alpha'], false, /whose variant reads peer\.images, which the declaration lacks/],
+    // Strict JSON type equality: false, "false", null and 0 all differ.
+    'the string "false" for false': [decl({ images: 'false' }), ['alpha'], false, /declares peer\.images = "false", not false/],
+    'null for false': [decl({ images: null }), ['alpha'], false, /declares peer\.images = null, not false/],
+    '0 for false': [decl({ images: 0 }), ['alpha'], false, /declares peer\.images = 0, not false/],
+    'false for the string "false"': [decl({ images: false }), ['alpha'], 'false', /declares peer\.images = false, not "false"/],
+  };
+  for (const [what, [d, personas, equals, re]] of Object.entries(failing)) {
+    it(`fails ${what}`, () => {
+      const failures = variantEnrolmentFailures({ persona: 'alpha', declaration: d, regions: [region(personas, equals)] });
+      strictEqual(failures.length, 1, JSON.stringify(failures));
+      match(failures[0], re);
+    });
+  }
+
+  it('the manifest refuses a malformed when', () => {
+    const manifest = (when) => ({ schema: 'persona-pipeline-manifest-1.0', personas: ['alpha'], units: [], extension_points: [],
+      regions: [{ id: 'r', template: 't.md', dest: 'c.md', personas: ['alpha'], when }] });
+    validateManifest(manifest({ field: 'peer.images', equals: false }));
+    throws(() => validateManifest(manifest({ field: 'peer.images' })), /equals must be a string, a number or a boolean/);
+    throws(() => validateManifest(manifest({ field: 'peer.images', equals: null })), /equals must be a string, a number or a boolean/);
+    throws(() => validateManifest(manifest({ field: 'Peer Images', equals: false })), /field must be a dotted declaration path/);
+    throws(() => validateManifest(manifest({ field: 'peer.images', equals: false, unless: true })), /unknown key "unless"/);
+    throws(() => validateManifest(manifest(false)), /when: is not an object/);
+  });
+
+  // The generator applies the rule in both directions, per persona.
+  it('the generator fails a mismatched enrollment in either direction, naming the persona', async () => {
+    let root = fixtureCopy();
+    const edit = (r, persona, fn) => {
+      const path = join(r, 'plugins', persona, 'persona.json');
+      const d = JSON.parse(readFileSync(path, 'utf8'));
+      fn(d);
+      writeFileSync(path, JSON.stringify(d, null, 2));
+    };
+    edit(root, 'alpha', (d) => { d.peer.images = true; });
+    let check = await sync(root);
+    strictEqual(check.code, 1);
+    match(check.err, /plugins\/alpha\/persona\.json: enrolled in region no-image \(commands\/run\.md\), but declares peer\.images = true, not false/);
+
+    root = fixtureCopy();
+    edit(root, 'beta', (d) => { d.schema = 'persona-declaration-1.2'; d.peer = { privacy_scope: 'beta secrets', privacy_spec: 'commands/run.md', images: false }; });
+    check = await sync(root);
+    strictEqual(check.code, 1);
+    match(check.err, /plugins\/beta\/persona\.json: declares peer\.images = false, so region no-image \(commands\/run\.md\) must enrol it/);
   });
 });

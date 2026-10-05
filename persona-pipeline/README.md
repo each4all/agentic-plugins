@@ -11,10 +11,10 @@ committed, so every plugin keeps its own complete copy and runs alone
 
 | Path | What it is |
 |---|---|
-| `manifest.json` | Every canonical unit, its destination inside a plugin, and the personas it is generated into (the enrollment matrix). Also the region and extension-point declarations. |
+| `manifest.json` | Every canonical unit, its destination inside a plugin, and the personas it is generated into (the enrollment matrix). Also the region and extension-slot declarations. |
 | `files/<plugin path>` | The canonical files. Each is copied whole into every enrolled persona, with a generated-file notice; its git mode is the generated mode. |
-| `regions/<block>.md` | The canonical region templates: a block of a runbook, rendered into each enrolled persona's authored file between its region markers. |
-| `persona.schema.json` | The schema of `plugins/<persona>/persona.json`, each persona's declaration of who it is and what differs: name, deliverable noun, runtime footer floor, capabilities, decide data, and from format 1.1 its verbs (see [The declaration](#the-declaration)). |
+| `regions/<block>.md` | The canonical region templates: a block of a runbook or a skill, rendered into each enrolled persona's authored file between its region markers. The `skill-*` templates render into `SKILL.md`. |
+| `persona.schema.json` | The schema of `plugins/<persona>/persona.json`, each persona's declaration of who it is and what differs: name, deliverable noun, runtime footer floor, capabilities, decide data, from format 1.1 its verbs, and from 1.2 its peer permissions (see [The declaration](#the-declaration)). |
 | `owned.json` | Generated: every plugin path the pipeline has written, per persona. It is how the write mode knows what it may replace or remove. Do not edit it. |
 
 The canonical scripts are persona-neutral. Each reads its persona from the
@@ -38,8 +38,41 @@ plugin-root paragraph and every shell block. Their `compose` and `frame`
 paragraph, every shell block, the phase-note scaffold and the
 completion-footer paragraph, rendered from the `verb-*` templates, and
 `decide` its Phase 0.5 argument resolution, rendered from
-`decide-resolve.md`. The prose around them, the privacy gate included, stays
-authored.
+`decide-resolve.md`. The prose around them stays authored.
+
+PC2a3 completes the verb runbooks and begins the skills:
+
+- `critique`, `refine` and `start` hold generated regions too: the
+  plugin-root paragraph, the Phase 0, bootstrap and resume blocks (critique
+  with its declared profiles; start from `start-bootstrap.md` and
+  `start-resume.md`), designer's critique and both personas' refine dispatch,
+  start's two lifecycle paragraphs, and in critique and refine a one-line
+  finalize heading and the completion-footer paragraph. A block whose
+  behavior differs by persona stays authored until the settlement work
+  (PC2b) generates it: the finalize
+  blocks of critique and refine (designer's ensemble-commit guard and its
+  convergence guard), start's terminal block, and founder's critique
+  dispatch, which picks its ensemble type by profile. An authored block in a
+  file that holds regions opens with the generated resolver, copied by hand,
+  since a file uses one resolver form.
+- The privacy gate is generated in all seven verb runbooks
+  (`verb-privacy-gate.md`: the persona's scope and spec from `peer`, the
+  verb's genericize sentence a manifest value) and followed by the no-image
+  rule (`verb-privacy-no-image.md`: no image reaches the peer as bytes) for a
+  persona whose declaration keeps images from the peer. designer's screenshot
+  sentences, with the verified-local file path its peer may read, stay
+  authored right after the regions.
+- designer's own steps sit in extension slots (see [Extension
+  slots](#extension-slots)): critique's dual input, refine's convergence loop
+  and its bound, and start's archetype section in the runbooks, and start's
+  archetype section in `SKILL.md` as well.
+- In `SKILL.md`, the sections founder and designer share line for line
+  (checkpoint, peer-now and resume's command resolution and steps, compose's
+  presentation and state write, decide's steps and approval gate, frame's
+  presentation), start's "When invoked by command" intro, and the privacy
+  gate of critique, refine and start are regions, below the frontmatter and
+  under an authored heading. Sections that differ by persona prose stay
+  authored, designer's render-and-vision loop and archetype text with them.
 
 ## The declaration
 
@@ -51,15 +84,19 @@ bootstrap describes, its `ensemble_type` where personas differ, the phase
 note's `artifact` sections (a list, one item per line), the proposal's
 `rationale_gate` and `evidence_pointers`, the `next_action` it records, and for
 `refine` and `start` whether the terminal write waits for a converged
-re-critique (`terminal_requires_convergence`). founder and designer declare
-1.1; engineer declares 1.0, with no verbs. The `investigate`, `frame`,
-`decide` and `compose` runbooks render these values from the declaration;
-`refine` and `start` are still authored, so their convergence flag is a
-copy of what their terminal block does.
+re-critique (`terminal_requires_convergence`). Format 1.2 adds `peer`, what
+the persona lets reach the peer: `privacy_scope` (the material its privacy
+gate names), `privacy_spec` (the plugin path of the spec that defines the
+gate, a regular file inside the plugin) and `images` (whether image bytes may
+go to the peer; both personas say `false`). founder and designer
+declare 1.2; engineer declares 1.0, with no verbs and no `peer`. The verb
+runbooks render these values from the declaration; the terminal blocks of
+`refine` and `start` are still authored, so their convergence flag is a copy
+of what that block does.
 `tests/persona-pipeline/test-declaration-verbs.mjs` binds each declared value
 to the runbook text that states it;
 `tests/persona-pipeline/test-verb-runbook-characterization.mjs` records what
-the four runbooks did before their blocks moved (`fixtures/verb-runbooks.json`),
+the seven runbooks did before their blocks moved (`fixtures/verb-runbooks.json`),
 and a region changes only what the fixture's `allowed_differences` lists,
 each with its reason.
 
@@ -84,7 +121,13 @@ substitutions. A template holds only `{{name}}` placeholders and
 - A substitution reads a declaration field (`field`, a dotted path) or carries
   a literal the manifest fixes for that region (`value`, e.g. the verb a
   shared block runs for). `derived.root_env` is the persona's
-  `AGENTIC_<NAME>_ROOT`, derived from `name`.
+  `AGENTIC_<NAME>_ROOT`, derived from `name`; `derived.skill_privacy_spec` is
+  `peer.privacy_spec` as a skill cites it, relative to its own directory.
+- A region may carry `when: {field, equals}`, a variant: its `personas` must
+  be exactly the manifest personas whose declaration holds `field` with that
+  JSON value (`false`, `"false"` and `null` differ). A persona whose format
+  lacks the field is never enrolled in it. Enrollment stays explicit data,
+  checked against the declarations; a template holds no condition on it.
 - Its `context` decides how the value lands. `shell`: a single-quoted
   literal, and only at an unquoted word position of a shell block, never
   inside `"…"`, `'…'`, `$'…'`, `${…}`, an arithmetic expansion, backticks, a
@@ -107,7 +150,22 @@ substitutions. A template holds only `{{name}}` placeholders and
 To give a file regions, put each pair of markers, empty, where the block
 goes, enroll the region in the manifest, and run the write: it fills the
 bodies. The write repairs a body only; a missing marker or enrollment is an
-authored fix.
+authored fix. In a `SKILL.md`, markers sit below the frontmatter, which a
+host reads only from the file's start.
+
+### Extension slots
+
+A persona's own step inside a pipeline file is authored text after an
+extension marker, `<!-- pipeline:extension <id> -->` (ADR-0066 Decision 2).
+The manifest declares each slot: its `dest`, the `personas` that own it, the
+regions it sits between (`after`, `before`, both enrolled for every owner),
+and how many markers it takes (`min` to `max`). The check fails a marker in a
+slot the file does not declare or the persona does not own, a marker outside
+its two regions, and a count outside the range, so a required step (`min` 1)
+cannot drop out unnoticed. The check places markers; it does not read the
+text after them. The runbook and skill contracts do: the terminal block
+follows every marker, and each required extension holds the sentences it
+exists for.
 
 A verb runbook's phase note never passes through a shell string. The finalize
 region shows the note's scaffold in a `markdown` fence, persona text rendered
@@ -151,7 +209,9 @@ id falls back to that preset, flagged, and an empty one counts as no
 
 The check fails on a generated file or region that differs from its source
 (the executable bit included), a missing or out-of-order region, an unknown
-region or extension id or broken region grammar, an owned output nothing
+region or extension id or broken region grammar, an extension marker its
+slot does not admit, a variant enrollment that disagrees with the
+declarations, an owned output nothing
 generates any more, a ledger that disagrees, a declaration that fails its
 schema or a cross-field rule (its decide fallback must equal its registry
 preset), and personas found on disk that differ from the manifest's.
@@ -174,7 +234,15 @@ before the dispatch, no image to the peer, the finalize block and decide's
 resolver block run with a stubbed `node`, and the fallback decide's prose
 names measured against its registry) over each persona's committed runbook
 and over the runbook assembled from the templates, so a defect the drift
-check cannot see still fails. `scripts/mutation-specs/persona-pipeline.mjs` puts defects into the
+check cannot see still fails. Runbooks with an authored finalize have their
+own family there (the block's position after every extension marker, the
+extensions' anchor sentences, the guards run with each combination of
+outcomes), and so does `start` (its clean-baseline admission and
+`workflow_type` read run for every status). `test-skill-contracts.mjs` is the
+skill family: a skill runs nothing, so it checks the text an agent acts on
+(no unrendered placeholder, `<plugin-root>` in every generated block, each named
+`state.mjs` subcommand exists, the Plugin root row per document, and what
+each generated section says it does). `scripts/mutation-specs/persona-pipeline.mjs` puts defects into the
 canonical source, regenerates them, and expects a contract test to fail; a
 case's `killed_by` names the tests that must fail, by name or by path
 (`suite > test`, read from the TAP records), so a run that fails only
