@@ -5,6 +5,11 @@
 Accepted (2026-07-09 — the Implementation Roadmap PR7 real-topic dogfood
 validated the direction; see the Accepted-flip evidence note below)
 
+**Proposed to be superseded** by [ADR-0066](0066-persona-pipeline-canonical-source.md)
+(proposed 2026-10-05) — Sub-decision 7 only. This line becomes `Superseded by
+ADR-0066` in the same commit that flips ADR-0066 to Accepted. Until then
+Sub-decision 7 stands.
+
 > **Status convention note.** This ADR follows the **long-roadmap pattern**
 > (precedent: ADR-0027/0028/0029/0036): it merged `Proposed` ahead of the
 > implementation ladder and flipped to `Accepted` in the roadmap's dogfood PR
