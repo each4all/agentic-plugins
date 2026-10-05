@@ -14,13 +14,9 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
-import { REPO_ROOT } from './_personas.mjs';
-import { VERB_RUNBOOK_PERSONAS, VERB_RUNBOOK_VERBS, characterize, runbookText } from './_verb-runbooks.mjs';
+import { FIXTURE, VERB_RUNBOOK_PERSONAS, VERB_RUNBOOK_VERBS, characterize, expectedFor, runbookText } from './_verb-runbooks.mjs';
 
-const FIXTURE = JSON.parse(readFileSync(join(REPO_ROOT, 'tests/persona-pipeline/fixtures/verb-runbooks.json'), 'utf8'));
 const arg = (call, flag) => {
   const found = call.args.filter(([f]) => f === flag);
   strictEqual(found.length, 1, `${call.script} ${call.sub} carries ${flag} once`);
@@ -28,10 +24,15 @@ const arg = (call, flag) => {
 };
 
 describe('verb runbook characterization (PC2a2 T0)', () => {
-  it('the fixture covers the eight runbooks, and no difference is allowed yet', () => {
+  it('the fixture covers the eight runbooks; every allowed difference is a listed, reasoned change to a known runbook', () => {
     const keys = VERB_RUNBOOK_PERSONAS.flatMap((p) => VERB_RUNBOOK_VERBS.map((v) => `${p}/${v}`)).sort();
     deepStrictEqual(Object.keys(FIXTURE.runbooks).sort(), keys);
-    deepStrictEqual(FIXTURE.allowed_differences, []);
+    ok(Array.isArray(FIXTURE.allowed_differences));
+    for (const d of FIXTURE.allowed_differences) {
+      deepStrictEqual(Object.keys(d).sort(), ['from', 'runbooks', 'to', 'where', 'why'], JSON.stringify(d));
+      ok(d.runbooks.length > 0 && d.runbooks.every((k) => keys.includes(k)), `${d.where}: runbooks`);
+      ok(d.from !== d.to && d.from.length > 0 && /^PC2a2 /.test(d.why), `${d.where}: a change with its reason`);
+    }
   });
 
   for (const persona of VERB_RUNBOOK_PERSONAS) {
@@ -41,8 +42,8 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
         const calls = got.calls;
         const of = (script, sub) => calls.map((c, i) => [c, i]).filter(([c]) => c.script === script && c.sub === sub);
 
-        it('does what the fixture recorded: calls, argument values, guards, run-id prefix, prompt file, note scaffold', () => {
-          deepStrictEqual(got, FIXTURE.runbooks[`${persona}/${verb}`]);
+        it('does what the fixture recorded, with the listed changes: calls, argument values, guards, run-id prefix, prompt file, note scaffold', () => {
+          deepStrictEqual(got, expectedFor(`${persona}/${verb}`));
         });
 
         it('identity: persona, verb, phase and ensemble type match the expected map', () => {

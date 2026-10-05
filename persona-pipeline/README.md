@@ -33,8 +33,11 @@ shares unchanged (the decide libraries and registry, `validate-commit`,
 
 Stage 2a (PC2a) begins the runbook regions. founder and designer's
 `checkpoint`, `resume` and `peer-now` commands hold generated regions: the
-plugin-root paragraph and every shell block. The prose around them, the
-privacy gate included, stays authored.
+plugin-root paragraph and every shell block. Their `compose` and `frame`
+commands (PC2a2b) hold the plugin-root paragraph, every shell block, the
+phase-note scaffold and the completion-footer paragraph, rendered from the
+`verb-*` templates; `decide` and `investigate` follow. The prose around
+them, the privacy gate included, stays authored.
 
 ## The declaration
 
@@ -51,8 +54,9 @@ re-critique (`terminal_requires_convergence`). founder and designer declare
 regions, the declared values are copies of their text, and
 `tests/persona-pipeline/test-declaration-verbs.mjs` keeps the two in step;
 `tests/persona-pipeline/test-verb-runbook-characterization.mjs` records what
-those runbooks do (`fixtures/verb-runbooks.json`), so moving their blocks into
-regions changes only what its fixture lists as allowed.
+those runbooks did before their blocks moved (`fixtures/verb-runbooks.json`),
+and a region changes only what the fixture's `allowed_differences` lists,
+each with its reason.
 
 Two readers read a declaration, the schema validator (the generator, the
 tests) and each plugin's `scripts/lib/persona.mjs`, and they agree at every
@@ -100,6 +104,23 @@ goes, enroll the region in the manifest, and run the write: it fills the
 bodies. The write repairs a body only; a missing marker or enrollment is an
 authored fix.
 
+A verb runbook's phase note never passes through a shell string. The finalize
+region shows the note's scaffold in a `markdown` fence, persona text rendered
+verbatim; the agent fills it in and runs the block below it, which reads the
+filled note from a quoted heredoc (`IFS= read -r -d '' NOTE <<'PHASE_NOTE' ||
+true`), so a quote, `$`, backtick or backslash in it reaches `state.mjs` as
+written, under bash and zsh (and macOS sh), with the heredoc's final newline.
+Two limits, each stated where the agent acts: a line reading `PHASE_NOTE`
+alone would end the note and run the rest as commands, so the prose has the
+agent rename the delimiter when its note holds one; and a shell whose `read`
+has no `-d` (dash) reads nothing, so an empty note stops the block before any
+write. The request placeholder works the same
+way: the region prose names it, and the block says
+`<the original request described above>`. The bootstrap `create`, the resume
+`append` and the finalize `append` stop the block when they fail
+(`|| exit $?`); `ensemble-commit` stays unguarded until the settlement
+transitions (PC2b) give the degraded path its own step.
+
 ## Editing
 
 1. Edit the canonical file under `files/`, never a generated copy (each starts
@@ -132,8 +153,13 @@ is to be taken over, which is how a hand-maintained copy joins the pipeline.
 declaration and its loader, the generator, the CLI entry guard, and the
 off-capability, broken-declaration and isolation behavior.
 `test-runbook-contracts.mjs` holds the runbook contracts (call order, the
-workflow each write targets, the privacy gate before the dispatch, no image to
-the peer) over each persona's committed runbook and over the runbook assembled
-from the templates, so a defect the drift check cannot see still fails.
-`scripts/mutation-specs/persona-pipeline.mjs` puts defects into the canonical
-source, regenerates them, and expects a contract test to fail.
+workflow each write targets, identity against the characterization's
+expected map, the phase-note transport, failure propagation, the privacy gate
+before the dispatch, no image to the peer, and the finalize block run with a
+stubbed `node`) over each persona's committed runbook and over the runbook
+assembled from the templates, so a defect the drift check cannot see still
+fails. `scripts/mutation-specs/persona-pipeline.mjs` puts defects into the
+canonical source, regenerates them, and expects a contract test to fail; a
+case's `killed_by` names the tests that must fail, by name or by path
+(`suite > test`, read from the TAP records), so a run that fails only
+elsewhere scores `KILLED-ELSEWHERE` (`scripts/mutation-harness.mjs`).

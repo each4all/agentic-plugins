@@ -14,7 +14,92 @@
       "investigate": "reference-scan"
     }
   },
-  "allowed_differences": [],
+  "allowed_differences": [
+    {
+      "runbooks": [
+        "founder/compose"
+      ],
+      "where": "call:state.mjs create:--profile",
+      "from": "<profile from $ARGUMENTS or 'plan'>",
+      "to": "<profile from the arguments above — default plan>",
+      "why": "PC2a2 PD3/PD5: the default comes from DEFAULT_PROFILE, a literal assigned from verbs.compose.default_profile; no fence carries $ARGUMENTS (Claude substitutes it at load)"
+    },
+    {
+      "runbooks": [
+        "designer/compose"
+      ],
+      "where": "call:state.mjs create:--profile",
+      "from": "<profile from $ARGUMENTS or 'spec'>",
+      "to": "<profile from the arguments above — default spec>",
+      "why": "PC2a2 PD3/PD5: as for founder"
+    },
+    {
+      "runbooks": [
+        "founder/compose"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized planning target>",
+      "to": "<the original request described above>",
+      "why": "PC2a2 PD3: the persona request placeholder moves to the region prose above the block (verbs.compose.request_placeholder); a persona value never sits inside double quotes"
+    },
+    {
+      "runbooks": [
+        "designer/compose"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized composition target>",
+      "to": "<the original request described above>",
+      "why": "PC2a2 PD3: as for founder"
+    },
+    {
+      "runbooks": [
+        "founder/frame"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized business topic>",
+      "to": "<the original request described above>",
+      "why": "PC2a2 PD3: as for compose"
+    },
+    {
+      "runbooks": [
+        "designer/frame"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized design/UX topic>",
+      "to": "<the original request described above>",
+      "why": "PC2a2 PD3: as for compose"
+    },
+    {
+      "runbooks": [
+        "designer/compose",
+        "founder/compose",
+        "designer/frame",
+        "founder/frame"
+      ],
+      "where": "guards.detached_head",
+      "from": "— {persona} workflows",
+      "to": "— ${PERSONA} workflows",
+      "why": "PC2a2 PD3/PD5: the message names the persona through PERSONA, a literal the Phase 0 block assigns before the guard"
+    },
+    {
+      "runbooks": [
+        "founder/compose"
+      ],
+      "where": "note",
+      "from": "(profile=<plan|canvas|validation-plan>)",
+      "to": "(profile=<profile>)",
+      "why": "PC2a2 PD2: the profile list stays in the authored Profiles section"
+    },
+    {
+      "runbooks": [
+        "designer/compose"
+      ],
+      "where": "note",
+      "from": "(profile=<spec|flow|wireframe>)",
+      "to": "(profile=<profile>)",
+      "why": "PC2a2 PD2: as for founder"
+    }
+  ],
   "runbooks": {
     "designer/compose": {
       "calls": [

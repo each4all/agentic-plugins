@@ -32,6 +32,11 @@
 // opposite would still pass; (b) the repo-wide sweep exempts lines carrying an
 // `amended` marker, because ADR body text is deliberately preserved as written
 // with an inline correction pointer.
+//
+// Invariant (i)'s per-document rule — the detector, the comment-block binding,
+// the facts and the inversions — lives in tests/_runbook-checks.mjs, so it can
+// also run over a runbook assembled in memory; this file keeps the corpora and
+// the floors.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -40,6 +45,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveSkillsRoot } from '../_helpers.mjs';
+import {
+  FORBIDDEN_IN_ANNOTATION,
+  INVOCATION_LABEL,
+  REQUIRED_FACTS,
+  archiveTimingProblems,
+  missingFacts,
+} from '../_runbook-checks.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -55,27 +67,9 @@ const PLUGINS_DIR = path.join(REPO_ROOT, 'plugins');
 // synchronous for this file's sake: it builds corpora from plain sync fs calls.
 const skillsRootOf = (plugin) => resolveSkillsRoot(path.join(PLUGINS_DIR, plugin));
 
-// Each is a distinct claim a reader can act on; dropping any one restores a
-// different half of the original defect. Matched by regex, not substring,
-// because the same fact is written as a bash comment at an invocation
-// ("EVERY turn end") and as prose in a reference ("**every turn end**").
-const REQUIRED_FACTS = [
-  { re: /every turn end/i, why: 'the Claude per-turn firing is the corrected fact' },
-  { re: /--terminal-marker false/, why: 'the unset window is the only escape' },
-  { re: /Codex/, why: 'the Codex hook is trust-gated, so its evaluation is deferred' },
-];
-
-const INVOCATION_LABEL = { re: /ARCHIVE TIMING/, why: 'the block must be findable by its label' };
-
-// Vocabulary alone would let an annotation assert the opposite and still match
-// every fact regex. These catch the inversions worth naming.
-const FORBIDDEN_IN_ANNOTATION = [
-  /not\s+fire\s+at\s+every\s+turn/i,
-  /never\s+fires?\s+at\s+every\s+turn/i,
-  /fires?\s+(?:only\s+)?at\s+session\s+(?:end|close)/i,
-  /Codex\s+always\s+archives/i,
-  /`?--terminal-marker false`?\s+is\s+forbidden/i,
-];
+// REQUIRED_FACTS (the three load-bearing facts), INVOCATION_LABEL and
+// FORBIDDEN_IN_ANNOTATION (the inversions) are imported: the sweep's rule and
+// the two pinned checks below read the same copy.
 
 // The disproved claim, and the shapes it takes elsewhere in the repo.
 const DISPROVED_CLAIMS = [
@@ -181,49 +175,6 @@ function sharedReferences() {
   return out.sort();
 }
 
-// A runnable invocation, as opposed to prose quoting one: a `node …state.mjs`
-// command inside a fenced code block whose continuation-joined text reaches
-// `set-terminal`. An `env VAR=v` prefix still counts — requiring the line to
-// begin with `node` was an evasion a reviewer reproduced.
-const NODE_COMMAND = /^\s*(?:(?:env|command|exec)\s+(?:\S+=\S*\s+)*)*node\s/;
-
-function findInvocations(lines) {
-  const sites = [];
-  let inFence = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\s*```/.test(lines[i])) { inFence = !inFence; continue; }
-    if (!inFence) continue;
-    if (!NODE_COMMAND.test(lines[i])) continue;
-    if (!/state\.mjs/.test(lines[i])) continue;
-    let end = i;
-    let joined = lines[i];
-    while (/\\\s*$/.test(lines[end]) && end + 1 < lines.length) {
-      end++;
-      joined += ' ' + lines[end].trim();
-    }
-    // ADR-0063 D3 — `finish-verb` is a verb's terminal write in interactive
-    // mode (set-terminal summary-complete), so it is a site too.
-    if (/\b(?:set-terminal|finish-verb)\b/.test(joined)) sites.push({ line: i, joined });
-  }
-  return sites;
-}
-
-// The contiguous comment block directly above the invocation — no blank line
-// between. Binding to this window is what makes the guard per-invocation: a
-// note attached to some other site in the same file cannot reach here.
-function commentBlockAbove(lines, invocationLine) {
-  const block = [];
-  for (let i = invocationLine - 1; i >= 0; i--) {
-    if (/^\s*#/.test(lines[i])) block.unshift(lines[i]);
-    else break;
-  }
-  return block.join('\n');
-}
-
-function missingFacts(block, facts) {
-  return facts.filter((f) => !f.re.test(block));
-}
-
 // The ARCHIVE TIMING note, bounded to its own paragraph. Searching a whole file
 // for the vocabulary lets any other part of the document satisfy a fact the
 // note itself omits — and, worse, lets the note assert the inverse while some
@@ -248,22 +199,10 @@ test('every set-terminal invocation states when the Stop hook evaluates the gate
 
   for (const file of files) {
     const rel = path.relative(REPO_ROOT, file);
-    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-    for (const site of findInvocations(lines)) {
-      total++;
-      pluginsSeen.add(rel.split(path.sep)[1]);
-      const block = commentBlockAbove(lines, site.line);
-      const absent = missingFacts(block, [INVOCATION_LABEL, ...REQUIRED_FACTS]);
-      if (absent.length > 0) {
-        problems.push(
-          `${rel}:${site.line + 1} — comment block above is missing ` +
-            absent.map((f) => `${f.re} (${f.why})`).join(', '),
-        );
-      }
-      for (const bad of FORBIDDEN_IN_ANNOTATION) {
-        if (bad.test(block)) problems.push(`${rel}:${site.line + 1} — annotation asserts the inverse: ${bad}`);
-      }
-    }
+    const found = archiveTimingProblems(fs.readFileSync(file, 'utf8'), rel);
+    total += found.sites;
+    if (found.sites > 0) pluginsSeen.add(rel.split(path.sep)[1]);
+    problems.push(...found.problems);
   }
 
   // Non-vacuity: a matcher that silently stops matching must fail, not pass.

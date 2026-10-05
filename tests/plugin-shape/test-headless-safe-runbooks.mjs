@@ -36,6 +36,10 @@
 //
 // The Codex skills (`core/skills/**/SKILL.md`) keep the root handling #808
 // gave them; rule 1 covers them too.
+//
+// Rule 2's per-document check, the resolver forms and the fenced-block reader
+// live in tests/_runbook-checks.mjs, so the rule can also run over a runbook
+// assembled in memory; this file keeps the corpus and its guards.
 
 import { test } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -44,6 +48,8 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } f
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { fencedBlocks, resolverForms, resolverProblems } from '../_runbook-checks.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const PLUGINS_DIR = join(REPO_ROOT, 'plugins');
@@ -57,26 +63,6 @@ function markdownFiles(dir = PLUGINS_DIR, acc = []) {
     else if (entry.endsWith('.md')) acc.push(p);
   }
   return acc;
-}
-
-/** Fenced blocks as `{ lang, start, lines }`, indentation removed; `start` is the 1-based line of the first body line. */
-function fencedBlocks(text) {
-  const blocks = [];
-  let open = null;
-  text.split(/\r?\n/).forEach((line, i) => {
-    const fence = line.match(/^([ \t]*)(`{3,}|~{3,})(.*)$/);
-    if (open === null) {
-      if (fence) open = { indent: fence[1].length, marker: fence[2], lang: fence[3].trim(), start: i + 2, lines: [] };
-      return;
-    }
-    if (fence && fence[2][0] === open.marker[0] && fence[2].length >= open.marker.length && fence[3].trim() === '') {
-      blocks.push(open);
-      open = null;
-      return;
-    }
-    open.lines.push(line.slice(Math.min(open.indent, line.length - line.trimStart().length)));
-  });
-  return blocks;
 }
 
 // `rm` or `rmdir` as a command word: at a line start or after a shell
@@ -106,41 +92,6 @@ function logicalLines(lines) {
   });
   if (text !== null) out.push({ i: start, text });
   return out;
-}
-
-const PLUGIN_ROOT_USE = /\$\{?CLAUDE_PLUGIN_ROOT\b/;
-const RUNTIME_ROOT_USE = /\$\{?RUNTIME_ROOT\b/;
-const isCode = (line) => line.trim() !== '' && !line.trimStart().startsWith('#');
-
-/** The two opening lines a command block of `plugin` must carry. */
-function resolverLines(plugin) {
-  const v = plugin === 'runtime' ? 'RUNTIME_ROOT' : 'CLAUDE_PLUGIN_ROOT';
-  const env = `AGENTIC_${plugin.toUpperCase()}_ROOT`;
-  return [
-    `${v}="\${${env}:-\${CLAUDE_PLUGIN_ROOT}}"`,
-    `[ -n "$${v}" ] || ${v}="$(find ~/.claude/plugins/cache/agentic-plugins/${plugin} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"`,
-  ];
-}
-
-/**
- * The opening lines a generated persona-pipeline block carries instead
- * (ADR-0066 Decision 4, PC2a DD1): the persona's name reaches the shell only
- * as a single-quoted literal, so the override is read with printenv and the
- * cache path quotes the name. Same resolution order as resolverLines.
- */
-const GENERATED_RESOLVER_PLUGINS = new Set(['founder', 'designer']);
-function generatedResolverLines(plugin) {
-  const env = `AGENTIC_${plugin.toUpperCase()}_ROOT`;
-  return [
-    `ROOT_OVERRIDE="$(printenv '${env}' || true)"`,
-    'CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"',
-    resolverLines(plugin)[1].replace(`agentic-plugins/${plugin} `, `agentic-plugins/'${plugin}' `),
-  ];
-}
-
-/** Every resolver form a block of `plugin` may open with. */
-function resolverForms(plugin) {
-  return GENERATED_RESOLVER_PLUGINS.has(plugin) ? [resolverLines(plugin), generatedResolverLines(plugin)] : [resolverLines(plugin)];
 }
 
 const FILES = markdownFiles();
@@ -213,26 +164,9 @@ test('every command block that uses the plugin root resolves it first', async (t
   const offenders = [];
   for (const f of COMMAND_FILES) {
     const plugin = rel(f).split('/')[1];
-    for (const block of fencedBlocks(readFileSync(f, 'utf8'))) {
-      const uses = (l) => isCode(l) && (PLUGIN_ROOT_USE.test(l) || (plugin === 'runtime' && RUNTIME_ROOT_USE.test(l)));
-      // The form the block opens with: its first line, then the rest in order.
-      const opened = resolverForms(plugin).map((form) => {
-        const at = block.lines.findIndex((l) => l.trim() === form[0]);
-        const whole = at >= 0 && form.every((line, k) => (block.lines[at + k] ?? '').trim() === line);
-        return { at, form, whole };
-      }).find((o) => o.at >= 0) ?? { at: -1, form: [], whole: false };
-      const own = (i) => opened.at >= 0 && i >= opened.at && i < opened.at + opened.form.length - 1;
-      const firstUse = block.lines.findIndex((l, i) => !own(i) && uses(l));
-      if (firstUse < 0) continue;
-      checked.push(`${rel(f)}:${block.start}`);
-      if (opened.at < 0 || opened.at > firstUse || !opened.whole) {
-        offenders.push(`${rel(f)}:${block.start + Math.max(firstUse, 0)}: ${block.lines[firstUse].trim()}`);
-      }
-      // Nothing may reassign the root from the retired fallbacks.
-      for (const [i, l] of block.lines.entries()) {
-        if (/BASH_SOURCE/.test(l) || /CLAUDE_PLUGIN_ROOT:-\}/.test(l)) offenders.push(`${rel(f)}:${block.start + i}: ${l.trim()}`);
-      }
-    }
+    const found = resolverProblems(readFileSync(f, 'utf8'), plugin, rel(f));
+    checked.push(...found.checked);
+    offenders.push(...found.offenders);
   }
 
   await t.test('the check reaches the runbooks it is about (guards a vacuous pass)', () => {

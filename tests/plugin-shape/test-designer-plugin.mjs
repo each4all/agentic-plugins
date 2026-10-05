@@ -1659,16 +1659,31 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
       ...PR6_SKILLS.map((s) => `${SKILLS_REL}/${s}/SKILL.md`),
       'commands/start.md', 'commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md',
     ];
+    // A generated runbook region passes the type as a single-quoted literal
+    // (ADR-0066 Decision 4), so the value may be quoted.
+    const TYPE_RE = /--ensemble-type\s+'?([a-z-]+)'?/g;
+    // Each verb command's own dispatch, by site: a scan that lost every match in
+    // the commands would otherwise still see the types the skills name.
+    const COMMAND_TYPES = {
+      investigate: 'reference-scan', frame: 'frame', decide: 'brainstorm',
+      compose: 'plan-verify', critique: 'review', refine: 'refine-verify',
+    };
     let blocks = 0;
     const withImage = [];
     const dispatchedTypes = new Set();
     for (const rel of surfaces) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      const own = [];
       for (const m of text.matchAll(DISPATCH_RE)) {
         blocks += 1;
         if (/--image/.test(m[0])) withImage.push(rel);
+        for (const t of m[0].matchAll(TYPE_RE)) own.push(t[1]);
       }
-      for (const m of text.matchAll(/--ensemble-type\s+([a-z-]+)/g)) dispatchedTypes.add(m[1]);
+      const verb = /^commands\/([a-z-]+)\.md$/.exec(rel)?.[1];
+      if (Object.hasOwn(COMMAND_TYPES, verb)) {
+        deepStrictEqual([...new Set(own)], [COMMAND_TYPES[verb]], `${rel}: the ensemble type its peer-runner dispatch names`);
+      }
+      for (const m of text.matchAll(TYPE_RE)) dispatchedTypes.add(m[1]);
     }
     ok(blocks >= 6, `expected the shipped peer-runner dispatch blocks to be found (got ${blocks}) — the scan must not pass vacuously`);
     deepStrictEqual(withImage, [],
