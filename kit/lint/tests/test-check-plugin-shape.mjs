@@ -732,11 +732,14 @@ describe('kit/lint/check-plugin-shape — skill frontmatter', () => {
   // /allow_implicit_invocation:\s*false/ assertions in tests/plugin-shape
   // passed throughout, because the string is present at either nesting.
   //
-  // Every expectation below was derived by running BOTH implementations over
+  // Most expectations below were derived by running BOTH implementations over
   // the same fixture and comparing the verdicts, not by reading the rules and
-  // predicting. The harness is kit/lint/tests/differential-vs-codex.py; at the
-  // time of writing it reported 38 of 38 cases in agreement. Re-run it against
-  // a new Codex release rather than trusting these expectations to still hold.
+  // predicting: a one-off differential run on 2026-09-10, against the
+  // validator codex-cli 0.154.0 ships, agreed on 38 of 38 cases. The rest were
+  // not compared, such as the block-scalar rejection, which reports a value
+  // this check cannot read rather than one Codex rejects. Nothing re-runs the
+  // comparison. After a Codex release, compare checkSkillAgentManifest with
+  // the new validator before trusting these expectations to still hold.
   const agentFile = (body) => body;
   const validAgent = [
     'interface:',

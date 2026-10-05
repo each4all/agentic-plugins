@@ -53,7 +53,8 @@ they are trigger-driven futures.
     **Write skill descriptions as single-line quoted scalars** — the
     convention every packaged skill already follows.
   - Run locally via `npm run lint:plugin-shape`.
-  - CI-gated on both host workflows in `.github/workflows/`.
+  - CI-gated once, by `validate.yml`. The linter's own tests
+    (`lint/tests/`) run in `full-tests.yml` with the rest of `npm test`.
 
 ## Planned (trigger-driven, not yet built)
 
@@ -62,18 +63,24 @@ they are trigger-driven futures.
   [ADR-0002](../docs/adr/0002-adapter-contract.md) (manifest mapping,
   event mapping, companion invocation, path resolution). Trigger:
   third-party adapter author submits a PR, or a third in-tree adapter
-  pattern emerges (currently 2 in tree: companions Stage 1 pattern,
-  engineer Stage 2 pattern). Surfaced as a follow-up by the 2026-05-06
-  Stage 2.5+ exit audit (Q3 G-5).
+  pattern emerges. On 2026-05-06 there were two, the companions Stage 1
+  pattern and the engineer Stage 2 pattern. Attention's Claude-only
+  hook adapter (ADR-0040 §3) has been added since; `lint/` checks its
+  shape as the hook-only category above. Surfaced as a deferred
+  follow-up by the
+  [2026-05-06 Stage 2.5+ exit audit](../docs/audits/2026-05-06-stage25-exit-validation.md)
+  (its "γ defer" action items).
 - **`adapter-generator/`** — generate per-host adapter scaffolding
   from a CORE plugin spec, saving authors from hand-writing manifests,
   hook configurations, and persona-to-TOML conversions. Trigger:
-  3+ plugins in tree (currently 2 — `companions`, `engineer`;
-  `designer` pending Stage 3).
+  3+ plugins in tree. The tree has passed that count; the generator has
+  not been built, and the rule under "When to build kit features" below
+  also requires that manual authoring cost more than the kit feature
+  would to maintain.
 - **`manifest-templates/`** — boilerplate `.claude-plugin/plugin.json`
   and `.codex-plugin/plugin.json` templates with required fields
   documented. Trigger: external contributor onboarding pain. Manual
-  authoring remains fine for the small initial plugin set.
+  authoring remains the practice.
 
 ## When to build kit features
 
