@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.19](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.18...plugin-designer-v0.3.19) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/designer:** generate the investigate and decide runbook blocks (ADR-0066 Stage 2a) ([13a1c69](https://github.com/each4all/agentic-plugins/commit/13a1c6976aeee5d7c22ddae0fd6929f7bd2dab6d))
+
 ## [0.3.18](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.17...plugin-designer-v0.3.18) (2026-10-05)
 
 
