@@ -246,7 +246,7 @@ export function findMemberCalls(code, obj, method) {
 // blanked (Codex round-3 CRITICAL). Comments are already stripped upstream.
 // Residual (documented): a `fetch(` nested inside a further template literal
 // *inside* an interpolation is skipped opaquely by matchDelimiter's string skip —
-// a token scanner cannot follow arbitrary nesting; the SOUND check is §2b.
+// a token scanner cannot follow arbitrary nesting (registry: Network egress).
 function blankStrings(code) {
   let out = '';
   let i = 0;
@@ -285,291 +285,31 @@ function blankStrings(code) {
   return out;
 }
 
-// FAIL-CLOSED analysis of `fetch` use (ADR-0041 §2d). `fetch` is a global with
-// no import to anchor on and JS offers unbounded indirection, so this flags
-// EVERY reference to fetch and permits ONLY a direct `fetch(` call (which the
-// gate then validates against the pinned spec). Returns:
-//   directCalls: [{inner}] — bare `fetch(` calls (the only permitted form);
-//   indirect: bool         — ANY other fetch reference (a bare `fetch` used as a
-//                            value, a member `.fetch`, computed `['fetch']`,
-//                            `Reflect.get(...,'fetch')`, or a local shadow
-//                            `const/let/var/function fetch`);
-//   anyUse: bool           — directCalls.length > 0 || indirect.
-// Residual (documented, out of scope for a token scanner): string-concatenated
-// obfuscation like `globalThis['fet'+'ch']`. The SOUND behavioral check was the
-// egress channel's fetchImpl-injection unit test (ADR-0041 §2b), deleted with
-// egress by ADR-0064; a future fetch user owes its own.
-export function analyzeFetchUse(code) {
+// Does the code reference the global `fetch` at all (ADR-0035 §4 network line)?
+// `fetch` is a global with no import to anchor on, and JS offers unbounded
+// indirection, so every form counts, and no runtime script may use any of them
+// (registry: Network egress):
+//   - the bare identifier, on string-blanked code: a call, an optional call
+//     `fetch?.(`, a tagged template, `fetch.call(`, an alias `= fetch`, a
+//     destructure `{ fetch } =`, a shadowing `const/let/var/function fetch`;
+//   - a member `.fetch` (`globalThis.fetch`, `g.fetch` after `const g = globalThis`);
+//   - a computed `['fetch']`;
+//   - a 'fetch' string passed as the LAST argument of a call — the reflective
+//     shape `Reflect.get(obj, 'fetch')`, `Object.getOwnPropertyDescriptor(obj,
+//     'fetch')`, `Reflect['get'](obj, 'fetch')`, however padded. Keyed on
+//     `, 'fetch')`, not on any 'fetch' string, so a DATA string such as a git
+//     subcommand in an argv array (`, 'fetch',` / `, 'fetch']`) is not flagged.
+// Strings are blanked for the identifier and member forms so a mention inside a
+// string literal is not flagged, while a `${…}` interpolation (executable code)
+// is still scanned. Residual (documented, out of scope for a token scanner):
+// string-concatenated obfuscation like `globalThis['fet'+'ch']`, a helper that
+// returns the global, `eval`.
+function referencesFetch(code) {
   const codeNoStr = blankStrings(code);
-  // Count REAL bare `fetch(` calls on the BLANKED code so a `fetch(` written
-  // inside a string literal is never mistaken for a call (nor lets a decoy
-  // string cancel a real reference in the arithmetic below — Codex re-review
-  // CRITICAL). blankStrings preserves length, so a call's open-paren index is
-  // identical in `code` and `codeNoStr`; the real inner (with real string
-  // values) is re-extracted from the UNBLANKED `code` for validation.
-  const blankedCalls = findBareCalls(codeNoStr, ['fetch']);
-  const directCalls = blankedCalls.map((c) => {
-    const close = matchDelimiter(code, c.openParen);
-    return { inner: close === -1 ? '' : code.slice(c.openParen + 1, close) };
-  });
-  // A bare `fetch` identifier count above the direct-call count means fetch is
-  // referenced as a value (alias / `.call` receiver / argument / return /
-  // destructure target).
-  const bareTokens = (codeNoStr.match(/(?<![.\w$])fetch\b/g) || []).length;
-  const bareNonCall = Math.max(0, bareTokens - blankedCalls.length);
-  const memberFetch = /\.\s*fetch\b/.test(codeNoStr);   // x.fetch / globalThis.fetch / o.fetch
-  // A name-based reference to the global fetch via a string key: computed member
-  // access `['fetch']`, or a 'fetch' string passed as the LAST argument of a call
-  // — the reflective shape `Reflect.get(obj, 'fetch')`,
-  // `Object.getOwnPropertyDescriptor(obj, 'fetch')`, `Reflect['get'](obj,'fetch')`
-  // (`, 'fetch')` regardless of the object or padding). Keyed on `, 'fetch')` (not
-  // proximity to a global-object token — Codex round-3 evaded a fixed window with
-  // padding) and NOT on any 'fetch' string, so a legitimate DATA string (a git
-  // subcommand 'fetch' in an allowlist array — `, 'fetch',` / `, 'fetch']`) is not
-  // over-flagged. Residual (documented): deeper indirection (a helper returning
-  // the global, string-concat obfuscation) is out of scope for a token scanner —
-  // the SOUND check was the egress channel's fetchImpl test (§2b), deleted
-  // with egress by ADR-0064.
-  const computedFetch = /\[\s*(['"`])fetch\1\s*\]/.test(code);
-  const reflectiveFetch = /,\s*(['"`])fetch\1\s*\)/.test(code);
-  const shadowFetch = /\b(?:const|let|var|function\s*\*?)\s+fetch\b/.test(codeNoStr);
-  const indirect = bareNonCall > 0 || memberFetch || computedFetch || reflectiveFetch || shadowFetch;
-  return { directCalls, indirect, anyUse: directCalls.length > 0 || indirect };
-}
-
-// Analyze how a resolved `node:https` import BINDING's `request` is used in a
-// PINNED_HTTPS_USERS file (ADR-0041 §2d), mirroring analyzeFetchUse's fail-closed
-// indirection detection but anchored on the import binding rather than the fetch
-// global. `binding` is an identifier (default/namespace import local name). Returns:
-//   directCalls:  [{inner}] — direct `binding.request(` member calls (the only permitted form);
-//   indirect:     bool      — ANY other reference to binding.request: an alias/value
-//                             (`= b.request`, `b.request` passed as an arg / `.call`
-//                             receiver), a computed `b['request']`, or a destructure
-//                             `const { request } = b` (all evade static pinned validation);
-//   otherMethods: string[]  — OTHER network primitives called on the binding
-//                             (`b.get(`, `b.connect(` …) — only `request` is permitted.
-// String bodies are blanked so a `binding.request(` inside a string is never counted;
-// the real inner (with real string values) is re-extracted from the unblanked code.
-function analyzeHttpsUse(code, binding) {
-  const codeNoStr = blankStrings(code);
-  const b = escapeRegExp(binding); // bindings may legitimately contain `$` (Codex round-2 CRITICAL)
-  const directCalls = findMemberCalls(codeNoStr, binding, 'request').map((c) => {
-    const close = matchDelimiter(code, c.openParen);
-    return { inner: close === -1 ? '' : code.slice(c.openParen + 1, close) };
-  });
-  // EVERY member access on the binding must be exactly a direct pinned `binding.request(`
-  // call — the ONLY permitted use of the node:https namespace. Count all `binding.` accesses;
-  // MORE than the direct request-call count means the binding is used another way: request as
-  // a VALUE (`const r = https.request; r(evil)`), a DIFFERENT method (`https.get(evil)`), or a
-  // DEEPER surface (`https.globalAgent.createConnection(evil)`) — all of which egress unchecked
-  // (Codex round-3 CRITICAL, replacing the earlier per-method enumeration which missed these).
-  const memberAccesses = (codeNoStr.match(new RegExp(`(?<![.\\w$])${b}\\s*\\.`, 'g')) || []).length;
-  const otherMemberUse = memberAccesses > directCalls.length;
-  // ANY computed member access on the binding — `binding['request']`, `binding[k]`. Tested on
-  // codeNoStr (strings blanked) so a `binding['request']` mentioned INSIDE a string literal is
-  // not over-flagged (Codex round-2 MINOR), while real computed code is still caught.
-  const computed = new RegExp(`(?<![.\\w$])${b}\\s*\\[`).test(codeNoStr);
-  // The binding used as a bare VALUE outside its import (`const x = https`, `foo(https)`, a
-  // shorthand `{ https }`, `https ? a : b`) — a namespace ALIAS whose members then egress
-  // (`const agent = https; agent.request(evil)`). Bare `binding` tokens NOT continuing an
-  // identifier (`(?![\w$])`, so a `$`-terminated binding is delimited — Codex round-3
-  // CRITICAL — and `h$foo` is not matched as `h$`) and NOT a member `.` nor an object-KEY `:`
-  // (so `{ https: true }` — a property name, not a value — is not over-flagged, Codex round-2
-  // MINOR; a shorthand `{ https }` is followed by `,`/`}`, still counted). Exactly one
-  // legitimate ref remains — the import statement — so MORE means the binding leaked as a value.
-  const bareBinding = (codeNoStr.match(new RegExp(`(?<![.\\w$])${b}(?![\\w$])(?!\\s*[.:])`, 'g')) || []).length;
-  const aliasedNamespace = bareBinding > 1;
-  const indirect = otherMemberUse || computed || aliasedNamespace;
-  return { directCalls, indirect };
-}
-
-// Validate that a pinned request URL argument (arg[0] of `fetch`/`https.request`) is
-// a LONE string/template literal (no `&&`/`||`/ternary/concatenation — so the value
-// equals the text) pinned to spec.endpointPrefix..endpointSuffix. Returns a violation
-// string or null. Shared by validatePinnedFetch and validatePinnedHttpsRequest;
-// `label` prefixes the message ('pinned fetch' | 'pinned https request').
-export function validatePinnedUrl(urlArg, spec, label) {
-  const urlText = (urlArg || '').trim();
-  const q = urlText[0];
-  if (q !== "'" && q !== '"' && q !== '`') {
-    return `${label} URL must be a lone string/template literal (got a non-literal expression)`;
-  }
-  const litEnd = skipString(urlText, 0); // index just past the closing quote/backtick
-  if (urlText.slice(litEnd).trim() !== '') {
-    return `${label} URL must be a lone literal — no operator/concatenation after it (${truncate(urlText)})`;
-  }
-  const litBody = urlText.slice(1, litEnd - 1);
-  if (!litBody.startsWith(spec.endpointPrefix)) {
-    return `${label} URL must begin with ${spec.endpointPrefix} (host+path pinned)`;
-  }
-  if (spec.endpointSuffix && !litBody.endsWith(spec.endpointSuffix)) {
-    return `${label} URL must end with ${spec.endpointSuffix} (endpoint pinned)`;
-  }
-  return null;
-}
-
-// Parse the TOP-LEVEL properties of a pinned request init/options OBJECT LITERAL
-// ourselves (not a first-match extract) so a later duplicate key, a spread, or a
-// computed key that would OVERRIDE a pinned property at runtime is rejected (Codex
-// re-review CRITICAL). Returns { violation } on a structural hazard (not an object
-// literal, a trailing operator after the object, unterminated, spread, computed key, a
-// forbidden key, a shorthand of a pinned key, a duplicate pinned key, or a
-// getter/setter/method that could override a pinned key), else { seen } mapping each
-// pinnedKey to its value text. A token buried in a nested string is not a top-level
-// property, so it never satisfies a pinned key. Shared by the fetch and https
-// validators. Options: `pinnedKeys` (captured for the caller's literal checks);
-// `allowedKeys` (when set — https — EVERY top-level key must be in it, an allowlist that
-// fails closed on connection-redirect keys like hostname/path/agent/lookup that
-// node:https merges over the URL); `label` prefixes the message.
-function parsePinnedInit(optsArg, { pinnedKeys, allowedKeys = null, label }) {
-  const opts = (optsArg || '').trim();
-  if (opts[0] !== '{') {
-    return { violation: `${label} init must be an inline object literal { … } (${truncate(opts)})` };
-  }
-  const oClose = matchDelimiter(opts, 0);
-  if (oClose === -1) return { violation: `${label} init object is unterminated` };
-  // No trailing operator/expression after the object literal: `{pinned} && {evil}`
-  // evaluates to {evil} at runtime while a first-object-only parse validates {pinned}
-  // (Codex plan-verify MAJOR). The object literal must BE the whole argument.
-  if (opts.slice(oClose + 1).trim() !== '') {
-    return { violation: `${label} init must be a lone object literal — no operator/expression after it (${truncate(opts)})` };
-  }
-  const seen = {};
-  for (const prop of splitTopLevel(opts.slice(1, oClose))) {
-    const t = prop.trim();
-    if (t === '') continue;
-    if (t.startsWith('...')) {
-      return { violation: `${label} init must not use spread (…) — it can override the pinned request` };
-    }
-    if (t.startsWith('[')) {
-      return { violation: `${label} init must not use a computed key — it can inject a pinned property dynamically` };
-    }
-    const m = t.match(/^([\w$]+|'[^']*'|"[^"]*")\s*:\s*([\s\S]+)$/);
-    let key;
-    if (!m) {
-      const short = t.match(/^([\w$]+)$/);
-      if (short) {
-        key = short[1];
-        // an allowlisted-only options object rejects a shorthand of a non-allowed key too.
-        if (allowedKeys && !allowedKeys.has(key)) {
-          return { violation: `${label} init must not set '${key}' — only ${[...allowedKeys].join('/')} are allowed (a stray key can redirect the request off the pinned host/endpoint)` };
-        }
-        // plain shorthand: reject a pinned key (value hidden); ignore others (e.g. `body`).
-        if (pinnedKeys.has(key)) {
-          return { violation: `${label} init '${key}' must be an explicit key: value (no shorthand)` };
-        }
-        continue;
-      }
-      // getter/setter/method-shorthand/other non-`key: value` form — a getter or method
-      // named like a pinned key overrides it at runtime while a static scan reads only
-      // the earlier literal (Codex round-3 HIGH). Fail closed.
-      return { violation: `${label} init has a non-literal property (${truncate(t)}) — getters/setters/methods/computed keys can override the pinned request` };
-    }
-    key = m[1].replace(/['"]/g, '');
-    // https allowlist: any top-level key outside the allowed set can redirect the request
-    // off the pinned host — node:https merges `hostname`/`host`/`path`/`port`/`protocol`/
-    // `lookup`/`agent`/`createConnection` OVER the URL string (Codex plan-verify CRITICAL).
-    if (allowedKeys && !allowedKeys.has(key)) {
-      return { violation: `${label} init must not set '${key}' — only ${[...allowedKeys].join('/')} are allowed (a stray key can redirect the request off the pinned host/endpoint)` };
-    }
-    if (pinnedKeys.has(key)) {
-      if (seen[key] !== undefined) return { violation: `${label} init has a duplicate '${key}' key — cannot statically pin` };
-      seen[key] = m[2].trim();
-    }
-  }
-  return { seen };
-}
-
-// Validate ONE direct pinned `fetch(url, init)` call. Returns a violation detail
-// string, or null when conformant. Precise (not text-substring): exactly two
-// args; the URL a LONE literal matching endpointPrefix..endpointSuffix; the init an
-// inline object whose TOP-LEVEL method/redirect/timeout properties are the pinned
-// literals.
-export function validatePinnedFetch(inner, spec) {
-  const args = splitTopLevel(inner);
-  if (args.length !== 2) {
-    return `pinned fetch must take exactly (url, init) — got ${args.length} arg(s)`;
-  }
-  const urlViolation = validatePinnedUrl(args[0], spec, 'pinned fetch');
-  if (urlViolation) return urlViolation;
-  // No allowedKeys allowlist for fetch: `fetch(url, init)` does NOT merge init over the
-  // URL for the connection target (unlike node:https.request), so a stray init key cannot
-  // redirect the host — the URL is the sole egress target. Behavior preserved from before
-  // the shared-helper extraction.
-  const parsed = parsePinnedInit(args[1], { pinnedKeys: new Set(['method', 'redirect', 'signal', 'timeout']), label: 'pinned fetch' });
-  if (parsed.violation) return parsed.violation;
-  const { seen } = parsed;
-  if (spec.method && normalizeElement(seen.method || '') !== spec.method) {
-    return `pinned fetch init.method must be the literal '${spec.method}'`;
-  }
-  if (spec.redirect && normalizeElement(seen.redirect || '') !== spec.redirect) {
-    return `pinned fetch init.redirect must be the literal '${spec.redirect}'`;
-  }
-  if (spec.requireTimeout) {
-    // Node's global fetch has NO `timeout` option — only an AbortSignal bounds
-    // the request. Require signal to be EXACTLY AbortSignal.timeout(<arg>) with
-    // no surrounding operator that could resolve to an unbounded signal (Codex
-    // re-review MAJOR: `signal: never || AbortSignal.timeout(5)` and a bare
-    // `timeout:` both slipped the substring check).
-    const sig = (seen.signal || '').trim();
-    if (!/^AbortSignal\s*\.\s*timeout\s*\([^)]*\)$/.test(sig)) {
-      return 'pinned fetch init.signal must be exactly AbortSignal.timeout(<ms>) (Node fetch ignores a `timeout` option; an operator-guarded signal is not bounded)';
-    }
-  }
-  return null;
-}
-
-// Validate ONE direct pinned `<https>.request(url, options[, callback])` call
-// (ADR-0041 §2d node:https transport). Returns a violation string, or null when
-// conformant. Parallel to validatePinnedFetch but for node:https: 2 or 3 args
-// (url, options, optional callback); the URL pinned to endpointPrefix..endpointSuffix;
-// the options carry ONLY the allowlisted keys (method/family/signal/timeout/headers — any
-// other key can redirect the request off the pinned host); the `method` the pinned literal;
-// the bound an auto-aborting `signal: AbortSignal.timeout(<…>)` (a bare `timeout:` option
-// only emits an event, so it is NOT accepted). There is NO redirect key to pin —
-// `node:https.request` does not follow redirects (unlike `fetch`); a redirect-FOLLOW would
-// require a SECOND request to a Location header, which the pinned-https-gate's maxCalls
-// bound forbids.
-// The ONLY option keys a pinned node:https egress request may carry. An ALLOWLIST (not a
-// denylist) so a future/obscure connection-redirect key fails closed by default. Excludes
-// every key node:https merges OVER the URL to change the connection target or path —
-// hostname/host/path/port/protocol/socketPath/href/lookup/agent/createConnection — and
-// TLS-downgrade keys (rejectUnauthorized/ca/cert/key/pfx). `family` (IPv4/IPv6 selection,
-// same host — the ADR-0041 §2d fix) and `headers` are the only non-pinned keys permitted.
-const HTTPS_ALLOWED_OPTION_KEYS = new Set(['method', 'family', 'signal', 'timeout', 'headers']);
-
-export function validatePinnedHttpsRequest(inner, spec) {
-  const args = splitTopLevel(inner);
-  if (args.length < 2 || args.length > 3) {
-    return `pinned https request must take (url, options) or (url, options, callback) — got ${args.length} arg(s)`;
-  }
-  const urlViolation = validatePinnedUrl(args[0], spec, 'pinned https request');
-  if (urlViolation) return urlViolation;
-  const parsed = parsePinnedInit(args[1], {
-    pinnedKeys: new Set(['method', 'signal', 'timeout']),
-    allowedKeys: HTTPS_ALLOWED_OPTION_KEYS,
-    label: 'pinned https request',
-  });
-  if (parsed.violation) return parsed.violation;
-  const { seen } = parsed;
-  if (spec.method && normalizeElement(seen.method || '') !== spec.method) {
-    return `pinned https request options.method must be the literal '${spec.method}'`;
-  }
-  if (spec.requireTimeout && !httpsHasBoundedTimeout(seen)) {
-    return 'pinned https request options must bound the request with signal: AbortSignal.timeout(<ms>) (a bare timeout: option only emits an event, it does not abort the socket)';
-  }
-  return null;
-}
-
-// A pinned https.request bounds its duration ONLY via an auto-aborting
-// `signal: AbortSignal.timeout(<…>)` — the SAME statically-verifiable bound the fetch
-// validator requires. A bare `timeout:` option merely EMITS a 'timeout' event (it does
-// not abort the socket, so it cannot be statically verified to bound the request — Codex
-// plan-verify MAJOR). node:https.request accepts `signal` (Node ≥17.3), so impl passes
-// signal: AbortSignal.timeout(<ms>) — a minimal change from the fetch code it replaces.
-function httpsHasBoundedTimeout(seen) {
-  const sig = (seen.signal || '').trim();
-  return /^AbortSignal\s*\.\s*timeout\s*\([^)]*\)$/.test(sig);
+  return /(?<![.\w$])fetch\b/.test(codeNoStr)
+    || /\.\s*fetch\b/.test(codeNoStr)
+    || /\[\s*(['"`])fetch\1\s*\]/.test(code)
+    || /,\s*(['"`])fetch\1\s*\)/.test(code);
 }
 
 // Find ALL command-origin calls in a file, closing the aliasing/member/namespace
@@ -854,20 +594,12 @@ export function scanFile({ fileName, source, registry }) {
   const code = stripComments(source);
   const isImporter = Object.prototype.hasOwnProperty.call(registry.CAPABILITY_IMPORTERS, fileName);
   const importerSpec = registry.CAPABILITY_IMPORTERS[fileName];
-  // ADR-0041 §2d: a PINNED_HTTPS_USERS entry is a network capability-importer scoped to
-  // the pinned request — it authorizes a STATIC import of exactly its `module` (the
-  // import-gate honors it as it honors a CAPABILITY_IMPORTERS entry). The pinned-https-gate
-  // below then obligates every use of that binding to be the single pinned request.
-  const httpsPinnedSpec = (registry.PINNED_HTTPS_USERS || {})[fileName];
 
   // --- Import-gate -----------------------------------------------------------
   const { staticImports, dynamic, reExports } = findImports(code);
   for (const imp of staticImports) {
     if (!registry.WATCHED_CAPABILITY_MODULES.includes(imp.module)) continue;
-    const cmod = canonicalModule(imp.module);
-    const okAsCapabilityImporter = isImporter && importerSpec.modules.includes(cmod);
-    const okAsPinnedHttps = Boolean(httpsPinnedSpec) && httpsPinnedSpec.module === cmod;
-    if (!okAsCapabilityImporter && !okAsPinnedHttps) {
+    if (!(isImporter && importerSpec.modules.includes(canonicalModule(imp.module)))) {
       violations.push({
         rule: 'import-gate', file: fileName,
         detail: `imports capability module '${imp.module}' but is not a registered CAPABILITY_IMPORTERS entry for it`,
@@ -909,7 +641,7 @@ export function scanFile({ fileName, source, registry }) {
   }
   // Fail closed on a watched-module import whose BINDING the ASCII structured parser cannot
   // resolve — a non-ASCII (`import η from …`) or \u-escaped (`import https …`) binding
-  // evades findImports' `[\w$]` grammar, so import-gate/pinned-https-gate silently miss it
+  // evades findImports' `[\w$]` grammar, so the import-gate above silently misses it
   // (Codex round-2/3 CRITICAL). A statement-anchored scan (so an import-looking DECOY inside a
   // string literal — preceded by `"`, not a statement boundary — is not matched) captures the
   // binding CLAUSE + module specifier of each real import; if the module is watched (or its
@@ -1078,159 +810,25 @@ export function scanFile({ fileName, source, registry }) {
     }
   }
 
-  // --- Global-fetch-gate (non-import-anchored, ADR-0041 §2d) ----------------
-  // FAIL-CLOSED: `fetch` is a global with no import to anchor on and JS offers
-  // unbounded indirection, so this flags EVERY fetch reference and permits ONLY a
-  // direct pinned `fetch(url, init)` call in a GLOBAL_FETCH_USERS file. A fetch
-  // reference in a non-registered file, or any indirect/member/computed/aliased/
-  // `.call`/shadowed fetch anywhere, is a violation. The ADR-0041 §11 keystone
-  // that must land before any fetch use. The SOUND behavioral check of a pinned
-  // request was the egress channel's fetchImpl unit test (ADR-0041 §2b), deleted
-  // with egress by ADR-0064; this gate is the fail-closed CI tripwire +
-  // defense-in-depth (see registry header).
-  const fetchUse = analyzeFetchUse(code); // hoisted: the pinned-https-gate cross-checks it
-  {
-    if (fetchUse.anyUse) {
-      const spec = (registry.GLOBAL_FETCH_USERS || {})[fileName];
-      if (!spec) {
-        violations.push({
-          rule: 'global-fetch-gate', file: fileName,
-          detail: 'global fetch referenced in a file not registered as a GLOBAL_FETCH_USERS entry (ADR-0041 §2d)',
-        });
-      } else {
-        if (fetchUse.indirect) {
-          violations.push({
-            rule: 'global-fetch-gate', file: fileName,
-            detail: 'only a DIRECT pinned fetch(url, init) call is allowed — no member/computed/aliased/.call/shadowed fetch reference (it would evade static pinned-request validation)',
-          });
-        }
-        // Cap the number of direct calls (Codex re-review MAJOR): a second
-        // pinned-shape send could egress to a different token/recipient.
-        const maxCalls = spec.maxCalls ?? 1;
-        if (fetchUse.directCalls.length > maxCalls) {
-          violations.push({
-            rule: 'global-fetch-gate', file: fileName,
-            detail: `at most ${maxCalls} direct pinned fetch call permitted (found ${fetchUse.directCalls.length}) — a second call could egress to a different token/recipient`,
-          });
-        }
-        for (const call of fetchUse.directCalls) {
-          const v = validatePinnedFetch(call.inner, spec);
-          if (v) violations.push({ rule: 'global-fetch-gate', file: fileName, detail: v });
-        }
-      }
-    }
+  // --- Global-fetch-gate (non-import-anchored) -------------------------------
+  // `fetch` is a global, so no import-anchored gate above sees it: every
+  // reference fails, in every runtime script (referencesFetch lists the forms).
+  // No table can permit one; a future network user needs its own ADR and its own
+  // behavioral test of the request it sends (registry: Network egress).
+  if (referencesFetch(code)) {
+    violations.push({
+      rule: 'global-fetch-gate', file: fileName,
+      detail: 'references the global fetch, an outbound-network primitive not permitted in any runtime script (no runtime script reaches the network since ADR-0064 retired tier E1)',
+    });
   }
 
   // --- Global-WebSocket-gate (non-import-anchored egress) --------------------
   // Node ≥22 exposes a global `WebSocket` — a second import-less outbound-network primitive
   // beside `fetch` (Codex round-4 CRITICAL, a plain non-obfuscated egress API). No runtime
   // script legitimately opens a WebSocket, so ANY reference (tested on string-blanked code so
-  // a prose mention is not over-flagged) fails closed — an egress that is neither the pinned
-  // fetch nor the pinned node:https request is forbidden outright.
+  // a prose mention is not over-flagged) fails closed, as a `fetch` reference does.
   if (/(?<![.\w$])WebSocket\b/.test(blankStrings(code))) {
     violations.push({ rule: 'global-websocket-gate', file: fileName, detail: 'the global WebSocket is an outbound-network primitive not permitted in any runtime script (no runtime script reaches the network since ADR-0064 retired tier E1)' });
-  }
-
-  // --- Pinned-HTTPS-gate (import-anchored node:https egress, ADR-0041 §2d) ----
-  // For a PINNED_HTTPS_USERS file, the ONLY permitted network use of its node:https
-  // import binding is a direct, pinned `binding.request(url, options)` — the in-process
-  // replacement for the E1 fetch egress. Mirrors the global-fetch-gate: fail-closed on
-  // indirection, cap the call count (a second call could egress to a different
-  // token/recipient OR manually follow a redirect — node:https does not auto-follow),
-  // reject any OTHER https member method, and validate each request against the pinned
-  // spec. INERT until the import + call actually land (scanner-gate-before-use), so this
-  // registers in the guard slice BEFORE the impl slice adds the transport. PINNED_HTTPS_USERS
-  // is empty since ADR-0064 R4n2 (notify.mjs was its one entry), so on the real registry
-  // this block never runs and the import-gate above rejects every node:https import; the
-  // guard tests exercise it through an injected registry.
-  if (httpsPinnedSpec) {
-    // Resolve the node:https import(s). The pinned egress uses the DEFAULT (or namespace)
-    // binding as `binding.request(url, options)`. Fail closed on:
-    //   - any NAMED (non-default) import from node:https — `{ request }`, `{ request as r }`,
-    //     and the string-literal form `{ 'request' as r }` all detach a primitive from the
-    //     namespace and defeat member-anchored pinning (Codex plan-verify CRITICAL); and
-    //   - MORE THAN ONE binding — `import https, * as h` or two import statements — where one
-    //     binding could be validated while another egresses unchecked (Codex CRITICAL).
-    const bindings = [];
-    let hasNamedImport = false;
-    for (const imp of staticImports) {
-      if (canonicalModule(imp.module) !== httpsPinnedSpec.module) continue;
-      if (imp.namespace) bindings.push(imp.namespace);
-      for (const nm of imp.names) {
-        if (nm.imported === 'default') bindings.push(nm.local);
-        else hasNamedImport = true; // ANY non-default named import, incl. string-literal names
-      }
-    }
-    if (hasNamedImport) {
-      violations.push({
-        rule: 'pinned-https-gate', file: fileName,
-        detail: `a named import from node:https detaches a primitive from the pinned namespace — import the DEFAULT binding and call <binding>.request(url, options) (ADR-0041 §2d)`,
-      });
-    }
-    if (bindings.length > 1) {
-      violations.push({
-        rule: 'pinned-https-gate', file: fileName,
-        detail: `more than one node:https binding (${bindings.join(', ')}) — exactly one default/namespace binding is allowed, else one is validated while another egresses unchecked (ADR-0041 §2d)`,
-      });
-    }
-    // Analyze EVERY resolved binding (so a second binding's egress is validated, not just
-    // flagged as a count) and aggregate the pinned-request call total across bindings.
-    let httpsDirectCalls = 0;
-    for (const binding of bindings) {
-      const use = analyzeHttpsUse(code, binding);
-      httpsDirectCalls += use.directCalls.length;
-      if (use.indirect) {
-        violations.push({
-          rule: 'pinned-https-gate', file: fileName,
-          detail: `the node:https binding '${binding}' is used other than as a single DIRECT pinned '${binding}.request(url, options)' call — no other method, deeper surface (globalAgent/get/…), computed/destructured/value reference, or namespace alias (it would evade static pinned-request validation)`,
-        });
-      }
-      for (const call of use.directCalls) {
-        const v = validatePinnedHttpsRequest(call.inner, httpsPinnedSpec);
-        if (v) violations.push({ rule: 'pinned-https-gate', file: fileName, detail: v });
-      }
-    }
-    // A local shadow of the global `AbortSignal` makes `AbortSignal.timeout(...)` untrusted
-    // (the pinned request would not actually be bounded), and shadowing it in the egress file
-    // is never legitimate (Codex round-3 HIGH). The ONLY legitimate use of the bare
-    // `AbortSignal` identifier here is as the callee of `AbortSignal.timeout(...)`, so if the
-    // bare identifier appears MORE times than `.timeout` uses of it, it is also bound some
-    // other way — a `const/let/var/class` decl, a function/catch PARAMETER, an import, or a
-    // destructure (Codex round-4 HIGH — the keyword-only check missed params). Count-based,
-    // mirroring the namespace-alias detection.
-    if (httpsDirectCalls > 0) {
-      const nostr = blankStrings(code);
-      const bareAbortSignal = (nostr.match(/(?<![.\w$])AbortSignal(?![\w$])/g) || []).length;
-      const timeoutUses = (nostr.match(/(?<![.\w$])AbortSignal\s*\.\s*timeout\b/g) || []).length;
-      if (bareAbortSignal > timeoutUses) {
-        violations.push({
-          rule: 'pinned-https-gate', file: fileName,
-          detail: 'the global `AbortSignal` is referenced other than as `AbortSignal.timeout(...)` (a local decl / parameter / import / destructure shadows it) — the pinned request’s signal bound cannot be statically trusted (remove the shadow)',
-        });
-      }
-    }
-    // Cap the AGGREGATE pinned-request count across all bindings: a second call could egress
-    // to a different token/recipient or manually follow a redirect (node:https does not
-    // auto-follow). maxCalls:1 forces the IPv4-preferred→fallback retry to loop around ONE
-    // call site (varying only the non-pinned `family`).
-    const maxCalls = httpsPinnedSpec.maxCalls ?? 1;
-    if (httpsDirectCalls > maxCalls) {
-      violations.push({
-        rule: 'pinned-https-gate', file: fileName,
-        detail: `at most ${maxCalls} direct pinned node:https request permitted (found ${httpsDirectCalls}) — a second call could egress to a different token/recipient or follow a redirect`,
-      });
-    }
-    // Cross-transport mutual exclusion: a file (notify.mjs, until ADR-0064) may be registered in BOTH
-    // GLOBAL_FETCH_USERS and PINNED_HTTPS_USERS during the guard→impl swap window, but must
-    // never ACTIVELY use both — a leftover pinned fetch plus a new pinned https.request is a
-    // double-send (Codex plan-verify MAJOR). The impl slice removes the fetch as it adds the
-    // request, so the swap is atomic.
-    if (httpsDirectCalls > 0 && fetchUse.directCalls.length > 0) {
-      violations.push({
-        rule: 'pinned-https-gate', file: fileName,
-        detail: `both a pinned fetch AND a pinned node:https request are active in this file — the fetch→node:https transport swap must be atomic (remove the fetch when adding the request) to avoid a double-send (ADR-0041 §2d)`,
-      });
-    }
   }
 
   // --- Kill-gate -------------------------------------------------------------
@@ -1286,7 +884,7 @@ export function scanFile({ fileName, source, registry }) {
   //   fs-delete-gate — a recursive:true removal must be a registered
   //     ALLOWED_RECURSIVE_REMOVALS site pinned to its exact target identifier.
   // Detection runs on string-blanked code (an `open(` inside an error-message
-  // string must not count — the same discipline as analyzeFetchUse); each
+  // string must not count — the same discipline as referencesFetch); each
   // call's real inner is re-extracted from the unblanked source, which is
   // position-identical because blankStrings preserves length.
   {
