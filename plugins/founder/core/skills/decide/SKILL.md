@@ -327,7 +327,9 @@ Risk-class / Evidence-confidence).
 
 ### Steps 1-4
 
+<!-- pipeline:begin decide-steps -->
 Follow the auto-activated steps above, at command fidelity.
+<!-- pipeline:end decide-steps -->
 
 ### Step 5: Peer ensemble parallel analysis (Brainstorm point)
 
@@ -347,8 +349,10 @@ directions both ways and ask the user.
 
 ### Approval gate
 
+<!-- pipeline:begin decide-approval-gate -->
 **Wait for the user to choose a direction** — do not proceed without
 explicit approval.
+<!-- pipeline:end decide-approval-gate -->
 
 ### State write (when invoked from a workflow command)
 

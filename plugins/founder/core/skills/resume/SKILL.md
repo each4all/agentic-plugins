@@ -58,17 +58,20 @@ is no `plugin_hooks` settings key.)
 
 ## Claude/Codex command resolution
 
+<!-- pipeline:begin resume-command-resolution -->
 | Concern | Claude | Codex |
 |---------|--------|-------|
 | Plugin root | Each shell block of the Claude command sets `$CLAUDE_PLUGIN_ROOT` first: from `AGENTIC_FOUNDER_ROOT` when set, else from the plugin path Claude Code writes into the command body when it loads it, else from the newest release (`X.Y.Z`) under `~/.claude/plugins/cache/agentic-plugins/founder/` | For a mentioned `founder` skill, the plugin directory that contains it (inside `$founder:start`, the mentioned skill is `start`, which runs the six verb skills in place): Codex injects a mentioned skill with its absolute path (`<path>…/core/skills/<skill>/SKILL.md</path>`), and dropping `/core/skills/<skill>/SKILL.md` from it leaves the root, which holds `.codex-plugin/plugin.json`. If that path is no longer in context, for example after compaction, a new mention of the skill supplies it again. With the default Codex home and the `agentic-plugins` marketplace added from Git, the root is `~/.codex/plugins/cache/agentic-plugins/founder/<version>`, the versioned copy Codex loads skills from, and `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/founder` is the marketplace checkout, which tracks the repository's `main` branch, not that copy. |
 | Entry path | `/founder:resume [archive [<id>]]` (slash command in `commands/resume.md`) | `$founder:resume` skill mention — this SKILL.md is the runbook |
 | `state.mjs` host flag | `--host claude` | `--host codex` |
 | Argument intake | `$ARGUMENTS` (Claude convention) | The full skill-mention argument string passed by the Codex runtime |
+<!-- pipeline:end resume-command-resolution -->
 
 ---
 
 ## Phase 0 — Argument intake
 
+<!-- pipeline:begin resume-intake -->
 Inspect the argument string (the full text after `/founder:resume` on
 Claude, or after `$founder:resume` on Codex):
 
@@ -77,6 +80,7 @@ Claude, or after `$founder:resume` on Codex):
   with Phase 3.
 - **Anything else** → reject with a one-line usage hint and stop. `resume`
   accepts only the empty form or `archive [<id>]`.
+<!-- pipeline:end resume-intake -->
 
 ---
 
@@ -150,6 +154,7 @@ one-line "Last checkpoint" entry above the drift block.
 
 ### Dirty-case enrichment (ADR-0018 §sub-decision-3)
 
+<!-- pipeline:begin resume-dirty-enrichment -->
 When `drift == dirty`, run native git probes guarded by a baseline validity
 check (the baseline commit object must be available via `git cat-file -e
 <head>^{commit}` — guards against shallow / GC'd / rewritten / hand-edited
@@ -170,11 +175,13 @@ After the probes, **always** render the auto-reconcile-not-supported notice:
 ```
   current plugin does not auto-reconcile; review and decide [resume / archive / abort]
 ```
+<!-- pipeline:end resume-dirty-enrichment -->
 
 ---
 
 ## Phase 2b — Append resume marker
 
+<!-- pipeline:begin resume-marker -->
 If the baseline commit object is available, append a `host_history` entry
 via `state.mjs append --event resumed` — host-flag is `claude` or `codex`
 per the runtime invoking this skill. **Skip** the marker append when the
@@ -184,6 +191,7 @@ Phase 2 may not survive across Bash invocations).
 Do NOT bump `current_phase` or `next_action` — the resume marker is purely a
 host-history append. The user (or the next verb skill / `founder:start`)
 controls phase progression.
+<!-- pipeline:end resume-marker -->
 
 ---
 

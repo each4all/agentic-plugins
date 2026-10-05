@@ -1,5 +1,5 @@
 {
-  "schema": "persona-declaration-1.1",
+  "schema": "persona-declaration-1.2",
   "name": "founder",
   "deliverable_noun": "business deliverable",
   "runtime_footer_floor": "0.79.0",
@@ -150,11 +150,26 @@
       "evidence_pointers": "plan sections / brief path",
       "next_action": "Critique the composed planning artifact"
     },
+    "critique": {
+      "profiles": [
+        "default",
+        "red-team"
+      ],
+      "default_profile": "default",
+      "request_placeholder": "one-line genericized review target"
+    },
     "refine": {
+      "request_placeholder": "one-line genericized refine target",
       "terminal_requires_convergence": false
     },
     "start": {
+      "request_placeholder": "one-line genericized business topic",
       "terminal_requires_convergence": false
     }
+  },
+  "peer": {
+    "privacy_scope": "proprietary venture concepts, interview/customer data, and unpublished business material",
+    "privacy_spec": "core/skills/investigate/references/business-brief-spec.md",
+    "images": false
   }
 }

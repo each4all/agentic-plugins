@@ -115,14 +115,18 @@ Note CONFLICT items for user resolution.
 
 ### Step 5: Present
 
+<!-- pipeline:begin compose-present -->
 Present the synthesized artifact and confirm before downstream verbs.
+<!-- pipeline:end compose-present -->
 
 ### State write (when invoked from a workflow command)
 
+<!-- pipeline:begin compose-state-write -->
 When `/founder:compose` runs as a sub-step of a founder workflow command,
 the invoking command writes the artifact + progress to its workflow file.
 This skill itself does not write workflow state. When invoked standalone,
 no workflow file write occurs.
+<!-- pipeline:end compose-state-write -->
 
 ---
 

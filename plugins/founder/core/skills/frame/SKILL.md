@@ -127,8 +127,10 @@ After both sides return:
 
 ### Step 5: Present
 
+<!-- pipeline:begin frame-present -->
 Use the same shape as auto-activated mode, at the deeper synthesized
 fidelity. Present clearly and confirm before downstream verbs.
+<!-- pipeline:end frame-present -->
 
 ### State write (when invoked from a workflow command)
 

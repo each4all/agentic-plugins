@@ -13,11 +13,13 @@ runs automatically (Review point for default, Adversarial-scan point for
 direct them to run companion CLIs manually. When the companions plugin or
 peer CLI is unavailable, the ensemble degrades silently to local-only.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_FOUNDER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 > **founder is not an orchestrator dispatch target** (ADR-0036 Non-Goal
 > 3): this command does NOT read `AGENTIC_PARENT_WORKFLOW` /
@@ -29,14 +31,17 @@ shell variable does not outlive a Bash call.
 
 ## Phase 0 — Workflow continuity (per ADR-0011 §5)
 
+<!-- pipeline:begin critique-phase-0 -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='founder'
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
-# ADR-0018 §sub-2 — founder workflows are anchored to a branch.
+# ADR-0018 §sub-2 — the persona's workflows are anchored to a branch.
 if [ -z "$GIT_BRANCH" ]; then
-  echo "✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
@@ -48,39 +53,54 @@ if [ "$FIND_RC" -ne 0 ]; then
   exit "$FIND_RC"
 fi
 ```
+<!-- pipeline:end critique-phase-0 -->
 
-- Empty `$ACTIVE` → bootstrap with verb=critique:
+Empty `$ACTIVE` → bootstrap with verb=critique:
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  GIT_BRANCH="$(git branch --show-current)"
-  GIT_HEAD="$(git rev-parse HEAD)"
-  STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
-  ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
-    --repo-root "$REPO_ROOT" \
-    --verb critique --host "${AGENTIC_HOST:-claude}" --persona founder \
-    --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
-    --status-digest "$STATUS_DIGEST" \
-    --profile "${AGENTIC_PROFILE:-<default or red-team from \$ARGUMENTS>}" \
-    --original-request "${AGENTIC_TOPIC:-<one-line genericized review target>}" \
-    --current-phase phase-0-bootstrap \
-    --next-action "Run critique skill")"
-  ```
+<!-- pipeline:begin critique-bootstrap -->
+In the block, replace the profile placeholder with the profile the arguments
+name, and `<the original request described above>` with a
+one-line genericized review target; `AGENTIC_PROFILE` and `AGENTIC_TOPIC` take their
+places when they are set.
 
-- Non-empty `$ACTIVE` → append-on-resume:
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='critique'
+DEFAULT_PROFILE='default'
+GIT_BRANCH="$(git branch --show-current)"
+GIT_HEAD="$(git rev-parse HEAD)"
+STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
+  --repo-root "$REPO_ROOT" \
+  --verb 'critique' --host "${AGENTIC_HOST:-claude}" --persona 'founder' \
+  --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
+  --status-digest "$STATUS_DIGEST" \
+  --profile "${AGENTIC_PROFILE:-<profile from the arguments above — default ${DEFAULT_PROFILE}>}" \
+  --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
+  --current-phase phase-0-bootstrap \
+  --next-action "Run ${VERB} skill")" || exit $?
+```
+<!-- pipeline:end critique-bootstrap -->
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb critique \
-    --profile "<default|red-team or empty>" \
-    --phase-label "Phase 0: Resume into critique" \
-    --phase-note "Resumed from prior verb. Profile=<...>." \
-    --current-phase phase-0-resume \
-    --next-action "Run critique skill" --event resumed
-  ```
+Non-empty `$ACTIVE` → append-on-resume:
+
+<!-- pipeline:begin critique-resume -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+VERB='critique'
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb 'critique' \
+  --profile "<profile or empty>" \
+  --phase-label "Phase 0: Resume into ${VERB}" \
+  --phase-note "Resumed from prior verb. Profile=<...>." \
+  --current-phase phase-0-resume \
+  --next-action "Run ${VERB} skill" --event resumed || exit $?
+```
+<!-- pipeline:end critique-resume -->
 
 ---
 
@@ -109,11 +129,17 @@ critique produces findings; `/founder:refine` applies the changes.
 
 ### Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary venture concepts, interview/customer data, and
-unpublished business material pass an explicit gate before BOTH web
-search AND peer-host dispatch. Genericize the artifact before the peer
-prompt; the pre-genericization value MUST never leave the local host. See
-`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:begin critique-privacy-gate -->
+PRIVACY GATE: proprietary venture concepts, interview/customer data, and unpublished business material
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize the artifact before the peer prompt; the pre-genericization value MUST never leave the local host.
+See `core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end critique-privacy-gate -->
+
+<!-- pipeline:begin critique-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end critique-privacy-no-image -->
 
 ### Ensemble dispatch (Review point for default; Adversarial-scan point for red-team)
 
@@ -125,8 +151,9 @@ or venture scope (red-team) and returns findings; the privacy gate must
 have passed first.
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 PROMPT_FILE="$(mktemp -t founder-critique-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 # Resolve ENSEMBLE_TYPE from the Phase 1 profile BEFORE building the prompt:
@@ -158,11 +185,14 @@ Graceful degradation: companion missing or exit code 3
 
 ---
 
+<!-- pipeline:begin critique-finalize-heading -->
 ## Phase 2 — State finalize
+<!-- pipeline:end critique-finalize-heading -->
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 NOTE="### Ensemble launched: critique (\$ENSEMBLE_TYPE) at <iso-utc>
 
 ### Ensemble synthesis: critique (profile=<default|red-team>) verdict=<sound|concerns|veto|conflict>
@@ -264,8 +294,9 @@ Always include the workflow path:
 Workflow: <absolute path to workflow .md file>
 ```
 
+<!-- pipeline:begin critique-completion-footer -->
 The runtime completion footer is **code-emitted** on this verb's terminal
-path (ADR-0039, enabled for founder by ADR-0043 S3): `state.mjs
+path (ADR-0039, enabled for founder by ADR-0043): `state.mjs
 set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
 to the runtime `footer.mjs` and prints the rendered footer — context
 state, completion state (founder's manually-published mapping surfaces
@@ -281,3 +312,4 @@ context. Detached HEAD never auto-recommends a fresh session (ADR-0018
 context" — the path-targeted terminal sidecar still renders normally).
 Wiring details:
 `core/skills/_shared/references/session-handoff.md`.
+<!-- pipeline:end critique-completion-footer -->

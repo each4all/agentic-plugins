@@ -44,11 +44,11 @@ const SEMVER_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 // The format minor this loader reads. A newer minor's unknown scalar is
 // forgiven; an unknown object or list is refused at any minor (ADR-0034 §4.1,
 // as the schema validator reads it).
-const READER_MINOR = 1;
+const READER_MINOR = 2;
 // The document cap the schema validator applies (SCHEMA_MAX_BYTES), measured
 // the same way: the declaration pretty-printed, in UTF-8 bytes.
 const MAX_BYTES = 64 * 1024;
-const TOP_KEYS = ['schema', 'name', 'deliverable_noun', 'runtime_footer_floor', 'capabilities', 'decide', 'verbs'];
+const TOP_KEYS = ['schema', 'name', 'deliverable_noun', 'runtime_footer_floor', 'capabilities', 'decide', 'verbs', 'peer'];
 const DECIDE_KEYS = ['fallback', 'size_presets', 'profile_presets', 'tie_break'];
 const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'critique', 'refine', 'start']);
 const VERB_KEYS = [
@@ -56,6 +56,8 @@ const VERB_KEYS = [
   'rationale_gate', 'evidence_pointers', 'next_action', 'terminal_requires_convergence',
 ];
 const LINE_RE = /^[^\n\r\0]*$/;
+const PEER_KEYS = ['privacy_scope', 'privacy_spec', 'images'];
+const SPEC_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/;
 
 export class PersonaDeclarationError extends Error {
   constructor(message) {
@@ -165,6 +167,7 @@ function structureProblems(d, minor) {
     no(`capabilities must set exactly ${CAPABILITIES.join(', ')} to true or false`);
   }
   if (d.verbs !== undefined) verbProblems(d.verbs, unknown, no);
+  if (d.peer !== undefined) peerProblems(d.peer, unknown, no);
   const decide = d.decide;
   if (!isObject(decide)) {
     no('decide is missing');
@@ -240,6 +243,20 @@ function verbProblems(verbs, unknown, no) {
       no(`${at}.terminal_requires_convergence must be true or false`);
     }
   }
+}
+
+/** Format 1.2: `peer`, the peer policy. */
+function peerProblems(peer, unknown, no) {
+  if (!isObject(peer)) {
+    no('peer must be an object');
+    return;
+  }
+  for (const key of unknown(peer, PEER_KEYS)) no(`unknown key peer.${key}`);
+  if (!isLine(peer.privacy_scope)) no('peer.privacy_scope must be one non-empty line of at most 512 characters');
+  if (!(typeof peer.privacy_spec === 'string' && peer.privacy_spec.length <= 256 && SPEC_RE.test(peer.privacy_spec))) {
+    no('peer.privacy_spec must be a plugin-relative path');
+  }
+  if (typeof peer.images !== 'boolean') no('peer.images must be true or false');
 }
 
 function field(d, path) {

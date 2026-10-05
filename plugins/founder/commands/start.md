@@ -26,24 +26,29 @@ SKILL.md.
 > parent-linkage flags at the CLI. `start` sequences founder's own verbs
 > in-place; it never transits cross-plugin boundaries.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_FOUNDER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 ---
 
 ## Phase 0 — Bootstrap (continuity + clean-baseline gate)
 
+<!-- pipeline:begin start-phase-0 -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='founder'
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
-# ADR-0018 §sub-2 — founder workflows are anchored to a branch.
+# ADR-0018 §sub-2 — the persona's workflows are anchored to a branch.
 if [ -z "$GIT_BRANCH" ]; then
-  echo "✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
@@ -55,88 +60,104 @@ if [ "$FIND_RC" -ne 0 ]; then
   exit "$FIND_RC"
 fi
 ```
+<!-- pipeline:end start-phase-0 -->
 
-- Empty `$ACTIVE` → **clean-baseline gate, then bootstrap** with
-  `workflow_type=start`:
+Empty `$ACTIVE` → **clean-baseline gate, then bootstrap** with
+`workflow_type=start`:
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline --repo-root "$REPO_ROOT")"
-  BASELINE_RC=$?
-  if [ "$BASELINE_RC" -ne 0 ]; then
-    echo "✗ clean-baseline check failed (exit $BASELINE_RC); its error is above." >&2; exit "$BASELINE_RC"
-  fi
-  STATUS="$(printf '%s' "$BASELINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{process.stdout.write("")}})')"
-  # Fail CLOSED: only an explicit clean/accepted proceeds. A dirty tree, an
-  # empty status, or any unrecognized value stops the bootstrap — the gate
-  # must never fail open on a parse error or a non-zero check.
-  case "$STATUS" in
-    clean|accepted) ;;  # proceed
-    dirty)
-      echo "✗ Working tree not clean — /founder:start gates a clean baseline before bootstrapping a deliverable." >&2
-      echo "  Resolve, then re-run:" >&2
-      echo "    • clean:  git restore . ; git clean -fd" >&2
-      echo "    • stash:  git stash push --include-untracked  (re-run, then git stash pop)" >&2
-      echo "    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree" >&2
-      exit 1;;
-    *)
-      echo "✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed)." >&2
-      exit 1;;
-  esac
-  GIT_HEAD="$(git rev-parse HEAD)"
-  STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
-  ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
-    --repo-root "$REPO_ROOT" \
-    --verb investigate --workflow-type start \
-    --host "${AGENTIC_HOST:-claude}" --persona founder \
-    --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
-    --status-digest "$STATUS_DIGEST" \
-    --original-request "${AGENTIC_TOPIC:-<one-line genericized business topic from \$ARGUMENTS>}" \
-    --current-phase phase-1-discover \
-    --next-action "Run Phase 1 discover+frame+decide composite")"
-  ```
+<!-- pipeline:begin start-bootstrap -->
+In the block, replace `<the original request described above>` with a
+one-line genericized business topic; `AGENTIC_TOPIC` takes its place when it is set. The
+block sets the repository and branch itself: a shell variable does not outlive
+a Bash call.
 
-- Non-empty `$ACTIVE` → **read `workflow_type` first** — the lifecycle macro
-  must NOT absorb a single-verb (`verb-chain`) workflow into lifecycle phase
-  space (state.mjs defaults non-start workflows to `verb-chain` and validates
-  `start` as a separate discriminator):
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='founder'
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+GIT_BRANCH="$(git branch --show-current)"
+BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline --repo-root "$REPO_ROOT")"
+BASELINE_RC=$?
+if [ "$BASELINE_RC" -ne 0 ]; then
+  echo "✗ clean-baseline check failed (exit $BASELINE_RC); its error is above." >&2; exit "$BASELINE_RC"
+fi
+STATUS="$(printf '%s' "$BASELINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{process.stdout.write("")}})')"
+# Fail CLOSED: only an explicit clean/accepted proceeds. A dirty tree, an
+# empty status, or any unrecognized value stops the bootstrap — the gate
+# must never fail open on a parse error or a non-zero check.
+case "$STATUS" in
+  clean|accepted) ;;  # proceed
+  dirty)
+    echo "✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable." >&2
+    echo "  Resolve, then re-run:" >&2
+    echo "    • clean:  git restore . ; git clean -fd" >&2
+    echo "    • stash:  git stash push --include-untracked  (re-run, then git stash pop)" >&2
+    echo "    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree" >&2
+    exit 1;;
+  *)
+    echo "✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed)." >&2
+    exit 1;;
+esac
+GIT_HEAD="$(git rev-parse HEAD)"
+STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
+  --repo-root "$REPO_ROOT" \
+  --verb investigate --workflow-type start \
+  --host "${AGENTIC_HOST:-claude}" --persona 'founder' \
+  --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
+  --status-digest "$STATUS_DIGEST" \
+  --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
+  --current-phase phase-1-discover \
+  --next-action "Run Phase 1 discover+frame+decide composite")" || exit $?
+```
+<!-- pipeline:end start-bootstrap -->
 
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  WF_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" \
-    | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.stdout.write("verb-chain")}})')"
-  ```
+Non-empty `$ACTIVE` → **read `workflow_type` first** — the lifecycle macro
+must NOT absorb a single-verb (`verb-chain`) workflow into lifecycle phase
+space (state.mjs defaults non-start workflows to `verb-chain` and validates
+`start` as a separate discriminator):
 
-  - `workflow_type == start` → **resume into start**: report the active
-    workflow's `verb` / `current_phase` / `next_action` and continue the
-    lifecycle from where it stopped (do not re-bootstrap).
-  - `workflow_type != start` (a `verb-chain` single-verb workflow) →
-    **reject**: do NOT mutate it into lifecycle phase space. Tell the user an
-    active single-verb workflow exists on this branch; finish or archive it
-    first (`/founder:resume` / `/founder:resume archive`), or continue it with
-    the matching `/founder:<verb>`, then re-run `/founder:start`.
+<!-- pipeline:begin start-resume -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+WF_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.stdout.write("verb-chain")}})')"
+```
+<!-- pipeline:end start-resume -->
 
-  For a clean/dirty drift report on the active workflow, the user can run
-  `/founder:resume`.
+- `workflow_type == start` → **resume into start**: report the active
+  workflow's `verb` / `current_phase` / `next_action` and continue the
+  lifecycle from where it stopped (do not re-bootstrap).
+- `workflow_type != start` (a `verb-chain` single-verb workflow) →
+  **reject**: do NOT mutate it into lifecycle phase space. Tell the user an
+  active single-verb workflow exists on this branch; finish or archive it
+  first (`/founder:resume` / `/founder:resume archive`), or continue it with
+  the matching `/founder:<verb>`, then re-run `/founder:start`.
 
+For a clean/dirty drift report on the active workflow, the user can run
+`/founder:resume`.
+
+<!-- pipeline:begin start-initial-verb -->
 The initial `verb` is `investigate` (Phase 1a); rotate the `verb` field at
 each phase boundary via `state.mjs append --verb <verb>` so SessionStart
 re-injection sees the active cognitive activity (SKILL.md § intra-document
 execution model).
+<!-- pipeline:end start-initial-verb -->
 
 ---
 
 ## Privacy gate (whole lifecycle)
 
-PRIVACY GATE: proprietary venture concepts, interview/customer data, and
-unpublished business material pass an explicit gate before BOTH web search
-AND peer-host dispatch. The lifecycle runs web search (Phase 1 investigate)
-and dispatches the peer ensemble at every phase boundary (always-max) —
-genericize before any external call; the pre-genericization value MUST never
-leave the local host. See
-`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:begin start-privacy-gate -->
+PRIVACY GATE: proprietary venture concepts, interview/customer data, and unpublished business material
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+The lifecycle runs web search (Phase 1 investigate) and dispatches the peer ensemble at every phase boundary (always-max) — genericize before any external call; the pre-genericization value MUST never leave the local host.
+See `core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end start-privacy-gate -->
 
 ---
 
@@ -158,10 +179,17 @@ Follow `${CLAUDE_PLUGIN_ROOT}/core/skills/start/SKILL.md` for the cognitive runb
 5. **Phase 4 — refine** to convergence (re-verify internal consistency; loop
    refine + peer re-verify until findings converge).
 
+<!-- pipeline:begin start-phase-boundary -->
 Each phase boundary writes state via `state.mjs append --verb <verb>
 --current-phase <phase> --next-action <...> --event updated` and dispatches
 the per-phase peer ensemble per
 `core/skills/_shared/references/ensemble-protocol.md` (always-max).
+<!-- pipeline:end start-phase-boundary -->
+
+<!-- pipeline:begin start-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end start-privacy-no-image -->
 
 ---
 
@@ -172,8 +200,9 @@ Present the final business artifact and save it (durable
 `<root>/YYYY-MM-DD_<topic-slug>/` location). Write terminal state:
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # ADR-0029 §1 / completion-output contract §2 — write the COMPACT form
 # (selected_next + one-line why + next_command) into --next-action; the
 # code-emitted footer surfaces it verbatim as "recommended next work".

@@ -133,11 +133,17 @@ a per-call flag.
 
 ### Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary venture concepts, interview/customer data, and
-unpublished business material pass an explicit gate before BOTH web
-search AND peer-host dispatch. Genericize before the peer prompt; the
-pre-genericization value MUST never leave the local host. See
-`core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:begin compose-privacy-gate -->
+PRIVACY GATE: proprietary venture concepts, interview/customer data, and unpublished business material
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize before the peer prompt; the pre-genericization value MUST never leave the local host.
+See `core/skills/investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end compose-privacy-gate -->
+
+<!-- pipeline:begin compose-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end compose-privacy-no-image -->
 
 ### Ensemble dispatch (Plan-verify point type)
 
