@@ -3,11 +3,11 @@
 // machine-bootstrap-contract.md §11.2 — the PUBLIC-SURFACE half of the test
 // obligations, driven through `runBootstrap` with every dependency injected
 // (probe runner, subprocess runner, home, cwd, clock). The storage
-// layer's obligations (#16/#28/#29/#30/#32 at the library seam) live in
+// layer's obligations (#16/#28/#29/#32 at the library seam) live in
 // tests/runtime/test-bootstrap.mjs; this file exercises the §3 grammar, the
 // R0/M1 boundary, the no-executor rule, and the CLI lifecycle end to end.
 
-import { deepStrictEqual, match, notStrictEqual, ok, rejects, strictEqual } from 'node:assert';
+import { deepStrictEqual, match, notStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,7 +26,7 @@ import {
   renderText,
   runBootstrap,
 } from '../../plugins/runtime/scripts/bootstrap.mjs';
-import { makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
+import { makeDefValidator, makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 import {
   projectModelEffort,
   readUserGlobalModelEffort,
@@ -241,7 +241,12 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
       ['plan', '--plugins', 'runtime,companions'],
       ['plan', '--out', 'x'],
       ['abandon'],
+      // ADR-0064 Decision 3 removed the portable machine profile: its verbs and
+      // the plan flag that read one are refused like any unknown token. Each
+      // argv here was VALID before the removal.
       ['profile', 'export'],
+      ['profile', 'seed', '--profile-file', 'x'],
+      ['plan', '--profile-file', 'x'],
       ['nonsense'],
     ]) {
       let threw = null;
@@ -253,6 +258,12 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
       ok(threw, `${argv.join(' ')} must be rejected`);
       strictEqual(threw.exitCode, EXIT.INVALID);
     }
+    // The removed surface is refused for being removed, not for a grammar slip
+    // around it.
+    for (const argv of [['profile', 'export'], ['profile', 'seed', '--profile-file', 'x']]) {
+      throws(() => parseBootstrapArgs(argv), /unknown verb 'profile'/);
+    }
+    throws(() => parseBootstrapArgs(['plan', '--profile-file', 'x']), /--profile-file is not part of the 'plan' grammar/);
   });
 
   it('#12 — an illegal decline (never-declinable step) exits 40, an unexpected step_id exits 40', async () => {
@@ -531,7 +542,7 @@ describe('runtime bootstrap CLI — R0 and executor boundaries', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Lifecycle, concurrency, abandonment, profiles (#4, #29, #30, path security)
+// Lifecycle, concurrency, abandonment, seeded_from read-back (#29, path security)
 // ---------------------------------------------------------------------------
 
 describe('runtime bootstrap CLI — lifecycle', () => {
@@ -1062,6 +1073,13 @@ describe('runtime bootstrap CLI — schema-minor migration (ADR-0048 §1)', () =
     // run could only be abandoned (Decision 7, first bullet).
     const validate = await makeValidator('runtime-bootstrap-run', { pluginRoot: PLUGIN_ROOT });
     deepStrictEqual(validate(seeded).errors, [], 'the retained 1.4 manifest validates under the packaged schema');
+    // The retired $defs stay valid as well, though the reader skips the files by
+    // name and never validates them: $defs/proof keeps the egress kind with
+    // provider_ack and mirror_correlated, and $defs/egressReceiptAttestation stays.
+    const validateProof = await makeDefValidator('runtime-bootstrap-run', 'proof', { pluginRoot: PLUGIN_ROOT });
+    deepStrictEqual(validateProof(retiredAckRecord()).errors, [], 'a retained egress proof record still validates against $defs/proof');
+    const validateReceipt = await makeDefValidator('runtime-bootstrap-run', 'egressReceiptAttestation', { pluginRoot: PLUGIN_ROOT });
+    deepStrictEqual(validateReceipt(retiredReceiptRecord()).errors, [], 'a retained receipt attestation still validates against its $def');
     await mkdir(join(runDir, 'proof'), { recursive: true });
     const ackPath = join(runDir, 'proof', 'egress-provider-ack.json');
     const receiptPath = join(runDir, 'proof', 'egress-receipt-attestation.json');

@@ -172,7 +172,7 @@ established, the step status is **`unknown`** — never `satisfied` — and it i
 surfaced as `manual-follow-up` with the exact registration command. Absence of
 evidence is never evidence of registration.
 
-### 1.3 Planner composition requires purity — three extractions, not two lifts
+### 1.3 Planner composition requires purity — extractions, not lifts
 
 > **ADR-0057 (2026-08-28)** removed the permission planner and its host-config
 > reader, so this section is **four** extractions rather than the five it shipped
@@ -208,22 +208,26 @@ records the pre-extraction state, not the tree. Where the planner lives now:
 |---|---|---|---|
 | plugin-management plan half | `lib/plugin-management-plan.mjs` | — | — (execute half stays in `scripts/settings.mjs`) |
 
-Two S8a3 findings worth carrying forward, because a consumer that assumes otherwise
-will be wrong:
+Two S8a3 findings, kept as the rule's rationale. The builders they were measured
+on are gone: the permission planner (ADR-0057, 2026-08-28) and the notification
+and egress-launcher builders (ADR-0064 Decision 1, deleted in slice R4n2,
+2026-10-05):
 
 1. **No pure build takes a `repoRoot`.** The point is capability, not referential
-   purity: a builder that accepts a repo root can grow a repo-relative read later. A
-   Codex trust target is passed inside `gathered` as an explicit
-   `{ applicable, path }` pair. A caller with no project context sets
-   `applicable: false` and gets no `[projects]` entry — passing a null path instead
-   renders a `[projects."null"]` header, because the TOML renderer stringifies whatever
-   it receives.
+   purity: a builder that accepts a repo root can grow a repo-relative read later. The
+   permission planner passed a Codex trust target inside `gathered` as an explicit
+   `{ applicable, path }` pair. A caller with no project context set
+   `applicable: false` and got no `[projects]` entry — passing a null path instead
+   rendered a `[projects."null"]` header, because the TOML renderer stringified
+   whatever it received.
 2. **Purity is a property of the build FUNCTION, not of the import graph.** These
    closures legitimately contain filesystem modules — the usage learner reads records
    synchronously, and `version.mjs` reads manifests at module initialization. The
    promise a caller may rely on is: synchronous, deterministic for identical
    `gathered` + injected clock/run-id, writes nothing, holds no repository capability,
-   and never reaches `doctor.mjs`. `tests/runtime/test-planner-purity.mjs` is the gate.
+   and never reaches `doctor.mjs`. `tests/runtime/test-planner-purity.mjs` pinned this
+   for the notification and egress-launcher builders until ADR-0064 removed them; it
+   now pins only the §1.1 import closure of `statusline-plan.mjs`.
 
 ### 1.4 Plugin selection input and version policy
 
@@ -567,11 +571,11 @@ runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
   reason PER LINE under a renderer-authored label, each line independently
   bounded, the block bounded as a whole, and any remainder declared on its own
   `<label>-omitted:` line with a count — so no reason can spend another's budget
-  and no omission is silent. It applies to all three reason arrays on
-  `completion` (the Stage-8 proofs and the Codex `/hooks` attestation; the third,
-  the egress receipt attestation, went with that verdict in ADR-0064 R4n1,
-  2026-10-05). It also applied to the `profile seed` proposal
-  and note rows until that verb was removed (ADR-0064 Decision 3, 2026-10-04).
+  and no omission is silent. It applies to both reason arrays on `completion`,
+  the Stage-8 proofs and the Codex `/hooks` attestation. (A third, the egress
+  receipt attestation's, went with that verdict in ADR-0064 R4n1, 2026-10-05.)
+  It also applied to the `profile seed` proposal and note rows until that verb
+  was removed (ADR-0064 Decision 3, 2026-10-04).
   The omission marker carries a DIFFERENT label from the reasons themselves;
   sharing one let a reason forge a count the renderer never made. Truncation
   cuts on a **grapheme cluster** boundary (UAX #29 via `Intl.Segmenter`), not a
@@ -900,8 +904,8 @@ validator that happens to sit on it:
 > also outlived its section: §4.4 required the export to read **user-global
 > config only**, so that one checkout's policy never became another machine's
 > default. The Stage-4 judges read the user layer for the same reason, and
-> §6.1.3 states it. Where a code comment still cites §4.4 for that rule, §6.1.3
-> is the text that governs.
+> §6.1.3 states it, and the code comments that cited §4.4 for that rule cite
+> §6.1.3.
 
 ### 4.1 Schema rules every packaged schema obeys
 
@@ -1093,9 +1097,11 @@ Five shapes are load-bearing and agree with §8 / §8.1:
   control row reads `pending` however the evidence reads. The two axes genuinely
   disagree — `passed` + `declined` and `stale` + `blocked` are both reachable —
   so one field could not carry both, and presenting them as peer rows misreads
-  as a contradiction. It did: on the 0.86.0 live-fire run the reducer judged a
-  proof `passed` while the step row rendered `pending`, and the operator
-  read a successful real-network send as a failure. §8 pins the presentation
+  as a contradiction. It did: on the 0.86.0 live-fire run the reducer judged the
+  egress ack `passed` while the step row rendered `pending`, and the operator
+  read a successful real-network send as a failure. (ADR-0064 R4n1 retired that
+  proof kind on 2026-10-05; the division it exposed governs the surviving
+  proofs.) §8 pins the presentation
   rule that closes it.
 - **`bound_versions.plugins` is per-host** (`{ claude: {…}, codex: {…} }`) and binds
   **every** selected plugin version, not only runtime + the two CLIs (§8.1). Freshness
@@ -1236,27 +1242,6 @@ Three judgement rules follow, and each closes a hole the presence test had:
   reaches the judge unvalidated — validators run on the write path — so a typo
   would otherwise satisfy the step while `runtime:settings --apply` refuses it.
 
-#### 6.1.2 Retired step ids
-
-`lib/step-registry.mjs` keeps a `RETIRED_STEP_IDS` map, id to the ADR that
-retired it, and `deriveExpectedSteps` derives none of them. They are listed here
-as history, in prose and not as table rows, because the table above is held to
-the registry by `tests/runtime/test-step-registry.mjs`:
-
-- `permission.claude.applied` and `permission.codex.applied` (Stage 6) —
-  ADR-0057;
-- `config.notify_kinds` (Stage 4), `notify.configured`,
-  `notify.codex.configured` and `egress.configured` (Stage 5), and
-  `proof.egress-provider-ack` (Stage 8) — ADR-0064 Decisions 1 and 6, slice
-  R4n1.
-
-A retired id stays nameable in a retained run: the step-id pattern never
-enumerated ids, so a row or a `choices[]` entry carrying one is schema-valid. A
-retired id is never owed, never judged and never rendered by a 1.5 runtime. §7
-states how a retained or open run that carries one is read. An `--answers` entry
-naming a retired id is exit `40`, like any step the registry did not derive
-(§3).
-
 **`blocked_by` edges** (the column §5's `steps[].blocked_by` serializes; enumerated here
 because §5 referenced them and this table did not define them — S8a2 C4). Each step is
 blocked by its *structural* predecessors only — the things without which the step cannot
@@ -1298,6 +1283,30 @@ post-probe observes the attestation — for every bundle carrying a persona (`en
 (`runtime`+`companions`+`attention`, none Codex-hook-bearing). The step keys off
 `hook_bearing.codex`; the Claude hook values drive no step, because Claude trusts plugin
 hooks by install and exposes no `/hooks` review flow.
+
+**Retired step ids.** `lib/step-registry.mjs` keeps a `RETIRED_STEP_IDS` map, id
+to the ADR that retired it, and `deriveExpectedSteps` derives none of them. They
+are listed here as history, in prose and not as table rows, because the §6.1
+step table is held to the registry by `tests/runtime/test-step-registry.mjs`:
+
+- `permission.claude.applied` and `permission.codex.applied` (Stage 6) —
+  ADR-0057;
+- `config.notify_kinds` (Stage 4), `notify.configured`,
+  `notify.codex.configured` and `egress.configured` (Stage 5), and
+  `proof.egress-provider-ack` (Stage 8) — ADR-0064 Decisions 1 and 6, slice
+  R4n1.
+
+A retired id stays nameable in a retained run: the step-id pattern never
+enumerated ids, so a row or a `choices[]` entry carrying one is schema-valid. A
+retired id is never owed or judged by a 1.5 runtime, and never rendered as a step
+of a run it judges; the historical projection of a terminal earlier-minor run
+still shows the stored rows (§7). §7 states how a retained or open run that
+carries one is read. An `--answers` entry
+naming a retired id is exit `40`, like any step the registry did not derive
+(§3).
+
+(§6.1.2, the `notify.codex.configured` conjunction, was removed with that step by
+ADR-0064 R4n1 on 2026-10-05; the number is not reused.)
 
 ### 6.1.1 The statusline steps (ADR-0048 §1/§2/§2.1)
 
@@ -1399,20 +1408,24 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   inventory classifies `agentic-statusline.mjs` only, so a shuttle or chain
   file left in `~/.agentic-plugins/bin` is no longer a kind it reports
   (ADR-0064 Decision 9 leaves its removal to the operator).
+- *(Removed 2026-10-04 with the portable machine profile, ADR-0064 Decision 3:)*
+  an owner-approved (2026-07-23) `statusline_preset` export rule had `profile
+  export` write `agentic-6` iff both hosts' statusline configuration was observed
+  canonical, and `null` for one host, a decline or foreign wiring.
 - **Desired-seat discipline (applies to every fragment-bearing exact probe)**:
   the plan's expectation freezes into `steps[].desired` on FIRST render and is
   never silently re-bound; §7 version invalidation clears it with the
   fragment fields; an unreadable persisted expectation judges
   `manual-follow-up` (fail-closed), never a silently widened match.
 
-#### 6.1.3 The VALUE-bearing Stage-4 steps
+#### 6.1.3 The VALUE-bearing Stage-4 step
 
 `config.session` is the only step whose resolution depends on a value the
 operator **chooses** rather than on a fact the probe finds. (`config.notify_kinds`
 was the other until ADR-0064 R4n1, 2026-10-05.) Its grammar is §3.3; this section
 is what it means.
 
-**What they certify is the PERSISTED USER-GLOBAL POSTURE**, never the effective
+**What it certifies is the PERSISTED USER-GLOBAL POSTURE**, never the effective
 value on this machine right now, and the distinction is load-bearing rather than
 pedantic. `session_capture` resolves repo → user → default at
 runtime, and `entry_brief` / `entry_brief_empty` resolve env → user → default
@@ -1627,7 +1640,8 @@ An older runtime's `status` / `verify` on a newer-minor run derives its OWN
 registry, so a step the newer minor added is simply absent from its expectation:
 the report is optimistic and the exit code can read `0` while that step is
 unresolved. This is the shipped, accepted behaviour of every step addition — the
-1.1 → 1.2 bump added a Stage-5 step in the same commit and has the
+1.1 → 1.2 bump added `notify.codex.configured` (a Stage-5 step ADR-0064 R4n1
+retired on 2026-10-05) in the same commit and has the
 identical property — and it is why the fence lives on the MUTATORS: `resume`
 refuses a future minor outright (as `profile seed` did until ADR-0064 Decision 3
 removed it on 2026-10-04), so an older runtime can never *close* a run under an
@@ -1771,7 +1785,8 @@ is where the minor moves:
   registry-new steps join `steps[]` through the ordinary reprobe (expected
   derives from the current registry; prior state carries per step id), the new
   fragments render, and the persist stamps the current schema string with a
-  history row naming the migration — never a silent rewrite;
+  history row naming the migration — never a silent rewrite (from 1.5 the
+  migration also drops retired step rows; see below);
 - a TERMINAL run under an older minor is **immutable historical evidence**:
   `status`/`verify` present a §3.2 **summary** of the stored completion with
   `historical`/`not_recertified` markers and exit `50` (§3.1), re-probe nothing,
@@ -1807,8 +1822,8 @@ run this runtime migrated.
   verdict on this path only.
 - **An open run of an earlier minor migrates on `resume`.** The run is judged
   against the 1.5 registry, which owes none of the retired steps, so their rows
-  leave `steps[]`. The migration history row (`from` the old schema, `to`
-  `runtime-bootstrap-run-1.5`, no `step_id`) names the dropped rows and their
+  leave `steps[]`. The migration history row (`step_id: null`, `from` the old
+  schema, `to` `runtime-bootstrap-run-1.5`) names the dropped rows and their
   retiring ADRs, or says there were none. `choices[]`, `history[]` and
   `seeded_from` stay exactly as written.
 - **Retired evidence files are skipped on every read of `proof/`.**
@@ -2029,8 +2044,8 @@ executor, the one proof that made a real network send. It reached doctor through
 write-ahead intent record. Bootstrap's `executeProofViaDoctor` has no egress
 branch, `PROOF_EXECUTE_FLAGS` and `DOCTOR_SECTION_BY_KIND` name the directional
 kinds only, and bootstrap no longer forwards a doctor intent-WAL warning or
-egress retry advice. Doctor's own egress proof section is removed by a later slice
-(R4n2). Git history holds the specification of the executor and its WAL.
+egress retry advice. Doctor's own egress proof section was removed by the next
+slice (R4n2, below). Git history holds the specification of the executor and its WAL.
 *Removed 2026-10-05 (slice R4n2):* doctor's `egress_ack_proof` section went
 too, with `--egress-ack-proof`, `--execute-egress-ack-proof`, the
 `AGENTIC_EGRESS_REAL_SMOKE` gate and the intent WAL. Records left under
@@ -2274,9 +2289,9 @@ in `test-machine-profile.mjs`, went with the machine profile: ADR-0064 Decision 
   reader (named in `retired`, never opened) and an open run holding one still
   resumes; a terminal earlier-minor run's stored egress proof row and receipt
   verdict are projected by the historical path (both paths tested).
-- **Migration**: an open 1.1 run resumes into a 1.2 stamp + history row +
-  injected registry-new steps + rendered fragments, and an open 1.4 run resumes
-  into a 1.5 stamp whose history row names the dropped retired step rows while
+- **Migration**: an open 1.1 run resumes into the current stamp
+  (`runtime-bootstrap-run-1.5`) + one history row + injected registry-new steps +
+  rendered fragments, and an open 1.4 run resumes into the same 1.5 stamp whose history row names the dropped retired step rows while
   `choices[]`, `history[]` and `seeded_from` stay as written; a terminal 1.1 run answers
   exit 50 with `historical`/`not_recertified` and stays byte-identical; a
   future-minor run refuses resume.

@@ -330,8 +330,9 @@ describe('runtime consensus', () => {
   // FILESYSTEM only. Before the ADR-0024 extraction, consensus reached for `runDoctor`
   // to get two filesystem-derived values and paid ~3.1s of host-CLI probing for them --
   // 14 `claude`/`codex` processes it never read, each of which received the ambient
-  // TELEGRAM_BOT_TOKEN. The scrub now lives inside runDoctor itself, at the point of use
-  // (ADR-0041 sec.2b/2c); it used to be each caller's job and only settings.mjs did it.
+  // TELEGRAM_BOT_TOKEN. That scrub then lived inside runDoctor itself, at the point of use
+  // (ADR-0041 sec.2b/2c), until ADR-0064 Decision 1 removed it with egress; before that it
+  // was each caller's job and only settings.mjs did it.
   it('resolves peer context WITHOUT spawning any host CLI, and still hands the companion the raw env', async () => {
     const root = await seedPlan();
     // Canonical: the peer context returns canonical companion paths (ADR-0061 S2).

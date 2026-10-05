@@ -166,7 +166,8 @@ export async function probeMachineHostState({
 // readiness verdict — the consumers that must map ambiguity to unknown
 // (`resolveCodexInstallState`, bootstrap's step evaluation, and `settings.mjs`'s
 // own third parser) are recorded as a follow-up, because changing what those
-// report is a gate change and belongs with the doctor/cutover wiring subtask.
+// report is a gate change and belongs with a doctor wiring change (the cutover
+// audit that once shared it was retired by ADR-0064 Decision 5).
 // What this does is stop the fact from being destroyed before they can read it.
 function normalizeInstalledRows({ claudePluginList, codexPluginList }) {
   const claude = Object.values(claudePluginList).map((row) => ({

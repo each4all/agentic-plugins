@@ -200,11 +200,12 @@ export function effectiveSelection({ pluginSet, selection, steps = [] }) {
  * The effective selection as a SELECTION OBJECT ready to persist — §6.2's "new
  * effective `custom` selection", literally.
  *
- * The bundle becomes `custom` and that is load-bearing, not cosmetic: `resolveSelection`
- * re-expands a NAMED bundle from the plugin-set, so a narrowed `desired` left under
- * `bundle: "design"` would be silently re-widened the moment the selection is seeded
- * into a new run through a machine profile — the operator's decline undone by the
- * export/seed round trip.
+ * The bundle becomes `custom` and that is load-bearing, not cosmetic: a NAMED bundle
+ * claims the set `resolveSelection` would expand it to from the plugin-set, so a
+ * narrowed `desired` left under `bundle: "design"` would contradict its own label, and
+ * any reader that re-expanded the name would undo the operator's decline. (The machine
+ * profile's export/seed round trip was such a reader until ADR-0064 Decision 3 removed
+ * it on 2026-10-04.)
  *
  * Returns `{ selection, changed, dropped, refusedButRetained }`. `changed: false`
  * returns the input object unchanged, so a caller can persist unconditionally without

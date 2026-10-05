@@ -116,19 +116,21 @@ export const NETWORK_PRIMITIVES = ['get', 'request', 'connect', 'createConnectio
 // sound sandbox: a determined author could still obfuscate past a token scanner
 // (e.g. `globalThis['fet'+'ch']`, a string-concatenated or UNICODE-ESCAPED
 // identifier in USE position, deep reflection, or `eval`) or edit this registry,
-// so the SOUND behavioral validation of the pinned request is the `channel`
-// slice's fetchImpl-injection
+// so the SOUND behavioral validation of a pinned request was the egress
+// channel's fetchImpl-injection unit test (ADR-0041 §2b — it observed the actual
+// URL/method/redirect/timeout fetch received). ADR-0064 deleted that channel and
+// its test with egress; with no fetch user registered, this gate is the only
+// check, and a future user owes its own behavioral test under the new ADR it
+// needs. This gate's job is to catch accidental / review-visible fetch
+// additions and to fail closed on anything it cannot recognize as the exact
+// pinned shape. (Codex review: the previous recognize-safe-forms design was
+// fail-OPEN — many indirections evaded it. Now inverted to flag-everything.)
 // [residual boundary] Escaped identifiers in IMPORT and MODULE-SPECIFIER position
 // ARE caught (a clean statement-anchored check exists there); an escaped identifier
 // in an arbitrary USE position (`https.request(...)`) is the documented
 // deliberate-obfuscation residual — a general static check would false-positive on
 // legitimate `\u`-bearing regex character classes (the `/[\u0000-\u001F]/` control
-// scrub notify.mjs carried), so §2b behavioral validation is the sound check.
-// unit test (ADR-0041 §2b — it observes the actual URL/method/redirect/timeout
-// fetch received). This gate's job is to catch accidental / review-visible fetch
-// additions and to fail closed on anything it cannot recognize as the exact
-// pinned shape. (Codex review: the previous recognize-safe-forms design was
-// fail-OPEN — many indirections evaded it. Now inverted to flag-everything.)
+// scrub notify.mjs carried), so a behavioral test of the request is the sound check.
 
 // The ONLY runtime scripts permitted to call the global `fetch`, each with the
 // pinned-request conformance spec its ONE direct call must satisfy. As of the
@@ -637,7 +639,7 @@ export const FS_MUTATION_USERS = {
   'bootstrap-artifacts.mjs': {
     primitives: ['link', 'mkdir', 'open', 'rename', 'rmdir', 'unlink', 'writeFile'],
     stateRoots: ['HOME:.agentic-plugins'],
-    justification: 'ADR-0046 machine-global bootstrap run/profile artifacts: temp+rename writes, hardlink family locks, bounded lock/temp cleanup',
+    justification: 'ADR-0046 machine-global bootstrap run artifacts (manifests, fragments, proofs): temp+rename writes, hardlink family locks, bounded lock/temp cleanup',
   },
   // notify.mjs and lib/{egress-config, egress-launcher-plan, egress-semantics,
   // notification-plan, notify-schema}.mjs were entries here until ADR-0064 R4n2

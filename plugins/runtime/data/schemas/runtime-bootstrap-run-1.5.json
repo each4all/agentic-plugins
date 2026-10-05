@@ -68,7 +68,7 @@
       }
     },
     "seeded_from": {
-      "description": "§5 — a profile id and HASH, never a filesystem path: a path can itself reveal operator layout.",
+      "description": "Retired by ADR-0064 Decision 3 with the portable machine profile: kept valid so retained runs still validate. No 1.5 plan sets it; a run migrated on resume keeps the value it carried. §5 — a profile id and HASH, never a filesystem path: a path can itself reveal operator layout.",
       "type": [
         "object",
         "null"
@@ -104,7 +104,7 @@
             "$ref": "#/$defs/stepId"
           },
           "answer": {
-            "description": "1.3 (§3.3) — either one of the BARE answers (decline | accept | execute; 1.2–1.4 also had attest-receipt, retired by ADR-0064 and still readable in a retained ledger) or the value form `set:<key>=<value|unset>[;...]`. Deliberately still an unconstrained bounded string rather than an enum or a pattern: the value form carries a per-step key set and per-key validators that live in code (lib/answer-values.mjs), and a schema pattern strong enough to express them would be a second, drifting copy of that grammar. The 1.2 → 1.3 bump therefore changes NO JSON shape; it exists to arm the future-minor fence in `resume` and `profile seed`, which is what stops an older MUTATOR from closing a run under expectations its registry cannot derive.",
+            "description": "1.3 (§3.3) — either one of the BARE answers (decline | accept | execute; 1.2–1.4 also had attest-receipt, retired by ADR-0064 and still readable in a retained ledger) or the value form `set:<key>=<value|unset>[;...]`. Deliberately still an unconstrained bounded string rather than an enum or a pattern: the value form carries a per-step key set and per-key validators that live in code (lib/answer-values.mjs), and a schema pattern strong enough to express them would be a second, drifting copy of that grammar. The 1.2 → 1.3 bump therefore changes NO JSON shape; it exists to arm the future-minor fence in `resume` (and, until ADR-0064 Decision 3 removed it, `profile seed`), which is what stops an older MUTATOR from closing a run under expectations its registry cannot derive.",
             "type": [
               "string",
               "null"

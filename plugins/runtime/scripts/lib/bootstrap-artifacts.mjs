@@ -1710,8 +1710,8 @@ export async function writeBootstrapFragment({ homeDir, repoRoot, runId, name, c
 
   const text = typeof content === 'string' ? content : `${JSON.stringify(content, null, 2)}\n`;
   // Fragments render host-config EDITS, never credentials — the same
-  // scrub-before-write fail-close every bootstrap artifact writer carries
-  // (Codex review MAJOR: this writer had none).
+  // scrub-before-write fail-close the proof writer carries (the run-manifest
+  // writers have none) (Codex review MAJOR: this writer had none).
   if (scrubSecrets(text) !== text) {
     return { ok: false, reason: 'secret-shaped-content', diagnostics: [`Fragment ${name} contains secret-shaped content; refusing to persist it.`], fragment: null };
   }
@@ -1917,9 +1917,9 @@ export async function readBootstrapProofRecords({ homeDir, runId }) {
     // every invalid byte sequence to U+FFFD, so this returned a digest and a
     // byte count for a re-encoding rather than for the file. Measured: 386
     // reported for a 384-byte record, and a sha256 that does not match the
-    // file's (cross-host review). The docstring above promises a
-    // `provider_proof_artifact_hash` link verifiable byte-for-byte; this is
-    // what makes that true.
+    // file's (cross-host review). The docstring above promises each row's
+    // sha256 is over the exact stored bytes, so a consumer can detect a swapped
+    // record; this is what makes that true.
     let bytes;
     try {
       bytes = await readFile(path);

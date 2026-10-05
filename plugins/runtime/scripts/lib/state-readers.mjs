@@ -445,7 +445,7 @@ export async function inspectMachineArtifactScope({ homeDir, now, maxBytes }) {
     policy: {
       run_count_cap: MACHINE_BOOTSTRAP_RETENTION_CAP,
       byte_cap: maxBytes,
-      retention_exempt: MACHINE_ARTIFACT_FAMILIES.filter((f) => f.retentionCap === null).map((f) => f.family),
+      retention_exempt: [],
     },
   });
 
@@ -534,14 +534,12 @@ async function inspectArtifactScope({ root, families, discoverUnknownFamilies, p
   return { status, root, policy, total, families: summaries, attention };
 }
 
-// retentionCap === null ⇒ the family is retention-EXEMPT: NO retention pressure of
-// ANY kind, count or bytes. It is not "cap 0" and not "cap Infinity" — it is a
-// family whose entries are operator inputs, so counting them is not a diagnosis
-// runtime is entitled to make (artifact-policy.md §Retention). Exempting only the
-// COUNT would leave the byte cap telling an operator to "remove obsolete generated
-// artifacts" — advice to delete the very input the exemption exists to protect.
-// No family is exempt since the machine profiles went (ADR-0064 Decision 3); the
-// rule stays, and so does the report's `retention_exempt` list, now empty.
+// Every family is under retention pressure, count and bytes. Until ADR-0064
+// Decision 3 removed the machine profiles (2026-10-04), a `retentionCap` of null
+// marked their family retention-EXEMPT, because its entries were operator inputs
+// rather than generated artifacts. No family carried it afterwards, so the
+// unreachable exemption branch was removed; the report's `retention_exempt` list
+// stays, always empty, so the doctor artifact keeps its shape.
 async function inspectArtifactFamily({ pointerFor, root, family, nowMs, retentionCap, maxBytes }) {
   let entries;
   try {
@@ -557,9 +555,8 @@ async function inspectArtifactFamily({ pointerFor, root, family, nowMs, retentio
 
   const runCount = entries.filter((entry) => entry.isDirectory()).length;
   const totals = await summarizeArtifactPath(root);
-  const retentionExempt = retentionCap === null;
   const attention = [];
-  if (!retentionExempt && runCount > retentionCap) {
+  if (runCount > retentionCap) {
     attention.push({
       family,
       kind: 'run_count_exceeds_cap',
@@ -568,7 +565,7 @@ async function inspectArtifactFamily({ pointerFor, root, family, nowMs, retentio
       recommendation: `Review ${pointerFor(root)} and remove obsolete generated artifacts manually; runtime:doctor does not delete artifacts.`,
     });
   }
-  if (!retentionExempt && totals.bytes > maxBytes) {
+  if (totals.bytes > maxBytes) {
     attention.push({
       family,
       kind: 'bytes_exceed_cap',

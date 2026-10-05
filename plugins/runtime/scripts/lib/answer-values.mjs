@@ -84,7 +84,7 @@ export const UNSET = 'unset';
 export const VALUE_STEPS = Object.freeze({
   [stepIds.configSession()]: Object.freeze({
     keys: Object.freeze([...CONFIG_KEY_FAMILIES.session]),
-    // §4.4 — what a value key is judged against. `user` means the persisted
+    // §6.1.3 — what a value key is judged against. `user` means the persisted
     // user-global posture in ~/.agentic-plugins/config.toml, which is the ONLY
     // layer bootstrap reads (§1.1 keeps it off the repo-scoped seam).
     scope: 'user',
@@ -400,7 +400,7 @@ export function sameConfigValue(want, got) {
  * `--target user` and not the `both` default: two of the three session keys are
  * in `USER_SCOPE_ONLY_CONFIG_KEYS`, the Stage-4 judge reads the user layer
  * exclusively, and a machine bootstrap records the OPERATOR's default rather than
- * a checkout's policy (§4.4).
+ * a checkout's policy (§6.1.3).
  */
 export function applyCommandFor(stepId, entry, observedOf) {
   const keys = valueStepKeys(stepId) ?? [];

@@ -719,8 +719,10 @@ export async function loadSchema(family, { pluginRoot } = {}) {
  * owns it:
  *
  *   * the fail-closed SECRET SCRUB. A token-shaped string satisfies `type: string`
- *     perfectly; the fragment and proof writers run `scrubSecrets` before they
- *     write.
+ *     perfectly. The run writers this validator serves do NOT scrub: run.json is
+ *     bounded by this schema only. Scrub-before-write lives in
+ *     `writeBootstrapFragment` / `writeBootstrapProof`, which do not take this
+ *     validator.
  *   * §5/§8.1 — `proofs[].status` is the aggregate RECOMPUTED from `directions`, and
  *     `bound_versions.plugins` must cover exactly the SELECTED plugin set. Both need
  *     facts (the directions, the selection) that a schema cannot see. The reducer (C5)
