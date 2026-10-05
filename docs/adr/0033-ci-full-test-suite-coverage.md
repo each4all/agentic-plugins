@@ -7,6 +7,8 @@ Accepted
 > Amended 2026-10-03 — see [Amendments](#amendments). Decision 3's
 > triggers and Decision 5 (iii) changed, and Decision 4 is withdrawn: the
 > host workflows are removed and CI no longer triggers on `pull_request`.
+> Amended 2026-10-05: Decision 1's serial pin is removed; `npm test` runs at
+> Node's default concurrency.
 
 ## Context
 
@@ -72,7 +74,9 @@ structural guard** (the "E′" option):
    load-dependent flakes whose likelihood varied with the runner's CPU
    count (Node's default concurrency). Serial execution is deterministic
    and, because the suite is largely subprocess/I-O-bound, costs no wall
-   time (~203s serial vs ~214s concurrent locally).
+   time (~203s serial vs ~214s concurrent locally). (2026-10-05: the
+   serial pin is removed, and `npm test` is `node --test
+   --test-timeout=120000` — see [Amendments](#amendments).)
 
 2. **Smoke tests move out of the discovery namespace.** The host-CLI
    smoke tests are renamed `companions/tests/*.smoke.test.mjs` →
@@ -129,7 +133,8 @@ structural guard** (the "E′" option):
   timed out spawning a subprocess under concurrent load) that passed
   serially via `test:plugin-shape` but had never run concurrently in CI —
   exactly the kind of gap this gate exists to catch. The serial pin fixes
-  it for good.
+  it for good. (2026-10-05: the pin is removed — see
+  [Amendments](#amendments).)
 
 **Negative**
 
@@ -274,3 +279,44 @@ GitHub App token for release-please if the release PR is to get CI.
 > dispatch still validates `main` after the release" no longer holds. The
 > dispatch is removed; the release commit's own run is green, and the release
 > job validates the catalogs before it pushes the sync.
+
+### 2026-10-05 — `npm test` runs at Node's default concurrency
+
+**Trigger**: macro subtask CC, from the owner's selection of 2026-10-05 at
+E1 (engineer workflow `decide-20261005T015832Z-7931cf`, item 7), which
+reviewed what the 2026-10-03 reduction left in place.
+
+**What changed.** `npm test` is `node --test --test-timeout=120000`. The
+`--test-concurrency=1` pin is gone, so Node runs up to
+`os.availableParallelism() - 1` test files at once (at least one), its
+default. The
+per-test timeout that bounds a hung test
+(`tests/scripts/test-test-timeout-policy.mjs`) is unchanged.
+
+**Why.** Decision 1 rested on two claims: running files concurrently
+caused load-dependent flakes, and running them serially cost no wall time
+(~203 s against ~214 s). The pin came from the `test:plugin-shape` script
+(2026-05-15) and was carried into `npm test` by this ADR. The second claim
+no longer holds. E1 timed one tree both ways, with `AGENTIC_*` removed from
+the environment: 561 s serially against 112 s at default concurrency
+(9 workers on a 10-core Mac). Both runs counted 6,688 tests: 6,687 passed,
+1 was skipped, none failed. On CI the full-tests workflow runs just before
+this change, still serial, took 310–392 s from start to finish.
+
+**What the measurement does not show.** Both timings come from one
+machine. GitHub's runners have fewer cores, so fewer workers, and their
+timing differs. The tests most exposed are bounded races, such as the
+post-link re-check case in `tests/runtime/test-bootstrap.mjs`, which retries
+40 times to reach a window whose hit rate was measured under one load. So
+the change lands only after a burn-in: the full-tests run of the branch push
+and two `workflow_dispatch` runs on the branch must all pass, with the same
+test counts, before the pull request merges. If any of them flakes, the pin
+stays and the flake is recorded instead.
+
+**Unchanged.** `scripts/mutation-harness.mjs` still runs each mutation's
+tests with `--test-concurrency=1`. It runs only a spec's own few test files,
+and a flake there would score a mutation wrongly, so it keeps determinism
+over wall time.
+
+**Rollback.** Put `--test-concurrency=1` back into `scripts.test` in
+`package.json`. No other file sets or checks the suite's concurrency.
