@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.19](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.18...plugin-founder-v0.4.19) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/founder:** generate the investigate and decide runbook blocks (ADR-0066 Stage 2a) ([52143f9](https://github.com/each4all/agentic-plugins/commit/52143f9ce42a30845e432897e9ca93e32aedace0))
+
 ## [0.4.18](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.17...plugin-founder-v0.4.18) (2026-10-05)
 
 
