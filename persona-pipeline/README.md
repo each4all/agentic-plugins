@@ -34,10 +34,12 @@ shares unchanged (the decide libraries and registry, `validate-commit`,
 Stage 2a (PC2a) begins the runbook regions. founder and designer's
 `checkpoint`, `resume` and `peer-now` commands hold generated regions: the
 plugin-root paragraph and every shell block. Their `compose` and `frame`
-commands (PC2a2b) hold the plugin-root paragraph, every shell block, the
-phase-note scaffold and the completion-footer paragraph, rendered from the
-`verb-*` templates; `decide` and `investigate` follow. The prose around
-them, the privacy gate included, stays authored.
+(PC2a2b), `investigate` and `decide` (PC2a2c) commands hold the plugin-root
+paragraph, every shell block, the phase-note scaffold and the
+completion-footer paragraph, rendered from the `verb-*` templates, and
+`decide` its Phase 0.5 argument resolution, rendered from
+`decide-resolve.md`. The prose around them, the privacy gate included, stays
+authored.
 
 ## The declaration
 
@@ -50,11 +52,14 @@ note's `artifact` sections (a list, one item per line), the proposal's
 `rationale_gate` and `evidence_pointers`, the `next_action` it records, and for
 `refine` and `start` whether the terminal write waits for a converged
 re-critique (`terminal_requires_convergence`). founder and designer declare
-1.1; engineer declares 1.0, with no verbs. Until the verb runbooks hold
-regions, the declared values are copies of their text, and
-`tests/persona-pipeline/test-declaration-verbs.mjs` keeps the two in step;
+1.1; engineer declares 1.0, with no verbs. The `investigate`, `frame`,
+`decide` and `compose` runbooks render these values from the declaration;
+`refine` and `start` are still authored, so their convergence flag is a
+copy of what their terminal block does.
+`tests/persona-pipeline/test-declaration-verbs.mjs` binds each declared value
+to the runbook text that states it;
 `tests/persona-pipeline/test-verb-runbook-characterization.mjs` records what
-those runbooks did before their blocks moved (`fixtures/verb-runbooks.json`),
+the four runbooks did before their blocks moved (`fixtures/verb-runbooks.json`),
 and a region changes only what the fixture's `allowed_differences` lists,
 each with its reason.
 
@@ -113,13 +118,23 @@ written, under bash and zsh (and macOS sh), with the heredoc's final newline.
 Two limits, each stated where the agent acts: a line reading `PHASE_NOTE`
 alone would end the note and run the rest as commands, so the prose has the
 agent rename the delimiter when its note holds one; and a shell whose `read`
-has no `-d` (dash) reads nothing, so an empty note stops the block before any
-write. The request placeholder works the same
+has no `-d` (dash) reads nothing, so the block clears `NOTE` before the read
+(a value the shell inherited cannot stand in) and an empty note stops it
+before any write. The request placeholder works the same
 way: the region prose names it, and the block says
 `<the original request described above>`. The bootstrap `create`, the resume
 `append` and the finalize `append` stop the block when they fail
 (`|| exit $?`); `ensemble-commit` stays unguarded until the settlement
 transitions (PC2b) give the degraded path its own step.
+
+decide's Phase 0.5 region (`decide-resolve.md`) holds the args-file steps
+(ADR-0059) and the resolver block, which opens with the `ARGS_DIR` the agent
+wrote into and then the plugin root; the resolved context reaches the
+block's output, and both resolver failures stop it. Its sentence on
+`--preset` names the persona's `decide.fallback.preset_id`, and a contract
+runs the persona's own registry to check what the sentence says: an unknown
+id falls back to that preset, flagged, and an empty one counts as no
+`--preset`.
 
 ## Editing
 
@@ -155,10 +170,11 @@ off-capability, broken-declaration and isolation behavior.
 `test-runbook-contracts.mjs` holds the runbook contracts (call order, the
 workflow each write targets, identity against the characterization's
 expected map, the phase-note transport, failure propagation, the privacy gate
-before the dispatch, no image to the peer, and the finalize block run with a
-stubbed `node`) over each persona's committed runbook and over the runbook
-assembled from the templates, so a defect the drift check cannot see still
-fails. `scripts/mutation-specs/persona-pipeline.mjs` puts defects into the
+before the dispatch, no image to the peer, the finalize block and decide's
+resolver block run with a stubbed `node`, and the fallback decide's prose
+names measured against its registry) over each persona's committed runbook
+and over the runbook assembled from the templates, so a defect the drift
+check cannot see still fails. `scripts/mutation-specs/persona-pipeline.mjs` puts defects into the
 canonical source, regenerates them, and expects a contract test to fail; a
 case's `killed_by` names the tests that must fail, by name or by path
 (`suite > test`, read from the TAP records), so a run that fails only

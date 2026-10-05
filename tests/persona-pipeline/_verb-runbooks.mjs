@@ -331,15 +331,19 @@ export function runbookText(persona, verb) {
 
 /**
  * The recorded value an allowed difference names, as a getter and a setter:
- * `call:<script> <sub>:<flag>` (that call must be the only one), `guards.<name>`
- * or `note`.
+ * `call:<script> <sub>:<flag>` (that call must be the only one),
+ * `call:<script> <sub>#<n>:<flag>` (the n-th such call: a runbook appends
+ * twice, on resume and with its phase note),
+ * `guards.<name>` or `note`.
  */
 function locate(record, where) {
-  const call = /^call:(\S+) (\S+):(--[a-z-]+)$/.exec(where);
+  const call = /^call:(\S+) ([a-z-]+)(?:#([1-9]))?:(--[a-z-]+)$/.exec(where);
   if (call) {
     const calls = record.calls.filter((c) => c.script === call[1] && c.sub === call[2]);
-    strictEqual(calls.length, 1, `${where}: one such call`);
-    const args = calls[0].args.filter(([f]) => f === call[3]);
+    const nth = call[3] === undefined ? null : Number(call[3]);
+    if (nth === null) strictEqual(calls.length, 1, `${where}: one such call`);
+    else strictEqual(calls.length >= nth, true, `${where}: at least ${nth} such calls`);
+    const args = calls[nth === null ? 0 : nth - 1].args.filter(([f]) => f === call[4]);
     strictEqual(args.length, 1, `${where}: the flag once`);
     return [() => args[0][1], (v) => { args[0][1] = v; }];
   }

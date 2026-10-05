@@ -915,6 +915,403 @@
           "context": "markdown"
         }
       }
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/investigate.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "investigate-phase-0",
+      "template": "regions/verb-phase-0.md",
+      "dest": "commands/investigate.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "investigate-bootstrap",
+      "template": "regions/verb-bootstrap-profiled.md",
+      "dest": "commands/investigate.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "investigate",
+          "context": "shell"
+        },
+        "request_placeholder": {
+          "field": "verbs.investigate.request_placeholder",
+          "context": "markdown"
+        },
+        "default_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "investigate-resume",
+      "template": "regions/verb-resume-profiled.md",
+      "dest": "commands/investigate.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "investigate",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "investigate-dispatch",
+      "template": "regions/verb-dispatch.md",
+      "dest": "commands/investigate.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "investigate",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "investigate-finalize",
+      "template": "regions/verb-finalize.md",
+      "dest": "commands/investigate.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "investigate",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "shell"
+        },
+        "phase_label": {
+          "value": "Phase 1: Investigate (synthesized)",
+          "context": "shell"
+        },
+        "next_action": {
+          "field": "verbs.investigate.next_action",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "launched": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "markdown"
+        },
+        "synthesis": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "artifact": {
+          "field": "verbs.investigate.artifact",
+          "context": "markdown"
+        },
+        "rationale_gate": {
+          "field": "verbs.investigate.rationale_gate",
+          "context": "markdown"
+        },
+        "evidence_pointers": {
+          "field": "verbs.investigate.evidence_pointers",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "investigate-completion-footer",
+      "template": "regions/verb-completion-footer.md",
+      "dest": "commands/investigate.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "decide-phase-0",
+      "template": "regions/verb-phase-0.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "decide-bootstrap",
+      "template": "regions/verb-bootstrap.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "decide",
+          "context": "shell"
+        },
+        "request_placeholder": {
+          "field": "verbs.decide.request_placeholder",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "decide-resume",
+      "template": "regions/verb-resume.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "decide",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "decide-resolve",
+      "template": "regions/decide-resolve.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "fallback_preset": {
+          "field": "decide.fallback.preset_id",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "decide-dispatch",
+      "template": "regions/verb-dispatch.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "decide",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "brainstorm",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "decide-finalize",
+      "template": "regions/verb-finalize.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "decide",
+          "context": "shell"
+        },
+        "ensemble_type": {
+          "value": "brainstorm",
+          "context": "shell"
+        },
+        "phase_label": {
+          "value": "Phase 1: Decide (synthesized)",
+          "context": "shell"
+        },
+        "next_action": {
+          "field": "verbs.decide.next_action",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "launched": {
+          "value": "decide",
+          "context": "markdown"
+        },
+        "synthesis": {
+          "value": "decide",
+          "context": "markdown"
+        },
+        "artifact": {
+          "field": "verbs.decide.artifact",
+          "context": "markdown"
+        },
+        "rationale_gate": {
+          "field": "verbs.decide.rationale_gate",
+          "context": "markdown"
+        },
+        "evidence_pointers": {
+          "field": "verbs.decide.evidence_pointers",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "decide-completion-footer",
+      "template": "regions/verb-completion-footer.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
     }
   ],
   "extension_points": []

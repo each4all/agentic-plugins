@@ -30,7 +30,14 @@ import {
 } from '../../scripts/lib/persona-pipeline.mjs';
 import { MANIFEST, REPO_ROOT, declaration, pluginRoot } from './_personas.mjs';
 import { FIXTURE, NOTE_READER, characterize, expectedFor } from './_verb-runbooks.mjs';
-import { archiveTimingProblems, completionBlocks, completionReenumerations, resolverProblems } from '../_runbook-checks.mjs';
+import {
+  archiveTimingProblems,
+  argsFileRunbookProblems,
+  argsFileTypedTextProblems,
+  completionBlocks,
+  completionReenumerations,
+  resolverProblems,
+} from '../_runbook-checks.mjs';
 
 /** The region files of the manifest and the personas enrolled into each. */
 function regionFiles() {
@@ -99,10 +106,27 @@ function shellSites(text, re) {
 const FILES = regionFiles();
 const covered = (dest) => FILES.has(dest);
 
-// The verb runbooks whose blocks are generated (PC2a2b; decide and investigate
-// follow in PC2a2c), with the verb each one runs.
-const VERB_DESTS = ['commands/compose.md', 'commands/frame.md'];
+// The verb runbooks whose blocks are generated (compose and frame in PC2a2b,
+// investigate and decide in PC2a2c), with the verb each one runs.
+const VERB_DESTS = ['commands/compose.md', 'commands/frame.md', 'commands/investigate.md', 'commands/decide.md'];
+
+// decide's Phase 0.5 block names the args directory before anything else
+// (tests/plugin-shape/test-runbook-shell-portability.mjs), so its resolver
+// opens on the line after.
+const ARGS_DIR_LINE = "ARGS_DIR='<directory from step 1>'";
 const verbOf = (dest) => /^commands\/([a-z]+)\.md$/.exec(dest)[1];
+
+// The operative privacy sentences each verb runbook states before its
+// dispatch (authored text, outside the regions). investigate's gate covers web
+// search as well as the peer, so it words both differently.
+const PROHIBITION = {
+  investigate: 'Genericize or remove proprietary content from the topic and sub-questions before WebSearch / WebFetch or peer dispatch; only the genericized form leaves the local host.',
+  other: 'Genericize before the peer prompt; the pre-genericization value MUST never leave the local host.',
+};
+const SCREENSHOT = {
+  investigate: '**Screenshots are sensitive by default** — a raw screenshot of a real UI is never sent to web search or the peer',
+  other: '**Screenshots are sensitive by default** and are never sent to the peer as bytes',
+};
 
 /** A shell block's lines joined the way the shell joins a trailing backslash. */
 const logical = (block) => block.replace(/[ \t]*\\\n[ \t]*/g, ' ');
@@ -114,13 +138,16 @@ function sentenceAt(text, sentence) {
 }
 
 /**
- * Run a runbook block with `node` stubbed: the stub logs each state.mjs
+ * Run a runbook block with `node` stubbed: the stub logs each script
  * subcommand, keeps the `--phase-note` it was handed, fails `append` when
- * asked to, and answers `find-active` with `active` and `findStatus`. The
+ * asked to, answers `find-active` with `active` and `findStatus`, and
+ * answers decide's `resolve` with `resolveStatus`, keeping the file it was
+ * given and printing a context on stdout and a diagnostic on stderr. The
  * heredoc's placeholder line is replaced by `note` first, and its delimiter
  * by `delimiter` when given; `after` is appended to the block.
+ * `inheritedNote` puts a NOTE in the shell's environment beforehand.
  */
-function runBlock(shell, block, persona, { note = '', failAppend = false, delimiter = null, active = '', findStatus = 0, after = '' }) {
+function runBlock(shell, block, persona, { note = '', failAppend = false, delimiter = null, active = '', findStatus = 0, resolveStatus = 0, inheritedNote = null, after = '' }) {
   const dir = mkdtempSync(join(tmpdir(), 'pc2a2b-finalize.'));
   try {
     mkdirSync(join(dir, 'bin'));
@@ -131,6 +158,7 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       '#!/bin/sh',
       'printf \'%s\\n\' "$2" >> "$STUB_LOG"',
       'if [ "$2" = find-active ]; then printf \'%s\\n\' "$STUB_ACTIVE"; exit "$STUB_FIND_RC"; fi',
+      'if [ "$2" = resolve ]; then printf \'%s\\n\' "$4" > "$STUB_ARGS"; printf \'%s\\n\' "$STUB_CONTEXT"; printf \'%s\\n\' "$STUB_DIAGNOSTIC" >&2; exit "$STUB_RESOLVE_RC"; fi',
       'if [ "$2" = append ]; then',
       '  while [ $# -gt 0 ]; do if [ "$1" = --phase-note ]; then printf \'%s\' "$2" > "$STUB_NOTE"; fi; shift; done',
       '  if [ -n "$STUB_FAIL_APPEND" ]; then exit 7; fi',
@@ -150,14 +178,39 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       STUB_NOTE: join(dir, 'note'),
       STUB_ACTIVE: active,
       STUB_FIND_RC: String(findStatus),
+      STUB_ARGS: join(dir, 'args'),
+      STUB_RESOLVE_RC: String(resolveStatus),
+      STUB_CONTEXT: RESOLVER_CONTEXT,
+      STUB_DIAGNOSTIC: RESOLVER_DIAGNOSTIC,
+      ...(inheritedNote === null ? {} : { NOTE: inheritedNote }),
       ...(failAppend ? { STUB_FAIL_APPEND: '1' } : {}),
     };
     const r = spawnSync(shell, ['-c', script], { cwd: dir, env, encoding: 'utf8' });
     const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : null);
-    return { status: r.status, stderr: r.stderr, log: (read('log') ?? '').split('\n').filter(Boolean), note: read('note'), out: read('out') };
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, log: (read('log') ?? '').split('\n').filter(Boolean), note: read('note'), out: read('out'), args: read('args') };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// What the stubbed resolver prints: the skill body reads the context from the
+// block's stdout, and the user sees the diagnostics on its stderr.
+const RESOLVER_CONTEXT = '{"stub":"ResolvedDecisionContext"}';
+const RESOLVER_DIAGNOSTIC = 'registry: stub diagnostic';
+
+/**
+ * The ResolvedDecisionContext a persona's own decide registry prints for the
+ * typed `text`, passed the way the runbook passes it (an args file), with
+ * the environment's AGENTIC_* settings (an L4 profile among them) left out.
+ */
+function resolveWith(persona, text) {
+  const dir = mkdtempSync(join(tmpdir(), 'agentic-args.'));
+  writeFileSync(join(dir, 'args.json'), JSON.stringify({ agentic_args: 1, text }));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_')));
+  const r = spawnSync(process.execPath, [join(pluginRoot(persona), 'scripts', 'decide-registry.mjs'), 'resolve', '--args-file', join(dir, 'args.json')], { env, encoding: 'utf8' });
+  rmSync(dir, { recursive: true, force: true });
+  strictEqual(r.status, 0, r.stderr);
+  return { context: JSON.parse(r.stdout), stderr: r.stderr };
 }
 
 const SHELLS = ['bash', 'zsh', 'sh', 'dash'].filter((s) => spawnSync(s, ['-c', 'exit 0']).status === 0);
@@ -197,8 +250,9 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             ok(blocks.length > 0, 'no shell block uses the plugin root');
             for (const b of blocks) {
               const lines = b.text.split('\n');
-              strictEqual(lines[0], `ROOT_OVERRIDE="$(printenv '${env}' || true)"`, `${persona}: block at line ${b.start + 1}`);
-              ok(lines[2].includes(`agentic-plugins/'${persona}' -mindepth`), `${persona}: cache path at line ${b.start + 1}`);
+              const at = lines[0] === ARGS_DIR_LINE ? 1 : 0;
+              strictEqual(lines[at], `ROOT_OVERRIDE="$(printenv '${env}' || true)"`, `${persona}: block at line ${b.start + 1}`);
+              ok(lines[at + 2].includes(`agentic-plugins/'${persona}' -mindepth`), `${persona}: cache path at line ${b.start + 1}`);
             }
             ok(!text.includes('{{'), 'a placeholder survived the render');
           });
@@ -301,7 +355,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 strictEqual(lines[at - 1], '', `a blank line before ${verb}-${id}`);
                 return lines[at - 2];
               };
-              ok(new RegExp(`^Empty \`\\$ACTIVE\` → bootstrap .*verb=${verb}:$`).test(before('bootstrap')), before('bootstrap'));
+              ok(new RegExp(`^Empty \`\\$ACTIVE\` → bootstrap .*verb=${verb}( \\([^)]*\\))?:$`).test(before('bootstrap')), before('bootstrap'));
               strictEqual(before('resume'), 'Non-empty `$ACTIVE` → append-on-resume:');
             });
 
@@ -355,6 +409,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const lines = finalize.text.split('\n');
               const reader = lines.indexOf(NOTE_READER);
               ok(reader > 0, 'the block reads NOTE from a quoted heredoc');
+              strictEqual(lines[reader - 1], 'unset NOTE', 'NOTE is cleared right before it is read');
               deepStrictEqual(lines.slice(reader + 1, reader + 3), ['<the phase note above, filled in>', 'PHASE_NOTE'], 'the heredoc holds only the placeholder line');
               strictEqual(lines[reader + 4], '[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }', 'an empty note stops the block before any write');
               ok(lines.findIndex((l) => /state\.mjs" append \\$/.test(l)) > reader + 4, 'the guard precedes the append');
@@ -371,16 +426,65 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
 
             it('privacy: the prohibition sentence precedes the dispatch; designer\'s screenshot sentence too; no --image', () => {
               const run = shellSites(text, /peer-runner\.mjs" run \\/);
-              const prohibition = sentenceAt(text, 'Genericize before the peer prompt; the pre-genericization value MUST never leave the local host.');
+              const prohibition = sentenceAt(text, PROHIBITION[verb] ?? PROHIBITION.other);
               strictEqual(prohibition.length, 1, 'the prohibition sentence');
               ok(prohibition[0] < run[0], 'the prohibition precedes the dispatch block');
               if (persona === 'designer') {
-                const screenshot = sentenceAt(text, '**Screenshots are sensitive by default** and are never sent to the peer as bytes');
+                const screenshot = sentenceAt(text, SCREENSHOT[verb] ?? SCREENSHOT.other);
                 strictEqual(screenshot.length, 1, 'the screenshot sentence');
                 ok(screenshot[0] < run[0], 'the screenshot sentence precedes the dispatch block');
               }
               strictEqual(shellSites(text, /--image\b/).length, 0);
             });
+
+            if (verb === 'decide') {
+              it('Phase 0.5: between the resume and the dispatch, the resolver reads the args file the agent wrote, and either failure stops the block', () => {
+                const block = blockWith(/decide-registry\.mjs" resolve /);
+                const lines = block.text.split('\n');
+                strictEqual(lines[0], ARGS_DIR_LINE, 'the block names the args directory first');
+                const call = lines.indexOf('node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"');
+                ok(call > 0, 'the resolver is given the args file');
+                strictEqual(lines[call + 1], 'RESOLVE_RC=$?', 'its status is read right after it');
+                const resume = shellSites(text, /--event resumed/);
+                const resolve = shellSites(text, /decide-registry\.mjs" resolve /);
+                const run = shellSites(text, /peer-runner\.mjs" run \\/);
+                deepStrictEqual([resume.length, resolve.length, run.length], [1, 1, 1], 'site counts');
+                ok(resume[0] < resolve[0] && resolve[0] < run[0], 'resume, resolve, dispatch in that order');
+                const script = block.text.replace(ARGS_DIR_LINE, () => "ARGS_DIR='/agentic-args.x'");
+                const after = "\nprintf '%s' reached > out\n";
+                const passed = runBlock('bash', script, persona, { after });
+                strictEqual(passed.status, 0, passed.stderr);
+                deepStrictEqual(passed.log, ['resolve']);
+                strictEqual(passed.args, '/agentic-args.x/args.json\n', 'the file the agent wrote');
+                strictEqual(passed.out, 'reached');
+                // The skill body reads the context from the block's output.
+                strictEqual(passed.stdout, `${RESOLVER_CONTEXT}\n`, 'the context reaches the block\'s stdout');
+                ok(passed.stderr.includes(RESOLVER_DIAGNOSTIC), 'the diagnostics reach the block\'s stderr');
+                for (const status of [2, 3]) {
+                  const failed = runBlock('bash', script, persona, { resolveStatus: status, after });
+                  strictEqual(failed.status, 1, `resolver exit ${status}: ${failed.stderr}`);
+                  strictEqual(failed.out, null, `resolver exit ${status}: nothing after the guard ran`);
+                }
+              });
+
+              it('Phase 0.5: the args-file pins hold, and the fallback the prose names is the one the registry takes (measured)', () => {
+                const label = `${persona}/${dest} (${which})`;
+                deepStrictEqual(argsFileRunbookProblems(text, label), []);
+                deepStrictEqual(argsFileTypedTextProblems(text, label), []);
+                const fallback = declaration(persona).decide.fallback.preset_id;
+                const prose = sentenceAt(text, `fall-back to the \`${fallback}\` preset with a diagnostic (no halt), while an empty one counts as no \`--preset\` at all.`);
+                strictEqual(prose.length, 1, 'the prose names the declared fallback preset');
+                const unknown = resolveWith(persona, '--preset=no-such-preset choose a direction');
+                deepStrictEqual([unknown.context.preset_id, unknown.context.registry_fallback], [fallback, true], 'an unknown preset');
+                ok(/unknown preset id "no-such-preset"/.test(unknown.stderr), 'with a diagnostic');
+                // An empty one is no --preset: the rest of the precedence (here
+                // --size) decides, with no flag and no diagnostic of its own.
+                const untimed = ({ context: { resolved_at, ...context }, stderr }) => ({ context, stderr });
+                for (const rest of ['choose a direction', '--size=minor choose a direction']) {
+                  deepStrictEqual(untimed(resolveWith(persona, `--preset= ${rest}`)), untimed(resolveWith(persona, rest)), `--preset= ${rest}`);
+                }
+              });
+            }
 
             for (const shell of SHELLS) {
               const finalizeCase = readsDelimited(shell)
@@ -389,15 +493,21 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               it(finalizeCase, () => {
                 const block = blockWith(/state\.mjs" set-terminal \\/).text;
                 if (!readsDelimited(shell)) {
-                  const refused = runBlock(shell, block, persona, { note: HOSTILE_NOTE });
-                  strictEqual(refused.status, 1, refused.stderr);
-                  deepStrictEqual(refused.log, [], 'nothing was written');
+                  // A NOTE the shell inherited must not stand in for the one
+                  // its read could not take (Codex review of PC2a2c).
+                  for (const inheritedNote of [null, 'a stale note']) {
+                    const refused = runBlock(shell, block, persona, { note: HOSTILE_NOTE, inheritedNote });
+                    strictEqual(refused.status, 1, refused.stderr);
+                    deepStrictEqual(refused.log, [], `nothing was written (inherited NOTE: ${inheritedNote})`);
+                  }
                   return;
                 }
                 const ok_ = runBlock(shell, block, persona, { note: HOSTILE_NOTE });
                 strictEqual(ok_.status, 0, ok_.stderr);
                 deepStrictEqual(ok_.log, ['append', 'ensemble-commit', 'set-terminal']);
                 strictEqual(ok_.note, `${HOSTILE_NOTE}\n`, 'the note reached state.mjs unread by the shell');
+                const inherited = runBlock(shell, block, persona, { note: HOSTILE_NOTE, inheritedNote: 'a stale note' });
+                strictEqual(inherited.note, `${HOSTILE_NOTE}\n`, 'the note read, not one the shell inherited');
                 // A note that holds the delimiter line, with the delimiter
                 // replaced as the prose above the block says.
                 const quoting = `${HOSTILE_NOTE}\nPHASE_NOTE\nprintf INJECTED > injected`;
