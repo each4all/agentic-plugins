@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.4](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.3...plugin-engineer-v0.24.4) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** point start's worktree route at runtime:worktree plan (WT) ([#876](https://github.com/each4all/agentic-plugins/issues/876)) ([7c40181](https://github.com/each4all/agentic-plugins/commit/7c40181cb64a10a37eebbf17a9f16ea84b951809))
+
 ## [0.24.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.2...plugin-engineer-v0.24.3) (2026-10-05)
 
 
