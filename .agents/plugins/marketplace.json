@@ -41,8 +41,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/designer",
-        "ref": "plugin-designer-v0.3.17",
-        "sha": "bda7bd2f91dc151bd46a71e47b37f113c85b3ecd"
+        "ref": "plugin-designer-v0.3.18",
+        "sha": "7849a4fe7af6474446c15b7d2f25b74b3365ffc3"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -71,8 +71,8 @@
         "source": "git-subdir",
         "url": "./",
         "path": "plugins/founder",
-        "ref": "plugin-founder-v0.4.17",
-        "sha": "bda7bd2f91dc151bd46a71e47b37f113c85b3ecd"
+        "ref": "plugin-founder-v0.4.18",
+        "sha": "7849a4fe7af6474446c15b7d2f25b74b3365ffc3"
       },
       "policy": {
         "installation": "AVAILABLE",
