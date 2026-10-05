@@ -1,5 +1,5 @@
 {
-  "schema": "persona-declaration-1.0",
+  "schema": "persona-declaration-1.1",
   "name": "designer",
   "deliverable_noun": "design deliverable",
   "runtime_footer_floor": "0.79.0",
@@ -96,6 +96,82 @@
       "ui": "experience",
       "cta": "conversion",
       "content": "clarity"
+    }
+  },
+  "verbs": {
+    "investigate": {
+      "profiles": [
+        "design-brief"
+      ],
+      "default_profile": "design-brief",
+      "request_placeholder": "one-line genericized design/UX topic",
+      "ensemble_type": "reference-scan",
+      "artifact": [
+        "### Brief saved",
+        "",
+        "<absolute path to design_brief.md>"
+      ],
+      "rationale_gate": "본질/근본 (essence/foundation) + evidence-quality gate",
+      "evidence_pointers": "brief path / sub-questions / Open Questions",
+      "next_action": "<compact selected_next + why + next_command — e.g. Frame the UX problem from this cited brief (/designer:frame)>"
+    },
+    "frame": {
+      "request_placeholder": "one-line genericized design/UX topic",
+      "artifact": [
+        "### UX problem model",
+        "",
+        "UX Problem / Opportunity: ...",
+        "Users + Job-to-be-Done: ...",
+        "Goals: ...",
+        "Measurable UX success metrics: ...",
+        "Constraints: ...",
+        "Key risks: ...",
+        "Out of scope: ..."
+      ],
+      "rationale_gate": "본질/근본 (essence/foundation) + evidence-quality gate",
+      "evidence_pointers": "UX-problem-model fields / brief path",
+      "next_action": "Decide on a design direction given this frame (/designer:decide)"
+    },
+    "decide": {
+      "request_placeholder": "one-line genericized design decision",
+      "artifact": [
+        "### Directions compared",
+        "",
+        "<table or list of directions with tradeoffs across the resolved design axes>",
+        "",
+        "### Recommendation",
+        "",
+        "<chosen direction + rationale + accessibility gate verdict + risks>"
+      ],
+      "rationale_gate": "decisive 사용성/archetype axis + the accessibility gate verdict",
+      "evidence_pointers": "phase notes / brief / artifacts",
+      "next_action": "Compose the flows/specs for the chosen direction (/designer:compose)"
+    },
+    "compose": {
+      "profiles": [
+        "spec",
+        "flow",
+        "wireframe"
+      ],
+      "default_profile": "spec",
+      "request_placeholder": "one-line genericized composition target",
+      "artifact": [
+        "### Artifact",
+        "",
+        "<the design artifact: IA / flow (with per-screen state set) / wireframe",
+        " structure / component specs / CTA copy — every element annotated with its",
+        " accessibility + consistency acceptance criteria, [to be validated] markers",
+        " on unvalidated assumptions>"
+      ],
+      "rationale_gate": "how the artifact honors the confirmed frame + chosen direction, plus its accessibility + consistency acceptance criteria",
+      "evidence_pointers": "spec sections / flow states / brief path",
+      "next_action": "Critique the composed design spec, and the rendered screen once built (/designer:critique)"
+    },
+    "refine": {
+      "terminal_requires_convergence": true
+    },
+    "start": {
+      "terminal_requires_convergence": true
     }
   }
 }
