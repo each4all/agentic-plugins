@@ -5,10 +5,11 @@
 Accepted (2026-06-15 — the Implementation Roadmap PR7 real-topic dogfood
 validated the direction; see the Accepted-flip evidence note below)
 
-**Proposed to be superseded** by [ADR-0066](0066-persona-pipeline-canonical-source.md)
-(proposed 2026-10-05) — Sub-decision 7 only. This line becomes `Superseded by
-ADR-0066` in the same commit that flips ADR-0066 to Accepted. Until then
-Sub-decision 7 stands.
+**Superseded by [ADR-0066](0066-persona-pipeline-canonical-source.md)** (2026-10-05) —
+Sub-decision 7 only. founder's workflow machinery is generated from
+`persona-pipeline/`, not copied and trimmed by hand from engineer; what
+Sub-decision 7 trimmed is a capability founder declares off. The Non-Goals,
+including Non-Goal 3 (no orchestrator→founder dispatch), stand.
 
 > **Status convention note.** [README.md](README.md) §Process step 4
 > ("Merge with `Status: Accepted`") coexists with a long-roadmap

@@ -2,16 +2,15 @@
 
 ## Status
 
-Proposed (2026-10-05). Written for macro subtask PC0
-(`macro-plan-20261003T022443Z-139657`) from the owner's selection at E1
-(`decide-20261005T015832Z-7931cf`). It becomes `Accepted` only when the owner
-accepts it explicitly at PR review. The implementation subtask PC1 waits for
-that.
+Accepted (2026-10-05 — the owner accepted it explicitly at PR review, #879).
+Written for macro subtask PC0 (`macro-plan-20261003T022443Z-139657`) from
+the owner's selection at E1 (`decide-20261005T015832Z-7931cf`). The
+implementation subtask PC1 implements Stage 1.
 
-Supersession is atomic with acceptance (the ADR-0056 §Decision 9 rule). This
-change adds a "Proposed to be superseded" line to ADR-0036 and ADR-0042, for
-Sub-decision 7 only. The commit that flips this ADR to `Accepted` replaces
-those lines and applies §Amendment cascade in the same commit.
+Supersession is atomic with acceptance (the ADR-0056 §Decision 9 rule). The
+proposal added a "Proposed to be superseded" line to ADR-0036 and ADR-0042,
+for Sub-decision 7 only. The acceptance commit replaced those lines and
+applied §Amendment cascade.
 
 A cross-host Plan-verify review (Codex, run
 `plan-verify-20261005T090052Z-13bf69`) checked the draft against the
@@ -809,7 +808,7 @@ stop.
 - **ADR-0029's copy-not-import rule holds as written.** The copy is now
   generated.
 
-## Amendment cascade (apply verbatim on acceptance)
+## Amendment cascade (apply verbatim on acceptance; applied 2026-10-05)
 
 `<date>` is the acceptance date.
 
