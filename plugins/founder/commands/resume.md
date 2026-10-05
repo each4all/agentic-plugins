@@ -18,11 +18,13 @@ baseline, or archives a stale workflow. It does NOT advance the workflow
 file owns the Claude-host bash below; the drift semantics, dirty-case
 enrichment rules, and host-availability matrix delegate to SKILL.md.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_FOUNDER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 ---
 
@@ -39,14 +41,17 @@ Inspect `$ARGUMENTS`:
 
 ## Phase 1 — Locate active workflow
 
+<!-- pipeline:begin resume-locate -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>/tmp/founder-resume-find.err)"
+  find-active --repo-root "$REPO_ROOT" 2>/tmp/'founder'-'resume'-find.err)"
 FIND_RC=$?
 ```
+<!-- pipeline:end resume-locate -->
 
 - **Exit 0, empty stdout** → "*No active workflow; nothing to resume.*"
   Recommend `/founder:investigate` (or another verb) to bootstrap one.
@@ -60,14 +65,17 @@ FIND_RC=$?
 
 ## Phase 2 — Drift report (clean / dirty)
 
+<!-- pipeline:begin resume-read -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" >/tmp/founder-resume-read.json
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" >/tmp/'founder'-resume-read.json
 CURRENT_BRANCH="$(git branch --show-current)"
 CURRENT_HEAD="$(git rev-parse HEAD)"
 CURRENT_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
 ```
+<!-- pipeline:end resume-read -->
 
 Classify: **clean** when current branch+HEAD+digest match the workflow's
 `git_baseline`; **dirty** otherwise. Render the drift report per SKILL.md
@@ -90,14 +98,18 @@ failed: ...)` on error. Always close the dirty report with:
 If the baseline commit object is available, append a `host_history` entry
 (no phase mutation):
 
+<!-- pipeline:begin resume-marker -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='founder'
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-  --workflow-path "$ACTIVE" --host claude \
-  --phase-label "Resume" --phase-note "Re-entered via /founder:resume; drift=<clean|dirty>." \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  --phase-label "Resume" --phase-note "Re-entered via /${PERSONA}:resume; drift=<clean|dirty>." \
   --event resumed
 ```
+<!-- pipeline:end resume-marker -->
 
 Skip the marker when the baseline is invalid (re-validate; shell state may
 not survive across Bash calls). Do NOT bump `current_phase` / `next_action`.
@@ -117,12 +129,15 @@ Confirm with the user before mutating (show workflow_id / current_phase /
 next_action). The durable business artifact is NOT affected. On
 confirmation:
 
+<!-- pipeline:begin resume-archive -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" archive \
-  --workflow-path "$WORKFLOW" --host claude --repo-root "$REPO_ROOT"
+  --workflow-path "$WORKFLOW" --host "${AGENTIC_HOST:-claude}" --repo-root "$REPO_ROOT"
 ```
+<!-- pipeline:end resume-archive -->
 
 Collision-safe + idempotent; `archived: false, reason: source-missing` means
 already-archived.

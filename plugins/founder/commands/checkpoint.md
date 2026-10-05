@@ -27,11 +27,13 @@ command file owns the Claude-host bash bootstrap and the `state.mjs` writes
 below; the summary-length guidance, privacy note, and host-availability
 matrix delegate to SKILL.md via the matching `§ Phase N` pointer.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_FOUNDER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 ---
 
@@ -56,14 +58,17 @@ long (>1000 chars); do not silently truncate.
 
 ## Phase 1 — Locate active workflow
 
+<!-- pipeline:begin checkpoint-locate -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>/tmp/founder-checkpoint-find.err)"
+  find-active --repo-root "$REPO_ROOT" 2>/tmp/'founder'-'checkpoint'-find.err)"
 FIND_RC=$?
 ```
+<!-- pipeline:end checkpoint-locate -->
 
 Branch on the result:
 
@@ -81,17 +86,20 @@ Branch on the result:
 
 ## Phase 2 — Set checkpoint
 
+<!-- pipeline:begin checkpoint-set -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_FOUNDER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/founder -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" checkpoint-set \
-  --workflow-path "$ACTIVE" --host claude --summary "$SUMMARY"
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --summary "$SUMMARY"
 ```
+<!-- pipeline:end checkpoint-set -->
 
 The CLI is signal-safe (atomic write under the per-file lock) and
 schema-preserving: `latest_checkpoint` is a schema-1.1 additive field that
-1.0 readers tolerantly ignore; `host_history` gains a `{host: claude, at:
-<ISO>, event: checkpointed}` entry per ADR-0011 §1.
+1.0 readers tolerantly ignore; `host_history` gains a `{host, at: <ISO>,
+event: checkpointed}` entry per ADR-0011 §1.
 
 `$SUMMARY` is the trimmed `$ARGUMENTS` text. Pass it as a single quoted
 argument so embedded whitespace survives intact. The CLI rejects empty
