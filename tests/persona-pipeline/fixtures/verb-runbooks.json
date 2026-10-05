@@ -71,10 +71,86 @@
     },
     {
       "runbooks": [
+        "founder/investigate"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized business topic>",
+      "to": "<the original request described above>",
+      "why": "PC2a2 PD3: as for compose"
+    },
+    {
+      "runbooks": [
+        "designer/investigate"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized design/UX topic>",
+      "to": "<the original request described above>",
+      "why": "PC2a2 PD3: as for compose"
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized business decision>",
+      "to": "<the original request described above>",
+      "why": "PC2a2 PD3: as for compose"
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line genericized design decision>",
+      "to": "<the original request described above>",
+      "why": "PC2a2 PD3: as for compose"
+    },
+    {
+      "runbooks": [
+        "founder/investigate"
+      ],
+      "where": "call:state.mjs create:--profile",
+      "from": "<profile from the arguments above — business-brief; default 'business-brief'>",
+      "to": "<profile from the arguments above — default business-brief>",
+      "why": "PC2a2 PD3: both profiled verbs use one wording, the default from DEFAULT_PROFILE, a literal assigned from verbs.investigate.default_profile (the profile list stays in the argument hint)"
+    },
+    {
+      "runbooks": [
+        "designer/investigate"
+      ],
+      "where": "call:state.mjs create:--profile",
+      "from": "<profile from the arguments above — design-brief; default 'design-brief'>",
+      "to": "<profile from the arguments above — default design-brief>",
+      "why": "PC2a2 PD3: as for founder"
+    },
+    {
+      "runbooks": [
+        "designer/investigate"
+      ],
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "e.g. 'Frame the UX problem from this cited brief (/designer:frame)'",
+      "to": "e.g. Frame the UX problem from this cited brief (/designer:frame)",
+      "why": "PC2a2 PD5: the placeholder loses its inner single quotes, so it can be a single-quoted literal (verbs.investigate.next_action)"
+    },
+    {
+      "runbooks": [
+        "designer/investigate"
+      ],
+      "where": "call:state.mjs set-terminal:--next-action",
+      "from": "e.g. 'Frame the UX problem from this cited brief (/designer:frame)'",
+      "to": "e.g. Frame the UX problem from this cited brief (/designer:frame)",
+      "why": "PC2a2 PD5: as for the phase-note append"
+    },
+    {
+      "runbooks": [
         "designer/compose",
         "founder/compose",
         "designer/frame",
-        "founder/frame"
+        "founder/frame",
+        "designer/investigate",
+        "founder/investigate",
+        "designer/decide",
+        "founder/decide"
       ],
       "where": "guards.detached_head",
       "from": "— {persona} workflows",

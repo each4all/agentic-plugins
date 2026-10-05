@@ -1,9 +1,9 @@
 // Declaration format 1.1, the per-verb fields (ADR-0066 Decision 2), bound to
-// the runbooks that state the same facts. Until the verb runbooks hold
-// generated regions, the declared values are copies of their text; these cases
-// keep the two in step, so a region that later renders from the declaration
-// renders what the runbook says today. Each binding is to a site, with a
-// nonzero count.
+// the runbooks that state the same facts. The investigate, frame, decide and
+// compose runbooks render these values from generated regions; refine and
+// start are still authored, so their declared convergence is a copy of what
+// their terminal block does. These cases keep each declared value and its
+// runbook text in step. Each binding is to a site, with a nonzero count.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -98,13 +98,20 @@ for (const persona of ['founder', 'designer']) {
       const text = runbook(persona, 'investigate');
       const { profiles, default_profile: def } = verbs.investigate;
       strictEqual(count(text, `\nargument-hint: --profile=${profiles.join('|')} | `), 1);
-      strictEqual(count(text, `<profile from the arguments above — ${profiles.join(', ')}; default '${def}'>`), 1);
+      // Authored, the placeholder spells the default; generated (PC2a2 PD3),
+      // it reads DEFAULT_PROFILE, which the bootstrap block assigns.
+      const authored = count(text, `<profile from the arguments above — ${profiles.join(', ')}; default '${def}'>`);
+      const generated = count(text, '<profile from the arguments above — default ${DEFAULT_PROFILE}>');
+      strictEqual(authored + generated, 1, 'one profile placeholder');
+      if (generated === 1) strictEqual(count(text, `\nDEFAULT_PROFILE='${def}'\n`), 1, 'the block assigns the declared default');
     });
 
     it('investigate: the ensemble type is the one its dispatch and ensemble-commit name', () => {
       const text = runbook(persona, 'investigate');
-      strictEqual(count(text, `--ensemble-type ${verbs.investigate.ensemble_type} --run-id`), 2);
-      strictEqual(count(text, `### Ensemble launched: ${verbs.investigate.ensemble_type} at <iso-utc>`), 1);
+      const type = verbs.investigate.ensemble_type;
+      // Bare as authored, single-quoted as generated (Decision 4).
+      strictEqual(text.split(new RegExp(`--ensemble-type '?${type}'? --run-id`)).length - 1, 2);
+      strictEqual(count(text, `### Ensemble launched: ${type} at <iso-utc>`), 1);
     });
 
     for (const verb of NOTE_VERBS) {

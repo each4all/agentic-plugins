@@ -20,6 +20,9 @@
 //   G  a defect in a canonical runbook region template (PC2a), regenerated
 //      into every enrolled persona: the region drift check stays clean, so a
 //      runbook contract test must fail;
+//   M  the verb runbook regions (PC2a2b compose and frame, PC2a2c investigate
+//      and decide): a template, manifest or declaration defect, or authored
+//      text removed, each with the contract that must catch it (killed_by);
 //   V  declaration format 1.1 (PC2a2): the loader's reader parity with the
 //      schema, the generator's cross-field rules, the declared verb fields
 //      bound to the runbooks; K, the verb runbook characterization (T0); L,
@@ -104,9 +107,10 @@ function templateDefect(copy, tools, { template, from, to, edits = [{ from, to }
 // (G13 edits each). The list must be every such template: one the list misses
 // would keep the errexit-safe form while the case reports a kill.
 const RESOLVER_TEMPLATES = [
-  'regions/checkpoint-set.md', 'regions/locate-active.md', 'regions/peer-now-dispatch.md',
-  'regions/peer-now-locate.md', 'regions/peer-now-note.md', 'regions/resume-archive.md',
-  'regions/resume-marker.md', 'regions/resume-read.md', 'regions/verb-bootstrap-profiled.md',
+  'regions/checkpoint-set.md', 'regions/decide-resolve.md', 'regions/locate-active.md',
+  'regions/peer-now-dispatch.md', 'regions/peer-now-locate.md', 'regions/peer-now-note.md',
+  'regions/resume-archive.md', 'regions/resume-marker.md', 'regions/resume-read.md',
+  'regions/verb-bootstrap-profiled.md',
   'regions/verb-bootstrap.md', 'regions/verb-dispatch.md', 'regions/verb-finalize.md',
   'regions/verb-phase-0.md', 'regions/verb-resume-profiled.md', 'regions/verb-resume.md',
 ];
@@ -121,6 +125,9 @@ const RESOLVER_TEMPLATES = [
 
 // PC2a2b: the finalize template and its ensemble-commit step, moved whole by M1/M2.
 const FINALIZE = 'regions/verb-finalize.md';
+// PC2a2c: decide's Phase 0.5 template and the contract that runs its block.
+const RESOLVE = 'regions/decide-resolve.md';
+const PHASE_05_RUN = /^Phase 0\.5: between the resume and the dispatch, the resolver reads the args file/;
 const COMMIT_STEP = [
   '# ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.',
   'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \\',
@@ -132,19 +139,22 @@ const COMMIT_STEP = [
   '',
 ].join('\n');
 
+/** The verb runbooks whose blocks are generated (PC2a2b, PC2a2c). */
+const VERB_RUNBOOKS = ['compose', 'frame', 'investigate', 'decide'];
+
 /**
  * The tests a defect in a verb template must fail: the named contract (a
  * pattern anchored at the test name's start) inside the committed runbook's
- * suite of every enrolled persona, compose and frame alike — matched by path,
- * so a contract failing in one suite and an unrelated test failing in
- * another does not pass for both (Codex review of PC2a2b).
+ * suite of every enrolled persona, every generated verb runbook alike —
+ * matched by path, so a contract failing in one suite and an unrelated test
+ * failing in another does not pass for both (Codex review of PC2a2b).
  */
 const inSuite = (suite, contract) => new RegExp(
   `(?:^| > )${suite.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} > ${contract.source.replace(/^\^/, '')}`,
 );
 const IDENTITY = /^identity: persona, verb, phase, ensemble type and run-id prefix/;
 const PRIVACY = /^privacy: the prohibition sentence precedes the dispatch/;
-const verbCaught = (contract) => ['founder', 'designer'].flatMap((p) => ['compose', 'frame'].map((v) => new RegExp(
+const verbCaught = (contract, verbs = VERB_RUNBOOKS) => ['founder', 'designer'].flatMap((p) => verbs.map((v) => new RegExp(
   `(?:^| > )${`${p}/commands/${v}.md (committed)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} > ${contract.source.replace(/^\^/, '')}`,
 )));
 
@@ -460,8 +470,8 @@ export const MUTATIONS = [
   },
   {
     id: 'K6', tests: [T_CHAR], file: 'plugins/founder/commands/decide.md',
-    from: `RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"`,
-    to: "RUN_ID='brainstorm-$(date -u +%Y%m%dT%H%M%SZ)'",
+    from: `RUN_ID="\${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"`,
+    to: "RUN_ID='${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)'",
     killed_by: /^does what the fixture recorded, with the listed changes/,
     why: 'founder decide single-quotes its run id, so the date never runs and the runner refuses the literal (Codex review of PC2a2b)',
   },
@@ -511,10 +521,11 @@ export const MUTATIONS = [
     why: 'a list item holding a line break renders as more lines than the list declares',
   },
 
-  // ---- M: the compose and frame runbook regions (PC2a2b T8) -------------------------
+  // ---- M: the verb runbook regions (PC2a2b T8; PC2a2c adds investigate, decide) -----
   // A canonical template defect regenerates into both personas, and each case
-  // names the contract that must catch it in both (killed_by): a nonzero exit
-  // from some other test is not that contract working.
+  // names the contract that must catch it in both (killed_by), in every verb
+  // runbook the template renders into: a nonzero exit from some other test is
+  // not that contract working.
   {
     id: 'M1', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, edits: [
@@ -680,6 +691,131 @@ export const MUTATIONS = [
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: 'so when the note itself holds\nsuch a line, replace both `PHASE_NOTE` delimiters with a word no line of the\nnote consists of.', to: 'so keep it short.' }),
     killed_by: verbCaught(/^the phase note: the scaffold right above the finalize block/),
     why: 'the agent is no longer told to rename a delimiter its note holds: such a note runs its tail as shell',
+  },
+
+  // ---- M: the investigate runbook regions (PC2a2c T8) ------------------------------
+  // The template cases above now also name investigate (verbCaught). These are
+  // the defects only investigate has: the ensemble type and both note labels
+  // come from its declaration, and its privacy sentences are its own.
+  {
+    id: 'M22', tests: [T_CONTRACT, T_CHAR, T_VERBS],
+    prepare: (copy, tools) => {
+      tools.applyEdit(copy, { file: 'plugins/designer/persona.json', from: '"ensemble_type": "reference-scan"', to: '"ensemble_type": "research-scan"' });
+      regenerate(copy);
+    },
+    killed_by: [inSuite('designer/commands/investigate.md (committed)', IDENTITY), /^does what the fixture recorded, with the listed changes/],
+    why: 'designer declares founder\'s investigate ensemble type: dispatch, commit, run id and note all follow it, so only the T0 map catches it',
+  },
+  {
+    id: 'M23', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy) => {
+      const path = join(copy, 'persona-pipeline/manifest.json');
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      const region = manifest.regions.find((r) => r.id === 'investigate-finalize');
+      if (!region) throw new MutationHarnessError('no investigate-finalize region');
+      [region.substitutions.launched, region.substitutions.synthesis] = [region.substitutions.synthesis, region.substitutions.launched];
+      writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+      regenerate(copy);
+    },
+    killed_by: verbCaught(/^the phase note: the scaffold right above the finalize block is the recorded one/, ['investigate']),
+    why: 'investigate\'s note headings swap the ensemble type and the profile (the launch line names the brief, the synthesis the scan)',
+  },
+  {
+    id: 'M24', tests: [T_CONTRACT], file: 'plugins/founder/commands/investigate.md',
+    from: 'Genericize or remove proprietary content\nfrom the topic and sub-questions before WebSearch / WebFetch or peer\ndispatch; only the genericized form leaves the local host. ',
+    to: '',
+    killed_by: inSuite('founder/commands/investigate.md (committed)', PRIVACY),
+    why: 'founder investigate loses the privacy prohibition before its dispatch (authored text outside the regions)',
+  },
+  {
+    id: 'M25', tests: [T_CONTRACT], file: 'plugins/designer/commands/investigate.md',
+    from: '**Screenshots are sensitive by default** — a raw\nscreenshot of a real UI is never sent to web search or the peer;',
+    to: 'Screenshots may be shared with the peer;',
+    killed_by: inSuite('designer/commands/investigate.md (committed)', PRIVACY),
+    why: 'designer investigate loses the screenshot sentence before its dispatch (authored text outside the regions)',
+  },
+  {
+    id: 'D6', tests: [T_SYNC], file: 'plugins/designer/commands/investigate.md',
+    from: "  --ensemble-type 'reference-scan' --run-id \"$RUN_ID\" \\\n  > \"$PROMPT_FILE.run.json\"",
+    to: "  --ensemble-type 'reference-scan' --run-id \"$RUN_ID\" --model gpt-x \\\n  > \"$PROMPT_FILE.run.json\"",
+    killed_by: /^the repository is clean$/,
+    why: 'a hand edit inside a generated region of investigate.md (the drift check must fail)',
+  },
+
+  // ---- M: the decide runbook regions (PC2a2c T8) ------------------------------------
+  // Phase 0.5 (decide-resolve) is decide's own region; the template cases
+  // above name decide too.
+  {
+    id: 'M26', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: RESOLVE, from: 'fix the invocation and rerun." >&2\n  exit 1\n', to: 'fix the invocation and rerun." >&2\n' }),
+    killed_by: [...verbCaught(PHASE_05_RUN, ['decide']), /^guards: detached HEAD and find-active failures exit; decide also exits on both resolver failures/],
+    why: 'decide goes on to the dispatch after the resolver rejected its arguments',
+  },
+  {
+    id: 'M27', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: RESOLVE, from: '--args-file "$ARGS_DIR/args.json"\nRESOLVE_RC=$?\n', to: '--args-file "$ARGS_DIR/args.json"\necho "resolved" >&2\nRESOLVE_RC=$?\n' }),
+    killed_by: verbCaught(PHASE_05_RUN, ['decide']),
+    why: 'the resolver\'s status is read after another command, so a rejected argument list reads as success',
+  },
+  {
+    id: 'M28', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: RESOLVE, from: 'resolve --args-file "$ARGS_DIR/args.json"\n', to: 'resolve -- "$(cat "$ARGS_DIR/args.json")"\n' }),
+    killed_by: verbCaught(/^Phase 0\.5: the args-file pins hold/, ['decide']),
+    why: 'the resolver gets the typed text through the shell again instead of the args file (ADR-0059)',
+  },
+  {
+    id: 'M29', tests: [T_CONTRACT],
+    prepare: (copy) => {
+      const path = join(copy, 'persona-pipeline/manifest.json');
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      const region = manifest.regions.find((r) => r.id === 'decide-resolve');
+      if (!region) throw new MutationHarnessError('no decide-resolve region');
+      region.substitutions.fallback_preset = { value: 'default', context: 'markdown' };
+      writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+      regenerate(copy);
+    },
+    killed_by: inSuite('designer/commands/decide.md (committed)', /^Phase 0\.5: the args-file pins hold/),
+    why: 'the prose names founder\'s fallback preset for every persona: designer\'s decide says "default" while its registry falls back to "balanced"',
+  },
+  {
+    id: 'M30', tests: [T_CONTRACT],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/decide-registry.mjs', from: '    if (presetId) {\n', to: '    if (presetId !== undefined) {\n' }),
+    killed_by: verbCaught(/^Phase 0\.5: the args-file pins hold/, ['decide']),
+    why: 'an empty --preset= is treated as an unknown preset (flag and diagnostic), so the measured behavior no longer matches the prose',
+  },
+  // Codex review of PC2a2c: each of these passed the reviewed version of the tests.
+  {
+    id: 'M33', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '# value the shell inherited must not stand in for the note.\nunset NOTE\n', to: '# value the shell inherited must not stand in for the note.\n' }),
+    killed_by: [/^dash: a shell whose read has no -d stops the finalize block before any write/, ...verbCaught(/^the phase note: the scaffold right above the finalize block/)],
+    why: 'a NOTE the shell inherited stands in for the note a shell without read -d could not take, and is recorded and archived',
+  },
+  {
+    id: 'M34', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: RESOLVE, from: 'node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve', to: 'exec >/dev/null\nnode "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve' }),
+    killed_by: verbCaught(PHASE_05_RUN, ['decide']),
+    why: 'the resolved context never reaches the block\'s output, so the skill body has nothing to read',
+  },
+  {
+    id: 'M31', tests: [T_CONTRACT], file: 'plugins/founder/commands/decide.md',
+    from: 'Genericize before the peer prompt; the\npre-genericization value MUST never leave the local host. ',
+    to: '',
+    killed_by: inSuite('founder/commands/decide.md (committed)', PRIVACY),
+    why: 'founder decide loses the privacy prohibition before its dispatch (authored text outside the regions)',
+  },
+  {
+    id: 'M32', tests: [T_CONTRACT], file: 'plugins/designer/commands/decide.md',
+    from: '**Screenshots are sensitive by default** and are never sent to\nthe peer as bytes',
+    to: 'Screenshots may be sent to\nthe peer',
+    killed_by: inSuite('designer/commands/decide.md (committed)', PRIVACY),
+    why: 'designer decide loses the screenshot sentence before its dispatch (authored text outside the regions)',
+  },
+  {
+    id: 'D7', tests: [T_SYNC], file: 'plugins/designer/commands/decide.md',
+    from: 'node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json"\n',
+    to: 'node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --args-file "$ARGS_DIR/args.json" --strict\n',
+    killed_by: /^the repository is clean$/,
+    why: 'a hand edit inside the generated Phase 0.5 region of decide.md (the drift check must fail)',
   },
   {
     id: 'D5', tests: [T_SYNC], file: 'plugins/founder/commands/compose.md',
