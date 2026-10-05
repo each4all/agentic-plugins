@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.14](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.13...plugin-designer-v0.3.14) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/designer:** stop state.mjs truncating piped output at 64 KiB (C70) ([700dd2f](https://github.com/each4all/agentic-plugins/commit/700dd2fec9b9ab9d1edbb6e3d961515a06ccf040))
+
 ## [0.3.13](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.12...plugin-designer-v0.3.13) (2026-10-04)
 
 

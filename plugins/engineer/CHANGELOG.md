@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.2...plugin-engineer-v0.24.3) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** stop state.mjs truncating piped output at 64 KiB (C70) ([cbb2887](https://github.com/each4all/agentic-plugins/commit/cbb2887d88f949b9a59c26504bf0d3d89446a684))
+
 ## [0.24.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.1...plugin-engineer-v0.24.2) (2026-10-04)
 
 
