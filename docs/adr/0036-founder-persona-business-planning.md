@@ -5,6 +5,12 @@
 Accepted (2026-06-15 — the Implementation Roadmap PR7 real-topic dogfood
 validated the direction; see the Accepted-flip evidence note below)
 
+**Superseded by [ADR-0066](0066-persona-pipeline-canonical-source.md)** (2026-10-05) —
+Sub-decision 7 only. founder's workflow machinery is generated from
+`persona-pipeline/`, not copied and trimmed by hand from engineer; what
+Sub-decision 7 trimmed is a capability founder declares off. The Non-Goals,
+including Non-Goal 3 (no orchestrator→founder dispatch), stand.
+
 > **Status convention note.** [README.md](README.md) §Process step 4
 > ("Merge with `Status: Accepted`") coexists with a long-roadmap
 > practice in which an ADR merges as `Proposed` and flips to

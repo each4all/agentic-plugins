@@ -827,3 +827,13 @@ Claude and Codex `hooks.json` (`matcher: "compact"` on both hosts);
 `plugins/attention/adapters/claude/hooks/hooks.json` (matcher
 `"startup"`, Claude-only by design — excluded from the correction's
 scope).
+
+### 2026-10-05 — the persona pipeline is shared at the source (per ADR-0066)
+
+The persona plugins' workflow machinery (scripts, hooks, the pipeline blocks of
+the runbooks, the shared protocol references) has one canonical source,
+`persona-pipeline/` at the repository root, generated into each persona plugin
+with a drift check. This is not the L1 workflow runtime the §1 table sketches:
+it is a source shared at authoring time, so no plugin is added, §6 trigger 1
+does not fire, and §5 holds — each plugin carries its own complete copy and
+nothing is imported across plugins at runtime.
