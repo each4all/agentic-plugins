@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.20](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.19...plugin-founder-v0.4.20) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/founder:** generate the critique, refine and start runbook blocks and the shared skill sections (ADR-0066 Stage 2a) ([88ceade](https://github.com/each4all/agentic-plugins/commit/88ceadedccdc57185d58206a22cef396c9a7312a))
+
 ## [0.4.19](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.18...plugin-founder-v0.4.19) (2026-10-05)
 
 

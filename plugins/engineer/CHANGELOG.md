@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.7](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.6...plugin-engineer-v0.24.7) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** read persona declaration 1.2 in the generated loader (ADR-0066 Stage 2a) ([13b22f2](https://github.com/each4all/agentic-plugins/commit/13b22f2949faf29f2a9b8850ac331be3bf5c7eb6))
+
 ## [0.24.6](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.5...plugin-engineer-v0.24.6) (2026-10-05)
 
 
