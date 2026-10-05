@@ -124,11 +124,17 @@ Follow Step 2 above, at command fidelity.
 
 ### Step 3: Privacy gate (before any external call)
 
-PRIVACY GATE: proprietary venture concepts, interview/customer data, and
-unpublished business material pass an explicit gate before BOTH web
-search AND peer-host dispatch. Genericize the revision before the peer
-prompt; the pre-genericization value MUST never leave the local host. See
-`../investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:begin refine-privacy-gate -->
+PRIVACY GATE: proprietary venture concepts, interview/customer data, and unpublished business material
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+Genericize the revision before the peer prompt; the pre-genericization value MUST never leave the local host.
+See `../investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end refine-privacy-gate -->
+
+<!-- pipeline:begin refine-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end refine-privacy-no-image -->
 
 ### Step 4: Peer ensemble parallel verification (Refine-verify point)
 

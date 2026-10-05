@@ -75,12 +75,13 @@ is no `plugin_hooks` settings key.)
 
 ## When invoked by command (`/founder:start` Claude command or `$founder:start` Codex skill mention)
 
+<!-- pipeline:begin start-command-intro -->
 Phase 0 host-side bootstrap (argument intake, detached-HEAD guard,
-redundancy probe, clean-baseline gate, active-workflow branching) is owned
-by the entry path: `commands/start.md` carries the canonical bash on the
-Claude side. Direct `$founder:start` on Codex follows the equivalent
-operational sequence inline using the same `scripts/state.mjs` CLI (the
-state writer is host-agnostic).
+clean-baseline gate, active-workflow branching) is owned by the entry path:
+`commands/start.md` carries the canonical bash on the Claude side. Direct
+`$founder:start` on Codex follows the equivalent operational sequence
+inline using the same `scripts/state.mjs` CLI (the state writer is
+host-agnostic).
 
 **Active-workflow branching** (both hosts): when `find-active` returns a
 non-empty workflow, read its `workflow_type` before continuing. Resume into
@@ -99,17 +100,21 @@ inspects the returned `status` (`clean` / `dirty` / `accepted`). On `dirty`
 the gate refuses to bootstrap and presents resolutions: clean the tree,
 stash, or set `ACCEPT_CURRENT_TREE=1` to acknowledge the dirty tree.
 `.agentic-plugins/state/**` is excluded from the dirty check.
+<!-- pipeline:end start-command-intro -->
 
 ### Privacy gate (applies to every phase that calls the peer or the web)
 
-PRIVACY GATE: proprietary venture concepts, interview/customer data, and
-unpublished business material pass an explicit gate before BOTH web search
-AND peer-host dispatch. The lifecycle dispatches the peer ensemble at every
-phase boundary (always-max), and Phase 1 investigate runs web search —
-genericize before any external call; the pre-genericization value MUST never
-leave the local host. Each verb skill restates this gate; the macro inherits
-it at every phase. See
-`../investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:begin start-privacy-gate -->
+PRIVACY GATE: proprietary venture concepts, interview/customer data, and unpublished business material
+pass an explicit privacy gate before BOTH web search AND peer-host dispatch.
+The lifecycle runs web search (Phase 1 investigate) and dispatches the peer ensemble at every phase boundary (always-max) — genericize before any external call; the pre-genericization value MUST never leave the local host. Each verb skill restates this gate; the macro inherits it at every phase.
+See `../investigate/references/business-brief-spec.md` § Privacy Gate.
+<!-- pipeline:end start-privacy-gate -->
+
+<!-- pipeline:begin start-privacy-no-image -->
+No dispatch passes `--image`: the companion peer path has no image channel, so
+an image never reaches the peer as bytes.
+<!-- pipeline:end start-privacy-no-image -->
 
 ### Entry routing recommendation (before Phase 1)
 
