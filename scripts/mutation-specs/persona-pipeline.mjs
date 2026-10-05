@@ -20,6 +20,10 @@
 //   G  a defect in a canonical runbook region template (PC2a), regenerated
 //      into every enrolled persona: the region drift check stays clean, so a
 //      runbook contract test must fail;
+//   V  declaration format 1.1 (PC2a2): the loader's reader parity with the
+//      schema, the generator's cross-field rules, the declared verb fields
+//      bound to the runbooks; K, the verb runbook characterization (T0); L,
+//      the engine's list values;
 //   C  a control: an innocuous canonical edit, regenerated everywhere, keeps
 //      the drift check clean (expect SURVIVED).
 //
@@ -44,6 +48,8 @@ const T_DECL = 'tests/persona-pipeline/test-persona-declaration.mjs';
 const T_CROSS = 'tests/persona-pipeline/test-capabilities-and-declaration.mjs';
 const T_CONTRACT = 'tests/persona-pipeline/test-runbook-contracts.mjs';
 const T_HEADLESS = 'tests/plugin-shape/test-headless-safe-runbooks.mjs';
+const T_VERBS = 'tests/persona-pipeline/test-declaration-verbs.mjs';
+const T_CHAR = 'tests/persona-pipeline/test-verb-runbook-characterization.mjs';
 
 export const TESTS = [T_SYNC];
 
@@ -319,6 +325,135 @@ export const MUTATIONS = [
     from: '--summary "$SUMMARY"',
     to: '--summary "$SUMMARY" --force',
     why: 'a hand edit inside a generated runbook region (the PC2a acceptance: the drift check must fail)',
+  },
+
+  // ---- V: declaration format 1.1 (PC2a2 T2) and list values (T1') -------------------
+  {
+    id: 'V1', tests: [T_DECL],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/lib/persona.mjs',
+      from: 'const READER_MINOR = 1;',
+      to: 'const READER_MINOR = 0;',
+    }),
+    why: 'the loader reads as 1.0 again and forgives an unknown scalar the schema refuses at the same minor (the readers disagree)',
+  },
+  {
+    id: 'V2', tests: [T_DECL],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/lib/persona.mjs',
+      from: '!(newer && isScalar(obj[k]))',
+      to: '!newer',
+    }),
+    why: 'a newer minor\'s unknown object or list is forgiven, so its meaning is silently dropped (ADR-0034 §4.1)',
+  },
+  {
+    id: 'V3', tests: [T_DECL],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/lib/persona.mjs',
+      from: '  if (d.verbs !== undefined) verbProblems(d.verbs, unknown, no);\n',
+      to: '',
+    }),
+    why: 'the loader stops checking verbs, so a declaration the schema rejects (a newline in a next action) authorizes writes',
+  },
+  {
+    id: 'V4', tests: [T_DECL], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '    } else if (Array.isArray(v.profiles) && !v.profiles.includes(v.default_profile)) {',
+    to: '    } else if (false) {',
+    why: 'a verb\'s default profile off its own profile list passes the check',
+  },
+  {
+    id: 'V5', tests: [T_REGION], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '      if (cur === undefined || cur === null) {',
+    to: '      if (false) {',
+    why: 'a declaration lacking a field an enrolled region reads is no longer its own failure (it surfaces only as a render error)',
+  },
+  {
+    id: 'V6', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
+    from: 'if [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: 'if true; then',
+    why: 'designer refine closes the workflow without a converged re-critique while its declaration says it waits for one (DD5)',
+  },
+  {
+    id: 'V7', tests: [T_VERBS], file: 'plugins/founder/persona.json',
+    from: '"next_action": "Compose the planning artifact for the chosen direction"',
+    to: '"next_action": "Critique the decision"',
+    why: 'the declared next action drifts from what founder decide records, so a region rendering it would change the runbook',
+  },
+  {
+    id: 'K1', tests: [T_CHAR], file: 'plugins/founder/commands/compose.md',
+    from: '  --phase compose --ensemble-type plan-verify --run-id "$RUN_ID" \\\n  --verdict',
+    to: '  --phase compose --ensemble-type brainstorm --run-id "$RUN_ID" \\\n  --verdict',
+    why: 'founder compose commits its ensemble result under another type than it dispatched (the T0 characterization must fail)',
+  },
+  {
+    id: 'K2', tests: [T_CHAR], file: 'plugins/designer/commands/frame.md', expect: 'SURVIVED',
+    from: '--persona designer \\',
+    to: "--persona 'designer' \\",
+    why: 'a quoting change alone (Decision 4 renders persona values as single-quoted literals) is not a difference the characterization reports',
+  },
+  // Codex review of PC2a2: each of these passed the first version of the tests.
+  {
+    id: 'K3', tests: [T_CHAR], file: 'plugins/founder/commands/compose.md',
+    from: '  --phase-note "$NOTE" \\\n',
+    to: '  --phase-note $NOTE \\\n',
+    why: 'the phase note is passed unquoted, so the shell splits it into many arguments',
+  },
+  {
+    id: 'K4', tests: [T_CHAR], file: 'plugins/founder/commands/compose.md',
+    from: 'node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \\\n',
+    to: '# node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \\\n',
+    why: 'the dispatch is commented out, so no peer runs',
+  },
+  {
+    id: 'K5', tests: [T_CHAR], file: 'plugins/founder/commands/decide.md',
+    from: '  exit 1\nelif [ "$RESOLVE_RC" -ne 0 ]; then',
+    to: 'elif [ "$RESOLVE_RC" -ne 0 ]; then',
+    why: 'founder decide goes on after the resolver rejected its arguments',
+  },
+  {
+    id: 'V8', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
+    from: '  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \\\n',
+    to: '  :; else\n  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \\\n',
+    why: 'designer refine\'s terminal write moves to the else branch: it runs when the re-critique did not converge',
+  },
+  {
+    id: 'V9', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
+    from: 'if [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal --workflow-path "$ACTIVE"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    why: 'designer refine gains a second, unguarded terminal write next to the guarded one',
+  },
+  {
+    id: 'V10', tests: [T_DECL],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/lib/persona.mjs',
+      from: '  if (Buffer.byteLength(`${JSON.stringify(d, null, 2)}\\n`, \'utf8\') > MAX_BYTES) no(`larger than ${MAX_BYTES} bytes`);\n',
+      to: '',
+    }),
+    why: 'the loader accepts a declaration over the 64 KiB cap the schema validator refuses',
+  },
+  {
+    id: 'V11', tests: [T_DECL], file: 'scripts/sync-persona-pipeline.mjs',
+    from: "    for (const size of ['minor', 'standard', 'major']) {",
+    to: '    for (const size of Object.keys(decide.size_presets ?? {})) {',
+    why: 'the generator reads a newer minor\'s ignored scalar as a preset reference and refuses the declaration',
+  },
+  {
+    id: 'L3', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: '  if (JSON.stringify(fenceLines(rendered)) !== JSON.stringify(fenceLines(text))) {',
+    to: '  if (false) {',
+    why: 'a list item "```bash" closes a markdown fence and opens a shell one, so a later markdown value lands in bash',
+  },
+  {
+    id: 'L1', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: "    if (Array.isArray(value) && sub.context === 'shell') {",
+    to: '    if (false) {',
+    why: 'a list reaches a shell value: its lines are spliced into a shell block unquoted',
+  },
+  {
+    id: 'L2', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: '      if (Array.isArray(value) && /[\\n\\r\\0]/.test(item)) {',
+    to: '      if (false) {',
+    why: 'a list item holding a line break renders as more lines than the list declares',
   },
 
   // ---- C: control -------------------------------------------------------------------

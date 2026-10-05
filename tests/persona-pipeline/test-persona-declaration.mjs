@@ -14,7 +14,7 @@ import { runSync } from '../../scripts/sync-persona-pipeline.mjs';
 import { MANIFEST, REPO_ROOT, declaration, personaInfo, personasFound } from './_personas.mjs';
 
 const SCHEMA = JSON.parse(readFileSync(join(REPO_ROOT, 'persona-pipeline/persona.schema.json'), 'utf8'));
-const validate = (doc) => validateAgainstSchema(doc, SCHEMA, { readerVersion: 'persona-declaration-1.0' });
+const validate = (doc) => validateAgainstSchema(doc, SCHEMA, { readerVersion: 'persona-declaration-1.1' });
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
 // Documents the schema rejects; the loader must reject each of them too.
@@ -34,6 +34,21 @@ const SCHEMA_REJECTS = {
   'a malformed deliverable noun': (d) => { d.deliverable_noun = 'Business $(deliverable)'; },
   'an empty tie-break list': (d) => { d.decide.tie_break = []; },
   'a profile map value that is not a preset id': (d) => { d.decide.profile_presets = { cta: 'Conversion!' }; },
+  // Format 1.1, structure only (the generator checks the cross-field rules).
+  'an unknown verb': (d) => { d.verbs.ideate = { next_action: 'Ideate' }; },
+  'an unknown verb key': (d) => { d.verbs.compose.surprise = 1; },
+  'a newline in a verb string': (d) => { d.verbs.frame.next_action = 'Decide\n--persona designer'; },
+  'an empty verb string': (d) => { d.verbs.decide.request_placeholder = ''; },
+  'a non-boolean convergence flag': (d) => { d.verbs.refine.terminal_requires_convergence = 'no'; },
+  'an artifact line that is not a string': (d) => { d.verbs.compose.artifact = ['### Artifact', 3]; },
+  'an artifact line holding a newline': (d) => { d.verbs.decide.artifact = ['### Directions compared\n### Recommendation']; },
+  'a profile that is not an id': (d) => { d.verbs.compose.profiles = ['Plan!']; },
+  'a verbs value that is not an object': (d) => { d.verbs = ['compose']; },
+  // Every field within its bounds, the document over the validator's 64 KiB
+  // cap (Codex review of PC2a2: the loader had no cap).
+  'a declaration larger than 64 KiB': (d) => {
+    for (const v of Object.values(d.verbs)) if (v.artifact) v.artifact = Array(40).fill('x'.repeat(512));
+  },
 };
 
 describe('the personas found are the manifest personas (by identity)', () => {
@@ -121,6 +136,87 @@ describe('scripts/lib/persona.mjs — the loader', () => {
     }
   });
 
+  // The two readers agree on forward compatibility (ADR-0034 §4.1), at every
+  // depth: an unknown scalar is forgiven only in a declaration of a newer minor
+  // than they read (1.1); an unknown object or list never is.
+  it('agrees with the schema on unknown keys: older/same/newer minor × scalar/object/list × every object depth', async () => {
+    const at = {
+      root: (d) => d,
+      capabilities: (d) => d.capabilities,
+      decide: (d) => d.decide,
+      'decide.fallback': (d) => d.decide.fallback,
+      'decide.fallback.axes[0]': (d) => d.decide.fallback.axes[0],
+      'decide.fallback.axes[0].labels': (d) => d.decide.fallback.axes[0].labels,
+      'decide.size_presets': (d) => d.decide.size_presets,
+      verbs: (d) => d.verbs,
+      'verbs.compose': (d) => d.verbs.compose,
+      'verbs.refine': (d) => d.verbs.refine,
+    };
+    const values = { scalar: 1, object: { x: 1 }, list: [1] };
+    const minors = { older: '1.0', same: '1.1', newer: '1.2' };
+    let forgiven = 0;
+    let refused = 0;
+    for (const [minorName, minor] of Object.entries(minors)) {
+      for (const [where, pick] of Object.entries(at)) {
+        for (const [kind, value] of Object.entries(values)) {
+          const d = clone(declaration('founder'));
+          d.schema = `persona-declaration-${minor}`;
+          pick(d).surprise = clone(value);
+          const schemaOk = validate(d).ok;
+          const mod = await load(loaderPlugin({ decl: d }));
+          let loaderOk = true;
+          try { mod.loadPersona(); } catch (err) { if (err.name !== 'PersonaDeclarationError') throw err; loaderOk = false; }
+          strictEqual(loaderOk, schemaOk, `${minorName} minor, ${kind} at ${where}: schema ${schemaOk ? 'accepts' : 'rejects'}, loader ${loaderOk ? 'accepts' : 'rejects'}`);
+          strictEqual(schemaOk, minorName === 'newer' && kind === 'scalar', `${minorName} minor, ${kind} at ${where}`);
+          if (schemaOk) forgiven++; else refused++;
+        }
+      }
+    }
+    // Both verdicts occur, at every depth (10 forgiven, 80 refused).
+    strictEqual(forgiven, Object.keys(at).length);
+    strictEqual(refused, Object.keys(at).length * 8);
+  });
+
+  it('agrees with the schema where keys are patterns or items are typed: profile_presets keys, artifact items', async () => {
+    const cases = [];
+    for (const minor of ['1.0', '1.1', '1.2']) {
+      for (const value of [1, 'x', { x: 1 }]) {
+        cases.push([`${minor}: a profile_presets key outside the id pattern holding ${JSON.stringify(value)}`, (d) => {
+          d.schema = `persona-declaration-${minor}`;
+          d.decide.profile_presets['Bad Key'] = clone(value);
+        }]);
+      }
+      cases.push([`${minor}: an artifact item that is a number`, (d) => {
+        d.schema = `persona-declaration-${minor}`;
+        d.verbs.compose.artifact = ['### Artifact', 7];
+      }]);
+      cases.push([`${minor}: an empty artifact item (a blank line)`, (d) => {
+        d.schema = `persona-declaration-${minor}`;
+        d.verbs.compose.artifact = ['### Artifact', '', 'x'];
+      }]);
+    }
+    const verdicts = new Set();
+    for (const [what, edit] of cases) {
+      const d = clone(declaration('designer'));
+      edit(d);
+      const schemaOk = validate(d).ok;
+      const mod = await load(loaderPlugin({ name: 'designer', decl: d }));
+      let loaderOk = true;
+      try { mod.loadPersona(); } catch (err) { if (err.name !== 'PersonaDeclarationError') throw err; loaderOk = false; }
+      strictEqual(loaderOk, schemaOk, `${what}: schema ${schemaOk ? 'accepts' : 'rejects'}, loader ${loaderOk ? 'accepts' : 'rejects'}`);
+      verdicts.add(schemaOk);
+    }
+    deepStrictEqual([...verdicts].sort(), [false, true], 'both verdicts occur');
+  });
+
+  it('a declaration without verbs (format 1.0, as engineer stays) still loads', async () => {
+    const d = clone(declaration('founder'));
+    d.schema = 'persona-declaration-1.0';
+    delete d.verbs;
+    ok(validate(d).ok);
+    strictEqual((await load(loaderPlugin({ decl: d }))).loadPersona().name, 'founder');
+  });
+
   it('reads nothing at import time: importing with no declaration does not throw', async () => {
     const mod = await load(loaderPlugin({}));
     strictEqual(typeof mod.loadPersona, 'function');
@@ -196,6 +292,9 @@ describe('cross-field rules (the generator check)', () => {
     'a field an enrolled unit reads': ['founder', (d) => { delete d.deliverable_noun; }, /unit session-handoff \(scripts\/session-handoff\.mjs\) reads deliverable_noun/],
     'a capability on that an enrolled unit carries only the off path of': ['designer', (d) => { d.capabilities.dispatch_target = true; }, /unit state \(scripts\/state\.mjs\) carries only the off path of dispatch_target/],
     'a name that is not its directory': ['founder', (d) => { d.name = 'designer'; }, /does not match its plugin directory founder/],
+    'a default profile off its list': ['founder', (d) => { d.verbs.compose.default_profile = 'spec'; }, /verbs\.compose\.default_profile "spec" is not one of its profiles \(plan, canvas, validation-plan\)/],
+    'profiles without a default profile': ['designer', (d) => { delete d.verbs.investigate.default_profile; }, /verbs\.investigate declares profiles without default_profile; declare both or neither/],
+    'a default profile without profiles': ['designer', (d) => { delete d.verbs.compose.profiles; }, /verbs\.compose declares default_profile without profiles; declare both or neither/],
   };
   for (const [what, [persona, edit, re]] of Object.entries(cases)) {
     it(`fails on ${what}`, async () => {
@@ -206,6 +305,14 @@ describe('cross-field rules (the generator check)', () => {
       match(err, re);
     });
   }
+
+  it('a newer minor\'s extra scalar, which both readers ignore, is not read as a preset reference', async () => {
+    const root = repoSubsetCopy();
+    editDecl(root, 'founder', (d) => { d.schema = 'persona-declaration-1.2'; d.decide.size_presets.future_label = 'later'; });
+    editDecl(root, 'designer', (d) => { d.schema = 'persona-declaration-1.2'; d.decide.profile_presets['Future Key'] = 'later'; });
+    const { code, err } = await check(root);
+    strictEqual(code, 0, err);
+  });
 
   it('fails when a persona.json appears that the manifest does not name, or a named one is missing', async () => {
     const root = repoSubsetCopy();

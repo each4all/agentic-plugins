@@ -38,8 +38,21 @@ const CAPABILITIES = Object.freeze(['dispatch_target', 'commit_surface', 'legacy
 const ID_RE = /^[a-z][a-z0-9-]*$/;
 const NOUN_RE = /^[a-z][a-z '/-]*[a-z]$/;
 const SEMVER_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
-const TOP_KEYS = ['schema', 'name', 'deliverable_noun', 'runtime_footer_floor', 'capabilities', 'decide'];
+// The format minor this loader reads. A newer minor's unknown scalar is
+// forgiven; an unknown object or list is refused at any minor (ADR-0034 §4.1,
+// as the schema validator reads it).
+const READER_MINOR = 1;
+// The document cap the schema validator applies (SCHEMA_MAX_BYTES), measured
+// the same way: the declaration pretty-printed, in UTF-8 bytes.
+const MAX_BYTES = 64 * 1024;
+const TOP_KEYS = ['schema', 'name', 'deliverable_noun', 'runtime_footer_floor', 'capabilities', 'decide', 'verbs'];
 const DECIDE_KEYS = ['fallback', 'size_presets', 'profile_presets', 'tie_break'];
+const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'critique', 'refine', 'start']);
+const VERB_KEYS = [
+  'profiles', 'default_profile', 'request_placeholder', 'ensemble_type', 'artifact',
+  'rationale_gate', 'evidence_pointers', 'next_action', 'terminal_requires_convergence',
+];
+const LINE_RE = /^[^\n\r\0]*$/;
 
 export class PersonaDeclarationError extends Error {
   constructor(message) {
@@ -124,43 +137,47 @@ function readDeclaration(root) {
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isId = (v) => typeof v === 'string' && v.length <= 64 && ID_RE.test(v);
+const isScalar = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
+const isLine = (v, { empty = false } = {}) => typeof v === 'string' && v.length <= 512 && LINE_RE.test(v) && (empty || v.length > 0);
 
 /**
- * The schema's structure, as a list of what is wrong (empty when valid). A
- * newer minor format may carry unknown top-level scalars; they are ignored, as
- * the schema validator ignores them (forward compatibility).
+ * The schema's structure, as a list of what is wrong (empty when valid). At
+ * every depth, a key the format does not know is refused, except a scalar in a
+ * declaration of a newer minor than this loader reads: that one is ignored, as
+ * the schema validator ignores it (forward compatibility).
  */
 function structureProblems(d, minor) {
   const problems = [];
   const no = (what) => problems.push(what);
-  for (const key of Object.keys(d)) {
-    if (TOP_KEYS.includes(key)) continue;
-    if (minor > 0 && !isObject(d[key]) && !Array.isArray(d[key])) continue;
-    no(`unknown key ${key}`);
-  }
+  const newer = minor > READER_MINOR;
+  // The keys of `obj` outside `known`, less the ones a newer minor may add.
+  const unknown = (obj, known) => Object.keys(obj).filter((k) => !known.includes(k) && !(newer && isScalar(obj[k])));
+  if (Buffer.byteLength(`${JSON.stringify(d, null, 2)}\n`, 'utf8') > MAX_BYTES) no(`larger than ${MAX_BYTES} bytes`);
+  for (const key of unknown(d, TOP_KEYS)) no(`unknown key ${key}`);
   if (d.name.length > 32) no('name longer than 32 characters');
   if (d.deliverable_noun !== undefined && !(typeof d.deliverable_noun === 'string' && d.deliverable_noun.length <= 64 && NOUN_RE.test(d.deliverable_noun))) no('invalid deliverable_noun');
   if (d.runtime_footer_floor !== undefined && !(typeof d.runtime_footer_floor === 'string' && SEMVER_RE.test(d.runtime_footer_floor))) no('invalid runtime_footer_floor');
   const caps = d.capabilities;
-  if (!isObject(caps) || CAPABILITIES.some((c) => typeof caps[c] !== 'boolean') || Object.keys(caps).some((k) => !CAPABILITIES.includes(k))) {
+  if (!isObject(caps) || CAPABILITIES.some((c) => typeof caps[c] !== 'boolean') || unknown(caps, CAPABILITIES).length > 0) {
     no(`capabilities must set exactly ${CAPABILITIES.join(', ')} to true or false`);
   }
+  if (d.verbs !== undefined) verbProblems(d.verbs, unknown, no);
   const decide = d.decide;
   if (!isObject(decide)) {
     no('decide is missing');
     return problems;
   }
-  for (const key of Object.keys(decide)) if (!DECIDE_KEYS.includes(key)) no(`unknown key decide.${key}`);
+  for (const key of unknown(decide, DECIDE_KEYS)) no(`unknown key decide.${key}`);
   const fb = decide.fallback;
-  if (!isObject(fb) || Object.keys(fb).some((k) => k !== 'preset_id' && k !== 'axes') || !isId(fb.preset_id)
+  if (!isObject(fb) || unknown(fb, ['preset_id', 'axes']).length > 0 || !isId(fb.preset_id)
     || !Array.isArray(fb.axes) || fb.axes.length < 2 || fb.axes.length > 16) {
     no('decide.fallback must be { preset_id, axes[2..16] }');
   } else {
     fb.axes.forEach((a, i) => {
       const ok = isObject(a)
-        && Object.keys(a).every((k) => ['id', 'labels', 'question', 'role', 'gate'].includes(k))
+        && unknown(a, ['id', 'labels', 'question', 'role', 'gate']).length === 0
         && isId(a.id)
-        && isObject(a.labels) && Object.keys(a.labels).every((k) => k === 'en' || k === 'ko')
+        && isObject(a.labels) && unknown(a.labels, ['en', 'ko']).length === 0
         && typeof a.labels.en === 'string' && a.labels.en.length <= 128
         && (a.labels.ko === null || (typeof a.labels.ko === 'string' && a.labels.ko.length <= 128))
         && typeof a.question === 'string' && a.question.length <= 2048
@@ -170,11 +187,13 @@ function structureProblems(d, minor) {
     });
   }
   const sizes = decide.size_presets;
-  if (!isObject(sizes) || Object.keys(sizes).sort().join() !== 'major,minor,standard' || !Object.values(sizes).every(isId)) {
+  const SIZES = ['minor', 'standard', 'major'];
+  if (!isObject(sizes) || SIZES.some((k) => !isId(sizes[k])) || unknown(sizes, SIZES).length > 0) {
     no('decide.size_presets must map minor, standard and major to preset ids');
   }
-  if (decide.profile_presets !== undefined
-    && !(isObject(decide.profile_presets) && Object.entries(decide.profile_presets).every(([k, v]) => ID_RE.test(k) && isId(v)))) {
+  const pp = decide.profile_presets;
+  if (pp !== undefined
+    && !(isObject(pp) && Object.entries(pp).every(([k, v]) => (ID_RE.test(k) ? isId(v) : newer && isScalar(v))))) {
     no('decide.profile_presets must map profile ids to preset ids');
   }
   if (decide.tie_break !== undefined
@@ -182,6 +201,42 @@ function structureProblems(d, minor) {
     no('decide.tie_break must be a list of 1..16 axis ids');
   }
   return problems;
+}
+
+/** Format 1.1: `verbs`, the per-verb fields (structure only; the generator checks the rest). */
+function verbProblems(verbs, unknown, no) {
+  if (!isObject(verbs)) {
+    no('verbs must be an object keyed by verb');
+    return;
+  }
+  for (const key of unknown(verbs, VERBS)) no(`unknown key verbs.${key}`);
+  for (const verb of VERBS) {
+    if (!Object.hasOwn(verbs, verb)) continue;
+    const v = verbs[verb];
+    const at = `verbs.${verb}`;
+    if (!isObject(v)) {
+      no(`${at} must be an object`);
+      continue;
+    }
+    for (const key of unknown(v, VERB_KEYS)) no(`unknown key ${at}.${key}`);
+    if (v.profiles !== undefined
+      && !(Array.isArray(v.profiles) && v.profiles.length >= 1 && v.profiles.length <= 16 && v.profiles.every(isId))) {
+      no(`${at}.profiles must be a list of 1..16 profile ids`);
+    }
+    for (const key of ['default_profile', 'ensemble_type']) {
+      if (v[key] !== undefined && !isId(v[key])) no(`${at}.${key} must be an id`);
+    }
+    for (const key of ['request_placeholder', 'rationale_gate', 'evidence_pointers', 'next_action']) {
+      if (v[key] !== undefined && !isLine(v[key])) no(`${at}.${key} must be one non-empty line of at most 512 characters`);
+    }
+    if (v.artifact !== undefined
+      && !(Array.isArray(v.artifact) && v.artifact.length >= 1 && v.artifact.length <= 40 && v.artifact.every((l) => isLine(l, { empty: true })))) {
+      no(`${at}.artifact must be a list of 1..40 lines`);
+    }
+    if (v.terminal_requires_convergence !== undefined && typeof v.terminal_requires_convergence !== 'boolean') {
+      no(`${at}.terminal_requires_convergence must be true or false`);
+    }
+  }
 }
 
 function field(d, path) {

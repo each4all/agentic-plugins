@@ -1,0 +1,2168 @@
+{
+  "description": "PC2a2 T0: what each founder and designer verb runbook did before its blocks became generated regions (tests/persona-pipeline/_verb-runbooks.mjs reads it). Written from the runbooks at 7e1db44d. A region that changes any of this must list the change in allowed_differences.",
+  "expected_ensemble_types": {
+    "founder": {
+      "compose": "plan-verify",
+      "decide": "brainstorm",
+      "frame": "frame",
+      "investigate": "research-scan"
+    },
+    "designer": {
+      "compose": "plan-verify",
+      "decide": "brainstorm",
+      "frame": "frame",
+      "investigate": "reference-scan"
+    }
+  },
+  "allowed_differences": [],
+  "runbooks": {
+    "designer/compose": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "compose"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "designer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--profile",
+              "${AGENTIC_PROFILE:-<profile from $ARGUMENTS or 'spec'>}"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized composition target>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run compose skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "compose"
+            ],
+            [
+              "--profile",
+              "<profile or empty>"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into compose"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb. Profile=<...>."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run compose skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "compose"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "plan-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Compose (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Critique the composed design spec, and the rendered screen once built (/designer:critique)"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "compose"
+            ],
+            [
+              "--ensemble-type",
+              "plan-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Critique the composed design spec, and the rendered screen once built (/designer:critique)"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "plan-verify"
+      ],
+      "mktemp_templates": [
+        "designer-compose-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null
+      },
+      "note": "### Ensemble launched: compose at <iso-utc>\n\n### Ensemble synthesis: compose (profile=<spec|flow|wireframe>) verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Artifact\n\n<the design artifact: IA / flow (with per-screen state set) / wireframe\n structure / component specs / CTA copy — every element annotated with its\n accessibility + consistency acceptance criteria, [to be validated] markers\n on unvalidated assumptions>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — how the artifact honors the confirmed frame + chosen direction, plus its accessibility + consistency acceptance criteria>\n- evidence_pointers:     <spec sections / flow states / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
+    },
+    "designer/decide": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "decide"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "designer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized design decision>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run decide skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "decide"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into decide"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run decide skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "decide-registry.mjs",
+          "sub": "resolve",
+          "args": [
+            [
+              "--args-file",
+              "<directory from step 1>/args.json"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "decide"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "brainstorm"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Decide (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Compose the flows/specs for the chosen direction (/designer:compose)"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "decide"
+            ],
+            [
+              "--ensemble-type",
+              "brainstorm"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Compose the flows/specs for the chosen direction (/designer:compose)"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "brainstorm"
+      ],
+      "mktemp_templates": [
+        "designer-decide-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": "RESOLVE_RC=$?\nif [ \"$RESOLVE_RC\" -eq 2 ]; then\n  echo \"✗ decide-registry rejected the argument list — fix the invocation and rerun.\" >&2\n  exit 1\nelif [ \"$RESOLVE_RC\" -ne 0 ]; then\n  echo \"✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above.\" >&2\n  exit 1\nfi"
+      },
+      "note": "### Ensemble launched: decide at <iso-utc>\n\n### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Directions compared\n\n<table or list of directions with tradeoffs across the resolved design axes>\n\n### Recommendation\n\n<chosen direction + rationale + accessibility gate verdict + risks>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — decisive 사용성/archetype axis + the accessibility gate verdict>\n- evidence_pointers:     <phase notes / brief / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
+    },
+    "designer/frame": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "frame"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "designer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized design/UX topic>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run frame skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "frame"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into frame"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run frame skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "frame"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "frame"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Frame (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Decide on a design direction given this frame (/designer:decide)"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "frame"
+            ],
+            [
+              "--ensemble-type",
+              "frame"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Decide on a design direction given this frame (/designer:decide)"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "frame"
+      ],
+      "mktemp_templates": [
+        "designer-frame-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null
+      },
+      "note": "### Ensemble launched: frame at <iso-utc>\n\n### Ensemble synthesis: frame verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### UX problem model\n\nUX Problem / Opportunity: ...\nUsers + Job-to-be-Done: ...\nGoals: ...\nMeasurable UX success metrics: ...\nConstraints: ...\nKey risks: ...\nOut of scope: ...\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <UX-problem-model fields / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
+    },
+    "designer/investigate": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "designer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--profile",
+              "${AGENTIC_PROFILE:-<profile from the arguments above — design-brief; default 'design-brief'>}"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized design/UX topic>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run investigate skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--profile",
+              "<profile or empty>"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into investigate"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb. Profile=<...>."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run investigate skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "investigate"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "reference-scan"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Investigate (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "<compact selected_next + why + next_command — e.g. 'Frame the UX problem from this cited brief (/designer:frame)'>"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "investigate"
+            ],
+            [
+              "--ensemble-type",
+              "reference-scan"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "<compact selected_next + why + next_command — e.g. 'Frame the UX problem from this cited brief (/designer:frame)'>"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "reference-scan"
+      ],
+      "mktemp_templates": [
+        "designer-investigate-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — designer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null
+      },
+      "note": "### Ensemble launched: reference-scan at <iso-utc>\n\n### Ensemble synthesis: design-brief verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Brief saved\n\n<absolute path to design_brief.md>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <brief path / sub-questions / Open Questions — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
+    },
+    "founder/compose": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "compose"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "founder"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--profile",
+              "${AGENTIC_PROFILE:-<profile from $ARGUMENTS or 'plan'>}"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized planning target>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run compose skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "compose"
+            ],
+            [
+              "--profile",
+              "<profile or empty>"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into compose"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb. Profile=<...>."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run compose skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "compose"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "plan-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Compose (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Critique the composed planning artifact"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "compose"
+            ],
+            [
+              "--ensemble-type",
+              "plan-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Critique the composed planning artifact"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "plan-verify"
+      ],
+      "mktemp_templates": [
+        "founder-compose-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null
+      },
+      "note": "### Ensemble launched: compose at <iso-utc>\n\n### Ensemble synthesis: compose (profile=<plan|canvas|validation-plan>) verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Artifact\n\n<the planning artifact: venture plan sections / lean canvas boxes /\n validation-plan experiments — with [to be validated] markers on\n unverified assumptions>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <plan sections / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
+    },
+    "founder/decide": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "decide"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "founder"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized business decision>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run decide skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "decide"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into decide"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run decide skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "decide-registry.mjs",
+          "sub": "resolve",
+          "args": [
+            [
+              "--args-file",
+              "<directory from step 1>/args.json"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "decide"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "brainstorm"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Decide (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Compose the planning artifact for the chosen direction"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "decide"
+            ],
+            [
+              "--ensemble-type",
+              "brainstorm"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Compose the planning artifact for the chosen direction"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "brainstorm"
+      ],
+      "mktemp_templates": [
+        "founder-decide-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": "RESOLVE_RC=$?\nif [ \"$RESOLVE_RC\" -eq 2 ]; then\n  echo \"✗ decide-registry rejected the argument list — fix the invocation and rerun.\" >&2\n  exit 1\nelif [ \"$RESOLVE_RC\" -ne 0 ]; then\n  echo \"✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above.\" >&2\n  exit 1\nfi"
+      },
+      "note": "### Ensemble launched: decide at <iso-utc>\n\n### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Directions compared\n\n<table or list of directions with tradeoffs across the resolved business axes>\n\n### Recommendation\n\n<chosen direction + rationale + gate verdict (regulatory/safety) + risks>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — decisive 시장성/단위경제 (market/unit-economics) + the regulatory/safety gate verdict>\n- evidence_pointers:     <phase notes / brief / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
+    },
+    "founder/frame": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "frame"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "founder"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized business topic>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run frame skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "frame"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into frame"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run frame skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "frame"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "frame"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Frame (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Decide on a business direction given this frame"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "frame"
+            ],
+            [
+              "--ensemble-type",
+              "frame"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Decide on a business direction given this frame"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "frame"
+      ],
+      "mktemp_templates": [
+        "founder-frame-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null
+      },
+      "note": "### Ensemble launched: frame at <iso-utc>\n\n### Ensemble synthesis: frame verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Opportunity model\n\nProblem / Opportunity: ...\nCustomer + Job-to-be-Done: ...\nValue hypothesis: ...\nBusiness-model sketch: ...\nConstraints: ...\nValidation criteria: ...\nKey risks: ...\nOut of scope: ...\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <opportunity-model fields / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
+    },
+    "founder/investigate": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "founder"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--profile",
+              "${AGENTIC_PROFILE:-<profile from the arguments above — business-brief; default 'business-brief'>}"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line genericized business topic>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run investigate skill"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--profile",
+              "<profile or empty>"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into investigate"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb. Profile=<...>."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--next-action",
+              "Run investigate skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "investigate"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "research-scan"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Investigate (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "<one-sentence imperative for next verb>"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "investigate"
+            ],
+            [
+              "--ensemble-type",
+              "research-scan"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "set-terminal",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--terminal-phase",
+              "summary-complete"
+            ],
+            [
+              "--terminal-marker",
+              "true"
+            ],
+            [
+              "--next-action",
+              "<one-sentence imperative for next verb>"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "research-scan"
+      ],
+      "mktemp_templates": [
+        "founder-investigate-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — founder workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null
+      },
+      "note": "### Ensemble launched: research-scan at <iso-utc>\n\n### Ensemble synthesis: business-brief verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Brief saved\n\n<absolute path to business_brief.md>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <brief path / sub-questions / Open Questions — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
+    }
+  }
+}
