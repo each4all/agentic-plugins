@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.5](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.4...plugin-engineer-v0.24.5) (2026-10-05)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** generate the persona pipeline from one canonical source (ADR-0066 Stage 1) ([c5a6f71](https://github.com/each4all/agentic-plugins/commit/c5a6f7133245b3c391e7fccfe4b1dc408de8e4ba))
+
 ## [0.24.4](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.3...plugin-engineer-v0.24.4) (2026-10-05)
 
 
