@@ -5,16 +5,19 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   parseRegions,
+  placeholderPlacements,
   regionBody,
   renderTemplate,
+  renderingDeclaration,
   replaceRegionBodies,
   shellQuote,
+  validateManifest,
 } from '../../scripts/lib/persona-pipeline.mjs';
 import { runSync } from '../../scripts/sync-persona-pipeline.mjs';
 import { REPO_ROOT } from './_personas.mjs';
@@ -108,12 +111,12 @@ describe('region rendering', () => {
   };
 
   it('substitutes declared fields per context and includes or omits capability blocks', () => {
-    const template = 'make the {{noun}}\nN={{q}}\n{{#capability dispatch_target}}\non\n{{/capability}}\n{{^capability dispatch_target}}\noff\n{{/capability}}\n';
+    const template = 'make the {{noun}}\n```bash\nN={{q}}\n```\n{{#capability dispatch_target}}\non\n{{/capability}}\n{{^capability dispatch_target}}\noff\n{{/capability}}\n';
     strictEqual(renderTemplate(template, { declaration: declaration(), substitutions: subs }),
-      "make the alpha deliverable\nN='alpha deliverable'\non\n");
+      "make the alpha deliverable\n```bash\nN='alpha deliverable'\n```\non\n");
     const off = declaration({ capabilities: { ...declaration().capabilities, dispatch_target: false } });
     strictEqual(renderTemplate(template, { declaration: off, substitutions: subs }),
-      "make the alpha deliverable\nN='alpha deliverable'\noff\n");
+      "make the alpha deliverable\n```bash\nN='alpha deliverable'\n```\noff\n");
   });
 
   it('fails on an unresolved or undeclared placeholder', () => {
@@ -143,15 +146,127 @@ describe('region rendering', () => {
   };
   for (const [what, value] of Object.entries(hostile)) {
     it(`emits ${what} as an inert single-quoted shell literal`, () => {
-      const rendered = renderTemplate('V={{q}}', { declaration: declaration({ deliverable_noun: value }), substitutions: subs });
+      const rendered = renderTemplate('```sh\nV={{q}}\n```', { declaration: declaration({ deliverable_noun: value }), substitutions: subs })
+        .split('\n')[1];
       strictEqual(rendered, `V=${shellQuote(value)}`);
       ok(rendered.startsWith("V='") && rendered.endsWith("'"));
       // Outside the quotes nothing but the escaped quote sequence remains.
       strictEqual(rendered.slice(2).split("'\\''").join('').replace(/^'|'$/g, '').includes("'"), false);
     });
   }
+  // Placement (ADR-0066 Decision 4, PC2a DD9): a single-quoted literal means
+  // what it says only at an unquoted word position of a shell block.
+  describe('placement', () => {
+    const d = (value = 'alpha deliverable') => ({ declaration: declaration({ deliverable_noun: value }), substitutions: subs });
+    const sh = (line) => `\`\`\`bash\n${line}\n\`\`\``;
+    it('accepts a shell value at a word position, also inside $(…) nested in double quotes', () => {
+      strictEqual(renderTemplate(sh('X={{q}}'), d()), sh("X='alpha deliverable'"));
+      strictEqual(renderTemplate(sh('mktemp -t {{q}}-x.XXXXXX'), d()), sh("mktemp -t 'alpha deliverable'-x.XXXXXX"));
+      strictEqual(renderTemplate(sh('X="$(find ~/c/{{q}} -type d)"'), d()), sh('X="$(find ~/c/\'alpha deliverable\' -type d)"'));
+      strictEqual(renderTemplate(sh('N=$((1 + 2)); X={{q}}'), d()), sh("N=$((1 + 2)); X='alpha deliverable'"));
+    });
+    const refused = {
+      'inside double quotes': ['X="a {{q}}"', /sits inside "…"/],
+      'inside single quotes': ["X='a {{q}}'", /sits inside '…'/],
+      // In $'…' a backslash-escaped quote does not end the string.
+      'inside an ANSI-C string after an escaped quote': ["X=$'a\\' {{q}}'", /sits inside \$'…'/],
+      'inside a parameter expansion': ['X="${Y:-{{q}}}"', /sits inside \$\{…\}/],
+      'inside an unquoted parameter expansion': ['X=${Y:-{{q}}}', /sits inside \$\{…\}/],
+      'inside backticks': ['X=`echo {{q}}`', /sits inside backticks/],
+      'in a comment': ['true # {{q}}', /sits in a shell comment/],
+      'in a heredoc': ['cat <<EOF\n{{q}}\nEOF', /sits in a heredoc/],
+      'in prose': [null, /sits in prose/],
+      // Codex review of PC2a: each of these rendered and ran the value's $(…).
+      'right after a backslash, inside double quotes': ['X="\\{{q}}"', /right after a backslash/],
+      'right after a backslash, unquoted': ['X=\\{{q}}', /right after a backslash/],
+      'in an arithmetic expansion inside double quotes': ['X="$(({{q}}))"', /arithmetic expansion/],
+      'in an arithmetic command': ['(( {{q}} ))', /arithmetic expansion/],
+      'in a heredoc with a numeric delimiter': ['cat <<1\n{{q}}\n1', /in a heredoc/],
+      'in a heredoc with a quoted punctuated delimiter': ["cat <<'X-1'\n{{q}}\nX-1", /in a heredoc/],
+      'in the second of two heredocs': ['cat <<A <<B\na\nA\n{{q}}\nB', /in a heredoc/],
+      'after a heredoc whose delimiter cannot be read': ['cat <<\n{{q}}', /in a heredoc/],
+    };
+    for (const [what, [line, re]] of Object.entries(refused)) {
+      it(`refuses a shell value ${what}`, () => {
+        throws(() => renderTemplate(line === null ? 'make {{q}}' : sh(line), d()), re);
+      });
+    }
+    it('refuses a shell value in a fence that is not shell', () => {
+      throws(() => renderTemplate('```text\n{{q}}\n```', d()), /not shell/);
+    });
+    it('refuses a markdown or text value anywhere in a shell block', () => {
+      throws(() => renderTemplate(sh('X={{noun}}'), d()), /markdown value inside a shell block/);
+      throws(() => renderTemplate(sh('X="{{noun}}"'), d()), /markdown value inside a shell block/);
+      strictEqual(renderTemplate('```text\n{{noun}}\n```', d()), '```text\nalpha deliverable\n```');
+    });
+    it('a quote closed on its line leaves the next placeholder unquoted; a heredoc ends at its delimiter', () => {
+      strictEqual(renderTemplate(sh(`echo "a" 'b' {{q}}`), d()), sh(`echo "a" 'b' 'alpha deliverable'`));
+      strictEqual(renderTemplate(sh('cat <<-EOF\nx\n\tEOF\nX={{q}}'), d()), sh("cat <<-EOF\nx\n\tEOF\nX='alpha deliverable'"));
+    });
+    it('reads every shell block the plugins carry as closed: a placeholder after it is at a word position', () => {
+      // The lexer only has to read the shell the runbooks use; a block it left
+      // inside a quote would make it refuse a correct position, or accept a
+      // wrong one, in every template that follows that shape.
+      const files = [];
+      const walk = (dir) => {
+        for (const e of readdirSync(dir, { withFileTypes: true })) {
+          const full = join(dir, e.name);
+          if (e.isDirectory()) walk(full);
+          else if (e.name.endsWith('.md')) files.push(full);
+        }
+      };
+      walk(join(REPO_ROOT, 'plugins'));
+      let blocks = 0;
+      const misread = [];
+      for (const f of files) {
+        const lines = readFileSync(f, 'utf8').split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const m = /^(\s*)```(bash|sh|zsh|shell)\s*$/.exec(lines[i]);
+          if (!m) continue;
+          let e = i + 1;
+          while (e < lines.length && lines[e].trim() !== '```') e++;
+          const body = lines.slice(i + 1, e).map((l) => l.slice(m[1].length));
+          if (!body.some((l) => l.includes('{{'))) {
+            blocks++;
+            const where = placeholderPlacements(['```bash', ...body, '{{probe}}', '```'].join('\n')).filter((x) => x.name === 'probe').map((x) => x.where);
+            if (where.join() !== 'word') misread.push(`${f.slice(REPO_ROOT.length + 1)}:${i + 1} → ${where.join()}`);
+          }
+          i = e;
+        }
+      }
+      ok(blocks > 300, `only ${blocks} shell blocks found`);
+      deepStrictEqual(misread, []);
+    });
+    it('refuses a placeholder that spans lines, and one the lexer cannot read', () => {
+      throws(() => renderTemplate(sh('X={{q\n}}'), d()), /could not read/);
+      throws(() => renderTemplate('make {{noun\n}}', d()), /could not read/);
+      throws(() => renderTemplate(sh('X=${{q}}'), d()), /could not read/);
+    });
+    it('a heredoc ends at its own delimiter, and a placeholder after both of two heredocs is a word', () => {
+      strictEqual(renderTemplate(sh("cat <<A <<'B-2'\na\nA\nb\nB-2\nX={{q}}"), d()), sh("cat <<A <<'B-2'\na\nA\nb\nB-2\nX='alpha deliverable'"));
+    });
+    it('refuses a value holding "{{", and anything left unresolved', () => {
+      throws(() => renderTemplate(sh('X={{q}}'), d('{{q}}')), /holds "\{\{"/);
+      throws(() => renderTemplate('make {{noun}}', d('a {{x')), /holds "\{\{"/);
+      throws(() => renderTemplate('a {{ b', d()), /could not read/);
+      // A value ending in "{" next to a template "{" makes a "{{" only after rendering.
+      throws(() => renderTemplate('make {{noun}}{x', d('a{')), /unresolved "\{\{" left after rendering/);
+    });
+    it('renders a manifest value and a derived field, and refuses a substitution with both or neither', () => {
+      const s2 = { verb: { value: 'checkpoint', context: 'shell' }, env: { field: 'derived.root_env', context: 'shell' } };
+      strictEqual(renderTemplate(sh('V={{verb}} E={{env}}'), { declaration: renderingDeclaration(declaration({ name: 'web-ux' })), substitutions: s2 }),
+        sh("V='checkpoint' E='AGENTIC_WEB_UX_ROOT'"));
+      const manifest = (sub) => ({ schema: 'persona-pipeline-manifest-1.0', personas: ['alpha'], units: [], extension_points: [],
+        regions: [{ id: 'r', template: 't.md', dest: 'c.md', personas: ['alpha'], substitutions: { x: sub } }] });
+      throws(() => validateManifest(manifest({ field: 'name', value: 'a', context: 'shell' })), /exactly one of field and value/);
+      throws(() => validateManifest(manifest({ context: 'shell' })), /exactly one of field and value/);
+      throws(() => validateManifest(manifest({ value: '', context: 'shell' })), /non-empty string/);
+      validateManifest(manifest({ value: 'a', context: 'shell' }));
+    });
+  });
+
   it('refuses a newline in a shell context and keeps it verbatim in markdown', () => {
-    throws(() => renderTemplate('V={{q}}', { declaration: declaration({ deliverable_noun: 'a\nrm -rf /' }), substitutions: subs }), /newline/);
+    throws(() => renderTemplate('```sh\nV={{q}}\n```', { declaration: declaration({ deliverable_noun: 'a\nrm -rf /' }), substitutions: subs }), /newline/);
     strictEqual(renderTemplate('{{noun}}', { declaration: declaration({ deliverable_noun: 'a\nb' }), substitutions: subs }), 'a\nb');
   });
 });
@@ -173,7 +288,7 @@ describe('regions in authored files (fixture)', () => {
     const alpha = readFileSync(join(root, 'plugins/alpha/commands/run.md'), 'utf8');
     const beta = readFileSync(join(root, 'plugins/beta/commands/run.md'), 'utf8');
     match(alpha, /<!-- pipeline:begin intro -->\nThis runbook produces the alpha deliverable\.\n<!-- pipeline:end intro -->/);
-    match(alpha, /NOUN='alpha deliverable'\nnode "\$PLUGIN_ROOT\/scripts\/tool\.mjs" --persona alpha/);
+    match(alpha, /NOUN='alpha deliverable'\nnode "\$PLUGIN_ROOT\/scripts\/tool\.mjs" --persona 'alpha'/);
     match(alpha, /Record the parent linkage before finishing\./);
     ok(!alpha.includes('There is no parent to record.'));
     match(beta, /NOUN='beta'\\''s deliverable'/);

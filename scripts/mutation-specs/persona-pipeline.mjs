@@ -17,6 +17,9 @@
 //      clean, so only a contract test can catch it;
 //   D  the drift check itself: a hand edit to a generated file, a region
 //      comparison that ignores differences, a loader without its name check.
+//   G  a defect in a canonical runbook region template (PC2a), regenerated
+//      into every enrolled persona: the region drift check stays clean, so a
+//      runbook contract test must fail;
 //   C  a control: an innocuous canonical edit, regenerated everywhere, keeps
 //      the drift check clean (expect SURVIVED).
 //
@@ -39,6 +42,8 @@ const T_SYNC = 'tests/persona-pipeline/test-sync-persona-pipeline.mjs';
 const T_REGION = 'tests/persona-pipeline/test-region-engine.mjs';
 const T_DECL = 'tests/persona-pipeline/test-persona-declaration.mjs';
 const T_CROSS = 'tests/persona-pipeline/test-capabilities-and-declaration.mjs';
+const T_CONTRACT = 'tests/persona-pipeline/test-runbook-contracts.mjs';
+const T_HEADLESS = 'tests/plugin-shape/test-headless-safe-runbooks.mjs';
 
 export const TESTS = [T_SYNC];
 
@@ -64,6 +69,36 @@ function canonicalDefect(copy, tools, { dest, from, to, only = null }) {
   regenerate(copy);
   for (const [persona, text] of Object.entries(keep)) writeFileSync(join(copy, 'plugins', persona, dest), text);
 }
+
+const regionPersonas = (template) => [...new Set(MANIFEST.regions.filter((r) => r.template === template).flatMap((r) => r.personas))].sort();
+const regionDests = (template) => [...new Set(MANIFEST.regions.filter((r) => r.template === template).map((r) => r.dest))];
+
+/**
+ * Edit a canonical region template and regenerate it into every persona; with
+ * `only`, put every other persona's region files and the template back, so
+ * exactly one persona's committed runbook carries the defect.
+ */
+function templateDefect(copy, tools, { template, from, to, only = null }) {
+  const keep = {};
+  for (const persona of regionPersonas(template)) {
+    if (only === null || persona === only) continue;
+    for (const dest of regionDests(template)) keep[join('plugins', persona, dest)] = readFileSync(join(copy, 'plugins', persona, dest), 'utf8');
+  }
+  const source = join(copy, 'persona-pipeline', template);
+  const canonical = readFileSync(source, 'utf8');
+  tools.applyEdit(copy, { file: `persona-pipeline/${template}`, from, to });
+  regenerate(copy);
+  for (const [rel, text] of Object.entries(keep)) writeFileSync(join(copy, rel), text);
+  // With `only`, the template goes back too: every other persona's committed
+  // and assembled runbook is then clean, so a kill names `only` (Codex review).
+  if (only !== null) writeFileSync(source, canonical);
+}
+
+const CHECKPOINT_TARGET = {
+  template: 'regions/checkpoint-set.md',
+  from: '  --workflow-path "$ACTIVE" --host',
+  to: '  --workflow-path "$WORKFLOW" --host',
+};
 
 const ENTRY = {
   dest: 'scripts/lib/cli-entry.mjs',
@@ -182,6 +217,110 @@ export const MUTATIONS = [
     why: 'a render that breaks the region grammar is written',
   },
 
+  // ---- G: runbook region templates (PC2a) --------------------------------------------
+  ...regionPersonas(CHECKPOINT_TARGET.template).map((persona) => ({
+    id: `G1-${persona}`, tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { ...CHECKPOINT_TARGET, only: persona }),
+    why: `${persona}: checkpoint writes to a workflow other than the one find-active found`,
+  })),
+  {
+    id: 'G2', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/peer-now-dispatch.md',
+      from: '  --peer "$PEER" $PROMPT_ARG --output-format text \\\n',
+      to: '  --peer "$PEER" $PROMPT_ARG --image "$SCREENSHOT" --output-format text \\\n',
+    }),
+    why: 'peer-now passes a screenshot to a companion path that has no image channel (the no-image rule)',
+  },
+  {
+    id: 'G3', tests: [T_CONTRACT, T_HEADLESS],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/locate-active.md',
+      from: 'ROOT_OVERRIDE="$(printenv {{root_env}} || true)"',
+      to: 'ROOT_OVERRIDE="$(printenv \'AGENTIC_ENGINEER_ROOT\' || true)"',
+    }),
+    why: 'a generated block honours another plugin\'s override — the driver would point it at the wrong plugin',
+  },
+  {
+    id: 'G4', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/peer-now-dispatch.md',
+      from: '  > "$RUN_JSON" 2> "$RUN_ERR"\nRUN_RC=$?\n',
+      to: '  > "$RUN_JSON" 2> "$RUN_ERR"\nSTARTED=1\nRUN_RC=$?\n',
+    }),
+    why: 'the runner\'s exit code is no longer read right after it (a failed dispatch would read as success)',
+  },
+  {
+    id: 'G5', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/resume-marker.md',
+      from: '  --event resumed\n',
+      to: '  --event updated\n',
+    }),
+    why: 'the resume marker stops recording a resumed event',
+  },
+  {
+    id: 'G6', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: "    if (sub.context === 'shell' && where !== 'word') {",
+    to: '    if (false) {',
+    why: 'a shell value is spliced inside "…", where a $(…) in it would run (Decision 4 placement)',
+  },
+  {
+    id: 'G7', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: "  if (rendered.includes('{{')) {",
+    to: '  if (false) {',
+    why: 'a "{{" left after rendering is written into a runbook',
+  },
+  {
+    id: 'G8', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: "      if (c === '$' && line[i + 1] === \"'\" && st.kind !== 'double') { stack.push({ kind: 'ansi' }); i += 2; continue; }\n",
+    to: '',
+    why: "the lexer reads $'…' as '…', so after an escaped quote a shell value counts as unquoted and its $(…) runs",
+  },
+  {
+    id: 'G9', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: "      if (c === '$' && line.startsWith('((', i + 1)) { stack.push({ kind: 'arith', depth: 0 }); i += 3; continue; }\n",
+    to: '',
+    why: 'the lexer reads $((…)) as $(…), so a shell value in an arithmetic expansion counts as unquoted (Codex review of PC2a)',
+  },
+  {
+    id: 'G10', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: "  if (placed.length !== (text.split('{{').length - 1) || JSON.stringify(placed.map((p) => p.name)) !== JSON.stringify(matched)) {",
+    to: '  if (false) {',
+    why: 'a "{{" the lexer stepped over (after a backslash, across lines) is replaced without a placement check (Codex review of PC2a)',
+  },
+  {
+    id: 'G11', tests: [T_REGION], file: 'scripts/lib/persona-pipeline.mjs',
+    from: "        if (!h) { heredocs.push({ delim: null, strip: false }); i += 2; continue; }\n        const delim = h[2] ?? h[3] ?? h[4].replace(/\\\\(.)/g, '$1');\n",
+    to: "        if (!h || !/^[A-Za-z_]\\w*$/.test(h[2] ?? h[3] ?? h[4])) { i += 2; continue; }\n        const delim = h[2] ?? h[3] ?? h[4];\n",
+    why: 'only identifier heredoc delimiters are read, so a body under <<1 or <<\'X-1\' counts as shell code (Codex review of PC2a)',
+  },
+  {
+    id: 'G12', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/locate-active.md',
+      from: 'ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \\\n',
+      to: 'OTHER="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \\\n',
+    }),
+    why: 'find-active no longer sets the $ACTIVE the later writes target (Codex review of PC2a)',
+  },
+  {
+    id: 'G13', tests: [T_HEADLESS, T_CONTRACT],
+    prepare: (copy, tools) => {
+      for (const template of [...new Set(MANIFEST.regions.map((r) => r.template))].filter((t) => t !== 'regions/plugin-root.md')) {
+        tools.applyEdit(copy, { file: `persona-pipeline/${template}`, from: 'printenv {{root_env}} || true)', to: 'printenv {{root_env}})' });
+      }
+      regenerate(copy);
+    },
+    why: 'an unset override fails the resolver under errexit again (Codex review of PC2a)',
+  },
+  {
+    id: 'D4', tests: [T_SYNC], file: 'plugins/founder/commands/checkpoint.md',
+    from: '--summary "$SUMMARY"',
+    to: '--summary "$SUMMARY" --force',
+    why: 'a hand edit inside a generated runbook region (the PC2a acceptance: the drift check must fail)',
+  },
+
   // ---- C: control -------------------------------------------------------------------
   {
     id: 'C1', tests: [T_SYNC], expect: 'SURVIVED',
@@ -191,5 +330,14 @@ export const MUTATIONS = [
       to: '// scripts/state.mjs (regenerated by the mutation control)\n',
     }),
     why: 'an innocuous canonical edit regenerated into every target leaves the drift check clean',
+  },
+  {
+    id: 'C2', tests: [T_SYNC, T_CONTRACT], expect: 'SURVIVED',
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/plugin-root.md',
+      from: 'shell variable does not outlive a Bash call.',
+      to: 'shell variable does not outlive a Bash call (each block runs in a new shell).',
+    }),
+    why: 'an innocuous template edit regenerated into every runbook leaves the drift check and the contracts clean',
   },
 ];

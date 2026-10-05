@@ -269,7 +269,7 @@ describe('review regressions (Codex review of PC1)', () => {
 
   it('refuses a render that would break the region grammar (an unclosed fence in a template)', async () => {
     const root = fixtureCopy();
-    writeFileSync(join(root, 'persona-pipeline/templates/intro.md'), '```bash\necho {{noun}}\n');
+    writeFileSync(join(root, 'persona-pipeline/templates/intro.md'), '```bash\necho hi\n');
     const before = read(root, 'plugins/alpha/commands/run.md');
     const r = await sync(root, { write: true });
     strictEqual(r.code, 1);
@@ -311,4 +311,38 @@ describe('PC1 acceptance: the drift check fails on a hand edit to a generated co
       strictEqual(spawnSync(process.execPath, [SCRIPT, '--root', root], { encoding: 'utf8' }).status, 0);
     });
   }
+});
+
+describe('PC2a acceptance: the drift check fails on a hand edit inside a generated runbook region', () => {
+  const cases = [
+    ['founder', 'commands/checkpoint.md', '--summary "$SUMMARY"', '--summary "$SUMMARY" --force', 'checkpoint-set'],
+    ['designer', 'commands/peer-now.md', 'RUN_RC=$?', 'RUN_RC=0', 'peer-now-dispatch'],
+  ];
+  for (const [persona, rel, from, to, region] of cases) {
+    it(`plugins/${persona}/${rel}: a hand edit in region ${region} fails the check naming it; --write restores it`, () => {
+      const root = repoSubsetCopy();
+      const path = join(root, 'plugins', persona, rel);
+      const good = readFileSync(path, 'utf8');
+      strictEqual(good.split(from).length, 2, `${rel} holds the edited text once`);
+      writeFileSync(path, good.replace(from, to));
+      const check = spawnSync(process.execPath, [SCRIPT, '--root', root], { encoding: 'utf8' });
+      strictEqual(check.status, 1);
+      match(check.stderr, new RegExp(`plugins/${persona}/${rel.replace(/[.]/g, '\\.')}: region ${region} differs from persona-pipeline/regions/`));
+      const write = spawnSync(process.execPath, [SCRIPT, '--root', root, '--write'], { encoding: 'utf8' });
+      strictEqual(write.status, 0, write.stderr);
+      strictEqual(readFileSync(path, 'utf8'), good);
+      strictEqual(spawnSync(process.execPath, [SCRIPT, '--root', root], { encoding: 'utf8' }).status, 0);
+    });
+  }
+
+  it('an edit outside every region is authored text: the check stays clean and --write keeps it', () => {
+    const root = repoSubsetCopy();
+    const path = join(root, 'plugins/founder/commands/checkpoint.md');
+    const edited = readFileSync(path, 'utf8').replace('## Completion', '## Completion\n\nAn authored note.');
+    writeFileSync(path, edited);
+    const check = spawnSync(process.execPath, [SCRIPT, '--root', root], { encoding: 'utf8' });
+    strictEqual(check.status, 0, check.stderr);
+    strictEqual(spawnSync(process.execPath, [SCRIPT, '--root', root, '--write'], { encoding: 'utf8' }).status, 0);
+    strictEqual(readFileSync(path, 'utf8'), edited);
+  });
 });

@@ -317,6 +317,231 @@
       "requires": []
     }
   ],
-  "regions": [],
+  "regions": [
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/checkpoint.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "checkpoint-locate",
+      "template": "regions/locate-active.md",
+      "dest": "commands/checkpoint.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "checkpoint",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "checkpoint-set",
+      "template": "regions/checkpoint-set.md",
+      "dest": "commands/checkpoint.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/resume.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "resume-locate",
+      "template": "regions/locate-active.md",
+      "dest": "commands/resume.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "resume",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "resume-read",
+      "template": "regions/resume-read.md",
+      "dest": "commands/resume.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "resume-marker",
+      "template": "regions/resume-marker.md",
+      "dest": "commands/resume.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "resume-archive",
+      "template": "regions/resume-archive.md",
+      "dest": "commands/resume.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/peer-now.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "peer-now-dispatch",
+      "template": "regions/peer-now-dispatch.md",
+      "dest": "commands/peer-now.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "peer-now-locate",
+      "template": "regions/peer-now-locate.md",
+      "dest": "commands/peer-now.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "peer-now-note",
+      "template": "regions/peer-now-note.md",
+      "dest": "commands/peer-now.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    }
+  ],
   "extension_points": []
 }

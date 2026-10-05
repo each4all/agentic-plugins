@@ -56,7 +56,7 @@
         },
         "name": {
           "field": "name",
-          "context": "text"
+          "context": "shell"
         }
       }
     }
