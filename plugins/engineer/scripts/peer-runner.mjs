@@ -25,6 +25,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
+import { isCliEntry } from './lib/cli-entry.mjs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
@@ -1305,7 +1306,12 @@ async function cliMain(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run as a CLI only when this file is the entry point. scripts/lib/cli-entry.mjs
+// compares both sides canonical and as paths, so an install reached through a
+// symlink (with or without --preserve-symlinks-main), or under a directory
+// whose name needs URL escaping (a space, '#', non-ASCII), still runs (ADR-0066
+// D1; the old template-string guard exited 0 there without running).
+if (isCliEntry(import.meta.url)) {
   const code = await cliMain(process.argv.slice(2));
   process.exit(code);
 }

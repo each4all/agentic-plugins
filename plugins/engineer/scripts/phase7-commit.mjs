@@ -42,6 +42,7 @@
 // invocation of this driver is the next /engineer:start after PR2
 // merges.
 
+import { isCliEntry } from './lib/cli-entry.mjs';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
@@ -1925,7 +1926,12 @@ export async function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run as a CLI only when this file is the entry point. scripts/lib/cli-entry.mjs
+// compares both sides canonical and as paths, so an install reached through a
+// symlink (with or without --preserve-symlinks-main), or under a directory
+// whose name needs URL escaping (a space, '#', non-ASCII), still runs (ADR-0066
+// D1; the old template-string guard exited 0 there without running).
+if (isCliEntry(import.meta.url)) {
   // ES-module CLI entry — async IIFE wrapper avoids top-level-await
   // deadlocks under dynamic-import circular edges (engineer plugin
   // convention captured in `project_cli_entry_iife_pattern`).

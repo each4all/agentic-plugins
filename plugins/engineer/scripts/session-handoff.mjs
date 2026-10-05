@@ -17,8 +17,8 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
+import { isCliEntry } from './lib/cli-entry.mjs';
 import { discoverRuntimePluginRoot } from './discover-runtime.mjs';
 import {
   currentGitBranch,
@@ -723,7 +723,12 @@ export async function runSessionHandoff(options = {}) {
   return computeEngineerProjection({ repoRoot, branch, routing: options.routing });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+// Run as a CLI only when this file is the entry point. scripts/lib/cli-entry.mjs
+// compares both sides canonical and as paths, so an install reached through a
+// symlink (with or without --preserve-symlinks-main), or under a directory
+// whose name needs URL escaping (a space, '#', non-ASCII), still runs (ADR-0066
+// D1; the old template-string guard exited 0 there without running).
+if (isCliEntry(import.meta.url)) {
   // Async IIFE wrapper (project convention) — avoids the unsettled top-level
   // await deadlock when state.mjs's dynamic imports run during module load.
   (async () => {
