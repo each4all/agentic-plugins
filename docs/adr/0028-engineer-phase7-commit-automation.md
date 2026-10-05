@@ -62,6 +62,10 @@ This ADR records the resulting policy. The implementation slice lands as
 the EPCC macro's PR1; the worktree slice (`/runtime:worktree` apply +
 engineer Phase 0 hook) lands as PR2a/PR2b under ADR-0029.
 
+> 2026-10-05: that slice never landed. ADR-0029 went to entry-routing
+> contract enforcement, and `runtime:worktree` ships only its read-only
+> `plan` subcommand; see the note under Layer 1.
+
 ## Decision
 
 Phase 7 of `/engineer:start` automates the commit step under fourteen
@@ -91,6 +95,11 @@ and presents four resolutions:
 - **accept-current-tree** — bypass via `ACCEPT_CURRENT_TREE=1` env-var
   (the workflow's commit will sweep whatever was in the tree; the user
   acknowledges this)
+
+> 2026-10-05: `runtime:worktree` has no `apply` subcommand; its CLI
+> accepts only `plan`. The gate's worktree resolution names
+> `/runtime:worktree plan`, which suggests the `git worktree add` command
+> for a clean checkout once its checks pass, without running it.
 
 The Layer 1 gate is the source of truth for the "intended" signal:
 post-baseline changes ARE workflow-intended by construction. Layer 3

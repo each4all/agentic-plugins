@@ -33,6 +33,10 @@ const ROUTING_CONTRACT_PATH = resolve(
 );
 const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
 const { evaluateCleanBaseline } = await import(STATE_PATH);
+// The argv parser the runtime:worktree CLI runs on its arguments.
+const { parseArgs: parseWorktreeArgs } = await import(
+  resolve(REPO_ROOT, 'plugins/runtime/scripts/worktree.mjs')
+);
 
 function frontmatter(text) {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -645,5 +649,80 @@ describe('/engineer:start — Layer 1 clean-baseline gate (ADR-0028)', () => {
     const skill = await readFile(SKILL_PATH, 'utf8');
     ok(/clean.{0,30}baseline|Layer.?1/.test(skill), 'SKILL.md must describe the Layer 1 clean-baseline gate');
     ok(/ACCEPT_CURRENT_TREE/.test(skill), 'SKILL.md must mention the ACCEPT_CURRENT_TREE bypass');
+  });
+});
+
+// The gate's worktree resolution once sent the user to `/runtime:worktree
+// apply`, which the CLI rejects ("Command must be one of: plan"). Each route
+// is checked against the CLI's own parser, so a subcommand the runtime drops
+// or never had fails here.
+describe('/engineer:start — runtime:worktree routes name a subcommand the CLI accepts', () => {
+  // Every `/runtime:worktree` and `$runtime:worktree` mention in `text`. A
+  // subcommand follows a single space, inside the same code span or echo
+  // string, and runs to the next backtick or whitespace, so `plan2` is read
+  // whole. Only the Codex mention may stand bare (`$runtime:worktree`, where
+  // the CLI's default command applies); a slash route without its subcommand,
+  // as in "`/runtime:worktree` apply" or "/runtime:worktree  apply", fails
+  // instead of being skipped.
+  function worktreeRoutes(text) {
+    return [...text.matchAll(/([/$])runtime:worktree/g)].map((m) => {
+      const rest = text.slice(m.index + m[0].length);
+      const subcommand = rest.match(/^ ([^\s`]+)/);
+      return {
+        raw: m[0] + rest.split('\n')[0].slice(0, 40),
+        subcommand: subcommand ? subcommand[1] : null,
+        bareCodexMention: m[1] === '$' && rest.startsWith('`'),
+      };
+    });
+  }
+
+  function assertWorktreeRoute(route, where) {
+    if (route.subcommand === null) {
+      ok(route.bareCodexMention, `${where} names runtime:worktree without a subcommand in the route itself: ${route.raw}`);
+      return;
+    }
+    let parsed;
+    try {
+      parsed = parseWorktreeArgs([route.subcommand]);
+    } catch (err) {
+      throw new Error(`${where} routes to \`runtime:worktree ${route.subcommand}\`, which the worktree CLI rejects: ${err.message}`);
+    }
+    strictEqual(parsed.command, route.subcommand, `${where}: the worktree CLI did not read ${route.subcommand} as its command`);
+  }
+
+  it('the Layer 1 gate\'s worktree resolution, in the command and the skill', async () => {
+    const gates = {
+      'commands/start.md': {
+        text: await readFile(COMMAND_PATH, 'utf8'),
+        line: /^\s*echo "\s*- worktree:.*$/m,
+      },
+      'start/SKILL.md': {
+        text: await readFile(SKILL_PATH, 'utf8'),
+        line: /^- \*\*worktree\*\* .*$/m,
+      },
+    };
+    for (const [where, { text, line }] of Object.entries(gates)) {
+      const resolution = text.match(line);
+      ok(resolution, `${where} has no worktree resolution in the clean-baseline gate`);
+      const routes = worktreeRoutes(resolution[0]);
+      ok(
+        routes.some((route) => route.raw.startsWith('/') && route.subcommand !== null),
+        `${where}'s worktree resolution names no /runtime:worktree subcommand: ${resolution[0].trim()}`,
+      );
+      for (const route of routes) assertWorktreeRoute(route, `${where}'s worktree resolution`);
+    }
+  });
+
+  it('every runtime:worktree subcommand the start route surfaces name', async () => {
+    const surfaces = {
+      'commands/start.md': await readFile(COMMAND_PATH, 'utf8'),
+      'start/SKILL.md': await readFile(SKILL_PATH, 'utf8'),
+      'entry-routing-contract.md': await readFile(ROUTING_CONTRACT_PATH, 'utf8'),
+    };
+    for (const [where, text] of Object.entries(surfaces)) {
+      const routes = worktreeRoutes(text);
+      ok(routes.some((route) => route.subcommand !== null), `${where} no longer names a runtime:worktree subcommand`);
+      for (const route of routes) assertWorktreeRoute(route, where);
+    }
   });
 });

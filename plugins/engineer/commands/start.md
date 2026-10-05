@@ -216,7 +216,7 @@ if [ "$BASELINE_STATUS" = "dirty" ]; then
   echo "  Resolutions:" >&2
   echo "    - clean:                git restore . ; git clean -fd  (then re-run)" >&2
   echo "    - stash:                git stash push --include-untracked  (re-run, then git stash pop)" >&2
-  echo "    - worktree:             /runtime:worktree apply  (ADR-0029)" >&2
+  echo "    - worktree:             /runtime:worktree plan  (suggests a git worktree add command once its checks pass; re-run in the new worktree)" >&2
   echo "    - accept-current-tree:  ACCEPT_CURRENT_TREE=1 /engineer:start ...  (sweep current tree into the workflow's commit)" >&2
   exit 1
 fi
