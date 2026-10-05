@@ -1,0 +1,101 @@
+{
+  "schema": "persona-declaration-1.0",
+  "name": "designer",
+  "deliverable_noun": "design deliverable",
+  "runtime_footer_floor": "0.79.0",
+  "capabilities": {
+    "dispatch_target": false,
+    "commit_surface": false,
+    "legacy_homes": false,
+    "profile_presets": true
+  },
+  "decide": {
+    "fallback": {
+      "preset_id": "balanced",
+      "axes": [
+        {
+          "id": "usability",
+          "labels": {
+            "en": "Usability",
+            "ko": "사용성"
+          },
+          "question": "Can the target users accomplish their task efficiently and without confusion — is the flow learnable, are affordances and states clear, is error recovery forgiving?",
+          "role": "decisive",
+          "gate": false
+        },
+        {
+          "id": "consistency",
+          "labels": {
+            "en": "Consistency",
+            "ko": "일관성"
+          },
+          "question": "Does this cohere with the established design system, platform conventions, and the product's existing patterns — or introduce a one-off that fragments the experience?",
+          "role": "decisive",
+          "gate": false
+        },
+        {
+          "id": "conversion",
+          "labels": {
+            "en": "Conversion",
+            "ko": "전환"
+          },
+          "question": "Does this move the user toward the intended action — is the primary call-to-action clear, the path low-friction, the value legible at the decision point?",
+          "role": "supporting",
+          "gate": false
+        },
+        {
+          "id": "desirability",
+          "labels": {
+            "en": "Desirability",
+            "ko": "매력도"
+          },
+          "question": "Is this something users will want to use — does it feel polished, trustworthy, and appropriate for the brand and audience?",
+          "role": "supporting",
+          "gate": false
+        },
+        {
+          "id": "content-clarity",
+          "labels": {
+            "en": "Content Clarity",
+            "ko": "명확성"
+          },
+          "question": "Is the content clear, scannable, and correctly leveled for the audience — labels, microcopy, information hierarchy, and reading order?",
+          "role": "supporting",
+          "gate": false
+        },
+        {
+          "id": "feasibility",
+          "labels": {
+            "en": "Feasibility",
+            "ko": "구현가능성"
+          },
+          "question": "Can this be built and maintained within the frontend-stack, component-library, and effort constraints — reusing existing components rather than demanding new infrastructure?",
+          "role": "supporting",
+          "gate": false
+        },
+        {
+          "id": "accessibility",
+          "labels": {
+            "en": "Accessibility",
+            "ko": "접근성"
+          },
+          "question": "Does this meet accessibility requirements — perceivable, operable, understandable for users with disabilities (contrast, semantic structure, keyboard, visible focus, target size)? A hard WCAG A/AA barrier is a VETO gate, not a tradeoff — candidate-level only (ADR-0042 Non-Goal 6): runtime testing of focus order, keyboard traversal, and screen-reader behavior is required to certify conformance.",
+          "role": "supporting",
+          "gate": true
+        }
+      ]
+    },
+    "size_presets": {
+      "minor": "balanced",
+      "standard": "balanced",
+      "major": "balanced"
+    },
+    "profile_presets": {
+      "general": "balanced",
+      "flow": "balanced",
+      "ui": "experience",
+      "cta": "conversion",
+      "content": "clarity"
+    }
+  }
+}
