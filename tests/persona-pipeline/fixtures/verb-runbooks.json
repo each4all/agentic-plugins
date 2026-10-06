@@ -288,6 +288,22 @@
       "from": "— /{persona}:start gates",
       "to": "— /${PERSONA}:start gates",
       "why": "PC2a3 QD9: the message names the persona through PERSONA, a literal the bootstrap block assigns"
+    },
+    {
+      "runbooks": [
+        "founder/compose",
+        "founder/frame",
+        "founder/investigate",
+        "founder/decide",
+        "designer/compose",
+        "designer/frame",
+        "designer/investigate",
+        "designer/decide"
+      ],
+      "where": "note",
+      "from": "### Active next-action proposal\n\n- selected_next:",
+      "to": "### Active next-action proposal\n\n(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)\n- selected_next:",
+      "why": "PC2a4 RV4: the finalize note cites the persona's own entry-routing contract, after the heading so the heading line stays exact"
     }
   ],
   "runbooks": {

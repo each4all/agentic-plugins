@@ -33,7 +33,7 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
     for (const d of FIXTURE.allowed_differences) {
       deepStrictEqual(Object.keys(d).sort(), ['from', 'runbooks', 'to', 'where', 'why'], JSON.stringify(d));
       ok(d.runbooks.length > 0 && d.runbooks.every((k) => keys.includes(k)), `${d.where}: runbooks`);
-      ok(d.from !== d.to && d.from.length > 0 && /^PC2a[23] /.test(d.why), `${d.where}: a change with its reason`);
+      ok(d.from !== d.to && d.from.length > 0 && /^PC2a[234] /.test(d.why), `${d.where}: a change with its reason`);
     }
   });
 

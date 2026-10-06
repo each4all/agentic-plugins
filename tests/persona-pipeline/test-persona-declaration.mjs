@@ -310,6 +310,12 @@ describe('cross-field rules (the generator check)', () => {
     'a default profile without profiles': ['designer', (d) => { delete d.verbs.compose.profiles; }, /verbs\.compose declares default_profile without profiles; declare both or neither/],
     'a privacy spec the plugin does not hold': ['founder', (d) => { d.peer.privacy_spec = 'core/skills/investigate/references/design-brief-spec.md'; }, /peer\.privacy_spec names core\/skills\/investigate\/references\/design-brief-spec\.md, which plugins\/founder\/ does not hold/],
     'a privacy spec that is a directory': ['designer', (d) => { d.peer.privacy_spec = 'core/skills/investigate/references'; }, /peer\.privacy_spec names core\/skills\/investigate\/references, which is not a regular file/],
+    // PC2a4: derived.brief_file is the investigate default profile's file;
+    // the declared artifact must name exactly that one file.
+    'an investigate artifact naming another brief file': ['founder', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to venture_brief.md>']; }, /verbs\.investigate\.artifact must name exactly one \*\.md file, business_brief\.md \(the default profile business-brief with - → _\); it names venture_brief\.md/],
+    'an investigate artifact naming the brief file with a suffix': ['founder', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to business_brief.md.bak>']; }, /must name exactly one \*\.md file, business_brief\.md .*; it names none/],
+    'an investigate artifact naming no file': ['designer', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to the brief>']; }, /verbs\.investigate\.artifact must name exactly one \*\.md file, design_brief\.md .*; it names none/],
+    'a renamed investigate profile the artifact does not follow': ['founder', (d) => { d.verbs.investigate.profiles = ['venture-brief']; d.verbs.investigate.default_profile = 'venture-brief'; }, /must name exactly one \*\.md file, venture_brief\.md .*; it names business_brief\.md/],
   };
   for (const [what, [persona, edit, re]] of Object.entries(cases)) {
     it(`fails on ${what}`, async () => {

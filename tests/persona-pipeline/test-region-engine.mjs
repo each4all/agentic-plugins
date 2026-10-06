@@ -312,6 +312,23 @@ describe('region rendering', () => {
       ok(!Object.hasOwn(derived(''), 'skill_privacy_spec'), 'an empty spec, no derived citation');
       throws(() => renderTemplate('See {{spec}}.', { declaration: renderingDeclaration(declaration({ name: 'alpha' })), substitutions: { spec: { field: 'derived.skill_privacy_spec', context: 'markdown' } } }), /unresolved placeholder \{\{spec\}\}/);
     });
+    it('derives the spec as a shared reference cites it, and the brief file and output-root variable from the investigate default profile (PC2a4)', () => {
+      const derived = (extra) => renderingDeclaration(declaration({ name: 'web-ux', ...extra })).derived;
+      strictEqual(derived({ peer: { privacy_spec: 'core/skills/investigate/references/spec.md' } }).shared_privacy_spec, '../../investigate/references/spec.md');
+      strictEqual(derived({ peer: { privacy_spec: 'docs/privacy.md' } }).shared_privacy_spec, '../../../../docs/privacy.md');
+      ok(!Object.hasOwn(derived({}), 'shared_privacy_spec'), 'no spec, no derived citation');
+      const withBrief = derived({ verbs: { investigate: { profiles: ['design-brief'], default_profile: 'design-brief' } } });
+      strictEqual(withBrief.brief_file, 'design_brief.md');
+      strictEqual(withBrief.output_root_env, 'WEB_UX_OUTPUT_ROOT');
+      for (const extra of [{}, { verbs: { investigate: {} } }, { verbs: { frame: {} } }]) {
+        const d = derived(extra);
+        ok(!Object.hasOwn(d, 'brief_file') && !Object.hasOwn(d, 'output_root_env'), `no investigate default profile, no brief names: ${JSON.stringify(extra)}`);
+      }
+    });
+    it('derives the profile variable from the name, as the persona loader names it (PC2a4)', () => {
+      strictEqual(renderingDeclaration(declaration({ name: 'web-ux' })).derived.profile_env, 'AGENTIC_WEB_UX_PROFILE');
+      strictEqual(renderingDeclaration(declaration({ name: 'designer' })).derived.profile_env, 'AGENTIC_DESIGNER_PROFILE');
+    });
   });
 
   it('refuses a newline in a shell context and keeps it verbatim in markdown', () => {

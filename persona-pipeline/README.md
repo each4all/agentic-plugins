@@ -13,7 +13,7 @@ committed, so every plugin keeps its own complete copy and runs alone
 |---|---|
 | `manifest.json` | Every canonical unit, its destination inside a plugin, and the personas it is generated into (the enrollment matrix). Also the region and extension-slot declarations. |
 | `files/<plugin path>` | The canonical files. Each is copied whole into every enrolled persona, with a generated-file notice; its git mode is the generated mode. |
-| `regions/<block>.md` | The canonical region templates: a block of a runbook or a skill, rendered into each enrolled persona's authored file between its region markers. The `skill-*` templates render into `SKILL.md`. |
+| `regions/<block>.md` | The canonical region templates: a block of a runbook, a skill or a reference, rendered into each enrolled persona's authored file between its region markers. The `skill-*` templates render into `SKILL.md`; the reference templates are named for their file (`routing-*`, `presentation-*`, `handoff-*`, `output-rules-*`, `ensemble-*`, `brief-ensemble-*`, `brief-spec-*`, `orchestration-*`). |
 | `persona.schema.json` | The schema of `plugins/<persona>/persona.json`, each persona's declaration of who it is and what differs: name, deliverable noun, runtime footer floor, capabilities, decide data, from format 1.1 its verbs, and from 1.2 its peer permissions (see [The declaration](#the-declaration)). |
 | `owned.json` | Generated: every plugin path the pipeline has written, per persona. It is how the write mode knows what it may replace or remove. Do not edit it. |
 
@@ -74,6 +74,33 @@ PC2a3 completes the verb runbooks and begins the skills:
   under an authored heading. Sections that differ by persona prose stay
   authored, designer's render-and-vision loop and archetype text with them.
 
+PC2a4 brings the shared references in. founder and designer now ship their own
+`entry-routing-contract.md` and `presentation-protocol.md` under
+`core/skills/_shared/references/`, and `session-handoff.md` cites its sibling
+contract's § Session-Level Continue-vs-Fresh Preflight rather than engineer's.
+Their persona- and capability-neutral sections are regions: the routes, the
+proposal's `selected_next` vocabulary and the orchestrator row follow
+`commit_surface` and `dispatch_target`, and the lens resolves with the profile
+preset where the persona has one. The persona's routes, its
+Standards and Root-Cause Gate (one per verb, from the declared
+`rationale_gate`), decision sizing, decisive axes and content types stay
+authored. The other shared references hold regions on the text founder and
+designer share: `session-handoff.md`, `ensemble-protocol.md`,
+`orchestration.md` (its intro and failure handling), and in `investigate`'s
+references `output-file-rules.md`, the brief ensemble, and the brief spec's
+Citation Conventions and Ensemble Label Policy. A region holds whole Markdown
+units, a paragraph, a whole list, a table or a fence; a list that holds one
+persona line stays authored whole. A region in `entry-routing-contract.md`,
+`presentation-protocol.md`, `session-handoff.md`, `output-file-rules.md` or
+the brief spec may carry its section's heading, and the brief ensemble's
+Failure Handling region its `###` cases; in `ensemble-protocol.md` and
+`orchestration.md` every heading stays authored. The
+point-type templates, designer's vision sections, the privacy bullets and the
+brief spec's Privacy Gate stay authored, and so do designer's ensemble guard
+and convergence sentence until PC2b. Every verb skill's Present step cites the persona's own protocol,
+and the generated finalize note (compose, frame, investigate, decide) its own
+contract. engineer's copies stay hand-written until PC3.
+
 ## The declaration
 
 `plugins/<persona>/persona.json` names its format, `persona-declaration-1.<minor>`.
@@ -106,8 +133,9 @@ depth: a key the format does not know is refused, except a scalar in a
 declaration of a newer minor than the reader's, which is ignored; an unknown
 object or list is refused at any minor. The generator adds the rules the
 schema cannot state: the decide fallback equals the registry preset, a verb's
-`default_profile` is one of its `profiles` (both or neither), and every field
-an enrolled unit or region reads is present. A declaration that fails one is
+`default_profile` is one of its `profiles` (both or neither), investigate's
+`artifact` names exactly one `*.md` file and it is `derived.brief_file`, and
+every field an enrolled unit or region reads is present. A declaration that fails one is
 reported as its own failure, and no region renders from it.
 
 ## Regions
@@ -121,8 +149,17 @@ substitutions. A template holds only `{{name}}` placeholders and
 - A substitution reads a declaration field (`field`, a dotted path) or carries
   a literal the manifest fixes for that region (`value`, e.g. the verb a
   shared block runs for). `derived.root_env` is the persona's
-  `AGENTIC_<NAME>_ROOT`, derived from `name`; `derived.skill_privacy_spec` is
-  `peer.privacy_spec` as a skill cites it, relative to its own directory.
+  `AGENTIC_<NAME>_ROOT`, derived from `name`, and `derived.profile_env` its
+  `AGENTIC_<NAME>_PROFILE`, the variable the decide resolver reads an L4
+  profile from (with `profile_presets` on); `derived.skill_privacy_spec` is
+  `peer.privacy_spec` as a skill cites it, relative to its own directory, and
+  `derived.shared_privacy_spec` the same spec relative to
+  `core/skills/_shared/references/`. `derived.brief_file` is the file the
+  investigate brief is saved as, its `default_profile` with `-` → `_` plus
+  `.md`, and `derived.output_root_env` the `<NAME>_OUTPUT_ROOT` variable that
+  moves it; both exist only with `verbs.investigate.default_profile`. A
+  derived field whose input is absent is absent, so a template that reads it
+  fails to render.
 - A region may carry `when: {field, equals}`, a variant: its `personas` must
   be exactly the manifest personas whose declaration holds `field` with that
   JSON value (`false`, `"false"` and `null` differ). A persona whose format
@@ -213,8 +250,8 @@ region or extension id or broken region grammar, an extension marker its
 slot does not admit, a variant enrollment that disagrees with the
 declarations, an owned output nothing
 generates any more, a ledger that disagrees, a declaration that fails its
-schema or a cross-field rule (its decide fallback must equal its registry
-preset), and personas found on disk that differ from the manifest's.
+schema or a cross-field rule (see [The declaration](#the-declaration)), and
+personas found on disk that differ from the manifest's.
 
 The write mode changes nothing when a failure is not one it can repair. It
 refuses a destination it does not own — present, not in `owned.json`, without
@@ -242,7 +279,18 @@ outcomes), and so does `start` (its clean-baseline admission and
 skill family: a skill runs nothing, so it checks the text an agent acts on
 (no unrendered placeholder, `<plugin-root>` in every generated block, each named
 `state.mjs` subcommand exists, the Plugin root row per document, and what
-each generated section says it does). `scripts/mutation-specs/persona-pipeline.mjs` puts defects into the
+each generated section says it does). `test-reference-contracts.mjs` is the
+reference family, over the committed references and the ones assembled from
+the templates: nothing unrendered; every in-plugin citation an agent follows
+(a relative path, a `core/skills/…` path or a bare sibling name) resolves in
+the same plugin, and the `§` after it names a heading the target holds; the
+capability text agrees with the declaration; every Present step, the
+generated finalize note and start's routing cite the persona's own documents;
+and each shared fact a region states is bound to the code that does it: the
+preflight to the generated scripts, the ensemble and brief collect order and
+the brief recovery to `peer-runner.mjs`, the brief's dispatch and ensemble
+type to the investigate runbook.
+`scripts/mutation-specs/persona-pipeline.mjs` puts defects into the
 canonical source, regenerates them, and expects a contract test to fail; a
 case's `killed_by` names the tests that must fail, by name or by path
 (`suite > test`, read from the TAP records), so a run that fails only

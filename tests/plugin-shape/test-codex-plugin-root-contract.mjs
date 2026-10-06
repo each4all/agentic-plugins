@@ -82,30 +82,40 @@ const PERSONAS = Object.keys(TABLES);
 // cell names it.
 const START_MACRO = new Set(['engineer', 'designer', 'founder']);
 
-// Engineer passages that send a Codex reader to the checkpoint table for the
-// root, each with the delimiters of its passage. The five non-decide verbs
-// share one paragraph, which test-engineer-plugin.mjs also holds identical.
+// Passages that send a Codex reader to the checkpoint table for the root, per
+// plugin, each with the delimiters of its passage. engineer's five non-decide
+// verbs share one paragraph, which test-engineer-plugin.mjs also holds
+// identical; founder and designer carry one pointer each, in the multi-axis
+// lens of their entry-routing contract (PC2a4, rendered from the persona
+// pipeline's routing-lens template).
 // Passages end at a paragraph or sibling-bullet boundary, not at a phrase, so
 // re-wrapping a passage cannot move its end past the text it has to hold.
 const BLANK_LINE = /\n[ \t]*\n/;
 const VERB_PASSAGE = { start: 'On Codex the resolver takes one extra step', end: BLANK_LINE };
+const REGISTRY_PASSAGE = {
+  start: '- **The registry is the single axis source.**',
+  end: /\n(?=\S)/,
+  claim: 'Claude/Codex command resolution shows how to take the root from it',
+};
 const ENGINEER_POINTERS = {
   'decide/SKILL.md': {
     start: '**Cross-host scope note (ADR-0001 §5 honest scope)**',
     end: BLANK_LINE,
     claim: 'the root is that path without its trailing `/<skills>/<skill>/SKILL.md`',
   },
-  '_shared/references/entry-routing-contract.md': {
-    start: '- **The registry is the single axis source.**',
-    end: /\n(?=\S)/,
-    claim: 'Claude/Codex command resolution shows how to take the root from it',
-  },
+  '_shared/references/entry-routing-contract.md': REGISTRY_PASSAGE,
   ...Object.fromEntries(
     ['compose', 'critique', 'frame', 'investigate', 'refine'].map((verb) => [
       `${verb}/SKILL.md`,
       { ...VERB_PASSAGE, claim: 'Claude/Codex command resolution shows how to take the root from it' },
     ]),
   ),
+};
+const POINTERS = {
+  engineer: ENGINEER_POINTERS,
+  founder: { '_shared/references/entry-routing-contract.md': REGISTRY_PASSAGE },
+  designer: { '_shared/references/entry-routing-contract.md': REGISTRY_PASSAGE },
+  orchestrator: {},
 };
 
 const squash = (s) => s.replace(/\s+/g, ' ');
@@ -199,26 +209,32 @@ describe('Codex plugin-root contract — engineer, designer, founder, orchestrat
     );
   });
 
-  it('each engineer pointer to the checkpoint table carries the mechanism inside its own passage', async () => {
-    const rel = skillsRel('engineer');
-    for (const [file, spec] of Object.entries(ENGINEER_POINTERS)) {
-      const path = skillsPath(pluginDir('engineer'), ...file.split('/'));
-      const text = lf(await readFile(path, 'utf8'));
-      strictEqual(text.split(spec.start).length - 1, 1, `${label(path)} must carry its pointer passage exactly once (starts "${spec.start}")`);
-      const body = passage(text, spec);
-      ok(body, `${label(path)} pointer passage not found`);
-      const flat = squash(body);
-      const refs = [...flat.matchAll(POINTER)];
-      strictEqual(refs.length, 1, `${label(path)} passage must point at the checkpoint command-resolution table exactly once`);
-      const target = resolve(dirname(path), refs[0][1].slice(1, -1));
-      strictEqual(label(target), label(skillsPath(pluginDir('engineer'), 'checkpoint', 'SKILL.md')), `${label(path)} passage must name a path that resolves to the checkpoint SKILL.md`);
-      ok(flat.includes('injects the mentioned skill with its absolute path'), `${label(path)} passage must say where the root comes from — the absolute path Codex injects with the mentioned skill`);
-      const claim = spec.claim.replace('<skills>', rel);
-      ok(flat.includes(claim), `${label(path)} passage must keep the corrected claim: ${claim}`);
-      for (const [pattern, why] of RETIRED) {
-        ok(!pattern.test(flat), `${label(path)} passage ${why}`);
+  it('each pointer to the checkpoint table carries the mechanism inside its own passage, in every plugin that has one', async () => {
+    let checked = 0;
+    for (const persona of PERSONAS) {
+      const rel = skillsRel(persona);
+      for (const [file, spec] of Object.entries(POINTERS[persona])) {
+        checked += 1;
+        const path = skillsPath(pluginDir(persona), ...file.split('/'));
+        const text = lf(await readFile(path, 'utf8'));
+        strictEqual(text.split(spec.start).length - 1, 1, `${label(path)} must carry its pointer passage exactly once (starts "${spec.start}")`);
+        const body = passage(text, spec);
+        ok(body, `${label(path)} pointer passage not found`);
+        const flat = squash(body);
+        const refs = [...flat.matchAll(POINTER)];
+        strictEqual(refs.length, 1, `${label(path)} passage must point at the checkpoint command-resolution table exactly once`);
+        const target = resolve(dirname(path), refs[0][1].slice(1, -1));
+        strictEqual(label(target), label(skillsPath(pluginDir(persona), 'checkpoint', 'SKILL.md')), `${label(path)} passage must name a path that resolves to its own plugin's checkpoint SKILL.md`);
+        ok(flat.includes('injects the mentioned skill with its absolute path'), `${label(path)} passage must say where the root comes from — the absolute path Codex injects with the mentioned skill`);
+        const claim = spec.claim.replace('<skills>', rel);
+        ok(flat.includes(claim), `${label(path)} passage must keep the corrected claim: ${claim}`);
+        for (const [pattern, why] of RETIRED) {
+          ok(!pattern.test(flat), `${label(path)} passage ${why}`);
+        }
       }
     }
+    strictEqual(checked, Object.values(POINTERS).reduce((n, files) => n + Object.keys(files).length, 0), 'every enumerated pointer passage must be checked');
+    ok(Object.keys(POINTERS.founder).length > 0 && Object.keys(POINTERS.designer).length > 0, 'founder and designer each carry a pointer passage');
   });
 
   it('across the four plugins, only the table cells name the checkout, only the listed passages point at the table, and no retired claim survives', async () => {
@@ -226,7 +242,7 @@ describe('Codex plugin-root contract — engineer, designer, founder, orchestrat
     // the cell test found, and a pointer file's one pointer is inside the
     // passage the pointer test extracted.
     const tableFiles = PERSONAS.flatMap((p) => TABLES[p].map((s) => label(skillsPath(pluginDir(p), s, 'SKILL.md'))));
-    const pointerFiles = Object.keys(ENGINEER_POINTERS).map((f) => label(skillsPath(pluginDir('engineer'), ...f.split('/'))));
+    const pointerFiles = PERSONAS.flatMap((p) => Object.keys(POINTERS[p]).map((f) => label(skillsPath(pluginDir(p), ...f.split('/')))));
     const naming = [];
     const pointing = [];
     let scanned = 0;
