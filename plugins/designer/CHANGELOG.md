@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.4.0...plugin-designer-v0.4.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **plugin/designer:** per-transition footer claims and the shared resume and peer-now fixes (ADR-0066 Stage 3) ([f82046e](https://github.com/each4all/agentic-plugins/commit/f82046ee5fefcb00a14148df6c4ededc8d5d4f32))
+
 ## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.21...plugin-designer-v0.4.0) (2026-10-06)
 
 

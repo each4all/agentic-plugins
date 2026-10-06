@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.5.0...plugin-founder-v0.5.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **plugin/founder:** per-transition footer claims and the shared resume and peer-now fixes (ADR-0066 Stage 3) ([c6c1cff](https://github.com/each4all/agentic-plugins/commit/c6c1cff92e180b3fd1f27e5df42819f36f17ce5a))
+
 ## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.21...plugin-founder-v0.5.0) (2026-10-06)
 
 
