@@ -18,4 +18,11 @@ if [ "$FIND_RC" -ne 0 ]; then
   echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
+# ADR-0066 Decision 3 — prints nothing interactively. When AGENTIC_AUTOPILOT
+# names a run it prints one line: the variable is ignored, this persona is no
+# autopilot dispatch target. When an owner gate is set on the workflow it
+# prints the gate and how the owner resolves it, to put to the user before
+# this command continues. It runs before any write.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" autopilot-preflight \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" || exit $?
 ```

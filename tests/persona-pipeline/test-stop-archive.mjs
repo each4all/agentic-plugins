@@ -24,7 +24,8 @@
 // Run via `node --test tests/persona-pipeline/test-stop-archive.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, match } from 'node:assert/strict';
+import { strictEqual, ok, match, deepStrictEqual } from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, readdir, readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
@@ -1332,5 +1333,220 @@ for (const persona of PERSONAS) {
         strictEqual((await listArchive(repoRoot)).length, 3);
       });
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Gate 5 (ADR-0063 D6, ADR-0066 PC2b): a workflow waiting on its owner is not
+  // archived on any path, whatever its terminal marker says. Each case ends
+  // with its control: the same workflow with the gate removed archives.
+
+  describe(`${persona}: gate 5 — a pending owner gate refuses the archive (ADR-0063 D6, PC2b)`, () => {
+    const GATE = {
+      awaiting_owner_gate: 'decide-conflict',
+      awaiting_owner_since: '2026-10-06T00:00:00Z',
+      awaiting_owner_pointer: `.agentic-plugins/state/${persona}/workflows/decide-x.md#ensemble-synthesis`,
+    };
+    const ungate = (fm) => {
+      for (const k of Object.keys(GATE)) delete fm[k];
+    };
+
+    it('the evaluator reports awaiting_owner alone when every other gate passes', () => {
+      const frontmatter = {
+        current_phase: 'summary-complete',
+        terminal_marker: true,
+        git_baseline: { branch: 'main', head: 'a'.repeat(40), status_digest: '' },
+        child_completions: [],
+      };
+      const pass = evaluateStopArchive({ frontmatter, headSha: 'b'.repeat(40), headSubject: 'feat: x' });
+      deepStrictEqual([pass.shouldArchive, pass.gateFailures], [true, []]);
+      const gated = evaluateStopArchive({ frontmatter: { ...frontmatter, ...GATE }, headSha: 'b'.repeat(40), headSubject: 'feat: x' });
+      deepStrictEqual([gated.shouldArchive, gated.gateFailures], [false, ['awaiting_owner']]);
+    });
+
+    for (const [host, hostScript] of [['claude', CLAUDE_STOP_PATH], ['codex', CODEX_STOP_PATH]]) {
+      it(`the ${host} Stop hook leaves a gated workflow whose marker was forced on and whose HEAD moved; without the gate it archives`, async () => {
+        await withRepo(async ({ repoRoot, baselineHead }) => {
+          const { filePath } = await createWorkflow({
+            repoRoot, verb: 'decide', originalRequest: 'gated on stop',
+            gitBaseline: { branch: 'main', head: baselineHead, status_digest: MIN_DIGEST },
+            host,
+          });
+          await setFrontmatter(filePath, (fm) => {
+            fm.current_phase = 'summary-complete';
+            fm.terminal_marker = true;
+            Object.assign(fm, GATE);
+          });
+          makeAdvanceCommit(repoRoot);
+          const payload = JSON.stringify({ cwd: repoRoot });
+          const first = spawnStopHook({ hostScript, cwd: repoRoot, payload });
+          strictEqual(first.code, 0, `stderr: ${first.stderr}`);
+          strictEqual((await listWorkflows(repoRoot)).length, 1, 'the gated workflow stays live');
+          strictEqual((await listArchive(repoRoot)).length, 0);
+          const { frontmatter } = parseWorkflowFile(await readFile(filePath, 'utf8'));
+          strictEqual(frontmatter.awaiting_owner_gate, GATE.awaiting_owner_gate, 'the gate is still set');
+
+          await setFrontmatter(filePath, ungate);
+          const second = spawnStopHook({ hostScript, cwd: repoRoot, payload });
+          strictEqual(second.code, 0, `stderr: ${second.stderr}`);
+          strictEqual((await listWorkflows(repoRoot)).length, 0, 'without the gate it archives');
+          strictEqual((await listArchive(repoRoot)).length, 1);
+        });
+      });
+    }
+
+    it('the sweep leaves a gated workflow whose branch was deleted; without the gate it archives', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { filePath } = await createWorkflow({
+          repoRoot, verb: 'decide', originalRequest: 'gated orphan',
+          gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+          host: 'claude',
+        });
+        await setFrontmatter(filePath, (fm) => {
+          fm.current_phase = 'summary-complete';
+          fm.terminal_marker = true;
+          Object.assign(fm, GATE);
+        });
+        const before = await readFile(filePath, 'utf8');
+        strictEqual((await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' })).length, 0);
+        strictEqual(await readFile(filePath, 'utf8'), before, 'nothing written to it');
+
+        await setFrontmatter(filePath, ungate);
+        strictEqual((await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' })).filter((r) => r.archived).length, 1);
+        strictEqual((await listWorkflows(repoRoot)).length, 0);
+      });
+    });
+
+    it('the sweep leaves a gated workflow on a kept branch that has moved; without the gate it archives', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        execFileSync('git', ['switch', '-q', '-c', 'feat/kept'], { cwd: repoRoot });
+        makeAdvanceCommit(repoRoot);
+        execFileSync('git', ['switch', '-q', '-c', 'feat/next'], { cwd: repoRoot });
+        const { filePath } = await createWorkflow({
+          repoRoot, verb: 'decide', originalRequest: 'gated kept branch',
+          gitBaseline: { branch: 'feat/kept', head: baselineHead, status_digest: MIN_DIGEST },
+          host: 'claude',
+        });
+        await setFrontmatter(filePath, (fm) => {
+          fm.current_phase = 'summary-complete';
+          fm.terminal_marker = true;
+          Object.assign(fm, GATE);
+        });
+        const before = await readFile(filePath, 'utf8');
+        strictEqual((await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' })).length, 0);
+        strictEqual(await readFile(filePath, 'utf8'), before, 'nothing written to it');
+
+        await setFrontmatter(filePath, ungate);
+        strictEqual((await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' })).filter((r) => r.archived).length, 1);
+        strictEqual((await listWorkflows(repoRoot)).length, 0);
+      });
+    });
+
+    // Review of code step 6 (finding 1): each path decides on
+    // its own read, then archiveWorkflow reads again under the file lock. An
+    // owner gate written in between, here by a wrapper around archiveWorkflow
+    // that runs the real setter first, keeps the workflow live; an unrelated
+    // write in the same place (a snapshot) does not.
+    const { archiveWorkflow, setAwaitingOwner, snapshot } = MODULES.get(persona).state;
+    const between = (filePath, write) => async (args) => {
+      await write(filePath);
+      return archiveWorkflow(args);
+    };
+    const gateIt = (filePath) => setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'recurring-finding', anchor: 'recurring-finding' });
+    const snapshotIt = (filePath) => snapshot({ workflowPath: filePath, host: 'claude', trigger: 'stop', statusDigest: MIN_DIGEST });
+    const refusedUnderLock = async (result, { repoRoot, filePath }, label) => {
+      strictEqual(result.archived, false, `${label}: not archived`);
+      strictEqual(result.reason, 'gate-not-met-under-lock', `${label}: refused on the locked read`);
+      ok(result.gateFailures.includes('awaiting_owner'), `${label}: ${result.gateFailures}`);
+      strictEqual((await listArchive(repoRoot)).length, 0, `${label}: nothing archived`);
+      const { frontmatter } = parseWorkflowFile(await readFile(filePath, 'utf8'));
+      strictEqual(frontmatter.awaiting_owner_gate, 'recurring-finding', `${label}: live, with the gate`);
+    };
+    const terminal = (fm) => {
+      fm.current_phase = 'summary-complete';
+      fm.terminal_marker = true;
+    };
+
+    it('the Stop path: an owner gate written between the gates\' read and the archive keeps the workflow; a snapshot written there does not', async () => {
+      for (const [write, archived] of [[gateIt, false], [snapshotIt, true]]) {
+        await withRepo(async ({ repoRoot, baselineHead }) => {
+          const { filePath } = await createWorkflow({
+            repoRoot, verb: 'refine', originalRequest: 'gated between reads',
+            gitBaseline: { branch: 'main', head: baselineHead, status_digest: MIN_DIGEST },
+            host: 'claude',
+          });
+          await setFrontmatter(filePath, terminal);
+          const headSha = makeAdvanceCommit(repoRoot);
+          const result = await runStopArchive({ workflowPath: filePath, host: 'claude', repoRoot, headSha, headSubject: 'feat: x', stderr: { write() {} }, archive: between(filePath, write) });
+          if (archived) {
+            strictEqual(result.archived, true, `control: ${JSON.stringify(result)}`);
+            strictEqual((await listWorkflows(repoRoot)).length, 0);
+          } else {
+            await refusedUnderLock(result, { repoRoot, filePath }, 'Stop');
+            strictEqual((await listWorkflows(repoRoot)).length, 1);
+          }
+        });
+      }
+    });
+
+    // Re-review: the recheck runs on the read archiveWorkflow makes under the
+    // file lock. The test holds that lock, lets archiveWorkflow take the
+    // directory lock and wait, writes the gate, then releases it.
+    it('archiveWorkflow re-checks on the read it makes under the file lock: a gate written while it waits for the lock keeps the workflow', async () => {
+      const { withFileLock, creationLockRel } = MODULES.get(persona).state;
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { filePath } = await createWorkflow({
+          repoRoot, verb: 'refine', originalRequest: 'gated under the lock',
+          gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+          host: 'claude',
+        });
+        await setFrontmatter(filePath, terminal);
+        const dirLock = join(repoRoot, creationLockRel());
+        let pending;
+        await withFileLock(filePath, async () => {
+          const gates = (fm) => (fm.awaiting_owner_gate !== undefined ? ['awaiting_owner'] : []);
+          pending = archiveWorkflow({ workflowPath: filePath, host: 'claude', repoRoot, recheck: gates });
+          const deadline = Date.now() + 4000;
+          while (!existsSync(dirLock)) {
+            if (Date.now() > deadline) throw new Error('archiveWorkflow never took the directory lock');
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          // Written raw: this test holds the lock a setter would take.
+          await setFrontmatter(filePath, (fm) => Object.assign(fm, GATE));
+        });
+        const result = await pending;
+        deepStrictEqual([result.archived, result.reason, result.gateFailures], [false, 'gate-not-met-under-lock', ['awaiting_owner']]);
+        strictEqual((await listWorkflows(repoRoot)).length, 1);
+      });
+    });
+
+    for (const kept of [false, true]) {
+      it(`the sweep, ${kept ? 'kept branch' : 'deleted branch'}: an owner gate written between the sweep's read and the archive keeps the workflow; a snapshot written there does not`, async () => {
+        for (const [write, archived] of [[gateIt, false], [snapshotIt, true]]) {
+          await withRepo(async ({ repoRoot, baselineHead }) => {
+            const branch = kept ? 'feat/kept' : 'feat/gone';
+            if (kept) {
+              execFileSync('git', ['switch', '-q', '-c', branch], { cwd: repoRoot });
+              makeAdvanceCommit(repoRoot);
+              execFileSync('git', ['switch', '-q', '-c', 'feat/next'], { cwd: repoRoot });
+            }
+            const { filePath } = await createWorkflow({
+              repoRoot, verb: 'refine', originalRequest: 'gated between reads',
+              gitBaseline: { branch, head: baselineHead, status_digest: MIN_DIGEST },
+              host: 'claude',
+            });
+            await setFrontmatter(filePath, terminal);
+            const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude', stderr: { write() {} }, archive: between(filePath, write) });
+            strictEqual(results.length, 1, `the sweep acted on it: ${JSON.stringify(results)}`);
+            if (archived) {
+              strictEqual(results[0].archived, true, `control: ${JSON.stringify(results[0])}`);
+              strictEqual((await listWorkflows(repoRoot)).length, 0);
+            } else {
+              await refusedUnderLock(results[0], { repoRoot, filePath }, kept ? 'kept branch' : 'deleted branch');
+              strictEqual((await listWorkflows(repoRoot)).length, 1);
+            }
+          });
+        }
+      });
+    }
   });
 }

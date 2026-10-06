@@ -111,13 +111,14 @@ const FILES = new Map([...regionFiles()].filter(([dest]) => dest.startsWith('com
 const covered = (dest) => FILES.has(dest);
 
 // The verb runbooks whose blocks are generated (compose and frame in PC2a2b,
-// investigate and decide in PC2a2c), with the verb each one runs.
-const VERB_DESTS = ['commands/compose.md', 'commands/frame.md', 'commands/investigate.md', 'commands/decide.md'];
-// The verb runbooks whose finalize block stays authored (PC2a3 QD7, DD5): its
-// behavior differs by persona until PC2b (designer's ensemble-commit guard,
-// D2, and its convergence guard). Their other blocks are generated.
-const AUTHORED_FINALIZE_DESTS = ['commands/critique.md', 'commands/refine.md'];
-const PIPELINE_VERB_DESTS = [...VERB_DESTS, ...AUTHORED_FINALIZE_DESTS];
+// investigate and decide in PC2a2c, critique's finalize in PC2b U5a, refine's
+// in PC2b U5b, through a variant where the persona waits for convergence),
+// with the verb each one runs.
+const VERB_DESTS = ['commands/compose.md', 'commands/frame.md', 'commands/investigate.md', 'commands/decide.md', 'commands/critique.md', 'commands/refine.md'];
+const PIPELINE_VERB_DESTS = VERB_DESTS;
+// The runbooks whose finalize sits under a generated finalize heading, after
+// every extension their slots hold (PC2a3 QD7, QD8).
+const HEADING_DESTS = ['commands/critique.md', 'commands/refine.md'];
 // start: its bootstrap (the clean-baseline gate) and its workflow_type read
 // are generated; the lifecycle list and the terminal block stay authored.
 const START = 'commands/start.md';
@@ -179,6 +180,17 @@ const logical = (block) => block.replace(/[ \t]*\\\n[ \t]*/g, ' ');
 
 const squash = (t) => t.replace(/\s+/g, ' ');
 
+// PC2b U5b: a verb whose persona declares terminal_requires_convergence renders
+// the convergent finalize, whose CONVERGED line is a placeholder the agent
+// fills from the re-critique. `converged` sets it the way the agent would
+// (UNSET drops the line); the shared cases run the finalize converged.
+const CONVERGED_LINE = /^CONVERGED="[^"\n]*"$/m;
+const UNSET = Symbol('unset');
+const convergent = (persona, verb) => declaration(persona).verbs?.[verb]?.terminal_requires_convergence === true;
+const converged = (block, persona, verb, value = 'yes') => (convergent(persona, verb)
+  ? block.replace(CONVERGED_LINE, () => (value === UNSET ? '' : `CONVERGED='${value}'`))
+  : block);
+
 /** A region's body by id; fails when the document does not hold it once. */
 function region(text, id) {
   const found = parseRegions(text).regions.filter((r) => r.id === id);
@@ -202,7 +214,7 @@ function sentenceAt(text, sentence) {
  * by `delimiter` when given; `after` is appended to the block.
  * `inheritedNote` puts a NOTE in the shell's environment beforehand.
  */
-function runBlock(shell, block, persona, { note = '', failAppend = false, delimiter = null, active = '', findStatus = 0, resolveStatus = 0, inheritedNote = null, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0 }) {
+function runBlock(shell, block, persona, { note = '', failAppend = false, delimiter = null, active = '', findStatus = 0, resolveStatus = 0, inheritedNote = null, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0 }) {
   const dir = mkdtempSync(join(tmpdir(), 'pc2a2b-finalize.'));
   try {
     mkdirSync(join(dir, 'bin'));
@@ -216,6 +228,9 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       'printf \'%s\\n\' "$2" >> "$STUB_LOG"',
       'printf \'%s\' "$*" | tr \'\\n\' \' \' >> "$STUB_ARGV"; printf \'\\n\' >> "$STUB_ARGV"',
       'if [ "$2" = find-active ]; then printf \'%s\\n\' "$STUB_ACTIVE"; exit "$STUB_FIND_RC"; fi',
+      'if [ "$2" = autopilot-preflight ]; then exit "$STUB_PREFLIGHT_RC"; fi',
+      'if [ "$2" = settle ]; then exit "$STUB_SETTLE_RC"; fi',
+      'if [ "$2" = awaiting-owner-clear ]; then exit "$STUB_CLEAR_RC"; fi',
       'if [ "$2" = check-clean-baseline ]; then printf \'%s\' "$STUB_BASELINE"; exit "$STUB_BASELINE_RC"; fi',
       'if [ "$2" = read ]; then printf \'%s\' "$STUB_READ"; exit "$STUB_READ_RC"; fi',
       'if [ "$2" = create ]; then printf \'%s\\n\' "$STUB_CREATED"; exit 0; fi',
@@ -250,6 +265,9 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       STUB_BASELINE_RC: String(baselineStatus),
       STUB_READ: readOutput,
       STUB_READ_RC: String(readStatus),
+      STUB_PREFLIGHT_RC: String(preflightStatus),
+      STUB_SETTLE_RC: String(settleStatus),
+      STUB_CLEAR_RC: String(clearStatus),
       STUB_CONTEXT: RESOLVER_CONTEXT,
       STUB_DIAGNOSTIC: RESOLVER_DIAGNOSTIC,
       ...(inheritedNote === null ? {} : { NOTE: inheritedNote }),
@@ -300,6 +318,49 @@ const HOSTILE_NOTE = [
   'ends with a backslash \\',
 ].join('\n');
 
+// PC2b U5b: the convergent finalize is a variant of the plain one, not a
+// second copy that can drift: the plain template with the convergence
+// paragraph before the last-write paragraph, and its terminal write, comment
+// and call, indented in the then branch of the fail-closed check. The
+// variant's own lines (the paragraph, the check, the else branch) are bound by
+// the refine finalize, start terminal and Owner decision runs.
+describe('each convergent variant is its plain template plus the convergence check, nothing else (PC2b U5b, U5c, Review of code step 6)', () => {
+  const LAST = 'The last write, `finish-verb`, records';
+  const TERMINAL_COMMENT = '# ADR-0029 §1 / completion-output contract §2';
+  // [plain, variant, the variant's paragraph opening, the paragraph the
+  // convergence paragraph precedes, where the plain terminal part opens]
+  const PAIRS = [
+    ['verb-finalize.md', 'verb-finalize-convergent.md', 'This verb closes only once it converged', LAST, (plain) => plain.indexOf(TERMINAL_COMMENT)],
+    ['start-terminal.md', 'start-terminal-convergent.md', 'This lifecycle closes only once Phase 4 converged', LAST, (plain) => plain.indexOf(TERMINAL_COMMENT)],
+    // The deferral's clear and terminal write: the Defer block's second clear.
+    ['refine-owner-decision.md', 'refine-owner-decision-convergent.md', 'This refine closes only once it converged', '**Fix now.**', (plain) => plain.lastIndexOf('node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \\\n')],
+  ];
+  for (const [plainName, variantName, opening, before, terminalFrom] of PAIRS) {
+    it(`${variantName}: rebuilt from ${plainName} and the variant's own lines, it is byte for byte the variant`, () => {
+      const read = (rel) => readFileSync(join(REPO_ROOT, 'persona-pipeline', 'regions', rel), 'utf8');
+      const plain = read(plainName);
+      const variant = read(variantName);
+      const para = variant.slice(variant.indexOf(opening), variant.indexOf(before));
+      ok(variant.indexOf(opening) >= 0 && para.endsWith('.\n\n'), `the convergence paragraph, right before ${before}`);
+      const terminalAt = terminalFrom(plain);
+      const ownerForm = plain.indexOf('# The owner-decision form, for an owner gate');
+      const terminal = plain.slice(terminalAt, ownerForm >= 0 ? ownerForm : plain.indexOf('\n```\n', terminalAt) + 1);
+      ok(terminalAt > 0 && /\nnode "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n/.test(terminal), 'the plain terminal write, comment and call');
+      const indented = terminal.replace(/^(?=.)/gm, '  ');
+      const THEN = 'if [ "${CONVERGED:-no}" = "yes" ]; then\n';
+      const headAt = variant.indexOf('# FAIL-CLOSED:');
+      const thenEnd = variant.indexOf(THEN, headAt) + THEN.length;
+      ok(headAt > 0 && thenEnd > THEN.length, 'the fail-closed check');
+      strictEqual(variant.slice(thenEnd, thenEnd + indented.length), indented, 'the then branch is the plain terminal write, indented');
+      const elseAt = thenEnd + indented.length;
+      const elseBranch = variant.slice(elseAt, variant.indexOf('\nfi\n', elseAt) + '\nfi\n'.length);
+      ok(elseBranch.startsWith('else\n'), 'an else branch follows');
+      const rebuilt = plain.replace(before, () => `${para}${before}`).replace(terminal, () => `${variant.slice(headAt, thenEnd)}${indented}${elseBranch}`);
+      strictEqual(variant, rebuilt);
+    });
+  }
+});
+
 describe('runbook regions: the contracts hold for every enrolled persona', () => {
   it('the contracts reach the region files they are about (guards a vacuous pass)', () => {
     for (const dest of ['commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md', ...PIPELINE_VERB_DESTS, START]) {
@@ -339,7 +400,22 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               deepStrictEqual([blocks.sites, blocks.violations], [1, []], 'one conformant six-field block');
               deepStrictEqual(completionReenumerations(text, label, blocks.blockLines), []);
               const timing = archiveTimingProblems(text, label);
-              deepStrictEqual([timing.sites, timing.problems], [1, []], 'the terminal write carries its archive-timing note');
+              // decide's Owner selection step (PC2b DD7) and refine's Owner
+              // decision (U5b) finish the verb a second way.
+              deepStrictEqual([timing.sites, timing.problems], [['commands/decide.md', 'commands/refine.md'].includes(dest) ? 2 : 1, []], 'each terminal write carries its archive-timing note');
+            }
+          });
+
+          // PC2b RV9: collection waits for the host's notification that the
+          // runner exited, so the runner runs in the foreground of a host
+          // background task; a shell `&` would detach it from the host.
+          it('no dispatch detaches: the runner command ends without a shell & (PC2b RV9)', () => {
+            const runs = shellBlocks(text).filter((b) => /peer-runner\.mjs" run\b/.test(b.text));
+            if (PIPELINE_VERB_DESTS.includes(dest) || dest === 'commands/peer-now.md') ok(runs.length > 0, 'the dispatch block');
+            for (const b of runs) {
+              const code = logical(b.text.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n'));
+              const command = code.split('\n').find((l) => /peer-runner\.mjs" run\b/.test(l));
+              ok(!/(^|[^&])&\s*$/.test(command), `${persona}: the runner command at line ${b.start + 1} detaches: ${command}`);
             }
           });
 
@@ -393,6 +469,17 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               return found[0];
             };
 
+            it('start Phase 0 runs autopilot-preflight on $ACTIVE after the find guard and before the baseline check or any write; a refusal stops the block (PC2b DD5)', () => {
+              const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
+              ok(/node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" autopilot-preflight --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \|\| exit \$\?$/m.test(logical(block.text)), logical(block.text));
+              const pre = shellSites(text, /state\.mjs" autopilot-preflight/);
+              const later = shellSites(text, /state\.mjs" (check-clean-baseline|create|append|set-terminal|finish-verb)\b/);
+              strictEqual(pre.length, 1, 'one preflight');
+              ok(later.length > 0 && later.every((w) => pre[0] < w), 'before the baseline check and every write');
+              const refused = runBlock('bash', block.text, persona, { active: '', preflightStatus: 4, after: '\nprintf ran > out\n' });
+              deepStrictEqual([refused.status, refused.out, refused.log], [4, null, ['find-active', 'autopilot-preflight']]);
+            });
+
             it('start bootstrap, run: only a clean or accepted baseline creates the workflow (investigate, workflow_type start); any other status, or a failed check, stops before any write', () => {
               const block = blockWith(/state\.mjs" check-clean-baseline /).text;
               const cases = [
@@ -425,7 +512,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               }
             });
 
-            it('start resume, run: workflow_type is start only when the workflow says so; a missing, empty, malformed or failed read is verb-chain; the read writes nothing', () => {
+            it('start resume, run: workflow_type is start only when the workflow says so; a missing, empty, malformed or failed read is verb-chain; only a start workflow is written — its next step cleared, its position kept (PC2b RV4)', () => {
               const block = blockWith(/state\.mjs" read --workflow-path "\$ACTIVE"/).text;
               const cases = [
                 ['{"workflow_type":"start"}', 0, 'start'],
@@ -438,8 +525,46 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               for (const [readOutput, readStatus, expected] of cases) {
                 const r = runBlock('bash', `ACTIVE='/w/active.md'\n${block}`, persona, { readOutput, readStatus, after: '\nprintf \'%s\' "$WF_TYPE" > out\n' });
                 strictEqual(r.out, expected, `${JSON.stringify(readOutput)} (exit ${readStatus}): ${r.stderr}`);
-                deepStrictEqual(r.log, ['read'], 'only the read');
                 ok(r.argv[0].includes(' --workflow-path /w/active.md'), 'the workflow Phase 0 found');
+                if (expected !== 'start') {
+                  deepStrictEqual(r.log, ['read'], 'a verb-chain workflow: only the read');
+                  continue;
+                }
+                deepStrictEqual(r.log, ['read', 'append'], 'a start workflow: the read, then the clear');
+                ok(r.argv[1].includes(' --workflow-path /w/active.md ') && r.argv[1].includes(' --clear-next-step true '), r.argv[1]);
+                ok(!/--(current-phase|next-action|verb|phase-label|phase-note) /.test(r.argv[1]), `the position is kept: ${r.argv[1]}`);
+              }
+              const failed = runBlock('bash', `ACTIVE='/w/active.md'\n${block}`, persona, { readOutput: '{"workflow_type":"start"}', failAppend: true, after: '\nprintf ran > out\n' });
+              deepStrictEqual([failed.status, failed.out], [7, null], 'a failed clear stops the block with its status');
+            });
+
+            // PC2b U5c, DD5: the lifecycle's terminal write is finish-verb kind
+            // commit (the owner saves and commits); a persona that waits for
+            // convergence makes it only once Phase 4 converged, and otherwise
+            // records the next step, turning an inherited marker off.
+            it('start terminal, run: finish-verb kind commit, only once converged where the persona waits for it (fail-closed); otherwise a non-terminal append with the next step (PC2b U5c)', () => {
+              const block = blockWith(/state\.mjs" finish-verb \\/).text;
+              const waits = convergent(persona, 'start');
+              strictEqual(CONVERGED_LINE.test(block), waits, 'the block assigns CONVERGED exactly where the persona waits for convergence');
+              if (waits) strictEqual(CONVERGED_LINE.exec(block)[0], 'CONVERGED="<yes|no — from the Phase 4 re-critique verdict; unset means no>"', 'the convergence placeholder');
+              const cases = waits
+                ? [['yes', 'finish-verb'], ['no', 'append'], [UNSET, 'append'], ['<yes|no>', 'append'], [null, 'append']]
+                : [[null, 'finish-verb']];
+              for (const [value, last] of cases) {
+                const script = value === null ? block : converged(block, persona, 'start', value);
+                const r = runBlock('bash', `ACTIVE='/w/active.md'\n${script}`, persona, {});
+                const label = `CONVERGED ${value === null ? 'as committed' : value === UNSET ? 'unset' : JSON.stringify(value)}`;
+                strictEqual(r.status, 0, `${label}: ${r.stderr}`);
+                deepStrictEqual(r.log, [last], label);
+                ok(r.argv[0].includes(' --workflow-path /w/active.md '), `${label}: the workflow Phase 0 found`);
+                if (last === 'finish-verb') {
+                  ok(r.argv[0].includes(` --next-action ${declaration(persona).verbs.start.next_action} `), `${label}: the declared next action: ${r.argv[0]}`);
+                  ok(r.argv[0].trimEnd().endsWith(' --next-step-kind commit --next-step-confidence <HIGH|MEDIUM|LOW>'), `${label}: kind commit: ${r.argv[0]}`);
+                } else {
+                  for (const part of [' --next-step-kind verb --next-step-verb <refine|decide|investigate> ', ' --clear-terminal-marker true ', ' --event updated']) ok(r.argv[0].includes(part), `${label}: ${part}: ${r.argv[0]}`);
+                  ok(!/ --(current-phase|phase-note|verb) /.test(r.argv[0]), `${label}: the position is kept: ${r.argv[0]}`);
+                  ok(/PAUSED/.test(r.stderr), `${label}: the pause is reported`);
+                }
               }
             });
 
@@ -452,7 +577,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const noImage = sentenceAt(text, NO_IMAGE);
               strictEqual(noImage.length, declaration(persona).peer.images === false ? 1 : 0, 'the no-image rule, exactly where images are off');
               const boundaryEnd = text.indexOf('<!-- pipeline:end start-phase-boundary -->');
-              const terminalAt = text.indexOf(blockWith(/state\.mjs" set-terminal \\/).text);
+              const terminalAt = text.indexOf(blockWith(/state\.mjs" finish-verb \\/).text);
               ok(boundaryEnd > 0 && noImage.every((at) => boundaryEnd < at && at < terminalAt), 'the no-image rule after the phase-boundary paragraph, before the terminal write');
               if (persona === 'designer') {
                 const screenshot = sentenceAt(text, SCREENSHOT.start);
@@ -467,6 +592,14 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const boundary = squash(region(text, 'start-phase-boundary'));
               ok(boundary.includes('Each phase boundary writes state via `state.mjs append --verb <verb> --current-phase <phase> --next-action <...> --event updated`'), 'the state write at each boundary');
               ok(boundary.includes('and dispatches the per-phase peer ensemble per `core/skills/_shared/references/ensemble-protocol.md` (always-max)'), 'the per-phase ensemble');
+              // PC2b RV3: the rules that hold inside the lifecycle, each run by
+              // test-start-lifecycle.mjs against the real scripts.
+              for (const rule of [
+                '**Each ensemble attempt is settled.** After its synthesis note, settle the phase\'s attempt from its run ledger with `peer-runner.mjs settle --phase <verb> --run-id <that attempt\'s run id>` (empty when no run launched), before the next phase. A repeated phase (a second refine pass) dispatches under a new run id and settles each attempt.',
+                '**No phase closes the workflow.** A verb\'s own terminal write (`finish-verb`) never runs inside the lifecycle; the Terminal block below is its one terminal write.',
+                'record it after the phase note with `state.mjs awaiting-owner-set --gate <gate> --anchor <anchor>`, a write that leaves the workflow open, and pause. Once the owner decides, clear it with `state.mjs awaiting-owner-clear --gate <gate> --resolution <the owner\'s decision> --next-step-kind verb --next-step-verb <the next phase\'s verb> --next-step-confidence HIGH`, and continue at that phase. The verb\'s own resolving step (decide\'s Owner selection, refine\'s Owner decision) ends in a terminal write, so the lifecycle does not run it.',
+              ]) ok(boundary.includes(rule), rule);
+              ok(text.indexOf('<!-- pipeline:end start-phase-boundary -->') < text.indexOf(blockWith(/state\.mjs" finish-verb \\/).text), 'the rules precede the terminal block they name');
               const bootstrap = text.indexOf('<!-- pipeline:begin start-bootstrap -->');
               ok(bootstrap > 0 && bootstrap < text.indexOf('<!-- pipeline:begin start-initial-verb -->'), 'the initial verb is stated after the bootstrap that creates the workflow');
             });
@@ -475,7 +608,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const exts = extensionTexts(text);
               const slots = MANIFEST.extension_points.filter((e) => e.dest === dest && e.personas.includes(persona)).map((e) => e.id);
               deepStrictEqual(exts.map((e) => e.id).sort(), [...slots].sort(), 'one marker per slot this persona owns');
-              const terminal = blockWith(/state\.mjs" set-terminal \\/);
+              const terminal = blockWith(/state\.mjs" finish-verb \\/);
               for (const ext of exts) {
                 ok(ext.line < terminal.start, `extension ${ext.id} precedes the terminal write`);
                 for (const sentence of EXTENSION_ANCHORS[ext.id] ?? [null]) {
@@ -505,6 +638,24 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(lines.includes('  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2'), 'the guard names the persona through PERSONA');
               const find = shellSites(text, /^ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" \\\n\s+find-active --repo-root "\$REPO_ROOT"\)"\nFIND_RC=\$\?\nif \[ "\$FIND_RC" -ne 0 \]; then\n[^\n]*\n\s+exit "\$FIND_RC"\nfi$/m);
               strictEqual(find.length, 1, 'find-active, then its status read and exited with');
+            });
+
+            it('Phase 0 runs autopilot-preflight on $ACTIVE right after the find guard, before any write, and a refusal stops the block (PC2b DD5)', () => {
+              const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
+              ok(/\nfi\n(#[^\n]*\n)*node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" autopilot-preflight --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \|\| exit \$\?$/.test(logical(block.text)), logical(block.text));
+              const pre = shellSites(text, /state\.mjs" autopilot-preflight/);
+              const writes = shellSites(text, /state\.mjs" (create|append|set-terminal|finish-verb|ensemble-commit)\b/);
+              strictEqual(pre.length, 1, 'one preflight');
+              ok(writes.length > 0 && writes.every((w) => pre[0] < w), 'before every write');
+              const refused = runBlock('bash', block.text, persona, { active: '/w/active.md', preflightStatus: 4, after: '\nprintf ran > out\n' });
+              deepStrictEqual([refused.status, refused.out, refused.log], [4, null, ['find-active', 'autopilot-preflight']]);
+              const passed = runBlock('bash', block.text, persona, { active: '/w/active.md', after: '\nprintf ran > out\n' });
+              deepStrictEqual([passed.status, passed.out], [0, 'ran'], passed.stderr);
+              ok(passed.argv[1].includes(' --workflow-path /w/active.md '), passed.argv[1]);
+            });
+
+            it('the resume append clears the next step the previous verb recorded (PC2b DD5)', () => {
+              ok(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" append --workflow-path "\$ACTIVE" [^\n]*--current-phase phase-0-resume --clear-next-step true [^\n]*--event resumed \|\| exit \$\?$/m.test(logical(blockWith(/--event resumed/).text)), logical(blockWith(/--event resumed/).text));
             });
 
             it('Phase 0, run: $ACTIVE holds what find-active printed, and a failed find stops the block with its status', () => {
@@ -542,17 +693,38 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(find[0] < createAt[0] && createAt[0] < resumeAt[0], 'find-active, bootstrap, resume in that order');
             });
 
-            if (VERB_DESTS.includes(dest)) it('the dispatch, the note, ensemble-commit and the terminal write run in that order on $ACTIVE; only the note stops the block when it fails (PD6)', () => {
+            if (VERB_DESTS.includes(dest)) it('the dispatch, the note, settle and finish-verb run in that order on $ACTIVE; each write stops the block when it fails (PC2b DD6/DD7)', () => {
               const run = shellSites(text, /peer-runner\.mjs" run \\/);
-              const finalize = blockWith(/state\.mjs" set-terminal \\/);
+              const finalize = blockWith(/peer-runner\.mjs" settle \\/);
               const code = logical(finalize.text);
               const at = (re) => { const m = re.exec(code); ok(m, `${key}: ${re}`); return m.index; };
+              const repo = at(/^REPO_ROOT="\$\(git rev-parse --show-toplevel\)" \|\| exit 1$/m);
               const note = at(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" append --workflow-path "\$ACTIVE" [^\n]*--phase-note "\$NOTE" [^\n]*--event updated \|\| exit \$\?$/m);
-              const commit = at(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" ensemble-commit --workflow-path "\$ACTIVE" [^\n]*--completed-at "\$\(date -u \+%Y-%m-%dT%H:%M:%SZ\)"$/m);
-              const terminal = at(/^node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" set-terminal --workflow-path "\$ACTIVE" [^\n]*--terminal-marker true [^\n]*--event updated$/m);
+              const settle = at(new RegExp(`^node "\\$CLAUDE_PLUGIN_ROOT/scripts/peer-runner\\.mjs" settle --repo-root "\\$REPO_ROOT" --workflow-path "\\$ACTIVE" --host "\\$\\{AGENTIC_HOST:-claude\\}" --phase '${verb}' --run-id "\\$RUN_ID" --verdict "\\$VERDICT" --summary "\\$SUMMARY" \\|\\| exit \\$\\?$`, 'm'));
+              // Indented inside the convergence check in the convergent variant.
+              const terminal = at(/^[ \t]*node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb --workflow-path "\$ACTIVE" [^\n]*--next-step-kind verb --next-step-verb '[a-z]+' --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \|\| exit \$\?$/m);
               strictEqual(run.length, 1, 'one dispatch');
               ok(run[0] < shellSites(text, /^IFS= read -r -d '' NOTE/m)[0], 'the dispatch precedes the finalize block');
-              ok(note < commit && commit < terminal, 'append, ensemble-commit, set-terminal in that order');
+              ok(repo < note && note < settle && settle < terminal, 'REPO_ROOT, append, settle, finish-verb in that order');
+              strictEqual(shellSites(text, /state\.mjs" (set-terminal|ensemble-commit)\b/).length, 0, 'no set-terminal or ensemble-commit runs beside them');
+              // The owner-decision form, commented under the typical finish.
+              ok(/\n# node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\\n#   --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \\\n#   --next-action '<Owner: the judgment, in a few words>' \\\n#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n```$/.test(finalize.text + '\n```'), 'the commented owner-decision form ends the block');
+              // The gates the prose names for this verb, with their anchors.
+              const gates = squash(text.slice(text.indexOf('The last write, `finish-verb`'), text.indexOf(finalize.text)));
+              ok(gates.includes('- `scope-routing` (heading `### Routing recommendation`, anchor `routing-recommendation`)'), gates);
+              strictEqual(gates.includes('- `decide-conflict` (the `Ensemble synthesis` heading, anchor `ensemble-synthesis`)'), verb === 'decide', 'decide-conflict exactly in decide');
+              strictEqual(gates.includes('- `recurring-finding` (heading `### Recurring finding`, anchor `recurring-finding`)'), verb === 'refine', 'recurring-finding exactly in refine');
+            });
+
+            if (VERB_DESTS.includes(dest)) it('the finalize, run: a settle refusal stops the block before finish-verb, with its status (PC2b DD6)', () => {
+              const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
+              const passed = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='agreed'; SUMMARY='s'\n${block}`, persona, { note: 'n' });
+              strictEqual(passed.status, 0, passed.stderr);
+              deepStrictEqual(passed.log, ['append', 'settle', 'finish-verb']);
+              ok(passed.argv[1].includes(' --run-id r --verdict agreed --summary s'), passed.argv[1]);
+              ok(passed.argv.every((a) => a.includes(' --workflow-path /w/active.md ')), 'every call targets $ACTIVE');
+              const refused = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID=''\n${block}`, persona, { note: 'n', settleStatus: 1 });
+              deepStrictEqual([refused.status, refused.log], [1, ['append', 'settle']], 'no finish-verb after a refused settle');
             });
 
             it('identity: persona, verb, phase, ensemble type and run-id prefix are the expected ones (the T0 map, not the manifest)', () => {
@@ -566,17 +738,24 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const create = one('state.mjs', 'create');
               strictEqual(create.get('--persona'), persona);
               strictEqual(create.get('--verb'), verb);
-              for (const [call, expected] of [[one('peer-runner.mjs', 'run'), type], [one('state.mjs', 'ensemble-commit'), FIXTURE.expected_commit_ensemble_types?.[persona]?.[verb] ?? type]]) {
+              // PC2b DD6: a settled finalize names only the phase; settle reads
+              // the type from the run ledger.
+              const settled = got.calls.some((c) => c.script === 'peer-runner.mjs' && c.sub === 'settle');
+              const pairs = settled
+                ? [[one('peer-runner.mjs', 'run'), type]]
+                : [[one('peer-runner.mjs', 'run'), type], [one('state.mjs', 'ensemble-commit'), FIXTURE.expected_commit_ensemble_types?.[persona]?.[verb] ?? type]];
+              for (const [call, expected] of pairs) {
                 strictEqual(call.get('--phase'), verb);
                 strictEqual(call.get('--ensemble-type'), expected);
               }
+              if (settled) strictEqual(one('peer-runner.mjs', 'settle').get('--phase'), verb);
               deepStrictEqual(got.run_id_prefixes, [type]);
               deepStrictEqual(got.mktemp_templates, [`${persona}-${verb}-prompt.XXXXXX`]);
             });
 
             if (VERB_DESTS.includes(dest)) it('the phase note: the scaffold right above the finalize block is the recorded one, read from a quoted heredoc and passed as "$NOTE" (PD2)', () => {
               strictEqual(characterize(text).note, expectedFor(key).note);
-              const finalize = blockWith(/state\.mjs" set-terminal \\/);
+              const finalize = blockWith(/peer-runner\.mjs" settle \\/);
               const lines = finalize.text.split('\n');
               const reader = lines.indexOf(NOTE_READER);
               ok(reader > 0, 'the block reads NOTE from a quoted heredoc');
@@ -660,24 +839,67 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               });
             }
 
-            if (AUTHORED_FINALIZE_DESTS.includes(dest)) {
-              it('the authored finalize follows the finalize heading region and every extension, and writes on $ACTIVE: the note, ensemble-commit, the terminal write (QD7, QD8)', () => {
+            // QD5, RV14: founder critique's dispatch is generated; the agent sets
+            // its type by profile in the block, and settle reads it from the ledger.
+            if (persona === 'founder' && verb === 'critique') it('founder critique, instantiated per profile: red-team dispatches adversarial-scan; default, unknown and missing review; settle names the same run (QD5, RV14)', () => {
+              const dispatch = blockWith(/peer-runner\.mjs" run \\/).text;
+              const finalize = blockWith(/peer-runner\.mjs" settle \\/).text;
+              const TYPE_LINE = /^ENSEMBLE_TYPE='review'$/m;
+              ok(TYPE_LINE.test(dispatch), 'the block assigns review, the default profile\'s type');
+              ok(/^ {2}--ensemble-type "\$ENSEMBLE_TYPE" --run-id "\$RUN_ID" \\$/m.test(dispatch), 'the dispatch names the type the block assigned, once');
+              strictEqual(sentenceAt(text, "for `--profile=red-team`, set `ENSEMBLE_TYPE='adversarial-scan'` in it before running it, and build the prompt from §Adversarial-scan.").length, 1, 'the prose says when to change it');
+              strictEqual(sentenceAt(text, 'Missing profile → default. Unknown profile → fallback to default with a one-line warning.').length, 1, 'the fallback sentence');
+              for (const [profile, expected] of [['default', 'review'], ['red-team', 'adversarial-scan'], ['unknown', 'review'], ['missing', 'review']]) {
+                const script = profile === 'red-team' ? dispatch.replace(TYPE_LINE, "ENSEMBLE_TYPE='adversarial-scan'") : dispatch;
+                const sent = runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
+                strictEqual(sent.status, 0, sent.stderr);
+                ok(sent.argv.length === 1 && sent.argv[0].includes(` --ensemble-type ${expected} `), `${profile}: the dispatch names ${expected}`);
+                ok(sent.out.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}`);
+                const done = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='${sent.out}'; VERDICT='sound'; SUMMARY='s'\n${finalize}`, persona, { note: 'n' });
+                ok(done.argv.find((a) => / settle /.test(a)).includes(` --phase critique --run-id ${sent.out} `), `${profile}: settle names the run the dispatch started`);
+              }
+            });
+
+            if (verb === 'decide') it('Owner selection, run: it finds the workflow, clears decide-conflict with the resolution and the next step, then finishes the verb; a failed find or clear, or no workflow, stops the block (PC2b DD7)', () => {
+              const block = blockWith(/state\.mjs" awaiting-owner-clear \\/).text;
+              ok(text.indexOf(block) > text.indexOf('<!-- pipeline:end decide-finalize -->'), 'after Phase 2, whose owner-decision form records the gate');
+              const CHAIN = { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}' };
+              const r = runBlock('bash', block, persona, CHAIN);
+              strictEqual(r.status, 0, r.stderr);
+              deepStrictEqual(r.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
+              for (const part of [' --workflow-path /w/active.md ', ' --gate decide-conflict ', ' --resolution <Owner selection: the direction the owner chose, and why> ', ' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH']) ok(r.argv[2].includes(part), `${part}: ${r.argv[2]}`);
+              ok(r.argv[3].includes(' --workflow-path /w/active.md ') && r.argv[3].includes(' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH'), r.argv[3]);
+              // Review of code step 6: a resolution with a quote reaches state.mjs whole.
+              const quoted = runBlock('bash', block.replace('<Owner selection: the direction the owner chose, and why>', "keep the team's \"existing\" `nav` $HOME"), persona, CHAIN);
+              strictEqual(quoted.status, 0, quoted.stderr);
+              ok(quoted.argv[2].includes(" --resolution keep the team's \"existing\" `nav` $HOME "), quoted.argv[2]);
+              // A gate met inside a start lifecycle: cleared, and the lifecycle resumes; no verb terminal write.
+              const lifecycle = runBlock('bash', block, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              deepStrictEqual([lifecycle.status, lifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: no finish-verb');
+              ok(lifecycle.stderr.includes(`Resume the lifecycle with /${persona}:start`), lifecycle.stderr);
+              const unread = runBlock('bash', block, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
+              deepStrictEqual([unread.status, unread.log], [1, ['find-active', 'read']], 'an unreadable type stops the block before any write');
+              const failed = runBlock('bash', block, persona, { ...CHAIN, clearStatus: 3 });
+              deepStrictEqual([failed.status, failed.log], [3, ['find-active', 'read', 'awaiting-owner-clear']], 'a refused clear stops the block');
+              const none = runBlock('bash', block, persona, { active: '' });
+              deepStrictEqual([none.status, none.log], [1, ['find-active']], 'no workflow: nothing written');
+              ok(none.stderr.includes(`✗ No active ${persona} workflow on this branch.`), none.stderr);
+              const lost = runBlock('bash', block, persona, { active: '/w/active.md', findStatus: 4 });
+              deepStrictEqual([lost.status, lost.log], [4, ['find-active']], 'a failed find stops the block with its status');
+            });
+
+            if (HEADING_DESTS.includes(dest)) {
+              it('the finalize follows the finalize heading region and every extension; the synthesis instruction sits between the dispatch and the heading (QD7, QD8)', () => {
                 const lines = text.split('\n');
                 const heading = lines.indexOf(`<!-- pipeline:end ${verb}-finalize-heading -->`);
                 ok(heading > 0, 'the finalize heading region');
-                const finalize = blockWith(/state\.mjs" set-terminal \\/);
+                const finalize = blockWith(/peer-runner\.mjs" settle \\/);
                 ok(finalize.start > heading, 'the terminal block follows the heading region');
                 const exts = extensionTexts(text);
                 for (const ext of exts) ok(ext.line < heading, `extension ${ext.id} precedes the finalize heading`);
                 const slots = MANIFEST.extension_points.filter((e) => e.dest === dest && e.personas.includes(persona)).map((e) => e.id);
                 deepStrictEqual(exts.map((e) => e.id).sort(), [...slots].sort(), 'one marker per slot this persona owns');
-                const code = logical(finalize.text);
-                const at = (re) => { const m = re.exec(code); ok(m, `${key}: ${re}`); return m.index; };
-                const note = at(/node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" append --workflow-path "\$ACTIVE" [^\n]*--phase-note "\$NOTE" /);
-                const commit = at(/node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" ensemble-commit --workflow-path "\$ACTIVE" /);
-                const terminal = at(/node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" set-terminal --workflow-path "\$ACTIVE" [^\n]*--terminal-marker true /);
-                ok(note < commit && commit < terminal, 'append, ensemble-commit, set-terminal in that order');
-                ok(shellSites(text, /peer-runner\.mjs" run \\/)[0] < shellSites(text, /state\.mjs" set-terminal \\/)[0], 'the dispatch precedes the finalize block');
+                ok(shellSites(text, /peer-runner\.mjs" run \\/)[0] < shellSites(text, /peer-runner\.mjs" settle \\/)[0], 'the dispatch precedes the finalize block');
                 // The agent collects and synthesizes the peer result between the
                 // dispatch and the finalize (the note records the synthesis).
                 const synth = sentenceAt(text, 'Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT');
@@ -693,83 +915,110 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                   for (const sentence of EXTENSION_ANCHORS[ext.id]) strictEqual(sentenceAt(ext.text, sentence).length, 1, `${ext.id}: ${sentence}`);
                 }
               });
-
-              // DD5 and D2, run: the variables the agent sets are substituted
-              // the way it sets them, one case per combination.
-              it('the authored finalize, run: designer records an ensemble only when it launched and closes only when converged (fail-closed); founder always does both', () => {
-                const block = blockWith(/state\.mjs" set-terminal \\/).text;
-                const CONVERGED_LINE = /^CONVERGED="[^"\n]*"$/m;
-                const convergent = persona === 'designer' && verb === 'refine';
-                strictEqual(CONVERGED_LINE.test(block), convergent, 'the block assigns CONVERGED exactly where it waits for convergence');
-                // The assignment is a placeholder the agent fills from the
-                // re-critique, never a value: run untouched, the block pauses.
-                if (convergent) strictEqual(CONVERGED_LINE.exec(block)[0], 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"', 'the convergence placeholder');
-                const type = FIXTURE.expected_ensemble_types[persona][verb];
-                const run = ({ launched, converged }) => {
-                  let script = block;
-                  // converged null: the block as committed, its placeholder untouched.
-                  if (convergent && converged !== null) script = script.replace(CONVERGED_LINE, () => (converged === undefined ? '' : `CONVERGED='${converged}'`));
-                  const vars = launched ? `RUN_ID='${type}-x'; VERDICT='resolved'; SUMMARY='s'; ENSEMBLE_TYPE='${type}'; ` : 'unset RUN_ID VERDICT SUMMARY ENSEMBLE_TYPE; ';
-                  return runBlock('bash', `ACTIVE='/w/active.md'; ${vars}\n${script}`, persona, {});
-                };
-                const cases = !convergent && persona === 'designer'
-                  ? [
-                    [{ launched: true }, ['append', 'ensemble-commit', 'set-terminal']],
-                    [{ launched: false }, ['append', 'set-terminal']],
-                  ]
-                  : convergent
-                  ? [
-                    [{ launched: true, converged: 'yes' }, ['append', 'ensemble-commit', 'set-terminal']],
-                    [{ launched: true, converged: 'no' }, ['append', 'ensemble-commit']],
-                    [{ launched: false, converged: 'yes' }, ['append', 'set-terminal']],
-                    [{ launched: false, converged: 'no' }, ['append']],
-                    [{ launched: true, converged: undefined }, ['append', 'ensemble-commit']],
-                    [{ launched: true, converged: '<yes|no>' }, ['append', 'ensemble-commit']],
-                    [{ launched: true, converged: null }, ['append', 'ensemble-commit']],
-                  ]
-                  : [[{ launched: true }, ['append', 'ensemble-commit', 'set-terminal']]];
-                for (const [opts, expected] of cases) {
-                  const r = run(opts);
-                  strictEqual(r.status, 0, `${JSON.stringify(opts)}: ${r.stderr}`);
-                  deepStrictEqual(r.log, expected, JSON.stringify(opts));
-                  ok(r.argv.every((a) => a.includes(' --workflow-path /w/active.md ')), `${JSON.stringify(opts)}: every write targets $ACTIVE`);
-                  if (expected.includes('set-terminal')) ok(r.argv.at(-1).includes(' --terminal-marker true '), 'the terminal write marks the workflow');
-                  else if (persona === 'designer') ok(/PAUSED/.test(r.stderr), `${JSON.stringify(opts)}: the pause is reported`);
-                  if (expected.includes('ensemble-commit')) ok(r.argv.find((a) => / ensemble-commit /.test(a)).includes(` --ensemble-type ${type} `), 'the type the dispatch named');
-                }
-              });
-
-              // QD5: founder critique's dispatch takes its type from the
-              // profile, as the agent sets it in the block; stays authored.
-              if (persona === 'founder' && verb === 'critique') {
-                it('founder critique, instantiated per profile: red-team dispatches and commits adversarial-scan; default, unknown and missing review (QD5)', () => {
-                  const dispatch = blockWith(/peer-runner\.mjs" run \\/).text;
-                  const finalize = blockWith(/state\.mjs" set-terminal \\/).text;
-                  const TYPE_LINE = /^ENSEMBLE_TYPE="review" {3}# ← CHANGE to "adversarial-scan" for --profile=red-team$/m;
-                  ok(TYPE_LINE.test(dispatch), 'the block assigns review and says when to change it');
-                  ok(/^#   default profile {4}→ review /m.test(dispatch) && /^#   --profile=red-team → adversarial-scan /m.test(dispatch), 'the mapping comment');
-                  strictEqual(sentenceAt(text, 'Missing profile → default. Unknown profile → fallback to default with a one-line warning.').length, 1, 'the fallback sentence');
-                  for (const [profile, expected] of [['default', 'review'], ['red-team', 'adversarial-scan'], ['unknown', 'review'], ['missing', 'review']]) {
-                    // The agent changes the line for red-team only; the block
-                    // runs in the foreground here (its trailing & dropped).
-                    const script = (profile === 'red-team' ? dispatch.replace(TYPE_LINE, 'ENSEMBLE_TYPE="adversarial-scan"') : dispatch).replace(/ &$/m, '');
-                    const sent = runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
-                    strictEqual(sent.status, 0, sent.stderr);
-                    ok(sent.argv.length === 1 && sent.argv[0].includes(` --ensemble-type ${expected} `), `${profile}: the dispatch names ${expected}`);
-                    ok(sent.out.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}`);
-                    const done = runBlock('bash', `ACTIVE='/w/active.md'; ENSEMBLE_TYPE='${expected}'; RUN_ID='${sent.out}'; VERDICT='sound'; SUMMARY='s'\n${finalize}`, persona, {});
-                    ok(done.argv.find((a) => / ensemble-commit /.test(a)).includes(` --ensemble-type ${expected} --run-id ${sent.out} `), `${profile}: ensemble-commit records ${expected} under the same run id`);
-                  }
-                });
-              }
             }
+
+            // DD5, PC2b U5b, run: a persona that declares refine convergent
+            // closes it only once converged (fail-closed); otherwise the last
+            // write records the next step, turns an inherited terminal marker
+            // off and closes nothing. The other persona always closes.
+            if (verb === 'refine') it('refine finalize, run: closes only once converged where the persona waits for it (fail-closed), otherwise records the next step without a terminal write and turns an inherited marker off (PC2b U5b, DD5)', () => {
+              const block = blockWith(/peer-runner\.mjs" settle \\/).text;
+              const waits = convergent(persona, verb);
+              strictEqual(CONVERGED_LINE.test(block), waits, 'the block assigns CONVERGED exactly where the persona waits for convergence');
+              // A placeholder the agent fills from the re-critique, never a
+              // value: run untouched, the block pauses.
+              if (waits) strictEqual(CONVERGED_LINE.exec(block)[0], 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"', 'the convergence placeholder');
+              const cases = waits
+                ? [['yes', 'finish-verb'], ['no', 'append'], [UNSET, 'append'], ['<yes|no>', 'append'], [null, 'append']]
+                : [[null, 'finish-verb']];
+              for (const [value, last] of cases) {
+                const script = value === null ? block : converged(block, persona, verb, value);
+                const r = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'; VERDICT='resolved'; SUMMARY='s'\n${script}`, persona, { note: 'n' });
+                const label = `CONVERGED ${value === null ? 'as committed' : value === UNSET ? 'unset' : JSON.stringify(value)}`;
+                strictEqual(r.status, 0, `${label}: ${r.stderr}`);
+                deepStrictEqual(r.log, ['append', 'settle', last], label);
+                ok(r.argv.every((a) => a.includes(' --workflow-path /w/active.md ')), `${label}: every write targets $ACTIVE`);
+                if (last === 'finish-verb') {
+                  ok(r.argv[2].includes(' --next-step-kind verb --next-step-verb critique '), `${label}: ${r.argv[2]}`);
+                } else {
+                  for (const part of [' --current-phase phase-2-presented ', ' --next-step-kind verb --next-step-verb <refine|decide|investigate> ', ' --clear-terminal-marker true ', ' --event updated']) ok(r.argv[2].includes(part), `${label}: ${part}: ${r.argv[2]}`);
+                  ok(!r.argv[2].includes(' --phase-note '), `${label}: the paused write adds no second note`);
+                  ok(/PAUSED/.test(r.stderr), `${label}: the pause is reported`);
+                }
+              }
+              // A refused settle stops the block before either last write.
+              const refused = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='r'\n${converged(block, persona, verb, 'no')}`, persona, { note: 'n', settleStatus: 1 });
+              deepStrictEqual([refused.status, refused.log], [1, ['append', 'settle']], 'no write after a refused settle');
+            });
+
+            if (verb === 'refine') it('Owner decision, run: fix now clears recurring-finding with this refine next; defer clears it with commit next, then finishes the verb, where the persona waits for convergence only once converged (fail-closed); a failed find or clear, or no workflow, stops each block (PC2b U5b)', () => {
+              const found = blocks.filter((b) => /state\.mjs" awaiting-owner-clear \\/.test(b.text)).map((b) => b.text);
+              strictEqual(found.length, 2, 'fix now and defer');
+              const [fix, deferAsCommitted] = found;
+              const waits = convergent(persona, verb);
+              strictEqual(CONVERGED_LINE.test(deferAsCommitted), waits, 'the defer block assigns CONVERGED exactly where the persona waits for convergence');
+              // The shared cases run the deferral converged; the persona that
+              // waits for convergence is run unconverged below.
+              const defer = converged(deferAsCommitted, persona, verb);
+              const finalizeEnd = `<!-- pipeline:end ${waits ? 'refine-finalize-convergent' : 'refine-finalize'} -->`;
+              ok(text.indexOf(fix) > text.indexOf(finalizeEnd) && text.indexOf(finalizeEnd) > 0, 'after Phase 2, whose owner-decision form records the gate');
+              const f = runBlock('bash', fix, persona, { active: '/w/active.md' });
+              strictEqual(f.status, 0, f.stderr);
+              deepStrictEqual(f.log, ['find-active', 'awaiting-owner-clear']);
+              for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ' --resolution <Owner decision: fix the finding now> ', ' --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH']) ok(f.argv[1].includes(part), `${part}: ${f.argv[1]}`);
+              const CHAIN = { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}' };
+              const d = runBlock('bash', defer, persona, CHAIN);
+              strictEqual(d.status, 0, d.stderr);
+              deepStrictEqual(d.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
+              for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ' --next-step-kind commit --next-step-confidence HIGH']) ok(d.argv[2].includes(part), `${part}: ${d.argv[2]}`);
+              ok(d.argv[3].includes(' --workflow-path /w/active.md ') && d.argv[3].includes(' --next-step-kind commit --next-step-confidence HIGH'), d.argv[3]);
+              // Review of code step 6: inside a start lifecycle the deferral is cleared and the lifecycle resumes.
+              const lifecycle = runBlock('bash', defer, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              deepStrictEqual([lifecycle.status, lifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: no finish-verb');
+              const unread = runBlock('bash', defer, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
+              deepStrictEqual([unread.status, unread.log], [1, ['find-active', 'read']], 'an unreadable type stops the block before any write');
+              // Review of code step 6 (finding 3): deferring a finding does not
+              // make a refine converge. Where the persona waits for convergence,
+              // anything but CONVERGED=yes clears the gate with the next step
+              // that resolves what is open, and makes no terminal write, inside
+              // a start lifecycle too.
+              if (waits) {
+                strictEqual(CONVERGED_LINE.exec(deferAsCommitted)[0], 'CONVERGED="<yes|no — from the re-critique verdict with the finding deferred; unset means no>"', 'the convergence placeholder');
+                for (const value of ['no', UNSET, '<yes|no>', null]) {
+                  const label = `CONVERGED ${value === null ? 'as committed' : value === UNSET ? 'unset' : JSON.stringify(value)}`;
+                  const script = value === null ? deferAsCommitted : converged(deferAsCommitted, persona, verb, value);
+                  for (const type of ['verb-chain', 'start']) {
+                    const paused = runBlock('bash', script, persona, { ...CHAIN, readOutput: `{"workflow_type":"${type}"}` });
+                    strictEqual(paused.status, 0, `${label}, ${type}: ${paused.stderr}`);
+                    deepStrictEqual(paused.log, ['find-active', 'read', 'awaiting-owner-clear'], `${label}, ${type}: no terminal write`);
+                    for (const part of [' --gate recurring-finding ', ' --next-step-kind verb --next-step-verb <refine|decide|investigate> --next-step-confidence <HIGH|MEDIUM|LOW>']) ok(paused.argv[2].includes(part), `${label}, ${type}: ${part}: ${paused.argv[2]}`);
+                    ok(/PAUSED \(not converged\)/.test(paused.stderr), `${label}, ${type}: the pause is reported`);
+                  }
+                }
+                const refusedPause = runBlock('bash', converged(deferAsCommitted, persona, verb, 'no'), persona, { ...CHAIN, clearStatus: 3 });
+                deepStrictEqual([refusedPause.status, refusedPause.log], [3, ['find-active', 'read', 'awaiting-owner-clear']], 'unconverged: a refused clear stops the block');
+                ok(!/PAUSED/.test(refusedPause.stderr), 'no pause is reported for a clear that did not happen');
+              }
+              const quoted = runBlock('bash', fix.replace('<Owner decision: fix the finding now>', "fix it: the team's call"), persona, CHAIN);
+              strictEqual(quoted.status, 0, quoted.stderr);
+              ok(quoted.argv[1].includes(" --resolution fix it: the team's call "), quoted.argv[1]);
+              for (const [name, block, ran] of [['fix now', fix, ['find-active', 'awaiting-owner-clear']], ['defer', defer, ['find-active', 'read', 'awaiting-owner-clear']]]) {
+                const failed = runBlock('bash', block, persona, { ...CHAIN, clearStatus: 3 });
+                deepStrictEqual([failed.status, failed.log], [3, ran], `${name}: a refused clear stops the block`);
+                const none = runBlock('bash', block, persona, { active: '' });
+                deepStrictEqual([none.status, none.log], [1, ['find-active']], `${name}: no workflow, nothing written`);
+                ok(none.stderr.includes(`✗ No active ${persona} workflow on this branch.`), none.stderr);
+                const lost = runBlock('bash', block, persona, { active: '/w/active.md', findStatus: 4 });
+                deepStrictEqual([lost.status, lost.log], [4, ['find-active']], `${name}: a failed find stops the block with its status`);
+              }
+            });
 
             if (VERB_DESTS.includes(dest)) for (const shell of SHELLS) {
               const finalizeCase = readsDelimited(shell)
-                ? `${shell}: the finalize block hands a hostile note to state.mjs byte for byte (plus the heredoc's final newline), and a failed append stops it before ensemble-commit and the terminal write`
+                ? `${shell}: the finalize block hands a hostile note to state.mjs byte for byte (plus the heredoc's final newline), and a failed append stops it before settle and finish-verb`
                 : `${shell}: a shell whose read has no -d stops the finalize block before any write`;
               it(finalizeCase, () => {
-                const block = blockWith(/state\.mjs" set-terminal \\/).text;
+                const block = converged(blockWith(/peer-runner\.mjs" settle \\/).text, persona, verb);
                 if (!readsDelimited(shell)) {
                   // A NOTE the shell inherited must not stand in for the one
                   // its read could not take (Codex review of PC2a2c).
@@ -782,7 +1031,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 }
                 const ok_ = runBlock(shell, block, persona, { note: HOSTILE_NOTE });
                 strictEqual(ok_.status, 0, ok_.stderr);
-                deepStrictEqual(ok_.log, ['append', 'ensemble-commit', 'set-terminal']);
+                deepStrictEqual(ok_.log, ['append', 'settle', 'finish-verb']);
                 strictEqual(ok_.note, `${HOSTILE_NOTE}\n`, 'the note reached state.mjs unread by the shell');
                 const inherited = runBlock(shell, block, persona, { note: HOSTILE_NOTE, inheritedNote: 'a stale note' });
                 strictEqual(inherited.note, `${HOSTILE_NOTE}\n`, 'the note read, not one the shell inherited');

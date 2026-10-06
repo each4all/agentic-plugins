@@ -26,6 +26,7 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   parseRegions,
@@ -294,6 +295,28 @@ export function checkCitations(persona, docs) {
   return { failures, loose, counted, sections };
 }
 
+/**
+ * What a persona's own state.mjs holds about next steps and owner gates (PC2b
+ * DD8): the documents are checked against the code that refuses or records,
+ * never against a list restated here. Run with AGENTIC_* scrubbed, so the
+ * caller's environment cannot change the answer.
+ */
+function stateFacts(persona) {
+  const url = pathToFileURL(join(pluginRoot(persona), 'scripts/state.mjs')).href;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_') && !k.startsWith('NODE_TEST')));
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e',
+    `const m = await import(${JSON.stringify(url)}); process.stdout.write(JSON.stringify({ settable: [...m.settableOwnerGates()].sort(), all: [...m.VALID_WORKFLOW_OWNER_GATES].sort(), kinds: [...m.VALID_NEXT_STEP_KINDS].sort() }));`,
+  ], { encoding: 'utf8', env });
+  return JSON.parse(out);
+}
+
+/** The first-column code cells of a Markdown table's rows (header and rule excluded). */
+const tableColumn = (text, col) => [...text.matchAll(/^\|(.*)\|[ \t]*$/gm)]
+  .map((m) => m[1].split('|').map((c) => c.trim()))
+  .filter((cells) => !cells.every((c) => /^-+$/.test(c)))
+  .map((cells) => /^`([^`]+)`$/.exec(cells[col] ?? '')?.[1])
+  .filter(Boolean);
+
 /** A region's body by id; fails when the document does not hold it once. */
 function region(text, id) {
   const found = parseRegions(text).regions.filter((r) => r.id === id);
@@ -343,7 +366,9 @@ for (const persona of PERSONAS) {
 
       it(`${label}: the capability text agrees with the declaration`, () => {
         const contract = docs.get(CONTRACT);
-        const allowed = caps.commit_surface ? ['verb', 'commit', 'owner decision', 'done'] : ['verb', 'owner decision'];
+        // PC2b DD7: the closed next-step kinds finish-verb records, whatever
+        // commit_surface says; off, `commit` means the owner publishes.
+        const allowed = ['verb', 'commit', 'owner decision', 'done'];
         let blocks = 0;
         for (const [rel, text] of docs) {
           for (const m of text.matchAll(/^[ \t]*- selected_next:[ \t]*(.*)$/gm)) {
@@ -365,7 +390,8 @@ for (const persona of PERSONAS) {
         } else {
           deepStrictEqual(commitMentions, [CONTRACT], `only the contract may name /${persona}:commit, to say there is none`);
           ok(squash(proposal).includes(`There is no \`/${persona}:commit\`.`), 'the proposal says there is no commit command');
-          ok(!/`commit`/.test(proposal), 'the proposal offers no `commit` next step');
+          ok(squash(proposal).includes(`A ${persona} workflow has no commit command: \`commit\` means the owner saves, commits or publishes`), 'the proposal says what `commit` means without a commit command');
+          ok(squash(proposal).includes("for `commit`, the owner's save and commit, which nothing here runs; for `done`, none;"), 'the next command each closed kind takes');
           ok(startRow.includes('to its saved artifact'), startRow);
         }
         const orchestratorRow = squash(region(contract, 'routing-routes')).match(/\| `orchestrator:plan` \|[^|]*\|/)?.[0] ?? '';
@@ -376,6 +402,70 @@ for (const persona of PERSONAS) {
         }
       });
 
+
+      it(`${label}: the owner-gates and next-step tables agree with this persona's state.mjs (PC2b DD8)`, () => {
+        const facts = stateFacts(persona);
+        const contract = docs.get(CONTRACT);
+        const gates = squash(region(contract, 'routing-owner-gates'));
+        const gateRows = tableColumn(region(contract, 'routing-owner-gates'), 0).filter((c) => c !== 'gate');
+        ok(facts.settable.length >= 3, `${persona}: only ${facts.settable.length} settable gates read from state.mjs`);
+        deepStrictEqual([...gateRows].sort(), facts.settable, 'the table lists exactly the gates this persona can set');
+        for (const gate of facts.all.filter((g) => !facts.settable.includes(g))) {
+          ok(new RegExp(`\`${gate}\` belongs to [^.]*, so \`state\\.mjs\` refuses to set it, naming the capability`).test(gates), `the contract says ${gate} is refused here`);
+        }
+        ok(gates.includes('Reading a workflow file, `state.mjs` accepts all five gate names'), 'readers accept every gate name');
+        strictEqual(facts.all.length, 5);
+        const kindRows = tableColumn(region(contract, 'routing-proposal'), 1).filter((c) => c !== 'next_step_kind');
+        deepStrictEqual([...kindRows].sort(), facts.kinds, 'the closed-enum table maps onto exactly the kinds finish-verb accepts');
+      });
+
+      it(`${label}: the skills and the handoff name finish-verb as the terminal write (PC2b DD8)`, () => {
+        const vocabulary = ['verb', 'commit', 'done', 'owner decision'];
+        const verbs = ['compose', 'frame', 'decide', 'critique', 'refine', 'investigate', 'start'];
+        for (const verb of verbs) {
+          const rel = `core/skills/${verb}/SKILL.md`;
+          const text = docs.get(rel);
+          ok(text, rel);
+          ok(/\bfinish-verb\b/.test(text), `${rel}: names finish-verb`);
+          // set-terminal survives only as the marker-clearing escape.
+          for (const m of text.matchAll(/set-terminal(.{0,20})/gs)) {
+            ok(m[1].startsWith("'s full flag set"), `${rel}: names set-terminal outside the clearing escape: "${squash(m[0])}"`);
+          }
+          for (const m of text.matchAll(/^[ \t]*- selected_next:[ \t]*<([^>\n]+)>/gm)) {
+            deepStrictEqual(m[1].split('|').map((s) => s.trim()), vocabulary, `${rel}: the proposal offers the runbook's closed vocabulary`);
+          }
+        }
+        const owned = { decide: 'decide-conflict', refine: 'recurring-finding' };
+        for (const [verb, gate] of Object.entries(owned)) {
+          const text = squash(docs.get(`core/skills/${verb}/SKILL.md`));
+          ok(text.includes(`ends with the \`${gate}\` owner gate instead of a terminal write`), `${verb}: names its gate`);
+          ok(text.includes('`../_shared/references/entry-routing-contract.md` § Owner gates'), `${verb}: cites the gate table`);
+        }
+        const wiring = squash(region(docs.get(HANDOFF), 'handoff-wiring'));
+        ok(wiring.includes('the terminal mutation (`state.mjs finish-verb`, the production completion entry point'), 'the handoff names finish-verb as the entry point');
+        ok(wiring.includes('no active children, no owner gate pending'), 'the archive gates include gate 5');
+        ok(wiring.includes('A `finish-verb` that records an owner gate is not a terminal write and emits nothing'), 'a gated finish-verb emits no footer');
+        ok(squash(region(docs.get(HANDOFF), 'handoff-recipe')).includes('runs the same `finish-verb` CLI'), 'the Codex parity names finish-verb');
+        ok(squash(docs.get(CONTRACT)).includes('write (`state.mjs finish-verb`) fires the handoff sidecar'), 'the preflight wiring names finish-verb');
+        let skips = 0;
+        for (const [rel, text] of docs) {
+          if (!rel.startsWith('commands/')) continue;
+          ok(!/companion unavailable/.test(text), `${rel}: a missing companion is a launched run, never a skip`);
+          for (const m of text.matchAll(/### Ensemble skipped: [a-z-]+(?: \(profile=<profile>\))? \(([^)\n]*)\)`/g)) {
+            skips += 1;
+            strictEqual(m[1], 'privacy gate', `${rel}: the skip heading names the one reason no run launches`);
+          }
+        }
+        ok(skips >= 6, `${persona}: only ${skips} skip headings found`);
+        // Review of code step 6 (finding 7): settle cannot tell an answer of
+        // structural shell from a real one, so every finalize that settles
+        // tells the agent to pass degraded for it.
+        const settling = [...docs].filter(([rel, text]) => rel.startsWith('commands/') && /peer-runner\.mjs" settle \\/.test(text));
+        strictEqual(settling.length, 6, `${persona}: the six verb runbooks settle`);
+        for (const [rel, text] of settling) {
+          ok(squash(text).includes('An answer that parses to nothing usable, only structural shell, reads to `settle` like any other, so set `VERDICT` to `degraded` then.'), `${rel}: a structurally empty answer settles degraded`);
+        }
+      });
 
       it(`${label}: the presentation protocol ships whole, with the decision item as its unit (RV3)`, () => {
         const protocol = docs.get(PROTOCOL);
@@ -602,7 +692,7 @@ for (const persona of PERSONAS) {
         // ensemble type.
         const run = docs.get('commands/investigate.md');
         ok(run.includes('scripts/peer-runner.mjs" run') && run.includes('> "$PROMPT_FILE.run.json"'), 'the investigate runbook dispatches through the runner and keeps its JSON result');
-        ok(run.includes(`--ensemble-type '${decl.verbs.investigate.ensemble_type}'`), 'under the declared ensemble type');
+        ok(run.includes(`ENSEMBLE_TYPE='${decl.verbs.investigate.ensemble_type}'\n`) && run.includes('--ensemble-type "$ENSEMBLE_TYPE" --run-id'), 'under the declared ensemble type');
       });
 
       it(`${label}: the brief recovery inspects the run before a retry, in the runner's terms (RV11)`, () => {
@@ -615,8 +705,11 @@ for (const persona of PERSONAS) {
         for (const branch of ['- `live: true` — the companion is still running', '- `derived_status: completed_uncommitted` — the companion finished', 'read `paths.envelope` as Step 2 item 3 reads `envelope_path`', 'with no new dispatch']) {
           ok(state.indexOf(branch) > inspect && state.indexOf(branch) < retry, `the inspection branches: ${branch}`);
         }
-        ok(state.includes('settle it with a verdict that says the run was abandoned'), 'the old pending entry is settled');
-        for (const retired of [/idempotent on `run_id`/, /reuses? the (previous|same) run id/i, /sees both the in-flight phase note/, /at each protocol step/]) {
+        // PC2b RV5: the old attempt is settled from its ledger, never with a
+        // verdict the agent picks.
+        ok(state.includes('cancel the old run if it is still live, then settle it with `peer-runner.mjs settle --run-id <old run_id>`, whether the step retries or proceeds local-only. The ledger decides what that records (verdict `failed` with its `error_kind` for a run that ended without a usable answer), never a verdict the agent picks'), 'the old pending entry is settled from its ledger');
+        ok(state.includes('settle it in the finalize (`peer-runner.mjs settle --run-id <run_id>`), with no new dispatch'), 'a finished run is settled, not committed by hand');
+        for (const retired of [/idempotent on `run_id`/, /reuses? the (previous|same) run id/i, /sees both the in-flight phase note/, /at each protocol step/, /state\.mjs ensemble-commit/, /abandoned/]) {
           ok(!retired.test(state), `the recovery does not say ${retired}`);
         }
         const runner = readFileSync(join(pluginRoot(persona), 'scripts', 'peer-runner.mjs'), 'utf8');
@@ -653,9 +746,12 @@ for (const persona of PERSONAS) {
         ]);
         const sections = Object.fromEntries(failure.split(/^### /m).slice(1).map((s) => [s.slice(0, s.indexOf('\n')), squash(s.slice(s.indexOf('\n')))]));
         for (const [name, action] of Object.entries({
-          'Peer host CLI unavailable, not installed, or unauthenticated': 'Action: Skip dispatch silently. Proceed with local-only research.',
-          'Peer timeout or runtime error': 'Action: Record the failure mode internally; proceed local-only.',
-          'Peer returns empty output': 'Action: Treat as if the peer was unavailable. Proceed local-only.',
+          // PC2b RV5: each failure is settled from the run ledger, never skipped by hand.
+          'Peer host CLI unavailable, not installed, or unauthenticated': 'Action: Proceed with local-only research, silently. A run the runner started settles as verdict `failed` with this `error_kind` (`peer-runner.mjs settle`); with no run launched there is nothing to settle.',
+          'Peer timeout or runtime error': 'Action: Proceed local-only; settling the attempt records verdict `failed` with the ledger\'s `error_kind`.',
+          // Review of code step 6 (finding 7): settle cannot tell an answer of
+          // structural shell from a real one, so the agent passes degraded.
+          'Peer returns empty output': 'Action: Treat as if the peer was unavailable. Proceed local-only; settling the completed attempt records verdict `degraded`. `settle` sees an empty or unreadable answer itself; an answer that parses to only structural shell reads to it like any other, so pass `degraded` as the synthesis verdict then.',
           'Peer returns malformed partial output': 'Discard claims with unverifiable or empty source URLs.',
           'Peer returns PEER-ONLY claim with no source URL': 'Discard the claim. Do NOT add it to Open Questions',
           'Graceful degradation principle': 'Ensemble failure NEVER blocks save.',
@@ -668,19 +764,44 @@ for (const persona of PERSONAS) {
         }
       });
 
-      it(`${label}: the protocol says an ensemble that never ran is not recorded exactly when the runbooks skip it (D2)`, () => {
+      // PC2b RV5: every agent-facing failure path follows the settle policy:
+      // nothing is skipped or committed by hand.
+      it(`${label}: the protocol's collect step and each failure action settle the attempt from its run ledger (RV5)`, () => {
+        const doc = docs.get(ENSEMBLE);
+        const collect = squash(region(doc, 'ensemble-collect'));
+        ok(collect.includes('Either way the finalize settles the attempt from its run ledger (`peer-runner.mjs settle`), which records what the ledger shows: verdict `failed` with its `error_kind`, `degraded` for a completed run with no usable answer, or the synthesis verdict. The ledger shows an empty or unreadable answer; for one that parses to nothing usable, only structural shell, the synthesis verdict is `degraded`.'), collect);
+        for (const [id, action] of [
+          ['ensemble-failure-unavailable', '- **Action**: Proceed with orchestrator-only analysis, silently. A run the runner started settles as verdict `failed` with this `error_kind` (`peer-runner.mjs settle`); with no run launched there is nothing to settle.'],
+          ['ensemble-failure-error', '- **Action**: Proceed orchestrator-only; settling the attempt records verdict `failed` with the ledger\'s `error_kind`.'],
+          ['ensemble-failure-empty', 'A completed run with no usable answer at all settles as verdict `degraded`. `settle` sees an empty or unreadable answer itself; an answer that parses to no findings, only structural shell, reads to it like any other, so pass `degraded` as the synthesis verdict then.'],
+        ]) {
+          const text = squash(region(doc, id));
+          ok(text.includes(action), `${id}: ${text}`);
+          ok(!/Skip the dispatch|Record the failure mode internally/.test(text), `${id}: no hand skip`);
+        }
+      });
+
+      it(`${label}: no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead (D2, PC2b U5b)`, () => {
         const section = squash(stepSection(docs.get(ENSEMBLE), /^### State Bookkeeping$/m) ?? '');
-        // The runbooks whose ensemble-commit runs only when the peer launched
-        // (the guard's code, not its comment). Characterized: designer's
-        // authored critique and refine finalize; the settlement work (PC2b)
-        // gives the generated finalize its own degraded step.
+        // D2 is fixed at its source: every finalize settles the attempt from
+        // its run ledger (peer-runner.mjs settle), so no runbook keeps a
+        // shell guard on RUN_ID and VERDICT, and the protocol no longer tells
+        // the agent to skip ensemble-commit by hand.
         const guarded = [...docs]
-          .filter(([rel, text]) => rel.startsWith('commands/') && /^if \[ -n "\$\{RUN_ID:-\}" \] && \[ -n "\$\{VERDICT:-\}" \]; then\n\s+node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" ensemble-commit/m.test(text))
+          .filter(([rel, text]) => rel.startsWith('commands/') && /^\s*if \[ -n "\$\{RUN_ID:-\}" \]/m.test(text))
           .map(([rel]) => rel)
           .sort();
-        deepStrictEqual(guarded, { designer: ['commands/critique.md', 'commands/refine.md'], founder: [] }[persona]);
-        const states = section.includes('**Do not record an ensemble that never ran.**');
-        strictEqual(states, guarded.length > 0, `runbooks that skip ensemble-commit: ${guarded.join(', ') || 'none'}`);
+        deepStrictEqual(guarded, []);
+        strictEqual(section.includes('**Do not record an ensemble that never ran.**'), false, 'the hand-skip sentence is gone');
+        const settles = [...docs].filter(([rel, text]) => rel.startsWith('commands/') && /peer-runner\.mjs" settle \\/.test(text)).map(([rel]) => rel).sort();
+        deepStrictEqual(settles, ['commands/compose.md', 'commands/critique.md', 'commands/decide.md', 'commands/frame.md', 'commands/investigate.md', 'commands/refine.md'], 'every verb finalize settles');
+        for (const fact of [
+          '**Each attempt is settled from its run ledger.** A verb\'s finalize runs `../../../../scripts/peer-runner.mjs settle` with the run id its dispatch generated (empty when no run launched) before its last write, and the ledger, not the agent, decides what the workflow records:',
+          '- never launched (no dispatch ran: the privacy gate kept the verb local-only): nothing, and the phase note\'s first heading reads `### Ensemble skipped: …`;',
+          '- launched, then failed, cancelled or abandoned: an `ensemble_results` entry with verdict `failed` and the ledger\'s `error_kind` in its summary;',
+          '- completed: the synthesis verdict, or `degraded` when the answer was empty or unreadable (the synthesis is then local-only). An answer that parses to nothing usable, only structural shell, reads to `settle` like any other: the synthesis judges it, and its verdict is then `degraded`.',
+          '`settle` refuses while the run is still live (collect it first), and when an empty run id would hide a run that launched for the same workflow and phase.',
+        ]) ok(section.includes(fact), fact);
       });
     }
   });

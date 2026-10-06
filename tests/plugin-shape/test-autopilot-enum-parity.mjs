@@ -11,13 +11,15 @@
 // stay inside ADR-0063 D4's closed enum.
 //
 // Copies today: engineer (S1) and orchestrator (S2). Runtime's entry-brief
-// readers get theirs with S7; add it to COPIES then.
+// readers get theirs with S7; add it to COPIES then. founder and designer
+// (ADR-0066 PC2b) carry the predicate, the pointer and the workflow gates,
+// held below against engineer's.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const COPIES = {
@@ -88,6 +90,46 @@ describe('owner gates are split between engineer and macro', () => {
     ok(d4.length >= 9, `D4 lists the gates (${d4.join(', ')})`);
     for (const gate of [...engineer, ...macro]) ok(d4.includes(gate), `${gate} is a D4 gate`);
   });
+});
+
+// The persona plugins' state.mjs (generated from persona-pipeline/, ADR-0066)
+// read schema 1.4 workflow files (PC2b): the same pointer shape and the same
+// workflow-file gates as engineer, so a file reads the same under every
+// persona. Which gates a persona can set is a capability question, not the
+// reader's (ADR-0066 Decision 3).
+describe('the persona plugins read the workflow-file contract engineer reads', async () => {
+  const { personasFor, personaInfo } = await import('../persona-pipeline/_personas.mjs');
+  for (const persona of personasFor('scripts/state.mjs')) {
+    const path = personaInfo(persona).path('scripts/state.mjs');
+    const mod = await import(pathToFileURL(path).href);
+    const source = await readFile(path, 'utf8');
+
+    it(`${persona}: the isAutopilotRun source line is engineer's, and decides the same`, () => {
+      const pattern = String.raw`^\s*return /\^autopilot-.*\.test\(env\?\.AGENTIC_AUTOPILOT \?\? ''\);$`;
+      const found = source.match(new RegExp(pattern, 'gm')) ?? [];
+      strictEqual(found.length, 1, `${persona}: exactly one predicate line`);
+      strictEqual(found[0].trim(), literalIn('engineer', pattern));
+      for (const value of [undefined, '', 'true', 'autopilot-20260930T010203Z-abcdef', 'autopilot-20260930T010203Z-ABCDEF']) {
+        const env = value === undefined ? {} : { AGENTIC_AUTOPILOT: value };
+        strictEqual(mod.isAutopilotRun(env), modules.engineer.isAutopilotRun(env), JSON.stringify(value));
+      }
+    });
+
+    it(`${persona}: the pointer regex literal is engineer's`, () => {
+      const pattern = String.raw`^const AWAITING_OWNER_POINTER_RE = .*;$`;
+      const found = source.match(new RegExp(pattern, 'gm')) ?? [];
+      strictEqual(found.length, 1, `${persona}: exactly one match for ${pattern}`);
+      strictEqual(found[0].trim(), literalIn('engineer', pattern));
+    });
+
+    it(`${persona}: the gate, kind and confidence enums are engineer's, and no macro gate`, () => {
+      deepStrictEqual([...mod.VALID_WORKFLOW_OWNER_GATES], [...modules.engineer.VALID_ENGINEER_OWNER_GATES]);
+      deepStrictEqual([...mod.VALID_NEXT_STEP_KINDS], [...modules.engineer.VALID_NEXT_STEP_KINDS]);
+      deepStrictEqual([...mod.VALID_CONFIDENCE], [...modules.engineer.VALID_CONFIDENCE]);
+      const macro = [...modules.orchestrator.VALID_MACRO_OWNER_GATES];
+      deepStrictEqual([...mod.VALID_WORKFLOW_OWNER_GATES].filter((g) => macro.includes(g)), []);
+    });
+  }
 });
 
 // The autopilot driver (ADR-0063 S8) lives in orchestrator and reads the

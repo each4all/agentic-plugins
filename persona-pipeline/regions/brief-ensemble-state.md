@@ -28,16 +28,20 @@ run result Step 2 reads):
   <run_id>`) before a retry, or proceed local-only.
 - `derived_status: completed_uncommitted` — the companion finished and
   wrote its envelope while the workflow still holds the pending entry:
-  read `paths.envelope` as Step 2 item 3 reads `envelope_path`, then
-  settle it with `state.mjs ensemble-commit`, with no new dispatch.
+  read `paths.envelope` as Step 2 item 3 reads `envelope_path`,
+  synthesize it, and settle it in the finalize (`peer-runner.mjs settle
+  --run-id <run_id>`), with no new dispatch.
 - Otherwise the run ended without an envelope to use: proceed local-only,
   or retry.
 
 A retry takes a fresh run id, since the runner refuses a `run_id` whose
-ledger already exists. The old pending entry stays until
-`state.mjs ensemble-commit` settles its `run_id`: settle it with a
-verdict that says the run was abandoned, whether the step retries or
-proceeds local-only.
+ledger already exists. The old pending entry stays until its attempt is
+settled: cancel the old run if it is still live, then settle it with
+`peer-runner.mjs settle --run-id <old run_id>`, whether the step retries
+or proceeds local-only. The ledger decides what that records (verdict
+`failed` with its `error_kind` for a run that ended without a usable
+answer), never a verdict the agent picks; the retry then settles under its
+own run id.
 
 Workflow re-entry uses {{persona}}'s own continuity — `scripts/state.mjs`
 restores the workflow `.md`'s tasks frontmatter and current_phase per

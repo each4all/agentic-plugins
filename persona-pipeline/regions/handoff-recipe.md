@@ -3,8 +3,9 @@
   `head_moved` is a fail-closed collapse that also covers a failed git
   probe — the wording never overclaims a single cause);
 - archive gate `blocked` with any **other** gate unmet (`terminal_phase`,
-  `no_active_children`) → **`blocked`**, with gate-specific unblocking
-  actions;
+  `no_active_children`, `awaiting_owner`) → **`blocked`**, with
+  gate-specific unblocking actions (for `awaiting_owner`, the pending gate's
+  resolving surface);
 - otherwise → **`next-work-available`**.
 
 The reason names the projection phase (+ the failed gate tokens when
@@ -68,7 +69,7 @@ the peer-runner's ADR-0040 §5 notification, and went with it (ADR-0064).
 
 The primary emission fires **synchronously at completion** and is fully
 host-symmetric: a Codex `${{persona}}:<verb>` completion runs the same
-`set-terminal` CLI and renders the same footer. What is not
+`finish-verb` CLI and renders the same footer. What is not
 non-interactively provable on Codex is the *hook-borne* re-surfacing
 (Stop backstop + SessionStart re-injection): those ride the packaged
 hooks, which require the stage-appropriate hook gate plus a `/hooks`

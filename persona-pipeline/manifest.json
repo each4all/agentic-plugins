@@ -714,10 +714,6 @@
           "value": "compose",
           "context": "shell"
         },
-        "ensemble_type": {
-          "value": "plan-verify",
-          "context": "shell"
-        },
         "phase_label": {
           "value": "Phase 1: Compose (synthesized)",
           "context": "shell"
@@ -738,6 +734,10 @@
           "value": "compose (profile=<profile>)",
           "context": "markdown"
         },
+        "verdicts": {
+          "value": "agreed|concerns|conflict",
+          "context": "markdown"
+        },
         "artifact": {
           "field": "verbs.compose.artifact",
           "context": "markdown"
@@ -748,6 +748,14 @@
         },
         "evidence_pointers": {
           "field": "verbs.compose.evidence_pointers",
+          "context": "markdown"
+        },
+        "next_verb": {
+          "value": "critique",
+          "context": "shell"
+        },
+        "owner_gates": {
+          "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
         }
       }
@@ -935,10 +943,6 @@
           "value": "frame",
           "context": "shell"
         },
-        "ensemble_type": {
-          "value": "frame",
-          "context": "shell"
-        },
         "phase_label": {
           "value": "Phase 1: Frame (synthesized)",
           "context": "shell"
@@ -959,6 +963,10 @@
           "value": "frame",
           "context": "markdown"
         },
+        "verdicts": {
+          "value": "agreed|concerns|conflict",
+          "context": "markdown"
+        },
         "artifact": {
           "field": "verbs.frame.artifact",
           "context": "markdown"
@@ -969,6 +977,14 @@
         },
         "evidence_pointers": {
           "field": "verbs.frame.evidence_pointers",
+          "context": "markdown"
+        },
+        "next_verb": {
+          "value": "decide",
+          "context": "shell"
+        },
+        "owner_gates": {
+          "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
         }
       }
@@ -1160,10 +1176,6 @@
           "value": "investigate",
           "context": "shell"
         },
-        "ensemble_type": {
-          "field": "verbs.investigate.ensemble_type",
-          "context": "shell"
-        },
         "phase_label": {
           "value": "Phase 1: Investigate (synthesized)",
           "context": "shell"
@@ -1184,6 +1196,10 @@
           "field": "verbs.investigate.default_profile",
           "context": "markdown"
         },
+        "verdicts": {
+          "value": "agreed|concerns|conflict",
+          "context": "markdown"
+        },
         "artifact": {
           "field": "verbs.investigate.artifact",
           "context": "markdown"
@@ -1194,6 +1210,14 @@
         },
         "evidence_pointers": {
           "field": "verbs.investigate.evidence_pointers",
+          "context": "markdown"
+        },
+        "next_verb": {
+          "value": "frame",
+          "context": "shell"
+        },
+        "owner_gates": {
+          "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
         }
       }
@@ -1404,10 +1428,6 @@
           "value": "decide",
           "context": "shell"
         },
-        "ensemble_type": {
-          "value": "brainstorm",
-          "context": "shell"
-        },
         "phase_label": {
           "value": "Phase 1: Decide (synthesized)",
           "context": "shell"
@@ -1428,6 +1448,10 @@
           "value": "decide",
           "context": "markdown"
         },
+        "verdicts": {
+          "value": "agreed|concerns|conflict",
+          "context": "markdown"
+        },
         "artifact": {
           "field": "verbs.decide.artifact",
           "context": "markdown"
@@ -1438,6 +1462,41 @@
         },
         "evidence_pointers": {
           "field": "verbs.decide.evidence_pointers",
+          "context": "markdown"
+        },
+        "next_verb": {
+          "value": "compose",
+          "context": "shell"
+        },
+        "owner_gates": {
+          "value": "- `decide-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the decision is left to the owner's selection, a\n  CONFLICT remained or a veto gate is unresolved; § Owner selection below\n  resolves it.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "decide-owner-selection",
+      "template": "regions/decide-owner-selection.md",
+      "dest": "commands/decide.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "next_action": {
+          "field": "verbs.decide.next_action",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
           "context": "markdown"
         }
       }
@@ -1614,6 +1673,198 @@
       ]
     },
     {
+      "id": "refine-finalize",
+      "template": "regions/verb-finalize.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "founder"
+      ],
+      "when": {
+        "field": "verbs.refine.terminal_requires_convergence",
+        "equals": false
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "refine",
+          "context": "shell"
+        },
+        "phase_label": {
+          "value": "Phase 1: Refine (synthesized)",
+          "context": "shell"
+        },
+        "next_action": {
+          "field": "verbs.refine.next_action",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "launched": {
+          "value": "refine",
+          "context": "markdown"
+        },
+        "synthesis": {
+          "value": "refine",
+          "context": "markdown"
+        },
+        "verdicts": {
+          "value": "resolved|concerns|regression|conflict",
+          "context": "markdown"
+        },
+        "artifact": {
+          "field": "verbs.refine.artifact",
+          "context": "markdown"
+        },
+        "rationale_gate": {
+          "field": "verbs.refine.rationale_gate",
+          "context": "markdown"
+        },
+        "evidence_pointers": {
+          "field": "verbs.refine.evidence_pointers",
+          "context": "markdown"
+        },
+        "next_verb": {
+          "value": "critique",
+          "context": "shell"
+        },
+        "owner_gates": {
+          "value": "- `recurring-finding` (heading `### Recurring finding`, anchor\n  `recurring-finding`): a finding an earlier refine pass on this workflow\n  already addressed survives verification again; fixing it again is the\n  owner's call, and § Owner decision below resolves it.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "refine-finalize-convergent",
+      "template": "regions/verb-finalize-convergent.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer"
+      ],
+      "when": {
+        "field": "verbs.refine.terminal_requires_convergence",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "refine",
+          "context": "shell"
+        },
+        "phase_label": {
+          "value": "Phase 1: Refine (synthesized)",
+          "context": "shell"
+        },
+        "next_action": {
+          "field": "verbs.refine.next_action",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "launched": {
+          "value": "refine",
+          "context": "markdown"
+        },
+        "synthesis": {
+          "value": "refine",
+          "context": "markdown"
+        },
+        "verdicts": {
+          "value": "resolved|concerns|regression|conflict",
+          "context": "markdown"
+        },
+        "artifact": {
+          "field": "verbs.refine.artifact",
+          "context": "markdown"
+        },
+        "rationale_gate": {
+          "field": "verbs.refine.rationale_gate",
+          "context": "markdown"
+        },
+        "evidence_pointers": {
+          "field": "verbs.refine.evidence_pointers",
+          "context": "markdown"
+        },
+        "next_verb": {
+          "value": "critique",
+          "context": "shell"
+        },
+        "owner_gates": {
+          "value": "- `recurring-finding` (heading `### Recurring finding`, anchor\n  `recurring-finding`): a finding an earlier refine pass on this workflow\n  already addressed survives verification again; fixing it again is the\n  owner's call, and § Owner decision below resolves it.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "refine-owner-decision",
+      "template": "regions/refine-owner-decision.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "founder"
+      ],
+      "when": {
+        "field": "verbs.refine.terminal_requires_convergence",
+        "equals": false
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "refine-owner-decision-convergent",
+      "template": "regions/refine-owner-decision-convergent.md",
+      "dest": "commands/refine.md",
+      "personas": [
+        "designer"
+      ],
+      "when": {
+        "field": "verbs.refine.terminal_requires_convergence",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
       "id": "refine-completion-footer",
       "template": "regions/verb-completion-footer.md",
       "dest": "commands/refine.md",
@@ -1757,7 +2008,8 @@
       "template": "regions/verb-dispatch.md",
       "dest": "commands/critique.md",
       "personas": [
-        "designer"
+        "designer",
+        "founder"
       ],
       "substitutions": {
         "root_env": {
@@ -1786,6 +2038,73 @@
         "designer",
         "founder"
       ]
+    },
+    {
+      "id": "critique-finalize",
+      "template": "regions/verb-finalize.md",
+      "dest": "commands/critique.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "verb": {
+          "value": "critique",
+          "context": "shell"
+        },
+        "phase_label": {
+          "value": "Phase 1: Critique (synthesized)",
+          "context": "shell"
+        },
+        "next_action": {
+          "field": "verbs.critique.next_action",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "launched": {
+          "value": "critique (profile=<profile>)",
+          "context": "markdown"
+        },
+        "synthesis": {
+          "value": "critique (profile=<profile>)",
+          "context": "markdown"
+        },
+        "verdicts": {
+          "value": "agreed|concerns|conflict",
+          "context": "markdown"
+        },
+        "artifact": {
+          "field": "verbs.critique.artifact",
+          "context": "markdown"
+        },
+        "rationale_gate": {
+          "field": "verbs.critique.rationale_gate",
+          "context": "markdown"
+        },
+        "evidence_pointers": {
+          "field": "verbs.critique.evidence_pointers",
+          "context": "markdown"
+        },
+        "next_verb": {
+          "value": "refine",
+          "context": "shell"
+        },
+        "owner_gates": {
+          "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "context": "markdown"
+        }
+      }
     },
     {
       "id": "critique-completion-footer",
@@ -1930,6 +2249,66 @@
       "when": {
         "field": "peer.images",
         "equals": false
+      }
+    },
+    {
+      "id": "start-terminal",
+      "template": "regions/start-terminal.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "founder"
+      ],
+      "when": {
+        "field": "verbs.start.terminal_requires_convergence",
+        "equals": false
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "next_action": {
+          "field": "verbs.start.next_action",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "start-terminal-convergent",
+      "template": "regions/start-terminal-convergent.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "designer"
+      ],
+      "when": {
+        "field": "verbs.start.terminal_requires_convergence",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "next_action": {
+          "field": "verbs.start.next_action",
+          "context": "shell"
+        }
       }
     },
     {
@@ -2339,6 +2718,21 @@
         "designer",
         "founder"
       ]
+    },
+    {
+      "id": "routing-owner-gates",
+      "template": "regions/routing-owner-gates.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
     },
     {
       "id": "routing-preflight-intro",

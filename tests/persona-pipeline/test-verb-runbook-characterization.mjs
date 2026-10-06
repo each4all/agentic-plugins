@@ -15,9 +15,9 @@
 // declarations a region renders from — so a wrong manifest value fails here.
 
 import { describe, it } from 'node:test';
-import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
 
-import { FIXTURE, VERB_RUNBOOK_PERSONAS, VERB_RUNBOOK_VERBS, characterize, expectedFor, runbookText } from './_verb-runbooks.mjs';
+import { FIXTURE, STRUCTURAL_OPS, VERB_RUNBOOK_PERSONAS, VERB_RUNBOOK_VERBS, applyDifference, characterize, expectedFor, runbookText } from './_verb-runbooks.mjs';
 
 const arg = (call, flag) => {
   const found = call.args.filter(([f]) => f === flag);
@@ -31,10 +31,83 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
     deepStrictEqual(Object.keys(FIXTURE.runbooks).sort(), keys);
     ok(Array.isArray(FIXTURE.allowed_differences));
     for (const d of FIXTURE.allowed_differences) {
-      deepStrictEqual(Object.keys(d).sort(), ['from', 'runbooks', 'to', 'where', 'why'], JSON.stringify(d));
+      const structural = Object.hasOwn(d, 'op');
+      deepStrictEqual(Object.keys(d).sort(), structural ? ['from', 'op', 'runbooks', 'to', 'where', 'why'] : ['from', 'runbooks', 'to', 'where', 'why'], JSON.stringify(d));
       ok(d.runbooks.length > 0 && d.runbooks.every((k) => keys.includes(k)), `${d.where}: runbooks`);
-      ok(d.from !== d.to && d.from.length > 0 && /^PC2a[234] /.test(d.why), `${d.where}: a change with its reason`);
+      ok(/^PC2(?:a[234]|b) /.test(d.why), `${d.where}: a change with its reason`);
+      if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
+      else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }
+  });
+
+  // PC2b RV7: the structural changes, each refusing a value it does not find
+  // as recorded.
+  describe('structural allowed differences (PC2b RV7)', () => {
+    const call = (script, sub, args = []) => ({ script, sub, args });
+    const record = () => ({
+      calls: [
+        call('state.mjs', 'find-active', [['--repo-root', '$REPO_ROOT']]),
+        call('state.mjs', 'create', [['--verb', 'compose']]),
+        call('state.mjs', 'append', [['--workflow-path', '$ACTIVE'], ['--current-phase', 'phase-0-resume'], ['--event', 'resumed']]),
+        call('state.mjs', 'append', [['--workflow-path', '$ACTIVE'], ['--phase-note', '$NOTE']]),
+        call('state.mjs', 'set-terminal', [['--workflow-path', '$ACTIVE'], ['--next-action', 'Critique']]),
+      ],
+      guards: { ensemble_launched: 'if [ -n "${RUN_ID:-}" ]; then\n  commit\nfi', converged: null },
+      note: 'x',
+    });
+    const preflight = call('state.mjs', 'autopilot-preflight', [['--workflow-path', '$ACTIVE'], ['--persona', '{persona}']]);
+    const apply = (d, r = record()) => { applyDifference(r, { runbooks: [], why: 'PC2b test', ...d }, 'founder'); return r; };
+
+    it('insert-call puts the call right after its anchor, between the two calls it names', () => {
+      const r = apply({ op: 'insert-call', where: 'call:state.mjs find-active', from: 'state.mjs create', to: preflight });
+      deepStrictEqual(r.calls.map((c) => c.sub), ['find-active', 'autopilot-preflight', 'create', 'append', 'append', 'set-terminal']);
+      deepStrictEqual(r.calls[1].args[1], ['--persona', 'founder'], '{persona} is substituted inside the call');
+      const atEnd = apply({ op: 'insert-call', where: 'call:state.mjs set-terminal', from: '', to: preflight });
+      strictEqual(atEnd.calls.at(-1).sub, 'autopilot-preflight');
+      const second = apply({ op: 'insert-call', where: 'call:state.mjs append#1', from: 'state.mjs append', to: preflight });
+      deepStrictEqual(second.calls.map((c) => c.sub).slice(2, 5), ['append', 'autopilot-preflight', 'append']);
+    });
+
+    it('insert-call refuses a neighbor that is not the recorded one, a missing anchor and an ambiguous one', () => {
+      throws(() => apply({ op: 'insert-call', where: 'call:state.mjs find-active', from: 'state.mjs append', to: preflight }), /finds "state\.mjs append" after it/);
+      throws(() => apply({ op: 'insert-call', where: 'call:state.mjs find-active', from: '', to: preflight }), /after it/);
+      throws(() => apply({ op: 'insert-call', where: 'call:state.mjs read', from: '', to: preflight }), /one such call/);
+      throws(() => apply({ op: 'insert-call', where: 'call:state.mjs append', from: 'state.mjs append', to: preflight }), /one such call/);
+    });
+
+    it('add-flag puts the flag right after the one it names, and refuses a flag already carried or a missing anchor flag', () => {
+      const r = apply({ op: 'add-flag', where: 'call:state.mjs append#1:--clear-next-step', from: '--current-phase', to: 'true' });
+      deepStrictEqual(r.calls[2].args, [['--workflow-path', '$ACTIVE'], ['--current-phase', 'phase-0-resume'], ['--clear-next-step', 'true'], ['--event', 'resumed']]);
+      deepStrictEqual(r.calls[3], record().calls[3], 'the other append is untouched');
+      const bare = apply({ op: 'add-flag', where: 'call:state.mjs create:--dry-run', from: '--verb', to: null });
+      deepStrictEqual(bare.calls[1].args.at(-1), ['--dry-run', null]);
+      throws(() => apply({ op: 'add-flag', where: 'call:state.mjs append#1:--event', from: '--current-phase', to: 'x' }), /finds the flag absent/);
+      throws(() => apply({ op: 'add-flag', where: 'call:state.mjs append#1:--clear-next-step', from: '--next-action', to: 'true' }), /finds --next-action once/);
+    });
+
+    it('replace-call swaps a call read exactly as recorded, and refuses any other reading', () => {
+      const finish = call('state.mjs', 'finish-verb', [['--workflow-path', '$ACTIVE'], ['--next-action', 'Critique'], ['--next-step-kind', 'verb']]);
+      const r = apply({ op: 'replace-call', where: 'call:state.mjs set-terminal', from: record().calls[4], to: finish });
+      deepStrictEqual(r.calls[4], finish);
+      strictEqual(r.calls.length, 5);
+      const stale = { ...record().calls[4], args: [['--workflow-path', '$ACTIVE'], ['--next-action', 'Refine']] };
+      throws(() => apply({ op: 'replace-call', where: 'call:state.mjs set-terminal', from: stale, to: finish }), /finds the call as recorded/);
+      throws(() => apply({ op: 'replace-call', where: 'call:state.mjs set-terminal', from: { ...record().calls[4], sub: 'append' }, to: finish }), /finds the call as recorded/);
+    });
+
+    it('null-guard removes a guard whose whole text reads as recorded, and refuses a partial text or a guard already gone', () => {
+      const r = apply({ op: 'null-guard', where: 'guards.ensemble_launched', from: record().guards.ensemble_launched, to: null });
+      strictEqual(r.guards.ensemble_launched, null);
+      throws(() => apply({ op: 'null-guard', where: 'guards.ensemble_launched', from: '  commit', to: null }), /finds the guard as recorded/);
+      throws(() => apply({ op: 'null-guard', where: 'guards.converged', from: '', to: null }), /names no recorded guard/);
+      throws(() => apply({ op: 'null-guard', where: 'guards.ensemble_launched', from: record().guards.ensemble_launched, to: '' }), /sets null/);
+    });
+
+    it('an unknown op is refused; a string difference still needs its text exactly once', () => {
+      throws(() => apply({ op: 'remove-everything', where: 'note', from: 'x', to: '' }), /unknown allowed-difference op/);
+      strictEqual(apply({ where: 'call:state.mjs create:--verb', from: 'compose', to: 'frame' }).calls[1].args[0][1], 'frame');
+      throws(() => apply({ where: 'call:state.mjs create:--verb', from: 'o', to: 'a' }), /finds "o" once/);
+    });
   });
 
   for (const persona of VERB_RUNBOOK_PERSONAS) {
@@ -54,9 +127,14 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           if (verb === 'start') {
             // The lifecycle macro creates a start workflow in its first verb,
             // and dispatches through the verbs it sequences, not in its blocks.
+            // Its first append is the resume's next-step clear (PC2b RV4); a
+            // lifecycle that waits for convergence (designer) records a paused
+            // next step with a second (U5c).
             strictEqual(arg(create, '--verb'), 'investigate');
             strictEqual(arg(create, '--workflow-type'), 'start');
-            deepStrictEqual([of('peer-runner.mjs', 'run').length, of('state.mjs', 'ensemble-commit').length, of('state.mjs', 'append').length], [0, 0, 0]);
+            deepStrictEqual([of('peer-runner.mjs', 'run').length, of('state.mjs', 'ensemble-commit').length, of('state.mjs', 'append').length], [0, 0, persona === 'designer' ? 2 : 1]);
+            const [[resume]] = of('state.mjs', 'append');
+            deepStrictEqual([arg(resume, '--workflow-path'), arg(resume, '--clear-next-step')], ['$ACTIVE', 'true']);
             deepStrictEqual([got.run_id_prefixes, got.mktemp_templates], [[], []]);
             return;
           }
@@ -65,16 +143,27 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           const [[run]] = of('peer-runner.mjs', 'run');
           strictEqual(arg(run, '--phase'), verb);
           strictEqual(arg(run, '--ensemble-type'), type);
-          const [[commit]] = of('state.mjs', 'ensemble-commit');
-          strictEqual(arg(commit, '--phase'), verb);
-          // founder critique names the type in its dispatch block and reads it
-          // back from a variable the agent sets there (recorded as it is, QD5).
-          strictEqual(arg(commit, '--ensemble-type'), FIXTURE.expected_commit_ensemble_types?.[persona]?.[verb] ?? type);
+          const settles = of('peer-runner.mjs', 'settle');
+          if (settles.length > 0) {
+            // PC2b DD6: settle names the phase and the run id; it reads the
+            // ensemble type from the run ledger, so nothing repeats it.
+            strictEqual(settles.length, 1, 'one settle');
+            const [[settle]] = settles;
+            deepStrictEqual([arg(settle, '--phase'), arg(settle, '--run-id'), arg(settle, '--workflow-path')], [verb, '$RUN_ID', '$ACTIVE']);
+            strictEqual(settle.args.some(([f]) => f === '--ensemble-type'), false, 'settle repeats no ensemble type');
+            strictEqual(of('state.mjs', 'ensemble-commit').length, 0, 'no ensemble-commit beside settle');
+          } else {
+            const [[commit]] = of('state.mjs', 'ensemble-commit');
+            strictEqual(arg(commit, '--phase'), verb);
+            // founder critique names the type in its dispatch block and reads it
+            // back from a variable the agent sets there (recorded as it is, QD5).
+            strictEqual(arg(commit, '--ensemble-type'), FIXTURE.expected_commit_ensemble_types?.[persona]?.[verb] ?? type);
+          }
           deepStrictEqual(got.run_id_prefixes, [type]);
           deepStrictEqual(got.mktemp_templates.filter((t) => t.endsWith('-prompt.XXXXXX')), [`${persona}-${verb}-prompt.XXXXXX`]);
         });
 
-        it('order: find-active, then bootstrap or resume, the dispatch, the note, ensemble-commit, set-terminal — every write on $ACTIVE', () => {
+        it('order: find-active, then bootstrap or resume, the dispatch, the note, the settlement, the terminal write — every write on $ACTIVE', () => {
           const index = (script, sub, nth = 0) => {
             const sites = of(script, sub);
             ok(sites.length > nth, `${script} ${sub} #${nth + 1}`);
@@ -83,9 +172,11 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           if (verb === 'start') {
             // start: the clean-baseline gate before the bootstrap, the
             // workflow_type read on resume, the terminal write at the end.
-            const order = ['find-active', 'check-clean-baseline', 'create', 'read', 'set-terminal'].map((sub) => index('state.mjs', sub));
+            const order = ['find-active', 'check-clean-baseline', 'create', 'read', 'finish-verb'].map((sub) => index('state.mjs', sub));
             deepStrictEqual([...order].sort((a, b) => a - b), order);
-            for (const sub of ['read', 'set-terminal']) strictEqual(arg(calls[index('state.mjs', sub)], '--workflow-path'), '$ACTIVE');
+            for (const sub of ['read', 'finish-verb']) strictEqual(arg(calls[index('state.mjs', sub)], '--workflow-path'), '$ACTIVE');
+            // PC2b U5c: the lifecycle closes with kind commit, the owner's save.
+            deepStrictEqual([arg(calls[index('state.mjs', 'finish-verb')], '--next-step-kind'), of('state.mjs', 'set-terminal').length], ['commit', 0]);
             return;
           }
           const find = index('state.mjs', 'find-active');
@@ -93,10 +184,29 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           const resume = index('state.mjs', 'append', 0);
           const run = index('peer-runner.mjs', 'run');
           const note = index('state.mjs', 'append', 1);
-          const commit = index('state.mjs', 'ensemble-commit');
-          const terminal = index('state.mjs', 'set-terminal');
+          // PC2b: settle and finish-verb where the finalize is settled (the
+          // generated four), ensemble-commit and set-terminal until then.
+          const settled = of('peer-runner.mjs', 'settle').length > 0;
+          const commit = settled ? index('peer-runner.mjs', 'settle') : index('state.mjs', 'ensemble-commit');
+          const terminal = settled ? index('state.mjs', 'finish-verb') : index('state.mjs', 'set-terminal');
           ok(find < create && create < resume && resume < run && run < note && note < commit && commit < terminal);
-          strictEqual(of('state.mjs', 'append').length, 2);
+          if (settled) {
+            // The closed-enum next step the typical case records: the verb
+            // after this one in the lifecycle (an independent map).
+            const NEXT = { investigate: 'frame', frame: 'decide', decide: 'compose', compose: 'critique', critique: 'refine', refine: 'critique' };
+            deepStrictEqual([arg(calls[terminal], '--next-step-kind'), arg(calls[terminal], '--next-step-verb')], ['verb', NEXT[verb]]);
+            strictEqual(of('state.mjs', 'set-terminal').length, 0, 'no set-terminal beside finish-verb');
+          }
+          // A refine that waits for convergence (designer) records its next
+          // step with a third, non-terminal append when it did not converge
+          // (PC2b U5b).
+          const paused = persona === 'designer' && verb === 'refine';
+          strictEqual(of('state.mjs', 'append').length, paused ? 3 : 2);
+          if (paused) {
+            const last = calls[index('state.mjs', 'append', 2)];
+            ok(last && index('state.mjs', 'append', 2) === terminal + 1, 'the paused append follows the converged finish-verb, its alternative');
+            deepStrictEqual([arg(last, '--workflow-path'), arg(last, '--clear-terminal-marker'), last.args.some(([f]) => f === '--phase-note')], ['$ACTIVE', 'true', false]);
+          }
           strictEqual(arg(calls[note], '--phase-note'), '$NOTE');
           for (const c of [calls[resume], calls[run], calls[note], calls[commit], calls[terminal]]) strictEqual(arg(c, '--workflow-path'), '$ACTIVE');
           strictEqual(arg(calls[terminal], '--next-action'), arg(calls[note], '--next-action'));
@@ -130,11 +240,11 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           } else {
             deepStrictEqual([g.baseline_rc, g.baseline_status], [null, null]);
           }
-          const designerGuarded = persona === 'designer' && (verb === 'critique' || verb === 'refine');
-          strictEqual(g.ensemble_launched !== null, designerGuarded, 'the D2 guard on ensemble-commit');
-          if (designerGuarded) ok(/state\.mjs" ensemble-commit/.test(g.ensemble_launched), 'it guards the ensemble-commit');
+          // The D2 guard went with the generated finalize (critique in PC2b
+          // U5a, refine in U5b): settle decides from the ledger.
+          strictEqual(g.ensemble_launched, null, 'no D2 guard on ensemble-commit');
           strictEqual(g.converged !== null, persona === 'designer' && (verb === 'refine' || verb === 'start'), 'the convergence guard');
-          if (g.converged !== null) ok(/state\.mjs" set-terminal/.test(g.converged), 'it guards the terminal write');
+          if (g.converged !== null) ok(/^  node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" (set-terminal|finish-verb) \\$/m.test(g.converged.split('\nelse\n')[0]), 'it guards the terminal write in its then branch');
         });
       });
     }

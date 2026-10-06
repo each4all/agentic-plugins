@@ -22,3 +22,15 @@ inspects the returned `status` (`clean` / `dirty` / `accepted`). On `dirty`
 the gate refuses to bootstrap and presents resolutions: clean the tree,
 stash, or set `ACCEPT_CURRENT_TREE=1` to acknowledge the dirty tree.
 `.agentic-plugins/state/**` is excluded from the dirty check.
+
+**Inside the lifecycle** (both hosts, ADR-0066 PC2b): Phase 0 runs
+`state.mjs autopilot-preflight` once, before any write, and a resumed start
+workflow clears the next step it carried. Each phase's ensemble attempt is
+settled from its run ledger (`peer-runner.mjs settle`) before the next phase,
+a repeated phase under a new run id. No phase makes a verb's terminal write;
+the lifecycle's one terminal write is `finish-verb` at the end, once it
+converged where the persona waits for convergence. An owner gate met in a
+phase (a decide CONFLICT, a recurring finding) is recorded with
+`state.mjs awaiting-owner-set`, which leaves the workflow open; the lifecycle
+pauses, and continues at the next phase once the owner's decision clears it
+(`state.mjs awaiting-owner-clear` with that phase as the next step).
