@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.21](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.20...plugin-designer-v0.3.21) (2026-10-06)
+
+
+### Bug Fixes
+
+* **plugin/designer:** generate the shared references and ship presentation-protocol and entry-routing-contract (ADR-0066 Stage 2a) ([9daa583](https://github.com/each4all/agentic-plugins/commit/9daa58397d9e3abb3ba84c1fee23fecef4cdadd1))
+
 ## [0.3.20](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.19...plugin-designer-v0.3.20) (2026-10-05)
 
 

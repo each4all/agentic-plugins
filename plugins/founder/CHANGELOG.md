@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.21](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.20...plugin-founder-v0.4.21) (2026-10-06)
+
+
+### Bug Fixes
+
+* **plugin/founder:** generate the shared references and ship presentation-protocol and entry-routing-contract (ADR-0066 Stage 2a) ([5fb546e](https://github.com/each4all/agentic-plugins/commit/5fb546e95f0106bb7f79da8ee7a5ea690763b167))
+
 ## [0.4.20](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.19...plugin-founder-v0.4.20) (2026-10-05)
 
 
