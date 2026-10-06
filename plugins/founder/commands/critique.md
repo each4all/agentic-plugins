@@ -169,8 +169,9 @@ ENSEMBLE_TYPE='review'
 PROMPT_FILE="$(mktemp -t 'founder'-'critique'-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-# ... LLM writes the prompt to $PROMPT_FILE (the privacy gate above must have
-#     passed; the prompt carries only genericized text) ...
+# ... LLM writes the prompt to $PROMPT_FILE (where this runbook has a privacy
+#     gate above, it must have passed, and the prompt carries only genericized
+#     text) ...
 # Run this block as a host background task (on Claude, the Bash tool's
 # run_in_background), never with a trailing `&`: the host tracks the runner
 # and notifies you when it exits, where a shell `&` would detach it from both.

@@ -44,7 +44,7 @@ const SEMVER_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 // The format minor this loader reads. A newer minor's unknown scalar is
 // forgiven; an unknown object or list is refused at any minor (ADR-0034 §4.1,
 // as the schema validator reads it).
-const READER_MINOR = 2;
+const READER_MINOR = 3;
 // The document cap the schema validator applies (SCHEMA_MAX_BYTES), measured
 // the same way: the declaration pretty-printed, in UTF-8 bytes.
 const MAX_BYTES = 64 * 1024;
@@ -54,7 +54,10 @@ const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'criti
 const VERB_KEYS = [
   'profiles', 'default_profile', 'request_placeholder', 'ensemble_type', 'artifact',
   'rationale_gate', 'evidence_pointers', 'next_action', 'terminal_requires_convergence',
+  'brief_file', 'output_root_env',
 ];
+const BRIEF_FILE_RE = /^[a-z][a-z0-9_-]*\.md$/;
+const ENV_RE = /^[A-Z][A-Z0-9_]*$/;
 const LINE_RE = /^[^\n\r\0]*$/;
 const PEER_KEYS = ['privacy_scope', 'privacy_spec', 'images'];
 const SPEC_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/;
@@ -241,6 +244,13 @@ function verbProblems(verbs, unknown, no) {
     }
     if (v.terminal_requires_convergence !== undefined && typeof v.terminal_requires_convergence !== 'boolean') {
       no(`${at}.terminal_requires_convergence must be true or false`);
+    }
+    // Format 1.3: investigate's brief names, where not derived.
+    if (v.brief_file !== undefined && !(typeof v.brief_file === 'string' && v.brief_file.length <= 64 && BRIEF_FILE_RE.test(v.brief_file))) {
+      no(`${at}.brief_file must be a lower-case *.md file name`);
+    }
+    if (v.output_root_env !== undefined && !(typeof v.output_root_env === 'string' && v.output_root_env.length <= 64 && ENV_RE.test(v.output_root_env))) {
+      no(`${at}.output_root_env must be an upper-case variable name`);
     }
   }
 }
