@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.21...plugin-designer-v0.4.0) (2026-10-06)
+
+
+### Features
+
+* **plugin/designer:** owner gates, finish-verb and schema 1.4 for designer workflows (ADR-0066 Stage 2b) ([f90ccc6](https://github.com/each4all/agentic-plugins/commit/f90ccc6a6c2bc653fc9244ac786a56aaea870d47))
+
+
+### Bug Fixes
+
+* **plugin/designer:** settle each ensemble attempt from its run ledger (D2) ([f90ccc6](https://github.com/each4all/agentic-plugins/commit/f90ccc6a6c2bc653fc9244ac786a56aaea870d47))
+
 ## [0.3.21](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.20...plugin-designer-v0.3.21) (2026-10-06)
 
 

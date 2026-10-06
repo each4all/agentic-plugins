@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.21...plugin-founder-v0.5.0) (2026-10-06)
+
+
+### Features
+
+* **plugin/founder:** owner gates, finish-verb and schema 1.4 for founder workflows (ADR-0066 Stage 2b) ([70aedb1](https://github.com/each4all/agentic-plugins/commit/70aedb14d64edbf4e0419bcbf183b95a5a2ed356))
+
+
+### Bug Fixes
+
+* **plugin/founder:** settle each ensemble attempt from its run ledger (D2) ([70aedb1](https://github.com/each4all/agentic-plugins/commit/70aedb14d64edbf4e0419bcbf183b95a5a2ed356))
+
 ## [0.4.21](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.20...plugin-founder-v0.4.21) (2026-10-06)
 
 
