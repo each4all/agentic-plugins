@@ -9,6 +9,20 @@ VERB={{verb}}
 GIT_BRANCH="$(git branch --show-current)"
 GIT_HEAD="$(git rev-parse HEAD)"
 STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+{{#capability dispatch_target}}
+# ADR-0019 §1+§3 — when /orchestrator:next dispatches this command,
+# it sets AGENTIC_PARENT_WORKFLOW + AGENTIC_ORIGINATING_SUBTASK so
+# the create-time bootstrap records the immutable parent linkage.
+# Both must be set together (or both absent for direct invocation).
+PARENT_ARGS=()
+if [ -n "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -n "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
+  if [ -z "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -z "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
+    echo "✗ AGENTIC_PARENT_WORKFLOW and AGENTIC_ORIGINATING_SUBTASK must be set together (ADR-0019 §3 immutable parent-child linkage). This usually indicates a dispatcher bug — /orchestrator:next must export both env vars or neither. If you set them manually, set both or neither." >&2
+    exit 1
+  fi
+  PARENT_ARGS=(--parent-workflow "$AGENTIC_PARENT_WORKFLOW" --originating-subtask "$AGENTIC_ORIGINATING_SUBTASK")
+fi
+{{/capability}}
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
   --verb {{verb}} --host "${AGENTIC_HOST:-claude}" --persona {{name}} \
@@ -16,5 +30,11 @@ ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --status-digest "$STATUS_DIGEST" \
   --original-request "${AGENTIC_TOPIC:-<the original request described above>}" \
   --current-phase phase-0-bootstrap \
+{{^capability dispatch_target}}
   --next-action "Run ${VERB} skill")" || exit $?
+{{/capability}}
+{{#capability dispatch_target}}
+  --next-action "Run ${VERB} skill" \
+  "${PARENT_ARGS[@]}")" || exit $?
+{{/capability}}
 ```

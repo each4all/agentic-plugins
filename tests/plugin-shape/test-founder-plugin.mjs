@@ -339,10 +339,13 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     ];
     for (const rel of SOURCES) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      // ADR-0066 Stage 3: the parent step sits behind dispatch_target and
+      // imports parent-writeback.mjs dynamically only when it is on; founder
+      // never writes a parent note (tests/persona-pipeline/test-stop-archive.mjs
+      // "no parent writeback ever"). A static import would break the plugin,
+      // which never receives the module.
       ok(!text.includes("from './parent-writeback.mjs'"),
-        `${rel} must not import parent-writeback machinery`);
-      ok(!/writebackParent\s*\(/.test(text),
-        `${rel} must not invoke writebackParent`);
+        `${rel} must not import parent-writeback machinery statically`);
     }
     strictEqual(await exists(resolve(PLUGIN_ROOT, 'scripts/parent-writeback.mjs')), false,
       'plugins/founder must not ship a parent-writeback module at all');

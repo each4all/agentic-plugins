@@ -78,7 +78,7 @@ describe('awaiting_owner_pointer has one shape', () => {
 
 describe('owner gates are split between engineer and macro', () => {
   it('the two sets do not overlap and stay inside the ADR-0063 D4 enum', async () => {
-    const engineer = [...modules.engineer.VALID_ENGINEER_OWNER_GATES];
+    const engineer = [...modules.engineer.VALID_WORKFLOW_OWNER_GATES];
     const macro = [...modules.orchestrator.VALID_MACRO_OWNER_GATES];
     deepStrictEqual(engineer.filter((g) => macro.includes(g)), []);
 
@@ -123,7 +123,7 @@ describe('the persona plugins read the workflow-file contract engineer reads', a
     });
 
     it(`${persona}: the gate, kind and confidence enums are engineer's, and no macro gate`, () => {
-      deepStrictEqual([...mod.VALID_WORKFLOW_OWNER_GATES], [...modules.engineer.VALID_ENGINEER_OWNER_GATES]);
+      deepStrictEqual([...mod.VALID_WORKFLOW_OWNER_GATES], [...modules.engineer.VALID_WORKFLOW_OWNER_GATES]);
       deepStrictEqual([...mod.VALID_NEXT_STEP_KINDS], [...modules.engineer.VALID_NEXT_STEP_KINDS]);
       deepStrictEqual([...mod.VALID_CONFIDENCE], [...modules.engineer.VALID_CONFIDENCE]);
       const macro = [...modules.orchestrator.VALID_MACRO_OWNER_GATES];
@@ -148,8 +148,8 @@ describe('the autopilot driver reads the engineer enums it was given', () => {
     deepStrictEqual([...policy.VERBS], engineerVerbs);
     deepStrictEqual([...policy.NEXT_STEP_KINDS], [...modules.engineer.VALID_NEXT_STEP_KINDS]);
     deepStrictEqual([...policy.CONFIDENCES], [...modules.engineer.VALID_CONFIDENCE]);
-    deepStrictEqual([...policy.ENGINEER_OWNER_GATES], [...modules.engineer.VALID_ENGINEER_OWNER_GATES]);
-    deepStrictEqual([...policy.ENGINEER_TERMINAL_PHASES], [...modules.engineer.TERMINAL_PHASES]);
+    deepStrictEqual([...policy.ENGINEER_OWNER_GATES], [...modules.engineer.VALID_WORKFLOW_OWNER_GATES]);
+    deepStrictEqual([...policy.ENGINEER_TERMINAL_PHASES], [...modules.engineer.terminalPhases()]);
     deepStrictEqual([...policy.MACRO_OWNER_GATES], [...modules.orchestrator.VALID_MACRO_OWNER_GATES]);
   });
 

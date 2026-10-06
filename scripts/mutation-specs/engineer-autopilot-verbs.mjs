@@ -16,8 +16,8 @@
 // Groups: S the state script, P the Phase 7 driver, K the Stop hook, R the
 // runbooks, C the tests' own controls.
 
-const T_AV = 'tests/engineer/test-autopilot-verbs.mjs';
-const T_EC = 'tests/engineer/test-engineer-commit.mjs';
+const T_AV = 'tests/persona-pipeline/test-autopilot-verbs.mjs';
+const T_EC = 'tests/persona-pipeline/test-commit-surface.mjs';
 const T_RB = 'tests/engineer/test-verb-runbook-autopilot.mjs';
 const T_SH = 'tests/plugin-shape/test-engineer-autopilot-runbooks.mjs';
 
@@ -31,12 +31,13 @@ export const TESTS = [T_AV, T_EC, T_RB, T_SH];
 
 const BEGIN_COMMIT_LOOP = '  await beginCommit({ workflowPath, host: flags.host });\n  for (let i = 0; i < shape.commits.length; i++) {';
 const LOOP_ONLY = '  for (let i = 0; i < shape.commits.length; i++) {';
-const PHASE_ASSERT = "      deepStrictEqual([fm.current_phase, fm.terminal_marker], ['phase-7-commit', false]);\n";
+// T_EC wraps its cases in a persona loop (ADR-0066 Stage 3), two spaces deeper.
+const PHASE_ASSERT = "        deepStrictEqual([fm.current_phase, fm.terminal_marker], ['phase-7-commit', false]);\n";
 const INHERITED_MARKER_SETUP =
-  '      // The verb ended interactively: summary-complete with the marker.\n' +
-  "      sh(dir, 'node', [STATE_BIN, 'finish-verb', '--workflow-path', wf, '--host', 'claude', '--next-action', 'commit',\n" +
-  "        '--next-step-kind', 'commit', '--next-step-confidence', 'HIGH']);\n" +
-  '      strictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, true);\n';
+  '        // The verb ended interactively: summary-complete with the marker.\n' +
+  "        sh(dir, 'node', [STATE_BIN, 'finish-verb', '--workflow-path', wf, '--host', 'claude', '--next-action', 'commit',\n" +
+  "          '--next-step-kind', 'commit', '--next-step-confidence', 'HIGH']);\n" +
+  '        strictEqual((await readWorkflow(wf)).frontmatter.terminal_marker, true);\n';
 
 export const MUTATIONS = [
   // ---- S: state.mjs ------------------------------------------------------------
@@ -60,19 +61,19 @@ export const MUTATIONS = [
   },
   {
     id: 'S4', file: STATE, tests: [T_AV],
-    from: '        if (terminalMarker && isAutopilotRun(process.env)) {',
+    from: '        if (terminalMarker && autopilotMode({ env: process.env, host: flags.host }).active) {',
     to: '        if (false) {',
     why: 'a verb that calls set-terminal under autopilot closes the workflow',
   },
   {
     id: 'S5', file: STATE, tests: [T_AV, T_RB],
-    from: '  if (autopilot && gate) {',
+    from: '  if (mode.active && gate) {',
     to: '  if (false) {',
     why: 'an autopilot step runs over a pending owner gate',
   },
   {
     id: 'S6', file: STATE, tests: [T_AV, T_RB],
-    from: "  if (autopilot) {\n    return {\n      mode: 'autopilot',\n      gate: null,",
+    from: "  if (mode.active) {\n    return {\n      mode: 'autopilot',\n      gate: null,",
     to: "  if (true) {\n    return {\n      mode: 'autopilot',\n      gate: null,",
     why: 'the rules banner prints interactively, so an interactive run follows autopilot rules',
   },
@@ -215,10 +216,11 @@ export const MUTATIONS = [
 
   // ---- R: the runbooks ---------------------------------------------------------
   {
+    // PC3 U7: critique's finalize is generated and settles the attempt.
     id: 'R1', file: CRITIQUE, tests: [T_RB, T_SH],
-    from: '  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit $?',
-    to: '  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
-    why: 'a failed ensemble-commit is ignored and finish-verb publishes the next step anyway',
+    from: '  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?',
+    to: '  --verdict "$VERDICT" --summary "$SUMMARY"',
+    why: 'a refused settlement is ignored and finish-verb publishes the next step anyway',
   },
   {
     id: 'R2', file: CRITIQUE, tests: [T_RB, T_SH],
@@ -228,7 +230,7 @@ export const MUTATIONS = [
   },
   {
     id: 'R3', file: CRITIQUE, tests: [T_RB, T_SH],
-    from: '    --clear-next-step true \\\n',
+    from: '  --clear-next-step true \\\n',
     to: '',
     why: 'a verb that dies after Phase 0 leaves the previous verb\'s next step, which reads as progress',
   },
@@ -272,14 +274,14 @@ export const MUTATIONS = [
   },
   {
     id: 'X4', file: STOP, tests: [T_EC],
-    from: '    if (frontmatter?.awaiting_owner_gate !== undefined) continue;',
+    from: "  if (frontmatter?.awaiting_owner_gate !== undefined) failures.push('awaiting_owner');\n",
     to: '',
     why: 'the orphan sweep archives a workflow that waits on its owner once its branch is gone',
   },
   {
     id: 'X5', file: 'plugins/engineer/scripts/session-handoff.mjs', tests: [T_AV],
-    from: "      .map((g) => (g === 'head_moved' && projection.phase === 'close-complete'\n        ? CLOSE_INCOMPLETE_ACTION\n        : BLOCKED_GATE_NEXT_ACTIONS[g]))",
-    to: '      .map((g) => BLOCKED_GATE_NEXT_ACTIONS[g])',
+    from: "  } else if (phase === 'close-complete') {\n",
+    to: "  } else if (phase === 'no-such-phase') {\n",
     why: 'an interrupted close tells the owner to commit',
   },
   {
@@ -309,8 +311,8 @@ export const MUTATIONS = [
   },
   {
     id: 'X10', file: 'plugins/engineer/commands/decide.md', tests: [T_RB, T_SH],
-    from: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?\n[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch." >&2; exit 1; }\n# One write records the owner\'s decision',
-    to: '# One write records the owner\'s decision',
+    from: 'REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?\n[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }\n# A gate met inside a /start lifecycle',
+    to: '# A gate met inside a /start lifecycle',
     why: 'the Owner selection block reuses $ACTIVE from another Bash call, and fails in a fresh shell (round-3 F2)',
   },
 

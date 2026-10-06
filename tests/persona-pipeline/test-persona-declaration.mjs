@@ -14,7 +14,7 @@ import { runSync } from '../../scripts/sync-persona-pipeline.mjs';
 import { MANIFEST, REPO_ROOT, declaration, personaInfo, personasFound } from './_personas.mjs';
 
 const SCHEMA = JSON.parse(readFileSync(join(REPO_ROOT, 'persona-pipeline/persona.schema.json'), 'utf8'));
-const validate = (doc) => validateAgainstSchema(doc, SCHEMA, { readerVersion: 'persona-declaration-1.2' });
+const validate = (doc) => validateAgainstSchema(doc, SCHEMA, { readerVersion: 'persona-declaration-1.3' });
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
 // Documents the schema rejects; the loader must reject each of them too.
@@ -132,7 +132,10 @@ describe('scripts/lib/persona.mjs — the loader', () => {
   }
 
   it('refuses a field the caller requires and the declaration lacks', async () => {
-    const mod = await load(loaderPlugin({ name: 'engineer', decl: declaration('engineer') }));
+    // deliverable_noun is optional in the schema: drop it from a valid declaration.
+    const decl = clone(declaration('engineer'));
+    delete decl.deliverable_noun;
+    const mod = await load(loaderPlugin({ name: 'engineer', decl }));
     throws(() => mod.loadPersona({ require: ['deliverable_noun'] }), /lacks deliverable_noun, which this script reads/);
     strictEqual(mod.loadPersona({ require: ['decide.fallback'] }).name, 'engineer');
   });
@@ -149,7 +152,7 @@ describe('scripts/lib/persona.mjs — the loader', () => {
 
   // The two readers agree on forward compatibility (ADR-0034 §4.1), at every
   // depth: an unknown scalar is forgiven only in a declaration of a newer minor
-  // than they read (1.2); an unknown object or list never is.
+  // than they read (1.3); an unknown object or list never is.
   it('agrees with the schema on unknown keys: older/same/newer minor × scalar/object/list × every object depth', async () => {
     const at = {
       root: (d) => d,
@@ -165,7 +168,7 @@ describe('scripts/lib/persona.mjs — the loader', () => {
       peer: (d) => d.peer,
     };
     const values = { scalar: 1, object: { x: 1 }, list: [1] };
-    const minors = { older: '1.1', same: '1.2', newer: '1.3' };
+    const minors = { older: '1.2', same: '1.3', newer: '1.4' };
     let forgiven = 0;
     let refused = 0;
     for (const [minorName, minor] of Object.entries(minors)) {
@@ -191,7 +194,7 @@ describe('scripts/lib/persona.mjs — the loader', () => {
 
   it('agrees with the schema where keys are patterns or items are typed: profile_presets keys, artifact items', async () => {
     const cases = [];
-    for (const minor of ['1.1', '1.2', '1.3']) {
+    for (const minor of ['1.1', '1.2', '1.3', '1.4']) {
       for (const value of [1, 'x', { x: 1 }]) {
         cases.push([`${minor}: a profile_presets key outside the id pattern holding ${JSON.stringify(value)}`, (d) => {
           d.schema = `persona-declaration-${minor}`;
@@ -206,6 +209,13 @@ describe('scripts/lib/persona.mjs — the loader', () => {
         d.schema = `persona-declaration-${minor}`;
         d.verbs.compose.artifact = ['### Artifact', '', 'x'];
       }]);
+      // Format 1.3: investigate's declared brief names (PC3 U7).
+      for (const [key, value] of [['brief_file', 'notes_brief.md'], ['brief_file', 'Notes.MD'], ['brief_file', 'notes'], ['brief_file', 7], ['output_root_env', 'NOTES_ROOT'], ['output_root_env', 'notes_root'], ['output_root_env', '']]) {
+        cases.push([`${minor}: investigate ${key} ${JSON.stringify(value)}`, (d) => {
+          d.schema = `persona-declaration-${minor}`;
+          d.verbs.investigate[key] = value;
+        }]);
+      }
     }
     const verdicts = new Set();
     for (const [what, edit] of cases) {
@@ -252,10 +262,10 @@ describe('derived identity (V1) equals the literals the plugins used before ADR-
     });
   }
 
-  it('the footer floors are the ones the resolvers pinned (V18): founder and designer 0.79.0; engineer declares none in Stage 1', () => {
+  it('the footer floors are the ones the resolvers pinned (V18): founder and designer 0.79.0, engineer 0.63.0 (no stage raises it)', () => {
     strictEqual(declaration('founder').runtime_footer_floor, '0.79.0');
     strictEqual(declaration('designer').runtime_footer_floor, '0.79.0');
-    strictEqual(declaration('engineer').runtime_footer_floor, undefined);
+    strictEqual(declaration('engineer').runtime_footer_floor, '0.63.0');
   });
 
   it('capabilities (ADR-0066 Decision 3): no persona gains one it lacked', () => {
@@ -303,7 +313,12 @@ describe('cross-field rules (the generator check)', () => {
     'a size map naming a preset the registry lacks': ['founder', (d) => { d.decide.size_presets.major = 'nine-axis'; }, /decide\.size_presets\.major names "nine-axis"/],
     'a tie-break axis that is not a fallback axis': ['engineer', (d) => { d.decide.tie_break = ['market-attractiveness']; }, /decide\.tie_break names "market-attractiveness", which is not a fallback axis/],
     'a field an enrolled unit reads': ['founder', (d) => { delete d.deliverable_noun; }, /unit session-handoff \(scripts\/session-handoff\.mjs\) reads deliverable_noun/],
-    'a capability on that an enrolled unit carries only the off path of': ['designer', (d) => { d.capabilities.dispatch_target = true; }, /unit state \(scripts\/state\.mjs\) carries only the off path of dispatch_target/],
+    // ADR-0066 Decision 1: a capability module (on_only) reaches exactly the
+    // personas that declare its capability on.
+    'a capability module enrolled into a persona that declares it off': ['engineer', (d) => { d.capabilities.dispatch_target = false; }, /unit parent-writeback \(scripts\/parent-writeback\.mjs\) is a module of dispatch_target, but engineer declares it off/],
+    'a capability on without its module': ['founder', (d) => { d.capabilities.commit_surface = true; }, /founder declares commit_surface on, but the manifest does not generate unit phase7-commit \(scripts\/phase7-commit\.mjs\) into it/],
+    // PC3 U7: autopilot leaves the terminal marker for the commit surface.
+    'dispatch_target on without the commit surface': ['engineer', (d) => { d.capabilities.commit_surface = false; }, /capabilities\.dispatch_target is on but capabilities\.commit_surface is off/],
     'a name that is not its directory': ['founder', (d) => { d.name = 'designer'; }, /does not match its plugin directory founder/],
     'a default profile off its list': ['founder', (d) => { d.verbs.compose.default_profile = 'spec'; }, /verbs\.compose\.default_profile "spec" is not one of its profiles \(plan, canvas, validation-plan\)/],
     'profiles without a default profile': ['designer', (d) => { delete d.verbs.investigate.default_profile; }, /verbs\.investigate declares profiles without default_profile; declare both or neither/],
@@ -315,6 +330,13 @@ describe('cross-field rules (the generator check)', () => {
     'an investigate artifact naming another brief file': ['founder', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to venture_brief.md>']; }, /verbs\.investigate\.artifact must name exactly one \*\.md file, business_brief\.md \(the default profile business-brief with - → _\); it names venture_brief\.md/],
     'an investigate artifact naming the brief file with a suffix': ['founder', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to business_brief.md.bak>']; }, /must name exactly one \*\.md file, business_brief\.md .*; it names none/],
     'an investigate artifact naming no file': ['designer', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to the brief>']; }, /verbs\.investigate\.artifact must name exactly one \*\.md file, design_brief\.md .*; it names none/],
+    // PC3 U7 (format 1.3): the brief's declared names belong to investigate.
+    'a brief file declared on another verb': ['engineer', (d) => { d.verbs.frame.brief_file = 'frame_brief.md'; }, /verbs\.frame\.brief_file is declared, but only investigate saves a brief/],
+    'an output-root variable declared on another verb': ['engineer', (d) => { d.verbs.compose.output_root_env = 'COMPOSE_ROOT'; }, /verbs\.compose\.output_root_env is declared, but only investigate saves a brief/],
+    'an engineer investigate artifact that does not name its declared brief file': ['engineer', (d) => { d.verbs.investigate.brief_file = 'cited_brief.md'; }, /must name exactly one \*\.md file, cited_brief\.md \(the declared verbs\.investigate\.brief_file\); it names research_brief\.md/],
+    // PC3 U7: the check reads the format the loader reads, so an unknown key in
+    // engineer's 1.3 declaration fails here as it fails every state write.
+    'an unknown scalar in a declaration of the format the loader reads': ['engineer', (d) => { d.verbs.investigate.brief_flie = 'research_brief.md'; }, /engineer\/persona\.json: \$\.verbs\.investigate\.member\[\d+\]: \[error\/unknown-key\]/],
     'a renamed investigate profile the artifact does not follow': ['founder', (d) => { d.verbs.investigate.profiles = ['venture-brief']; d.verbs.investigate.default_profile = 'venture-brief'; }, /must name exactly one \*\.md file, venture_brief\.md .*; it names business_brief\.md/],
   };
   for (const [what, [persona, edit, re]] of Object.entries(cases)) {
@@ -326,6 +348,20 @@ describe('cross-field rules (the generator check)', () => {
       match(err, re);
     });
   }
+
+  // No real unit carries only an off path since PC3 converged engineer
+  // (ADR-0066 Decision 6), so the rule is proven on a manifest that marks one.
+  it('fails on a capability on that an enrolled unit carries only the off path of', async () => {
+    const root = repoSubsetCopy();
+    const path = join(root, 'persona-pipeline', 'manifest.json');
+    const m = JSON.parse(readFileSync(path, 'utf8'));
+    m.units.find((u) => u.id === 'session-handoff').off_only = ['legacy_homes'];
+    writeFileSync(path, `${JSON.stringify(m, null, 2)}\n`);
+    const { code, err } = await check(root);
+    strictEqual(code, 1);
+    match(err, /engineer\/persona\.json: unit session-handoff \(scripts\/session-handoff\.mjs\) carries only the off path of legacy_homes, but engineer declares it on/);
+    ok(!/plugins\/(founder|designer)\/persona\.json: unit session-handoff/.test(err), `only the persona with the capability on fails; got:\n${err}`);
+  });
 
   it('fails on a privacy spec that is a link leading out of the plugin', async () => {
     const root = repoSubsetCopy();
@@ -354,8 +390,8 @@ describe('cross-field rules (the generator check)', () => {
 
   it('a newer minor\'s extra scalar, which both readers ignore, is not read as a preset reference', async () => {
     const root = repoSubsetCopy();
-    editDecl(root, 'founder', (d) => { d.schema = 'persona-declaration-1.3'; d.decide.size_presets.future_label = 'later'; });
-    editDecl(root, 'designer', (d) => { d.schema = 'persona-declaration-1.3'; d.decide.profile_presets['Future Key'] = 'later'; });
+    editDecl(root, 'founder', (d) => { d.schema = 'persona-declaration-1.4'; d.decide.size_presets.future_label = 'later'; });
+    editDecl(root, 'designer', (d) => { d.schema = 'persona-declaration-1.4'; d.decide.profile_presets['Future Key'] = 'later'; });
     const { code, err } = await check(root);
     strictEqual(code, 0, err);
   });

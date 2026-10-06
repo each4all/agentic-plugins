@@ -377,12 +377,16 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
 
   // ADR-0042 Non-Goal 2 — designer is NOT an orchestrator dispatch target.
   it('guards the non-dispatch contract: machinery never imports/invokes parent-writeback (ADR-0042 Non-Goal 2)', async () => {
+    // ADR-0066 Stage 3: the canonical stop-archive carries the dispatch_target
+    // parent step behind the capability, importing parent-writeback.mjs only
+    // when it is on. The pin is now behavioral: the module is never generated
+    // into designer (on_only), no script imports it statically (which would
+    // break the plugin), and designer never writes a parent note — pinned by
+    // tests/persona-pipeline/test-stop-archive.mjs "no parent writeback ever".
     for (const rel of [...ALL_SCRIPTS, ...ALL_HOOK_SCRIPTS]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      ok(!/(?:import|from|require)\b[^\n]*parent-writeback/.test(text),
-        `${rel} must not import parent-writeback machinery (any relative path)`);
-      ok(!/writebackParent\s*\(/.test(text),
-        `${rel} must not invoke writebackParent`);
+      ok(!/^\s*import\s[^\n(]*from\s*['"][^'"]*parent-writeback/m.test(text),
+        `${rel} must not import parent-writeback machinery statically`);
     }
     strictEqual(await exists(resolve(PLUGIN_ROOT, 'scripts/parent-writeback.mjs')), false,
       'plugins/designer must not ship a parent-writeback module at all (non-dispatch)');

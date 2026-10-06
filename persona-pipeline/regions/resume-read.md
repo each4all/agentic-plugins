@@ -6,4 +6,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" >/tm
 CURRENT_BRANCH="$(git branch --show-current)"
 CURRENT_HEAD="$(git rev-parse HEAD)"
 CURRENT_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
+BASE_BRANCH="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.branch??""))}catch{}' /tmp/{{name}}-resume-read.json)"
+BASE_HEAD="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.head??""))}catch{}' /tmp/{{name}}-resume-read.json)"
+BASE_DIGEST="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.status_digest??""))}catch{}' /tmp/{{name}}-resume-read.json)"
 ```

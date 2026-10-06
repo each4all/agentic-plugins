@@ -42,7 +42,13 @@ const FOOTER_SCRIPT = join(REPO_ROOT, 'plugins/runtime/scripts/footer.mjs');
 // Raising is free; a drop below the floor means a completion surface lost its
 // template and must be deliberate (update the contract doc + this floor).
 const PERSONA_FLOORS = {
-  engineer: 20, // 18 + /engineer:commit's command and skill (ADR-0063 D3)
+  // 18 + /engineer:commit's command and skill (ADR-0063 D3), less one per
+  // verb runbook that joined the persona pipeline (PC3 U7: frame, compose,
+  // decide, critique, refine, investigate), whose Completion points at the phase note's
+  // block instead of restating it (the pipeline's one-block-per-runbook
+  // contract); the required-surface manifest below still needs a block in
+  // each.
+  engineer: 14,
   founder: 12,
   designer: 12,
   orchestrator: 7,

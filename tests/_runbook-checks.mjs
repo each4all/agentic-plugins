@@ -246,8 +246,10 @@ function resolverLines(plugin) {
  * (ADR-0066 Decision 4, PC2a DD1): the persona's name reaches the shell only
  * as a single-quoted literal, so the override is read with printenv and the
  * cache path quotes the name. Same resolution order as resolverLines.
+ * engineer carries both forms while its runbooks join the regions group by
+ * group (ADR-0066 Stage 3, PC3 U7).
  */
-const GENERATED_RESOLVER_PLUGINS = new Set(['founder', 'designer']);
+const GENERATED_RESOLVER_PLUGINS = new Set(['founder', 'designer', 'engineer']);
 function generatedResolverLines(plugin) {
   const env = `AGENTIC_${plugin.toUpperCase()}_ROOT`;
   return [

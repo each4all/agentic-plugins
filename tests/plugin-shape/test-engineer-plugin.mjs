@@ -54,15 +54,19 @@
 //
 // Slug sanitization unit tests, lock-ownership race, frontmatter
 // validation, secret scrubbing, envelope strict shape, and SessionStart
-// marker hardening live in dedicated unit tests under tests/engineer/
-// (added in Stage 2 Deliverable E Cluster 2 alongside this test).
+// marker hardening live in dedicated unit tests (added in Stage 2
+// Deliverable E Cluster 2 alongside this test under tests/engineer/, and
+// parametrized over the personas under tests/persona-pipeline/ since
+// ADR-0066 Stage 3).
 //
 // Run via `node --test tests/plugin-shape/test-engineer-plugin.mjs`.
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
@@ -838,6 +842,87 @@ describe('plugins/engineer — 12 commands (commands/<verb>.md — 6 verbs + aud
     );
   });
 
+  // engineer's authored text around the generated peer-now and resume regions
+  // (the shared contracts are in tests/persona-pipeline/test-runbook-contracts.mjs).
+  it('peer-now and resume cite their provenance: ADR-0017 §sub-decision-3 (peer-now), ADR-0017 §sub-decision-1 and ADR-0018 §sub-decision-3 (resume)', async () => {
+    const peerNow = await readFile(resolve(PLUGIN_ROOT, 'commands/peer-now.md'), 'utf8');
+    ok(/ADR-0017 §sub-decision-3/.test(peerNow), 'commands/peer-now.md must cite ADR-0017 §sub-decision-3');
+    const resume = await readFile(resolve(PLUGIN_ROOT, 'commands/resume.md'), 'utf8');
+    ok(/ADR-0017 §sub-decision-1/.test(resume), 'commands/resume.md must cite ADR-0017 §sub-decision-1');
+    ok(/ADR-0018 §sub-decision-3/.test(resume), 'commands/resume.md must cite ADR-0018 §sub-decision-3 (drift enrichment)');
+  });
+
+  it('resume\'s drift report: Phase 2 states drift is two-tier and the 4-tier taxonomy deferred; workflow_type and verb on separate labeled lines, never <verb> under the workflow_type label (ADR-0020 PR 2)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/resume.md'), 'utf8');
+    const [from, to] = [text.indexOf('## Phase 2 — Drift report'), text.indexOf('## Phase 2b')];
+    ok(from > 0 && to > from, 'the Phase 2 section');
+    const phase2 = text.slice(from, to).replace(/\s+/g, ' ');
+    ok(phase2.includes('Drift is two-tier') && /4-tier \(`compatible \/ conflicting \/ rewound`\) is deferred/.test(phase2),
+      'Phase 2 keeps the out-of-scope 4-tier taxonomy explicit');
+    ok(/^\s{2}workflow_type:\s+<workflow_type/m.test(text), 'the drift report labels workflow_type with the workflow_type value');
+    ok(/^\s{2}verb:\s+<verb>/m.test(text), 'the drift report has a separate verb: line');
+    ok(!/^\s{2}workflow_type:\s+<verb>\s*$/m.test(text), 'the pre-PR-2 mislabel "workflow_type:  <verb>" must stay removed');
+  });
+
+  it('resume\'s drift block, run: clean only when branch, HEAD and digest match (an unrecorded digest matches); dirty runs the four ADR-0018 probes in order only past the baseline guard, and always closes with the no-auto-reconcile notice', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/resume.md'), 'utf8');
+    const blocks = [...text.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map((m) => m[1]).filter((b) => /^\s*DRIFT=dirty$/m.test(b));
+    strictEqual(blocks.length, 1, 'the drift block');
+    const [block] = blocks;
+    const guarded = block.indexOf('if [ "$BASE_VALID" = true ]; then');
+    ok(guarded > 0 && /\[ -z "\$BASE_HEAD" \]/.test(block.slice(0, guarded)), 'the empty-baseline guard precedes the probes');
+    let at = guarded;
+    for (const probe of [
+      /git\s+log\s+"\$BASE_HEAD\.\.HEAD"\s+--oneline/,
+      /git\s+diff\s+--stat\s+HEAD/,
+      /git\s+log\s+--diff-filter=R\s+--name-status\s+"\$BASE_HEAD\.\.HEAD"/,
+      /git\s+log\s+--diff-filter=D\s+--name-status\s+"\$BASE_HEAD\.\.HEAD"/,
+    ]) {
+      const m = probe.exec(block.slice(at));
+      ok(m, `${probe}, in order, inside the guarded branch`);
+      at += m.index + m[0].length;
+    }
+
+    const repo = mkdtempSync(resolve(tmpdir(), 'engineer-resume-drift-'));
+    try {
+      const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: repo, encoding: 'utf8' }).trim();
+      git('init', '-q', '-b', 'main');
+      git('commit', '-q', '--allow-empty', '-m', 'baseline');
+      const head = git('rev-parse', 'HEAD');
+      const run = (vars) => {
+        const assign = Object.entries(vars).map(([k, v]) => `${k}='${v}'`).join('\n');
+        const r = spawnSync('bash', ['-c', `${assign}\n${block}\nprintf 'DRIFT=%s\\n' "$DRIFT"`], { cwd: repo, encoding: 'utf8' });
+        strictEqual(r.status, 0, r.stderr);
+        return { drift: /^DRIFT=(.*)$/m.exec(r.stdout)?.[1], out: r.stdout };
+      };
+      const NOTICE = 'current plugin does not auto-reconcile; review and decide [resume / archive / abort]';
+      const base = { CURRENT_BRANCH: 'main', BASE_BRANCH: 'main', CURRENT_HEAD: head, BASE_HEAD: head, CURRENT_DIGEST: 'd1', BASE_DIGEST: 'd1' };
+      for (const [label, vars] of [['unchanged', base], ['no recorded digest', { ...base, BASE_DIGEST: '' }]]) {
+        const r = run(vars);
+        strictEqual(r.drift, 'clean', label);
+        ok(!r.out.includes(NOTICE), `${label}: no dirty report`);
+      }
+      for (const [label, vars] of [['branch changed', { ...base, CURRENT_BRANCH: 'other' }], ['HEAD moved', { ...base, CURRENT_HEAD: 'f'.repeat(40) }], ['digest changed', { ...base, CURRENT_DIGEST: 'd2' }]]) {
+        const r = run(vars);
+        strictEqual(r.drift, 'dirty', label);
+        let seen = -1;
+        for (const line of ['commits since baseline:', 'working-tree diff stat (vs HEAD; untracked excluded):', 'renames since baseline:', 'deletes since baseline:', NOTICE]) {
+          const next = r.out.indexOf(line);
+          ok(next > seen, `${label}: ${line} in order:\n${r.out}`);
+          seen = next;
+        }
+      }
+      for (const [label, baseHead] of [['empty baseline head', ''], ['unavailable baseline commit', '0'.repeat(40)]]) {
+        const r = run({ ...base, BASE_HEAD: baseHead });
+        strictEqual(r.drift, 'dirty', label);
+        ok(r.out.includes('✗ Invalid baseline') && !r.out.includes('commits since baseline'), `${label}: no probe runs:\n${r.out}`);
+        ok(r.out.includes(NOTICE), `${label}: the notice still closes the report`);
+      }
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('workflow completion commands defer to the code-emitted runtime completion footer (ADR-0039)', async () => {
     // ADR-0063 D3 — /engineer:commit is a completion surface as well.
     for (const cmd of [...VERBS, ...LIFECYCLE_MACROS, 'commit']) {
@@ -921,6 +1006,17 @@ describe('plugins/engineer — 12 commands (commands/<verb>.md — 6 verbs + aud
         /entry-routing-contract\.md/.test(completionRegion),
         `commands/${verb}.md Completion must cite entry-routing-contract.md (ADR-0029 §1)`,
       );
+      // PC3 U7: a runbook whose finalize is generated holds the proposal
+      // template once, in the phase note, and its Completion points at that
+      // note: the persona-pipeline runbook contract counts one six-field block
+      // and fails a prose re-enumeration (tests/_runbook-checks.mjs).
+      if (text.includes(`<!-- pipeline:begin ${verb}-finalize -->`)) {
+        ok(
+          /the \*\*Active Next-Action Proposal\*\* the phase note above carries/.test(completionRegion),
+          `commands/${verb}.md Completion must point at the phase note's proposal`,
+        );
+        continue;
+      }
       for (const field of PROPOSAL_FIELDS) {
         ok(
           completionRegion.includes(field),

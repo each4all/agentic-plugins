@@ -5,7 +5,7 @@
   "runtime_footer_floor": "0.79.0",
   "capabilities": {
     "dispatch_target": true,
-    "commit_surface": false,
+    "commit_surface": true,
     "legacy_homes": false,
     "profile_presets": false
   },

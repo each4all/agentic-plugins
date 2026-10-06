@@ -2,7 +2,9 @@
 //
 // Verifies that orchestrator computes its OWN bounded MACRO projection
 // (fail-closed) and that the result satisfies the runtime seam's bounded schema
-// (the cross-plugin contract). Mirrors tests/engineer/test-session-handoff.mjs
+// (the cross-plugin contract). Mirrors the persona suite
+// tests/persona-pipeline/test-session-handoff.mjs (engineer's cases since
+// ADR-0066 PC3)
 // with the macro-specific divergences: cross-branch resolution (find-active then
 // find-macro), the pure evaluateMacroStopArchive gate set, the empty-macro
 // guard, and HEAD-independent archive readiness.

@@ -1,5 +1,5 @@
 {
-  "description": "PC2a2 T0 and PC2a3 T0': what each founder and designer verb runbook did before its blocks became generated regions (tests/persona-pipeline/_verb-runbooks.mjs reads it). compose, decide, frame and investigate were written from the runbooks at 7e1db44d; critique, refine and start from the runbooks at 85abc9c3. A region that changes any of this must list the change in allowed_differences.",
+  "description": "PC2a2 T0 and PC2a3 T0': what each founder and designer verb runbook did before its blocks became generated regions (tests/persona-pipeline/_verb-runbooks.mjs reads it). compose, decide, frame and investigate were written from the runbooks at 7e1db44d; critique, refine and start from the runbooks at 85abc9c3. PC3: engineer's seven, from its runbooks at ae3dd024, before its verb runbooks join the regions. A region that changes any of this must list the change in allowed_differences.",
   "expected_ensemble_types": {
     "founder": {
       "compose": "plan-verify",
@@ -16,6 +16,14 @@
       "investigate": "reference-scan",
       "critique": "review",
       "refine": "refine-verify"
+    },
+    "engineer": {
+      "compose": "plan-verify",
+      "decide": "brainstorm",
+      "frame": "frame",
+      "investigate": "investigate",
+      "critique": "review",
+      "refine": "refine-verify"
     }
   },
   "expected_launched": {
@@ -24,6 +32,10 @@
     },
     "designer": {
       "critique": "critique (profile=<profile>)"
+    },
+    "engineer": {
+      "critique": "critique (profile=<profile>)",
+      "investigate": "investigate (profile=<profile>)"
     }
   },
   "allowed_differences": [
@@ -3037,6 +3049,871 @@
         ]
       },
       "why": "PC2b Review of code step 6 (finding 3): designer waits for convergence (terminal_requires_convergence), so a deferral that leaves the refinement unconverged clears the recurring-finding gate with the next step that resolves what is still open and makes no terminal write; converged, the deferral clears with commit next and finishes as before"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/frame",
+        "engineer/decide",
+        "engineer/critique",
+        "engineer/refine",
+        "engineer/investigate"
+      ],
+      "where": "call:state.mjs create:--original-request",
+      "from": "<one-line scrubbed user request>",
+      "to": "<the original request described above>",
+      "why": "PC3 U7: as for founder and designer (PC2a2 PD3), the request placeholder moves to the region prose above the block (verbs.<verb>.request_placeholder)"
+    },
+    {
+      "runbooks": [
+        "engineer/compose"
+      ],
+      "where": "call:state.mjs create:--profile",
+      "from": "<profile from $ARGUMENTS or 'plan'>",
+      "to": "<profile from the arguments above — default plan>",
+      "why": "PC3 U7: as for founder (PC2a2 PD3/PD5), the default comes from DEFAULT_PROFILE, assigned from verbs.compose.default_profile"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/frame",
+        "engineer/decide",
+        "engineer/critique",
+        "engineer/refine",
+        "engineer/investigate"
+      ],
+      "where": "guards.detached_head",
+      "from": "— engineer workflows",
+      "to": "— ${PERSONA} workflows",
+      "why": "PC3 U7: as for founder and designer (PC2a2 PD3/PD5), the message names the persona through PERSONA, which the Phase 0 block assigns"
+    },
+    {
+      "runbooks": [
+        "engineer/frame"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "frame"
+          ],
+          [
+            "--ensemble-type",
+            "frame"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "frame"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC3 U7 (ADR-0066 D2, Stage 3): engineer's ensemble attempt is settled from the run ledger as founder's and designer's are since PC2b: a run that launched and failed records verdict failed and clears its pending entry, a completed run records the synthesis verdict through ensemble-commit, as before"
+    },
+    {
+      "runbooks": [
+        "engineer/compose"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "compose"
+          ],
+          [
+            "--ensemble-type",
+            "plan-verify"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "compose"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC3 U7 (ADR-0066 D2, Stage 3): engineer's ensemble attempt is settled from the run ledger as founder's and designer's are since PC2b: a run that launched and failed records verdict failed and clears its pending entry, a completed run records the synthesis verdict through ensemble-commit, as before"
+    },
+    {
+      "runbooks": [
+        "engineer/frame"
+      ],
+      "where": "note",
+      "from": "(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from this frame, not a fixed table)",
+      "to": "(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)",
+      "why": "PC3 U7: the citation line is the shared finalize note's (PC2a4 RV4), one line, naming the artifact"
+    },
+    {
+      "runbooks": [
+        "engineer/compose"
+      ],
+      "where": "note",
+      "from": "(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from this artifact, not a fixed table)",
+      "to": "(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)",
+      "why": "PC3 U7: the citation line is the shared finalize note's (PC2a4 RV4), on one line"
+    },
+    {
+      "runbooks": [
+        "engineer/compose",
+        "engineer/frame",
+        "engineer/decide",
+        "engineer/critique",
+        "engineer/refine",
+        "engineer/investigate"
+      ],
+      "where": "note",
+      "from": "- selected_next:         <verb | commit | owner decision | done>",
+      "to": "- selected_next:         <verb | commit | done | owner decision>",
+      "why": "PC3 U7: the shared note lists the closed next-step kinds in finish-verb's order (PC2b DD7); the same four values"
+    },
+    {
+      "runbooks": [
+        "engineer/compose"
+      ],
+      "where": "note",
+      "from": "(profile=<plan|code>) verdict=<...>",
+      "to": "(profile=<profile>) verdict=<agreed|concerns|conflict>",
+      "why": "PC3 U7: as for founder (PC2a2 PD2), the profile list stays in the authored Profiles section; the verdict placeholder names the synthesis verdicts the other verbs name (settle records the value as given)"
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "decide"
+          ],
+          [
+            "--ensemble-type",
+            "brainstorm"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "decide"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC3 U7 (ADR-0066 D2, Stage 3): engineer's ensemble attempt is settled from the run ledger as founder's and designer's are since PC2b: a run that launched and failed records verdict failed and clears its pending entry, a completed run records the synthesis verdict through ensemble-commit, as before"
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "where": "note",
+      "from": "(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from this decision, not a fixed table)",
+      "to": "(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)",
+      "why": "PC3 U7: the citation line is the shared finalize note's (PC2a4 RV4), one line, naming the artifact"
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#2",
+      "from": "state.mjs awaiting-owner-clear",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "PC3 U7: as for founder (PC2b, Review of code step 6), the Owner selection reads the workflow type first, so a gate met inside an /engineer:start lifecycle is cleared and the lifecycle resumes, with no verb terminal write"
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "where": "call:state.mjs awaiting-owner-clear:--resolution",
+      "from": "Owner selection: <the direction the owner chose, and why>",
+      "to": "$RESOLUTION",
+      "why": "PC3 U7: as for founder (PC2b, Review of code step 6), the resolution is read from a quoted heredoc, so no quote, $ or backtick in the owner's words is read by the shell"
+    },
+    {
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "where": "call:state.mjs create:--profile",
+      "from": "${AGENTIC_PROFILE:-<profile from $ARGUMENTS, e.g., full-codebase, full-codebase:security>}",
+      "to": "${AGENTIC_PROFILE:-<profile from the arguments above — default default>}",
+      "why": "PC3 U7: as for founder (PC2a3), the default comes from DEFAULT_PROFILE, assigned from verbs.critique.default_profile; the full-codebase examples move to the prose above the block"
+    },
+    {
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "where": "call:peer-runner.mjs run:--ensemble-type",
+      "from": "${ENSEMBLE_TYPE:-review}",
+      "to": "review",
+      "why": "PC3 U7: as for founder's critique (PC2a3 QD5), the block assigns review, the default profile's type, and the prose tells the agent to set adversarial-scan there for full-codebase; the type is no longer a variable set in another Bash call"
+    },
+    {
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "where": "run_id_prefixes",
+      "from": "${ENSEMBLE_TYPE:-review}",
+      "to": "review",
+      "why": "PC3 U7: the run id carries the type the block assigned, as for the dispatch above"
+    },
+    {
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "critique"
+          ],
+          [
+            "--ensemble-type",
+            "${ENSEMBLE_TYPE:-review}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "critique"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC3 U7 (ADR-0066 D2, Stage 3): engineer's ensemble attempt is settled from the run ledger as founder's and designer's are since PC2b: a run that launched and failed records verdict failed and clears its pending entry, a completed run records the synthesis verdict through ensemble-commit, as before; settle reads the ensemble type from the ledger, so the variable is not repeated"
+    },
+    {
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "where": "note",
+      "from": "### Ensemble launched: critique (profile=<...>) at <iso-utc>\n\n### Ensemble synthesis: critique verdict=<agreed|concerns|conflict>",
+      "to": "### Ensemble launched: critique (profile=<profile>) at <iso-utc>\n\n### Ensemble synthesis: critique (profile=<profile>) verdict=<agreed|concerns|conflict>",
+      "why": "PC3 U7: as for founder and designer (PC2b U5a), both headings name the profile, from the shared finalize note"
+    },
+    {
+      "runbooks": [
+        "engineer/critique"
+      ],
+      "where": "note",
+      "from": "(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from these findings, not a fixed table)",
+      "to": "(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)",
+      "why": "PC3 U7: the citation line is the shared finalize note's (PC2a4 RV4), one line, naming the artifact"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "refine"
+          ],
+          [
+            "--ensemble-type",
+            "refine-verify"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "refine"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC3 U7 (ADR-0066 D2, Stage 3): engineer's ensemble attempt is settled from the run ledger as founder's and designer's are since PC2b: a run that launched and failed records verdict failed and clears its pending entry, a completed run records the synthesis verdict through ensemble-commit, as before"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "where": "note",
+      "from": "### Ensemble synthesis: refine verdict=<agreed|concerns|conflict>",
+      "to": "### Ensemble synthesis: refine verdict=<resolved|concerns|regression|conflict>",
+      "why": "PC3 U7: the refine finalize names the Refine-verify verdicts founder's and designer's name (PC2a3); settle records the value as given"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "where": "note",
+      "from": "(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from this refinement, not a fixed table)",
+      "to": "(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)",
+      "why": "PC3 U7: the citation line is the shared finalize note's (PC2a4 RV4), one line, naming the artifact"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "where": "call:state.mjs awaiting-owner-clear#1:--resolution",
+      "from": "Owner decision: fix <the finding> now",
+      "to": "$RESOLUTION",
+      "why": "PC3 U7: as for founder (PC2b, Review of code step 6), the owner's resolution is read from a quoted heredoc, so no quote, $ or backtick in it is read by the shell"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "where": "call:state.mjs awaiting-owner-clear#2:--resolution",
+      "from": "Owner decision: defer <the finding> — <the owner's reason, and where it is tracked>",
+      "to": "$RESOLUTION",
+      "why": "PC3 U7: as for the Fix now block"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#3",
+      "from": "state.mjs awaiting-owner-clear",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "PC3 U7: as for founder (PC2b, Review of code step 6), the Defer block reads the workflow type first, so a gate met inside an /engineer:start lifecycle is cleared and the lifecycle resumes, with no verb terminal write"
+    },
+    {
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs create",
+      "from": {
+        "script": "state.mjs",
+        "sub": "create",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--verb",
+            "investigate"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--git-baseline-branch",
+            "$GIT_BRANCH"
+          ],
+          [
+            "--git-baseline-head",
+            "$GIT_HEAD"
+          ],
+          [
+            "--status-digest",
+            "$STATUS_DIGEST"
+          ],
+          [
+            "--persona",
+            "engineer"
+          ],
+          [
+            "--profile",
+            "${AGENTIC_PROFILE:-<profile from the arguments above — analysis|root-cause|cited-brief; default 'analysis'>}"
+          ],
+          [
+            "--original-request",
+            "${AGENTIC_TOPIC:-<the original request described above>}"
+          ],
+          [
+            "--current-phase",
+            "phase-0-bootstrap"
+          ],
+          [
+            "--next-action",
+            "Run investigate skill"
+          ],
+          [
+            null,
+            "${PARENT_ARGS[@]}"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "create",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--verb",
+            "investigate"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--persona",
+            "engineer"
+          ],
+          [
+            "--git-baseline-branch",
+            "$GIT_BRANCH"
+          ],
+          [
+            "--git-baseline-head",
+            "$GIT_HEAD"
+          ],
+          [
+            "--status-digest",
+            "$STATUS_DIGEST"
+          ],
+          [
+            "--profile",
+            "${AGENTIC_PROFILE:-<profile from the arguments above — default analysis>}"
+          ],
+          [
+            "--original-request",
+            "${AGENTIC_TOPIC:-<the original request described above>}"
+          ],
+          [
+            "--current-phase",
+            "phase-0-bootstrap"
+          ],
+          [
+            "--next-action",
+            "Run investigate skill"
+          ],
+          [
+            null,
+            "${PARENT_ARGS[@]}"
+          ]
+        ]
+      },
+      "why": "PC3 U7: the shared profiled bootstrap's create, as engineer's critique (PC2a3): --persona follows --host, and the profile placeholder's default comes from DEFAULT_PROFILE, assigned from verbs.investigate.default_profile; the three profiles move to the prose above the block"
+    },
+    {
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "where": "call:peer-runner.mjs run:--ensemble-type",
+      "from": "${ENSEMBLE_TYPE:-investigate}",
+      "to": "investigate",
+      "why": "PC3 U7: as engineer's critique, the block assigns investigate, the analysis profile's type, and the prose tells the agent to set root-cause or cited-brief there by profile; the type is no longer a variable set in another Bash call"
+    },
+    {
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "where": "run_id_prefixes",
+      "from": "${ENSEMBLE_TYPE:-investigate}",
+      "to": "investigate",
+      "why": "PC3 U7: the run id carries the type the block assigned, as for the dispatch above"
+    },
+    {
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "investigate"
+          ],
+          [
+            "--ensemble-type",
+            "${ENSEMBLE_TYPE:-investigate}"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "investigate"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC3 U7 (ADR-0066 D2, Stage 3): engineer's ensemble attempt is settled from the run ledger as founder's and designer's are since PC2b: a run that launched and failed records verdict failed and clears its pending entry, a completed run records the synthesis verdict through ensemble-commit, as before; settle reads the ensemble type from the ledger, so the variable is not repeated"
+    },
+    {
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "where": "call:state.mjs finish-verb:--next-step-verb",
+      "from": "<next verb>",
+      "to": "frame",
+      "why": "PC3 U7: the shared investigate finalize shows frame as the typical next verb, as founder's and designer's; the prose still has the agent set the next step from the proposal (decide, refine, frame or compose)"
+    },
+    {
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "where": "note",
+      "from": "### Ensemble launched: investigate at <iso-utc>\n\n### Ensemble synthesis: investigate verdict=<agreed|concerns|conflict>",
+      "to": "### Ensemble launched: investigate (profile=<profile>) at <iso-utc>\n\n### Ensemble synthesis: investigate (profile=<profile>) verdict=<agreed|concerns|conflict>",
+      "why": "PC3 U7: as engineer's critique, both headings name the profile (derived.investigate_launched / investigate_synthesis: several declared profiles, whose point type differs by profile)"
+    },
+    {
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "where": "note",
+      "from": "<top findings with file paths and line numbers>\n\n### Active",
+      "to": "<top findings with file paths and line numbers>\n\n### Brief saved\n\n<cited-brief profile only: absolute path to research_brief.md; drop this section for analysis and root-cause>\n\n### Active",
+      "why": "PC3 U7: the brief's path, which the runbook's prose already asked the cited-brief note to carry under ### Brief saved, is a section of the declared artifact (verbs.investigate.artifact names brief_file research_brief.md, as the generator requires)"
+    },
+    {
+      "runbooks": [
+        "engineer/investigate"
+      ],
+      "where": "note",
+      "from": "(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from these findings, not a fixed table)",
+      "to": "(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)",
+      "why": "PC3 U7: the citation line is the shared finalize note's (PC2a4 RV4), one line, naming the artifact"
     }
   ],
   "runbooks": {
@@ -3310,7 +4187,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: compose at <iso-utc>\n\n### Ensemble synthesis: compose (profile=<spec|flow|wireframe>) verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Artifact\n\n<the design artifact: IA / flow (with per-screen state set) / wireframe\n structure / component specs / CTA copy — every element annotated with its\n accessibility + consistency acceptance criteria, [to be validated] markers\n on unvalidated assumptions>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — how the artifact honors the confirmed frame + chosen direction, plus its accessibility + consistency acceptance criteria>\n- evidence_pointers:     <spec sections / flow states / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
     },
@@ -3584,7 +4462,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": "if [ -n \"${RUN_ID:-}\" ] && [ -n \"${VERDICT:-}\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" ensemble-commit \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --phase critique --ensemble-type review --run-id \"$RUN_ID\" \\\n    --verdict \"$VERDICT\" --summary \"$SUMMARY\" \\\n    --completed-at \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\nfi",
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: critique (profile=<lens|all>) at <iso-utc>\n\n### Ensemble synthesis: critique verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Review report\n\nGate verdict: 접근성 Accessibility [PASS/CONDITIONAL/FAIL] (candidate-level; focus-order / keyboard / screen-reader unverified — runtime)\n\n<severity-grouped findings: CRITICAL / MAJOR / MINOR / SUGGESTION, each\n [element/region] [lens] — [finding + failure signal + criteria ref]; plus Looks Strong>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — the decisive findings + the accessibility gate verdict>\n- evidence_pointers:     <finding sections / criteria refs / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
     },
@@ -3860,7 +4739,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: decide at <iso-utc>\n\n### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Directions compared\n\n<table or list of directions with tradeoffs across the resolved design axes>\n\n### Recommendation\n\n<chosen direction + rationale + accessibility gate verdict + risks>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — decisive 사용성/archetype axis + the accessibility gate verdict>\n- evidence_pointers:     <phase notes / brief / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
     },
@@ -4126,7 +5006,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: frame at <iso-utc>\n\n### Ensemble synthesis: frame verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### UX problem model\n\nUX Problem / Opportunity: ...\nUsers + Job-to-be-Done: ...\nGoals: ...\nMeasurable UX success metrics: ...\nConstraints: ...\nKey risks: ...\nOut of scope: ...\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <UX-problem-model fields / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
     },
@@ -4400,7 +5281,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: reference-scan at <iso-utc>\n\n### Ensemble synthesis: design-brief verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Brief saved\n\n<absolute path to design_brief.md>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <brief path / sub-questions / Open Questions — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
     },
@@ -4666,7 +5548,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": "if [ -n \"${RUN_ID:-}\" ] && [ -n \"${VERDICT:-}\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" ensemble-commit \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --phase refine --ensemble-type refine-verify --run-id \"$RUN_ID\" \\\n    --verdict \"$VERDICT\" --summary \"$SUMMARY\" \\\n    --completed-at \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\nfi",
-        "converged": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete \\\n    --terminal-marker true \\\n    --next-action \"$NEXT_ACTION\" \\\n    --event updated\nelse\n  echo \"→ Refine PAUSED (non-convergence / regression / vision re-critique unavailable) — workflow left ACTIVE, NOT marked terminal. Resolve the flagged item, then re-run /designer:refine or route to /designer:decide.\" >&2\nfi"
+        "converged": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete \\\n    --terminal-marker true \\\n    --next-action \"$NEXT_ACTION\" \\\n    --event updated\nelse\n  echo \"→ Refine PAUSED (non-convergence / regression / vision re-critique unavailable) — workflow left ACTIVE, NOT marked terminal. Resolve the flagged item, then re-run /designer:refine or route to /designer:decide.\" >&2\nfi",
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: refine at <iso-utc>\n\n### Ensemble synthesis: refine verdict=<resolved|concerns|regression|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Refinement summary\n\n- Applied: <N findings / 1 revision>\n- Verified: <downstream elements reconcile; accessibility gate exposure\n  unchanged; measurable success metrics intact; [to be validated] markers intact>\n- Render status (post-code only): <re-rendered screen read host-direct | re-render unavailable / broke — vision re-critique UNVERIFIED | N/A (pre-code)>\n- Re-critique: <converged — no new CRITICAL/MAJOR + accessibility gate not FAIL (PASS, or CONDITIONAL with named preconditions) | NOT converged — new findings / regression / gate FAIL / vision UNVERIFIED>\n- Convergence: <CONVERGED | PAUSED — bounded passes exhausted / regression / render unavailable → routed to owner decision | /designer:decide | /designer:investigate>\n- Deferred: <items not addressed and why>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — the design reconciles + the accessibility gate verdict>\n- evidence_pointers:     <revised elements / criteria refs / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n"
     },
@@ -4802,7 +5685,2455 @@
         "baseline_rc": "BASELINE_RC=$?\nif [ \"$BASELINE_RC\" -ne 0 ]; then\n  echo \"✗ clean-baseline check failed (exit $BASELINE_RC); its error is above.\" >&2; exit \"$BASELINE_RC\"\nfi",
         "baseline_status": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /designer:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"  Resolve, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
         "ensemble_launched": null,
-        "converged": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete --terminal-marker true \\\n    --next-action \"Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface\" \\\n    --event updated\nelse\n  echo \"→ Lifecycle PAUSED at Phase 4 (non-convergence / new accessibility barrier / vision re-critique unavailable) — workflow left ACTIVE, NOT marked terminal. Resolve the flagged item, then re-run /designer:refine or route to /designer:decide.\" >&2\nfi"
+        "converged": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete --terminal-marker true \\\n    --next-action \"Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface\" \\\n    --event updated\nelse\n  echo \"→ Lifecycle PAUSED at Phase 4 (non-convergence / new accessibility barrier / vision re-critique unavailable) — workflow left ACTIVE, NOT marked terminal. Resolve the flagged item, then re-run /designer:refine or route to /designer:decide.\" >&2\nfi",
+        "baseline_dirty": null
+      },
+      "note": null
+    },
+    "engineer/compose": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "autopilot-preflight",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "compose"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "engineer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--profile",
+              "${AGENTIC_PROFILE:-<profile from $ARGUMENTS or 'plan'>}"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line scrubbed user request>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run compose skill"
+            ],
+            [
+              null,
+              "${PARENT_ARGS[@]}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "compose"
+            ],
+            [
+              "--profile",
+              "<profile or empty>"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into compose"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb. Profile=<...>."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--clear-next-step",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Run compose skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "compose"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "plan-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Compose (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Critique the composed artifact"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "compose"
+            ],
+            [
+              "--ensemble-type",
+              "plan-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "finish-verb",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--next-action",
+              "Critique the composed artifact"
+            ],
+            [
+              "--next-step-kind",
+              "verb"
+            ],
+            [
+              "--next-step-verb",
+              "critique"
+            ],
+            [
+              "--next-step-confidence",
+              "<HIGH|MEDIUM|LOW>"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "plan-verify"
+      ],
+      "mktemp_templates": [
+        "engineer-compose-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — engineer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null,
+        "baseline_dirty": null
+      },
+      "note": "### Ensemble launched: compose at <iso-utc>\n\n### Ensemble synthesis: compose (profile=<plan|code>) verdict=<...>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Artifact\n\n<plan: TDD task list, dependencies, success criteria\n OR code: list of changed files with one-line summary each>\n\n### Active next-action proposal\n\n(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from this artifact, not a fixed table)\n- selected_next:         <verb | commit | owner decision | done>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>\n- evidence_pointers:     <phase notes / files / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>\n"
+    },
+    "engineer/critique": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "autopilot-preflight",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "critique"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "engineer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--profile",
+              "${AGENTIC_PROFILE:-<profile from $ARGUMENTS, e.g., full-codebase, full-codebase:security>}"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line scrubbed user request>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run critique skill"
+            ],
+            [
+              null,
+              "${PARENT_ARGS[@]}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "critique"
+            ],
+            [
+              "--profile",
+              "<profile or empty>"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into critique"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb. Profile=<...>."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--clear-next-step",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Run critique skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "critique"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "${ENSEMBLE_TYPE:-review}"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Critique (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Refine to address findings"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "critique"
+            ],
+            [
+              "--ensemble-type",
+              "${ENSEMBLE_TYPE:-review}"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "finish-verb",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--next-action",
+              "Refine to address findings"
+            ],
+            [
+              "--next-step-kind",
+              "verb"
+            ],
+            [
+              "--next-step-verb",
+              "refine"
+            ],
+            [
+              "--next-step-confidence",
+              "<HIGH|MEDIUM|LOW>"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "${ENSEMBLE_TYPE:-review}"
+      ],
+      "mktemp_templates": [
+        "engineer-critique-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — engineer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null,
+        "baseline_dirty": null
+      },
+      "note": "### Ensemble launched: critique (profile=<...>) at <iso-utc>\n\n### Ensemble synthesis: critique verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Findings\n\n<severity-grouped findings: CRITICAL / MAJOR / MINOR / SUGGESTION>\n\n### Active next-action proposal\n\n(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from these findings, not a fixed table)\n- selected_next:         <verb | commit | owner decision | done>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>\n- evidence_pointers:     <phase notes / files / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>\n"
+    },
+    "engineer/decide": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "autopilot-preflight",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "decide"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "engineer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line scrubbed user request>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run decide skill"
+            ],
+            [
+              null,
+              "${PARENT_ARGS[@]}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "decide"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into decide"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--clear-next-step",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Run decide skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "decide-registry.mjs",
+          "sub": "resolve",
+          "args": [
+            [
+              "--args-file",
+              "<directory from step 1>/args.json"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "decide"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "brainstorm"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Decide (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Compose the artifact for the chosen direction"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "decide"
+            ],
+            [
+              "--ensemble-type",
+              "brainstorm"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "finish-verb",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--next-action",
+              "Compose the artifact for the chosen direction"
+            ],
+            [
+              "--next-step-kind",
+              "verb"
+            ],
+            [
+              "--next-step-verb",
+              "compose"
+            ],
+            [
+              "--next-step-confidence",
+              "<HIGH|MEDIUM|LOW>"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "awaiting-owner-clear",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--gate",
+              "decide-conflict"
+            ],
+            [
+              "--resolution",
+              "Owner selection: <the direction the owner chose, and why>"
+            ],
+            [
+              "--next-step-kind",
+              "verb"
+            ],
+            [
+              "--next-step-verb",
+              "compose"
+            ],
+            [
+              "--next-step-confidence",
+              "HIGH"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "finish-verb",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--next-action",
+              "Compose the artifact for the chosen direction"
+            ],
+            [
+              "--next-step-kind",
+              "verb"
+            ],
+            [
+              "--next-step-verb",
+              "compose"
+            ],
+            [
+              "--next-step-confidence",
+              "HIGH"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "brainstorm"
+      ],
+      "mktemp_templates": [
+        "engineer-decide-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — engineer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": "RESOLVE_RC=$?\nif [ \"$RESOLVE_RC\" -eq 2 ]; then\n  echo \"✗ decide-registry rejected the argument list — fix the invocation and rerun.\" >&2\n  exit 1\nelif [ \"$RESOLVE_RC\" -ne 0 ]; then\n  echo \"✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above.\" >&2\n  exit 1\nfi",
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null,
+        "baseline_dirty": null
+      },
+      "note": "### Ensemble launched: decide at <iso-utc>\n\n### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Options compared\n\n<table or list of options with tradeoffs>\n\n### Recommendation\n\n<chosen direction + rationale + risks>\n\n### Active next-action proposal\n\n(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from this decision, not a fixed table)\n- selected_next:         <verb | commit | owner decision | done>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>\n- evidence_pointers:     <phase notes / files / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>\n"
+    },
+    "engineer/frame": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "autopilot-preflight",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "frame"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "engineer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line scrubbed user request>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run frame skill"
+            ],
+            [
+              null,
+              "${PARENT_ARGS[@]}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "frame"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into frame"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--clear-next-step",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Run frame skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "frame"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "frame"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Frame (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Decide on a direction given this frame"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "frame"
+            ],
+            [
+              "--ensemble-type",
+              "frame"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "finish-verb",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--next-action",
+              "Decide on a direction given this frame"
+            ],
+            [
+              "--next-step-kind",
+              "verb"
+            ],
+            [
+              "--next-step-verb",
+              "decide"
+            ],
+            [
+              "--next-step-confidence",
+              "<HIGH|MEDIUM|LOW>"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "frame"
+      ],
+      "mktemp_templates": [
+        "engineer-frame-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — engineer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null,
+        "baseline_dirty": null
+      },
+      "note": "### Ensemble launched: frame at <iso-utc>\n\n### Ensemble synthesis: frame verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Frame model\n\nProblem statement: ...\nGoals: ...\nAudience: ...\nConstraints: ...\nSuccess criteria: ...\nRisks: ...\nOut of scope: ...\n\n### Active next-action proposal\n\n(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from this frame, not a fixed table)\n- selected_next:         <verb | commit | owner decision | done>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>\n- evidence_pointers:     <phase notes / files / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>\n"
+    },
+    "engineer/investigate": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "autopilot-preflight",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--persona",
+              "engineer"
+            ],
+            [
+              "--profile",
+              "${AGENTIC_PROFILE:-<profile from the arguments above — analysis|root-cause|cited-brief; default 'analysis'>}"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line scrubbed user request>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run investigate skill"
+            ],
+            [
+              null,
+              "${PARENT_ARGS[@]}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--profile",
+              "<profile or empty>"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into investigate"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb. Profile=<...>."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--clear-next-step",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Run investigate skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "investigate"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "${ENSEMBLE_TYPE:-investigate}"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Investigate (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "<one-sentence imperative for next verb>"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "investigate"
+            ],
+            [
+              "--ensemble-type",
+              "${ENSEMBLE_TYPE:-investigate}"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "finish-verb",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--next-action",
+              "<one-sentence imperative for next verb>"
+            ],
+            [
+              "--next-step-kind",
+              "verb"
+            ],
+            [
+              "--next-step-verb",
+              "<next verb>"
+            ],
+            [
+              "--next-step-confidence",
+              "<HIGH|MEDIUM|LOW>"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "${ENSEMBLE_TYPE:-investigate}"
+      ],
+      "mktemp_templates": [
+        "engineer-investigate-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — engineer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null,
+        "baseline_dirty": null
+      },
+      "note": "### Ensemble launched: investigate at <iso-utc>\n\n### Ensemble synthesis: investigate verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Findings\n\n<top findings with file paths and line numbers>\n\n### Active next-action proposal\n\n(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from these findings, not a fixed table)\n- selected_next:         <verb | commit | owner decision | done>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>\n- evidence_pointers:     <phase notes / files / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>\n"
+    },
+    "engineer/refine": {
+      "calls": [
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "autopilot-preflight",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "refine"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--persona",
+              "engineer"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--original-request",
+              "${AGENTIC_TOPIC:-<one-line scrubbed user request>}"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Run refine skill"
+            ],
+            [
+              null,
+              "${PARENT_ARGS[@]}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "refine"
+            ],
+            [
+              "--phase-label",
+              "Phase 0: Resume into refine"
+            ],
+            [
+              "--phase-note",
+              "Resumed from prior verb."
+            ],
+            [
+              "--current-phase",
+              "phase-0-resume"
+            ],
+            [
+              "--clear-next-step",
+              "true"
+            ],
+            [
+              "--next-action",
+              "Run refine skill"
+            ],
+            [
+              "--event",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "script": "peer-runner.mjs",
+          "sub": "run",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--kind",
+              "ensemble"
+            ],
+            [
+              "--peer",
+              "codex"
+            ],
+            [
+              "--prompt-file",
+              "$PROMPT_FILE"
+            ],
+            [
+              "--output-format",
+              "json"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--phase",
+              "refine"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--cwd",
+              "$REPO_ROOT"
+            ],
+            [
+              "--ensemble-type",
+              "refine-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase-label",
+              "Phase 1: Refine (synthesized)"
+            ],
+            [
+              "--phase-note",
+              "$NOTE"
+            ],
+            [
+              "--current-phase",
+              "phase-2-presented"
+            ],
+            [
+              "--next-action",
+              "Critique to verify, or investigate deeper if root cause is uncertain"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "ensemble-commit",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--phase",
+              "refine"
+            ],
+            [
+              "--ensemble-type",
+              "refine-verify"
+            ],
+            [
+              "--run-id",
+              "$RUN_ID"
+            ],
+            [
+              "--verdict",
+              "$VERDICT"
+            ],
+            [
+              "--summary",
+              "$SUMMARY"
+            ],
+            [
+              "--completed-at",
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "finish-verb",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--next-action",
+              "Critique to verify, or investigate deeper if root cause is uncertain"
+            ],
+            [
+              "--next-step-kind",
+              "verb"
+            ],
+            [
+              "--next-step-verb",
+              "critique"
+            ],
+            [
+              "--next-step-confidence",
+              "<HIGH|MEDIUM|LOW>"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "awaiting-owner-clear",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--gate",
+              "recurring-finding"
+            ],
+            [
+              "--resolution",
+              "Owner decision: fix <the finding> now"
+            ],
+            [
+              "--next-step-kind",
+              "verb"
+            ],
+            [
+              "--next-step-verb",
+              "refine"
+            ],
+            [
+              "--next-step-confidence",
+              "HIGH"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "awaiting-owner-clear",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--gate",
+              "recurring-finding"
+            ],
+            [
+              "--resolution",
+              "Owner decision: defer <the finding> — <the owner's reason, and where it is tracked>"
+            ],
+            [
+              "--next-step-kind",
+              "commit"
+            ],
+            [
+              "--next-step-confidence",
+              "HIGH"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "finish-verb",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--next-action",
+              "Commit the refined change; the recurring finding is deferred"
+            ],
+            [
+              "--next-step-kind",
+              "commit"
+            ],
+            [
+              "--next-step-confidence",
+              "HIGH"
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [
+        "refine-verify"
+      ],
+      "mktemp_templates": [
+        "engineer-refine-prompt.XXXXXX"
+      ],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — engineer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": null,
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null,
+        "baseline_dirty": null
+      },
+      "note": "### Ensemble launched: refine at <iso-utc>\n\n### Ensemble synthesis: refine verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Changes applied\n\n<list of edited files with one-line summary; test/lint/type-check status>\n\n### Verification\n\n<test results, regression checks, root-cause confirmation>\n\n### Active next-action proposal\n\n(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from this refinement, not a fixed table)\n- selected_next:         <verb | commit | owner decision | done>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>\n- evidence_pointers:     <phase notes / files / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit for commit or done; the owner-decision action otherwise>\n"
+    },
+    "engineer/start": {
+      "calls": [
+        {
+          "script": "start-args.mjs",
+          "sub": null,
+          "args": [
+            [
+              "--args-file",
+              "<directory from step 1>/args.json"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "find-active",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "diagnose-redundancy",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--base-branch",
+              "$BASE_BRANCH"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "check-clean-baseline",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              null,
+              "${BASELINE_ARGS[@]}"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "create",
+          "args": [
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--workflow-type",
+              "start"
+            ],
+            [
+              "--git-baseline-branch",
+              "$GIT_BRANCH"
+            ],
+            [
+              "--git-baseline-head",
+              "$GIT_HEAD"
+            ],
+            [
+              "--status-digest",
+              "$STATUS_DIGEST"
+            ],
+            [
+              "--current-phase",
+              "phase-0-bootstrap"
+            ],
+            [
+              "--next-action",
+              "Phase 1 brainstorm — investigate options, frame the model, decide a direction"
+            ],
+            [
+              "--original-request",
+              "$FEATURE"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "read",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--event",
+              "resumed"
+            ],
+            [
+              "--phase-label",
+              "Resume /engineer:start"
+            ],
+            [
+              "--phase-note",
+              "Auto-resume of active workflow_type=start on $GIT_BRANCH"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "read",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--current-phase",
+              "phase-1-brainstorm-investigate"
+            ],
+            [
+              "--next-action",
+              "Generate option candidates and gather supporting evidence"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "frame"
+            ],
+            [
+              "--current-phase",
+              "phase-1-brainstorm-frame"
+            ],
+            [
+              "--next-action",
+              "Frame options across 5 perspectives"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "decide"
+            ],
+            [
+              "--current-phase",
+              "phase-1-brainstorm-decide"
+            ],
+            [
+              "--next-action",
+              "Recommend direction and obtain user approval"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "investigate"
+            ],
+            [
+              "--profile",
+              "analysis"
+            ],
+            [
+              "--current-phase",
+              "phase-2-explore"
+            ],
+            [
+              "--next-action",
+              "Map current codebase state and integration points"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "compose"
+            ],
+            [
+              "--profile",
+              "plan"
+            ],
+            [
+              "--current-phase",
+              "phase-3-plan"
+            ],
+            [
+              "--next-action",
+              "Produce plan artifact"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "critique"
+            ],
+            [
+              "--current-phase",
+              "phase-3-verify"
+            ],
+            [
+              "--next-action",
+              "Verify plan completeness and feasibility"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "compose"
+            ],
+            [
+              "--profile",
+              "code"
+            ],
+            [
+              "--current-phase",
+              "phase-4-implement"
+            ],
+            [
+              "--next-action",
+              "RED-GREEN-REFACTOR loop per planned task"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "critique"
+            ],
+            [
+              "--profile",
+              "parallel-review"
+            ],
+            [
+              "--current-phase",
+              "phase-5-review"
+            ],
+            [
+              "--next-action",
+              "Multi-perspective code review + Codex working-tree review"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "state.mjs",
+          "sub": "append",
+          "args": [
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--verb",
+              "refine"
+            ],
+            [
+              "--current-phase",
+              "phase-6-resolve"
+            ],
+            [
+              "--next-action",
+              "Address findings; converge or escalate same-finding recurrence"
+            ],
+            [
+              "--event",
+              "updated"
+            ]
+          ]
+        },
+        {
+          "script": "phase7-commit.mjs",
+          "sub": null,
+          "args": [
+            [
+              "--mode",
+              "plan"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ]
+          ]
+        },
+        {
+          "script": "phase7-commit.mjs",
+          "sub": null,
+          "args": [
+            [
+              "--mode",
+              "execute"
+            ],
+            [
+              "--workflow-path",
+              "$ACTIVE"
+            ],
+            [
+              "--repo-root",
+              "$REPO_ROOT"
+            ],
+            [
+              "--host",
+              "${AGENTIC_HOST:-claude}"
+            ],
+            [
+              "--subject",
+              "$APPROVED_SUBJECT"
+            ],
+            [
+              "--confirm-non-interactive",
+              null
+            ]
+          ]
+        }
+      ],
+      "run_id_prefixes": [],
+      "mktemp_templates": [],
+      "guards": {
+        "detached_head": "if [ -z \"$GIT_BRANCH\" ]; then\n  echo \"✗ Detached HEAD detected — no active branch context (ADR-0031); engineer workflows are anchored to a branch (ADR-0018 §sub-2).\" >&2\n  echo \"  Switch to a branch first: git switch <branch>\" >&2\n  exit 1\nfi",
+        "find_rc": "FIND_RC=$?\nif [ \"$FIND_RC\" -ne 0 ]; then\n  echo \"✗ find-active failed (exit $FIND_RC); its error is above.\" >&2\n  exit \"$FIND_RC\"\nfi",
+        "resolve_rc": null,
+        "baseline_rc": "BASELINE_RC=$?\nif [ \"$BASELINE_RC\" -ne 0 ]; then\n  echo \"✗ check-clean-baseline failed (exit $BASELINE_RC); its error is above.\" >&2\n  exit \"$BASELINE_RC\"\nfi",
+        "baseline_status": null,
+        "ensemble_launched": null,
+        "converged": null,
+        "baseline_dirty": "if [ \"$BASELINE_STATUS\" = \"dirty\" ]; then\n  echo \"✗ Working tree is dirty — /engineer:start requires a clean baseline (ADR-0028 §Layer-1).\" >&2\n  echo \"$BASELINE\" | jq .categories >&2\n  echo >&2\n  echo \"  Resolutions:\" >&2\n  echo \"    - clean:                git restore . ; git clean -fd  (then re-run)\" >&2\n  echo \"    - stash:                git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n  echo \"    - worktree:             /runtime:worktree plan  (suggests a git worktree add command once its checks pass; re-run in the new worktree)\" >&2\n  echo \"    - accept-current-tree:  ACCEPT_CURRENT_TREE=1 /engineer:start ...  (sweep current tree into the workflow's commit)\" >&2\n  exit 1\nfi"
       },
       "note": null
     },
@@ -5076,7 +8407,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: compose at <iso-utc>\n\n### Ensemble synthesis: compose (profile=<plan|canvas|validation-plan>) verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Artifact\n\n<the planning artifact: venture plan sections / lean canvas boxes /\n validation-plan experiments — with [to be validated] markers on\n unverified assumptions>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <plan sections / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
     },
@@ -5350,7 +8682,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: critique ($ENSEMBLE_TYPE) at <iso-utc>\n\n### Ensemble synthesis: critique (profile=<default|red-team>) verdict=<sound|concerns|veto|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Review report\n\nGate verdict: 규제노출 <PASS|COND|FAIL> · 안전리스크 <PASS|COND|FAIL>\n<CRITICAL / MAJOR / MINOR / SUGGESTION findings by section/claim;\n 'Looks Strong' observations at the end>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + the gate verdict>\n- evidence_pointers:     <finding sections / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
     },
@@ -5626,7 +8959,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: decide at <iso-utc>\n\n### Ensemble synthesis: decide verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Directions compared\n\n<table or list of directions with tradeoffs across the resolved business axes>\n\n### Recommendation\n\n<chosen direction + rationale + gate verdict (regulatory/safety) + risks>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — decisive 시장성/단위경제 (market/unit-economics) + the regulatory/safety gate verdict>\n- evidence_pointers:     <phase notes / brief / artifacts — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
     },
@@ -5892,7 +9226,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: frame at <iso-utc>\n\n### Ensemble synthesis: frame verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Opportunity model\n\nProblem / Opportunity: ...\nCustomer + Job-to-be-Done: ...\nValue hypothesis: ...\nBusiness-model sketch: ...\nConstraints: ...\nValidation criteria: ...\nKey risks: ...\nOut of scope: ...\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <opportunity-model fields / brief path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
     },
@@ -6166,7 +9501,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: research-scan at <iso-utc>\n\n### Ensemble synthesis: business-brief verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Brief saved\n\n<absolute path to business_brief.md>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + evidence-quality gate>\n- evidence_pointers:     <brief path / sub-questions / Open Questions — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
     },
@@ -6432,7 +9768,8 @@
         "baseline_rc": null,
         "baseline_status": null,
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": "### Ensemble launched: refine at <iso-utc>\n\n### Ensemble synthesis: refine verdict=<resolved|concerns|regression|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Refinement summary\n\n- Applied: <N findings / 1 revision>\n- Verified: <downstream sections reconcile; gate exposure unchanged;\n  [to be validated] markers intact>\n- Deferred: <items not addressed and why>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + consistency/gate check>\n- evidence_pointers:     <revised sections / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n"
     },
@@ -6558,7 +9895,8 @@
         "baseline_rc": "BASELINE_RC=$?\nif [ \"$BASELINE_RC\" -ne 0 ]; then\n  echo \"✗ clean-baseline check failed (exit $BASELINE_RC); its error is above.\" >&2; exit \"$BASELINE_RC\"\nfi",
         "baseline_status": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /founder:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    echo \"  Resolve, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to acknowledge the dirty tree\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
         "ensemble_launched": null,
-        "converged": null
+        "converged": null,
+        "baseline_dirty": null
       },
       "note": null
     }

@@ -1,12 +1,25 @@
 ## Owner decision (recurring-finding)
 
+{{^capability dispatch_target}}
 The `recurring-finding` gate is resolved by the owner's decision (ADR-0063 Q2,
 ported by ADR-0066 Decision 9), in either of two ways:
+{{/capability}}
+{{#capability dispatch_target}}
+The `recurring-finding` gate is resolved by the owner's decision (ADR-0063
+Q2), in either of two ways:
+{{/capability}}
 
 - **In this session**, right after the refine stopped on it.
+{{^capability dispatch_target}}
 - **Later**, when Phase 0's preflight reports a pending `recurring-finding`
   gate (an earlier session stopped on it): present the finding recorded at the
   gate's pointer, the latest `Recurring finding` note.
+{{/capability}}
+{{#capability dispatch_target}}
+- **Later**, when Phase 0's preflight reports a pending `recurring-finding`
+  gate (an autopilot run, or an earlier session, stopped on it): present the
+  finding recorded at the gate's pointer, the latest `Recurring finding` note.
+{{/capability}}
 
 Ask the owner: fix it now, or defer it. The clear records the owner's decision
 (`--resolution`, written in place of the placeholder line between the two
@@ -40,9 +53,16 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?
 ```
 
+{{^capability commit_surface}}
 **Defer.** Clear the gate with the deferral and `commit` as the next step (the
 owner saves and commits the artifact; {{persona}} runs no commit itself), then
 end the verb:
+{{/capability}}
+{{#capability commit_surface}}
+**Defer.** Clear the gate with the deferral and `commit` as the next step
+(`/{{persona}}:commit` commits the change, or closes the workflow when there is
+none), then end the verb:
+{{/capability}}
 
 ```bash
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
@@ -81,10 +101,18 @@ fi
 # core/skills/_shared/references/session-handoff.md § Archive timing.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+{{^capability commit_surface}}
   --next-action 'The recurring finding is deferred; the owner saves and commits the refined artifact' \
+{{/capability}}
+{{#capability commit_surface}}
+  --next-action 'Commit the refined change; the recurring finding is deferred' \
+{{/capability}}
   --next-step-kind commit --next-step-confidence HIGH || exit $?
 ```
 
 `awaiting-owner-clear` records `### Owner gate resolved: recurring-finding at
 <iso>` with the pointer it cleared and the resolution. It refuses, writing
 nothing, when the gate set on the workflow is not `recurring-finding`.
+{{#capability dispatch_target}}
+It refuses under an autopilot run too: only the owner resolves an owner gate.
+{{/capability}}

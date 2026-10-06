@@ -16,7 +16,9 @@ import { join } from 'node:path';
 
 import { REPO_ROOT, pluginRoot } from './_personas.mjs';
 
-export const VERB_RUNBOOK_PERSONAS = Object.freeze(['designer', 'founder']);
+// engineer's seven are recorded before its verb runbooks join the regions
+// (PC3 U7: characterize before rewriting).
+export const VERB_RUNBOOK_PERSONAS = Object.freeze(['designer', 'engineer', 'founder']);
 // The characterized runbooks. This is not the list of runbooks whose blocks
 // are generated (the contracts keep their own): critique, refine and start are
 // recorded here before theirs are (PC2a3 T0').
@@ -296,7 +298,9 @@ export function noteScaffold(text) {
 function runIdPrefixes(code) {
   const assignments = literalAssignments(code);
   return [...code.matchAll(/^RUN_ID=("[^\n]*")$/gm)]
-    .map((m) => /^([a-z][a-z-]*)-\$\(date /.exec(readWordValue(m[1], varsAt(assignments, m.index)).text))
+    // A prefix the agent picks at run time stays symbolic: engineer's
+    // `${ENSEMBLE_TYPE:-review}` (PC3).
+    .map((m) => /^([a-z][a-z-]*|\$\{[A-Z_]+:-[a-z][a-z-]*\})-\$\(date /.exec(readWordValue(m[1], varsAt(assignments, m.index)).text))
     .filter(Boolean)
     .map((m) => m[1]);
 }
@@ -331,6 +335,8 @@ export function characterize(text) {
       baseline_status: guardText(all, 'case "\\$STATUS" in', 'esac'),
       ensemble_launched: guardText(all, 'if \\[ -n "\\$\\{RUN_ID:-\\}" \\] && \\[ -n "\\$\\{VERDICT:-\\}" \\]; then'),
       converged: guardText(all, 'if \\[ "\\$\\{CONVERGED:-no\\}" = "yes" \\]; then'),
+      // PC3: engineer's start refuses a dirty baseline with an if.
+      baseline_dirty: guardText(all, 'if \\[ "\\$BASELINE_STATUS" = "dirty" \\]; then'),
     },
     note: noteScaffold(text),
   };
@@ -357,8 +363,8 @@ const FLAG_WHERE = /^call:(\S+) ([a-z-]+)(?:#([1-9]))?:(--[a-z-]+)$/;
 
 /**
  * The recorded value an allowed difference names, as a getter and a setter:
- * `call:<script> <sub>[#<n>]:<flag>` (see locateCall), `guards.<name>` or
- * `note`.
+ * `call:<script> <sub>[#<n>]:<flag>` (see locateCall), `guards.<name>`,
+ * `note`, or `run_id_prefixes` for a runbook with one dispatch.
  */
 function locate(record, where) {
   const call = FLAG_WHERE.exec(where);
@@ -370,6 +376,8 @@ function locate(record, where) {
   const guard = /^guards\.([a-z_]+)$/.exec(where);
   if (guard && typeof record.guards[guard[1]] === 'string') return [() => record.guards[guard[1]], (v) => { record.guards[guard[1]] = v; }];
   if (where === 'note' && typeof record.note === 'string') return [() => record.note, (v) => { record.note = v; }];
+  // PC3 U7: a runbook with one dispatch has one run-id prefix.
+  if (where === 'run_id_prefixes' && record.run_id_prefixes.length === 1) return [() => record.run_id_prefixes[0], (v) => { record.run_id_prefixes[0] = v; }];
   throw new Error(`allowed difference names no recorded value: ${where}`);
 }
 

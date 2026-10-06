@@ -13,31 +13,42 @@
 // L3 -> L1 (ADR-0010), matching the projection (inversion-of-control) model.
 //
 // Persona data read here, when the code runs (scripts/lib/persona.mjs):
-// the name (workflow_kind, the resume route, the re-injection marker) and
-// deliverable_noun (the publish next action). This unit carries the
-// commit_surface OFF path: the persona never commits, so a blocked archive
-// gate that only waits for HEAD to move means the owner publishes.
+// the name (workflow_kind, the resume route, the re-injection marker), the
+// capabilities, and with commit_surface off deliverable_noun (the publish next
+// action). Two capabilities change what this module does (ADR-0066 D4):
+//   - commit_surface: on, a blocked archive gate maps to `blocked` with the
+//     persona's commit (or, for a `close-complete` workflow, its /commit
+//     again) as the unblocking action; off, the persona never commits, so a
+//     gate that only waits for HEAD to move means the owner publishes
+//     (`publish-needed`).
+//   - legacy_homes: on, the one-shot projection slot follows the workflow's
+//     storage home, the pre-migration `.claude/agentic-<persona>` home
+//     included, and the SessionStart backstop reads both slots.
 //
-// The projection is computed fail-closed: a corrupt state yields NO
-// projection (the seam degrades to context-risk only), never a half-trusted
-// one. archive_gate is collapsed from the PURE `evaluateStopArchive` verdict
-// — never the side-effecting `runStopArchive` runner — so computing the
-// projection has no side effects.
+// The projection is computed fail-closed: a corrupt state (or, with
+// legacy_homes on, a canonical + legacy split) yields NO projection (the seam
+// degrades to context-risk only), never a half-trusted one. archive_gate is
+// collapsed from the PURE `evaluateStopArchive` verdict — never the
+// side-effecting `runStopArchive` runner — so computing the projection has no
+// side effects.
 
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { discoverRuntimePluginRoot } from './discover-runtime.mjs';
 import {
   currentGitBranch,
   findActiveWorkflowByBranch,
+  legacyStateDirRel,
   readWorkflow,
+  terminalPhases,
   workflowDir,
 } from './state.mjs';
 import { evaluateStopArchive } from './stop-archive.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
-import { commandPrefix, loadPersona, personaName, personaOrRefuse } from './lib/persona.mjs';
+import { capabilityOn, commandPrefix, loadPersona, personaName, personaOrRefuse } from './lib/persona.mjs';
 
 // Default routing recommendation for an active workflow: resume it.
 function defaultRouting() {
@@ -163,6 +174,7 @@ export async function computeProjection({
   }
   let activePath;
   try {
+    // Throws on a canonical + legacy split (legacy_homes; fail-closed, ADR-0031).
     activePath = await findActiveWorkflowByBranch(repoRoot, branch);
   } catch (error) {
     return { projection: null, status: 'fail_closed', error: error.message, routing: resolvedRouting };
@@ -184,9 +196,9 @@ export async function computeProjection({
  * sidecar so it projects exactly the workflow that was just terminalized —
  * `setTerminal` mutates an explicit `workflowPath` that may not be the active
  * workflow on the repo's current checkout branch (cross-branch invocation), so
- * resolving by `currentGitBranch` would project the wrong workflow (the Codex
- * Plan-verify bug the engineer reference fixed; ADR-0043 §2 makes the
- * path-targeted form the explicit baseline). Fail-closed: an unreadable /
+ * resolving by `currentGitBranch` would project the wrong workflow (a Codex
+ * Plan-verify finding; ADR-0043 §2 makes the path-targeted form the explicit
+ * baseline). Fail-closed: an unreadable /
  * invalid workflow emits no projection.
  */
 export async function computeProjectionForPath({
@@ -210,24 +222,51 @@ export async function computeProjectionForPath({
 }
 
 /**
- * Default projection-file path: `<persona state root>/last-session-handoff.json`.
- * legacy_homes off — canonical home only (no legacy dual-home), so
- * unlike the engineer reference there is no legacy-home variant and no
- * home-aware selection: every writer and the hook backstop share this single
+ * Default projection-file path: `<persona state root>/last-session-handoff.json`
+ * (canonical home). Every writer and the hook backstop share this single
  * per-persona slot (the ADR-0031 slot model; ADR-0043 §2 accepts
- * last-writer-wins for concurrent cross-branch terminals).
+ * last-writer-wins for concurrent cross-branch terminals). Callers that
+ * already know the home — `setTerminal` via `inferStorageFromWorkflowPath` —
+ * pass an explicit `projectionFile`.
  */
 function defaultProjectionFile(repoRoot) {
   return resolve(workflowDir(repoRoot), '..', 'last-session-handoff.json');
 }
 
+// legacy_homes (ADR-0025): the pre-migration state root's slot. The primary
+// `setTerminal` writes the one-shot projection under the terminalized
+// workflow's inferred home, so a legacy-home workflow's projection lives here.
+function legacyProjectionFile(repoRoot) {
+  return resolve(repoRoot, legacyStateDirRel(), 'last-session-handoff.json');
+}
+
 /**
- * The candidate one-shot files the SessionStart backstop reads. legacy_homes off —
- * a single canonical candidate (see `defaultProjectionFile`); the list shape is
- * kept so the backstop code stays line-comparable to the engineer reference.
+ * Home-aware default target for a specific workflow, used by
+ * `emitTerminalHandoffSidecar` when no explicit `projectionFile` is supplied
+ * (the Stop hook backstop), so the backstop writes where the primary would:
+ * with legacy_homes on, a legacy-home workflow's projection goes under the
+ * legacy root; otherwise the canonical root.
+ */
+function projectionFileForWorkflow(repoRoot, workflowPath) {
+  if (capabilityOn('legacy_homes')
+    && typeof workflowPath === 'string'
+    && workflowPath.includes(`/${legacyStateDirRel()}/`)) {
+    return legacyProjectionFile(repoRoot);
+  }
+  return defaultProjectionFile(repoRoot);
+}
+
+/**
+ * The candidate one-shot files the SessionStart backstop reads, in preference
+ * order: the canonical slot, and with legacy_homes on the legacy slot after it.
+ * A repo holds EITHER canonical or legacy state (resolveWorkflowStorage blocks
+ * both for writes), so checking both covers both repo types regardless of
+ * which home the primary wrote under.
  */
 function pendingHandoffCandidates(repoRoot) {
-  return [defaultProjectionFile(repoRoot)];
+  return capabilityOn('legacy_homes')
+    ? [defaultProjectionFile(repoRoot), legacyProjectionFile(repoRoot)]
+    : [defaultProjectionFile(repoRoot)];
 }
 
 // ADR-0039 — the completion footer renders AT MOST ONCE per terminal
@@ -241,22 +280,62 @@ function pendingHandoffCandidates(repoRoot) {
 //
 // MARKER CONTRACT (ADR-0043 §2 — documented cross-package contract, consumed by
 // the attention follow-up; regression-pinned by tests/persona-pipeline/test-footer-activation.mjs):
-//   filename : `${projectionFile}.footer-rendered` (the engineer slot shape —
-//              every persona shares engineer's single-projection-slot structure)
-//   JSON     : {"workflow_id": <id>, "status": "claimed"|"rendered", "at": <iso>}
+//   filename : `${projectionFile}.footer-rendered` (one marker per projection
+//              slot; every persona shares the single-projection-slot structure)
+//   JSON     : {"workflow_id": <id>, "status": "claimed"|"rendered", "at": <iso>,
+//               "transition": <key>, "claim": <token>}
 //   a render counts ONLY as status==='rendered' for the terminalized
 //   workflow_id; a bare 'claimed' marker is an in-flight/crashed render.
+//   `transition` (additive, PC3) names WHICH terminal transition of that
+//   workflow rendered (see transitionKey); a marker without it, written
+//   before the field existed, matches any transition of its workflow.
+//   `claim` (additive, PC3) is the render attempt's token: only the attempt
+//   that holds it upgrades or releases the marker.
 //
-// TOMBSTONE (divergence from the engineer copy, Codex Plan-verify blocker;
-// commit_surface off): a 'rendered' marker SURVIVES `consumePendingHandoff`. The
-// manually-published lifecycle keeps a publish-needed workflow active-terminal
-// across sessions, so deleting the marker with the one-shot projection would
-// let every later Stop backstop re-render the SAME transition
+// TOMBSTONE (Codex Plan-verify blocker, ADR-0043 S3/S4; every persona since
+// ADR-0066 D4): a 'rendered' marker SURVIVES `consumePendingHandoff`. A
+// terminal workflow can stay active across sessions — a publish-needed one
+// until the owner publishes (commit_surface off), a terminal one until HEAD
+// moves past its baseline, or one whose archive gate failed — and the Stop
+// backstop re-fires the sidecar at every Stop while it does, so deleting the
+// marker with the one-shot projection would re-render the SAME transition
 // (set-terminal → SessionStart consume → Stop re-render). The tombstone keeps
 // the backstop suppressed; only a NEW primary transition (origin==='primary',
-// see claimFooterRender) or a different workflow's claim replaces it.
+// see claimFooterRender), a different transition of the same workflow, or a
+// different workflow's claim replaces it.
 function footerMarkerFile(projectionFile) {
   return `${projectionFile}.footer-rendered`;
+}
+
+// TRANSITION IDENTITY (PC3, Codex Plan-verify) — a workflow can terminalize
+// more than once (a verb's finish-verb, then its commit or no-changes close),
+// and a later transition's primary emit can be missed: a crash after the
+// terminal write, or the close, whose primary emit the commit driver turns off
+// on purpose. Keyed by workflow_id alone, the earlier transition's tombstone
+// would suppress the Stop backstop for the later one, and its footer would
+// never render. The key is what the transition hands the user, the terminal
+// phase and next action, taken from the projection; the archive gate and
+// routing are left out because they change while one transition stays
+// active-terminal (HEAD moving, a branch switch). A re-terminalization with
+// the same phase and next action reads as the same transition to the
+// backstop; its primary emit still renders (origin 'primary').
+// Only a terminal phase starts a transition: a workflow reopened by the next
+// verb keeps its inherited terminal marker while its phase moves on (Phase 0
+// does not clear the marker), and that is no new completion. Such a projection
+// has no key and reads as the transition already rendered.
+function transitionKey(projection) {
+  if (!terminalPhases().has(projection.phase)) return undefined;
+  return createHash('sha256')
+    .update(JSON.stringify([projection.phase, projection.next_action]))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+// A marker without `transition` predates the field: it matches any transition
+// of its workflow, as every marker did before. A projection without a key (a
+// non-terminal phase) matches the marker it finds.
+function sameTransition(marker, transition) {
+  return transition === undefined || marker.transition === undefined || marker.transition === transition;
 }
 
 async function readFooterMarker(markerFile) {
@@ -268,81 +347,154 @@ async function readFooterMarker(markerFile) {
   }
 }
 
-// True only for a COMPLETED render of this workflow (status==='rendered'). A bare
-// 'claimed' marker (a render in progress, or one that crashed mid-flight) is NOT
-// a completed render — the idempotency skip and the SessionStart nudge
-// suppression both key on this, so a degraded/aborted render never suppresses
-// the backstop.
-async function footerRenderedMatches(markerFile, workflowId) {
+// True only for a COMPLETED render of this workflow's transition
+// (status==='rendered'). A bare 'claimed' marker (a render in progress, or one
+// that crashed mid-flight) is NOT a completed render — the idempotency skip
+// and the SessionStart nudge suppression both key on this, so a
+// degraded/aborted render never suppresses the backstop, and neither does an
+// earlier transition's render.
+async function footerRenderedMatches(markerFile, workflowId, transition) {
   const marker = await readFooterMarker(markerFile);
-  return Boolean(marker) && marker.workflow_id === workflowId && marker.status === 'rendered';
+  return Boolean(marker) && marker.workflow_id === workflowId && marker.status === 'rendered'
+    && sameTransition(marker, transition);
 }
 
-function footerMarkerBody(workflowId, status) {
-  return `${JSON.stringify({ workflow_id: workflowId, status, at: new Date().toISOString() })}\n`;
+function footerMarkerBody(workflowId, status, transition, claim) {
+  return `${JSON.stringify({ workflow_id: workflowId, status, at: new Date().toISOString(), transition, claim })}\n`;
 }
 
-// Atomically CLAIM the render BEFORE spawning, so two overlapping terminal emits
-// (primary set-terminal + Stop-hook backstop) cannot both render. Returns true
-// iff THIS call owns the render:
-//   - `wx` create succeeds                         → fresh claim (we own it)
-//   - EEXIST + marker is THIS workflow:
-//       - status==='claimed'                       → a LIVE concurrent render owns
-//         it → skip (never stolen, even by a primary)
-//       - status==='rendered' + origin==='primary' → a NEW terminal transition of
-//         a previously-rendered workflow (re-terminalization over the tombstone)
-//         → re-claim + own it
-//       - status==='rendered' otherwise (backstop) → already rendered → skip
-//   - EEXIST + marker is a DIFFERENT workflow      → stale one-shot (the canonical
-//     file is reused across sequential terminals)  → re-claim + own it
-async function claimFooterRender(markerFile, workflowId, origin = 'backstop') {
+// MARKER LOCK (PC3, Codex Plan-verify) — every read-decide-write of the marker
+// runs under a short lock file beside it, so two overlapping emits of the same
+// transition cannot both read a reclaimable marker, both overwrite it and both
+// render. The lock is held for that read and write only, never across a
+// render, and it holds its owner's token: the owner writes the marker only
+// while the lock still holds its token (`owns`, checked right before the
+// write) and removes only its own lock. A holder that died leaves its lock
+// behind; one older than MARKER_LOCK_STALE_MS is replaced by an atomic rename,
+// so two breakers never delete each other's lock: the last rename holds it,
+// and a breaker whose lock was replaced finds another token and writes
+// nothing. An emit that has not taken the lock within MARKER_LOCK_WAIT_MS gives
+// up, however the lock resists (a stale lock that cannot be replaced
+// included): no claim, no render, and the SessionStart nudge stays the
+// backstop. Resolves fn's value, or undefined when the lock was not taken or
+// fn threw. Never throws.
+const MARKER_LOCK_WAIT_MS = 2_000;
+const MARKER_LOCK_STALE_MS = 10_000;
+
+async function lockHolds(lockFile, token) {
+  return (await readFile(lockFile, 'utf8').catch(() => null)) === token;
+}
+
+async function takeMarkerLock(lockFile, token) {
   try {
-    await writeFile(markerFile, footerMarkerBody(workflowId, 'claimed'), { flag: 'wx' });
+    await writeFile(lockFile, token, { flag: 'wx' });
     return true;
   } catch (error) {
-    if (error?.code !== 'EEXIST') return false; // unexpected FS error → fail-closed (no render)
-    const existing = await readFooterMarker(markerFile);
-    if (existing && existing.workflow_id === workflowId) {
-      if (origin === 'primary' && existing.status === 'rendered') {
-        try {
-          await writeFile(markerFile, footerMarkerBody(workflowId, 'claimed'), { flag: 'w' });
-          return true;
-        } catch {
-          return false;
-        }
-      }
-      return false; // rendered (backstop view) or live 'claimed' → never double-render
-    }
-    try {
-      await writeFile(markerFile, footerMarkerBody(workflowId, 'claimed'), { flag: 'w' });
-      return true;
-    } catch {
-      return false;
-    }
+    if (error?.code !== 'EEXIST') return false;
+  }
+  const held = await stat(lockFile).catch(() => null);
+  if (!held || Date.now() - held.mtimeMs <= MARKER_LOCK_STALE_MS) return false;
+  const replacement = `${lockFile}.${token}`;
+  try {
+    await writeFile(replacement, token, { flag: 'wx' });
+    await rename(replacement, lockFile);
+  } catch {
+    await rm(replacement, { force: true }).catch(() => {});
+    return false;
+  }
+  return lockHolds(lockFile, token);
+}
+
+async function withMarkerLock(markerFile, fn) {
+  const lockFile = `${markerFile}.lock`;
+  const token = `${process.pid}-${randomBytes(8).toString('hex')}`;
+  const deadline = Date.now() + MARKER_LOCK_WAIT_MS;
+  while (!(await takeMarkerLock(lockFile, token))) {
+    if (Date.now() >= deadline) return undefined;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  try {
+    return await fn(() => lockHolds(lockFile, token));
+  } catch {
+    return undefined;
+  } finally {
+    if (await lockHolds(lockFile, token)) await rm(lockFile, { force: true }).catch(() => {});
   }
 }
 
-async function markFooterRendered(markerFile, workflowId) {
-  try {
-    await writeFile(markerFile, footerMarkerBody(workflowId, 'rendered'), { flag: 'w' });
-  } catch {
-    // best-effort: a missing 'rendered' upgrade at worst re-renders once or keeps
-    // the backstop nudge next session, never a crash.
-  }
+// A claim older than a render can take (two footer runs, then the delivery
+// wait, with a margin) belongs to a render that died; until SessionStart
+// consumed it, it would suppress every later emit of its transition. A claim
+// whose time cannot be read is treated as dead.
+function claimIsStale(marker) {
+  const staleMs = 2 * FOOTER_RUN_TIMEOUT_MS + DELIVERY_TIMEOUT_MS + 15_000;
+  const at = Date.parse(marker.at);
+  return !Number.isFinite(at) || Date.now() - at > staleMs;
+}
+
+// Whether an emit may take over a marker its own workflow holds.
+function mayReclaim(existing, transition, origin) {
+  // A different transition of the workflow: rendered (a later transition
+  // whose primary emit was missed, TRANSITION IDENTITY) or claimed (an
+  // earlier transition's render in flight or dead) — this one renders too.
+  if (!sameTransition(existing, transition)) return true;
+  // The same transition rendered: only a primary emit renders again
+  // (re-terminalization over the tombstone); a backstop is suppressed.
+  if (existing.status === 'rendered') return origin === 'primary';
+  // The same transition claimed: a live render owns it (never stolen, even by
+  // a primary); a dead one is taken over.
+  return claimIsStale(existing);
+}
+
+// CLAIM the render BEFORE spawning, under the marker lock, so overlapping
+// terminal emits (primary set-terminal + Stop-hook backstop, or two
+// backstops) cannot both render one transition. Resolves THIS render
+// attempt's claim token when it owns the render, else null: no marker, a
+// malformed one, or a DIFFERENT workflow's (a stale one-shot: the canonical
+// file is reused across sequential terminals) is claimed; this workflow's
+// marker per mayReclaim. An FS error or a lock not taken claims nothing
+// (fail-closed, no render).
+async function claimFooterRender(markerFile, workflowId, transition, origin = 'backstop') {
+  const claim = randomBytes(8).toString('hex');
+  const claimed = await withMarkerLock(markerFile, async (owns) => {
+    const existing = await readFooterMarker(markerFile);
+    if (existing && existing.workflow_id === workflowId && !mayReclaim(existing, transition, origin)) return false;
+    if (!(await owns())) return false;
+    await writeFile(markerFile, footerMarkerBody(workflowId, 'claimed', transition, claim), { flag: 'w' });
+    return true;
+  });
+  return claimed === true ? claim : null;
+}
+
+// Whether the marker is still this render attempt's (its claim token), or
+// gone (SessionStart consumed the claim mid-render). A claim another attempt
+// took over, of any workflow or transition, is not.
+function heldBy(existing, claim) {
+  return !existing || existing.claim === claim;
+}
+
+// Upgrade OUR claim to 'rendered'. A marker another emit took over meanwhile
+// is left to it.
+async function markFooterRendered(markerFile, workflowId, transition, claim) {
+  // best-effort: a missing 'rendered' upgrade at worst re-renders once or keeps
+  // the backstop nudge next session, never a crash.
+  await withMarkerLock(markerFile, async (owns) => {
+    if (!heldBy(await readFooterMarker(markerFile), claim) || !(await owns())) return;
+    await writeFile(markerFile, footerMarkerBody(workflowId, 'rendered', transition, claim), { flag: 'w' });
+  });
 }
 
 // Release a claim whose render failed/degraded so the backstop can retry and
 // SessionStart still nudges (no false suppression). Only removes OUR still-
-// 'claimed' marker, never a peer's 'rendered' one. Best-effort.
-async function releaseFooterClaim(markerFile, workflowId) {
-  const existing = await readFooterMarker(markerFile);
-  if (existing && existing.workflow_id === workflowId && existing.status !== 'rendered') {
-    try {
+// 'claimed' marker, never a 'rendered' one or another attempt's claim.
+// Best-effort.
+async function releaseFooterClaim(markerFile, claim) {
+  await withMarkerLock(markerFile, async (owns) => {
+    const existing = await readFooterMarker(markerFile);
+    if (existing && heldBy(existing, claim) && existing.status !== 'rendered' && await owns()) {
       await rm(markerFile, { force: true });
-    } catch {
-      /* best-effort */
     }
-  }
+  });
 }
 
 // ADR-0039 §3 — map the bounded projection to EXPLICIT footer completion flags
@@ -351,35 +503,71 @@ async function releaseFooterClaim(markerFile, workflowId) {
 // enforces it), so recommended-next-work is always concrete. `cleanup-needed` /
 // `closed` are never inferred here (§3 — a caller must set them explicitly).
 //
-// Completion-output contract (runtime docs/completion-output-contract.md §2,
-// manually-published lifecycles): with commit_surface off the persona
-// terminalizes WITHOUT auto-committing — the owner publishes the deliverable
-// manually — so it does NOT copy engineer's blocked / next-work-available
-// dichotomy. The per-gate rule from the persona's own evaluator (evaluateStopArchive: terminal_marker /
-// terminal_phase / head_moved / no_active_children / awaiting_owner):
-//   - blocked with ONLY head_moved unmet  → publish-needed (the deliverable is
-//     ready for the owner's save/commit decision; head_moved is a fail-closed
-//     collapse that also covers a failed git probe — the wording must not
-//     overclaim a single cause)
-//   - blocked with any other gate unmet   → blocked (genuinely blocking)
-//   - not_terminal / ready_to_archive     → next-work-available
+// Completion-output contract (runtime docs/completion-output-contract.md),
+// the per-gate rule from the persona's own evaluator (evaluateStopArchive:
+// terminal_marker / terminal_phase / head_moved / no_active_children /
+// awaiting_owner):
+//   - commit_surface on: the terminal path maps only among blocked /
+//     next-work-available, matching the runtime's own inference (a concrete
+//     next action → next-work-available; footer.mjs `inferCompletionState`).
+//   - commit_surface off (§2, manually-published lifecycles): the persona
+//     terminalizes WITHOUT auto-committing — the owner publishes the
+//     deliverable manually — so
+//       - blocked with ONLY head_moved unmet → publish-needed (the deliverable
+//         is ready for the owner's save/commit decision; head_moved is a
+//         fail-closed collapse that also covers a failed git probe — the
+//         wording must not overclaim a single cause)
+//       - blocked with any other gate unmet  → blocked (genuinely blocking)
+//       - not_terminal / ready_to_archive    → next-work-available
 // The reason names the projection phase and, when blocked, the specific failed
 // gate tokens (threaded via the compute return's gate_failures, never the
 // frozen projection schema); blocked AND publish-needed completions both pass
 // an explicit --completion-next-action (the §3.2 marker-free floor).
-// The next action per unmet gate, worded from the declaration (V2: the
-// deliverable noun) when it is needed, never at import.
-function blockedGateNextActions() {
-  const { name, deliverable_noun: noun } = loadPersona({ require: ['deliverable_noun'] });
-  return {
-    // head_moved is a fail-closed collapse: a failed git probe also reports it
-    // (evaluateStopArchive treats a null probe as "HEAD did not move").
-    head_moved: `Save/commit the ${noun} so HEAD moves past the workflow baseline — ${name} never auto-commits; publishing is the owner's manual step (a failed git probe also reports this gate).`,
+//
+// The next action per unmet gate, worded from the declaration when it runs,
+// never at import (V2: the deliverable noun, read only with commit_surface
+// off). `phase` picks the head_moved action with commit_surface on: a
+// `close-complete` workflow made no commit, so HEAD is not meant to move.
+function blockedGateNextActions(phase) {
+  const name = personaName();
+  const prefix = commandPrefix();
+  const resolvingSurfaces = [
+    `decide-conflict, the Owner selection step of ${prefix}decide`,
+    `recurring-finding, the Owner decision step of ${prefix}refine`,
+    'scope-routing, the owner picks the route the phase note recommends',
+  ];
+  if (capabilityOn('commit_surface')) {
+    resolvingSurfaces.push(`staging-set, an interactive ${prefix}commit, which clears it once the owner confirms the staging set`);
+  }
+  if (capabilityOn('dispatch_target')) {
+    resolvingSurfaces.push('pr-handling, the owner takes or declines the outward action, then clears the gate with the next step');
+  }
+  const actions = {
     no_active_children: `Settle the incomplete child-completion entries recorded on this workflow before archiving it (${name} workflows normally carry none — an unexpected entry indicates external state mutation).`,
-    // ADR-0063 D6 gate 5 (PC2b): the gate's resolving surface, by gate.
-    awaiting_owner: `Resolve the pending owner gate (awaiting_owner_gate) through its resolving surface: decide-conflict, the Owner selection step of ${commandPrefix()}decide; recurring-finding, the Owner decision step of ${commandPrefix()}refine; scope-routing, the owner picks the route the phase note recommends. Inside a ${commandPrefix()}start lifecycle, resume it with ${commandPrefix()}start instead, which clears the gate with the phase it continues at. A workflow waiting on its owner is not archived.`,
-    terminal_phase: 'Advance current_phase to an archive-whitelisted terminal phase (commit-complete, summary-complete, or fix-complete).',
+    // ADR-0063 D6 gate 5: the gate's resolving surface, by gate.
+    awaiting_owner: `Resolve the pending owner gate (awaiting_owner_gate) through its resolving surface: ${resolvingSurfaces.join('; ')}. Inside a ${prefix}start lifecycle, resume it with ${prefix}start instead, which clears the gate with the phase it continues at. A workflow waiting on its owner is not archived.`,
+    terminal_phase: `Advance current_phase to an archive-whitelisted terminal phase (${orList([...terminalPhases()])}).`,
   };
+  // head_moved is a fail-closed collapse: a failed git probe also reports it
+  // (evaluateStopArchive treats a null probe as "HEAD did not move").
+  if (!capabilityOn('commit_surface')) {
+    const { deliverable_noun: noun } = loadPersona({ require: ['deliverable_noun'] });
+    actions.head_moved = `Save/commit the ${noun} so HEAD moves past the workflow baseline — ${name} never auto-commits; publishing is the owner's manual step (a failed git probe also reports this gate).`;
+  } else if (phase === 'close-complete') {
+    // ADR-0063 — a no-changes close makes no commit, so HEAD is not meant to
+    // move: a `close-complete` workflow still active only lacks its archive,
+    // which the close writes itself. Advising a commit there would be wrong.
+    actions.head_moved = `Finish the no-changes close: run ${prefix}commit ($${name}:commit on Codex) again; it archives the workflow itself, since a close makes no commit and HEAD is not meant to move.`;
+  } else {
+    actions.head_moved = 'Commit the completed work so HEAD moves past the workflow baseline (the Stop-hook archive gate requires a real commit; a failed git probe also reports this gate).';
+  }
+  return actions;
+}
+
+// `a, b, or c` (two items: `a or b`).
+function orList(items) {
+  if (items.length <= 2) return items.join(' or ');
+  return `${items.slice(0, -1).join(', ')}, or ${items[items.length - 1]}`;
 }
 
 // Collapse control characters / newlines to single spaces. footer.mjs REJECTS
@@ -394,7 +582,8 @@ export function mapCompletionFlags(projection, gateFailures = []) {
   const gate = projection.archive_gate;
   const phase = oneLine(projection.phase);
   const blockedGates = gateFailures.filter((g) => g !== 'terminal_marker');
-  const publishNeeded = gate === 'blocked'
+  const publishNeeded = !capabilityOn('commit_surface')
+    && gate === 'blocked'
     && blockedGates.length === 1
     && blockedGates[0] === 'head_moved';
   const state = publishNeeded
@@ -414,7 +603,7 @@ export function mapCompletionFlags(projection, gateFailures = []) {
     // The state-scoped immediate action IS the owner publish step. Passed
     // explicitly so the footer never falls back to its static publish-needed
     // template (contract §3.2 marker-free floor).
-    flags.completionNextAction = blockedGateNextActions().head_moved;
+    flags.completionNextAction = blockedGateNextActions(projection.phase).head_moved;
   } else if (gate === 'blocked') {
     // Always pass an explicit unblocking action on blocked terminals — and
     // never let an unknown/future gate token ride silently beside known ones:
@@ -423,7 +612,7 @@ export function mapCompletionFlags(projection, gateFailures = []) {
     // previously fired only when NO token was known), so the runtime's
     // no-input default never renders with a generic-fallback marker
     // (contract §3.2 marker-free floor).
-    const nextActions = blockedGateNextActions();
+    const nextActions = blockedGateNextActions(projection.phase);
     const actions = blockedGates
       .map((g) => nextActions[g])
       .filter(Boolean);
@@ -442,14 +631,64 @@ export function mapCompletionFlags(projection, gateFailures = []) {
 // child output to the parent's channels); the child's stderr is discarded so an
 // unknown-flag / diagnostic line cannot leak. Resolves { ok, stdout } — ok=false
 // on spawn error, non-zero exit, or timeout. NEVER throws.
+const FOOTER_RUN_TIMEOUT_MS = 10_000;
+
 function execFooter(footerScript, args) {
   return new Promise((res) => {
     execFile(
       process.execPath,
       [footerScript, 'render', ...args],
-      { encoding: 'utf8', timeout: 10_000, maxBuffer: 4 * 1024 * 1024 },
+      { encoding: 'utf8', timeout: FOOTER_RUN_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
       (error, stdout) => res(error ? { ok: false, stdout: '' } : { ok: true, stdout: stdout ?? '' }),
     );
+  });
+}
+
+// DELIVERY, not acceptance (PC3, Codex Plan-verify): on a pipe, process.stderr
+// writes asynchronously on macOS (Node's notes on process I/O), so a write
+// that returns has not reached the reader yet and can still fail. Resolves
+// true once the write callback reports success; false on a write error, a
+// stream 'error' during the write, a synchronous throw, or no callback within
+// DELIVERY_TIMEOUT_MS (a reader that never drains). Never throws.
+// LIMIT: the timeout ends the wait, not the write. A write still pending on a
+// pipe nobody drains keeps the process alive until the reader drains or
+// closes it, as any stderr write of the caller's does; ending the process
+// here could cut the caller's own stdout, the machine channel.
+const DELIVERY_TIMEOUT_MS = 10_000;
+
+// A failed write calls its callback first and emits 'error' after it, when
+// the per-write listener below is gone; with no listener left, that 'error'
+// would crash a completion whose state write already landed. One listener for
+// the life of the process absorbs it: a broken stderr has no reader to tell.
+let stderrErrorsAbsorbed = false;
+function absorbStderrErrors() {
+  if (stderrErrorsAbsorbed) return;
+  stderrErrorsAbsorbed = true;
+  process.stderr.on('error', () => {});
+}
+
+function deliverToStderr(text) {
+  absorbStderrErrors();
+  return new Promise((resolveDelivery) => {
+    const stream = process.stderr;
+    let settled = false;
+    let timer = null;
+    const onError = () => finish(false);
+    function finish(delivered) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stream.removeListener('error', onError);
+      resolveDelivery(delivered);
+    }
+    timer = setTimeout(() => finish(false), DELIVERY_TIMEOUT_MS);
+    timer.unref?.();
+    try {
+      stream.once('error', onError);
+      stream.write(text, (error) => finish(!error));
+    } catch {
+      finish(false);
+    }
   });
 }
 
@@ -466,7 +705,7 @@ function execFooter(footerScript, args) {
 // Fail-closed silent throughout; resolves true ONLY when a VALID footer was
 // DELIVERED — a failed stderr write reports false so the marker stays
 // un-upgraded and the SessionStart nudge fires (the ADR-0043 §2 orchestrator
-// delivery baseline, not the engineer swallow).
+// delivery baseline; every persona since ADR-0066 D4).
 function renderTerminalFooter({ repoRoot, host, projectionFile, projection, gateFailures }) {
   return new Promise((resolveRender) => {
     (async () => {
@@ -477,7 +716,9 @@ function renderTerminalFooter({ repoRoot, host, projectionFile, projection, gate
       // THIS emit's completion flags with a concurrent emit's projection
       // (Codex Plan-verify). The slot file stays the guaranteed channel; the
       // snapshot only feeds the render and is removed best-effort afterwards.
-      const snapshotFile = `${projectionFile}.render-snapshot-${process.pid}.json`;
+      // The random suffix keeps two renders in one process (two emits on one
+      // slot) from writing, reading or removing each other's snapshot.
+      const snapshotFile = `${projectionFile}.render-snapshot-${process.pid}-${randomBytes(6).toString('hex')}.json`;
       try {
         const runtimeRoot = await discoverRuntimePluginRoot();
         if (!runtimeRoot) {
@@ -543,17 +784,12 @@ function renderTerminalFooter({ repoRoot, host, projectionFile, projection, gate
           resolveRender(false);
           return;
         }
-        try {
-          process.stderr.write(textRun.stdout.endsWith('\n') ? textRun.stdout : `${textRun.stdout}\n`);
-        } catch {
-          // The footer was NOT delivered (stderr closed/errored). Report NOT
-          // rendered so the caller leaves the marker un-upgraded and the
-          // SessionStart nudge fires as the backstop (a swallowed delivery
-          // failure must not count as a rendered footer — ADR-0043 §2).
-          resolveRender(false);
-          return;
-        }
-        resolveRender(true);
+        // A footer that was NOT delivered (stderr closed or errored, now or
+        // asynchronously) reports NOT rendered, so the caller leaves the marker
+        // un-upgraded and the SessionStart nudge fires as the backstop (a
+        // swallowed delivery failure must not count as a rendered footer —
+        // ADR-0043 §2).
+        resolveRender(await deliverToStderr(textRun.stdout.endsWith('\n') ? textRun.stdout : `${textRun.stdout}\n`));
       } catch {
         resolveRender(false);
       } finally {
@@ -569,8 +805,9 @@ function renderTerminalFooter({ repoRoot, host, projectionFile, projection, gate
 
 /**
  * ADR-0031 activation sidecar (ADR-0043) — fired from the must-run persona
- * completion mutation (`setTerminal`, opted in by the CLI `set-terminal` case),
- * and re-fired by the Stop-hook backstop. Projects the EXACT workflow just
+ * completion mutation (`setTerminal`, opted in by the CLI `set-terminal` and
+ * `finish-verb` cases and, with commit_surface on, by `phase7-commit`), and
+ * re-fired by the Stop-hook backstop. Projects the EXACT workflow just
  * terminalized (by path, via `computeProjectionForPath` — not by current
  * branch) and emits the bounded projection through two channels that NEVER
  * touch stdout (the completion scripts' stdout contracts — path-only / JSON —
@@ -618,7 +855,7 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
   let target = null;
   try {
     if (!repoRoot) return { emitted: false, status: 'no_repo_root' };
-    target = projectionFile ?? defaultProjectionFile(repoRoot);
+    target = projectionFile ?? projectionFileForWorkflow(repoRoot, workflowPath);
     const result = await computeProjectionForPath({ repoRoot, workflowPath });
     if (result.status !== 'ok' || !result.projection) {
       await clearStaleProjection(target);
@@ -629,6 +866,8 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
     const p = result.projection;
     // The advisory is best-effort: a stderr failure must not flip a successful
     // emit into the catch path (which would clear the projection just written).
+    // Nothing waits on its delivery; an asynchronous write error is absorbed.
+    absorbStderrErrors();
     try {
       process.stderr.write(
         `⚑ ADR-0031 session-handoff: ${p.workflow_kind} ${p.workflow_id} ` +
@@ -649,12 +888,15 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
     // SessionStart nudge. Fail-closed + non-fatal throughout.
     let footerRendered = false;
     const markerFile = footerMarkerFile(target);
-    // A rendered marker suppresses only NON-primary emits: the tombstone means
-    // "this workflow's LAST transition already rendered", and a primary emit
-    // IS a new transition (re-terminalization) that must render again.
-    if (origin !== 'primary' && await footerRenderedMatches(markerFile, p.workflow_id)) {
+    const transition = transitionKey(p);
+    let claim = null;
+    // A rendered marker suppresses only NON-primary emits of the SAME
+    // transition: the tombstone means "this workflow's transition already
+    // rendered", and a primary emit IS a new transition (re-terminalization)
+    // that must render again.
+    if (origin !== 'primary' && await footerRenderedMatches(markerFile, p.workflow_id, transition)) {
       footerRendered = true; // the primary already rendered; the backstop must not re-render
-    } else if (await claimFooterRender(markerFile, p.workflow_id, origin)) {
+    } else if ((claim = await claimFooterRender(markerFile, p.workflow_id, transition, origin))) {
       footerRendered = await renderTerminalFooter({
         repoRoot,
         host,
@@ -662,8 +904,8 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
         projection: p,
         gateFailures: result.gate_failures ?? [],
       });
-      if (footerRendered) await markFooterRendered(markerFile, p.workflow_id);
-      else await releaseFooterClaim(markerFile, p.workflow_id);
+      if (footerRendered) await markFooterRendered(markerFile, p.workflow_id, transition, claim);
+      else await releaseFooterClaim(markerFile, claim);
     } else {
       footerRendered = true; // a concurrent emit owns the render — do not double-emit
     }
@@ -733,7 +975,7 @@ export async function readPendingHandoff(repoRoot, projectionFile) {
         return { projection, projectionFile: target };
       }
     } catch {
-      /* candidate unreadable — fail-closed (a single canonical home) */
+      /* candidate unreadable — try the next home (canonical → legacy), else none */
     }
   }
   return null;
@@ -757,8 +999,10 @@ export async function pendingHandoffReinjectionLine(repoRoot, projectionFile) {
   // this terminal workflow (sibling marker present), the "may have been missed"
   // nudge is FALSE. Suppress it (line=null) but still return the projectionFile
   // so the hook consumes the one-shot (and its marker). Keys on the RAW
-  // workflow_id (what the marker was written with), not the clamped display id.
-  if (await footerRenderedMatches(footerMarkerFile(pending.projectionFile), p.workflow_id)) {
+  // workflow_id (what the marker was written with), not the clamped display id,
+  // and on the pending projection's transition: an earlier transition's render
+  // does not stand for this one.
+  if (await footerRenderedMatches(footerMarkerFile(pending.projectionFile), p.workflow_id, transitionKey(p))) {
     return { line: null, projectionFile: pending.projectionFile, footerRendered: true };
   }
   // SELF-CONTAINED marker: the re-injection carries the continue-vs-fresh signal
@@ -784,12 +1028,12 @@ export async function pendingHandoffReinjectionLine(repoRoot, projectionFile) {
  * Best-effort one-shot consume of the pending-handoff file after a hook
  * re-surfaced it, so the nudge does not repeat every session. Never throws.
  *
- * Divergence from the engineer copy (Codex Plan-verify blocker; commit_surface
- * off): a completed 'rendered' marker is PRESERVED as a tombstone. The persona's
- * publish-needed workflow stays active-terminal until the owner publishes, so
- * removing the marker here would let the very next Stop backstop re-render the
+ * A completed 'rendered' marker is PRESERVED as a tombstone (see TOMBSTONE
+ * above): a terminal workflow can stay active across sessions, so removing the
+ * marker here would let the very next Stop backstop re-render the
  * already-delivered transition. Only a non-completed marker (a crashed
- * 'claimed', a foreign/malformed body) is removed with the projection; the
+ * 'claimed' — one older than a render can take; a live claim stays — or a
+ * foreign/malformed body) is removed with the projection; the
  * tombstone is replaced by the next primary transition or a different
  * workflow's claim, and rollback cleanup removes it manually (runbook).
  */
@@ -800,15 +1044,15 @@ export async function consumePendingHandoff(projectionFile) {
   } catch {
     /* best-effort: a stale one-shot file is harmless next session */
   }
+  // Under the marker lock, so a render upgrading its claim meanwhile is never
+  // undone by this removal. A live claim stays: its render upgrades or
+  // releases it, and a dead one is taken over by the next emit.
   const markerFile = footerMarkerFile(projectionFile);
-  const marker = await readFooterMarker(markerFile);
-  if (!(marker && marker.status === 'rendered')) {
-    try {
-      await rm(markerFile, { force: true });
-    } catch {
-      /* best-effort */
-    }
-  }
+  await withMarkerLock(markerFile, async (owns) => {
+    const marker = await readFooterMarker(markerFile);
+    if (marker && (marker.status === 'rendered' || (marker.status === 'claimed' && !claimIsStale(marker)))) return;
+    if (await owns()) await rm(markerFile, { force: true });
+  });
 }
 
 export function parseArgs(argv) {

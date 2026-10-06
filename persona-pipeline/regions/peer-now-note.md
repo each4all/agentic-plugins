@@ -5,7 +5,13 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label "[Peer] $PEER consultation" \
-  --phase-note "run_id=$RUN_ID
+  --phase-note "peer: $PEER
+run_id: $RUN_ID
+handle: $HANDLE_PATH
+prompt-mode: verbatim
+
+### Response
+
 $(head -c 4000 "$STDOUT_PATH")" \
   --event updated
 ```

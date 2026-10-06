@@ -29,9 +29,9 @@
 const T_LIB = 'tests/companions/test-discover-peer.mjs';
 const T_BOOT = 'tests/companions/test-companion-bootstrap.mjs';
 const T_GUARD = 'tests/plugin-shape/test-no-snapshot-locators.mjs';
-const T_RUNNER = 'tests/engineer/test-peer-runner.mjs';
+const T_RUNNER = 'tests/persona-pipeline/test-peer-runner.mjs';
 const T_SIBLINGS = 'tests/plugin-shape/test-installed-sibling-resolvers.mjs';
-const T_WRITEBACK = 'tests/engineer/test-parent-writeback.mjs';
+const T_WRITEBACK = 'tests/persona-pipeline/test-parent-writeback.mjs';
 const T_PEC = 'tests/runtime/test-peer-execution-context.mjs';
 const T_CONSENSUS = 'tests/runtime/test-consensus.mjs';
 const T_DOCTOR = 'tests/runtime/test-doctor.mjs';
@@ -280,8 +280,8 @@ export const MUTATIONS = [
   },
   {
     id: 'R14', file: ENG_RUNTIME, tests: [T_SIBLINGS],
-    from: "    if (ownership(sibling, hostTrees) === 0 && (await fileExists(join(sibling, 'scripts', 'footer.mjs')))) {",
-    to: "    if (await fileExists(join(sibling, 'scripts', 'footer.mjs'))) {",
+    from: "    if (ownership(sibling, hostTrees) === 0 && (await fileExists(join(sibling, capabilityRel)))) {",
+    to: "    if (await fileExists(join(sibling, capabilityRel))) {",
     why: 'a checkout sibling that is a symlink into the marketplace clone is accepted',
   },
   {
@@ -369,23 +369,26 @@ export const MUTATIONS = [
   // ---- E: CLI entry guards on the paths the resolvers hand out ------------
   // Ids are pinned rather than derived from the position: E4 (notify.mjs) went
   // with the emitter in R4n2, and E5/E6 keep the names they were scored under.
+  // E2/E3/E5: engineer's scripts are generated from persona-pipeline/ and guard
+  // their CLI with the shared lib/cli-entry.mjs (ADR-0066 Stage 1), so the
+  // defect replaces that call.
   ...[
-    ['E1', 'plugins/orchestrator/scripts/state.mjs'],
-    ['E2', 'plugins/engineer/scripts/state.mjs'],
-    ['E3', 'plugins/engineer/scripts/dispatch-peer.mjs'],
-    ['E5', 'plugins/engineer/scripts/discover-runtime.mjs'],
-    ['E6', 'plugins/orchestrator/scripts/discover-engineer.mjs'],
-  ].map(([id, file]) => ({
+    ['E1', 'plugins/orchestrator/scripts/state.mjs', 'if (invokedAsCli()) {'],
+    ['E2', 'plugins/engineer/scripts/state.mjs', 'if (isCliEntry(import.meta.url)) {'],
+    ['E3', 'plugins/engineer/scripts/dispatch-peer.mjs', 'if (isCliEntry(import.meta.url)) {'],
+    ['E5', 'plugins/engineer/scripts/discover-runtime.mjs', 'if (isCliEntry(import.meta.url)) {'],
+    ['E6', 'plugins/orchestrator/scripts/discover-engineer.mjs', 'if (invokedAsCli()) {'],
+  ].map(([id, file, from]) => ({
     id, file, tests: [T_SIBLINGS],
-    from: 'if (invokedAsCli()) {',
+    from,
     to: 'if (import.meta.url === `file://${process.argv[1]}`) {',
     why: `${file} compares argv[1] as spelled again, so it does nothing from an escaped path or a symlink`,
   })),
 
   {
-    id: 'E7', file: 'plugins/engineer/scripts/state.mjs', tests: [T_SIBLINGS],
-    from: '    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));',
-    to: '    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);',
+    id: 'E7', file: 'plugins/engineer/scripts/lib/cli-entry.mjs', tests: [T_SIBLINGS],
+    from: '    self = realpathSync(fileURLToPath(importMetaUrl));',
+    to: '    self = fileURLToPath(importMetaUrl);',
     why: 'only argv[1] is canonicalized, so --preserve-symlinks-main leaves the CLI silent through a symlink',
   },
 

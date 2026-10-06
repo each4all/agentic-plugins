@@ -24,20 +24,26 @@
 //       * relative path rejected
 //       * env override missing discover-peer.mjs rejected
 //       * unknown peer rejected
+//   - the CLI (the verbatim path peer-now used before peer-runner):
+//       * --peer missing (misuse, exit 2), invalid, or both prompt forms
+//       * no companion resolvable → companion_error, exit 3
 //
-// None of these cases reads or writes workflow state, so every persona —
-// engineer included, whose dispatch-peer imports its hand-written state.mjs
-// until ADR-0066 Stage 3 — runs every case.
+// None of these cases reads or writes workflow state, so every persona runs
+// every case (engineer's own copy of this suite folded in here at ADR-0066
+// Stage 3, when its state.mjs became generated too).
 //
-// Live spawn flows (companion not installed, peer CLI missing, etc.)
-// are NOT covered here — those are integration concerns exercised by the
-// dogfood session in Cluster 3.
+// Live spawn flows (a companion that runs, a peer CLI that fails) are NOT
+// covered here — no case spawns a companion; those are integration concerns
+// exercised by the dogfood session in Cluster 3.
 //
 // Run via `node --test tests/persona-pipeline/test-dispatch-peer.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
-import { resolve } from 'node:path';
+import { strictEqual, notStrictEqual, ok, match } from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { personasFor, personaInfo, REPO_ROOT } from './_personas.mjs';
@@ -385,6 +391,60 @@ for (const persona of personasFor('scripts/dispatch-peer.mjs')) {
       } catch (err) {
         ok(/Invalid peer/i.test(err.message), `err: ${err.message}`);
       }
+    });
+  });
+
+  describe(`${persona}: dispatch-peer.mjs CLI — refusals and a missing companion`, () => {
+    // Each call runs in a scratch directory that is also HOME, with no
+    // companions override and no CODEX_HOME, so no installed companion can
+    // be resolved or spawned.
+    async function withScratch(fn) {
+      const dir = await mkdtemp(join(tmpdir(), `${persona}-dispatch-cli-`));
+      try {
+        await fn(dir);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+    function cli(dir, args) {
+      const env = { ...process.env, HOME: dir };
+      delete env.AGENTIC_COMPANIONS_ROOT;
+      delete env.CODEX_HOME;
+      return spawnSync(process.execPath, [DISPATCH_PATH, ...args], { encoding: 'utf8', env, cwd: dir });
+    }
+
+    it('a missing --peer is misuse: exit 2, naming the flag', async () => {
+      await withScratch(async (dir) => {
+        const r = cli(dir, ['--prompt-text', 'hello']);
+        strictEqual(r.status, 2, `stderr: ${r.stderr}`);
+        match(r.stderr, /--peer claude\|codex is required/);
+      });
+    });
+
+    it('a --peer outside claude|codex is refused before any companion is resolved', async () => {
+      await withScratch(async (dir) => {
+        const r = cli(dir, ['--peer', 'gpt', '--prompt-text', 'hello']);
+        notStrictEqual(r.status, 0);
+        match(r.stderr, /Invalid peer: gpt/);
+      });
+    });
+
+    it('--prompt-text and --prompt-file together are refused', async () => {
+      await withScratch(async (dir) => {
+        const r = cli(dir, ['--peer', 'codex', '--prompt-text', 'hello', '--prompt-file', '/dev/null']);
+        notStrictEqual(r.status, 0);
+        match(r.stderr, /either promptFile or promptText, not both/);
+      });
+    });
+
+    it('no resolvable companion is a companion_error: exit 3 (peer CLI not found)', async () => {
+      await withScratch(async (dir) => {
+        const promptFile = join(dir, 'p.txt');
+        await writeFile(promptFile, 'verbatim probe');
+        const r = cli(dir, ['--peer', 'codex', '--prompt-file', promptFile, '--output-format', 'json']);
+        strictEqual(r.status, 3, `stderr: ${r.stderr}`);
+        match(r.stderr, /companion for peer "codex" not resolved/);
+      });
     });
   });
 }

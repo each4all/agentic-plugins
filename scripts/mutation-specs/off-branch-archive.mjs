@@ -14,10 +14,11 @@
 // Groups: K the engineer sweep on a kept branch, S the designer and founder
 // copies, G the /orchestrator:done scans.
 
-const T_ENG = 'tests/engineer/test-stop-archive.mjs';
-// designer's and founder's stop-archive is one canonical source generated into
-// both (ADR-0066); its suite is parametrized over both, so a defect in one
-// persona's copy fails that persona's cases.
+// stop-archive is one canonical source generated into engineer, designer and
+// founder (ADR-0066); its suite is one file parametrized over all three, so a
+// defect in one persona's copy fails that persona's cases. The engineer-only
+// parent note (K10) is a dispatch_target-on case, registered for engineer.
+const T_ENG = 'tests/persona-pipeline/test-stop-archive.mjs';
 const T_DES = 'tests/persona-pipeline/test-stop-archive.mjs';
 const T_FOU = 'tests/persona-pipeline/test-stop-archive.mjs';
 const T_DONE = 'tests/orchestrator/test-done-runbook.mjs';
@@ -28,7 +29,7 @@ const FOU = 'plugins/founder/scripts/stop-archive.mjs';
 const stateOf = (file) => file.replace('stop-archive.mjs', 'state.mjs');
 const DONE = 'plugins/orchestrator/commands/done.md';
 
-export const TESTS = [T_ENG, T_DES, T_DONE];
+export const TESTS = [T_ENG, T_DONE];
 
 const keptBranchPath = (id, file, tests, persona) => [
   {

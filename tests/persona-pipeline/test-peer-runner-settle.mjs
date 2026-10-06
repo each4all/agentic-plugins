@@ -13,7 +13,7 @@ import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { personaInfo, personasFor } from './_personas.mjs';
@@ -169,6 +169,30 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
         await leftBehind(ctx, 'plan-verify-c', { phase: 'critique' });
         await leftBehind(ctx, 'plan-verify-d', { workflow_path: join(ctx.repoRoot, 'other.md') });
         strictEqual((await settle(ctx, '')).settlement, 'skipped');
+      });
+    });
+
+    // legacy_homes on (ADR-0025): a workflow still in the pre-migration home
+    // has its ledgers there, and the scan reads each run from that home.
+    if (P.capabilities.legacy_homes) it('with no run id and a legacy-home ledger naming this workflow and phase: refused (legacy_homes on)', async () => {
+      await withWorkflow(async (ctx) => {
+        const legacyState = join(ctx.repoRoot, '.claude', `agentic-${persona}`);
+        await mkdir(join(ctx.repoRoot, '.claude'), { recursive: true });
+        await rename(join(ctx.repoRoot, P.stateDirRel), legacyState);
+        const workflowPath = join(legacyState, 'workflows', basename(ctx.workflowPath));
+        const legacy = { ...ctx, workflowPath };
+        const paths = peerRunPaths(ctx.repoRoot, 'plan-verify-l', { home: 'legacy' });
+        await mkdir(paths.dir, { recursive: true, mode: 0o700 });
+        const at = OLD;
+        await writeHandle(paths.handle, {
+          schema_version: HANDLE_SCHEMA_VERSION, run_id: 'plan-verify-l', plugin: persona, kind: 'ensemble',
+          workflow_path: workflowPath, phase: 'compose', ensemble_type: 'plan-verify', host: 'claude',
+          peer_host: 'codex', model: null, effort: null, cwd: ctx.repoRoot, output_format: 'json',
+          status: 'completed', pid: null, pgid: null, process_fingerprint: { kind: 'none' },
+          started_at: at, updated_at: at, completed_at: at, last_output_at: null,
+          stdout_bytes: 0, stderr_bytes: 0, exit_code: 0, error_kind: null, prompt_retained: false,
+        });
+        await refused(settle(legacy, ''), /unsettled ensemble attempt .*plan-verify-l/);
       });
     });
 

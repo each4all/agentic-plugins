@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "persona-pipeline/persona.schema.json",
   "title": "Persona declaration, plugins/<persona>/persona.json (ADR-0066 Decision 2)",
-  "description": "Format 1.0 holds identity, the deliverable noun, the runtime footer floor, the capabilities and the decide data; 1.1 adds verbs, each verb's profiles, default profile, request placeholder, ensemble type, phase-note artifact sections and proposal texts; 1.2 adds peer, the peer policy. Cross-field rules the schema cannot state (the decide fallback equals the registry preset, profile_presets needs its map, tie_break names a fallback axis, a verb's default profile is one of its profiles, each enrolled unit's and region's fields are present, a variant region is enrolled exactly where its declared value says, the privacy spec is a file of the plugin) are checked by scripts/sync-persona-pipeline.mjs. Validated with the closed keyword subset of plugins/runtime/scripts/lib/schema-validate.mjs.",
+  "description": "Format 1.0 holds identity, the deliverable noun, the runtime footer floor, the capabilities and the decide data; 1.1 adds verbs, each verb's profiles, default profile, request placeholder, ensemble type, phase-note artifact sections and proposal texts; 1.2 adds peer, the peer policy; 1.3 adds investigate's brief_file and output_root_env, where its brief is not named after its default profile. Cross-field rules the schema cannot state (the decide fallback equals the registry preset, profile_presets needs its map, tie_break names a fallback axis, a verb's default profile is one of its profiles, each enrolled unit's and region's fields are present, a variant region is enrolled exactly where its declared value says, the privacy spec is a file of the plugin) are checked by scripts/sync-persona-pipeline.mjs. Validated with the closed keyword subset of plugins/runtime/scripts/lib/schema-validate.mjs.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "name", "capabilities", "decide"],
@@ -157,6 +157,18 @@
         "ensemble_type": {
           "description": "The peer ensemble type, where it differs by persona.",
           "$ref": "#/$defs/id"
+        },
+        "brief_file": {
+          "description": "investigate only: the file the brief is saved as, where it is not the default profile's name (the generator refuses it on another verb).",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*\\.md$",
+          "maxLength": 64
+        },
+        "output_root_env": {
+          "description": "investigate only: the variable that overrides where the brief is saved, where it is not <NAME>_OUTPUT_ROOT (the generator refuses it on another verb).",
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "maxLength": 64
         },
         "artifact": {
           "description": "The phase note's artifact sections, one list item per line (an empty item is a blank line).",

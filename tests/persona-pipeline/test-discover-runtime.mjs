@@ -64,6 +64,21 @@ async function tmp(prefix) {
 
 const NEUTRAL_SELF = 'file:///nowhere/scripts/discover-runtime.mjs'; // no /.claude/ or /.codex/, no sibling
 
+// Versions around a persona's footer floor, so each case holds for every
+// declared floor (engineer 0.63.0, founder and designer 0.79.0): the patch
+// release just below it, the next minor above it, and their prereleases.
+function aroundFloor(floor) {
+  const [major, minor] = floor.split('.').map(Number);
+  if (minor === 0) throw new Error(`aroundFloor needs a floor with a minor above 0, got ${floor}`);
+  return Object.freeze({
+    justBelow: `${major}.${minor - 1}.1`,
+    farBelow: '0.10.0',
+    above: `${major}.${minor + 1}.0`,
+    floorPrerelease: `${floor}-beta.1`,
+    abovePrerelease: `${major}.${minor + 1}.0-rc.1`,
+  });
+}
+
 for (const persona of personasFor('scripts/discover-runtime.mjs')) {
   const P = personaInfo(persona);
   const {
@@ -75,6 +90,7 @@ for (const persona of personasFor('scripts/discover-runtime.mjs')) {
   } = await import(pathToFileURL(P.path('scripts/discover-runtime.mjs')).href);
 
   const pfx = (label) => `${persona}-rt-${label}-`;
+  const V = aroundFloor(P.runtimeFooterFloor);
   const NO_HOME = () => tmp(pfx('emptyhome')); // a home with no caches
 
   describe(`${persona}: discoverRuntimePluginRoot — footer floor (ADR-0043 §2/§4)`, () => {
@@ -87,6 +103,12 @@ for (const persona of personasFor('scripts/discover-runtime.mjs')) {
       // (plugin-runtime-v0.79.0). A persona enrolled later declares its own.
       if (persona === 'founder' || persona === 'designer') {
         strictEqual(minRuntimeVersion(), '0.79.0');
+      }
+      // engineer's floor is the ADR-0031 projection-file floor: runtime 0.63.0
+      // added --workflow-projection-file, the newest render flag engineer
+      // passes. No stage of ADR-0066 raises it (Decision 2).
+      if (persona === 'engineer') {
+        strictEqual(minRuntimeVersion(), '0.63.0');
       }
       strictEqual(FOOTER_CAPABILITY, 'footer.mjs');
     });
@@ -119,9 +141,11 @@ for (const persona of personasFor('scripts/discover-runtime.mjs')) {
       );
     });
 
-    it('a 0.78.x runtime, just below the footer floor → null', async () => {
-      // A pre-S2 runtime would render the unsupported-kind degradation text.
-      const root = await mkRuntimeRoot(await tmp(pfx('window')), { version: '0.78.1' });
+    it('a runtime just below the footer floor → null', async () => {
+      // Below the floor the runtime cannot render this persona's footer: before
+      // 0.79.0 it rejects founder's and designer's workflow kinds (ADR-0043 S2),
+      // before 0.63.0 it lacks --workflow-projection-file.
+      const root = await mkRuntimeRoot(await tmp(pfx('window')), { version: V.justBelow });
       const home = await NO_HOME();
       const env = { AGENTIC_RUNTIME_ROOT: root };
       strictEqual(await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }), null);
@@ -163,6 +187,18 @@ for (const persona of personasFor('scripts/discover-runtime.mjs')) {
       strictEqual(got, codexRoot, 'Codex-host self should prefer the Codex cache');
     });
 
+    it('same-host preference: Claude selfUrl prefers the Claude cache over a Codex cache', async () => {
+      const home = await tmp(pfx('samehost-claude'));
+      const claudeBase = await mkClaudeCache(home, [{ version: '0.80.0' }]);
+      await mkCodexCache(home, { version: '0.81.0' });
+      const got = await discoverRuntimePluginRoot({
+        env: {},
+        home,
+        selfUrl: pathToFileURL(join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', P.name, '0.18.0', 'scripts', 'discover-runtime.mjs')).href,
+      });
+      strictEqual(got, join(claudeBase, '0.80.0'), 'Claude-host self should prefer the Claude cache, even over a newer Codex one');
+    });
+
     it('sibling monorepo fallback → resolves <persona>/../runtime when no env/cache', async () => {
       const mono = await tmp(pfx('sibling'));
       const personaScripts = join(mono, 'plugins', P.name, 'scripts');
@@ -186,21 +222,30 @@ for (const persona of personasFor('scripts/discover-runtime.mjs')) {
     });
 
     it('too-old runtime → null (gated), even though resolve() finds it (no stale-cache fallback)', async () => {
-      const oldRoot = await mkRuntimeRoot(await tmp(pfx('old')), { version: '0.10.0' });
+      const oldRoot = await mkRuntimeRoot(await tmp(pfx('old')), { version: V.farBelow });
       const home = await NO_HOME();
       const env = { AGENTIC_RUNTIME_ROOT: oldRoot };
       strictEqual(await resolveRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }), oldRoot);
       strictEqual(await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }), null);
+      // The gate's default floor is the declared one.
+      strictEqual(await runtimeVersionAtLeast(oldRoot), false);
     });
 
-    it('a prerelease of the footer floor (0.79.0-beta.1) does NOT satisfy the gate', async () => {
-      const preRoot = await mkRuntimeRoot(await tmp(pfx('pre')), { version: '0.79.0-beta.1' });
+    it('too-old Claude cache → null (does not fall back to an older-but-present copy)', async () => {
+      const home = await tmp(pfx('old-cache'));
+      await mkClaudeCache(home, [{ version: V.farBelow }, { version: V.justBelow }]); // both below the floor
+      strictEqual(await discoverRuntimePluginRoot({ env: {}, home, selfUrl: NEUTRAL_SELF }), null);
+    });
+
+    it('a prerelease of the footer floor does NOT satisfy the gate', async () => {
+      const preRoot = await mkRuntimeRoot(await tmp(pfx('pre')), { version: V.floorPrerelease });
       const home = await NO_HOME();
       const env = { AGENTIC_RUNTIME_ROOT: preRoot };
       strictEqual(await resolveRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }), preRoot, 'resolve() (ungated) finds it');
       strictEqual(await discoverRuntimePluginRoot({ env, home, selfUrl: NEUTRAL_SELF }), null, 'gate rejects a prerelease of the floor');
       // a prerelease ABOVE the floor is still fine.
-      const preAbove = await mkRuntimeRoot(await tmp(pfx('pre2')), { version: '0.80.0-rc.1' });
+      strictEqual(await runtimeVersionAtLeast(preRoot), false);
+      const preAbove = await mkRuntimeRoot(await tmp(pfx('pre2')), { version: V.abovePrerelease });
       strictEqual(await runtimeVersionAtLeast(preAbove, minRuntimeVersion()), true);
     });
 

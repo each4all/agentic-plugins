@@ -12,7 +12,8 @@ import { execFileSync } from 'node:child_process';
 
 // Hermetic tmp git repo — disables gpg signing, overrides committer
 // identity via env so the user's global gitconfig cannot leak.
-// Mirrors tests/engineer/test-stop-archive.mjs:192-214 precedent.
+// Mirrors the withTmpGitRepo precedent in
+// tests/persona-pipeline/test-stop-archive.mjs.
 export async function withTmpGitRepo(prefix, fn) {
   const dir = await mkdtemp(join(tmpdir(), `${prefix}-`));
   const env = {
