@@ -177,10 +177,12 @@ peer does. Wait for the notification; never sleep-poll a file or loop on
 takes the structured step report each time your turn ends, including a turn
 you end to wait for a background task. That report does not end the step.
 When the task's notification re-invokes you, carry on where the runbook left
-off: collect the peer, synthesize, write `ensemble-commit` and the verb's
-last write (`finish-verb`), then end with a new report. The driver judges the
-step by the last report only. A report you file while still waiting says
-`failed` and names what it waits for, so a step that never gets past it halts
-rather than passes. On the first two autopilot runs of a real macro
+off: collect the peer, synthesize, record the ensemble result (Phase 2's
+`peer-runner.mjs settle`, or `ensemble-commit` where Phase 2 still calls
+it) and the verb's last write (`finish-verb`), then end with a new report.
+The driver judges the step by the last report only. A report you file
+while still waiting says `failed` and names what it waits for, so a step
+that never gets past it halts rather than passes. On the first two autopilot
+runs of a real macro
 (2026-10-04), workers took that first report as final and left the ensemble
 unsettled.

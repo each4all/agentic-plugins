@@ -28,27 +28,34 @@ verb skills (`/engineer:investigate / :frame / :decide / :compose /
 
 ## Host availability
 
+<!-- pipeline:begin checkpoint-host-availability -->
 | Operation | Claude | Codex |
 |-----------|--------|-------|
 | `state.mjs checkpoint-set` (write `latest_checkpoint`) | `--host claude` | `--host codex` — same on-disk schema; the host flag distinguishes write provenance in `host_history` |
-| Schema preservation (schema 1 keeps 1; '1.1' keeps '1.1' per ADR-0017 schema versioning policy) | Yes | Yes — `state.mjs` is host-agnostic |
-| SessionStart re-injection of the summary — both hosts register the hook with `matcher: "compact"`, so this is **post-compact only**, never an arbitrary new session | Yes — the SessionStart hook surfaces `[engineer-active-metadata]` with `checkpoint_summary` + `checkpoint_at` after compact | Yes once the bundled hooks load (generic `[features].hooks`) and pass `/hooks` trust; otherwise manual resume reads the same durable checkpoint |
+| Schema preservation (schema 1 keeps 1; '1.1' keeps '1.1') | Yes | Yes — `state.mjs` is host-agnostic |
+| SessionStart re-injection of the summary — both hosts register the hook with `matcher: "compact"`, so this is **post-compact only**, never an arbitrary new session | Yes — the hook surfaces `[engineer-active-metadata]` with the checkpoint summary + timestamp after compact | Yes when the engineer plugin's hooks are enabled (`[features].hooks`, default on) and `/hooks`-reviewed/trusted; otherwise manual `$engineer:resume` reads the same durable checkpoint |
 
-The Codex use case is **cross-host handoff**: a checkpoint written on
-Codex is re-injected on either host's next post-compact session, given
-that host's hook is live — on Codex that means plugin hooks enabled and
-`/hooks`-trusted. Without that trust, Codex can still durably *write* the
-checkpoint and `$engineer:resume` reads it manually.
+The Codex use case is **cross-host handoff**: a checkpoint written on Codex is
+re-injected on either host's next post-compact session, given that host's
+hook is live — on Codex that means the plugin's hooks enabled and
+`/hooks`-trusted. Without
+that active-session trust, Codex can still durably *write* the checkpoint
+and `$engineer:resume` reads it manually. (Per ADR-0030/0035 the Codex hook
+model is generic `[features].hooks` + `/hooks` review/trust — there is no
+`plugin_hooks` settings key.)
+<!-- pipeline:end checkpoint-host-availability -->
 
 ---
 
 ## Claude/Codex command resolution
 
+<!-- pipeline:begin checkpoint-command-resolution -->
 | Concern | Claude | Codex |
 |---------|--------|-------|
 | Plugin root | Each shell block of the Claude command sets `$CLAUDE_PLUGIN_ROOT` first: from `AGENTIC_ENGINEER_ROOT` when set, else from the plugin path Claude Code writes into the command body when it loads it, else from the newest release (`X.Y.Z`) under `~/.claude/plugins/cache/agentic-plugins/engineer/` | For a mentioned `engineer` skill, the plugin directory that contains it (inside `$engineer:start`, the mentioned skill is `start`, which runs the six verb skills in place): Codex injects a mentioned skill with its absolute path (`<path>…/core/skills/<skill>/SKILL.md</path>`), and dropping `/core/skills/<skill>/SKILL.md` from it leaves the root, which holds `.codex-plugin/plugin.json`. If that path is no longer in context, for example after compaction, a new mention of the skill supplies it again. With the default Codex home and the `agentic-plugins` marketplace added from Git, the root is `~/.codex/plugins/cache/agentic-plugins/engineer/<version>`, the versioned copy Codex loads skills from, and `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/engineer` is the marketplace checkout, which tracks the repository's `main` branch, not that copy. |
-| Entry path | `/engineer:checkpoint <one-line summary>` | `$engineer:checkpoint <one-line summary>` — this SKILL.md is the runbook; the full skill-mention argument string is the `$ARGUMENTS` equivalent |
+| Entry path | `/engineer:checkpoint <one-line summary>` | `$engineer:checkpoint <one-line summary>` — this SKILL.md is the runbook; the skill-mention argument string is the `$ARGUMENTS` equivalent |
 | `state.mjs` host flag | `--host claude` | `--host codex` |
+<!-- pipeline:end checkpoint-command-resolution -->
 
 ---
 
@@ -104,59 +111,48 @@ Branch on the result:
 
 ## Phase 2 — Set checkpoint
 
+<!-- pipeline:begin checkpoint-set -->
 ```bash
 node "<plugin-root>/scripts/state.mjs" checkpoint-set \
   --workflow-path "$ACTIVE" --host <claude|codex> --summary "$SUMMARY"
 ```
 
 The CLI is signal-safe (atomic write under the per-file lock) and
-schema-preserving:
+schema-preserving (`latest_checkpoint` is a schema-1.1 additive field that
+1.0 readers tolerantly ignore; `host_history` gains a `{host, at, event:
+checkpointed}` entry per ADR-0011 §1).
 
-- Schema 1 stays schema 1 — `latest_checkpoint` is a schema-1.1
-  additive field that 1.0 readers tolerantly ignore (ADR-0017
-  §"Schema versioning policy", additive non-breaking).
-- Schema '1.1' stays '1.1'.
-- `host_history` gains a `{host, at, event: checkpointed}` entry
-  per ADR-0011 §1's host-history append contract.
+Pass `$SUMMARY` as a single quoted argument so embedded whitespace and
+special characters survive intact. The CLI rejects empty summaries; Phase 0
+already filtered that case.
 
-Pass `$SUMMARY` as a single quoted argument so embedded whitespace
-and special characters survive intact. The CLI rejects empty
-summaries; Phase 0 already filtered that case.
-
-**Cross-Bash-call note (parallel to `resume` Phase 2b)**: shell-
-variable state (e.g., `$ACTIVE`, `$SUMMARY`) does not survive
-across Bash tool invocations. If Phase 1 (`find-active`) and
-Phase 2 (`checkpoint-set`) run in separate Bash calls, re-resolve
-both values inside the second call — or capture them in a single
-combined Bash call to avoid the re-read.
+**Cross-Bash-call note**: shell-variable state (`$ACTIVE`, `$SUMMARY`) does
+not survive across Bash tool invocations. If Phase 1 and Phase 2 run in
+separate Bash calls, re-resolve both values inside the second call — or
+combine them in a single Bash call.
+<!-- pipeline:end checkpoint-set -->
 
 ---
 
 ## Completion outcomes
 
-- `✓ Checkpoint recorded: <summary>` — Phase 2 succeeded. Surface
-  the absolute workflow path so the user can inspect by hand.
-- `✗ No active workflow; nothing to checkpoint.` — Phase 1 found
-  nothing.
-- `✗ Per-branch duplicate detected — resolve via the resume meta
-  skill before checkpointing.` — Phase 1 found more than one
-  workflow on the current branch.
-- `✗ Empty summary; <command-or-skill-name> <summary> required.` —
-  Phase 0 rejected.
+<!-- pipeline:begin checkpoint-outcomes -->
+- `✓ Checkpoint recorded: <summary>` — Phase 2 succeeded. Surface the
+  absolute workflow path so the user can inspect by hand.
+- `✗ No active workflow; nothing to checkpoint.` — Phase 1 found nothing.
+- `✗ Per-branch duplicate detected — resolve via the resume meta skill
+  before checkpointing.` — Phase 1 found more than one workflow.
+- `✗ Empty summary; <command-or-skill-name> <summary> required.` — Phase 0
+  rejected.
 
-Both hosts re-inject through a SessionStart hook registered with
-`matcher: "compact"`, so the summary surfaces in the **post-compact**
-session context as part of the `[engineer-active-metadata]` marker. It is
-not re-injected into an arbitrary new session, and not on
-`claude --continue` — those carry a different SessionStart source that the
-matcher does not select. Inside that window the user does not need to
-re-issue `resume` to see the checkpoint.
-
-Codex re-injects the same way once the bundled hooks load (generic
-`[features].hooks`) and pass `/hooks` review/trust (ADR-0030). The on-disk
-`latest_checkpoint` is host-agnostic, so a checkpoint written on either
-host is read by either host. Outside the post-compact window — or on Codex
-before hook trust — `resume` reads the same durable checkpoint manually.
+On Claude, the next SessionStart re-injects the summary into the
+post-compact session as part of the `[engineer-active-metadata]` marker — no
+need to re-issue `resume` inside that window. The on-disk
+`latest_checkpoint` is host-agnostic, so a checkpoint written on either host
+is read by either host; Codex re-injects it the same way once the plugin's
+hooks are enabled and `/hooks`-trusted, per the Host availability table.
+Outside the post-compact window, `resume` reads it manually.
+<!-- pipeline:end checkpoint-outcomes -->
 
 ---
 

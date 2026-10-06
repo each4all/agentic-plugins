@@ -131,7 +131,9 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
    wait for the notification exactly as written; never sleep-poll a file
    (`autopilot-mode.md` § Peer ensembles). The step report the host takes
    when you end a turn to wait is provisional: on the notification, finish
-   Synthesize, `ensemble-commit` and the verb's last write, then report
+   Synthesize, record the ensemble result (Phase 2's `peer-runner.mjs
+   settle`, or `ensemble-commit` where Phase 2 still calls it) and the
+   verb's last write, then report
    again.
 4. If the peer failed or returned empty output, record the failure
    and proceed to Synthesize with orchestrator-only results
