@@ -25,11 +25,13 @@ for each Phase 0–3 the cognitive description, decision gates, and
 host-availability matrix delegate to SKILL.md via the matching
 `§ Phase N` pointer.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_ENGINEER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 ---
 
@@ -48,14 +50,17 @@ Inspect `$ARGUMENTS`:
 
 ## Phase 1 — Locate active workflow
 
+<!-- pipeline:begin resume-locate -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>/tmp/engineer-resume-find.err)"
+  find-active --repo-root "$REPO_ROOT" 2>/tmp/'engineer'-'resume'-find.err)"
 FIND_RC=$?
 ```
+<!-- pipeline:end resume-locate -->
 
 Branch on the result:
 
@@ -83,8 +88,9 @@ Branch on the result:
   whose branch matches `git branch --show-current`.
 
   ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+  ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+  CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
   for dir in "$REPO_ROOT/.agentic-plugins/state/engineer/workflows" "$REPO_ROOT/.claude/agentic-engineer/workflows"; do
     for f in "$dir"/*.md; do
       [ -f "$f" ] || continue
@@ -109,20 +115,20 @@ Branch on the result:
 
 Read the active workflow's frontmatter and compare git state:
 
+<!-- pipeline:begin resume-read -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
-  --workflow-path "$ACTIVE" > /tmp/engineer-resume-frontmatter.json
-
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" >/tmp/'engineer'-resume-read.json
 CURRENT_BRANCH="$(git branch --show-current)"
 CURRENT_HEAD="$(git rev-parse HEAD)"
 CURRENT_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
-
-BASE_BRANCH="$(jq -r '.git_baseline.branch' /tmp/engineer-resume-frontmatter.json)"
-BASE_HEAD="$(jq -r '.git_baseline.head' /tmp/engineer-resume-frontmatter.json)"
-BASE_DIGEST="$(jq -r '.git_baseline.status_digest // ""' /tmp/engineer-resume-frontmatter.json)"
+BASE_BRANCH="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.branch??""))}catch{}' /tmp/'engineer'-resume-read.json)"
+BASE_HEAD="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.head??""))}catch{}' /tmp/'engineer'-resume-read.json)"
+BASE_DIGEST="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.status_digest??""))}catch{}' /tmp/'engineer'-resume-read.json)"
 ```
+<!-- pipeline:end resume-read -->
 
 Drift is two-tier per ADR-0017 §sub-decision-1: `clean` (identical
 branch + HEAD + digest) vs `dirty` (anything else). The shell block
@@ -250,26 +256,26 @@ not available —
 re-validating here because shell variables from Phase 2 do not survive
 across Bash invocations.
 
+<!-- pipeline:begin resume-marker -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-BASE_HEAD_CHECK="$(jq -r '.git_baseline.head' /tmp/engineer-resume-frontmatter.json 2>/dev/null)"
-PHASE2B_SKIP=false
-if [ -z "$BASE_HEAD_CHECK" ] || [ "$BASE_HEAD_CHECK" = "null" ] \
-   || ! git cat-file -e "$BASE_HEAD_CHECK^{commit}" 2>/dev/null; then
-  PHASE2B_SKIP=true
-fi
-
-if [ "$PHASE2B_SKIP" = true ]; then
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# host_history fidelity (ADR-0017 §sub-decision-1): no marker over a baseline
+# whose commit object is not available. Re-read here: shell variables from
+# Phase 2 do not survive across Bash calls.
+BASE_HEAD_CHECK="$(node -e 'try{const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).git_baseline||{};process.stdout.write(String(b.head??""))}catch{}' /tmp/'engineer'-resume-read.json)"
+if [ -z "$BASE_HEAD_CHECK" ] || ! git cat-file -e "$BASE_HEAD_CHECK^{commit}" 2>/dev/null; then
   echo "Phase 2b: resume marker NOT appended (invalid baseline; ADR-0017 §sub-decision-1 host_history fidelity)."
 else
+  PERSONA='engineer'
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-    --workflow-path "$ACTIVE" --host claude \
-    --phase-label "Resume: drift=<clean|dirty>" \
-    --phase-note "<one-paragraph diff summary or 'no changes since baseline'>" \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+    --phase-label "Resume" --phase-note "Re-entered via /${PERSONA}:resume; drift=<clean|dirty>. <one-paragraph diff summary, or 'no changes since baseline'>" \
     --event resumed
 fi
 ```
+<!-- pipeline:end resume-marker -->
 
 Do NOT bump `current_phase` or `next_action` — the resume marker is
 purely a host-history append. The user (or the next verb command)
@@ -299,12 +305,15 @@ so the user can sanity-check.
 
 On confirmation:
 
+<!-- pipeline:begin resume-archive -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" archive \
-  --workflow-path "$WORKFLOW" --host claude --repo-root "$REPO_ROOT"
+  --workflow-path "$WORKFLOW" --host "${AGENTIC_HOST:-claude}" --repo-root "$REPO_ROOT"
 ```
+<!-- pipeline:end resume-archive -->
 
 The CLI is collision-safe (timestamp suffix on collision) and
 idempotent (no-op if the file already moved). On success, surface the

@@ -37,11 +37,13 @@ description, peer-prompt phrasing guidance, host-availability matrix,
 and status/cancel controls delegate to SKILL.md via the matching
 `§ Phase N` pointer.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_ENGINEER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 ---
 
@@ -74,34 +76,29 @@ until explicit migration). With
 surfaces the response path. Use `--output-format text` so the raw
 companion stdout remains verbatim in `stdout.log`.
 
+<!-- pipeline:begin peer-now-dispatch -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-RUN_JSON="$(mktemp -t engineer-peer-now.XXXXXX).json"
-RUN_ERR="$(mktemp -t engineer-peer-now.XXXXXX).err"
-
+RUN_JSON="$(mktemp -t 'engineer'-peer-now.XXXXXX).json"
+RUN_ERR="$(mktemp -t 'engineer'-peer-now.XXXXXX).err"
 echo "peer-now run_id=$RUN_ID" >&2
-
-# $PROMPT_ARG is either `--prompt-text "<text>"` or
-# `--prompt-file <path>` based on Phase 0's parse.
+# $PEER from --peer; $PROMPT_ARG is --prompt-text "<text>" or --prompt-file <path>
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
-  --repo-root "$REPO_ROOT" \
-  --run-id "$RUN_ID" \
-  --kind peer-now \
-  --peer "$PEER" $PROMPT_ARG \
-  --output-format text \
-  --host "${AGENTIC_HOST:-claude}" \
-  --cwd "$REPO_ROOT" \
+  --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --kind peer-now \
+  --peer "$PEER" $PROMPT_ARG --output-format text \
+  --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   > "$RUN_JSON" 2> "$RUN_ERR"
 RUN_RC=$?
-
-STDOUT_PATH="$(jq -r '.stdout_path // empty' "$RUN_JSON" 2>/dev/null)"
-STDERR_PATH="$(jq -r '.stderr_path // empty' "$RUN_JSON" 2>/dev/null)"
-HANDLE_PATH="$(jq -r '.handle_path // empty' "$RUN_JSON" 2>/dev/null)"
-ERROR_KIND="$(jq -r '.error_kind // empty' "$RUN_JSON" 2>/dev/null)"
+STDOUT_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stdout_path)||"")}catch{}' "$RUN_JSON")"
+STDERR_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stderr_path)||"")}catch{}' "$RUN_JSON")"
+HANDLE_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).handle_path)||"")}catch{}' "$RUN_JSON")"
+ERROR_KIND="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).error_kind)||"")}catch{}' "$RUN_JSON")"
 ```
+<!-- pipeline:end peer-now-dispatch -->
 
 Exit-code semantics (per `companions/contract.md` §5.1):
 
@@ -114,8 +111,10 @@ While the run is active, another local host/session can inspect or
 cancel it:
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" status \
   --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --json
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" cancel \
@@ -133,14 +132,16 @@ command too.
 
 Locate the active workflow:
 
+<!-- pipeline:begin peer-now-locate -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT" 2>/tmp/engineer-peer-now-find.err)"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT" 2>/tmp/'engineer'-peer-now-find.err)"
 FIND_RC=$?
 ```
+<!-- pipeline:end peer-now-locate -->
 
 Branch on the result:
 
@@ -148,38 +149,37 @@ Branch on the result:
   print the response from `$STDOUT_PATH` to stdout and skip the
   state mutation step.
 - **Exit 0, single path** → append a `[Peer]` label phase note to
-  that workflow's body. Do NOT pass `--current-phase` or
-  `--next-action` — peer-now does not advance phase.
-
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  RESPONSE="$(head -c 4000 "$STDOUT_PATH")"
-  NOTE="peer: $PEER
-  run_id: $RUN_ID
-  handle: $HANDLE_PATH
-  prompt-mode: verbatim
-
-  ### Response
-
-  $RESPONSE
-  "
-
-  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-    --workflow-path "$ACTIVE" --host claude \
-    --phase-label "[Peer] $PEER consultation" \
-    --phase-note "$NOTE" \
-    --event updated
-  ```
-
-  The 4000-char cap on the appended response keeps a single
-  consultation from blowing the workflow body out; the full
-  `$STDOUT_PATH` is also printed to the user separately.
-
+  that workflow's body with the block below. Do NOT pass
+  `--current-phase` or `--next-action` — peer-now does not advance
+  phase.
 - **Exit 1, per-branch duplicate error** → reject with a hint
   pointing at `/engineer:resume` (peer-now must not pick a workflow
   itself — per-branch duplicate is a user-resolvable invariant
   violation per ADR-0018 §sub-2 cascade of ADR-0011 §1).
+
+<!-- pipeline:begin peer-now-note -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  --phase-label "[Peer] $PEER consultation" \
+  --phase-note "peer: $PEER
+run_id: $RUN_ID
+handle: $HANDLE_PATH
+prompt-mode: verbatim
+
+### Response
+
+$(head -c 4000 "$STDOUT_PATH")" \
+  --event updated
+```
+<!-- pipeline:end peer-now-note -->
+
+The 4000-char cap on the appended response keeps a single
+consultation from blowing the workflow body out; the full
+`$STDOUT_PATH` is also printed to the user separately.
 
 ---
 

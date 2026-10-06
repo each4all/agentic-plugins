@@ -56,12 +56,14 @@ fires based on the `--peer` flag.
 
 ## Claude/Codex command resolution
 
+<!-- pipeline:begin peer-now-command-resolution -->
 | Concern | Claude | Codex |
 |---------|--------|-------|
 | Plugin root | Each shell block of the Claude command sets `$CLAUDE_PLUGIN_ROOT` first: from `AGENTIC_ENGINEER_ROOT` when set, else from the plugin path Claude Code writes into the command body when it loads it, else from the newest release (`X.Y.Z`) under `~/.claude/plugins/cache/agentic-plugins/engineer/` | For a mentioned `engineer` skill, the plugin directory that contains it (inside `$engineer:start`, the mentioned skill is `start`, which runs the six verb skills in place): Codex injects a mentioned skill with its absolute path (`<path>…/core/skills/<skill>/SKILL.md</path>`), and dropping `/core/skills/<skill>/SKILL.md` from it leaves the root, which holds `.codex-plugin/plugin.json`. If that path is no longer in context, for example after compaction, a new mention of the skill supplies it again. With the default Codex home and the `agentic-plugins` marketplace added from Git, the root is `~/.codex/plugins/cache/agentic-plugins/engineer/<version>`, the versioned copy Codex loads skills from, and `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/engineer` is the marketplace checkout, which tracks the repository's `main` branch, not that copy. |
-| Entry path | `/engineer:peer-now --peer <claude|codex> (--prompt-text "..." \| --prompt-file <path>)` | `$engineer:peer-now --peer <claude|codex> (--prompt-text "..." \| --prompt-file <path>)` |
-| Companion bridge invoked | `--peer codex` runs `<plugin-root>/scripts/peer-runner.mjs run --kind peer-now` → `companions/codex-companion.mjs` | `--peer claude` runs `<plugin-root>/scripts/peer-runner.mjs run --kind peer-now` → `companions/claude-companion.mjs` (same `peer-runner.mjs` path inside the engineer plugin's `scripts/` on both hosts; only the bridge target differs) |
+| Entry path | `/engineer:peer-now --peer <claude\|codex> (--prompt-text "..." \| --prompt-file <path>)` | `$engineer:peer-now --peer <claude\|codex> (--prompt-text "..." \| --prompt-file <path>)` |
+| Companion bridge invoked | `--peer codex` runs `<plugin-root>/scripts/peer-runner.mjs run --kind peer-now` → `companions/codex-companion.mjs` | `--peer claude` runs the same `peer-runner.mjs` → `companions/claude-companion.mjs` (only the bridge target differs) |
 | `state.mjs` host flag (when injecting `[Peer]` note) | `--host claude` | `--host codex` |
+<!-- pipeline:end peer-now-command-resolution -->
 
 ---
 
@@ -87,99 +89,69 @@ Reject with a one-line usage hint and stop on:
 
 ## Phase 1 — Dispatch verbatim with operational tracking
 
-`peer-runner.mjs` supervises the companion process and writes a
-hidden repo-local ledger under
-`.agentic-plugins/state/engineer/peer-runs/<run_id>/` for new repos
-(legacy `.claude/agentic-engineer/peer-runs/<run_id>/` remains active
-until explicit migration). With
-`--kind peer-now`, it does NOT touch `pending_ensemble` or
-`ensemble_results` — it just tracks the side-channel process and
-surfaces the response path. Use `--output-format text` so the raw
-companion stdout remains verbatim in `stdout.log`.
+<!-- pipeline:begin peer-now-dispatch -->
+`peer-runner.mjs` supervises the companion process and writes a hidden
+repo-local ledger under `.agentic-plugins/state/engineer/peer-runs/<run_id>/`.
+A repository still on the legacy home keeps it under
+`.claude/agentic-engineer/peer-runs/<run_id>/` until explicit migration.
+With `--kind peer-now`, it does NOT touch `pending_ensemble` or
+`ensemble_results` — it just tracks the side-channel process and surfaces
+the response path. Use `--output-format text` so the raw companion stdout
+stays verbatim in `stdout.log`.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-HOST="${AGENTIC_HOST:-claude}" # Codex-side command-invoked mode uses codex.
+HOST="${AGENTIC_HOST:-claude}"  # Codex-side command-invoked mode uses codex.
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-RUN_JSON="$(mktemp -t engineer-peer-now.XXXXXX).json"
-RUN_ERR="$(mktemp -t engineer-peer-now.XXXXXX).err"
-
+RUN_JSON="$(mktemp -t 'engineer'-peer-now.XXXXXX).json"
+RUN_ERR="$(mktemp -t 'engineer'-peer-now.XXXXXX).err"
 echo "peer-now run_id=$RUN_ID" >&2
 
 node "<plugin-root>/scripts/peer-runner.mjs" run \
-  --repo-root "$REPO_ROOT" \
-  --run-id "$RUN_ID" \
-  --kind peer-now \
-  --peer "$PEER" $PROMPT_ARG \
-  --output-format text \
-  --host "$HOST" \
-  --cwd "$REPO_ROOT" \
+  --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --kind peer-now \
+  --peer "$PEER" $PROMPT_ARG --output-format text \
+  --host "$HOST" --cwd "$REPO_ROOT" \
   > "$RUN_JSON" 2> "$RUN_ERR"
 RUN_RC=$?
 
-STDOUT_PATH="$(jq -r '.stdout_path // empty' "$RUN_JSON" 2>/dev/null)"
-STDERR_PATH="$(jq -r '.stderr_path // empty' "$RUN_JSON" 2>/dev/null)"
-HANDLE_PATH="$(jq -r '.handle_path // empty' "$RUN_JSON" 2>/dev/null)"
-ERROR_KIND="$(jq -r '.error_kind // empty' "$RUN_JSON" 2>/dev/null)"
+STDOUT_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stdout_path)||"")}catch{}' "$RUN_JSON")"
+STDERR_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stderr_path)||"")}catch{}' "$RUN_JSON")"
+HANDLE_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).handle_path)||"")}catch{}' "$RUN_JSON")"
+ERROR_KIND="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).error_kind)||"")}catch{}' "$RUN_JSON")"
 ```
 
-Exit-code semantics (per `companions/contract.md` §5.1):
+Exit-code semantics (per `companions/contract.md` §5.1): 0 success (response
+in `$STDOUT_PATH`); 1 `peer_run_error`; 2 `companion_misuse` (bad CLI args,
+this command's bug); 3 peer CLI infrastructure failure (companion not
+found). On `RUN_RC != 0`, surface the first line from `$RUN_ERR`, then
+`$STDERR_PATH`, then `$ERROR_KIND` as fallback, plus exit code + run id; stop without appending a phase note and
+exit non-zero.
 
-- 0 — success, peer response in `$STDOUT_PATH`
-- 1 — `peer_run_error` (companion ran but peer signaled failure)
-- 2 — `companion_misuse` (bad CLI args; this command's bug)
-- 3 — peer CLI infrastructure failure (companion not found)
-
-While the run is active, another local host/session can inspect or
-cancel it:
-
-```bash
-node "<plugin-root>/scripts/peer-runner.mjs" status \
-  --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --json
-node "<plugin-root>/scripts/peer-runner.mjs" cancel \
-  --repo-root "$REPO_ROOT" --run-id "$RUN_ID"
-```
-
-On `RUN_RC != 0`, surface the first line from `$RUN_ERR`, then
-`$STDERR_PATH`, then `$ERROR_KIND` as fallback, plus the exit code
-and run id. Stop without appending a phase note and exit non-zero
-from this skill too.
+The run can be inspected / cancelled from another local session (pass the
+repository root: the runner reads the ledger under it, not under the working
+directory): `peer-runner.mjs status --repo-root "$REPO_ROOT" --run-id <id>
+--json` / `peer-runner.mjs cancel --repo-root "$REPO_ROOT" --run-id <id>`.
+<!-- pipeline:end peer-now-dispatch -->
 
 ---
 
 ## Phase 2 — Optional `[Peer]` label injection
 
+<!-- pipeline:begin peer-now-label -->
 Locate the active workflow with `state.mjs find-active`:
 
-- **Exit 0, empty stdout** → no active workflow. Standalone mode:
-  print the response from `$STDOUT_PATH` to stdout and skip the
-  state mutation step.
-- **Exit 0, single path** → append a `[Peer]` label phase note to
-  that workflow's body via
-  `state.mjs append --phase-label "[Peer] $PEER consultation"
-  --phase-note "<note>" --event updated`. Do NOT pass
-  `--current-phase` or `--next-action` — `peer-now` does not
-  advance phase.
-  - Include `run_id: $RUN_ID` and `handle: $HANDLE_PATH` in the
-    `[Peer]` note so the raw ledger can be inspected while retention
-    keeps it.
-  - Cap the appended response excerpt at 4000 chars (`head -c 4000`
-    on `$STDOUT_PATH`) so one consultation cannot blow the
-    workflow body out. The full response is also printed to the
-    user separately.
-  - **Cross-Bash-call note (parallel to `resume` Phase 2b)**:
-    shell-variable state (`$STDOUT_PATH`, `$ACTIVE`, `$PEER`) does
-    not survive across Bash tool invocations. If Phase 1 dispatch
-    and Phase 2 state-write run in separate Bash calls, re-resolve
-    the active workflow inside Phase 2 (e.g., re-run
-    `state.mjs find-active`) and re-read `$STDOUT_PATH` via
-    `head -c 4000` after locating the file path; the ledger file
-    itself persists until peer-run retention removes it, but the
-    variable does not.
-- **Exit 1, per-branch duplicate error** → reject with a hint
-  pointing at the `resume` meta skill. `peer-now` must not pick a
-  workflow itself — per-branch duplicate is a user-resolvable
-  invariant violation per ADR-0018 §sub-2.
+- **Empty stdout** → no active workflow. Standalone mode: print the response
+  from `$STDOUT_PATH` and skip the state mutation.
+- **Single path** → append a `[Peer]` label phase note via `state.mjs append
+  --phase-label "[Peer] $PEER consultation" --phase-note "<note>" --event
+  updated`. Do NOT pass `--current-phase` / `--next-action`. Include
+  `run_id: $RUN_ID` and `handle: $HANDLE_PATH` in the note; cap the appended
+  excerpt at 4000 chars (`head -c 4000` on `$STDOUT_PATH`); print the full
+  response to the user separately. Re-resolve `$STDOUT_PATH` / `$ACTIVE` if
+  Phase 1 and Phase 2 run in separate Bash calls.
+- **Per-branch duplicate error** → reject with a hint pointing at the
+  `resume` meta skill. Do NOT pick a workflow yourself.
+<!-- pipeline:end peer-now-label -->
 
 ---
 

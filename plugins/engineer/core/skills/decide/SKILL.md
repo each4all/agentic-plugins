@@ -316,7 +316,7 @@ direction that produces a different top option under the
 advisory-only aggregate view. The two-option single-differentiator
 case emits `_flips_: []` with a diagnostic explaining that
 perturbation cannot reverse order on positive weights (peer (f)
-sanity invariant pinned by `tests/engineer/test-decide-scores.mjs`).
+sanity invariant pinned by `tests/persona-pipeline/test-decide-scores.mjs`).
 
 **Size-aware rendering**:
 
