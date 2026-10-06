@@ -36,7 +36,12 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { resolveCompanion, validateEnvelopeShape } from './dispatch-peer.mjs';
-import { recordPendingEnsemble } from './state.mjs';
+import {
+  ENSEMBLE_RESULTS_RETENTION_CAP,
+  commitEnsemble,
+  parseWorkflowFile,
+  recordPendingEnsemble,
+} from './state.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
 import { personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
 
@@ -1038,14 +1043,22 @@ export async function sweepPeerRuns({
   return report;
 }
 
-async function reconcileOne(paths, handle, { staleGraceMs, now }) {
+// A non-terminal handle whose run is over: the envelope decides when there is
+// one; otherwise a run whose process is gone and whose handle has not moved
+// for `staleGraceMs` is orphaned. `queued` is judged by staleness alone (PC2b
+// RV1): no process is recorded before the spawn, and the PID recorded after it
+// is the companion's, never the runner's.
+export async function reconcileOne(paths, handle, { staleGraceMs, now }) {
   if (isTerminalStatus(handle.status)) return handle;
 
+  // Each write keeps a terminal status already on disk: the caller's handle
+  // may predate one the runner or a cancel wrote (PC2b re-review).
   if (await exists(paths.envelope)) {
     try {
       const envelope = JSON.parse(await readFile(paths.envelope, 'utf8'));
       const shape = validateEnvelopeShape(envelope);
       const next = await updateHandle(paths.handle, (h) => {
+        if (isTerminalStatus(h.status)) return h;
         h.status = shape.ok && envelope.status === 'success' ? 'completed' : 'failed';
         h.completed_at ??= now.toISOString();
         h.exit_code = Number.isInteger(envelope.exit_code) ? envelope.exit_code : h.exit_code;
@@ -1054,6 +1067,7 @@ async function reconcileOne(paths, handle, { staleGraceMs, now }) {
       return next;
     } catch {
       const next = await updateHandle(paths.handle, (h) => {
+        if (isTerminalStatus(h.status)) return h;
         h.status = 'failed';
         h.completed_at ??= now.toISOString();
         h.error_kind = 'envelope_parse_error';
@@ -1062,12 +1076,18 @@ async function reconcileOne(paths, handle, { staleGraceMs, now }) {
     }
   }
 
-  if (['spawning', 'running', 'cancel_requested'].includes(handle.status)) {
+  if (['queued', 'spawning', 'running', 'cancel_requested'].includes(handle.status)) {
     const live = await originalProcessAliveForHandle(handle);
     const refMs = Date.parse(handle.updated_at ?? handle.started_at);
     const stale = Number.isFinite(refMs) && now.getTime() - refMs > staleGraceMs;
     if (!live && stale) {
+      // The runner may have finished between the reads above and this write:
+      // an envelope that appeared is reconciled as such, and the handle is
+      // re-read so a terminal status the runner wrote is never replaced
+      // (PC2b Review of code step 6).
+      if (await exists(paths.envelope)) return reconcileOne(paths, await readHandle(paths.handle), { staleGraceMs, now });
       const next = await updateHandle(paths.handle, (h) => {
+        if (!['queued', 'spawning', 'running', 'cancel_requested'].includes(h.status)) return h;
         h.status = 'orphaned';
         h.completed_at ??= now.toISOString();
         h.pid = null;
@@ -1080,6 +1100,229 @@ async function reconcileOne(paths, handle, { staleGraceMs, now }) {
   }
 
   return handle;
+}
+
+// -----------------------------------------------------------------------------
+// Ensemble settlement (ADR-0066 PC2b DD6, RV1, RV2): the one call a verb makes
+// after its ensemble step, deciding from the run ledger what the workflow
+// records. It replaces the D2 guard, which decided from shell variables carried
+// between blocks and left a pending row behind when one was lost.
+//
+//   no run id, nothing attempted       → skipped: nothing is written
+//   no run id, an attempt unsettled    → refused: settle names its run id
+//   a run id already settled           → no-op, reported (repeat or race)
+//   a run id with no ledger            → its pending row is settled failed
+//                                        (error_kind=ledger_missing); with no
+//                                        pending row either, refused
+//   a ledger that is not this attempt  → refused: kind, workflow, phase and
+//                                        ensemble type must all match
+//   non-terminal                       → reconciled first (reconcileOne);
+//                                        still live or too fresh → refused:
+//                                        collect it first
+//   failed / cancelled / orphaned      → verdict `failed`, the summary naming
+//                                        the status and error_kind; the
+//                                        agent's --verdict is not used
+//   completed, answer empty/unreadable → verdict `degraded`: the synthesis is
+//                                        local-only, no peer verdict invented
+//   completed, answer usable           → the synthesis --verdict (required,
+//                                        never `failed`) and --summary
+//
+// Every write goes through commitEnsemble, which pops the pending row and
+// appends the result idempotently under the workflow file's lock, so a
+// repeated or concurrent settle records one result.
+
+export const SETTLE_FAILED_VERDICT = 'failed';
+export const SETTLE_DEGRADED_VERDICT = 'degraded';
+
+export class SettleRefusal extends Error {}
+
+const refuse = (message) => { throw new SettleRefusal(message); };
+
+// The answer a completed run returned: the envelope's stdout (json) or the
+// stdout log (text). `null` when it cannot be read, '' when it is empty.
+async function completedAnswer(paths, handle) {
+  try {
+    if (handle.output_format === 'json') {
+      const envelope = JSON.parse(await readFile(paths.envelope, 'utf8'));
+      return typeof envelope?.stdout === 'string' ? envelope.stdout : null;
+    }
+    return await readFile(paths.stdout, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// Ledger handles naming this workflow and phase as an ensemble attempt with no
+// result recorded. A handle that cannot be read at all counts: it could be
+// one, and an empty run id is accepted only when there is none. When the
+// results list is full, a run that ended before its oldest entry may have been
+// settled and pruned since, so it does not count.
+async function unsettledAttempts({ repoRoot, workflowPath, phase, results }) {
+  const root = await resolvePeerRunsDirForSweep(repoRoot);
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const settled = new Set(results.map((r) => r.run_id));
+  const oldestKept = results.length >= ENSEMBLE_RESULTS_RETENTION_CAP
+    ? results.map((r) => r.completed_at).filter((t) => typeof t === 'string').sort()[0] ?? null
+    : null;
+  const out = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    let paths;
+    try {
+      paths = peerRunPaths(repoRoot, entry.name);
+    } catch {
+      continue;
+    }
+    if (!(await exists(paths.handle))) continue;
+    let handle;
+    try {
+      handle = JSON.parse(await readFile(paths.handle, 'utf8'));
+    } catch {
+      out.push(`${entry.name} (unreadable handle)`);
+      continue;
+    }
+    if (handle?.kind !== 'ensemble' || handle.phase !== phase) continue;
+    if (typeof handle.workflow_path !== 'string' || resolve(handle.workflow_path) !== workflowPath) continue;
+    if (settled.has(handle.run_id)) continue;
+    // Ended before a full results list's oldest entry: settled and pruned. A
+    // settlement comes after the run ended and the list drops its oldest entries
+    // first, so a run that ended later, or never ended (settle commits only a
+    // terminal run), cannot have been pruned and still blocks (PC2b Review of
+    // code step 6 and its re-review).
+    if (oldestKept !== null && isTerminalStatus(handle.status) && Date.parse(handle.completed_at) < Date.parse(oldestKept)) continue;
+    out.push(handle.run_id);
+  }
+  return out;
+}
+
+/**
+ * Settle one ensemble attempt of a workflow phase (see the table above).
+ * Throws SettleRefusal when the ledger does not let it decide; returns
+ * `{ settlement: 'skipped' | 'committed' | 'already-settled', … }` otherwise.
+ */
+export async function settleEnsemble({
+  repoRoot = process.cwd(),
+  workflowPath,
+  phase,
+  runId,
+  verdict,
+  summary,
+  staleGraceMs = DEFAULT_STALE_GRACE_MS,
+  now = new Date(),
+} = {}) {
+  for (const [flag, value] of [['--workflow-path', workflowPath], ['--phase', phase]]) {
+    if (typeof value !== 'string' || value.length === 0) throw new Error(`settle: ${flag} is required`);
+  }
+  if (typeof runId !== 'string') throw new Error("settle: --run-id is required (pass '' when no run launched)");
+  const wf = resolve(workflowPath);
+  const { frontmatter } = parseWorkflowFile(await readFile(wf, 'utf8'));
+  const pending = (frontmatter.pending_ensemble ?? []).filter((e) => e.phase === phase);
+  const results = frontmatter.ensemble_results ?? [];
+
+  if (runId === '') {
+    if (pending.length > 0) {
+      refuse(`a run launched for phase ${phase}: settle it by its run id (${pending.map((e) => e.run_id).join(', ')})`);
+    }
+    const open = await unsettledAttempts({ repoRoot, workflowPath: wf, phase, results });
+    if (open.length > 0) {
+      refuse(`an unsettled ensemble attempt for phase ${phase} is in the ledger: settle it by its run id (${open.join(', ')})`);
+    }
+    return { ok: true, settlement: 'skipped', run_id: null, phase };
+  }
+
+  assertSafeRunId(runId);
+  const row = pending.find((e) => e.run_id === runId) ?? null;
+  const done = results.find((r) => r.run_id === runId) ?? null;
+  // A concurrent settle that won is reported with the verdict the workflow
+  // holds, never this call's (PC2b Review of code step 6).
+  let keptVerdict = null;
+  const commit = async (fields) => {
+    const { idempotentSkip, kept } = await commitEnsemble({
+      workflowPath: wf,
+      run_id: runId,
+      phase,
+      completed_at: isoSeconds(now),
+      ...fields,
+    });
+    if (!idempotentSkip) return 'committed';
+    // Read under the commit's lock: the workflow may be archived right after.
+    keptVerdict = kept?.verdict ?? null;
+    return 'already-settled';
+  };
+
+  // Settled before (a repeat, or a concurrent settle that won): report it, and
+  // drop a pending row left beside the result, if any, through the same
+  // idempotent commit.
+  if (done) {
+    if (done.phase !== phase) refuse(`run ${runId} was settled for phase ${done.phase}, not ${phase}`);
+    if (row) await commit({ ensemble_type: done.ensemble_type, verdict: done.verdict, summary: done.summary });
+    return { ok: true, settlement: 'already-settled', run_id: runId, phase, verdict: done.verdict };
+  }
+
+  const paths = await resolvePeerRunPathsForRead(repoRoot, runId);
+  if (!(await exists(paths.handle))) {
+    if (!row) refuse(`no ledger and no pending entry for run ${runId} in phase ${phase}`);
+    const settlement = await commit({
+      ensemble_type: row.ensemble_type,
+      verdict: SETTLE_FAILED_VERDICT,
+      summary: 'peer run ledger missing: error_kind=ledger_missing',
+    });
+    return { ok: true, settlement, run_id: runId, phase, status: null, error_kind: 'ledger_missing', verdict: keptVerdict ?? SETTLE_FAILED_VERDICT };
+  }
+
+  let handle = await readHandle(paths.handle);
+  if (handle.kind !== 'ensemble') refuse(`run ${runId} is a ${handle.kind} run, not an ensemble attempt`);
+  if (typeof handle.workflow_path !== 'string' || resolve(handle.workflow_path) !== wf) {
+    refuse(`run ${runId} belongs to another workflow (${handle.workflow_path})`);
+  }
+  if (handle.phase !== phase) refuse(`run ${runId} is phase ${handle.phase}, not ${phase}`);
+  if (row && row.ensemble_type !== handle.ensemble_type) {
+    refuse(`run ${runId}: the pending entry's ensemble type ${row.ensemble_type} is not the ledger's ${handle.ensemble_type}`);
+  }
+
+  handle = await reconcileOne(paths, handle, { staleGraceMs, now });
+  if (!isTerminalStatus(handle.status)) {
+    refuse(`run ${runId} is ${handle.status} and not shown abandoned: collect it first`);
+  }
+  const base = { ok: true, run_id: runId, phase, status: handle.status, error_kind: handle.error_kind };
+  if (handle.status !== 'completed') {
+    const settlement = await commit({
+      ensemble_type: handle.ensemble_type,
+      verdict: SETTLE_FAILED_VERDICT,
+      summary: `peer run ${handle.status}: error_kind=${handle.error_kind ?? 'none'}`,
+    });
+    return { ...base, settlement, verdict: keptVerdict ?? SETTLE_FAILED_VERDICT };
+  }
+  const answer = await completedAnswer(paths, handle);
+  if (answer === null || answer.trim() === '') {
+    const why = answer === null ? 'unreadable' : 'empty';
+    const local = typeof summary === 'string' && summary.trim() !== '' ? `: ${singleLineSummary(summary)}` : '';
+    const settlement = await commit({
+      ensemble_type: handle.ensemble_type,
+      verdict: SETTLE_DEGRADED_VERDICT,
+      summary: `peer answer ${why}; the synthesis is local-only${local}`,
+    });
+    return { ...base, settlement, verdict: keptVerdict ?? SETTLE_DEGRADED_VERDICT, answer: why };
+  }
+  if (typeof verdict !== 'string' || verdict.trim() === '') refuse(`run ${runId} completed: settle needs the synthesis --verdict`);
+  if (verdict === SETTLE_FAILED_VERDICT) refuse(`run ${runId} completed: '${SETTLE_FAILED_VERDICT}' is reserved for a run that failed`);
+  if (typeof summary !== 'string' || summary.trim() === '') refuse(`run ${runId} completed: settle needs the synthesis --summary`);
+  const settlement = await commit({ ensemble_type: handle.ensemble_type, verdict, summary: singleLineSummary(summary) });
+  return { ...base, settlement, verdict: keptVerdict ?? verdict };
+}
+
+function singleLineSummary(text) {
+  return String(text).replace(/\s+/g, ' ').trim();
+}
+
+function isoSeconds(date) {
+  return new Date(date).toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 async function exists(path) {
@@ -1161,6 +1404,12 @@ function parseCliArgs(argv) {
       case '--json':
         opts.json = true;
         break;
+      case '--verdict':
+        opts.verdict = rest[++i];
+        break;
+      case '--summary':
+        opts.summary = rest[++i];
+        break;
       case '--apply':
         opts.apply = true;
         break;
@@ -1189,7 +1438,7 @@ function parseCliArgs(argv) {
 
 function printHelp() {
   process.stdout.write([
-    'Usage: peer-runner.mjs <run|status|cancel|sweep> [flags]',
+    'Usage: peer-runner.mjs <run|status|cancel|sweep|settle> [flags]',
     '',
     'Subcommands:',
     '  run --peer claude|codex (--prompt-file <path>|--prompt-text <text>)',
@@ -1202,6 +1451,11 @@ function printHelp() {
     '  cancel --run-id <id> [--repo-root <path>] [--cancel-grace-ms <ms>]',
     '  sweep [--repo-root <path>] [--apply] [--stale-grace-ms <ms>]',
     '        [--retention-ttl-days <days>] [--retention-cap <n>]',
+    "  settle --workflow-path <path> --phase <p> --run-id <id|''>",
+    '         [--verdict <v> --summary <s>] [--repo-root <path>] [--host claude|codex]',
+    '         [--stale-grace-ms <ms>]',
+    '      Record what an ensemble attempt came to, decided from its ledger:',
+    "      --run-id '' when no run launched. Exit 0 settled or skipped, 1 refused.",
     '',
   ].join('\n'));
 }
@@ -1266,6 +1520,31 @@ async function cliMain(argv) {
       });
       process.stdout.write(`${JSON.stringify(result)}\n`);
       return result.ok ? 0 : 1;
+    }
+
+    if (opts.subcommand === 'settle') {
+      if (opts.host !== undefined && !VALID_PEERS.has(opts.host)) throw new Error(`--host must be claude or codex (got ${opts.host})`);
+      try {
+        const result = await settleEnsemble({
+          repoRoot: opts.repoRoot,
+          workflowPath: opts.workflowPath,
+          phase: opts.phase,
+          runId: opts.runId,
+          verdict: opts.verdict,
+          summary: opts.summary,
+          staleGraceMs: Number.isInteger(opts.staleGraceMs)
+            ? opts.staleGraceMs
+            : parsePositiveInt(process.env.PEER_RUN_STALE_GRACE_MS, DEFAULT_STALE_GRACE_MS),
+        });
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        process.stderr.write(`settlement: ${result.settlement}${result.verdict ? ` (${result.verdict})` : ''}\n`);
+        return 0;
+      } catch (err) {
+        if (!(err instanceof SettleRefusal)) throw err;
+        process.stdout.write(`${JSON.stringify({ ok: false, settlement: 'refused', reason: err.message })}\n`);
+        process.stderr.write(`peer-runner settle: refused: ${err.message}\n`);
+        return 1;
+      }
     }
 
     if (opts.subcommand === 'sweep') {

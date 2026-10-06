@@ -64,6 +64,25 @@ attention Stop sensor has read designer terminal projections since
 freshness); since ADR-0064 removed its notification stage, that read only
 decides the session capture's workflow evidence.
 
+## Owner gates and mixed versions (ADR-0066 Decision 7)
+
+From the release that carries ADR-0066 Stage 2b, designer writes new workflow
+files at schema 1.4: each verb records its next step in closed-enum form, and
+a verb that needs the owner's judgment — a decision whose directions conflict, a refine finding that keeps
+coming back, a request that belongs in another verb or workflow — ends with an owner gate
+instead of closing. The Stop hook never archives a workflow while its gate is
+pending. Existing files are not migrated; they stay readable as they are.
+
+While a workflow carries an owner gate, every host that touches it must run
+that release or a later one. An earlier designer reads the file and keeps its
+keys, but its Stop hook archives the gated workflow, and its terminal write
+leaves a stale next step behind
+(`tests/persona-pipeline/test-mixed-version.mjs` records this against the
+previous release). Install the release on both hosts, and on Codex check that
+the catalog pin has moved to it, before sharing a gated workflow. Recovery
+goes forward only: upgrade the host that is behind, never rewrite the file
+for an older one.
+
 ## Scope boundaries (ADR-0042 Non-Goals)
 
 - **Figma / external design-tool integration** — excluded in v1
