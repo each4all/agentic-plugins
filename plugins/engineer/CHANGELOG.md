@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.8](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.7...plugin-engineer-v0.24.8) (2026-10-06)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** generate engineer's scripts and six verb runbooks from the canonical persona pipeline (ADR-0066 Stage 3) ([731d368](https://github.com/each4all/agentic-plugins/commit/731d368ddb785f7abce34c10a823b9844156cc1b))
+
 ## [0.24.7](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.24.6...plugin-engineer-v0.24.7) (2026-10-05)
 
 
