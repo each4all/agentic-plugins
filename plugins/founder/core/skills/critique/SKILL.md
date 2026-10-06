@@ -206,12 +206,12 @@ Next-Action Proposal** instead of a fixed next verb — derived from these
 findings, not a fixed table:
 
 ```
-- selected_next:         <verb | owner decision>
+- selected_next:         <verb | commit | done | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + the gate verdict>
 - evidence_pointers:     <finding sections / artifact path — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>
+- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>
 ```
 
 Typical `selected_next` candidates for critique: `/founder:refine` to
@@ -224,10 +224,14 @@ artifact holds up and only minor polish remains, `selected_next` may be
 "the plan is sound — proceed". The routing is a fallback only when
 evidence is genuinely neutral — do not end with a hardcoded "next: X".
 
-(When the invoking workflow command's terminal write runs — `state.mjs
-set-terminal` — the runtime completion footer is **code-emitted** on that
-command's stderr per ADR-0039/ADR-0043 S3; do not hand-compose a second
-footer — surface the emitted one. Standalone skill invocations write no
+(The invoking workflow command's last write, `state.mjs finish-verb`, records
+this proposal's closed-enum form — `next_step_kind`, `next_step_verb` and
+`next_step_confidence`, per `../_shared/references/entry-routing-contract.md`
+§ Active Next-Action Proposal. Unless it ends with an owner gate
+(`../_shared/references/entry-routing-contract.md` § Owner gates), that
+write is terminal, and the runtime completion footer is **code-emitted** on
+that command's stderr per ADR-0039/ADR-0043 S3; do not hand-compose a
+second footer — surface the emitted one. Standalone skill invocations write no
 workflow state and emit no footer. Wiring:
 `core/skills/_shared/references/session-handoff.md`.)
 

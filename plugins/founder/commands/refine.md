@@ -52,6 +52,13 @@ if [ "$FIND_RC" -ne 0 ]; then
   echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
+# ADR-0066 Decision 3 — prints nothing interactively. When AGENTIC_AUTOPILOT
+# names a run it prints one line: the variable is ignored, this persona is no
+# autopilot dispatch target. When an owner gate is set on the workflow it
+# prints the gate and how the owner resolves it, to put to the user before
+# this command continues. It runs before any write.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" autopilot-preflight \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" || exit $?
 ```
 <!-- pipeline:end refine-phase-0 -->
 
@@ -93,6 +100,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --phase-label "Phase 0: Resume into ${VERB}" \
   --phase-note "Resumed from prior verb." \
   --current-phase phase-0-resume \
+  --clear-next-step true \
   --next-action "Run ${VERB} skill" --event resumed || exit $?
 ```
 <!-- pipeline:end refine-resume -->
@@ -152,13 +160,16 @@ PROMPT_FILE="$(mktemp -t 'founder'-'refine'-prompt.XXXXXX).xml"
 RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the prompt to $PROMPT_FILE (the privacy gate above must have
 #     passed; the prompt carries only genericized text) ...
+# Run this block as a host background task (on Claude, the Bash tool's
+# run_in_background), never with a trailing `&`: the host tracks the runner
+# and notifies you when it exits, where a shell `&` would detach it from both.
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase 'refine' \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
-  --ensemble-type 'refine-verify' --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
+  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"
 ```
 <!-- pipeline:end refine-dispatch -->
 
@@ -179,11 +190,15 @@ Graceful degradation: companion missing or exit code 3
 ## Phase 2 — State finalize
 <!-- pipeline:end refine-finalize-heading -->
 
-```bash
-ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
-CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-NOTE="### Ensemble launched: refine at <iso-utc>
+<!-- pipeline:begin refine-finalize -->
+The phase note this step records — fill in every `<…>`. When no run launched
+(the privacy gate kept the verb local-only, so no dispatch ran; a run whose
+companion is missing did launch, and settles `failed`), its first heading reads
+`### Ensemble skipped: refine (privacy gate)` instead, and the synthesis
+is local-only:
+
+```markdown
+### Ensemble launched: refine at <iso-utc>
 
 ### Ensemble synthesis: refine verdict=<resolved|concerns|regression|conflict>
 
@@ -198,37 +213,96 @@ NOTE="### Ensemble launched: refine at <iso-utc>
 
 ### Active next-action proposal
 
-- selected_next:         <verb | owner decision>
+(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)
+- selected_next:         <verb | commit | done | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + consistency/gate check>
 - evidence_pointers:     <revised sections / artifact path — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /founder:<verb> … or \$founder:<verb> for a verb>
-"
+- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>
+```
+
+Then run the block with the filled-in note in place of its placeholder line,
+between the two `PHASE_NOTE` lines. The quoted heredoc hands the note to
+`state.mjs` as written: no quote, `$`, backtick or backslash in it is read by
+the shell. The first line that reads `PHASE_NOTE` alone ends the note, and
+the shell runs every line after it as a command, so when the note itself holds
+such a line, replace both `PHASE_NOTE` delimiters with a word no line of the
+note consists of.
+
+Set `RUN_ID` to the run id the dispatch generated, empty when no run launched,
+and `VERDICT` and `SUMMARY` to the synthesis's verdict and a one-line résumé
+of its breakdown. `peer-runner.mjs settle` decides from the run ledger what the
+workflow records, not from these values alone: a run that never launched
+records nothing; a run that launched and failed, was cancelled or was
+abandoned records verdict `failed` with the ledger's `error_kind`; a run that
+completed records the synthesis verdict, or `degraded` when its answer was
+empty or unreadable. An answer that parses to nothing usable, only structural
+shell, reads to `settle` like any other, so set `VERDICT` to `degraded` then.
+It refuses, and the block stops before the last write, while a run is still
+live (collect it first) or when an empty `RUN_ID` would hide a run that
+launched (set it to that run's id).
+
+The last write, `finish-verb`, records the proposal's next step in closed-enum
+form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit` (the owner
+saves and commits the artifact; founder runs no commit itself) or `done`,
+each closing the workflow `summary-complete`. End instead with an owner gate
+when the owner must judge, with the judgment under the gate's heading in the
+note:
+
+- `recurring-finding` (heading `### Recurring finding`, anchor
+  `recurring-finding`): a finding an earlier refine pass on this workflow
+  already addressed survives verification again; fixing it again is the
+  owner's call, and § Owner decision below resolves it.
+- `scope-routing` (heading `### Routing recommendation`, anchor
+  `routing-recommendation`): the request does not belong in this verb or
+  workflow; the owner picks the route, then clears the gate.
+
+The owner-decision form below records the gate with the next step in one
+write and leaves the workflow open, not terminal, until the owner resolves it.
+
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# The run ledger lives under the repository root, where the dispatch put it.
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+# Where read takes no -d (dash) it assigns nothing, so clear NOTE first: a
+# value the shell inherited must not stand in for the note.
+unset NOTE
+IFS= read -r -d '' NOTE <<'PHASE_NOTE' || true
+<the phase note above, filled in>
+PHASE_NOTE
+# A shell whose read has no -d (dash) reads nothing: stop before any write.
+[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --phase-label "Phase 1: Refine (synthesized)" \
+  --phase-label 'Phase 1: Refine (synthesized)' \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
-  --next-action "Re-critique the revised artifact" \
-  --event updated
+  --next-action 'Re-critique the revised artifact' \
+  --event updated || exit $?
 
-# ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
-  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --phase refine --ensemble-type refine-verify --run-id "$RUN_ID" \
-  --verdict "$VERDICT" --summary "$SUMMARY" \
-  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
+# launched and failed, completed); a refusal stops the block before the last
+# write, so the workflow never closes with an attempt left unsettled.
+node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
+  --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \
+  --host "${AGENTIC_HOST:-claude}" --phase 'refine' --run-id "$RUN_ID" \
+  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?
 
 # ADR-0029 §1 / completion-output contract §2 — set --next-action (the
 # append above and this terminal write) to the COMPACT form of the
 # proposal above (selected_next + one-line why + next_command) so the
 # durable state and the code-emitted completion footer agree with the
 # Active Next-Action Proposal. The value shown is the typical-case
-# default; override it when the verb's result selects a different next
-# step (e.g. the owner publish/commit step).
-# ADR-0017 §sub-decision 5 — atomic terminal write.
+# default; override it, and the --next-step-* flags, when the verb's result
+# selects a different next step (e.g. the owner's save and commit).
+# ADR-0063 D3 — finish-verb is the verb's last write: the ADR-0017
+# §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
+# with the next step. ADR-0066 Decision 3: an inherited AGENTIC_AUTOPILOT
+# changes nothing here.
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # archive gates are evaluated at the end of THIS turn, not at session close;
 # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
@@ -238,13 +312,21 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
 # core/skills/_shared/references/session-handoff.md § Archive timing.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --terminal-phase summary-complete \
-  --terminal-marker true \
-  --next-action "Re-critique the revised artifact" \
-  --event updated
+  --next-action 'Re-critique the revised artifact' \
+  --next-step-kind verb --next-step-verb 'critique' \
+  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
+# The owner-decision form, for an owner gate named above this block: it
+# records the gate with the next step in one write, and the workflow stays
+# open until the owner resolves the gate.
+# node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+#   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+#   --next-action '<Owner: the judgment, in a few words>' \
+#   --next-step-kind owner-decision --next-step-confidence "<HIGH|MEDIUM|LOW>" \
+#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?
 ```
+<!-- pipeline:end refine-finalize -->
 
 ---
 
@@ -262,6 +344,101 @@ trivial reversible step. A weightier fork should route to
 
 ---
 
+<!-- pipeline:begin refine-owner-decision -->
+## Owner decision (recurring-finding)
+
+The `recurring-finding` gate is resolved by the owner's decision (ADR-0063 Q2,
+ported by ADR-0066 Decision 9), in either of two ways:
+
+- **In this session**, right after the refine stopped on it.
+- **Later**, when Phase 0's preflight reports a pending `recurring-finding`
+  gate (an earlier session stopped on it): present the finding recorded at the
+  gate's pointer, the latest `Recurring finding` note.
+
+Ask the owner: fix it now, or defer it. The clear records the owner's decision
+(`--resolution`, written in place of the placeholder line between the two
+`OWNER_RESOLUTION` lines) and the next step it implies in one write, so the
+next step never becomes runnable without the decision behind it, and a failure
+never leaves the gate's `owner-decision` behind. Inside a `/founder:start`
+lifecycle the Defer block clears the gate and stops there: resume the
+lifecycle, which makes its one terminal write.
+
+**Fix now.** Clear the gate with this refine as the next step, then run the
+phases above on that finding, as usual:
+
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='founder'
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
+# The owner's resolution, from a quoted heredoc: no quote, $, backtick or
+# backslash in it is read by the shell. An empty read stops the block.
+unset RESOLUTION
+IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
+<Owner decision: fix the finding now>
+OWNER_RESOLUTION
+[ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
+  --resolution "$RESOLUTION" \
+  --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?
+```
+
+**Defer.** Clear the gate with the deferral and `commit` as the next step (the
+owner saves and commits the artifact; founder runs no commit itself), then
+end the verb:
+
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='founder'
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
+# A gate met inside a /start lifecycle is resolved there: the lifecycle makes
+# the one terminal write. A type that cannot be read stops the block.
+WF_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
+  || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
+# The owner's resolution, from a quoted heredoc: no quote, $, backtick or
+# backslash in it is read by the shell. An empty read stops the block.
+unset RESOLUTION
+IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
+<Owner decision: defer the finding, with the reason and where it is tracked>
+OWNER_RESOLUTION
+[ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate recurring-finding \
+  --resolution "$RESOLUTION" \
+  --next-step-kind commit --next-step-confidence HIGH || exit $?
+if [ "$WF_TYPE" = start ]; then
+  echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); it continues at its terminal step." >&2
+  exit 0
+fi
+# ARCHIVE TIMING — this finish-verb is a terminal write: on Claude the Stop
+# hook fires at EVERY turn end, so the archive gates are evaluated at the end
+# of THIS turn (they pass once HEAD has moved). Clearing the marker with
+# `--terminal-marker false` works only before that Stop fires and needs
+# set-terminal's full flag set. On Codex the Stop hook runs only once the
+# operator has trusted the plugin hooks (`/hooks`). Full contract:
+# core/skills/_shared/references/session-handoff.md § Archive timing.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+  --next-action 'The recurring finding is deferred; the owner saves and commits the refined artifact' \
+  --next-step-kind commit --next-step-confidence HIGH || exit $?
+```
+
+`awaiting-owner-clear` records `### Owner gate resolved: recurring-finding at
+<iso>` with the pointer it cleared and the resolution. It refuses, writing
+nothing, when the gate set on the workflow is not `recurring-finding`.
+<!-- pipeline:end refine-owner-decision -->
+
+---
+
 ## Completion
 
 Output the refinement summary (applied / verified / deferred) and one of:
@@ -270,6 +447,11 @@ Output the refinement summary (applied / verified / deferred) and one of:
 - `✓ Refine paused (regression flagged).` — when the peer or the
   consistency check surfaced a new inconsistency or gate exposure that
   warrants user input before proceeding.
+- `✓ Refine stopped for the owner (recurring finding).` — a finding an
+  earlier refine pass already addressed survived verification again. Phase 2
+  ended with the owner-decision form of `finish-verb`, which recorded the
+  `recurring-finding` gate: record the owner's decision with the Owner
+  decision step above.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
 `core/skills/refine/SKILL.md` § Completion): typical `selected_next` is
@@ -285,8 +467,9 @@ Workflow: <absolute path to workflow .md file>
 
 <!-- pipeline:begin refine-completion-footer -->
 The runtime completion footer is **code-emitted** on this verb's terminal
-path (ADR-0039, enabled for founder by ADR-0043): `state.mjs
-set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
+path (ADR-0039, enabled for founder by ADR-0043): the terminal write
+(`state.mjs finish-verb`, which takes `set-terminal`'s path) fires the
+ADR-0031 session-handoff sidecar, which shells out
 to the runtime `footer.mjs` and prints the rendered footer — context
 state, completion state (founder's manually-published mapping surfaces
 `publish-needed` when only the owner's save/commit remains) + state-derived
