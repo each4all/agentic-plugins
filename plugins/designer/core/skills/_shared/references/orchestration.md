@@ -1,8 +1,10 @@
 # Dynamic Orchestration (designer persona)
 
+<!-- pipeline:begin orchestration-intro -->
 Follow this framework at every stage that allocates analysis effort.
 Pursue the best results through task-analysis-based dynamic composition,
 not static counts.
+<!-- pipeline:end orchestration-intro -->
 
 **Plugin boundary note**: this orchestration framework is
 designer-internal (lives at
@@ -318,12 +320,14 @@ item 3).
 
 ### Failure handling
 
+<!-- pipeline:begin orchestration-failure -->
 If any local analysis fails to return: notify the user which
 perspective failed, ask retry-or-proceed, follow the user's decision,
 and if proceeding note the missing perspective in the synthesis so the
 user knows coverage was incomplete. Peer ensemble failures are handled
 separately per the ensemble contract — graceful degradation, never
 blocks the workflow.
+<!-- pipeline:end orchestration-failure -->
 
 ---
 

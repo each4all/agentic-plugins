@@ -98,6 +98,9 @@ consistent with what was framed and decided.
 
 ### Step 4: Present and confirm
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Present the artifact and confirm before any downstream action. For a
 non-trivial spec, present section by section and confirm the flow + the
 accessibility acceptance criteria explicitly — they carry the most
@@ -158,6 +161,9 @@ items for user resolution.
 ### Step 5: Present
 
 <!-- pipeline:begin compose-present -->
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Present the synthesized artifact and confirm before downstream verbs.
 <!-- pipeline:end compose-present -->
 
@@ -233,9 +239,11 @@ layout structures, two flow shapes, two component approaches — surface a
 **compact multi-axis lens** comparing the branches across the decisive
 design axes (사용성 Usability + the archetype axis) + the accessibility gate,
 instead of a flat list, reading the resolved axes from
-`../decide/references/decision-axes.yml` (the
-`scripts/decide-registry.mjs resolve --size=minor` resolver gives the
-compact rendering of `balanced`). Bounded: only at a genuine 2+-branch
+`../decide/references/decision-axes.yml` (the `scripts/decide-registry.mjs
+resolve` resolver, with the active profile in `AGENTIC_DESIGNER_PROFILE` and
+no `--size`, gives the profile's preset:
+`../_shared/references/entry-routing-contract.md` § Surfacing the multi-axis
+lens from a non-decide verb). Bounded: only at a genuine 2+-branch
 point, never the full matrix for a trivial reversible step. A weightier fork
 should route to `/designer:decide` rather than be settled inline.
 

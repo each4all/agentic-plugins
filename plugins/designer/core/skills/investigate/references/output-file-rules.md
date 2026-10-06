@@ -1,5 +1,6 @@
 # Output File Rules (designer:investigate `design-brief` profile)
 
+<!-- pipeline:begin output-rules-intro -->
 Output-file conventions for the design-brief profile of
 `designer:investigate`. This is the only designer:investigate profile that
 produces a separate user-facing artifact; any future non-brief profiles
@@ -10,6 +11,7 @@ designer ships its own copy of these conventions (ADR-0010 §5 no
 cross-plugin import; ADR-0029 §Neutral copy/adapt). The filename and
 env-var name are designer-owned (`design_brief.md` / `DESIGNER_OUTPUT_ROOT`)
 — designer has no Stage-1 backward-compatibility constraint.
+<!-- pipeline:end output-rules-intro -->
 
 **Workspace convention (ADR-0042)**: designer workflows anchor to the
 **frontend / design project git repository** — design briefs, flow specs,
@@ -19,6 +21,7 @@ lifecycle real commits to terminate on. The brief is saved relative to the
 resolved output root within whatever working directory the session runs
 in.
 
+<!-- pipeline:begin output-rules-layout -->
 ---
 
 ## Directory structure
@@ -72,6 +75,7 @@ from collapsing into innocuous-looking slugs.
 When sanitization produces an empty slug — empty input, traversal
 rejected at step 1, or step 5 stripped everything — use the time-based
 fallback for the entire directory name: `YYYY-MM-DD_HHMM`.
+<!-- pipeline:end output-rules-layout -->
 
 ### Examples
 
@@ -83,14 +87,15 @@ fallback for the entire directory name: `YYYY-MM-DD_HHMM`.
 | `../../etc/passwd` | (rejected at step 1) → fallback | `2026-07-08_1430` |
 | `2025` | `2025` | `2026-07-08_2025` |
 
+<!-- pipeline:begin output-rules-files -->
 ---
 
 ## Filename
 
 The brief file is **always** named `design_brief.md`. Fixed — do not
 parameterize, do not add suffixes for revisions. If a user wants to
-preserve a previous version, they archive the entire previous directory or
-rename it externally before re-running.
+preserve a previous version, they archive the entire previous directory
+or rename it externally before re-running.
 
 UTF-8 encoding. POSIX line endings (LF).
 
@@ -101,12 +106,12 @@ UTF-8 encoding. POSIX line endings (LF).
 If `<resolved-root>/YYYY-MM-DD_<topic-slug>/` already exists when the
 design-brief profile is about to save, ask the user:
 
-> The output directory `<path>` already exists with a previous design
+> The output directory `<path>` already exists with a previous
 > brief. Choose:
 >
 > 1. **Overwrite** — replace the existing `design_brief.md` with the new one.
 > 2. **Distinct directory** — save to a sibling directory with the time
->    suffix (e.g., `2026-07-08_my-topic_1430/`) so both briefs coexist.
+>    suffix (e.g., `YYYY-MM-DD_my-topic_HHMM/`) so both briefs coexist.
 > 3. **Abort** — do not save; present the brief inline only.
 
 Default if the user does not respond: option 2 (distinct directory) — the
@@ -125,8 +130,8 @@ save (the recorded decision is reused — the gate is not re-asked).
 
 The brief is written in the user's interaction language. Section headers
 and the spec structure follow the user's language; the "Source language"
-field inside the brief records the dominant language of cited sources (may
-differ from the brief's writing language).
+field inside the brief records the dominant language of cited sources
+(may differ from the brief's writing language).
 
 ---
 
@@ -135,11 +140,11 @@ differ from the brief's writing language).
 When the environment variable `DESIGNER_OUTPUT_ROOT` is set, that path
 replaces `./output/` as the root of the per-topic directory hierarchy:
 
-1. **Absolute path required**: relative paths and tilde-prefixed paths are
-   rejected. The variable MUST be an absolute path (POSIX `/abs/path` or
-   Windows `C:\abs\path`). When the value is empty, non-absolute, or fails
-   resolution, the profile falls back to `./output/` as if the variable
-   were unset.
+1. **Absolute path required**: relative paths and tilde-prefixed paths
+   are rejected. The variable MUST be an absolute path (POSIX
+   `/abs/path` or Windows `C:\abs\path`). When the value is empty,
+   non-absolute, or fails resolution, the profile falls back to
+   `./output/` as if the variable were unset.
 2. **Auto-create on use**: the resolved root is created with `mkdir -p`
    semantics if it does not exist. Parent directories are created as
    needed.
@@ -163,3 +168,4 @@ accept a per-call `--output` flag, a slug override, or a custom filename.
 - Do not write outside the resolved root (sandbox enforced — see "Output
   root override" above).
 - File encoding: UTF-8.
+<!-- pipeline:end output-rules-files -->

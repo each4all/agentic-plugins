@@ -243,6 +243,11 @@ rigor below.
 
 ### Step 4: Recommend
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting: one
+decision with its compared directions is a single decision item, presented
+whole.
+
 Always provide a recommendation. Never leave the user with only a
 comparison.
 

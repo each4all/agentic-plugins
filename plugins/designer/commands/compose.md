@@ -225,6 +225,7 @@ The phase note this step records — fill in every `<…>`:
 
 ### Active next-action proposal
 
+(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)
 - selected_next:         <verb | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — how the artifact honors the confirmed frame + chosen direction, plus its accessibility + consistency acceptance criteria>

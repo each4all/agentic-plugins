@@ -141,6 +141,9 @@ standard).
 
 ### Step 4: Synthesize and present (auto mode)
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Produce the durable artifact per `references/design-brief-spec.md`
 (canonical structure, citation conventions, audit checklist) and save it
 per `references/output-file-rules.md` (per-topic directory under the
@@ -211,7 +214,7 @@ pass `--model` or `--effort` flags.
    run to return; collect findings.
 2. Wait for the peer ensemble background notification; read the peer
    envelope.
-3. Synthesize per `references/design-brief-ensemble.md` § Synthesis —
+3. Synthesize per `references/design-brief-ensemble.md` § Synthesis Categories —
    `AGREED` / `LOCAL-ONLY` / `PEER-ONLY` / `CONFLICT`; PEER-ONLY claims
    undergo the bidirectional Independence Rule (Path A locally verify and
    cite with tier/as-of/platform tags, Path B move to Open Questions);
@@ -220,10 +223,10 @@ pass `--model` or `--effort` flags.
 
 ### Step 5: Present
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
 Present clearly and confirm with the user before finalizing (present the
-synthesized brief and ask the user to confirm before save; designer has no
-separate formal presentation protocol — the inline present-and-confirm
-flow described here is what designer ships). The design-brief profile has
+synthesized brief and ask the user to confirm before save). The design-brief profile has
 three possible terminal outcomes:
 
 - **saved** — audit passed and the brief was written to
@@ -274,7 +277,7 @@ Proposal** instead of a fixed next verb — derived from these findings, not
 a fixed table:
 
 ```
-- selected_next:         <verb | commit | owner decision>
+- selected_next:         <verb | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + the evidence-quality gate>
 - evidence_pointers:     <brief path / sub-questions / Open Questions — pointers only>
