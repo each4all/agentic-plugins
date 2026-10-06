@@ -84,6 +84,9 @@ include unit-economics + the gates.
 
 ### Step 3: Synthesize
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 1. Merge findings from all perspectives.
 2. Remove duplicates.
 3. Sort by severity (CRITICAL > MAJOR > MINOR > SUGGESTION). An
@@ -179,6 +182,9 @@ The peer call is automatic (always-max policy); skills do not pass
    phase notes; the saved review report strips them.
 
 ### Step 6: Present
+
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
 
 Use the same output shape as auto-activated mode. Do NOT fix issues —
 critique produces findings; the next action is the Active Next-Action

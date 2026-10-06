@@ -68,6 +68,9 @@ a frame that pretends certainty — and the marked gaps become the
 
 ### Step 3: Present and confirm
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Present the opportunity model and ask the user:
 
 > "Does this accurately capture the opportunity you want to pursue, or
@@ -128,6 +131,9 @@ After both sides return:
 ### Step 5: Present
 
 <!-- pipeline:begin frame-present -->
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Use the same shape as auto-activated mode, at the deeper synthesized
 fidelity. Present clearly and confirm before downstream verbs.
 <!-- pipeline:end frame-present -->

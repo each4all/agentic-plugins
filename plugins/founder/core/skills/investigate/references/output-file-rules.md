@@ -1,5 +1,6 @@
 # Output File Rules (founder:investigate `business-brief` profile)
 
+<!-- pipeline:begin output-rules-intro -->
 Output-file conventions for the business-brief profile of
 `founder:investigate`. This is the only founder:investigate profile that
 produces a separate user-facing artifact; any future non-brief profiles
@@ -10,6 +11,7 @@ founder ships its own copy of these conventions (ADR-0010 §5 no
 cross-plugin import; ADR-0029 §Neutral copy/adapt). The filename and
 env-var name are founder-owned (`business_brief.md` / `FOUNDER_OUTPUT_ROOT`)
 — founder has no Stage-1 backward-compatibility constraint.
+<!-- pipeline:end output-rules-intro -->
 
 **Workspace convention (ADR-0036 SD5)**: founder workflows are
 recommended to anchor to a **per-venture content git repository** —
@@ -18,6 +20,7 @@ repo gives the lifecycle real commits to terminate on. The brief is
 saved relative to the resolved output root within whatever working
 directory the session runs in.
 
+<!-- pipeline:begin output-rules-layout -->
 ---
 
 ## Directory structure
@@ -71,6 +74,7 @@ from collapsing into innocuous-looking slugs.
 When sanitization produces an empty slug — empty input, traversal
 rejected at step 1, or step 5 stripped everything — use the time-based
 fallback for the entire directory name: `YYYY-MM-DD_HHMM`.
+<!-- pipeline:end output-rules-layout -->
 
 ### Examples
 
@@ -82,6 +86,7 @@ fallback for the entire directory name: `YYYY-MM-DD_HHMM`.
 | `../../etc/passwd` | (rejected at step 1) → fallback | `2026-06-13_1430` |
 | `2025` | `2025` | `2026-06-13_2025` |
 
+<!-- pipeline:begin output-rules-files -->
 ---
 
 ## Filename
@@ -100,12 +105,12 @@ UTF-8 encoding. POSIX line endings (LF).
 If `<resolved-root>/YYYY-MM-DD_<topic-slug>/` already exists when the
 business-brief profile is about to save, ask the user:
 
-> The output directory `<path>` already exists with a previous business
+> The output directory `<path>` already exists with a previous
 > brief. Choose:
 >
 > 1. **Overwrite** — replace the existing `business_brief.md` with the new one.
 > 2. **Distinct directory** — save to a sibling directory with the time
->    suffix (e.g., `2026-06-13_my-topic_1430/`) so both briefs coexist.
+>    suffix (e.g., `YYYY-MM-DD_my-topic_HHMM/`) so both briefs coexist.
 > 3. **Abort** — do not save; present the brief inline only.
 
 Default if the user does not respond: option 2 (distinct directory) — the
@@ -162,3 +167,4 @@ accept a per-call `--output` flag, a slug override, or a custom filename.
 - Do not write outside the resolved root (sandbox enforced — see "Output
   root override" above).
 - File encoding: UTF-8.
+<!-- pipeline:end output-rules-files -->

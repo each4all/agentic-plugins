@@ -93,6 +93,9 @@ it. Do NOT mark the refinement complete on an unreconciled artifact.
 
 ### Step 4: Present the result
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 ```
 ## Refinement Summary
 - Applied: [N findings / 1 revision / etc.]
@@ -149,6 +152,9 @@ The peer call is automatic (always-max policy); skills do not pass
 `--model` / `--effort`.
 
 ### Step 5: Synthesize
+
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
 
 After both sides return:
 

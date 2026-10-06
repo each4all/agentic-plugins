@@ -1,13 +1,14 @@
 # Session-Level Handoff Wiring (founder, ADR-0031 + ADR-0043 S3)
 
+<!-- pipeline:begin handoff-wiring -->
 This is the founder-side wiring for the **session-level continue-vs-fresh
 preflight** (ADR-0031) and the **code-emitted completion footer**
 (ADR-0039, enabled for founder by ADR-0043). The **canonical contracts** —
 the firing rules, the three inputs, the bounded projection schema, and the
-continue-vs-fresh decision policy — live in the engineer plugin's
-`entry-routing-contract.md § Session-Level Continue-vs-Fresh Preflight
-(ADR-0031)` (the single source, cited by name per ADR-0010 §5; restating
-the schema here would drift). The completion-flag minimum content is owned
+continue-vs-fresh decision policy — live in founder's own
+`entry-routing-contract.md` § Session-Level Continue-vs-Fresh Preflight
+(ADR-0031), beside this file (the single source; restating the schema
+here would drift). The completion-flag minimum content is owned
 by the runtime's `docs/completion-output-contract.md`. This file holds only
 the founder-local wiring: how a founder surface computes its own bounded
 projection, passes it **into** the runtime seam (L3 → L1; the runtime never
@@ -16,7 +17,7 @@ reads founder state), and what the code-emitted terminal path guarantees.
 ## When it fires
 
 - at **standalone verb / lifecycle completion** — **code-emitted**
-  (ADR-0039 via ADR-0043 S3): the terminal mutation (`state.mjs
+  (ADR-0039 via ADR-0043): the terminal mutation (`state.mjs
   set-terminal`, the production completion entry point for the six verb
   commands and the `/founder:start` terminal step) fires
   `emitTerminalHandoffSidecar`, which — after writing the projection —
@@ -62,11 +63,11 @@ founder workflow is archived then; if any fails it stays marked and a later Stop
 re-evaluates it. Same-turn *evaluation* is the guarantee; same-turn *archival* is
 not, and the move itself is best-effort and non-fatal.
 
-No parent writeback fires here at all: founder carries no orchestrator parent
-and the step is removed outright (ADR-0036 Non-Goal 3, `scripts/stop-archive.mjs`).
-Note also that `/founder:start` marks terminal before the owner saves or commits,
-so the HEAD-movement gate usually fails on the same turn and the archive lands
-after that commit.
+No parent writeback fires here at all: founder declares `dispatch_target` off,
+so it carries no orchestrator parent and the step is removed outright
+(`scripts/stop-archive.mjs`).
+Note also that `/founder:start` does not auto-commit, so the HEAD-movement gate
+usually fails on the same turn and the archive lands after the owner commits.
 
 Consequences for a runbook author:
 
@@ -109,8 +110,9 @@ semantics plus orchestrator's **hardened delivery**:
   sibling marker below), and a rendered footer suppresses the false
   "missed-footer" SessionStart nudge;
 - the projection slot is the single per-persona
-  `.agentic-plugins/state/founder/last-session-handoff.json` (founder is
-  canonical-home only, ADR-0036 SD5). Concurrent cross-branch terminals are
+  `.agentic-plugins/state/founder/last-session-handoff.json`
+  (founder declares `legacy_homes` off: canonical home only).
+  Concurrent cross-branch terminals are
   **last-writer-wins** on the slot (accepted by ADR-0043 §2; the marker
   prevents double render, not cross-workflow overwrite).
 
@@ -130,7 +132,12 @@ SessionStart's consume runs after `stdout.write` returns without a
 delivery acknowledgment — a truncated injection can lose the one pending
 nudge. The render itself reads an immutable per-process snapshot, so a
 concurrent cross-branch overwrite of the slot can no longer mix one emit's
-completion flags with another emit's projection.
+completion flags with another emit's projection. The single-workflow marker
+shares the same LWW family: a different workflow's later claim replaces the
+tombstone, so under concurrent cross-branch terminals a still-active
+publish-needed workflow's Stop backstop can re-render an already-delivered
+transition — accepted with the slot model (a slot-transaction redesign is a
+cross-persona follow-up, not this onboarding).
 
 ## Footer-rendered marker (documented cross-package contract)
 
@@ -161,6 +168,7 @@ consumes this documentation, not the implementation):
 Pinned by `tests/persona-pipeline/test-footer-activation.mjs` and
 `tests/persona-pipeline/test-handoff-backstop.mjs`, which run for every
 persona the session-handoff script is generated into (ADR-0066).
+<!-- pipeline:end handoff-wiring -->
 
 ## Completion-flag mapping (publish-needed; completion-output contract §2)
 
@@ -169,6 +177,7 @@ auto-committing — the owner saves/commits the deliverable to their venture
 repository (ADR-0036 SD5). The sidecar therefore maps `--completion-state`
 from founder's **own** terminal semantics, not engineer's dichotomy:
 
+<!-- pipeline:begin handoff-recipe -->
 - archive gate `blocked` with **only `head_moved` unmet** →
   **`publish-needed`** (the deliverable awaits the owner's save/commit;
   `head_moved` is a fail-closed collapse that also covers a failed git
@@ -193,9 +202,10 @@ surface; at completion the same projection is computed and handed to
 `discover-runtime.mjs` resolver (copy-not-import, ADR-0010 §5).
 
 ```bash
-# 1. Compute the bounded projection from founder's OWN state.
+# 1. Compute the bounded projection from this persona's OWN state.
+PERSONA='founder'
 HANDOFF="$(node "$CLAUDE_PLUGIN_ROOT/scripts/session-handoff.mjs" project \
-  --repo-root "$REPO_ROOT" --routing "/founder:resume")"
+  --repo-root "$REPO_ROOT" --routing "/${PERSONA}:resume")"
 STATUS="$(echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{}})')"
 # Routing is always present in the result (ADR-0031 input (c)) — pass it
 # standalone when there is no projection so the seam never loses it.
@@ -206,7 +216,7 @@ case "$STATUS" in
     # 2. Materialize just the projection object to a temp file and pass it to
     #    the runtime seam. runtime composes context-risk × archive_gate into
     #    the continue-vs-fresh decision + next-session prompt/command.
-    PROJ_FILE="$(mktemp -t founder-projection.XXXXXX).json"
+    PROJ_FILE="$(mktemp -t "${PERSONA}-projection.XXXXXX").json"
     echo "$HANDOFF" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{process.stdout.write(JSON.stringify(JSON.parse(s).projection))})' > "$PROJ_FILE"
     #   runtime:context check --risk <green|yellow|red> --workflow-projection-file "$PROJ_FILE"
     ;;
@@ -215,7 +225,7 @@ case "$STATUS" in
     # (ADR-0018 §sub-2). Surface: "no active branch context".
     ;;
   no_active_workflow|fail_closed)
-    # No active founder workflow, or a corrupt state. Degrade: NO projection,
+    # No active workflow of this persona, or a corrupt state. Degrade: NO projection,
     # but routing is still available — pass it standalone so the seam keeps
     # the routing-shaped next command:
     #   runtime:context check --risk <green|yellow|red> --routing-recommendation "$ROUTING"
@@ -276,3 +286,4 @@ pre-rollback handoff as current.
   state with no branch to anchor to. The path-targeted terminal sidecar
   does not consult the branch at all — it renders normally for the exact
   workflow it was handed and stays advisory.
+<!-- pipeline:end handoff-recipe -->
