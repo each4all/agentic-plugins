@@ -2268,6 +2268,1118 @@
         "field": "peer.images",
         "equals": false
       }
+    },
+    {
+      "id": "routing-intro",
+      "template": "regions/routing-intro.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "routing-routes",
+      "template": "regions/routing-routes.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "deliverable_noun": {
+          "field": "deliverable_noun",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "routing-decision-prompt",
+      "template": "regions/routing-decision-prompt.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "routing-proposal",
+      "template": "regions/routing-proposal.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "deliverable_noun": {
+          "field": "deliverable_noun",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "routing-floor",
+      "template": "regions/routing-floor.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "routing-preflight-intro",
+      "template": "regions/routing-preflight-intro.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "routing-preflight-inputs",
+      "template": "regions/routing-preflight-inputs.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "routing-preflight-projection",
+      "template": "regions/routing-preflight-projection.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "routing-preflight-policy",
+      "template": "regions/routing-preflight-policy.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "routing-lens",
+      "template": "regions/routing-lens.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "profile_env": {
+          "field": "derived.profile_env",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "routing-quality",
+      "template": "regions/routing-quality.md",
+      "dest": "core/skills/_shared/references/entry-routing-contract.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "presentation-intro",
+      "template": "regions/presentation-intro.md",
+      "dest": "core/skills/_shared/references/presentation-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "presentation-exclusions",
+      "template": "regions/presentation-exclusions.md",
+      "dest": "core/skills/_shared/references/presentation-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "presentation-offer",
+      "template": "regions/presentation-offer.md",
+      "dest": "core/skills/_shared/references/presentation-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "presentation-modes",
+      "template": "regions/presentation-modes.md",
+      "dest": "core/skills/_shared/references/presentation-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "presentation-rules",
+      "template": "regions/presentation-rules.md",
+      "dest": "core/skills/_shared/references/presentation-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "handoff-wiring",
+      "template": "regions/handoff-wiring.md",
+      "dest": "core/skills/_shared/references/session-handoff.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "footer_floor": {
+          "field": "runtime_footer_floor",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "handoff-recipe",
+      "template": "regions/handoff-recipe.md",
+      "dest": "core/skills/_shared/references/session-handoff.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "footer_floor": {
+          "field": "runtime_footer_floor",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "output-rules-intro",
+      "template": "regions/output-rules-intro.md",
+      "dest": "core/skills/investigate/references/output-file-rules.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "brief_file": {
+          "field": "derived.brief_file",
+          "context": "markdown"
+        },
+        "output_root_env": {
+          "field": "derived.output_root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "output-rules-layout",
+      "template": "regions/output-rules-layout.md",
+      "dest": "core/skills/investigate/references/output-file-rules.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "brief_file": {
+          "field": "derived.brief_file",
+          "context": "markdown"
+        },
+        "output_root_env": {
+          "field": "derived.output_root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "output-rules-files",
+      "template": "regions/output-rules-files.md",
+      "dest": "core/skills/investigate/references/output-file-rules.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "brief_file": {
+          "field": "derived.brief_file",
+          "context": "markdown"
+        },
+        "output_root_env": {
+          "field": "derived.output_root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "ensemble-always-max",
+      "template": "regions/ensemble-always-max.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-bidirectional",
+      "template": "regions/ensemble-bidirectional.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "ensemble-when-applies",
+      "template": "regions/ensemble-when-applies.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "ensemble-execution-intro",
+      "template": "regions/ensemble-execution-intro.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-launch",
+      "template": "regions/ensemble-launch.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "ensemble-collect",
+      "template": "regions/ensemble-collect.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-synthesize-intro",
+      "template": "regions/ensemble-synthesize-intro.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-categories",
+      "template": "regions/ensemble-categories.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-bookkeeping",
+      "template": "regions/ensemble-bookkeeping.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "ensemble-prompt-intro",
+      "template": "regions/ensemble-prompt-intro.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-required-blocks",
+      "template": "regions/ensemble-required-blocks.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-privacy-contract",
+      "template": "regions/ensemble-privacy-contract.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "ensemble-independence",
+      "template": "regions/ensemble-independence.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-independence-bidirectional",
+      "template": "regions/ensemble-independence-bidirectional.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-privacy-intro",
+      "template": "regions/ensemble-privacy-intro.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "ensemble-privacy-bidirectional",
+      "template": "regions/ensemble-privacy-bidirectional.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_spec": {
+          "field": "derived.shared_privacy_spec",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "ensemble-point-types-intro",
+      "template": "regions/ensemble-point-types-intro.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "ensemble-failure-unavailable",
+      "template": "regions/ensemble-failure-unavailable.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-failure-error",
+      "template": "regions/ensemble-failure-error.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-failure-empty",
+      "template": "regions/ensemble-failure-empty.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "ensemble-graceful",
+      "template": "regions/ensemble-graceful.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "founder"
+      ],
+      "substitutions": {
+        "deliverable_noun": {
+          "field": "deliverable_noun",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-intro",
+      "template": "regions/brief-ensemble-intro.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-when",
+      "template": "regions/brief-ensemble-when.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-execution-intro",
+      "template": "regions/brief-ensemble-execution-intro.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-launch",
+      "template": "regions/brief-ensemble-launch.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-collect",
+      "template": "regions/brief-ensemble-collect.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-model",
+      "template": "regions/brief-ensemble-model.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-independence",
+      "template": "regions/brief-ensemble-independence.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ]
+    },
+    {
+      "id": "brief-ensemble-claim-shape-note",
+      "template": "regions/brief-ensemble-claim-shape-note.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-categories",
+      "template": "regions/brief-ensemble-categories.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ]
+    },
+    {
+      "id": "brief-ensemble-agreed",
+      "template": "regions/brief-ensemble-agreed.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ]
+    },
+    {
+      "id": "brief-ensemble-local-only",
+      "template": "regions/brief-ensemble-local-only.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-peer-only",
+      "template": "regions/brief-ensemble-peer-only.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ]
+    },
+    {
+      "id": "brief-ensemble-path-c",
+      "template": "regions/brief-ensemble-path-c.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ]
+    },
+    {
+      "id": "brief-ensemble-remapping",
+      "template": "regions/brief-ensemble-remapping.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-privacy-bidirectional",
+      "template": "regions/brief-ensemble-privacy-bidirectional.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ]
+    },
+    {
+      "id": "brief-ensemble-failure",
+      "template": "regions/brief-ensemble-failure.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ]
+    },
+    {
+      "id": "brief-ensemble-state",
+      "template": "regions/brief-ensemble-state.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_file": {
+          "field": "derived.brief_file",
+          "context": "markdown"
+        },
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-intro",
+      "template": "regions/brief-ensemble-intro.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-when",
+      "template": "regions/brief-ensemble-when.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-execution-intro",
+      "template": "regions/brief-ensemble-execution-intro.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-launch",
+      "template": "regions/brief-ensemble-launch.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-collect",
+      "template": "regions/brief-ensemble-collect.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-model",
+      "template": "regions/brief-ensemble-model.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-independence",
+      "template": "regions/brief-ensemble-independence.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-claim-shape-note",
+      "template": "regions/brief-ensemble-claim-shape-note.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-categories",
+      "template": "regions/brief-ensemble-categories.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-agreed",
+      "template": "regions/brief-ensemble-agreed.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-local-only",
+      "template": "regions/brief-ensemble-local-only.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-peer-only",
+      "template": "regions/brief-ensemble-peer-only.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-path-c",
+      "template": "regions/brief-ensemble-path-c.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-remapping",
+      "template": "regions/brief-ensemble-remapping.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-privacy-bidirectional",
+      "template": "regions/brief-ensemble-privacy-bidirectional.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-failure",
+      "template": "regions/brief-ensemble-failure.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-state",
+      "template": "regions/brief-ensemble-state.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_file": {
+          "field": "derived.brief_file",
+          "context": "markdown"
+        },
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-spec-citations",
+      "template": "regions/brief-spec-citations.md",
+      "dest": "core/skills/investigate/references/business-brief-spec.md",
+      "personas": [
+        "founder"
+      ]
+    },
+    {
+      "id": "brief-spec-label-policy",
+      "template": "regions/brief-spec-label-policy.md",
+      "dest": "core/skills/investigate/references/business-brief-spec.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-spec-citations",
+      "template": "regions/brief-spec-citations.md",
+      "dest": "core/skills/investigate/references/design-brief-spec.md",
+      "personas": [
+        "designer"
+      ]
+    },
+    {
+      "id": "brief-spec-label-policy",
+      "template": "regions/brief-spec-label-policy.md",
+      "dest": "core/skills/investigate/references/design-brief-spec.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "verbs.investigate.default_profile",
+          "context": "markdown"
+        },
+        "ensemble_type": {
+          "field": "verbs.investigate.ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "orchestration-intro",
+      "template": "regions/orchestration-intro.md",
+      "dest": "core/skills/_shared/references/orchestration.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
+    },
+    {
+      "id": "orchestration-failure",
+      "template": "regions/orchestration-failure.md",
+      "dest": "core/skills/_shared/references/orchestration.md",
+      "personas": [
+        "designer",
+        "founder"
+      ]
     }
   ],
   "extension_points": [

@@ -68,6 +68,10 @@ const FOUNDER_PRIVACY_SENTINEL =
   'pass an explicit gate before BOTH web search AND peer-host dispatch';
 const CANONICAL_PRIVACY_SENTINEL =
   'pass an explicit privacy gate before BOTH web search AND peer-host dispatch';
+// The region templates that state the gate: the verb runbooks' and skills'
+// privacy gate, the ensemble protocol's Launch step and Privacy section, and
+// the brief ensemble's Launch pre-conditions (PC2a4 RD4/RD5/RD8).
+const GATE_TEMPLATES = ['regions/verb-privacy-gate.md', 'regions/ensemble-launch.md', 'regions/ensemble-privacy-intro.md', 'regions/brief-ensemble-launch.md'];
 const GENERATED_GATE_FILES = [
   'commands/compose.md',
   'commands/critique.md',
@@ -76,7 +80,9 @@ const GENERATED_GATE_FILES = [
   'commands/investigate.md',
   'commands/refine.md',
   'commands/start.md',
+  'core/skills/_shared/references/ensemble-protocol.md',
   'core/skills/critique/SKILL.md',
+  'core/skills/investigate/references/business-brief-ensemble.md',
   'core/skills/refine/SKILL.md',
   'core/skills/start/SKILL.md',
 ];
@@ -288,6 +294,8 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     // recipe item; documents the code-emitted footer, the fail-closed
     // baseline, and the footer-rendered marker contract).
     `${SKILLS_REL}/_shared/references/session-handoff.md`,
+    // PC2a4 (ADR-0066) — the persona's own entry-routing contract (D6).
+    `${SKILLS_REL}/_shared/references/entry-routing-contract.md`,
   ];
 
   for (const rel of REQUIRED_SURFACES) {
@@ -468,16 +476,13 @@ describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)'
     }
   });
 
-  it('the generated-gate list is exactly the founder files whose privacy gate is a region, and each says it once', async () => {
+  it('the generated-gate list is exactly the founder files whose privacy gate is a region, and each says it once per region', async () => {
     const manifest = JSON.parse(await readFile(resolve(PLUGIN_ROOT, '../../persona-pipeline/manifest.json'), 'utf8'));
-    const generated = manifest.regions
-      .filter((r) => r.template === 'regions/verb-privacy-gate.md' && r.personas.includes('founder'))
-      .map((r) => r.dest)
-      .sort();
-    deepStrictEqual(generated, GENERATED_GATE_FILES);
+    const gates = manifest.regions.filter((r) => GATE_TEMPLATES.includes(r.template) && r.personas.includes('founder'));
+    deepStrictEqual([...new Set(gates.map((r) => r.dest))].sort(), GENERATED_GATE_FILES);
     for (const rel of GENERATED_GATE_FILES) {
       const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
-      strictEqual(text.split(CANONICAL_PRIVACY_SENTINEL).length - 1, 1, rel);
+      strictEqual(text.split(CANONICAL_PRIVACY_SENTINEL).length - 1, gates.filter((r) => r.dest === rel).length, rel);
       ok(!text.includes(FOUNDER_PRIVACY_SENTINEL), `${rel} holds the canonical wording only`);
     }
   });
@@ -834,12 +839,19 @@ describe('plugins/founder — release-please wiring', () => {
 describe('plugins/founder — session-handoff runbook (ADR-0043 S3)', () => {
   const RUNBOOK = `${SKILLS_REL}/_shared/references/session-handoff.md`;
 
-  it('cites the engineer canonical contract BY NAME, never by a cross-plugin path (ADR-0010 §5)', async () => {
+  // PC2a4 (D6): founder ships its own entry-routing-contract.md, rendered from
+  // the persona pipeline; the runbook cites that sibling, whose § heading
+  // exists (tests/persona-pipeline/test-reference-contracts.mjs resolves every
+  // citation of the plugin), never engineer's copy by a cross-plugin path.
+  it('cites founder\'s own contract, which holds the cited § heading, never a cross-plugin path (ADR-0010 §5)', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
-    ok(/entry-routing-contract\.md/.test(text),
-      'the runbook must cite the engineer canonical entry-routing-contract.md by name (single source)');
+    ok(/`entry-routing-contract\.md` § Session-Level Continue-vs-Fresh Preflight\s+\(ADR-0031\)/.test(text),
+      'the runbook must cite the sibling entry-routing-contract.md § Session-Level Continue-vs-Fresh Preflight (ADR-0031)');
+    const contract = await readFile(resolve(PLUGIN_ROOT, `${SKILLS_REL}/_shared/references/entry-routing-contract.md`), 'utf8');
+    ok(/^## Session-Level Continue-vs-Fresh Preflight \(ADR-0031\)$/m.test(contract),
+      'the persona\'s own contract must hold the cited § heading');
     ok(!/plugins\/engineer/.test(text) && !/\.\.\/\.\.\/engineer/.test(text),
-      'the runbook must not reach the engineer contract by a cross-plugin path — cite it by name');
+      'the runbook must not reach the engineer contract by a cross-plugin path');
   });
 
   it('documents the footer-rendered marker contract and the publish-needed mapping', async () => {

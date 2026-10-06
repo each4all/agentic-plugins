@@ -30,6 +30,9 @@
 //      characterization (T0); L, the engine's list values;
 //   S  the extension slots (PC2a3 DD6): each slot check dropped; W, the
 //      variant rule (DD2) dropped;
+//   X  the shared-reference regions (PC2a4): a template defect regenerated
+//      into founder and designer, or authored reference text broken, each with
+//      the reference contract that must catch it (killed_by);
 //   C  a control: an innocuous canonical edit, regenerated everywhere, keeps
 //      the drift check clean (expect SURVIVED).
 //
@@ -57,6 +60,9 @@ const T_HEADLESS = 'tests/plugin-shape/test-headless-safe-runbooks.mjs';
 const T_VERBS = 'tests/persona-pipeline/test-declaration-verbs.mjs';
 const T_CHAR = 'tests/persona-pipeline/test-verb-runbook-characterization.mjs';
 const T_SKILL = 'tests/persona-pipeline/test-skill-contracts.mjs';
+const T_REF = 'tests/persona-pipeline/test-reference-contracts.mjs';
+const T_CODEX = 'tests/plugin-shape/test-codex-plugin-root-contract.mjs';
+const T_ARCH = 'tests/scripts/test-set-terminal-archive-timing.mjs';
 
 export const TESTS = [T_SYNC];
 
@@ -1268,6 +1274,283 @@ export const MUTATIONS = [
     to: "  --terminal-marker true --force \\\n  --next-action 'Critique the composed planning artifact' \\\n",
     killed_by: /^the repository is clean$/,
     why: 'a hand edit inside a generated region of compose.md (the drift check must fail)',
+  },
+
+  // ---- X: shared-reference regions (PC2a4) ------------------------------------------
+  {
+    id: 'X1', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-preflight-intro.md', from: '## Session-Level Continue-vs-Fresh Preflight (ADR-0031)', to: '## Session-Level Preflight (ADR-0031)' }),
+    killed_by: /every in-plugin citation resolves, and its § names a heading of the target$/,
+    why: 'the contract loses the preflight heading the session handoff cites (D6)',
+  },
+  {
+    id: 'X2', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-proposal.md', from: '- **selected_next**: the recommended next step — a verb or\n  `owner decision`, chosen', to: '- **selected_next**: the recommended next step — a verb, `commit` or\n  `owner decision`, chosen' }),
+    killed_by: /the capability text agrees with the declaration$/,
+    why: 'a commit next step renders for a persona whose commit_surface is off',
+  },
+  {
+    id: 'X3', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-routes.md', from: 'can be carried from idea to its saved artifact on the current branch.', to: 'can be carried from idea to commit on the current branch.' }),
+    killed_by: /the capability text agrees with the declaration$/,
+    why: 'the start route promises a commit to a persona whose commit_surface is off',
+  },
+  {
+    id: 'X4', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-routes.md', from: 'dispatches its subtasks into engineer only, so a {{deliverable_noun}} inside it runs through `/{{persona}}:start` on its own branch.', to: 'dispatches its subtasks into {{persona}}.' }),
+    killed_by: /the capability text agrees with the declaration$/,
+    why: 'the orchestrator row claims dispatch into a persona whose dispatch_target is off',
+  },
+  {
+    id: 'X5', tests: [T_REF], file: 'plugins/founder/core/skills/_shared/references/entry-routing-contract.md',
+    from: '§ Entry routing recommendation\n(before Phase 1)', to: '§ Entry routing advice\n(before Phase 1)',
+    killed_by: /(?:^| > )committed: every in-plugin citation resolves, and its § names a heading of the target$/,
+    why: 'an authored citation names a § its target does not hold',
+  },
+  {
+    id: 'X6', tests: [T_REF], file: 'plugins/founder/core/skills/investigate/SKILL.md',
+    from: '- selected_next:         <verb | owner decision>', to: '- selected_next:         <verb | commit | owner decision>',
+    killed_by: /the capability text agrees with the declaration$/,
+    why: "founder's investigate proposal offers commit again (RV5)",
+  },
+  {
+    id: 'X7', tests: [T_REF], file: 'plugins/designer/core/skills/investigate/SKILL.md',
+    from: '- selected_next:         <verb | owner decision>', to: '- selected_next:         <verb | commit | owner decision>',
+    killed_by: /the capability text agrees with the declaration$/,
+    why: "designer's investigate proposal offers commit again (RV5)",
+  },
+  {
+    id: 'X8', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-preflight-policy.md', from: 'capture` with `--next-session-prompt`.', to: 'capture` with `--next-session-prompt` — the projection itself is\n  ephemeral and is never written to a second state-like artifact.' }),
+    killed_by: /the preflight states what the generated scripts do \(RV1\)$/,
+    why: "the preflight restores engineer's claim that the projection is never persisted (RV1)",
+  },
+  {
+    id: 'X9', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-preflight-policy.md', from: "real archive happens only in the persona's Stop hook, preserving the", to: 'real archive still happens only via the Stop hook after a real commit, preserving the' }),
+    killed_by: /the preflight states what the generated scripts do \(RV1\)$/,
+    why: "the preflight restores engineer's claim that archiving happens only after a real commit (RV1)",
+  },
+  {
+    id: 'X10', tests: [T_REF, T_CODEX],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-lens.md', from: 'Codex injects the mentioned skill with its absolute path, and', to: 'Codex hands the agent the mentioned skill, and' }),
+    killed_by: /each pointer to the checkpoint table carries the mechanism inside its own passage, in every plugin that has one$/,
+    why: 'the lens keeps a valid citation of the checkpoint table but loses where the Codex root comes from (RV9)',
+  },
+
+  {
+    id: 'X11', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-verb-present.md', from: 'Follow the Presentation Mode Protocol\n(`../_shared/references/presentation-protocol.md`) before presenting.\n\n', to: '' }),
+    killed_by: /every verb skill's Present step follows the protocol, in each invocation mode \(RV6\)$/,
+    why: "a generated Present site (compose's command mode) loses its protocol citation",
+  },
+  {
+    id: 'X12', tests: [T_REF], file: 'plugins/founder/core/skills/critique/SKILL.md',
+    from: '### Step 3: Synthesize\n\nFollow the Presentation Mode Protocol\n(`../_shared/references/presentation-protocol.md`) before presenting.\n\n', to: '### Step 3: Synthesize\n\n',
+    killed_by: /every verb skill's Present step follows the protocol, in each invocation mode \(RV6\)$/,
+    why: "an authored Present site (founder critique, auto-activated) loses its protocol citation",
+  },
+  {
+    id: 'X13', tests: [T_REF, T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)\n', to: '' }),
+    killed_by: [/the finalize note and the start routing cite the persona's own contract$/, /does what the fixture recorded, with the listed changes/],
+    why: 'the finalize note drops its citation of the entry-routing contract (RV4)',
+  },
+  {
+    id: 'X14', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/presentation-rules.md', from: 'so this is a single-item presentation and the protocol does\nnot split it', to: 'so interview mode presents it as 4 per-option segments + 1 aggregate, [1/4] Option A first' }),
+    killed_by: /the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
+    why: "Example 1 reverts to engineer's per-option segments (RV3)",
+  },
+  {
+    id: 'X15', tests: [T_ARCH],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: 'The Stop hook fires at **every turn end**, so the archive gates', to: 'The Stop hook fires at **session close**, so the archive gates' }),
+    killed_by: /every shared reference carries the canonical archive-timing section$/,
+    why: "the handoff's archive-timing section loses the same-turn fact (RD6)",
+  },
+  {
+    id: 'X16', tests: [T_REF], file: 'scripts/lib/persona-pipeline.mjs',
+    from: "derived.brief_file = `${profile.split('-').join('_')}.md`;", to: "derived.brief_file = profile.split('-').join('_');",
+    killed_by: /the output-file rules name the brief file and output root the declaration implies \(RD7\)$/,
+    why: 'derived.brief_file loses its .md, so the assembled output-file rules name a file the investigate verb never writes',
+  },
+  {
+    id: 'X17', tests: [T_DECL], file: 'scripts/sync-persona-pipeline.mjs',
+    from: '    if (named.length !== 1 || named[0] !== briefFile) {', to: '    if (false) {',
+    killed_by: /fails on an investigate artifact naming another brief file$/,
+    why: 'the brief_file cross-field rule is dropped (RD7)',
+  },
+  {
+    id: 'X18', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: "live in {{persona}}'s own\n`entry-routing-contract.md` § Session-Level Continue-vs-Fresh Preflight\n(ADR-0031), beside this file", to: "live in the engineer plugin's\n`entry-routing-contract.md` § Session-Level Continue-vs-Fresh Preflight\n(ADR-0031)" }),
+    killed_by: /the session handoff cites this persona's own preflight section \(D6\)$/,
+    why: "the handoff's D6 citation reverts to engineer's contract",
+  },
+
+  {
+    id: 'X19', tests: [T_REF], file: 'plugins/founder/core/skills/investigate/SKILL.md',
+    from: '- selected_next:         <verb | owner decision>', to: '- selected_next:         commit',
+    killed_by: /the capability text agrees with the declaration$/,
+    why: 'a proposal block offers a literal commit next step instead of the placeholder (Plan-verify of code step 1)',
+  },
+  {
+    id: 'X20', tests: [T_REF], file: 'plugins/founder/core/skills/_shared/references/entry-routing-contract.md',
+    from: '§ Entry routing recommendation\n(before Phase 1)', to: '§ Entry routing recommendation\n(nonexistent section)',
+    killed_by: /(?:^| > )committed: every in-plugin citation resolves, and its § names a heading of the target$/,
+    why: "a citation keeps a heading's title but names a subtitle it does not have (Plan-verify of code step 1)",
+  },
+  {
+    id: 'X21', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-lens.md', from: 'so an incidental in-verb branch resolves\n  with no `--size` and the profile carried inline', to: 'so an incidental in-verb branch uses\n  `--size=minor` with the profile carried inline' }),
+    killed_by: /the lens's default size keeps a profile preset where the persona has one$/,
+    why: "the lens's default --size=minor drops designer's archetype preset (Plan-verify of code step 1)",
+  },
+
+  {
+    id: 'X22', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-launch.md', from: '   {{privacy_scope}}\n   pass an explicit privacy gate before BOTH web search AND peer-host\n   dispatch. Genericize before constructing the prompt.\n', to: '   {{privacy_scope}}.\n   Genericize before constructing the prompt.\n' }),
+    killed_by: /the ensemble Launch passes the privacy gate before any dispatch \(RD5\)$/,
+    why: "the ensemble Launch step loses its privacy-gate prohibition before the dispatch step (RD5)",
+  },
+  {
+    id: 'X23', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-collect.md', from: '2. Read the peer-runner JSON first. Its', to: '2. Read `envelope_path` for the parsed companion envelope, then\n   read the peer-runner JSON first. Its' }),
+    killed_by: /the ensemble Collect reads the runner result before any envelope, in the runner's own terms \(RV10\)$/,
+    why: 'the Collect step reads the envelope before the runner result, which may name none (RV10)',
+  },
+  {
+    id: 'X24', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-bookkeeping.md', from: '**`peer-now` is structurally excluded** from `ensemble_results`, by two\nindependent mechanisms:', to: 'Two mechanisms keep `ensemble_results` to verb ensembles:' }),
+    killed_by: /State Bookkeeping excludes peer-now, and the peer-now skill agrees \(RV7\)$/,
+    why: "State Bookkeeping drops the peer-now exclusion that both personas' peer-now skills cite (RV7)",
+  },
+  {
+    id: 'X25', tests: [T_REF], file: 'plugins/designer/core/skills/_shared/references/ensemble-protocol.md',
+    from: '**Do not record an ensemble that never ran.** When the privacy gate\nforces local-only, or the companion is unavailable, skip\n`ensemble-commit` entirely and record `### Ensemble degraded:` or\n`### Ensemble skipped (local-only, privacy):` in the body instead.\n\n', to: '',
+    killed_by: /the protocol says an ensemble that never ran is not recorded exactly when the runbooks skip it \(D2\)$/,
+    why: "designer's authored D2 paragraph is dropped while its critique and refine runbooks still skip ensemble-commit",
+  },
+  {
+    id: 'X26', tests: [T_REF], file: 'plugins/founder/core/skills/peer-now/SKILL.md',
+    from: '(`--workflow-path /\n--phase / --ensemble-type`)', to: '(`--workflow-path /\n--phase / --ensemble-type / --run-id`)',
+    killed_by: /State Bookkeeping excludes peer-now, and the peer-now skill agrees \(RV7\)$/,
+    why: "founder's peer-now skill lists --run-id among the flags it omits, which its dispatch passes (RV7)",
+  },
+  {
+    id: 'X27', tests: [T_REF], file: 'plugins/designer/core/skills/_shared/references/ensemble-protocol.md',
+    from: '**Screenshots are sensitive by default**: the privacy gate of step 2\nbelow covers every screenshot that would inform the peer, before any\ndispatch.\n\n', to: '',
+    killed_by: /the ensemble Launch passes the privacy gate before any dispatch \(RD5\)$/,
+    why: "designer's screenshot sentence no longer precedes the Launch dispatch step (RV8)",
+  },
+
+  {
+    id: 'X28', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-collect.md', from: '2. Read the peer-runner JSON first. Its', to: "2. Read the JSON envelope from the companion's stdout. Its" }),
+    killed_by: /the brief ensemble gates before dispatch and collects the runner result first, as the investigate runbook dispatches \(RD8, RV10\)$/,
+    why: "the brief ensemble's Step 2 reverts to reading the envelope from the companion's stdout (RV10)",
+  },
+  {
+    id: 'X29', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-spec-label-policy.md', from: 'the bidirectional {{ensemble_type}} ensemble (per', to: 'the bidirectional ensemble (per' }),
+    killed_by: /the brief spec's label policy names the declared ensemble type and brief ensemble \(RD8\)$/,
+    why: 'the label policy loses the ensemble type (RD8)',
+  },
+  {
+    id: 'X30', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/orchestration-failure.md', from: "If any local analysis fails to return: notify the user which\nperspective failed, ask retry-or-proceed, follow the user's decision,\nand if proceeding note the missing perspective in the synthesis so the\nuser knows coverage was incomplete. ", to: '' }),
+    killed_by: /the failure handling sections keep every case \(RD8, RD9\)$/,
+    why: "orchestration.md's failure handling drops the local-analysis case (RD9)",
+  },
+  {
+    id: 'X31', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-failure.md', from: '### Peer returns PEER-ONLY claim with no source URL\n\n- Treat as malformed at the per-claim level (no source URL means nothing\n  to verify).\n- Discard the claim. Do NOT add it to Open Questions — there is nothing\n  to follow up on.\n\n', to: '' }),
+    killed_by: /the failure handling sections keep every case \(RD8, RD9\)$/,
+    why: "the brief ensemble's failure handling drops a subsection (RD8)",
+  },
+  {
+    id: 'X32', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-state.md', from: 'Inspect that run before dispatching again:', to: 'The next session must re-dispatch (the helper is idempotent on `run_id`\nso duplicate entries do not accumulate). Inspect that run before\ndispatching again:' }),
+    killed_by: /the brief recovery inspects the run before a retry, in the runner's terms \(RV11\)$/,
+    why: "the brief recovery regains the false 'idempotent on run_id' claim (RV11)",
+  },
+  {
+    id: 'X33', tests: [T_REF], file: 'plugins/designer/core/skills/investigate/references/design-brief-ensemble.md',
+    from: '**Screenshots are sensitive by default** and are never sent to the peer\nas inline bytes (see "Vision boundary" above): pre-condition 1 below\ngates them before any dispatch.\n\n', to: '',
+    killed_by: /the brief ensemble gates before dispatch and collects the runner result first, as the investigate runbook dispatches \(RD8, RV10\)$/,
+    why: "designer's brief screenshot sentence no longer precedes the dispatch step (RV8)",
+  },
+
+  {
+    id: 'X34', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-collect.md', from: "not the peer's answer. When `envelope_path` is null there is no\n   envelope to read, and the run degrades to local-only: `error_kind`\n   says why —", to: "not the peer's answer. `error_kind` names a failure —" }),
+    killed_by: /the ensemble Collect reads the runner result before any envelope, in the runner's own terms \(RV10\)$/,
+    why: "the protocol's Collect loses the null-envelope branch (Plan-verify of code step 2)",
+  },
+  {
+    id: 'X35', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-collect.md', from: "not the peer's answer. When `envelope_path` is null there is no\n   envelope to read, and the run degrades to local-only: `error_kind`\n   says why —", to: "not the peer's answer. `error_kind` names a failure —" }),
+    killed_by: /the brief ensemble gates before dispatch and collects the runner result first, as the investigate runbook dispatches \(RD8, RV10\)$/,
+    why: "the brief's Collect loses the null-envelope branch (Plan-verify of code step 2)",
+  },
+  {
+    id: 'X36', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-state.md', from: 'A retry takes a fresh run id, since the runner refuses a `run_id` whose\nledger already exists.', to: 'A retry reuses the same run id, which the runner resumes.' }),
+    killed_by: /the brief recovery inspects the run before a retry, in the runner's terms \(RV11\)$/,
+    why: 'the brief recovery retries under the old run id, which the runner refuses (Plan-verify of code step 2)',
+  },
+  {
+    id: 'X37', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-spec-label-policy.md', from: '- No host-named markers anywhere in the brief — none of `[Local]`,\n  `[Peer]`, `[Both]`, or any host-specific equivalent.\n', to: '' }),
+    killed_by: /the brief spec's label policy names the declared ensemble type and brief ensemble \(RD8\)$/,
+    why: 'the label policy drops its prohibition of source-of-discovery labels (Plan-verify of code step 2)',
+  },
+  {
+    id: 'X38', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-failure.md', from: '- Discard the claim. Do NOT add it to Open Questions — there is nothing\n  to follow up on.', to: '- Keep the uncited claim in Findings.' }),
+    killed_by: /the failure handling sections keep every case \(RD8, RD9\)$/,
+    why: "a failure case keeps its heading but changes its action (Plan-verify of code step 2)",
+  },
+  {
+    id: 'X39', tests: [T_REF], file: 'plugins/designer/commands/critique.md',
+    from: 'if [ -n "${RUN_ID:-}" ] && [ -n "${VERDICT:-}" ]; then', to: 'if true; then',
+    killed_by: /the protocol says an ensemble that never ran is not recorded exactly when the runbooks skip it \(D2\)$/,
+    why: "designer's critique records an ensemble result unconditionally while the protocol still says one that never ran is not recorded (Plan-verify of code step 2)",
+  },
+  {
+    id: 'X40', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-peer-now-dispatch.md', from: '--run-id "$RUN_ID" --kind peer-now \\', to: '--run-id "$RUN_ID" --kind peer-now --phase peer-now \\' }),
+    killed_by: /State Bookkeeping excludes peer-now, and the peer-now skill agrees \(RV7\)$/,
+    why: 'the peer-now dispatch passes an ensemble-accounting flag its skill says it omits (Plan-verify of code step 2)',
+  },
+  {
+    id: 'X41', tests: [T_STOP, T_REF],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/stop-archive.mjs', from: "    if (refState !== 'absent') continue; // unknown → leave", to: '    continue; // unknown → leave' }),
+    killed_by: /archives a terminal workflow whose baseline branch was deleted \(orphan\)$/,
+    why: "the off-branch sweep stops archiving a deleted branch's workflow while its comment, which the preflight contract reads, still says it does (Review of code step 3)",
+  },
+  {
+    id: 'X42', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-lens.md', from: 'env "${PROFILE_VAR}=<profile>" node "<plugin-root>/scripts/decide-registry.mjs" resolve\n', to: 'env "${PROFILE_VAR}=<profile>" node "<plugin-root>/scripts/decide-registry.mjs" resolve --size=minor\n' }),
+    killed_by: /the lens's default size keeps a profile preset where the persona has one$/,
+    why: "the profile persona's lens call passes a --size, which drops the profile's preset (Review of code step 3)",
+  },
+  {
+    id: 'X43', tests: [T_REF],
+    prepare: (copy, tools) => tools.applyEdit(copy, { file: 'plugins/designer/core/skills/refine/SKILL.md', from: '(the `scripts/decide-registry.mjs resolve` resolver, with the active profile in', to: '(the `scripts/decide-registry.mjs resolve --size=minor` resolver, with the active profile in' }),
+    killed_by: /the lens's default size keeps a profile preset where the persona has one$/,
+    why: "an authored designer skill's lens call goes back to --size=minor, against its contract (Review of code step 3)",
+  },
+  {
+    id: 'X44', tests: [T_REF],
+    prepare: (copy, tools) => tools.applyEdit(copy, { file: 'plugins/founder/core/skills/start/SKILL.md', from: '`../_shared/references/entry-routing-contract.md` § Routing Recommendation\nand the sections after it):', to: '`../_shared/references/entry-routing-contract.md` § Routing Recommendation: Missing subsection\nand the sections after it):' }),
+    killed_by: /the finalize note and the start routing cite the persona's own contract$/,
+    why: "start's routing pointer names a subsection the contract does not have, past the citation check's documented limit (Review of code step 3)",
+  },
+  {
+    id: 'X45', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/presentation-rules.md', from: "1. Each direction's full analysis (4 blocks, in order)\n2. The multi-perspective comparison table, after all directions (rows =\n   axes, columns = A/B/C/D)\n", to: "1. The multi-perspective comparison table, after all directions (rows =\n   axes, columns = A/B/C/D)\n2. Each direction's full analysis (4 blocks, in order)\n" }),
+    killed_by: /the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
+    why: "Example 1 puts the comparison table before the directions, against decide's output format (Review of code step 3)",
   },
 
   // ---- C: control -------------------------------------------------------------------

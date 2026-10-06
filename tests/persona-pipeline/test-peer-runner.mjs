@@ -367,12 +367,38 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
         strictEqual(result.ok, false);
         strictEqual(result.status, 'failed');
         strictEqual(result.error_kind, 'peer_cli_not_found');
+        // The ensemble protocol's Collect step branches on this before any
+        // envelope (PC2a4 RV10): no companion, no envelope.
+        strictEqual(result.envelope_path, null);
         // ADR-0061 §Decision 4 — a failed resolution still records what was tried.
         const handle = await readHandle(peerRunPaths(repoRoot, 'no-companion').handle);
         strictEqual(handle.status, 'failed');
         strictEqual(handle.companion.path, null);
         strictEqual(handle.companion.source, 'env');
         strictEqual(handle.companion.reason, 'not installed');
+      });
+    });
+    it('reports envelope_path only when an envelope was written: unparsable stdout fails as envelope_parse_error with none (PC2a4 RV10)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const companionsRoot = await writeFakeCompanions(repoRoot);
+        const run = (runId, extra) => runPeer({
+          repoRoot,
+          runId,
+          kind: 'manual',
+          peer: 'claude',
+          promptText: '<task>collect</task>',
+          outputFormat: 'json',
+          cwd: repoRoot,
+          env: fakeEnv(companionsRoot, extra),
+        });
+        const malformed = await run('collect-malformed', { FAKE_COMPANION_MODE: 'stream-text' });
+        strictEqual(malformed.status, 'failed');
+        strictEqual(malformed.error_kind, 'envelope_parse_error');
+        strictEqual(malformed.envelope_path, null);
+        const success = await run('collect-success', {});
+        strictEqual(success.status, 'completed');
+        strictEqual(success.envelope_path, peerRunPaths(repoRoot, 'collect-success').envelope);
+        strictEqual((await readJson(success.envelope_path)).status, 'success');
       });
     });
   });

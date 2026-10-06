@@ -60,6 +60,7 @@ import {
   PipelineError,
   WRITE_COMMAND,
   carriesNotice,
+  derivedFields,
   parseRegions,
   readJsonFile,
   regionBody,
@@ -207,6 +208,18 @@ function crossFieldFailures({ persona, pluginDir, declaration, registry, units, 
       } else if (!statSync(real).isFile()) {
         failures.push(`${where}: peer.privacy_spec names ${spec}, which is not a regular file`);
       }
+    }
+  }
+
+  // PC2a4: the investigate brief's file name is derived from its default
+  // profile (derived.brief_file); the declared artifact must name exactly that
+  // one file, so the convention stays bound to declared data.
+  const briefFile = derivedFields(d).brief_file;
+  if (briefFile !== undefined) {
+    const artifact = d.verbs?.investigate?.artifact;
+    const named = Array.isArray(artifact) ? [...artifact.join('\n').matchAll(/(?<![\w.\/-])[\w.-]+\.md(?![\w.\/-])/g)].map((m) => m[0]) : [];
+    if (named.length !== 1 || named[0] !== briefFile) {
+      failures.push(`${where}: verbs.investigate.artifact must name exactly one *.md file, ${briefFile} (the default profile ${d.verbs.investigate.default_profile} with - → _); it names ${named.length === 0 ? 'none' : named.join(', ')}`);
     }
   }
 

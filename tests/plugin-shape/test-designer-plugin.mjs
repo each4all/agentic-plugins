@@ -2051,12 +2051,19 @@ describe('plugins/designer — session-handoff runbook (ADR-0043 S4)', () => {
       'the ADR-0043 S4 onboarding lands the copied session-handoff wiring runbook');
   });
 
-  it('cites the engineer canonical contract BY NAME, never by a cross-plugin path (ADR-0010 §5)', async () => {
+  // PC2a4 (D6): designer ships its own entry-routing-contract.md, rendered from
+  // the persona pipeline; the runbook cites that sibling, whose § heading
+  // exists (tests/persona-pipeline/test-reference-contracts.mjs resolves every
+  // citation of the plugin), never engineer's copy by a cross-plugin path.
+  it('cites designer\'s own contract, which holds the cited § heading, never a cross-plugin path (ADR-0010 §5)', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
-    ok(/entry-routing-contract\.md/.test(text),
-      'the runbook must cite the engineer canonical entry-routing-contract.md by name (single source)');
+    ok(/`entry-routing-contract\.md` § Session-Level Continue-vs-Fresh Preflight\s+\(ADR-0031\)/.test(text),
+      'the runbook must cite the sibling entry-routing-contract.md § Session-Level Continue-vs-Fresh Preflight (ADR-0031)');
+    const contract = await readFile(resolve(PLUGIN_ROOT, `${SKILLS_REL}/_shared/references/entry-routing-contract.md`), 'utf8');
+    ok(/^## Session-Level Continue-vs-Fresh Preflight \(ADR-0031\)$/m.test(contract),
+      'the persona\'s own contract must hold the cited § heading');
     ok(!/plugins\/engineer/.test(text) && !/\.\.\/\.\.\/engineer/.test(text),
-      'the runbook must not reach the engineer contract by a cross-plugin path — cite it by name');
+      'the runbook must not reach the engineer contract by a cross-plugin path');
   });
 
   it('documents the footer-rendered marker contract and the publish-needed mapping', async () => {

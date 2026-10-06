@@ -479,13 +479,38 @@ function lookupField(declaration, field) {
  *     to a skill's own directory (`core/skills/<skill>/`), the same path from
  *     every skill (PC2a3 T7). Absent when the declaration has no spec, so a
  *     template that reads it fails to render rather than citing nothing.
+ *   - `shared_privacy_spec`: the same spec as a shared reference cites it,
+ *     relative to `core/skills/_shared/references/` (PC2a4). Absent without a
+ *     spec.
+ *   - `brief_file`: the file the investigate brief is saved as, its default
+ *     profile with `-` → `_` plus `.md` (`business-brief` →
+ *     `business_brief.md`); the generator checks that the declared
+ *     `artifact` names that same file (PC2a4).
+ *   - `output_root_env`: the variable that overrides where that brief is
+ *     saved, `<NAME>_OUTPUT_ROOT`, from the name (PC2a4).
+ *   Both are absent without `verbs.investigate.default_profile` (engineer's
+ *   1.0 declaration has none, and its brief keeps its own legacy names).
+ *   - `profile_env`: the variable the decide resolver reads the L4 profile
+ *     from, `AGENTIC_<NAME>_PROFILE`, from the name as `lib/persona.mjs`
+ *     `profileEnvVar` derives it; the resolver reads it only with the
+ *     `profile_presets` capability on, and a template cites it only there
+ *     (PC2a4).
  */
 export function derivedFields(declaration) {
   const name = declaration?.name;
   if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*$/.test(name)) return {};
-  const derived = { root_env: `AGENTIC_${name.toUpperCase().split('-').join('_')}_ROOT` };
+  const upper = name.toUpperCase().split('-').join('_');
+  const derived = { root_env: `AGENTIC_${upper}_ROOT`, profile_env: `AGENTIC_${upper}_PROFILE` };
   const spec = declaration?.peer?.privacy_spec;
-  if (typeof spec === 'string' && spec.length > 0) derived.skill_privacy_spec = `../${posix.relative('core/skills', spec)}`;
+  if (typeof spec === 'string' && spec.length > 0) {
+    derived.skill_privacy_spec = `../${posix.relative('core/skills', spec)}`;
+    derived.shared_privacy_spec = posix.relative('core/skills/_shared/references', spec);
+  }
+  const profile = declaration?.verbs?.investigate?.default_profile;
+  if (typeof profile === 'string' && profile.length > 0) {
+    derived.brief_file = `${profile.split('-').join('_')}.md`;
+    derived.output_root_env = `${upper}_OUTPUT_ROOT`;
+  }
   return derived;
 }
 
