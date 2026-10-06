@@ -10,17 +10,21 @@
 // read from its own persona.json when the code runs, never at import
 // (scripts/lib/persona.mjs).
 //
-// This unit carries only the OFF path of three capabilities (ADR-0066
-// Decision 3), so the manifest never enrolls it into a persona that declares
-// one of them on:
-//   - legacy_homes off: canonical home only — no legacy `.claude/agentic-*`
-//     fallback, no dual-home reads, and no migration surface (ADR-0025 §1).
-//   - dispatch_target off: no cross-plugin parent linkage — the
+// Three capabilities change what it does (ADR-0066 Decision 3), each read
+// from the declaration when it runs:
+//   - legacy_homes: on, the ADR-0025 pre-migration `.claude/agentic-<persona>`
+//     home is read and written beside the canonical one (dual-home reads, the
+//     write block while both hold state). Off: canonical home only.
+//   - dispatch_target: on, the ADR-0019 parent linkage (the create flags, the
 //     parent_workflow / originating_subtask / parent_detached /
-//     parent_writeback_at keys stay opaque data the forward-compat carrier
-//     keeps, the create flags are refused, and the detach-archive and
-//     set/clear-parent-writeback-marker subcommands do not exist.
-//   - commit_surface off: no Phase 7 commit driver; the owner publishes.
+//     parent_writeback_at keys, the detach-archive and
+//     set/clear-parent-writeback-marker subcommands) and the ADR-0063
+//     autopilot mode on Claude. Off: the keys stay opaque data the
+//     forward-compat carrier keeps, the flags and subcommands are refused,
+//     and an inherited AGENTIC_AUTOPILOT is ignored.
+//   - commit_surface: on, the Phase 7 commit surface's state (close-complete,
+//     beginCommit, the staging-set gate, autopilot-preflight --surface
+//     commit). Off: the owner publishes.
 //
 // Used by:
 //   - plugins/<persona>/commands/<verb>.md (thin-shim Phase 0 + state finalize)
@@ -28,6 +32,7 @@
 //
 // Storage location:
 //   canonical: <repo_root>/.agentic-plugins/state/<persona>/workflows/<workflow_id>.md
+//   legacy (legacy_homes on): <repo_root>/.claude/agentic-<persona>/workflows/<workflow_id>.md
 //
 // Lock files:
 //   <state-home>/.creation-lock             (directory-level)
@@ -126,6 +131,12 @@ export function creationLockRel() {
 export function archiveDirRel() {
   return `${stateDirRel()}/archive`;
 }
+// legacy_homes (ADR-0025): the pre-migration `.claude/agentic-<persona>` home,
+// read and written beside the canonical one only by a persona that declares
+// the capability on.
+export function legacyStateDirRel() {
+  return `.claude/agentic-${personaName()}`;
+}
 
 // ADR-0017 §sub-decision 5 — terminal phase whitelist that gates Stop
 // auto-archive. The whitelist is intentionally small + explicit so an
@@ -135,6 +146,24 @@ export const TERMINAL_PHASES = new Set([
   'summary-complete',
   'fix-complete',
 ]);
+
+// commit_surface (ADR-0063): `close-complete` records a workflow that the
+// persona's /commit closed without a commit (the no-changes close), so the
+// archived record stays distinct from `commit-complete`. That close archives
+// the file itself: HEAD never moved, so the Stop hook's HEAD-moved gate would
+// not. TERMINAL_PHASES is the set every persona shares; terminalPhases() is
+// the persona's, read when it runs.
+export function terminalPhases() {
+  return capabilityOn('commit_surface') ? new Set([...TERMINAL_PHASES, 'close-complete']) : TERMINAL_PHASES;
+}
+
+// A capability's programmatic entry points refuse when it is off, as its CLI
+// subcommands do (ADR-0066 Decision 3).
+function requireCapability(capability, what) {
+  if (!capabilityOn(capability)) {
+    throw new Error(`${what} belongs to ${capability}, which ${personaName()} has off (ADR-0066 Decision 3)`);
+  }
+}
 
 // ADR-0017 §sub-decision 4 — global retention cap on `ensemble_results`.
 // Oldest entries (by `completed_at`) are evicted on append.
@@ -206,25 +235,29 @@ export function isAutopilotRun(env = process.env) {
 /**
  * ADR-0066 Decision 3's activation rule: autopilot behavior only when
  * AGENTIC_AUTOPILOT names a run AND the persona has dispatch_target on AND the
- * host is Claude. This unit carries dispatch_target off — the manifest never
- * enrolls it into a persona that has it on — so the rule never holds here: a
- * named run is reported as ignored, and every surface runs interactively. The
- * variable is still inherited by the processes this one starts (the peer
- * runner's companion, the handoff sidecar); none of them acts on it. The on
- * path extends this one function.
+ * host is Claude (autopilot is Claude-only, ADR-0063 D9). Otherwise a named
+ * run is reported as ignored and every surface runs interactively: with
+ * dispatch_target off the persona is no autopilot subject, and on Codex the
+ * autopilot rules do not apply. The variable is still inherited by the
+ * processes this one starts (the peer runner's companion, the handoff
+ * sidecar); none of them acts on it.
  */
 export function autopilotMode({ env = process.env, host = 'claude' } = {}) {
-  if (capabilityOn('dispatch_target')) {
-    throw new Error(`${personaName()} declares dispatch_target on, but this state.mjs carries only its off path (ADR-0066 Decision 3)`);
-  }
   const named = isAutopilotRun(env);
+  if (named && capabilityOn('dispatch_target') && host === 'claude') {
+    return { active: true, host, ignored: false, reason: null };
+  }
+  let why = null;
+  if (named) {
+    why = capabilityOn('dispatch_target')
+      ? `autopilot mode is Claude-only (ADR-0063 D9), and this command runs on ${host}`
+      : `${personaName()} is not an autopilot dispatch target (dispatch_target off, ADR-0066 Decision 3)`;
+  }
   return {
     active: false,
     host,
     ignored: named,
-    reason: named
-      ? `AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT} is ignored: ${personaName()} is not an autopilot dispatch target (dispatch_target off, ADR-0066 Decision 3); this command runs interactively.`
-      : null,
+    reason: named ? `AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT} is ignored: ${why}; this command runs interactively.` : null,
   };
 }
 
@@ -258,9 +291,10 @@ function assertSettableOwnerGate(gate) {
 // -----------------------------------------------------------------------------
 // Path helpers
 
-// legacy_homes off — canonical home only (no legacy dual-home).
+// The state homes: the canonical one, and with legacy_homes on the ADR-0025
+// pre-migration home beside it.
 function stateHomes() {
-  return {
+  const homes = {
     canonical: {
       home: 'canonical',
       stateDirRel: stateDirRel(),
@@ -270,6 +304,18 @@ function stateHomes() {
       peerRunsDirRel: `${stateDirRel()}/peer-runs`,
     },
   };
+  if (capabilityOn('legacy_homes')) {
+    const legacy = legacyStateDirRel();
+    homes.legacy = {
+      home: 'legacy',
+      stateDirRel: legacy,
+      workflowDirRel: `${legacy}/workflows`,
+      archiveDirRel: `${legacy}/archive`,
+      creationLockRel: `${legacy}/.creation-lock`,
+      peerRunsDirRel: `${legacy}/peer-runs`,
+    };
+  }
+  return homes;
 }
 
 function assertAbsoluteRepoRoot(repoRoot, fnName = 'repoRoot') {
@@ -280,7 +326,8 @@ function assertAbsoluteRepoRoot(repoRoot, fnName = 'repoRoot') {
 
 function statePaths(repoRoot, home = 'canonical') {
   assertAbsoluteRepoRoot(repoRoot);
-  const spec = stateHomes()[home];
+  const homes = stateHomes();
+  const spec = Object.hasOwn(homes, home) ? homes[home] : undefined;
   if (!spec) throw new Error(`unknown workflow state home: ${home}`);
   return {
     ...spec,
@@ -328,16 +375,32 @@ async function stateHomeHasState(repoRoot, home) {
   );
 }
 
-// legacy_homes off — `mode` is accepted for caller-signature parity with the
-// engineer sibling but has no effect: with a single canonical home there
-// is no dual-home write conflict to block.
+// With legacy_homes off, `mode` has no effect: with a single canonical home
+// there is no dual-home write conflict to block. With it on (ADR-0025), the
+// home that holds state is used (canonical first), and a write is refused
+// while both hold state.
 export async function resolveWorkflowStorage(repoRoot, { mode = 'read' } = {}) {
   assertAbsoluteRepoRoot(repoRoot);
-  void mode;
   const canonicalHasState = await stateHomeHasState(repoRoot, 'canonical');
+  if (!capabilityOn('legacy_homes')) {
+    return {
+      ...statePaths(repoRoot, 'canonical'),
+      canonicalHasState,
+    };
+  }
+  const legacyHasState = await stateHomeHasState(repoRoot, 'legacy');
+  if (mode === 'write' && canonicalHasState && legacyHasState) {
+    throw new Error(
+      `Workflow storage migration blocked: both ${stateDirRel()} and ` +
+        `${legacyStateDirRel()} contain ${personaName()} state. Migrate or reconcile ` +
+        `the legacy home before ordinary workflow writes.`,
+    );
+  }
+  const home = canonicalHasState ? 'canonical' : (legacyHasState ? 'legacy' : 'canonical');
   return {
-    ...statePaths(repoRoot, 'canonical'),
+    ...statePaths(repoRoot, home),
     canonicalHasState,
+    legacyHasState,
   };
 }
 
@@ -347,6 +410,12 @@ function inferStorageFromWorkflowPath(workflowPath) {
   const canonicalIndex = text.indexOf(canonicalNeedle);
   if (canonicalIndex >= 0) {
     return { home: 'canonical', repoRoot: text.slice(0, canonicalIndex) };
+  }
+  if (capabilityOn('legacy_homes')) {
+    const legacyIndex = text.indexOf(`/${legacyStateDirRel()}/`);
+    if (legacyIndex >= 0) {
+      return { home: 'legacy', repoRoot: text.slice(0, legacyIndex) };
+    }
   }
   return null;
 }
@@ -675,6 +744,7 @@ export async function listWorkflowFiles(repoRoot) {
 export async function listWorkflowFilesAllHomes(repoRoot) {
   const dirs = [
     workflowDir(repoRoot, { home: 'canonical' }),
+    ...(capabilityOn('legacy_homes') ? [workflowDir(repoRoot, { home: 'legacy' })] : []),
   ];
   const files = [];
   for (const dir of dirs) {
@@ -985,12 +1055,25 @@ async function findActiveWorkflowByBranchInDir(dir, branch) {
 
 export async function findActiveWorkflowByBranch(repoRoot, branch) {
   if (!branch) return null;
-  // legacy_homes off — canonical home only; no legacy probe, no dual-home
-  // ambiguity error.
-  return findActiveWorkflowByBranchInDir(
+  // With legacy_homes off, the canonical home only; no legacy probe, no
+  // dual-home ambiguity error.
+  const canonical = await findActiveWorkflowByBranchInDir(
     workflowDir(repoRoot, { home: 'canonical' }),
     branch,
   );
+  if (!capabilityOn('legacy_homes')) return canonical;
+  const legacy = await findActiveWorkflowByBranchInDir(
+    workflowDir(repoRoot, { home: 'legacy' }),
+    branch,
+  );
+  if (canonical && legacy) {
+    throw new Error(
+      `Ambiguous ${personaName()} workflow storage: both ${workflowDirRel()} and ` +
+        `${legacyStateDirRel()}/workflows contain an active workflow on branch ` +
+        `${JSON.stringify(branch)}. Reconcile or migrate before continuing.`,
+    );
+  }
+  return canonical ?? legacy;
 }
 
 /**
@@ -1042,11 +1125,11 @@ const FRONTMATTER_KEY_ORDER = [
   'ensemble_results',      // sub-decision 4
   'terminal_marker',       // sub-decision 5
   'child_completions',     // sub-decision 5 (A4 transitive)
-  // dispatch_target off — the ADR-0019 cross-plugin parent-linkage keys
-  // (parent_workflow / originating_subtask / parent_detached) are
-  // intentionally absent: the persona is no orchestrator dispatch target
-  // (ADR-0066 Decision 3). A workflow file carrying those keys is treated
-  // as an unknown-additive-key case by the forward-compat carrier.
+  // The ADR-0019 cross-plugin parent-linkage keys (parent_workflow /
+  // originating_subtask / parent_detached) belong to dispatch_target and sit
+  // here only when it is on (frontmatterKeyOrder below). With it off, a file
+  // carrying them is an unknown-additive-key case for the forward-compat
+  // carrier (ADR-0066 Decision 3).
   // ADR-0020 schema 1.1 workflow-shape discriminator (PR 2, additive).
   // Always-written at create-time with 'verb-chain' default; lifecycle
   // macro workflows (the persona's `start` macro) write 'start'.
@@ -1055,8 +1138,8 @@ const FRONTMATTER_KEY_ORDER = [
   // Written by recordComposedFile / recordRefineFile; consumed by
   // Phase 7 staging (Layer 3) to intersect against `git_changes`.
   'commit_manifest',
-  // dispatch_target off — ADR-0028 §P10 parent_writeback_at is absent (no
-  // parent to write back to).
+  // ADR-0028 §P10 parent_writeback_at (dispatch_target) sits here only when
+  // the capability is on (frontmatterKeyOrder below).
   // ADR-0063 D6 schema 1.4 (additive optional, ADR-0066 Decision 7). Flat
   // top-level scalars, not a nested block, so that a 1.3 reader carries them
   // through its forward-compat carrier instead of rejecting the file. An
@@ -1069,6 +1152,24 @@ const FRONTMATTER_KEY_ORDER = [
   'awaiting_owner_since',
   'awaiting_owner_pointer',
 ];
+
+// dispatch_target's frontmatter keys (ADR-0019 PR-A, ADR-0028 §P10): known,
+// ordered and validated only for a persona that declares the capability on.
+// parent_workflow + originating_subtask are immutable once set at create-time
+// (ADR-0019 §3); parent_detached is set by the orchestrator's /finalize·/abort
+// detach pass (§5); parent_writeback_at is the P10 write-ahead marker.
+const PARENT_LINKAGE_KEYS = Object.freeze(['parent_workflow', 'originating_subtask', 'parent_detached']);
+let keyOrderCache = null;
+function frontmatterKeyOrder() {
+  if (keyOrderCache !== null) return keyOrderCache;
+  const order = [...FRONTMATTER_KEY_ORDER];
+  if (capabilityOn('dispatch_target')) {
+    order.splice(order.indexOf('workflow_type'), 0, ...PARENT_LINKAGE_KEYS);
+    order.splice(order.indexOf('next_step_kind'), 0, 'parent_writeback_at');
+  }
+  keyOrderCache = Object.freeze(order);
+  return keyOrderCache;
+}
 
 // ADR-0028 §Forward-compat (PR5) — invisible carrier for unknown additive
 // frontmatter keys observed when a 1.x reader meets a 1.y file with y > x.
@@ -1168,7 +1269,7 @@ function yamlScalar(value) {
 function serializeFrontmatter(fm) {
   const lines = ['---'];
 
-  for (const key of FRONTMATTER_KEY_ORDER) {
+  for (const key of frontmatterKeyOrder()) {
     if (!(key in fm)) continue;
     const value = fm[key];
 
@@ -1328,7 +1429,7 @@ function serializeFrontmatter(fm) {
   // that arrived through the structured carrier above are already emitted;
   // any remaining string-keyed unknowns indicate a hand-rolled caller error.
   for (const key of Object.keys(fm)) {
-    if (!FRONTMATTER_KEY_ORDER.includes(key)) {
+    if (!frontmatterKeyOrder().includes(key)) {
       throw new Error(
         `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 / ADR-0028 PR3 schema=1.3 are closed; ADR-0028 §Forward-compat (PR5) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
       );
@@ -1493,7 +1594,7 @@ export function parseWorkflowFile(text) {
         `Empty frontmatter key (line ${i}). ADR-0011 §2 forbids nameless keys; ADR-0028 §Forward-compat (PR5) does not relax this.`,
       );
     }
-    if (!FRONTMATTER_KEY_ORDER.includes(key)) {
+    if (!frontmatterKeyOrder().includes(key)) {
       const carrier = fm[FORWARD_COMPAT_UNKNOWNS] ??= [];
       // Preserve the raw post-colon line tail so round-trip emit matches
       // the original byte-for-byte. parseScalar's permissive fallback
@@ -1515,7 +1616,7 @@ export function parseWorkflowFile(text) {
   // carrier above so this gate only catches non-Symbol shape violations
   // (e.g., a directly-set fm['foo'] from a hand-rolled caller).
   for (const key of Object.keys(fm)) {
-    if (!FRONTMATTER_KEY_ORDER.includes(key)) {
+    if (!frontmatterKeyOrder().includes(key)) {
       throw new Error(
         `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 / ADR-0028 PR3 schema=1.3 are closed; ADR-0028 §Forward-compat (PR5) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
       );
@@ -1644,11 +1745,35 @@ function validateSchema11Fields(fm) {
   validateListOfObjectsField(fm, 'child_completions');
   // ADR-0028 §Layer-2 schema 1.2
   validateListOfObjectsField(fm, 'commit_manifest');
-  // dispatch_target off — parent_writeback_at and the ADR-0019 parent-linkage
-  // scalars (parent_workflow / originating_subtask / parent_detached)
-  // are not schema keys here (ADR-0066 Decision 3); when present on
-  // disk they fall through to the forward-compat unknown-key carrier
-  // rather than validating here.
+  // dispatch_target's keys are schema keys only with the capability on
+  // (frontmatterKeyOrder); with it off they fall through to the
+  // forward-compat unknown-key carrier and are not validated here
+  // (ADR-0066 Decision 3).
+  if (capabilityOn('dispatch_target')) {
+    // ADR-0028 §P10 schema 1.3 — parent_writeback_at write-ahead marker.
+    // Optional scalar; non-empty string when present.
+    if ('parent_writeback_at' in fm) {
+      if (typeof fm.parent_writeback_at !== 'string' || fm.parent_writeback_at.length === 0) {
+        throw new Error('parent_writeback_at must be a non-empty string when present');
+      }
+    }
+    // ADR-0019 PR-A — the three cross-plugin parent-linkage scalars.
+    if ('parent_workflow' in fm) {
+      if (typeof fm.parent_workflow !== 'string' || fm.parent_workflow.length === 0) {
+        throw new Error('parent_workflow must be a non-empty string');
+      }
+    }
+    if ('originating_subtask' in fm) {
+      if (typeof fm.originating_subtask !== 'string' || fm.originating_subtask.length === 0) {
+        throw new Error('originating_subtask must be a non-empty string');
+      }
+    }
+    if ('parent_detached' in fm) {
+      if (typeof fm.parent_detached !== 'boolean') {
+        throw new Error('parent_detached must be a boolean');
+      }
+    }
+  }
 
   // ADR-0020 PR 2 — workflow_type enum discriminator. Absence is
   // tolerant (read-time default 'verb-chain' applied by callers, e.g.,
@@ -1955,8 +2080,13 @@ export async function createWorkflowUnderLock({
   currentPhase = 'phase-0',
   nextAction = '',
   bodyTitle,
-  // dispatch_target off — no parentWorkflow / originatingSubtask create
-  // options (ADR-0066 Decision 3).
+  // ADR-0019 PR-A — optional parent-linkage at create-time, dispatch_target
+  // only (ADR-0066 Decision 3; refused when it is off). Both fields are
+  // immutable thereafter (§3). /orchestrator:next sets them through the verb
+  // command's Phase 0 (AGENTIC_PARENT_WORKFLOW / AGENTIC_ORIGINATING_SUBTASK,
+  // forwarded as CLI flags).
+  parentWorkflow,
+  originatingSubtask,
   // ADR-0020 PR 2 — workflow-shape discriminator. Always-written at
   // create-time (default 'verb-chain') so every new workflow is
   // self-describing. workflow_type is a primary discriminator, not a
@@ -2024,6 +2154,37 @@ export async function createWorkflowUnderLock({
     // verb commands; the persona's `start` macro overrides with 'start'.
     workflow_type: workflowType,
   };
+
+  // ADR-0019 PR-A — write parent-linkage fields when supplied. Validate
+  // shape eagerly so callers get a clear error before the file lands.
+  // Only `undefined` / `null` mean omitted; an empty string is
+  // explicitly-provided-but-invalid (a CLI shim that expands an unset env var
+  // to `--flag ''` would otherwise silently drop the parent association).
+  // With dispatch_target off the options are dropped here, as the trimmed
+  // copy dropped them; its CLI refuses the flags loudly (ADR-0066 Decision 3).
+  if (!capabilityOn('dispatch_target')) {
+    parentWorkflow = undefined;
+    originatingSubtask = undefined;
+  }
+  if (parentWorkflow !== undefined && parentWorkflow !== null) {
+    if (typeof parentWorkflow !== 'string' || parentWorkflow.length === 0) {
+      throw new Error('parentWorkflow must be a non-empty string when provided');
+    }
+    frontmatter.parent_workflow = parentWorkflow;
+  }
+  if (originatingSubtask !== undefined && originatingSubtask !== null) {
+    if (typeof originatingSubtask !== 'string' || originatingSubtask.length === 0) {
+      throw new Error('originatingSubtask must be a non-empty string when provided');
+    }
+    frontmatter.originating_subtask = originatingSubtask;
+  }
+  // Both set together or both omitted: a parent without a subtask cannot
+  // anchor the writeback (ADR-0019 §4).
+  if (('parent_workflow' in frontmatter) !== ('originating_subtask' in frontmatter)) {
+    throw new Error(
+      'parent_workflow and originating_subtask must be set together or both omitted (ADR-0019 §3 parent-child linkage)',
+    );
+  }
 
   const title = bodyTitle ?? `${persona}:${verb}`;
   const body =
@@ -2586,9 +2747,9 @@ export async function recordRefineFile({ workflowPath, path, op, recorded_at, no
   });
 }
 
-// dispatch_target off — the ADR-0028 §P10 setParentWritebackMarker /
-// clearParentWritebackMarker pair does not exist here: these workflows have
-// no parent to write back to (ADR-0066 Decision 3).
+// The ADR-0028 §P10 setParentWritebackMarker / clearParentWritebackMarker
+// pair belongs to dispatch_target; it sits with the other capability-only
+// writers before archiveWorkflow.
 
 /**
  * ADR-0017 §sub-decision 2 — set `latest_checkpoint` and append a
@@ -2652,8 +2813,8 @@ export async function setTerminal({
 }) {
   validateHost(host);
   validateHookEvent(event);
-  if (!TERMINAL_PHASES.has(terminalPhase)) {
-    const allowed = [...TERMINAL_PHASES].join(', ');
+  if (!terminalPhases().has(terminalPhase)) {
+    const allowed = [...terminalPhases()].join(', ');
     throw new Error(
       `setTerminal: terminalPhase ${JSON.stringify(terminalPhase)} not in whitelist (${allowed})`,
     );
@@ -2837,8 +2998,8 @@ export async function setAwaitingOwner({
  * ADR-0063 D6 / Q2 — the resolving surface clears the owner gate once the
  * owner has decided. The gate named must be the one that is set. The keys are
  * deleted, so the phase note appended here is where the resolution, and the
- * pointer and since that were cleared, remain on record. AGENTIC_AUTOPILOT
- * changes nothing here (autopilotMode: dispatch_target off).
+ * pointer and since that were cleared, remain on record. Under autopilot
+ * (autopilotMode active) it refuses: only the owner resolves an owner gate.
  */
 export async function clearAwaitingOwner({
   workflowPath,
@@ -2850,12 +3011,18 @@ export async function clearAwaitingOwner({
   // The owner's decision in words (the direction chosen, a deferral and its
   // reason). It lands in the resolved note of the same write.
   resolution,
+  env = process.env,
   now = new Date(),
 }) {
   validateHost(host);
   const nextStepWrite = resolveNextStepWrite(nextStep, false);
   if (resolution !== undefined && (typeof resolution !== 'string' || resolution.trim().length === 0)) {
     throw new Error('resolution must be non-empty text when given');
+  }
+  if (autopilotMode({ env, host }).active) {
+    throw new Error(
+      `refused under autopilot (AGENTIC_AUTOPILOT=${env.AGENTIC_AUTOPILOT}): only the owner resolves an owner gate (ADR-0063 Q2)`,
+    );
   }
   validateEnumScalar('awaiting_owner_gate', gate, VALID_WORKFLOW_OWNER_GATES);
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
@@ -2895,28 +3062,57 @@ export async function clearAwaitingOwner({
 const OWNER_GATE_RESOLUTION = Object.freeze({
   'decide-conflict': (p) => `the owner selects a direction in ${p}decide, whose Owner selection step clears the gate`,
   'recurring-finding': (p) => `the owner decides to fix the finding now or defer it in ${p}refine, whose Owner decision step clears the gate`,
+  // commit_surface and dispatch_target gates, settable only with those on.
+  'staging-set': (p) => `the owner confirms the staging set in ${p}commit, which clears the gate and then commits`,
+  'pr-handling': () => 'the owner takes or declines the outward action (push, pull request), then clears the gate',
   'scope-routing': () => 'the owner chooses the route the phase note recommends, then clears the gate',
 });
 
+// The rules an autopilot step follows (dispatch_target on, ADR-0063 D4),
+// printed by autopilotPreflight's banner: one set for the verbs, one for the
+// commit surface (commit_surface), the one step that commits or closes.
+const AUTOPILOT_COMMIT_RULES =
+  'this command is the one step that commits or closes the workflow. Run its ' +
+  'Autopilot block — phase7-commit.mjs --mode autopilot — and nothing else: it ' +
+  'commits with the suggested subjects, closes a done workflow without a commit, ' +
+  'or stops at the staging-set owner gate. Never pass a confirm or bypass flag, ' +
+  'push, or open a pull request: landing is the owner\'s. ' +
+  'Rules: core/skills/_shared/references/autopilot-mode.md.';
+const AUTOPILOT_RULES =
+  'ceremony gates auto-pass. Do not offer a presentation mode (present in batch); ' +
+  'proceed with the recommended option instead of asking; carry only CRITICAL and ' +
+  'MAJOR findings into refine; end the verb with finish-verb, which records ' +
+  'next_step and leaves the terminal marker unset; never run git commit, push, or ' +
+  'open a pull request; when a genuine owner judgment is needed, record the owner ' +
+  'gate and stop. Rules: core/skills/_shared/references/autopilot-mode.md.';
+
 /**
- * A verb's Phase 0 check, before any write: the run mode and any owner gate
- * set on the workflow. Pure apart from reading the workflow file.
+ * A verb's (or the commit surface's) Phase 0 check, before any write: the run
+ * mode and any owner gate set on the workflow. Pure apart from reading the
+ * workflow file.
  *
- * - AGENTIC_AUTOPILOT naming a run: one line on stderr saying it is ignored
- *   (autopilotMode — dispatch_target off); the command runs interactively;
- * - an owner gate set: a notice naming the gate, its pointer and how it is
+ * - autopilot (autopilotMode active), no gate: the rules banner;
+ * - autopilot, a gate: refuse — an autopilot step never resolves an owner gate;
+ * - AGENTIC_AUTOPILOT naming a run that autopilotMode ignores: one line on
+ *   stderr saying so; the command runs interactively;
+ * - interactive, a gate: a notice naming the gate, its pointer and how it is
  *   resolved, for the command to put to the owner before it continues;
- * - neither: nothing (interactive output is unchanged).
- *
- * It never refuses here: refusing a gated workflow is the autopilot on path.
+ * - interactive, no gate: nothing (interactive output is unchanged).
  */
 export async function autopilotPreflight({
   workflowPath,
   host = 'claude',
+  // `verb` for the verbs, `commit` for the commit surface (commit_surface),
+  // whose rules differ: it is the one surface that commits and closes.
+  surface = 'verb',
   env = process.env,
   scriptPath = fileURLToPath(import.meta.url),
 }) {
   validateHost(host);
+  if (surface !== 'verb' && surface !== 'commit') {
+    throw new Error(`surface must be verb or commit (got ${JSON.stringify(surface)})`);
+  }
+  if (surface === 'commit') requireCapability('commit_surface', 'autopilot-preflight --surface commit');
   const mode = autopilotMode({ env, host });
   let gate = null;
   if (typeof workflowPath === 'string' && workflowPath.length > 0) {
@@ -2929,6 +3125,27 @@ export async function autopilotPreflight({
         lifecycle: frontmatter.workflow_type === 'start',
       };
     }
+  }
+  if (mode.active && gate) {
+    return {
+      mode: 'autopilot',
+      gate,
+      refuse: true,
+      stdout: '',
+      stderr:
+        `✗ owner gate ${gate.gate} is set on this workflow since ${gate.since} ` +
+        `(${gate.pointer}); an autopilot step never resolves an owner gate ` +
+        '(ADR-0063 Q2). Stop here: the owner resolves it.\n',
+    };
+  }
+  if (mode.active) {
+    return {
+      mode: 'autopilot',
+      gate: null,
+      refuse: false,
+      stdout: `Autopilot run ${env.AGENTIC_AUTOPILOT} (ADR-0063 D4): ${surface === 'commit' ? AUTOPILOT_COMMIT_RULES : AUTOPILOT_RULES}\n`,
+      stderr: '',
+    };
   }
   const stderr = mode.ignored ? `${mode.reason}\n` : '';
   if (!gate) return { mode: 'interactive', ignored: mode.ignored, gate: null, refuse: false, stdout: '', stderr };
@@ -2967,8 +3184,8 @@ export async function autopilotPreflight({
  * With an owner gate (ADR-0063 D4, D6) the verb stopped on a judgment only the
  * owner makes: the gate is recorded with the next step `owner-decision` in one
  * write, an inherited terminal marker is turned off, and the workflow stays
- * open until the owner resolves the gate. AGENTIC_AUTOPILOT changes nothing
- * here (autopilotMode — dispatch_target off).
+ * open until the owner resolves the gate. Under autopilot (autopilotMode
+ * active) the verb records its next step without closing (below).
  */
 export async function finishVerb({
   workflowPath,
@@ -2977,6 +3194,7 @@ export async function finishVerb({
   nextStep,
   // `{ gate, anchor | pointer }`: the owner judgment this verb stops on.
   ownerGate,
+  env = process.env,
   now = new Date(),
   emitHandoff = false,
 }) {
@@ -2988,12 +3206,26 @@ export async function finishVerb({
       `an owner gate goes with the next step owner-decision (got ${JSON.stringify(nextStep.kind)}) (ADR-0063 D4)`,
     );
   }
-  if (ownerGate !== undefined) {
+  // Under autopilot (dispatch_target on, ADR-0063 D3) a verb records its next
+  // step and leaves the terminal marker for the commit surface; a pending peer
+  // is refused, so a next step is published only once the step is settled (D5).
+  const autopilot = autopilotMode({ env, host }).active;
+  if (autopilot) {
+    const { frontmatter } = await readWorkflow(workflowPath);
+    if (!noPendingEnsembleCheck(frontmatter)) {
+      throw new Error(
+        'refused under autopilot: a peer ensemble is still pending ' +
+          `(${frontmatter.pending_ensemble.map((e) => e.run_id).join(', ')}); collect it and ` +
+          'run ensemble-commit first — the next step is published only once the step is settled (ADR-0063 D5)',
+      );
+    }
+  }
+  if (autopilot || ownerGate !== undefined) {
     const result = await appendPhase({
       workflowPath, host, nextAction, nextStep, ownerGate,
       clearTerminalMarker: true, event: 'updated', now,
     });
-    return { ...result, mode: 'interactive', terminal: false };
+    return { ...result, mode: autopilot ? 'autopilot' : 'interactive', terminal: false };
   }
   const result = await setTerminal({
     workflowPath,
@@ -3007,6 +3239,194 @@ export async function finishVerb({
     emitHandoff,
   });
   return { ...result, mode: 'interactive', terminal: true };
+}
+
+// ---- capability-only writers (ADR-0066 Decision 3) ---------------------------
+// dispatch_target: the P10 write-ahead marker and the mid-flight detach.
+// commit_surface: entering the commit. Each refuses when its capability is
+// off; the CLI cases refuse first.
+
+/**
+ * ADR-0028 §P10 — set the parent_writeback_at write-ahead marker.
+ *
+ * Phase 7 invokes this immediately BEFORE calling writebackParent so
+ * that a crash between writeback and set-terminal leaves a durable
+ * "writeback attempted" record. It does not gate later calls: the
+ * orchestrator writes its engineer-terminal note once per engineer
+ * workflow and commit and does nothing on a repeat, so the Stop hook
+ * calls again whether or not the marker is present (ADR-0062 §Decision 2).
+ */
+export async function setParentWritebackMarker({
+  workflowPath, host, at, now = new Date(),
+}) {
+  requireCapability('dispatch_target', 'setParentWritebackMarker');
+  validateHost(host);
+  if (typeof at !== 'string' || at.length === 0) {
+    throw new Error('setParentWritebackMarker: at must be a non-empty string');
+  }
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    frontmatter.parent_writeback_at = at;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0028 §P10 — clear the parent_writeback_at write-ahead marker on
+ * writeback failure. Idempotent: a missing marker leaves the file
+ * unchanged. Phase 7 calls this when writebackParent returns a
+ * failure, so the record says the writeback did not happen; the Stop
+ * hook's call is the retry.
+ */
+export async function clearParentWritebackMarker({
+  workflowPath, host, now = new Date(),
+}) {
+  requireCapability('dispatch_target', 'clearParentWritebackMarker');
+  validateHost(host);
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    if (!('parent_writeback_at' in frontmatter)) {
+      // Idempotent — nothing to clear, no host_history churn.
+      return { frontmatter, workflowPath, skipped: true };
+    }
+    const nowIso = isoUtc(now);
+    delete frontmatter.parent_writeback_at;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0063 G1 — enter the commit: the workflow is not terminal while
+ * `/engineer:commit` (or /engineer:start Phase 7) is committing it. A verb
+ * chain run interactively ends each verb terminal (`summary-complete` + the
+ * marker), and a split whose second commit fails would otherwise leave that
+ * inherited marker in front of the Stop hook with HEAD moved, which archives
+ * the half-committed workflow and notes its commit on the parent. Phase 7's
+ * own terminal write, after every post-commit gate, turns it back on.
+ */
+export async function beginCommit({ workflowPath, host, now = new Date() }) {
+  requireCapability('commit_surface', 'beginCommit');
+  validateHost(host);
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    frontmatter.current_phase = 'phase-7-commit';
+    if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(workflowPath, assembleWorkflowFile(frontmatter, body), { lockPath, token });
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0019 §5 PR-E — mid-flight detach path invoked by orchestrator
+ * /finalize / /abort step 2 when a child engineer workflow has NOT
+ * reached a terminal commit. Two operations in one logical action:
+ *
+ *   1. Set `parent_detached: true` + `terminal_marker: false` on the
+ *      child frontmatter (atomic under the per-file lock). The
+ *      `parent_detached` field is closed-set per ADR-0019 PR-A — the
+ *      schema already accepts it.
+ *   2. Archive the workflow file (dir lock → file lock under
+ *      `archiveWorkflow`).
+ *
+ * No parent writeback fires: the orchestrator already marked the
+ * subtask `deferred` / `abandoned` in step 1, so there is no
+ * `completed` semantic to propagate. ADR-0019 §6 lock-order is
+ * naturally satisfied — this helper acquires only engineer-side
+ * locks (per-file for the frontmatter mutation, dir+per-file inside
+ * `archiveWorkflow`), all released before the orchestrator
+ * re-acquires its own parent lock in step 3.
+ *
+ * @param {object} args
+ * @param {string} args.workflowPath
+ * @param {string} args.host
+ * @param {string} args.repoRoot
+ * @param {Date}   [args.now]
+ * @returns {Promise<{detached: true, to: string, host: string} | {detached: false, reason: string}>}
+ */
+export async function detachArchive({
+  workflowPath,
+  host,
+  repoRoot,
+  now = new Date(),
+}) {
+  requireCapability('dispatch_target', 'detachArchive');
+  validateHost(host);
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
+    throw new Error('detachArchive: repoRoot is required (non-empty string)');
+  }
+
+  // Step 1 — mark `parent_detached: true` + `terminal_marker: false`
+  // under the per-file lock. The `parent_detached` field is already
+  // in FRONTMATTER_KEY_ORDER + validateSchema11Fields (PR-A); we just
+  // set the boolean and let the serializer preserve key order.
+  await withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    frontmatter.parent_detached = true;
+    // Explicitly set `false` (not absent) so a stop-archive evaluation
+    // post-detach reads the gate as "did not pass" rather than "missing
+    // — defaults to false". Same boolean-strict treatment as PR-C0's
+    // §4 auto-terminal pass.
+    frontmatter.terminal_marker = false;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+  });
+
+  // Step 2 — archive. archiveWorkflow's withDirectoryLock + withFileLock
+  // are acquired+released within its own scope; the step-1 file lock
+  // above has already been released by the time we reach here. Both
+  // engineer-side lock windows are independent, satisfying ADR-0019
+  // §6 child-locks-released-before-parent rule for any subsequent
+  // orchestrator parent acquire.
+  const result = await archiveWorkflow({
+    workflowPath,
+    host,
+    repoRoot,
+    now,
+  });
+  if (!result.archived) {
+    return { detached: false, reason: result.reason ?? 'archive-no-op' };
+  }
+  return { detached: true, to: result.to, host };
 }
 
 /**
@@ -3255,7 +3675,7 @@ export function terminalMarkerCheck(frontmatter) {
  * ADR-0017 §sub-decision 5 terminal-phase whitelist gate.
  */
 export function terminalPhaseCheck(currentPhase) {
-  return TERMINAL_PHASES.has(currentPhase);
+  return terminalPhases().has(currentPhase);
 }
 
 /**
@@ -3288,10 +3708,8 @@ export function noPendingEnsembleCheck(frontmatter) {
   return !Array.isArray(list) || list.length === 0;
 }
 
-// dispatch_target off — the ADR-0019 §5 detachArchive mid-flight detach helper
-// is removed: it exists solely for orchestrator /finalize·/abort to
-// detach a dispatched child, and the persona is no dispatch target
-// (ADR-0066 Decision 3).
+// The ADR-0019 §5 detachArchive mid-flight detach (dispatch_target) sits with
+// the other capability-only writers before archiveWorkflow.
 
 // -----------------------------------------------------------------------------
 // Public API: diagnoseRedundancy (ADR-0020 §Sub-decision 7)
@@ -3668,6 +4086,12 @@ function cliRequire(flags, names) {
   }
 }
 
+// An unknown subcommand, or one whose capability is off (ADR-0066 Decision 3).
+function unknownSubcommand(subcommand) {
+  process.stderr.write(`state.mjs: unknown subcommand: ${subcommand}\n`);
+  return 2;
+}
+
 function cliPrintHelp() {
   process.stdout.write(
     [
@@ -3690,8 +4114,16 @@ function cliPrintHelp() {
       '         [--workflow-type verb-chain|start]',
       '    Create a new workflow under the directory-level lock. Print the new',
       '    workflow path on stdout.',
-      '    dispatch_target off — no --parent-workflow / --originating-subtask',
-      '    flags (ADR-0066 Decision 3).',
+      ...(capabilityOn('dispatch_target')
+        ? [
+          '    [--parent-workflow <id> --originating-subtask <id>] (dispatch_target):',
+          '    ADR-0019 §3 — when invoked by orchestrator dispatch, they record the',
+          '    cross-plugin parent linkage. Both flags together or both omitted.',
+        ]
+        : [
+          '    dispatch_target off — no --parent-workflow / --originating-subtask',
+          '    flags (ADR-0066 Decision 3).',
+        ]),
       '    ADR-0020 §Sub-decision 5 — --workflow-type discriminates the',
       '    workflow shape. Omit (or pass verb-chain) for single-verb workflows',
       `    produced by the six ${personaName()} verb commands. The`,
@@ -3748,13 +4180,16 @@ function cliPrintHelp() {
       '    no-ops and exits 0 (standalone invocation does not mutate).',
       '',
       '  set-terminal --workflow-path <path> --host <host>',
-      '               --terminal-phase commit-complete|summary-complete|fix-complete',
+      `               --terminal-phase ${[...terminalPhases()].join('|')}`,
       '               [--terminal-marker true|false] [--next-action <text>]',
       '               [--next-step-kind <kind> --next-step-confidence <c>',
       '                [--next-step-verb <verb>]]',
       '               [--event updated|resumed]',
       '    ADR-0017 sub-5 — atomic terminal-phase write (current_phase + terminal_marker).',
       '    Default --terminal-marker=true. The --next-step-* flags are as for append.',
+      ...(capabilityOn('dispatch_target')
+        ? ['    ADR-0063 D3 — --terminal-marker true exits 1 under an autopilot run:', '    a verb ends with finish-verb instead.']
+        : []),
       '',
       '  finish-verb --workflow-path <path> --host <host> --next-action <text>',
       '              --next-step-kind verb|commit|owner-decision|done',
@@ -3765,11 +4200,24 @@ function cliPrintHelp() {
       '    means the owner publishes). --owner-gate needs --next-step-kind',
       '    owner-decision; it is recorded with the next step in one write and the',
       '    workflow stays open until the owner resolves it.',
+      ...(capabilityOn('dispatch_target')
+        ? ['    Under an autopilot run: the next step only, terminal marker unset, and', '    a pending peer ensemble is refused.']
+        : []),
       '',
-      '  autopilot-preflight [--workflow-path <path>] [--host <host>]',
-      "    A verb's Phase 0 check: one line when AGENTIC_AUTOPILOT names a run,",
-      '    which is ignored here (dispatch_target off, ADR-0066 Decision 3); with',
-      '    an owner gate set, the gate and how the owner resolves it. Exit 0.',
+      ...(capabilityOn('dispatch_target')
+        ? [
+          `  autopilot-preflight [--workflow-path <path>] [--host <host>]${capabilityOn('commit_surface') ? ' [--surface verb|commit]' : ''}`,
+          '    ADR-0063 D4 — print the autopilot rules when AGENTIC_AUTOPILOT names an',
+          '    autopilot run on Claude, and nothing otherwise. With an owner gate set',
+          '    on the workflow: exit 1 under autopilot; otherwise print the gate and',
+          '    how the owner resolves it.',
+        ]
+        : [
+          '  autopilot-preflight [--workflow-path <path>] [--host <host>]',
+          "    A verb's Phase 0 check: one line when AGENTIC_AUTOPILOT names a run,",
+          '    which is ignored here (dispatch_target off, ADR-0066 Decision 3); with',
+          '    an owner gate set, the gate and how the owner resolves it. Exit 0.',
+        ]),
       '',
       `  awaiting-owner-set --workflow-path <path> --host <host>`,
       `                     --gate ${[...VALID_WORKFLOW_OWNER_GATES].join('|')}`,
@@ -3786,15 +4234,27 @@ function cliPrintHelp() {
       '    ADR-0063 D6 — clear the owner gate once the owner has decided, and',
       '    append an "Owner gate resolved" phase note, with the next step the',
       '    owner chose and the decision in words in the same write. Exit 1 when',
-      '    the gate is not the one set.',
+      `    the gate is not the one set${capabilityOn('dispatch_target') ? ', or under an autopilot run' : ''}.`,
       '',
       '  archive --workflow-path <path> --host <host> --repo-root <path>',
       '    ADR-0017 sub-5 — move workflow file from workflows/ to archive/.',
       '    Collision-safe (timestamp-suffix). Idempotent if source is already absent.',
       '',
-      '  (dispatch_target off — no detach-archive subcommand: the ADR-0019 PR-E',
-      '   mid-flight detach exists only for orchestrator dispatch, which is',
-      '   off here; ADR-0066 Decision 3.)',
+      ...(capabilityOn('dispatch_target')
+        ? [
+          '  detach-archive --workflow-path <path> --host <host> --repo-root <path>',
+          '    ADR-0019 PR-E — atomic mid-flight detach: write parent_detached:true +',
+          '    terminal_marker:false, then archive. Invoked by orchestrator',
+          '    /finalize·/abort step 2 when the child has NOT reached a terminal',
+          '    commit. Does NOT fire parent writeback. Emits JSON:',
+          '      {detached: true, to: <archive-path>, host} on success',
+          '      {detached: false, reason: <string>} on archive no-op',
+        ]
+        : [
+          '  (dispatch_target off — no detach-archive subcommand: the ADR-0019 PR-E',
+          '   mid-flight detach exists only for orchestrator dispatch, which is',
+          '   off here; ADR-0066 Decision 3.)',
+        ]),
       '',
       '  diagnose-redundancy --repo-root <path> [--base-branch <ref>]',
       '    ADR-0020 §Sub-decision 7 — probe the current branch for evidence of work',
@@ -3811,18 +4271,30 @@ function cliPrintHelp() {
       '    honor ACCEPT_CURRENT_TREE=1 in the environment for the same bypass. Emits',
       '    JSON: { status, categories: {modified, staged, untracked}, git_present }.',
       '',
-      '  (dispatch_target off — no set/clear-parent-writeback-marker subcommands:',
-      '   the ADR-0028 §P10 write-ahead marker exists only for parent',
-      '   writeback, which is off here; ADR-0066 Decision 3.)',
+      ...(capabilityOn('dispatch_target')
+        ? [
+          '  set-parent-writeback-marker --workflow-path <path> --host <host> --at <iso>',
+          '    ADR-0028 §P10 (PR3 M3) — the write-ahead marker the Phase 7 driver sets',
+          '    BEFORE writebackParent fires: a record that P10 tried.',
+          '',
+          '  clear-parent-writeback-marker --workflow-path <path> --host <host>',
+          '    ADR-0028 §P10 (PR3 M3) — clear the marker on writeback failure.',
+          '    Idempotent: missing marker is a no-op.',
+        ]
+        : [
+          '  (dispatch_target off — no set/clear-parent-writeback-marker subcommands:',
+          '   the ADR-0028 §P10 write-ahead marker exists only for parent',
+          '   writeback, which is off here; ADR-0066 Decision 3.)',
+        ]),
       '',
       '  stop-archive --workflow-path <path> --host <host> --repo-root <path>',
       '               [--head-sha <sha>] [--head-subject <text>] [--status-digest <hex>]',
       '    Wraps runStopArchive with explicit head info so the A3 head_moved gate',
       '    is evaluated against an explicitly-supplied SHA rather than the',
-      '    current-process git HEAD. Retained as a general',
-      '    remote-archive surface; no external cross-plugin caller exists',
-      '    (dispatch_target is off). Emits the',
-      '    runStopArchive return as JSON:',
+      '    current-process git HEAD. With dispatch_target on, orchestrator',
+      '    /finalize·/abort step 2 invokes it when the child HAS reached a terminal',
+      '    commit (probing the child branch HEAD and passing it as --head-sha).',
+      '    Emits the runStopArchive return as JSON:',
       '      {archived: true, to: <archive-path>} on archive success',
       '      {archived: false, reason: <reason>, gateFailures?: [...]} otherwise',
       '',
@@ -3866,12 +4338,12 @@ async function cliMain(argv) {
 
       case 'create': {
         cliRequire(flags, ['repo-root', 'verb', 'host', 'git-baseline-branch', 'git-baseline-head']);
-        // dispatch_target off — fail loud on parent-linkage flags instead of
-        // silently ignoring them: a dispatcher exporting the
+        // With dispatch_target off, fail loud on parent-linkage flags instead
+        // of silently ignoring them: a dispatcher exporting the
         // AGENTIC_PARENT_WORKFLOW contract at this persona is misconfigured
         // (it is no orchestrator dispatch target, ADR-0066 Decision 3), and a
         // silently-unlinked workflow would mask that bug.
-        if (flags['parent-workflow'] !== undefined || flags['originating-subtask'] !== undefined) {
+        if (!capabilityOn('dispatch_target') && (flags['parent-workflow'] !== undefined || flags['originating-subtask'] !== undefined)) {
           throw new Error(
             `${personaName()} state.mjs create does not accept --parent-workflow/--originating-subtask: ` +
               `${personaName()} is no orchestrator dispatch target (dispatch_target off, ADR-0066 Decision 3)`,
@@ -3900,7 +4372,10 @@ async function cliMain(argv) {
           currentPhase: flags['current-phase'] ?? 'phase-0',
           nextAction: flags['next-action'] ?? '',
           bodyTitle: flags['body-title'],
-          // dispatch_target off — no parent-linkage flags.
+          // ADR-0019 §3 — dispatch_target's parent linkage (refused above
+          // when it is off).
+          parentWorkflow: flags['parent-workflow'],
+          originatingSubtask: flags['originating-subtask'],
           // ADR-0020 PR 2 — workflow-shape discriminator. Omitting the
           // flag defaults to 'verb-chain' inside createWorkflowUnderLock;
           // the persona's `start` macro passes 'start'. cliParseFlags
@@ -4047,8 +4522,30 @@ async function cliMain(argv) {
         return 0;
       }
 
-      // dispatch_target off — no set/clear-parent-writeback-marker subcommands
-      // (ADR-0028 §P10 markers serve only parent writeback).
+      // dispatch_target — the ADR-0028 §P10 write-ahead marker; an unknown
+      // subcommand when the capability is off.
+      case 'set-parent-writeback-marker': {
+        if (!capabilityOn('dispatch_target')) return unknownSubcommand(subcommand);
+        cliRequire(flags, ['workflow-path', 'host', 'at']);
+        await setParentWritebackMarker({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          at: flags.at,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'clear-parent-writeback-marker': {
+        if (!capabilityOn('dispatch_target')) return unknownSubcommand(subcommand);
+        cliRequire(flags, ['workflow-path', 'host']);
+        await clearParentWritebackMarker({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
 
       case 'set-terminal': {
         cliRequire(flags, ['workflow-path', 'host', 'terminal-phase']);
@@ -4066,6 +4563,14 @@ async function cliMain(argv) {
         } else {
           throw new Error(
             `--terminal-marker must be 'true' or 'false' (got '${tm}')`,
+          );
+        }
+        // ADR-0063 D3 — under autopilot a verb ends with finish-verb, and only
+        // the commit surface sets the terminal marker.
+        if (terminalMarker && autopilotMode({ env: process.env, host: flags.host }).active) {
+          throw new Error(
+            `refused under autopilot (AGENTIC_AUTOPILOT=${process.env.AGENTIC_AUTOPILOT}): ` +
+              `a verb ends with finish-verb, and only ${commandPrefix()}commit sets the terminal marker (ADR-0063 D3)`,
           );
         }
         await setTerminal({
@@ -4118,11 +4623,12 @@ async function cliMain(argv) {
         return 0;
       }
 
-      // A verb's Phase 0 check (ADR-0066 Decision 3: autopilot is ignored here).
+      // A verb's Phase 0 check (ADR-0063 D4; ADR-0066 Decision 3's activation rule).
       case 'autopilot-preflight': {
         const result = await autopilotPreflight({
           workflowPath: flags['workflow-path'],
           host: flags.host ?? 'claude',
+          surface: flags.surface ?? 'verb',
         });
         process.stdout.write(result.stdout);
         process.stderr.write(result.stderr);
@@ -4149,7 +4655,11 @@ async function cliMain(argv) {
           // session-handoff sidecar.
           emitHandoff: true,
         });
-        if (result.terminal === false) {
+        if (result.mode === 'autopilot') {
+          process.stderr.write(
+            `autopilot: next step recorded; the terminal marker is left for ${commandPrefix()}commit (ADR-0063 D3)\n`,
+          );
+        } else if (result.terminal === false) {
           process.stderr.write(
             `owner gate ${flags['owner-gate']} recorded; the workflow stays open until the owner resolves it (ADR-0063 D6)\n`,
           );
@@ -4175,8 +4685,19 @@ async function cliMain(argv) {
         return 0;
       }
 
-      // dispatch_target off — no detach-archive subcommand (ADR-0019 PR-E is
-      // orchestrator-dispatch machinery).
+      // dispatch_target — ADR-0019 PR-E mid-flight detach; an unknown
+      // subcommand when the capability is off.
+      case 'detach-archive': {
+        if (!capabilityOn('dispatch_target')) return unknownSubcommand(subcommand);
+        cliRequire(flags, ['workflow-path', 'host', 'repo-root']);
+        const result = await detachArchive({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          repoRoot: flags['repo-root'],
+        });
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
 
       case 'diagnose-redundancy': {
         cliRequire(flags, ['repo-root']);
@@ -4227,8 +4748,7 @@ async function cliMain(argv) {
       }
 
       default:
-        process.stderr.write(`state.mjs: unknown subcommand: ${subcommand}\n`);
-        return 2;
+        return unknownSubcommand(subcommand);
     }
   } catch (err) {
     process.stderr.write(`state.mjs ${subcommand}: ${err.message}\n`);
