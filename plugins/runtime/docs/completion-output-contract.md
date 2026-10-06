@@ -253,7 +253,8 @@ contract section instead).
    `closed` exception, marker rendering including the 4-marker fully-generic
    case, marker absence from JSON values, checkpoint rendering, and legacy
    `completion.source` freeze.
-2. **Persona flag floor** (`tests/engineer/test-footer-activation.mjs`,
+2. **Persona flag floor** (`tests/persona-pipeline/test-footer-activation.mjs`,
+   parametrized over the three personas, and
    `tests/orchestrator/test-footer-activation.mjs`): the sidecar mapping
    names phase + failed gates, passes the unblocking `--completion-next-action`
    when blocked, single-line values, and E2E terminal footers are
