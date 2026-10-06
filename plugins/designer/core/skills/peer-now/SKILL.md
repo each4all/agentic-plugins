@@ -141,6 +141,7 @@ HOST="${AGENTIC_HOST:-claude}"  # Codex-side command-invoked mode uses codex.
 RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 RUN_JSON="$(mktemp -t 'designer'-peer-now.XXXXXX).json"
 RUN_ERR="$(mktemp -t 'designer'-peer-now.XXXXXX).err"
+echo "peer-now run_id=$RUN_ID" >&2
 
 node "<plugin-root>/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --kind peer-now \
@@ -150,6 +151,8 @@ node "<plugin-root>/scripts/peer-runner.mjs" run \
 RUN_RC=$?
 
 STDOUT_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stdout_path)||"")}catch{}' "$RUN_JSON")"
+STDERR_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).stderr_path)||"")}catch{}' "$RUN_JSON")"
+HANDLE_PATH="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).handle_path)||"")}catch{}' "$RUN_JSON")"
 ERROR_KIND="$(node -e 'try{process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).error_kind)||"")}catch{}' "$RUN_JSON")"
 ```
 
@@ -157,12 +160,13 @@ Exit-code semantics (per `companions/contract.md` §5.1): 0 success (response
 in `$STDOUT_PATH`); 1 `peer_run_error`; 2 `companion_misuse` (bad CLI args,
 this command's bug); 3 peer CLI infrastructure failure (companion not
 found). On `RUN_RC != 0`, surface the first line from `$RUN_ERR`, then
-`$ERROR_KIND` + exit code + run id; stop without appending a phase note and
+`$STDERR_PATH`, then `$ERROR_KIND` as fallback, plus exit code + run id; stop without appending a phase note and
 exit non-zero.
 
-The run can be inspected / cancelled from another local session:
-`peer-runner.mjs status --run-id <id> --json` / `peer-runner.mjs cancel
---run-id <id>`.
+The run can be inspected / cancelled from another local session (pass the
+repository root: the runner reads the ledger under it, not under the working
+directory): `peer-runner.mjs status --repo-root "$REPO_ROOT" --run-id <id>
+--json` / `peer-runner.mjs cancel --repo-root "$REPO_ROOT" --run-id <id>`.
 <!-- pipeline:end peer-now-dispatch -->
 
 ---
@@ -177,10 +181,10 @@ Locate the active workflow with `state.mjs find-active`:
 - **Single path** → append a `[Peer]` label phase note via `state.mjs append
   --phase-label "[Peer] $PEER consultation" --phase-note "<note>" --event
   updated`. Do NOT pass `--current-phase` / `--next-action`. Include
-  `run_id: $RUN_ID` in the note; cap the appended excerpt at 4000 chars
-  (`head -c 4000` on `$STDOUT_PATH`); print the full response to the user
-  separately. Re-resolve `$STDOUT_PATH` / `$ACTIVE` if Phase 1 and Phase 2
-  run in separate Bash calls.
+  `run_id: $RUN_ID` and `handle: $HANDLE_PATH` in the note; cap the appended
+  excerpt at 4000 chars (`head -c 4000` on `$STDOUT_PATH`); print the full
+  response to the user separately. Re-resolve `$STDOUT_PATH` / `$ACTIVE` if
+  Phase 1 and Phase 2 run in separate Bash calls.
 - **Per-branch duplicate error** → reject with a hint pointing at the
   `resume` meta skill. Do NOT pick a workflow yourself.
 <!-- pipeline:end peer-now-label -->

@@ -41,9 +41,10 @@ import {
   commitEnsemble,
   parseWorkflowFile,
   recordPendingEnsemble,
+  resolveWorkflowStorage,
 } from './state.mjs';
 import { isCliEntry } from './lib/cli-entry.mjs';
-import { personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
+import { capabilityOn, personaName, personaOrRefuse, stateDirRel } from './lib/persona.mjs';
 
 
 // ADR-0061 §Decision 4: record where the companion came from — which host
@@ -88,10 +89,14 @@ const STDERR_FILE = 'stderr.log';
 const ENVELOPE_FILE = 'envelope.json';
 const PROMPT_FILE = 'prompt.xml';
 
-// legacy_homes off — canonical peer-run home only (no legacy dual-home, no
-// ambiguity resolution, no migration surface).
+// The peer-run homes. With legacy_homes off, the canonical home only (no
+// legacy dual-home, no ambiguity resolution, no migration surface). With it
+// on (ADR-0025), the pre-migration `.claude/agentic-<persona>/peer-runs` home
+// is read and written where the workflow storage still lives.
 function peerRunsDirRels() {
-  return { canonical: `${stateDirRel()}/peer-runs` };
+  const rels = { canonical: `${stateDirRel()}/peer-runs` };
+  if (capabilityOn('legacy_homes')) rels.legacy = `.claude/agentic-${personaName()}/peer-runs`;
+  return rels;
 }
 
 export function peerRunsDir(repoRoot, { home = 'canonical' } = {}) {
@@ -118,18 +123,56 @@ export function peerRunPaths(repoRoot, runId, opts = {}) {
   };
 }
 
-// legacy_homes off — all three resolvers collapse to the canonical home
-// (no dual-home write block, read ambiguity, or sweep preference).
+// With legacy_homes off, all three resolvers collapse to the canonical home
+// (no dual-home write block, read ambiguity, or sweep preference). With it
+// on, a write goes where the workflow storage resolves (which refuses a
+// dual-home write), a read refuses a run id found in both homes, and the
+// sweep prefers the home that holds ledgers and refuses when both do.
 async function resolvePeerRunPathsForWrite(repoRoot, runId) {
-  return peerRunPaths(repoRoot, runId, { home: 'canonical' });
+  if (!capabilityOn('legacy_homes')) return peerRunPaths(repoRoot, runId, { home: 'canonical' });
+  const storage = await resolveWorkflowStorage(resolve(repoRoot), { mode: 'write' });
+  return peerRunPaths(repoRoot, runId, { home: storage.home });
 }
 
 async function resolvePeerRunPathsForRead(repoRoot, runId) {
-  return peerRunPaths(repoRoot, runId, { home: 'canonical' });
+  const canonical = peerRunPaths(repoRoot, runId, { home: 'canonical' });
+  if (!capabilityOn('legacy_homes')) return canonical;
+  const legacy = peerRunPaths(repoRoot, runId, { home: 'legacy' });
+  const canonicalExists = await exists(canonical.handle) || await exists(canonical.dir);
+  const legacyExists = await exists(legacy.handle) || await exists(legacy.dir);
+  if (canonicalExists && legacyExists) {
+    const rels = peerRunsDirRels();
+    throw new Error(
+      `Ambiguous ${personaName()} peer-run storage: run_id=${runId} exists in both ` +
+        `${rels.canonical} and ${rels.legacy}.`,
+    );
+  }
+  return legacyExists ? legacy : canonical;
+}
+
+// The home a directory resolvePeerRunsDirForSweep returned stands for, so a
+// run found there is read from that home, not the canonical default.
+function homeOfPeerRunsDir(repoRoot, dir) {
+  return capabilityOn('legacy_homes') && dir === peerRunsDir(repoRoot, { home: 'legacy' }) ? 'legacy' : 'canonical';
 }
 
 async function resolvePeerRunsDirForSweep(repoRoot) {
-  return peerRunsDir(repoRoot, { home: 'canonical' });
+  const canonical = peerRunsDir(repoRoot, { home: 'canonical' });
+  if (!capabilityOn('legacy_homes')) return canonical;
+  const legacy = peerRunsDir(repoRoot, { home: 'legacy' });
+  const canonicalHasRuns = await directoryHasEntries(canonical);
+  const legacyHasRuns = await directoryHasEntries(legacy);
+  if (canonicalHasRuns && legacyHasRuns) {
+    const rels = peerRunsDirRels();
+    throw new Error(
+      `Ambiguous ${personaName()} peer-run storage: both ${rels.canonical} ` +
+        `and ${rels.legacy} contain peer-run ledgers.`,
+    );
+  }
+  if (legacyHasRuns) return legacy;
+  if (canonicalHasRuns) return canonical;
+  const storage = await resolveWorkflowStorage(resolve(repoRoot));
+  return peerRunsDir(repoRoot, { home: storage.home });
 }
 
 export function isTerminalStatus(status) {
@@ -963,7 +1006,7 @@ export async function sweepPeerRuns({
     const runId = entry.name;
     let paths;
     try {
-      paths = peerRunPaths(repoRoot, runId);
+      paths = peerRunPaths(repoRoot, runId, { home: homeOfPeerRunsDir(repoRoot, root) });
     } catch {
       continue;
     }
@@ -1175,7 +1218,7 @@ async function unsettledAttempts({ repoRoot, workflowPath, phase, results }) {
     if (!entry.isDirectory()) continue;
     let paths;
     try {
-      paths = peerRunPaths(repoRoot, entry.name);
+      paths = peerRunPaths(repoRoot, entry.name, { home: homeOfPeerRunsDir(repoRoot, root) });
     } catch {
       continue;
     }

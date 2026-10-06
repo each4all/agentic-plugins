@@ -5,10 +5,11 @@
 //
 // ADR-0017 §sub-decision 5 — Stop hook auto-archive orchestration, one copy
 // for every persona that enrolls it (generated from persona-pipeline/,
-// ADR-0066). It carries only the dispatch_target OFF path (ADR-0066
-// Decision 3): NO parent writeback step — these workflows have no
-// orchestrator parent, so the ADR-0019 §4 writebackParent integration is
-// absent and parent-linkage keys stay opaque data.
+// ADR-0066). dispatch_target (ADR-0066 Decision 3) decides the parent step:
+// on, an archived workflow's terminal commit is noted on its orchestrator
+// parent (ADR-0019 §4 as changed by ADR-0062), the dispatch_target module
+// parent-writeback.mjs imported only then; off, there is no parent step and
+// the parent-linkage keys stay opaque data.
 // Host-shared (Claude Stop, trusted Codex Stop, and Codex fallback Stop
 // invocations all call this).
 //
@@ -46,7 +47,7 @@ import {
   terminalPhaseCheck,
 } from './state.mjs';
 import { CONVENTIONAL_COMMIT_RE } from './validate-commit.mjs';
-import { personaName } from './lib/persona.mjs';
+import { capabilityOn, personaName } from './lib/persona.mjs';
 import { readFile } from 'node:fs/promises';
 
 /**
@@ -212,15 +213,70 @@ export async function runStopArchive({
     return { archived: false, reason: 'archive-threw' };
   }
 
-  // dispatch_target off — NO Step 5 parent writeback. A persona with the
-  // capability on fires ADR-0019 §4 writebackParent here when
-  // parent_workflow / originating_subtask are set; these workflows are no
-  // dispatch target (ADR-0066 Decision 3), so the archive completes the stop
-  // lifecycle with no cross-plugin side effects. The guard test asserts this
-  // module neither imports parent-writeback machinery nor acts on parent
-  // linkage fields.
+  // Step 5 — parent writeback (ADR-0019 §4, as changed by ADR-0062), only
+  // with dispatch_target on. Off, the archive completes the stop lifecycle
+  // with no cross-plugin side effect: the persona is no dispatch target
+  // (ADR-0066 Decision 3).
+  if (capabilityOn('dispatch_target')) {
+    await noteTerminalOnParent({ frontmatter, commit: headSha, host, repoRoot, stderr });
+  }
 
   return { archived: true, to: archiveResult.to };
+}
+
+/**
+ * Note an archived workflow's terminal commit on its orchestrator parent, when
+ * it has one (ADR-0019 §4, as changed by ADR-0062). dispatch_target only: the
+ * caller checks the capability, and parent-writeback.mjs is imported here, so
+ * a persona without the module never reaches it.
+ *
+ * Call only after the archive succeeded: the workflow's locks are released by
+ * then (archiveWorkflow's withDirectoryLock + withFileLock callbacks both
+ * exited), so §6 lock-order (child release → parent acquire) is naturally
+ * satisfied. Best-effort: a failure is reported via stderr but does NOT
+ * invalidate the archive, and the subtask is completed by /orchestrator:done
+ * after the merge either way.
+ */
+async function noteTerminalOnParent({ frontmatter, commit, host, repoRoot, stderr }) {
+  // ADR-0063 — a no-changes close made no commit: HEAD is not its commit, and
+  // /orchestrator:done --no-commit records it instead.
+  if (frontmatter.current_phase === 'close-complete') return;
+  if (typeof frontmatter.parent_workflow !== 'string'
+      || typeof frontmatter.originating_subtask !== 'string'
+      || typeof frontmatter.workflow_id !== 'string'
+      || typeof commit !== 'string'
+      || commit.length === 0) {
+    return;
+  }
+  // ADR-0062 §Decision 2 — the writeback notes the terminal commit on the
+  // macro; it does not complete the subtask. Phase 7's P10 has usually
+  // sent the same note already (its `parent_writeback_at` marker says it
+  // tried); calling again is safe because the orchestrator writes nothing
+  // when the note is already there, and it covers a crash between P10's
+  // marker and its write.
+  try {
+    const { writebackParent } = await import('./parent-writeback.mjs');
+    await writebackParent({
+      repoRoot,
+      parentWorkflowId: frontmatter.parent_workflow,
+      originatingSubtaskId: frontmatter.originating_subtask,
+      engineerWorkflowId: frontmatter.workflow_id,
+      commit,
+      host,
+      stderr,
+    });
+  } catch (err) {
+    // writebackParent itself never throws past its contract, but defend
+    // against unexpected programmer errors (e.g., bad arg shape) so the stop
+    // lifecycle still completes cleanly. Surface the parent/subtask ids so the
+    // user has the concrete handles for manual reconciliation via
+    // /orchestrator:done.
+    stderr.write(
+      `${personaName()}/stop-archive: parent-writeback threw unexpectedly for ` +
+      `parent=${frontmatter.parent_workflow} subtask=${frontmatter.originating_subtask}: ` +
+      `${err.message}\n`,
+    );
+  }
 }
 
 /**
@@ -233,8 +289,9 @@ export async function runStopArchive({
  * workflow whose `git_baseline.branch` is not checked out when a Stop fires —
  * deleted after its merge, or left behind by a switch in the same turn — would
  * otherwise stay "active" until someone returned to or deleted its branch.
- * This sweep is the dispatch_target-off form of the engineer/orchestrator
- * branch-agnostic sweeps (no macro A4 interaction — no orchestrator parent).
+ * For a dispatch_target persona it also keeps an orchestrator macro's A4
+ * (no_active_engineer_children) gate from waiting on a child nobody archives;
+ * it mirrors orchestrator's branch-agnostic `runMacroStopArchiveAll`.
  *
  * Criterion, per `branchRefState` of the workflow's baseline branch:
  *   - every case requires `terminal_marker === true` AND `current_phase` ∈
@@ -298,9 +355,23 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
       continue;
     }
     if (refState !== 'absent') continue; // unknown → leave
-    // dispatch_target off — no parent-linked-orphan special handling: these
-    // workflows never carry parent linkage, so there is no macro A4
-    // interaction and no missed-writeback case to surface here.
+    // Parent-linked orphan (dispatch_target on): archiving it is exactly the
+    // cleanup the macro's A4 (no_active_engineer_children) gate waits for, and
+    // A3 (all_subtasks_terminal) still guards the macro against false
+    // completion. The deferred parent writeback cannot be replayed here (a
+    // deleted branch has no recoverable terminal commit, and writebackParent
+    // requires one), so the rare "committed but writeback missed" case is
+    // surfaced for manual reconciliation rather than silently dropped. With
+    // dispatch_target off these workflows carry no parent linkage.
+    if (capabilityOn('dispatch_target')
+        && typeof frontmatter.parent_workflow === 'string' && frontmatter.parent_workflow.length > 0) {
+      stderr.write(
+        `${personaName()}/stop-archive: archiving parent-linked orphan ${workflowPath} ` +
+        `(parent=${frontmatter.parent_workflow}, subtask=${frontmatter.originating_subtask ?? '?'}); ` +
+        `if its work landed, confirm the macro subtask is completed via ` +
+        `/orchestrator:done — the macro's all_subtasks_terminal gate keeps it live until then.\n`,
+      );
+    }
     try {
       const archiveResult = await archive({ workflowPath, host, repoRoot, recheck: sweepGateFailures });
       results.push({
@@ -355,6 +426,10 @@ async function archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, re
       repoRoot,
       recheck: (locked) => evaluateStopArchive({ frontmatter: locked, headSha: tip.sha, headSubject: tip.subject }).gateFailures,
     });
+    // The parent note carries the kept branch's own tip (dispatch_target on).
+    if (archiveResult.archived === true && capabilityOn('dispatch_target')) {
+      await noteTerminalOnParent({ frontmatter, commit: tip.sha, host, repoRoot, stderr });
+    }
     return {
       workflowPath,
       archived: archiveResult.archived === true,
