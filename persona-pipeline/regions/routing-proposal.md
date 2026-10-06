@@ -15,15 +15,20 @@ derived from the verb's actual result and the current workflow state:
   table.
 {{/capability}}
 {{^capability commit_surface}}
-- **selected_next**: the recommended next step — a verb or
-  `owner decision`, chosen from the verb's result, not from a fixed table.
-  A {{persona}} workflow has no commit step: the owner saves, commits or
-  publishes the {{deliverable_noun}}. A verb command's terminal write marks
-  the workflow `summary-complete`, and it stays active-terminal until its
-  archive gates pass (the footer reports it as `publish-needed` while only
-  the HEAD-movement gate is unmet). A verb whose terminal write waits for a
-  converged re-critique stays non-terminal until it converges, and a skill
-  invoked on its own, outside a workflow command, writes no workflow state.
+- **selected_next**: the recommended next step — a verb, `commit`,
+  `owner decision`, or `done`, chosen from the verb's result, not from a
+  fixed table. A {{persona}} workflow has no commit command: `commit` means
+  the owner saves, commits or publishes the {{deliverable_noun}}, and `done`
+  that nothing is left to publish (an investigation or decision whose output
+  is the phase note itself). Either way the verb command's terminal write,
+  `finish-verb`, records that next step and marks the workflow
+  `summary-complete`, and it stays active-terminal until its archive gates
+  pass (the footer reports it as `publish-needed` while only the
+  HEAD-movement gate is unmet). An `owner decision` that sets an owner gate
+  leaves the workflow open until the owner resolves the gate. A verb whose
+  terminal write waits for a converged re-critique stays non-terminal until it
+  converges, and a skill invoked on its own, outside a workflow command, writes
+  no workflow state.
 {{/capability}}
 - **rejected_alternatives**: 1-2 plausible next steps that were
   considered, each with a one-line why-not.
@@ -44,8 +49,9 @@ derived from the verb's actual result and the current workflow state:
 {{^capability commit_surface}}
 - **next_command**: the exact next step, matching `selected_next` — for
   a verb, the `/{{persona}}:<verb> …` (Claude) or `${{persona}}:<verb>` (Codex)
-  mention; for `owner decision`, surfacing the decision to the owner rather
-  than a command to run. There is no `/{{persona}}:commit`.
+  mention; for `commit`, the owner's save and commit, which nothing here
+  runs; for `done`, none; for `owner decision`, surfacing the decision to
+  the owner rather than a command to run. There is no `/{{persona}}:commit`.
 {{/capability}}
 
 The default verb sequence (Routing Recommendation table above) remains
@@ -63,3 +69,20 @@ The durable `state.mjs --next-action` write SHOULD carry the compact
 form (selected_next + one-line rationale + next_command); the fuller
 proposal (alternatives + evidence + confidence) belongs in the
 completion output and the phase note.
+
+**Closed-enum projection: `next_step` (ADR-0063 D6, ported by ADR-0066
+Stage 2).** A verb command's last write, `state.mjs finish-verb`, also
+records `selected_next` and `confidence` as three flat keys. `next_action`
+stays the free-text form for humans; a machine consumer reads the closed-enum
+keys and never parses `next_action`.
+
+| `selected_next` | `next_step_kind` | `next_step_verb` |
+|---|---|---|
+| a verb | `verb` | that verb |
+| `commit` | `commit` | absent |
+| `owner decision` | `owner-decision` | absent |
+| `done` | `done` | absent |
+
+`next_step_confidence` is the proposal's confidence. A verb's Phase 0 clears
+the three keys when it resumes a workflow (`append --clear-next-step true`),
+so a verb that stops before its last write leaves no next step behind.

@@ -92,10 +92,16 @@ for (const persona of STATE_PERSONAS) {
         '--git-baseline-head', head, '--parent-workflow', '/x/macro.md', '--originating-subtask', 'S1'], { cwd: repo });
       strictEqual(r.status, 1);
       match(r.stderr, new RegExp(`${persona} state\\.mjs create does not accept --parent-workflow/--originating-subtask: ${persona} is no orchestrator dispatch target \\(dispatch_target off, ADR-0066 Decision 3\\)`));
-      for (const sub of ['detach-archive', 'set-parent-writeback-marker', 'clear-parent-writeback-marker', 'autopilot-preflight', 'finish-verb']) {
+      for (const sub of ['detach-archive', 'set-parent-writeback-marker', 'clear-parent-writeback-marker']) {
         const s = node(state, [sub, '--workflow-path', '/nonexistent.md', '--host', 'claude'], { cwd: repo });
         strictEqual(s.status, 2, `${sub} must not exist here`);
         match(s.stderr, new RegExp(`unknown subcommand: ${sub}`));
+      }
+      // PC2b: the verb's Phase 0 check and final write exist, on their off
+      // path (tests/persona-pipeline/test-state-schema-14.mjs).
+      for (const sub of ['autopilot-preflight', 'finish-verb']) {
+        const s = node(state, [sub, '--workflow-path', '/nonexistent.md', '--host', 'claude'], { cwd: repo });
+        ok(!/unknown subcommand/.test(s.stderr), `${sub} exists: ${s.stderr}`);
       }
       ok(!existsSync(join(repo, P.stateDirRel)), 'a refused create writes nothing');
     });
@@ -137,6 +143,68 @@ for (const persona of STATE_PERSONAS) {
       match(readFileSync(join(repo, P.archiveDirRel, archived[0]), 'utf8'), /originating_subtask: "S1"/);
       strictEqual(readFileSync(parent, 'utf8'), parentBefore, 'no parent write-back');
     });
+
+    // PC2b (ADR-0066 Decision 3, RV13): with dispatch_target off, an inherited
+    // AGENTIC_AUTOPILOT is still passed down to subprocesses, but no generated
+    // surface acts on it. state.mjs is the one reader: its preflight says the
+    // variable is ignored (tests/persona-pipeline/test-state-schema-14.mjs).
+    // profile_presets off: tests/persona-pipeline/test-decide-registry.mjs.
+    if (!P.capabilities.dispatch_target) {
+      it('dispatch_target off: no generated surface but state.mjs reads AGENTIC_AUTOPILOT, and no runbook line expands it', () => {
+        const readers = [];
+        let runbookMentions = 0;
+        const walk = (dir) => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const full = join(dir, e.name);
+            if (e.isDirectory()) { walk(full); continue; }
+            const rel = relative(P.root, full).split('\\').join('/');
+            const text = readFileSync(full, 'utf8');
+            if (!text.includes('AGENTIC_AUTOPILOT')) continue;
+            if (/\.(mjs|js|sh|json)$/.test(e.name)) readers.push(rel);
+            if (e.name.endsWith('.md')) {
+              runbookMentions += 1;
+              for (const line of text.split('\n').filter((l) => l.includes('AGENTIC_AUTOPILOT'))) {
+                ok(!/\$\{?AGENTIC_AUTOPILOT|printenv\s+'?AGENTIC_AUTOPILOT/.test(line), `${rel}: a line expands AGENTIC_AUTOPILOT: ${line.trim()}`);
+              }
+            }
+          }
+        };
+        for (const sub of ['commands', 'core', 'scripts', 'adapters', 'hooks']) if (existsSync(P.path(sub))) walk(P.path(sub));
+        deepStrictEqual(readers, ['scripts/state.mjs'], 'only state.mjs reads the variable');
+        ok(runbookMentions >= 7, `only ${runbookMentions} documents mention the variable (the runbooks say it changes nothing)`);
+      });
+
+      it('dispatch_target off: the Stop hook archives the same with and without an inherited AGENTIC_AUTOPILOT', () => {
+        for (const env of [{}, { AGENTIC_AUTOPILOT: 'autopilot-20260101T000000Z-abcdef', AGENTIC_HOST: 'claude' }]) {
+          const { repo, git, head } = scratchRepo();
+          const path = createWorkflow(P.root, repo, head);
+          const fin = node(P.path('scripts/state.mjs'), ['finish-verb', '--workflow-path', path, '--host', 'claude', '--next-action', 'n',
+            '--next-step-kind', 'done', '--next-step-confidence', 'HIGH'], { cwd: repo, env });
+          strictEqual(fin.status, 0, fin.stderr);
+          match(readFileSync(path, 'utf8'), /terminal_marker: true/);
+          writeFileSync(join(repo, 'deliverable.md'), 'done\n');
+          git('add', '.');
+          git('commit', '-q', '-m', 'docs: deliverable');
+          const hook = node(P.path('adapters/claude/hooks/stop.mjs'), [], { cwd: repo, env, input: JSON.stringify({ cwd: repo }) });
+          strictEqual(hook.status, 0, hook.stderr);
+          ok(!existsSync(path), `archived with env ${JSON.stringify(env)}`);
+        }
+      });
+    }
+
+    if (!P.capabilities.commit_surface) {
+      it('commit_surface off: no commit command, skill or Phase 7 script, so commit and done in a proposal are the owner\'s', () => {
+        ok(!existsSync(P.path('commands/commit.md')), 'no /commit command');
+        ok(!existsSync(P.path('core/skills/commit')), 'no commit skill');
+        for (const f of readdirSync(P.path('scripts'))) ok(!/phase7|commit-driver/.test(f), `no commit driver: scripts/${f}`);
+        const state = P.path('scripts/state.mjs');
+        const { repo } = scratchRepo();
+        for (const sub of ['phase7-commit', 'commit', 'staging-set']) {
+          const s = node(state, [sub, '--workflow-path', '/nonexistent.md', '--host', 'claude'], { cwd: repo });
+          strictEqual(s.status, 2, `${sub} must not exist here`);
+        }
+      });
+    }
 
     it('hooks and readers: a legacy-shaped home is never read', () => {
       const { repo, head } = scratchRepo();

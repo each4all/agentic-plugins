@@ -1,6 +1,7 @@
 The runtime completion footer is **code-emitted** on this verb's terminal
-path (ADR-0039, enabled for {{persona}} by ADR-0043): `state.mjs
-set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
+path (ADR-0039, enabled for {{persona}} by ADR-0043): the terminal write
+(`state.mjs finish-verb`, which takes `set-terminal`'s path) fires the
+ADR-0031 session-handoff sidecar, which shells out
 to the runtime `footer.mjs` and prints the rendered footer — context
 state, completion state ({{persona}}'s manually-published mapping surfaces
 `publish-needed` when only the owner's save/commit remains) + state-derived

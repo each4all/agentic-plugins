@@ -334,6 +334,13 @@ describe('skill regions: the contracts hold for every enrolled persona', () => {
               ok(intro.includes('Resume into the lifecycle only when `workflow_type == start`'), 'only a start workflow resumes');
               ok(intro.includes('only an explicit `clean` / `accepted` status proceeds'), 'the clean-baseline gate fails closed');
               ok(intro.includes(`(\`/${persona}:resume\`)`), 'it names this persona\'s resume');
+              // PC2b RV3: the lifecycle rules, as the runbook's phase boundary states them.
+              for (const rule of [
+                'Phase 0 runs `state.mjs autopilot-preflight` once, before any write, and a resumed start workflow clears the next step it carried.',
+                'Each phase\'s ensemble attempt is settled from its run ledger (`peer-runner.mjs settle`) before the next phase, a repeated phase under a new run id.',
+                'No phase makes a verb\'s terminal write; the lifecycle\'s one terminal write is `finish-verb` at the end',
+                'is recorded with `state.mjs awaiting-owner-set`, which leaves the workflow open; the lifecycle pauses, and continues at the next phase once the owner\'s decision clears it (`state.mjs awaiting-owner-clear` with that phase as the next step).',
+              ]) ok(intro.includes(rule), rule);
             });
           }
 

@@ -33,6 +33,10 @@
 //   X  the shared-reference regions (PC2a4): a template defect regenerated
 //      into founder and designer, or authored reference text broken, each with
 //      the reference contract that must catch it (killed_by);
+//   O  schema 1.4 read before it is written (PC2b): the per-key validation
+//      and the known keys, a defect in one persona's copy or in every copy;
+//   E  ensemble settlement (PC2b DD6, RV1, RV2): each rule `settle` decides
+//      by, dropped or loosened;
 //   C  a control: an innocuous canonical edit, regenerated everywhere, keeps
 //      the drift check clean (expect SURVIVED).
 //
@@ -63,6 +67,8 @@ const T_SKILL = 'tests/persona-pipeline/test-skill-contracts.mjs';
 const T_REF = 'tests/persona-pipeline/test-reference-contracts.mjs';
 const T_CODEX = 'tests/plugin-shape/test-codex-plugin-root-contract.mjs';
 const T_ARCH = 'tests/scripts/test-set-terminal-archive-timing.mjs';
+const T_S14 = 'tests/persona-pipeline/test-state-schema-14.mjs';
+const T_SETTLE = 'tests/persona-pipeline/test-peer-runner-settle.mjs';
 
 export const TESTS = [T_SYNC];
 
@@ -117,11 +123,14 @@ function templateDefect(copy, tools, { template, from, to, edits = [{ from, to }
 // (G13 edits each). The list must be every such template: one the list misses
 // would keep the errexit-safe form while the case reports a kill.
 const RESOLVER_TEMPLATES = [
-  'regions/checkpoint-set.md', 'regions/decide-resolve.md', 'regions/locate-active.md',
+  'regions/checkpoint-set.md', 'regions/decide-owner-selection.md', 'regions/decide-resolve.md', 'regions/locate-active.md',
   'regions/peer-now-dispatch.md', 'regions/peer-now-locate.md', 'regions/peer-now-note.md',
+  'regions/refine-owner-decision.md', 'regions/refine-owner-decision-convergent.md',
   'regions/resume-archive.md', 'regions/resume-marker.md', 'regions/resume-read.md',
-  'regions/start-bootstrap.md', 'regions/start-resume.md', 'regions/verb-bootstrap-profiled.md',
+  'regions/start-bootstrap.md', 'regions/start-resume.md', 'regions/start-terminal.md',
+  'regions/start-terminal-convergent.md', 'regions/verb-bootstrap-profiled.md',
   'regions/verb-bootstrap.md', 'regions/verb-dispatch.md', 'regions/verb-finalize.md',
+  'regions/verb-finalize-convergent.md',
   'regions/verb-phase-0.md', 'regions/verb-resume-profiled.md', 'regions/verb-resume.md',
 ];
 {
@@ -133,21 +142,24 @@ const RESOLVER_TEMPLATES = [
   }
 }
 
-// PC2a2b: the finalize template and its ensemble-commit step, moved whole by M1/M2.
+// PC2a2b: the finalize template and its settle step (PC2b DD6; ensemble-commit
+// before it), moved whole by M1/M2.
 const FINALIZE = 'regions/verb-finalize.md';
 // PC2a2c: decide's Phase 0.5 template and the contract that runs its block.
 const RESOLVE = 'regions/decide-resolve.md';
 const PHASE_05_RUN = /^Phase 0\.5: between the resume and the dispatch, the resolver reads the args file/;
 const COMMIT_STEP = [
-  '# ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.',
-  'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \\',
-  '  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \\',
-  '  --phase {{verb}} --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" \\',
-  '  --verdict "$VERDICT" --summary "$SUMMARY" \\',
-  '  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
+  '# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,',
+  '# launched and failed, completed); a refusal stops the block before the last',
+  '# write, so the workflow never closes with an attempt left unsettled.',
+  'node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\',
+  '  --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \\',
+  '  --host "${AGENTIC_HOST:-claude}" --phase {{verb}} --run-id "$RUN_ID" \\',
+  '  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?',
   '',
   '',
 ].join('\n');
+const FINALIZE_ORDER = /^the dispatch, the note, settle and finish-verb run in that order/;
 
 // PC2a3: the privacy gate's two templates, and the per-verb sentence the
 // manifest gives the gate (a `value` substitution), edited in place.
@@ -235,6 +247,414 @@ export const MUTATIONS = [
     prepare: (copy, tools) => canonicalDefect(copy, tools, { ...STOP_GATE, only: persona }),
     why: `${persona}: a terminal workflow on a kept branch is never swept (one stop-archive gate inverted)`,
   })),
+
+  // ---- O: schema 1.4 read before it is written (PC2b) -------------------------------
+  ...enrolled('scripts/state.mjs').map((persona) => ({
+    id: `O1-${persona}`, tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "    validateEnumScalar('awaiting_owner_gate', fm.awaiting_owner_gate, VALID_WORKFLOW_OWNER_GATES);\n",
+      to: '',
+      only: persona,
+    }),
+    why: `${persona}: a workflow file carrying a macro gate, or none ADR-0063 D4 stores in a workflow, is read as gated`,
+  })),
+  {
+    id: 'O2', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  }\n\n  validateSchema14Fields(fm);\n}\n",
+      to: "  }\n}\n",
+    }),
+    why: 'the reader stops validating the six keys, so any value reaches the archive gate and the handoff',
+  },
+  {
+    id: 'O3', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  'next_step_confidence',\n  'awaiting_owner_gate',\n",
+      to: "  'next_step_confidence',\n",
+    }),
+    why: 'awaiting_owner_gate is not a known key, so the forward-compat carrier hides it from every reader',
+  },
+  {
+    id: 'O4', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: '  if (present.length > 0 && present.length < awaiting.length) {\n',
+      to: '  if (false) {\n',
+    }),
+    why: 'a gate without its pointer or its date is accepted, half set',
+  },
+  {
+    id: 'O5', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  if (('next_step_verb' in fm) !== (fm.next_step_kind === 'verb')) {\n",
+      to: '  if (false) {\n',
+    }),
+    why: 'a next step of kind commit carrying a verb, or kind verb without one, is accepted',
+  },
+  {
+    id: 'O6', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1', '1.2', '1.3', '1.4']);",
+      to: "export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1', '1.2', '1.3']);",
+    }),
+    why: '"1.4" is not a version this build names as known',
+  },
+
+  ...enrolled('scripts/stop-archive.mjs').map((persona) => ({
+    id: `O7-${persona}`, tests: [T_STOP],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/stop-archive.mjs',
+      from: "  if (frontmatter?.awaiting_owner_gate !== undefined) {\n    gateFailures.push('awaiting_owner');\n  }\n",
+      to: '',
+      only: persona,
+    }),
+    why: `${persona}: the Stop hook archives a workflow waiting on its owner once its marker is on and HEAD moved (gate 5 dropped from the evaluator)`,
+  })),
+  {
+    id: 'O8', tests: [T_STOP],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/stop-archive.mjs',
+      from: "  if (frontmatter?.awaiting_owner_gate !== undefined) failures.push('awaiting_owner');\n",
+      to: '',
+    }),
+    why: 'the off-branch sweep archives a gated workflow once its branch is deleted (gate 5 dropped from the sweep)',
+  },
+  // Review of code step 6 (finding 1): the gates are evaluated
+  // again on the bytes archiveWorkflow reads under the file lock.
+  {
+    id: 'O22', tests: [T_STOP],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/state.mjs', from: '      if (recheck) {\n', to: '      if (false) {\n' }),
+    killed_by: [/the Stop path: an owner gate written between the gates' read and the archive keeps the workflow/, /the sweep, deleted branch: an owner gate written between/, /the sweep, kept branch: an owner gate written between/],
+    why: 'archiveWorkflow moves the bytes it read under the lock without the caller\'s gates, so an owner gate written after the caller decided is archived',
+  },
+  {
+    id: 'O23', tests: [T_STOP],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/stop-archive.mjs', from: '      recheck: (locked) => evaluateStopArchive({ frontmatter: locked, headSha, headSubject }).gateFailures,\n', to: '' }),
+    killed_by: /the Stop path: an owner gate written between the gates' read and the archive keeps the workflow/,
+    why: 'the Stop path archives on the gates of its first read: an owner gate written before the archive takes the lock is buried',
+  },
+  {
+    id: 'O24', tests: [T_STOP],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/stop-archive.mjs', from: 'archive({ workflowPath, host, repoRoot, recheck: sweepGateFailures })', to: 'archive({ workflowPath, host, repoRoot })' }),
+    killed_by: /the sweep, deleted branch: an owner gate written between/,
+    why: 'the sweep archives a deleted branch\'s workflow on the gates of its first read',
+  },
+  {
+    id: 'O25', tests: [T_STOP],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/stop-archive.mjs', from: '      recheck: (locked) => evaluateStopArchive({ frontmatter: locked, headSha: tip.sha, headSubject: tip.subject }).gateFailures,\n', to: '' }),
+    killed_by: /the sweep, kept branch: an owner gate written between/,
+    why: 'the sweep archives a kept branch\'s workflow on the gates of its first read',
+  },
+  {
+    id: 'O26', tests: [T_STOP],
+    prepare: (copy, tools) => {
+      // The recheck runs on a read made before either lock.
+      tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: '  return withDirectoryLock(dirLockRoot, async () => {\n    const sourceStat = await pathStat(workflowPath);\n', to: "  const early = recheck ? recheck(parseWorkflowFile(await readFile(workflowPath, 'utf8')).frontmatter) : [];\n  if (early.length > 0) return { archived: false, reason: 'gate-not-met-under-lock', gateFailures: early, workflowPath };\n  return withDirectoryLock(dirLockRoot, async () => {\n    const sourceStat = await pathStat(workflowPath);\n" });
+      tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: '      if (recheck) {\n', to: '      if (false) {\n' });
+      regenerate(copy);
+    },
+    killed_by: /archiveWorkflow re-checks on the read it makes under the file lock: a gate written while it waits for the lock keeps the workflow$/,
+    why: 'the gates are re-checked before the locks, so a gate written while the archive waits for the file lock is archived (re-review)',
+  },
+
+  ...enrolled('scripts/session-handoff.mjs').map((persona) => ({
+    id: `O9-${persona}`, tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: "    awaiting_owner: `Resolve the pending owner gate",
+      to: "    awaiting_owner_unused: `Resolve the pending owner gate",
+      only: persona,
+    }),
+    why: `${persona}: the handoff of a workflow waiting on its owner names no resolving surface, only the unknown-gate fallback`,
+  })),
+
+  ...enrolled('scripts/state.mjs').map((persona) => ({
+    id: `O19-${persona}`, tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  assertSettableOwnerGate(ownerGate.gate);\n",
+      to: '',
+      only: persona,
+    }),
+    why: `${persona}: the setters accept every gate a reader accepts, staging-set and pr-handling included`,
+  })),
+  {
+    id: 'O10', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  if (current !== undefined && current !== fields.awaiting_owner_gate) {\n",
+      to: "  if (false) {\n",
+    }),
+    why: "a second owner gate replaces the first, which is lost unresolved",
+  },
+  {
+    id: 'O11', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  Object.assign(frontmatter, fields);\n  if (frontmatter.terminal_marker === true) frontmatter.terminal_marker = false;\n",
+      to: "  Object.assign(frontmatter, fields);\n",
+    }),
+    why: "a gate set on a terminal workflow leaves its marker on, in front of the Stop hook",
+  },
+  {
+    id: 'O12', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  if (ownerGate !== undefined) {\n    const result = await appendPhase({\n",
+      to: "  if (false) {\n    const result = await appendPhase({\n",
+    }),
+    why: "finish-verb with an owner gate makes the terminal write and records no gate",
+  },
+  {
+    id: 'O13', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  if (ownerGate !== undefined) {\n    const result = await appendPhase({\n",
+      to: "  if (ownerGate !== undefined || isAutopilotRun()) {\n    const result = await appendPhase({\n",
+    }),
+    why: "an inherited AGENTIC_AUTOPILOT suppresses a verb's terminal write (the acceptance case)",
+  },
+  {
+    id: 'O14', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  'pr-handling': 'dispatch_target',\n",
+      to: "",
+    }),
+    why: "pr-handling, an autopilot set point, can be set by a persona with dispatch_target off",
+  },
+  {
+    id: 'O15', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  'staging-set': 'commit_surface',\n",
+      to: "",
+    }),
+    why: "staging-set can be set by a persona with no commit surface to resolve it",
+  },
+  {
+    id: 'O16', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  const stderr = mode.ignored ? `${mode.reason}\\n` : '';\n",
+      to: "  const stderr = '';\n",
+    }),
+    why: "an inherited AGENTIC_AUTOPILOT is ignored silently: nobody learns the run is interactive",
+  },
+  {
+    id: 'O17', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "    refuse: false,\n    stdout:\n",
+      to: "    refuse: mode.ignored,\n    stdout:\n",
+    }),
+    why: "the preflight refuses a gated workflow under an inherited AGENTIC_AUTOPILOT, the on path leaking into the off one",
+  },
+  {
+    id: 'O18', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "          clearNextStep: cliBoolean(flags, 'clear-next-step', false),\n",
+      to: "          clearNextStep: false,\n",
+    }),
+    why: "append ignores --clear-next-step, so a resumed verb keeps the previous verb's next step",
+  },
+  {
+    id: 'O19', tests: [T_S14],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "          clearTerminalMarker: cliBoolean(flags, 'clear-terminal-marker', false),\n",
+      to: "          clearTerminalMarker: false,\n",
+    }),
+    why: "append ignores --clear-terminal-marker, so a refine that did not converge keeps an earlier verb's terminal marker and the Stop hook can archive it (PC2b U5b)",
+  },
+  {
+    id: 'O20', tests: ['tests/persona-pipeline/test-start-lifecycle.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "          gate: flags.gate,\n          nextStep: cliNextStep(flags),\n",
+      to: "          gate: flags.gate,\n          nextStep: undefined,\n",
+    }),
+    why: "awaiting-owner-clear drops the next step the owner's decision names, so a start lifecycle resumes with no phase to continue at (PC2b RV3: the lifecycle test must fail)",
+  },
+
+  // ---- E: ensemble settlement (PC2b) -----------------------------------------------
+  ...enrolled('scripts/peer-runner.mjs').map((persona) => ({
+    id: `E0-${persona}`, tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "      verdict: SETTLE_FAILED_VERDICT,\n      summary: `peer run ${handle.status}: error_kind=${handle.error_kind ?? 'none'}`,\n",
+      to: "      verdict: verdict ?? SETTLE_FAILED_VERDICT,\n      summary: `peer run ${handle.status}: error_kind=${handle.error_kind ?? 'none'}`,\n",
+      only: persona,
+    }),
+    why: `${persona}: a failed run is recorded under the verdict the agent passed`,
+  })),
+  {
+    id: 'E1', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "      verdict: SETTLE_FAILED_VERDICT,\n      summary: `peer run ${handle.status}: error_kind=${handle.error_kind ?? 'none'}`,\n",
+      to: "      verdict: verdict ?? SETTLE_FAILED_VERDICT,\n      summary: `peer run ${handle.status}: error_kind=${handle.error_kind ?? 'none'}`,\n",
+    }),
+    why: "a failed run is recorded under the verdict the agent passed, as if the peer had answered",
+  },
+  {
+    id: 'E2', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "    if (pending.length > 0) {\n      refuse(",
+      to: "    if (false) {\n      refuse(",
+    }),
+    why: "an empty run id skips although a pending entry shows a run launched, leaving the entry behind",
+  },
+  {
+    id: 'E3', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "    const open = await unsettledAttempts({ repoRoot, workflowPath: wf, phase, results });\n",
+      to: "    const open = [];\n",
+    }),
+    why: "an empty run id skips although the ledger holds an attempt whose pending registration failed",
+  },
+  {
+    id: 'E4', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "  if (row && row.ensemble_type !== handle.ensemble_type) {\n",
+      to: "  if (false) {\n",
+    }),
+    why: "a pending entry and a ledger of different ensemble types are settled as one attempt",
+  },
+  {
+    id: 'E5', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "  if (typeof handle.workflow_path !== 'string' || resolve(handle.workflow_path) !== wf) {\n",
+      to: "  if (false) {\n",
+    }),
+    why: "another workflow's run is settled into this one",
+  },
+  {
+    id: 'E6', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "  if (!isTerminalStatus(handle.status)) {\n    refuse(",
+      to: "  if (false) {\n    refuse(",
+    }),
+    why: "a live run is settled before it is collected",
+  },
+  {
+    id: 'E7', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "  if (['queued', 'spawning', 'running', 'cancel_requested'].includes(handle.status)) {\n",
+      to: "  if (['spawning', 'running', 'cancel_requested'].includes(handle.status)) {\n",
+    }),
+    why: "a runner killed before the spawn leaves a queued run that is never shown abandoned, so its attempt can never settle",
+  },
+  {
+    id: 'E8', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "  if (answer === null || answer.trim() === '') {\n",
+      to: "  if (false) {\n",
+    }),
+    why: "a completed run with an empty answer is recorded under the agent's verdict, a peer verdict nobody gave",
+  },
+  {
+    id: 'E9', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "  if (verdict === SETTLE_FAILED_VERDICT) refuse(",
+      to: "  if (false) refuse(",
+    }),
+    why: "a completed run is recorded as failed, the verdict reserved for a ledger failure",
+  },
+  {
+    id: 'E10', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "    if (oldestKept !== null && isTerminalStatus(handle.status) && Date.parse(handle.completed_at) < Date.parse(oldestKept)) continue;\n",
+      to: "",
+    }),
+    why: "a run settled and pruned from a full results list blocks every later skip",
+  },
+  // Review of code step 6 (PC2b): the settle races and the retention window.
+  {
+    id: 'E12', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "    if (oldestKept !== null && isTerminalStatus(handle.status) && Date.parse(handle.completed_at) < Date.parse(oldestKept)) continue;\n",
+      to: "    if (oldestKept !== null && Date.parse(handle.completed_at) < Date.parse(oldestKept)) continue;\n",
+    }),
+    expect: 'SURVIVED',
+    why: 'equivalent since the re-review judges by when a run ended: a non-terminal handle carries no completed_at, so the end-time comparison alone keeps an open attempt blocking; the status check is defense in depth',
+  },
+  {
+    id: 'E13', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "        if (!['queued', 'spawning', 'running', 'cancel_requested'].includes(h.status)) return h;\n",
+      to: "",
+    }),
+    killed_by: /reconcile never replaces a terminal status the runner wrote after the caller read the handle \(Review of code step 6\)$/,
+    why: 'reconcile writes orphaned over a terminal status the runner wrote after the read, so a finished run settles failed',
+  },
+  {
+    id: 'E14', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "  return { ...base, settlement, verdict: keptVerdict ?? verdict };\n}",
+      to: "  return { ...base, settlement, verdict };\n}",
+    }),
+    killed_by: /two concurrent settles of a completed run report the verdict the workflow holds \(Review of code step 6\)$/,
+    why: 'the settle that lost a race reports its own verdict, which the workflow does not hold',
+  },
+  // Re-review of the code-step-6 fixes.
+  {
+    id: 'E15', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "      const next = await updateHandle(paths.handle, (h) => {\n        if (isTerminalStatus(h.status)) return h;\n        h.status = shape.ok",
+      to: "      const next = await updateHandle(paths.handle, (h) => {\n        h.status = shape.ok",
+    }),
+    killed_by: /reconcile through an envelope never replaces a terminal status already on disk \(re-review\)$/,
+    why: 'a cancel that landed after the caller read the handle is overwritten as completed when an envelope exists',
+  },
+  {
+    id: 'E16', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: '&& Date.parse(handle.completed_at) < Date.parse(oldestKept)) continue;',
+      to: "&& typeof handle.started_at === 'string' && handle.started_at < oldestKept) continue;",
+    }),
+    killed_by: /a full results list does not hide a run that started before its oldest entry but ended after it \(re-review\)$/,
+    why: 'a run that started before the oldest kept result but ended after it is taken as settled and pruned, so an empty run id skips it',
+  },
+  {
+    id: 'E17', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: '    return { frontmatter, workflowPath, idempotentSkip: alreadyCommitted, kept };\n',
+      to: '    return { frontmatter, workflowPath, idempotentSkip: alreadyCommitted };\n',
+    }),
+    killed_by: [/a repeated commit returns the entry already recorded, read under its lock \(re-review\)$/, /two concurrent settles of a completed run report the verdict the workflow holds \(Review of code step 6\)$/],
+    why: 'the losing settle has no recorded verdict to report, so it reports its own again',
+  },
+  {
+    id: 'E11', tests: [T_SETTLE],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/peer-runner.mjs',
+      from: "      out.push(`${entry.name} (unreadable handle)`);\n",
+      to: "",
+    }),
+    why: "an empty run id skips beside a handle it cannot read, which could be the attempt",
+  },
 
   // ---- A: every target carries it; drift equality cannot see it ----------------
   {
@@ -329,6 +749,293 @@ export const MUTATIONS = [
     why: 'a render that breaks the region grammar is written',
   },
 
+  // ---- G (PC2b): Phase 0 preflight and the resume clear -------------------------------
+  {
+    id: 'G30', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-phase-0.md',
+      from: "  --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" || exit $?\n```",
+      to: "  --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\"\n```",
+    }),
+    why: "Phase 0 goes on after the preflight refused (a refusal no longer stops the block)",
+  },
+  {
+    id: 'G31', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-phase-0.md',
+      from: "node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" autopilot-preflight \\\n  --workflow-path \"$ACTIVE\"",
+      to: "node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" autopilot-preflight \\\n  --workflow-path \"\"",
+    }),
+    why: "the preflight reads no workflow, so a pending owner gate is never put to the user",
+  },
+  {
+    id: 'G32', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-resume.md',
+      from: "  --clear-next-step true \\\n",
+      to: "",
+    }),
+    why: "frame, decide and refine resume without clearing the previous verb's next step",
+  },
+  {
+    id: 'G33', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-resume-profiled.md',
+      from: "  --clear-next-step true \\\n",
+      to: "",
+    }),
+    why: "compose, investigate and critique resume without clearing the previous verb's next step",
+  },
+  {
+    id: 'G34', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/start-resume.md',
+      from: "if [ \"$WF_TYPE\" = start ]; then",
+      to: "if true; then",
+    }),
+    why: "start writes a verb-chain workflow it is about to refuse",
+  },
+  {
+    id: 'G35', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/start-resume.md',
+      from: "    --clear-next-step true --event resumed || exit $?\n",
+      to: "    --clear-next-step true --event resumed\n",
+    }),
+    why: "start's lifecycle goes on after its resume clear failed",
+  },
+
+  {
+    id: 'G36', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-dispatch.md',
+      from: '  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"\n```',
+      to: '  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &\n```',
+    }),
+    why: 'the generated dispatch detaches the runner with a shell &, out of reach of the host notification collection waits for (RV9)',
+  },
+  {
+    id: 'G37', tests: [T_CONTRACT], file: 'plugins/founder/commands/critique.md',
+    from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"\n',
+    to: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &\n',
+    why: "founder critique's dispatch, edited in the runbook, detaches the runner with a shell & (RV9)",
+  },
+  // ---- G: PC2b U4b, the compose/frame/investigate/decide finalize ------------
+  {
+    id: 'G38', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?\n', to: '  --verdict "$VERDICT" --summary "$SUMMARY"\n' }),
+    killed_by: verbCaught(/^the finalize, run: a settle refusal stops the block before finish-verb/),
+    why: 'a refused settle no longer stops the block: the workflow closes with its ensemble attempt unsettled',
+  },
+  {
+    id: 'G39', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '--phase {{verb}} --run-id "$RUN_ID" \\\n', to: "--phase {{verb}} --run-id '' \\\n" }),
+    killed_by: verbCaught(FINALIZE_ORDER),
+    why: 'settle is never given the run id, so every launched attempt is refused or, without a pending row, skipped',
+  },
+  {
+    id: 'G40', tests: [T_CONTRACT, T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '  --next-step-kind verb --next-step-verb {{next_verb}} \\\n', to: '' }),
+    killed_by: verbCaught(FINALIZE_ORDER),
+    why: 'the terminal write records no closed-enum next step (finish-verb then refuses: the block fails at its last write)',
+  },
+  {
+    id: 'G41', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '\n{{owner_gates}}\n', to: '\n' }),
+    killed_by: verbCaught(FINALIZE_ORDER),
+    why: 'the finalize no longer names the owner gates its verb may end with, nor their anchors',
+  },
+  {
+    id: 'G42', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/decide-owner-selection.md', from: '--next-step-confidence HIGH || exit $?\nif [ "$WF_TYPE" = start ]; then', to: '--next-step-confidence HIGH\nif [ "$WF_TYPE" = start ]; then' }),
+    killed_by: verbCaught(/^Owner selection, run: it finds the workflow, clears decide-conflict/, ['decide']),
+    why: "decide's Owner selection finishes the verb even when the gate clear was refused",
+  },
+  // Review of code step 6: a gate met inside a start lifecycle is resolved there.
+  {
+    id: 'G61', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/decide-owner-selection.md', from: 'if [ "$WF_TYPE" = start ]; then', to: 'if false; then' }),
+    killed_by: verbCaught(/^Owner selection, run: it finds the workflow, clears decide-conflict/, ['decide']),
+    why: "decide's Owner selection finishes the verb on a start workflow, closing the lifecycle before compose, critique and refine",
+  },
+  {
+    id: 'G62', tests: [T_CONTRACT],
+    prepare: (copy, tools) => {
+      for (const template of ['regions/refine-owner-decision.md', 'regions/refine-owner-decision-convergent.md']) templateDefect(copy, tools, { template, from: 'if [ "$WF_TYPE" = start ]; then', to: 'if false; then' });
+    },
+    killed_by: verbCaught(/^Owner decision, run: fix now clears recurring-finding/, ['refine']),
+    why: "refine's deferral finishes the verb on a start workflow, closing the lifecycle before its terminal step",
+  },
+  {
+    id: 'G43', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/decide-owner-selection.md', from: '--gate decide-conflict \\\n', to: '--gate scope-routing \\\n' }),
+    killed_by: verbCaught(/^Owner selection, run: it finds the workflow, clears decide-conflict/, ['decide']),
+    why: "decide's Owner selection clears a gate other than the one its Phase 2 records",
+  },
+  {
+    id: 'G44', tests: ['tests/scripts/test-runbook-checks.mjs', T_CONTRACT],
+    file: 'tests/_runbook-checks.mjs',
+    from: 'new RegExp(`(?<![-\\\\w])${key}\\\\b`)',
+    to: 'new RegExp(`\\\\b${key}\\\\b`)',
+    killed_by: [/completionReenumerations: a key inside a CLI flag is no field mention/],
+    why: 'the re-enumeration rule counts a CLI flag (--next-step-confidence) as a field mention again',
+  },
+  {
+    id: 'G45', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-proposal.md', from: "  mention; for `commit`, the owner's save and commit, which nothing here\n  runs; for `done`, none; for `owner decision`, surfacing the decision to\n  the owner rather than a command to run.", to: "  mention; for `owner decision`, surfacing the decision to the owner rather\n  than a command to run." }),
+    why: 'the routing contract offers commit and done without saying what each takes when there is no commit command',
+  },
+  {
+    id: 'G46', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => {
+      tools.applyEdit(copy, { file: 'persona-pipeline/files/scripts/state.mjs', from: '          // session-handoff sidecar.\n          emitHandoff: true,\n        });\n        if (result.terminal === false) {', to: '          // session-handoff sidecar.\n          emitHandoff: false,\n        });\n        if (result.terminal === false) {' });
+      regenerate(copy);
+    },
+    killed_by: [/CLI finish-verb renders the footer on STDERR like set-terminal/],
+    why: "finish-verb's terminal write no longer fires the handoff sidecar, so the runbooks' terminal write prints no footer",
+  },
+  // ---- G: PC2b U5a, critique's generated finalize and founder's generated dispatch ----
+  {
+    id: 'G47', tests: [T_CONTRACT, 'tests/plugin-shape/test-designer-plugin.mjs'],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n', to: '  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" \\\n' }),
+    killed_by: [inSuite('founder/commands/critique.md (committed)', /^founder critique, instantiated per profile/), /the Refine-verify ensemble dispatches via peer-runner\.mjs/],
+    why: 'the dispatch names its type a second time: a red-team critique that sets ENSEMBLE_TYPE still dispatches review',
+  },
+  {
+    id: 'G48', tests: [T_CONTRACT], file: 'plugins/founder/commands/critique.md',
+    from: "point type: for `--profile=red-team`, set `ENSEMBLE_TYPE='adversarial-scan'`\nin it before running it, and build the prompt from §Adversarial-scan.\n",
+    to: 'point type.\n',
+    killed_by: [inSuite('founder/commands/critique.md (committed)', /^founder critique, instantiated per profile/)],
+    why: 'founder critique no longer says how a red-team run changes the dispatched type (RV14)',
+  },
+  {
+    id: 'G49', tests: [T_CHAR],
+    prepare: (copy, tools) => {
+      tools.applyEdit(copy, { file: 'persona-pipeline/manifest.json', from: '"next_verb": {\n          "value": "refine",', to: '"next_verb": {\n          "value": "critique",' });
+      regenerate(copy);
+    },
+    why: "critique's terminal write records itself as the next verb instead of refine",
+  },
+  {
+    id: 'G50', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: '  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?\n', to: '  --verdict "$VERDICT" --summary "$SUMMARY"\n' }),
+    killed_by: [/^verb-finalize-convergent\.md: rebuilt from verb-finalize\.md and the variant's own lines, it is byte for byte the variant$/],
+    why: 'the convergent finalize drifts from the plain one in a line they share: its settle no longer stops the block (PC2b U5b)',
+  },
+  {
+    id: 'G51', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision.md', from: '  --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?\n', to: '  --next-step-kind verb --next-step-verb critique --next-step-confidence HIGH || exit $?\n' }),
+    killed_by: templateCaught('regions/refine-owner-decision.md', /^Owner decision, run: fix now clears recurring-finding/),
+    why: "the owner's fix-now decision names a re-critique as the next step instead of the refine that fixes the finding (PC2b U5b)",
+  },
+  {
+    id: 'G52', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision.md', from: '  --next-step-kind commit --next-step-confidence HIGH || exit $?\nif [ "$WF_TYPE" = start ]; then', to: '  --next-step-kind commit --next-step-confidence HIGH\nif [ "$WF_TYPE" = start ]; then' }),
+    killed_by: templateCaught('regions/refine-owner-decision.md', /^Owner decision, run: fix now clears recurring-finding/),
+    why: 'a refused clear of the recurring-finding gate no longer stops the deferral: the verb closes with the gate still set (PC2b U5b)',
+  },
+  // Review of code step 6 (finding 3): where the persona waits for
+  // convergence, a deferral closes the verb only once converged.
+  {
+    id: 'G63', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision-convergent.md', from: 'if [ "${CONVERGED:-no}" = "yes" ]; then', to: 'if [ "${CONVERGED:-yes}" != "no" ]; then' }),
+    killed_by: templateCaught('regions/refine-owner-decision-convergent.md', /^Owner decision, run: fix now clears recurring-finding/),
+    why: 'an unset or unfilled CONVERGED reads as converged, so a deferral that leaves the refinement unconverged closes the verb (fail-open)',
+  },
+  {
+    id: 'G64', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision-convergent.md', from: '    --next-step-kind verb --next-step-verb "<refine|decide|investigate>" \\\n', to: '    --next-step-kind commit \\\n' }),
+    killed_by: templateCaught('regions/refine-owner-decision-convergent.md', /^Owner decision, run: fix now clears recurring-finding/),
+    why: 'an unconverged deferral records commit as the next step, offering the owner a save of an artifact that did not converge',
+  },
+  {
+    id: 'G65', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision-convergent.md', from: '    --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n  echo "→ PAUSED', to: '    --next-step-confidence "<HIGH|MEDIUM|LOW>"\n  echo "→ PAUSED' }),
+    killed_by: templateCaught('regions/refine-owner-decision-convergent.md', /^Owner decision, run: fix now clears recurring-finding/),
+    why: 'a refused clear on the unconverged path is reported as a pause, with the gate still set',
+  },
+  {
+    id: 'G66', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/refine-owner-decision-convergent.md', from: '  --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH || exit $?\n', to: '  --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH\n' }),
+    killed_by: [/^refine-owner-decision-convergent\.md: rebuilt from refine-owner-decision\.md and the variant's own lines, it is byte for byte the variant$/],
+    why: 'the convergent Owner decision drifts from the plain one in a line they share: its fix-now clear no longer stops the block',
+  },
+  {
+    id: 'G53', tests: [T_CONTRACT],
+    prepare: (copy, tools) => {
+      tools.applyEdit(copy, { file: 'persona-pipeline/manifest.json', from: '"value": "- `recurring-finding` (heading `### Recurring finding`, anchor\\n  `recurring-finding`): a finding an earlier refine pass on this workflow\\n  already addressed survives verification again; fixing it again is the\\n  owner\'s call, and § Owner decision below resolves it.\\n- `scope-routing`', to: '"value": "- `scope-routing`', count: 2 });
+      regenerate(copy);
+    },
+    killed_by: ['founder', 'designer'].map((p) => inSuite(`${p}/commands/refine.md (committed)`, FINALIZE_ORDER)),
+    why: "refine's finalize no longer names the recurring-finding gate it may end with, or the Owner decision that resolves it (PC2b U5b)",
+  },
+  {
+    id: 'G54', tests: [T_CHAR],
+    prepare: (copy) => {
+      // founder's refine finalize only (designer's variant carries the same value).
+      const path = join(copy, 'persona-pipeline/manifest.json');
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      const sub = manifest.regions.find((r) => r.id === 'refine-finalize' && r.dest === 'commands/refine.md')?.substitutions?.verdicts;
+      if (!sub || sub.value !== 'resolved|concerns|regression|conflict') throw new MutationHarnessError('refine-finalize: no verdicts value to edit');
+      sub.value = 'agreed|concerns|conflict';
+      writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+      regenerate(copy);
+    },
+    why: "founder refine's synthesis verdicts lose resolved and regression, the outcomes a refine reports (the characterization must fail)",
+  },
+  {
+    id: 'G55', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-terminal-convergent.md', from: "    --clear-terminal-marker true --event updated || exit $?\n", to: "    --event updated || exit $?\n" }),
+    killed_by: templateCaught('regions/start-terminal-convergent.md', /^start terminal, run: /),
+    why: 'a lifecycle that did not converge leaves a terminal marker an earlier write left on, so the Stop hook can archive the paused workflow (PC2b U5c, RV4)',
+  },
+  {
+    id: 'G56', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-terminal.md', from: '  --next-step-kind commit --next-step-confidence', to: '  --next-step-kind done --next-step-confidence' }),
+    killed_by: templateCaught('regions/start-terminal.md', /^start terminal, run: /),
+    why: "the lifecycle closes with nothing left to do, where the owner's save and commit of the deliverable remains (PC2b U5c, DD3)",
+  },
+  {
+    id: 'G57', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-terminal-convergent.md', from: '    --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n', to: '    --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>"\n' }),
+    killed_by: [/^start-terminal-convergent\.md: rebuilt from start-terminal\.md and the variant's own lines, it is byte for byte the variant$/],
+    why: "the convergent start terminal drifts from the plain one in a line they share (PC2b U5c)",
+  },
+  {
+    id: 'G58', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/start-phase-boundary.md', from: "- **No phase closes the workflow.** A verb's own terminal write\n  (`finish-verb`) never runs inside the lifecycle; the Terminal block below is\n  its one terminal write.\n", to: '' }),
+    killed_by: templateCaught('regions/start-phase-boundary.md', /^start lifecycle: the workflow begins at investigate/),
+    why: "the lifecycle no longer says a verb's own terminal write never runs inside it, so a decide that finishes closes the lifecycle mid-way (PC2b RV3)",
+  },
+  {
+    id: 'G59', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/skill-start-command-intro.md', from: "settled from its run ledger (`peer-runner.mjs settle`) before the next phase,\na repeated phase under a new run id.", to: 'committed when the lifecycle ends.' }),
+    killed_by: templateCaught('regions/skill-start-command-intro.md', /^start names only the Phase 0 steps its runbook runs, and the gates it states$/),
+    why: "the start skill says the lifecycle commits its ensembles at the end, where each phase's attempt is settled before the next (PC2b RV3)",
+  },
+
+  // PC2b U7: the off-capability negative tests, data-driven from the declaration.
+  {
+    id: 'O21', tests: [T_CROSS],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/stop-archive.mjs',
+      from: "  // Gate 5 (ADR-0063 D6, ADR-0066 PC2b) — no owner gate pending. A workflow\n",
+      to: "  if (process.env.AGENTIC_AUTOPILOT) gateFailures.push('autopilot');\n  // Gate 5 (ADR-0063 D6, ADR-0066 PC2b) — no owner gate pending. A workflow\n",
+    }),
+    killed_by: /dispatch_target off: (?:no generated surface but state\.mjs reads AGENTIC_AUTOPILOT, and no runbook line expands it|the Stop hook archives the same with and without an inherited AGENTIC_AUTOPILOT)$/,
+    why: 'the Stop hook acts on an inherited AGENTIC_AUTOPILOT in a persona whose dispatch_target is off, and keeps a finished workflow (PC2b U7, ADR-0066 Decision 3)',
+  },
+  {
+    id: 'G60', tests: [T_CROSS],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-finalize.md',
+      from: 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n  --workflow-path',
+      to: '[ -n "${AGENTIC_AUTOPILOT:-}" ] || node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n  --workflow-path',
+    }),
+    killed_by: /dispatch_target off: no generated surface but state\.mjs reads AGENTIC_AUTOPILOT, and no runbook line expands it$/,
+    why: "a verb's finalize skips its terminal write when AGENTIC_AUTOPILOT is inherited, in a persona that is no autopilot dispatch target (PC2b U7)",
+  },
+
   // ---- G: runbook region templates (PC2a) --------------------------------------------
   ...regionPersonas(CHECKPOINT_TARGET.template).map((persona) => ({
     id: `G1-${persona}`, tests: [T_CONTRACT],
@@ -420,7 +1127,9 @@ export const MUTATIONS = [
     id: 'G13', tests: [T_HEADLESS, T_CONTRACT],
     prepare: (copy, tools) => {
       for (const template of RESOLVER_TEMPLATES) {
-        tools.applyEdit(copy, { file: `persona-pipeline/${template}`, from: 'printenv {{root_env}} || true)', to: 'printenv {{root_env}})' });
+        // Every resolver line of the template (refine's Owner decision has two blocks).
+        const count = readFileSync(join(copy, 'persona-pipeline', template), 'utf8').split('printenv {{root_env}} || true)').length - 1;
+        tools.applyEdit(copy, { file: `persona-pipeline/${template}`, from: 'printenv {{root_env}} || true)', to: 'printenv {{root_env}})', count });
       }
       regenerate(copy);
     },
@@ -487,9 +1196,9 @@ export const MUTATIONS = [
   },
   {
     id: 'K1', tests: [T_CHAR], file: 'plugins/founder/commands/compose.md',
-    from: "  --phase 'compose' --ensemble-type 'plan-verify' --run-id \"$RUN_ID\" \\\n  --verdict",
-    to: "  --phase 'compose' --ensemble-type 'brainstorm' --run-id \"$RUN_ID\" \\\n  --verdict",
-    why: 'founder compose commits its ensemble result under another type than it dispatched (the T0 characterization must fail)',
+    from: "ENSEMBLE_TYPE='plan-verify'\n",
+    to: "ENSEMBLE_TYPE='brainstorm'\n",
+    why: 'founder compose dispatches its ensemble under another type than the recorded one (the T0 characterization must fail; settle reads the type from the ledger since PC2b, so the dispatch is where it is named)',
   },
   {
     id: 'K2', tests: [T_CHAR], file: 'plugins/designer/commands/frame.md', expect: 'SURVIVED',
@@ -525,10 +1234,10 @@ export const MUTATIONS = [
   },
   // PC2a3 T0': critique, refine and start recorded before their regions.
   {
-    id: 'K7', tests: [T_CHAR], file: 'plugins/designer/commands/critique.md',
-    from: 'if [ -n "${RUN_ID:-}" ] && [ -n "${VERDICT:-}" ]; then',
-    to: 'if [ -n "${RUN_ID:-}" ]; then',
-    why: 'designer critique records an ensemble result with no verdict (its D2 guard loses a condition)',
+    id: 'K7', tests: [T_CHAR], file: 'plugins/designer/commands/refine.md',
+    from: '    --clear-terminal-marker true --event updated || exit $?\n',
+    to: '    --event updated || exit $?\n',
+    why: 'designer refine\'s paused write leaves a terminal marker an earlier verb left on (its D2 guard went with PC2b U5b; the characterization must see the write)',
   },
   {
     id: 'K8', tests: [T_CHAR], file: 'plugins/founder/commands/start.md',
@@ -542,16 +1251,47 @@ export const MUTATIONS = [
     to: 'if [ "${CONVERGED:-yes}" = "yes" ]; then',
     why: 'designer start closes the lifecycle when its convergence was never established (the guard fails open)',
   },
+  // PC2b RV7: each structural allowed difference checks the value it replaces.
+  {
+    id: 'K10', tests: [T_CHAR], file: 'tests/persona-pipeline/_verb-runbooks.mjs',
+    from: "    strictEqual(next === undefined ? '' : callName(next), d.from, `${d.where}: insert-call finds ${JSON.stringify(d.from)} after it`);\n",
+    to: '',
+    why: 'insert-call no longer checks the call it goes before, so an entry written against another order inserts anywhere',
+  },
+  {
+    id: 'K11', tests: [T_CHAR], file: 'tests/persona-pipeline/_verb-runbooks.mjs',
+    from: '    strictEqual(args.filter(([f]) => f === m[4]).length, 0, `${d.where}: add-flag finds the flag absent`);\n',
+    to: '',
+    why: 'add-flag adds a flag the call already carries, so a runbook passing it twice still matches',
+  },
+  {
+    id: 'K12', tests: [T_CHAR], file: 'tests/persona-pipeline/_verb-runbooks.mjs',
+    from: '    deepStrictEqual(record.calls[at], d.from, `${d.where}: replace-call finds the call as recorded`);\n',
+    to: '',
+    why: 'replace-call swaps whatever call it finds, so a stale entry absorbs an argument change nobody listed',
+  },
+  {
+    id: 'K13', tests: [T_CHAR], file: 'tests/persona-pipeline/_verb-runbooks.mjs',
+    from: '    strictEqual(record.guards[m[1]], d.from, `${d.where}: null-guard finds the guard as recorded`);\n',
+    to: '',
+    why: 'null-guard drops a guard without reading it, so a guard that changed before it was removed goes unseen',
+  },
+  {
+    id: 'K14', tests: [T_CHAR], file: 'tests/persona-pipeline/_verb-runbooks.mjs',
+    from: "  if (typeof value === 'string') return value.split('{persona}').join(persona);\n",
+    to: "  if (typeof value === 'string') return value;\n",
+    why: 'a structural entry written for {persona} is applied with the placeholder left in, so it can match neither persona',
+  },
   {
     id: 'V8', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
-    from: '  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \\\n',
-    to: '  :; else\n  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \\\n',
+    from: '  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n',
+    to: '  :; else\n  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \\\n',
     why: 'designer refine\'s terminal write moves to the else branch: it runs when the re-critique did not converge',
   },
   {
     id: 'V9', tests: [T_VERBS], file: 'plugins/designer/commands/refine.md',
     from: 'if [ "${CONVERGED:-no}" = "yes" ]; then',
-    to: 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal --workflow-path "$ACTIVE"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
+    to: 'node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb --workflow-path "$ACTIVE"\nif [ "${CONVERGED:-no}" = "yes" ]; then',
     why: 'designer refine gains a second, unguarded terminal write next to the guarded one',
   },
   {
@@ -657,10 +1397,10 @@ export const MUTATIONS = [
     id: 'M1', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, edits: [
       { from: COMMIT_STEP, to: '' },
-      { from: '  --next-action {{next_action}} \\\n  --event updated\n```', to: `  --next-action {{next_action}} \\\n  --event updated\n\n${COMMIT_STEP.trimEnd()}\n\`\`\`` },
+      { from: '  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n# The owner-decision form', to: `  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?\n\n${COMMIT_STEP.trimEnd()}\n# The owner-decision form` },
     ] }),
-    killed_by: verbCaught(/^the dispatch, the note, ensemble-commit and the terminal write run in that order/),
-    why: 'the terminal write runs before ensemble-commit: the workflow archives with its ensemble result still pending',
+    killed_by: verbCaught(FINALIZE_ORDER),
+    why: 'the terminal write runs before settle: the workflow archives with its ensemble attempt still unsettled',
   },
   {
     id: 'M2', tests: [T_CONTRACT],
@@ -668,8 +1408,8 @@ export const MUTATIONS = [
       { from: COMMIT_STEP, to: '' },
       { from: 'nothing was written." >&2; exit 1; }\n\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n', to: `nothing was written." >&2; exit 1; }\n\n${COMMIT_STEP}node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \\\n` },
     ] }),
-    killed_by: verbCaught(/^the dispatch, the note, ensemble-commit and the terminal write run in that order/),
-    why: 'ensemble-commit runs before the phase note is written',
+    killed_by: verbCaught(FINALIZE_ORDER),
+    why: 'settle runs before the phase note is written',
   },
   {
     id: 'M3', tests: [T_CONTRACT],
@@ -696,7 +1436,7 @@ export const MUTATIONS = [
   {
     id: 'M5', tests: [T_CONTRACT],
     prepare: (copy, tools) => templateDefect(copy, tools, { template: FINALIZE, from: '  --event updated || exit $?\n', to: '  --event updated\n' }),
-    killed_by: [...verbCaught(/^the dispatch, the note, ensemble-commit and the terminal write run in that order/), /^bash: the finalize block hands a hostile note to state\.mjs byte for byte/],
+    killed_by: [...verbCaught(FINALIZE_ORDER), /^bash: the finalize block hands a hostile note to state\.mjs byte for byte/],
     why: 'a failed phase-note append no longer stops the block, which goes on to commit and archive (PD6; the run case shows it)',
   },
   {
@@ -719,7 +1459,7 @@ export const MUTATIONS = [
   },
   {
     id: 'M9', tests: [T_CONTRACT],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: '  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" \\\n', to: '  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" --image "$SCREENSHOT" \\\n' }),
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-dispatch.md', from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n', to: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" --image "$SCREENSHOT" \\\n' }),
     killed_by: templateCaught('regions/verb-dispatch.md', /^privacy: the prohibition sentence precedes the dispatch/),
     why: 'the dispatch passes a screenshot to a companion path that has no image channel',
   },
@@ -742,7 +1482,8 @@ export const MUTATIONS = [
       const path = join(copy, 'persona-pipeline/manifest.json');
       const manifest = JSON.parse(readFileSync(path, 'utf8'));
       const subs = manifest.regions.filter((r) => r.dest === 'commands/compose.md' && r.substitutions?.ensemble_type);
-      if (subs.length !== 2) throw new MutationHarnessError(`compose ensemble_type substitutions: ${subs.length}`);
+      // One since PC2b U5a: the dispatch names the type, the finalize no longer does.
+      if (subs.length !== 1) throw new MutationHarnessError(`compose ensemble_type substitutions: ${subs.length}`);
       for (const r of subs) r.substitutions.ensemble_type.value = 'review';
       writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
       regenerate(copy);
@@ -870,8 +1611,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D6', tests: [T_SYNC], file: 'plugins/designer/commands/investigate.md',
-    from: "  --ensemble-type 'reference-scan' --run-id \"$RUN_ID\" \\\n  > \"$PROMPT_FILE.run.json\"",
-    to: "  --ensemble-type 'reference-scan' --run-id \"$RUN_ID\" --model gpt-x \\\n  > \"$PROMPT_FILE.run.json\"",
+    from: "  --ensemble-type \"$ENSEMBLE_TYPE\" --run-id \"$RUN_ID\" \\\n  > \"$PROMPT_FILE.run.json\"",
+    to: "  --ensemble-type \"$ENSEMBLE_TYPE\" --run-id \"$RUN_ID\" --model gpt-x \\\n  > \"$PROMPT_FILE.run.json\"",
     killed_by: /^the repository is clean$/,
     why: 'a hand edit inside a generated region of investigate.md (the drift check must fail)',
   },
@@ -947,11 +1688,11 @@ export const MUTATIONS = [
   {
     id: 'M36', tests: [T_CONTRACT],
     prepare: (copy) => {
-      // The authored finalize block moves above the second extension marker:
-      // the marker stays in its slot, so only the QD8 contract can see it.
+      // The finalize block moves above the second extension marker: the
+      // marker stays in its slot, so only the QD8 contract can see it.
       const path = join(copy, 'plugins/designer/commands/refine.md');
       const text = readFileSync(path, 'utf8');
-      const block = /\n```bash\n(?:(?!```)[\s\S])*?state\.mjs" set-terminal \\\n[\s\S]*?\n```\n/.exec(text);
+      const block = /\n```bash\n(?:(?!```)[\s\S])*?peer-runner\.mjs" settle \\\n[\s\S]*?\n```\n/.exec(text);
       const marker = '<!-- pipeline:extension refine-convergence-bound -->\n';
       if (!block || !text.includes(marker)) throw new MutationHarnessError('designer refine: no finalize block or marker');
       // Function replacements: the block holds `$'`, which a string
@@ -963,7 +1704,7 @@ export const MUTATIONS = [
       }
       writeFileSync(path, moved);
     },
-    killed_by: [inSuite('designer/commands/refine.md (committed)', /^the authored finalize follows the finalize heading region and every extension/)],
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^the finalize follows the finalize heading region and every extension/)],
     why: 'designer refine\'s terminal write moves above its convergence-bound extension: the extension now follows the terminal write',
   },
   {
@@ -979,34 +1720,28 @@ export const MUTATIONS = [
     why: 'designer refine keeps the extension marker but loses the bounded-convergence text it stands for',
   },
   {
-    id: 'M38', tests: [T_CONTRACT], file: 'plugins/designer/commands/refine.md',
-    from: 'if [ -n "${RUN_ID:-}" ] && [ -n "${VERDICT:-}" ]; then',
-    to: 'if true; then',
-    killed_by: [inSuite('designer/commands/refine.md (committed)', /^the authored finalize, run: /)],
-    why: 'designer refine records an ensemble result when the peer never launched (D2 dropped), fabricating a peer run',
+    id: 'M38', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: "    --clear-terminal-marker true --event updated || exit $?\n", to: "    --event updated || exit $?\n" }),
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^refine finalize, run: /)],
+    why: 'a refine that did not converge leaves a terminal marker an earlier verb left on, so the Stop hook can archive the unresolved workflow (PC2b U5b, RV4)',
   },
   {
     id: 'M39', tests: [T_CONTRACT], file: 'plugins/designer/commands/refine.md',
     from: 'if [ "${CONVERGED:-no}" = "yes" ]; then',
     to: 'if [ "${CONVERGED:-yes}" = "yes" ]; then',
-    killed_by: [inSuite('designer/commands/refine.md (committed)', /^the authored finalize, run: /)],
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^refine finalize, run: /)],
     why: 'designer refine closes the workflow when CONVERGED was never assigned (the guard fails open)',
   },
-  // ---- M: critique (PC2a3 U5): designer's dispatch generated, founder's authored (QD5) ----
+  // ---- M: critique (PC2a3 U5; PC2b U5a generates founder's dispatch and both finalizes) ----
   {
     id: 'M40', tests: [T_CONTRACT], file: 'plugins/founder/commands/critique.md',
     from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json"',
-    to: '  --ensemble-type review --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json"',
+    to: '  --ensemble-type \'review\' --run-id "$RUN_ID" \\\n  > "$PROMPT_FILE.run.json"',
     killed_by: [inSuite('founder/commands/critique.md (committed)', /^founder critique, instantiated per profile/)],
     why: 'founder critique dispatches review for red-team too: the adversarial scan never reaches the peer (QD5)',
   },
-  {
-    id: 'M41', tests: [T_CONTRACT], file: 'plugins/founder/commands/critique.md',
-    from: '--phase critique --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID"',
-    to: '--phase critique --ensemble-type review --run-id "$RUN_ID"',
-    killed_by: [inSuite('founder/commands/critique.md (committed)', /^founder critique, instantiated per profile/)],
-    why: 'founder critique commits a red-team result under review, another type than it dispatched',
-  },
+  // M41 (founder critique committed a red-team result under another type) is
+  // gone with PC2b U5a: settle names no type, it reads the ledger's.
   {
     id: 'M42', tests: [T_CONTRACT],
     prepare: (copy) => {
@@ -1020,11 +1755,10 @@ export const MUTATIONS = [
     why: 'designer critique keeps its dual-input marker but loses the host-direct vision text it stands for',
   },
   {
-    id: 'M43', tests: [T_CONTRACT], file: 'plugins/designer/commands/critique.md',
-    from: 'if [ -n "${RUN_ID:-}" ] && [ -n "${VERDICT:-}" ]; then',
-    to: 'if true; then',
-    killed_by: [inSuite('designer/commands/critique.md (committed)', /^the authored finalize, run: /)],
-    why: 'designer critique records an ensemble result when the peer never launched (D2 dropped)',
+    id: 'M43', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize-convergent.md', from: "  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" append \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --current-phase phase-2-presented \\\n", to: "  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete \\\n" }),
+    killed_by: [inSuite('designer/commands/refine.md (committed)', /^refine finalize, run: /)],
+    why: 'a refine that did not converge closes the workflow anyway: its paused write becomes a terminal write (PC2b U5b, DD5)',
   },
   // ---- M: start (PC2a3 U6): the clean-baseline bootstrap and the workflow_type read ----
   {
@@ -1216,13 +1950,13 @@ export const MUTATIONS = [
       if (moved.split(heading[0]).length !== 2) throw new MutationHarnessError('designer critique: the heading did not move whole');
       writeFileSync(path, moved);
     },
-    killed_by: [inSuite('designer/commands/critique.md (committed)', /^the authored finalize follows the finalize heading region and every extension/)],
+    killed_by: [inSuite('designer/commands/critique.md (committed)', /^the finalize follows the finalize heading region and every extension/)],
     why: 'designer critique\'s finalize heading moves above the synthesis instruction: the note would be finalized before the peer result is synthesized',
   },
   {
     id: 'M72', tests: [T_CONTRACT], file: 'plugins/designer/commands/refine.md',
     from: 'CONVERGED="<yes|no — from the re-critique verdict; unset means no>"', to: 'CONVERGED="yes"',
-    killed_by: inSuite('designer/commands/refine.md (committed)', /^the authored finalize, run: /),
+    killed_by: inSuite('designer/commands/refine.md (committed)', /^refine finalize, run: /),
     why: 'designer refine\'s terminal block assigns convergence instead of taking it from the re-critique',
   },
   {
@@ -1270,8 +2004,8 @@ export const MUTATIONS = [
   },
   {
     id: 'D5', tests: [T_SYNC], file: 'plugins/founder/commands/compose.md',
-    from: "  --terminal-marker true \\\n  --next-action 'Critique the composed planning artifact' \\\n",
-    to: "  --terminal-marker true --force \\\n  --next-action 'Critique the composed planning artifact' \\\n",
+    from: "  --next-step-kind verb --next-step-verb 'critique' \\\n",
+    to: "  --next-step-kind verb --next-step-verb 'critique' --force \\\n",
     killed_by: /^the repository is clean$/,
     why: 'a hand edit inside a generated region of compose.md (the drift check must fail)',
   },
@@ -1285,9 +2019,11 @@ export const MUTATIONS = [
   },
   {
     id: 'X2', tests: [T_REF],
-    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-proposal.md', from: '- **selected_next**: the recommended next step — a verb or\n  `owner decision`, chosen', to: '- **selected_next**: the recommended next step — a verb, `commit` or\n  `owner decision`, chosen' }),
+    // PC2b DD7: a commit_surface-off persona offers `commit` (the owner
+    // publishes); the defect is a proposal that sends it to a commit command.
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-proposal.md', from: '  fixed table. A {{persona}} workflow has no commit command: `commit` means\n  the owner saves, commits or publishes the {{deliverable_noun}}, and `done`', to: '  fixed table. `commit` runs `/{{persona}}:commit`, and `done`' }),
     killed_by: /the capability text agrees with the declaration$/,
-    why: 'a commit next step renders for a persona whose commit_surface is off',
+    why: 'the proposal of a persona whose commit_surface is off sends commit to a commit command it does not have',
   },
   {
     id: 'X3', tests: [T_REF],
@@ -1309,15 +2045,15 @@ export const MUTATIONS = [
   },
   {
     id: 'X6', tests: [T_REF], file: 'plugins/founder/core/skills/investigate/SKILL.md',
-    from: '- selected_next:         <verb | owner decision>', to: '- selected_next:         <verb | commit | owner decision>',
+    from: '- selected_next:         <verb | commit | done | owner decision>', to: '- selected_next:         <verb | commit | done | owner decision | publish>',
     killed_by: /the capability text agrees with the declaration$/,
-    why: "founder's investigate proposal offers commit again (RV5)",
+    why: "founder's investigate proposal offers a next step outside the closed vocabulary finish-verb records (RV5; retargeted in PC2b U6b, where commit and done joined the vocabulary)",
   },
   {
     id: 'X7', tests: [T_REF], file: 'plugins/designer/core/skills/investigate/SKILL.md',
-    from: '- selected_next:         <verb | owner decision>', to: '- selected_next:         <verb | commit | owner decision>',
+    from: '- selected_next:         <verb | commit | done | owner decision>', to: '- selected_next:         <verb | commit | done | owner decision | merge>',
     killed_by: /the capability text agrees with the declaration$/,
-    why: "designer's investigate proposal offers commit again (RV5)",
+    why: "designer's investigate proposal offers a next step outside the closed vocabulary finish-verb records (RV5; retargeted in PC2b U6b, where commit and done joined the vocabulary)",
   },
   {
     id: 'X8', tests: [T_REF],
@@ -1389,7 +2125,7 @@ export const MUTATIONS = [
 
   {
     id: 'X19', tests: [T_REF], file: 'plugins/founder/core/skills/investigate/SKILL.md',
-    from: '- selected_next:         <verb | owner decision>', to: '- selected_next:         commit',
+    from: '- selected_next:         <verb | commit | done | owner decision>', to: '- selected_next:         commit',
     killed_by: /the capability text agrees with the declaration$/,
     why: 'a proposal block offers a literal commit next step instead of the placeholder (Plan-verify of code step 1)',
   },
@@ -1426,9 +2162,9 @@ export const MUTATIONS = [
   },
   {
     id: 'X25', tests: [T_REF], file: 'plugins/designer/core/skills/_shared/references/ensemble-protocol.md',
-    from: '**Do not record an ensemble that never ran.** When the privacy gate\nforces local-only, or the companion is unavailable, skip\n`ensemble-commit` entirely and record `### Ensemble degraded:` or\n`### Ensemble skipped (local-only, privacy):` in the body instead.\n\n', to: '',
-    killed_by: /the protocol says an ensemble that never ran is not recorded exactly when the runbooks skip it \(D2\)$/,
-    why: "designer's authored D2 paragraph is dropped while its critique and refine runbooks still skip ensemble-commit",
+    from: '<!-- pipeline:end ensemble-bookkeeping -->\n', to: '<!-- pipeline:end ensemble-bookkeeping -->\n\n**Do not record an ensemble that never ran.** When the privacy gate\nforces local-only, or the companion is unavailable, skip\n`ensemble-commit` entirely.\n',
+    killed_by: /no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead \(D2, PC2b U5b\)$/,
+    why: "designer's protocol tells the agent again to skip ensemble-commit by hand, beside the settle rule that decides it from the ledger (D2, PC2b U5b)",
   },
   {
     id: 'X26', tests: [T_REF], file: 'plugins/founder/core/skills/peer-now/SKILL.md',
@@ -1512,9 +2248,9 @@ export const MUTATIONS = [
   },
   {
     id: 'X39', tests: [T_REF], file: 'plugins/designer/commands/critique.md',
-    from: 'if [ -n "${RUN_ID:-}" ] && [ -n "${VERDICT:-}" ]; then', to: 'if true; then',
-    killed_by: /the protocol says an ensemble that never ran is not recorded exactly when the runbooks skip it \(D2\)$/,
-    why: "designer's critique records an ensemble result unconditionally while the protocol still says one that never ran is not recorded (Plan-verify of code step 2)",
+    from: '# ADR-0066 PC2b — settle the ensemble attempt from its ledger', to: 'if [ -n "${RUN_ID:-}" ]; then :; fi\n# ADR-0066 PC2b — settle the ensemble attempt from its ledger',
+    killed_by: /no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead \(D2, PC2b U5b\)$/,
+    why: "designer's critique guards its finalize on a shell variable again, the D2 shape settle replaced (Plan-verify of code step 2)",
   },
   {
     id: 'X40', tests: [T_REF],
@@ -1551,6 +2287,114 @@ export const MUTATIONS = [
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/presentation-rules.md', from: "1. Each direction's full analysis (4 blocks, in order)\n2. The multi-perspective comparison table, after all directions (rows =\n   axes, columns = A/B/C/D)\n", to: "1. The multi-perspective comparison table, after all directions (rows =\n   axes, columns = A/B/C/D)\n2. Each direction's full analysis (4 blocks, in order)\n" }),
     killed_by: /the presentation protocol ships whole, with the decision item as its unit \(RV3\)$/,
     why: "Example 1 puts the comparison table before the directions, against decide's output format (Review of code step 3)",
+  },
+  {
+    id: 'X46', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-bookkeeping.md', from: 'entry with verdict `failed` and the ledger\'s `error_kind` in its summary;', to: 'entry with the synthesis verdict and the ledger\'s `error_kind` in its summary;' }),
+    killed_by: /no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead \(D2, PC2b U5b\)$/,
+    why: 'the protocol says a failed run records the synthesis verdict, where settle records verdict failed whatever the agent passed (PC2b U5b)',
+  },
+  {
+    id: 'X47', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-state.md', from: "settled: cancel the old run if it is still live, then settle it with\n`peer-runner.mjs settle --run-id <old run_id>`, whether the step retries\nor proceeds local-only.", to: "settled: settle it with `state.mjs ensemble-commit` and a verdict that\nsays the run was abandoned, whether the step retries or proceeds\nlocal-only." }),
+    killed_by: /the brief recovery inspects the run before a retry, in the runner's terms \(RV11\)$/,
+    why: 'the brief recovery has the agent commit an abandoned attempt with a verdict it picks again, where settle reads it from the ledger (PC2b RV5)',
+  },
+  {
+    id: 'X48', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-failure-unavailable.md', from: "- **Action**: Proceed with orchestrator-only analysis, silently. A run the\n  runner started settles as verdict `failed` with this `error_kind`\n  (`peer-runner.mjs settle`); with no run launched there is nothing to\n  settle.", to: "- **Action**: Skip the dispatch silently. Proceed with orchestrator-only\n  analysis." }),
+    killed_by: /the protocol's collect step and each failure action settle the attempt from its run ledger \(RV5\)$/,
+    why: 'the protocol tells the agent to skip an unavailable peer by hand again, leaving the attempt the runner started unsettled (PC2b RV5)',
+  },
+  {
+    id: 'X49', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-collect.md', from: " Either way the finalize settles the attempt from its run\n   ledger (`peer-runner.mjs settle`), which records what the ledger shows:\n   verdict `failed` with its `error_kind`, `degraded` for a completed run\n   with no usable answer, or the synthesis verdict.", to: "" }),
+    killed_by: /the protocol's collect step and each failure action settle the attempt from its run ledger \(RV5\)$/,
+    why: 'the collect step no longer says a failed or empty run is settled from its ledger (PC2b RV5)',
+  },
+
+  // PC2b U6b (DD8): the gate and next-step tables bound to state.mjs, and
+  // finish-verb named as the terminal write where an agent reads.
+  {
+    id: 'X50', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-owner-gates.md', from: "| `recurring-finding` | `/{{persona}}:refine`: a finding an earlier refine pass on this workflow already addressed survives verification again | `Recurring finding` · `recurring-finding` | the owner's fix-now-or-defer in `/{{persona}}:refine` (its Owner decision step clears the gate) |\n", to: '' }),
+    killed_by: /the owner-gates and next-step tables agree with this persona's state\.mjs \(PC2b DD8\)$/,
+    why: 'the gate table loses a gate the persona can set, so an agent meeting a recurring finding finds no heading, anchor or resolving surface for it (PC2b DD8)',
+  },
+  {
+    id: 'X51', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-owner-gates.md', from: "`staging-set` belongs to a commit command, and {{persona}} declares\n`commit_surface` off, so `state.mjs` refuses to set it, naming the capability.\n", to: '' }),
+    killed_by: /the owner-gates and next-step tables agree with this persona's state\.mjs \(PC2b DD8\)$/,
+    why: 'the contract stops saying a gate the persona cannot set is refused (PC2b DD2/DD8)',
+  },
+  {
+    id: 'X52', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/routing-proposal.md', from: "| `done` | `done` | absent |\n", to: '' }),
+    killed_by: /the owner-gates and next-step tables agree with this persona's state\.mjs \(PC2b DD8\)$/,
+    why: 'the closed-enum map drops a kind finish-verb accepts (PC2b DD8)',
+  },
+  {
+    id: 'X53', tests: [T_REF],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, { dest: 'scripts/state.mjs', from: '(gate) => !Object.hasOwn(CAPABILITY_OWNER_GATES, gate) || capabilityOn(CAPABILITY_OWNER_GATES[gate]),', to: '(gate) => true || capabilityOn(CAPABILITY_OWNER_GATES[gate]),' }),
+    killed_by: /the owner-gates and next-step tables agree with this persona's state\.mjs \(PC2b DD8\)$/,
+    why: 'state.mjs lets a persona set the capability gates its documents say it refuses: the table is checked against the code, not a restated list (PC2b DD8)',
+  },
+  {
+    id: 'X54', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/handoff-wiring.md', from: "  (ADR-0039 via ADR-0043): the terminal mutation (`state.mjs\n  finish-verb`,", to: "  (ADR-0039 via ADR-0043): the terminal mutation (`state.mjs\n  set-terminal`," }),
+    killed_by: /the skills and the handoff name finish-verb as the terminal write \(PC2b DD8\)$/,
+    why: 'the session handoff names set-terminal as the completion entry point again, where every runbook now ends in finish-verb (PC2b DD8)',
+  },
+  {
+    id: 'X55', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-finalize.md',
+      from: "`### Ensemble skipped: {{launched}} (privacy gate)`",
+      to: "`### Ensemble skipped: {{launched}} (<privacy gate | companion unavailable>)`",
+    }),
+    killed_by: /the skills and the handoff name finish-verb as the terminal write \(PC2b DD8\)$/,
+    why: 'the finalize offers a skip for a missing companion, where the runner launched that run and settle records it failed (PC2b U6b)',
+  },
+  {
+    id: 'X56', tests: [T_REF], file: 'plugins/founder/core/skills/refine/SKILL.md',
+    from: '- selected_next:         <verb | commit | done | owner decision>',
+    to: '- selected_next:         <verb | owner decision>',
+    killed_by: /the skills and the handoff name finish-verb as the terminal write \(PC2b DD8\)$/,
+    why: "a verb skill's proposal offers a narrower vocabulary than its runbook records (authored text, PC2b DD8)",
+  },
+  {
+    id: 'X57', tests: [T_REF], file: 'plugins/designer/core/skills/start/SKILL.md',
+    from: 'node "<plugin-root>/scripts/state.mjs" finish-verb \\\n',
+    to: 'node "<plugin-root>/scripts/state.mjs" set-terminal \\\n',
+    killed_by: /the skills and the handoff name finish-verb as the terminal write \(PC2b DD8\)$/,
+    why: "designer start's skill writes the lifecycle's terminal state through set-terminal again (authored text, PC2b DD8)",
+  },
+
+  // Review of code step 6 (finding 7): settle cannot tell an answer of
+  // structural shell from a real one, so the agent passes degraded.
+  {
+    id: 'X58', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/verb-finalize.md', from: 'An answer that parses to nothing usable, only structural\nshell, reads to `settle` like any other, so set `VERDICT` to `degraded` then.\n', to: '' }),
+    killed_by: /the skills and the handoff name finish-verb as the terminal write \(PC2b DD8\)$/,
+    why: 'the finalize no longer says what verdict an answer of structural shell takes, so the agent records a peer verdict for a peer that said nothing',
+  },
+  {
+    id: 'X59', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-failure-empty.md', from: ' `settle` sees\n  an empty or unreadable answer itself; an answer that parses to no\n  findings, only structural shell, reads to it like any other, so pass\n  `degraded` as the synthesis verdict then.', to: '' }),
+    killed_by: /the protocol's collect step and each failure action settle the attempt from its run ledger \(RV5\)$/,
+    why: "the protocol's empty-output action leaves an answer of structural shell to settle, which records the agent's verdict for it",
+  },
+  {
+    id: 'X60', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/brief-ensemble-failure.md', from: ' `settle` sees\n  an empty or unreadable answer itself; an answer that parses to only\n  structural shell reads to it like any other, so pass `degraded` as the\n  synthesis verdict then.', to: '' }),
+    killed_by: /the failure handling sections keep every case \(RD8, RD9\)$/,
+    why: "the brief's empty-output action leaves an answer of structural shell to settle, which records the agent's verdict for it",
+  },
+  {
+    id: 'X61', tests: [T_REF],
+    prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-bookkeeping.md', from: ' An answer that parses to\n  nothing usable, only structural shell, reads to `settle` like any other:\n  the synthesis judges it, and its verdict is then `degraded`.', to: '' }),
+    killed_by: /no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead \(D2, PC2b U5b\)$/,
+    why: 'the bookkeeping section says settle alone decides degraded, hiding the answer of structural shell the synthesis must judge',
   },
 
   // ---- C: control -------------------------------------------------------------------

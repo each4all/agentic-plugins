@@ -160,6 +160,31 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
       ok(res.stderr.includes(FOOTER_HEADER), 'footer header must appear on stderr');
     });
 
+    // PC2b: the runbooks' terminal write is finish-verb now. It takes
+    // set-terminal's path, footer included, and an inherited AGENTIC_AUTOPILOT
+    // changes nothing (ADR-0066 Decision 3); an owner gate is no terminal
+    // write, so no footer.
+    it('CLI finish-verb renders the footer on STDERR like set-terminal, an inherited AGENTIC_AUTOPILOT included; an owner gate renders none (PC2b)', async () => {
+      const root = await mkdtemp(join(tmpdir(), `${persona}-footer-finish-`));
+      initRepo(root);
+      const finish = (wf, extra) => spawnSync(
+        'node',
+        [STATE, 'finish-verb', '--workflow-path', wf, '--host', 'claude', '--next-action', CRITIQUE_NEXT, '--next-step-confidence', 'HIGH', ...extra],
+        { encoding: 'utf8', cwd: root, env: { ...process.env, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, AGENTIC_AUTOPILOT: 'autopilot-20261006T000000Z-abcdef' } },
+      );
+      const wf = createWorkflow(root);
+      const res = finish(wf, ['--next-step-kind', 'verb', '--next-step-verb', 'critique']);
+      strictEqual(res.status, 0, res.stderr);
+      strictEqual(res.stdout, `${wf}\n`, 'stdout must remain path-only');
+      ok(res.stderr.includes(FOOTER_HEADER), `footer header must appear on stderr; got:\n${res.stderr}`);
+      ok(res.stderr.includes(`recommended next work: ${CRITIQUE_NEXT}`), res.stderr);
+      const gated = createWorkflow(root, { branch: 'feat/gated' });
+      const held = finish(gated, ['--next-step-kind', 'owner-decision', '--owner-gate', 'scope-routing', '--owner-gate-anchor', 'routing-recommendation']);
+      strictEqual(held.status, 0, held.stderr);
+      ok(!held.stderr.includes(FOOTER_HEADER), `an owner gate is no terminal write: no footer; got:\n${held.stderr}`);
+      ok(held.stderr.includes('owner gate scope-routing recorded'), held.stderr);
+    });
+
     it('promotes elements 2/3/4/7 to CONCRETE (completion state + recommended next work + continue-vs-fresh)', async () => {
       const root = await mkdtemp(join(tmpdir(), `${persona}-footer-elements-`));
       initRepo(root);
@@ -377,6 +402,22 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
         ok(flags.reason.includes('archive gate(s) unmet: head_moved, no_active_children'), flags.reason);
         ok(flags.completionNextAction.includes(OWNER_PUBLISH), flags.completionNextAction);
         ok(flags.completionNextAction.includes('child-completion entries'), flags.completionNextAction);
+      });
+
+      // PC2b (ADR-0063 D6 gate 5): a pending owner gate is blocked, names
+      // the resolving surfaces in this persona's commands, and outranks the
+      // owner's publish.
+      it('a pending owner gate is blocked with its resolving surfaces, alone or beside head_moved', () => {
+        for (const gates of [['awaiting_owner'], ['head_moved', 'awaiting_owner']]) {
+          const flags = mapCompletionFlags({ ...projection, archive_gate: 'blocked' }, gates);
+          strictEqual(flags.state, 'blocked', gates.join(','));
+          ok(flags.reason.includes(`archive gate(s) unmet: ${gates.join(', ')}`), flags.reason);
+          ok(flags.completionNextAction.includes('Resolve the pending owner gate (awaiting_owner_gate)'), flags.completionNextAction);
+          ok(flags.completionNextAction.includes(`Owner selection step of ${P.commandPrefix}decide`), flags.completionNextAction);
+          ok(flags.completionNextAction.includes(`Owner decision step of ${P.commandPrefix}refine`), flags.completionNextAction);
+          ok(!flags.completionNextAction.includes('Resolve the unmet archive gate(s)'), 'a known gate, not the unknown-gate fallback');
+          ok(!/[\r\n]/.test(flags.completionNextAction), 'next action must stay single-line');
+        }
       });
 
       it('a non-head_moved gate alone is blocked, never publish-needed', () => {

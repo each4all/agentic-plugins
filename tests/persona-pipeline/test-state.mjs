@@ -898,15 +898,16 @@ host_history:
   // ============================================================================
 
   describe(`${persona}: state.mjs — ADR-0017 schema 1.1 + ADR-0028 schema 1.2/1.3 constants`, () => {
-    it('SCHEMA_VERSION is the latest schema (PR3 M3 bumped to "1.3")', () => {
-      strictEqual(SCHEMA_VERSION, '1.3');
+    it('SCHEMA_VERSION is the latest schema (PR3 M3 bumped to "1.3", PC2b to "1.4")', () => {
+      strictEqual(SCHEMA_VERSION, '1.4');
     });
 
-    it('SUPPORTED_SCHEMA_VERSIONS accepts 1, "1.1", "1.2", "1.3" (additive read backward compat)', () => {
+    it('SUPPORTED_SCHEMA_VERSIONS accepts 1, "1.1", "1.2", "1.3", "1.4" (additive read backward compat; 1.4 read before it is written, PC2b)', () => {
       ok(SUPPORTED_SCHEMA_VERSIONS.has(1));
       ok(SUPPORTED_SCHEMA_VERSIONS.has('1.1'));
       ok(SUPPORTED_SCHEMA_VERSIONS.has('1.2'));
       ok(SUPPORTED_SCHEMA_VERSIONS.has('1.3'));
+      ok(SUPPORTED_SCHEMA_VERSIONS.has('1.4'));
       strictEqual(SUPPORTED_SCHEMA_VERSIONS.has(2), false);
       strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.0'), false);
     });

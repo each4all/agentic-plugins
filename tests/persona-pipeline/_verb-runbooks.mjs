@@ -10,7 +10,7 @@
 // `${NAME}` inside double quotes expands to a literal assigned earlier in the
 // same block (`NAME='compose'`).
 
-import { strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, strictEqual } from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -341,20 +341,29 @@ export function runbookText(persona, verb) {
 }
 
 /**
+ * The index in `record.calls` of the call `<script> <sub>` names: that call
+ * must be the only one, or with `#<n>` the n-th such call (a runbook appends
+ * twice, on resume and with its phase note).
+ */
+function locateCall(record, where, script, sub, nth) {
+  const sites = record.calls.map((c, i) => [c, i]).filter(([c]) => c.script === script && c.sub === sub);
+  if (nth === undefined) strictEqual(sites.length, 1, `${where}: one such call`);
+  else strictEqual(sites.length >= Number(nth), true, `${where}: at least ${nth} such calls`);
+  return sites[nth === undefined ? 0 : Number(nth) - 1][1];
+}
+
+const CALL_WHERE = /^call:(\S+) ([a-z-]+)(?:#([1-9]))?$/;
+const FLAG_WHERE = /^call:(\S+) ([a-z-]+)(?:#([1-9]))?:(--[a-z-]+)$/;
+
+/**
  * The recorded value an allowed difference names, as a getter and a setter:
- * `call:<script> <sub>:<flag>` (that call must be the only one),
- * `call:<script> <sub>#<n>:<flag>` (the n-th such call: a runbook appends
- * twice, on resume and with its phase note),
- * `guards.<name>` or `note`.
+ * `call:<script> <sub>[#<n>]:<flag>` (see locateCall), `guards.<name>` or
+ * `note`.
  */
 function locate(record, where) {
-  const call = /^call:(\S+) ([a-z-]+)(?:#([1-9]))?:(--[a-z-]+)$/.exec(where);
+  const call = FLAG_WHERE.exec(where);
   if (call) {
-    const calls = record.calls.filter((c) => c.script === call[1] && c.sub === call[2]);
-    const nth = call[3] === undefined ? null : Number(call[3]);
-    if (nth === null) strictEqual(calls.length, 1, `${where}: one such call`);
-    else strictEqual(calls.length >= nth, true, `${where}: at least ${nth} such calls`);
-    const args = calls[nth === null ? 0 : nth - 1].args.filter(([f]) => f === call[4]);
+    const args = record.calls[locateCall(record, where, call[1], call[2], call[3])].args.filter(([f]) => f === call[4]);
     strictEqual(args.length, 1, `${where}: the flag once`);
     return [() => args[0][1], (v) => { args[0][1] = v; }];
   }
@@ -364,21 +373,95 @@ function locate(record, where) {
   throw new Error(`allowed difference names no recorded value: ${where}`);
 }
 
+/** `{persona}` replaced in every string of a fixture value. */
+function forPersona(value, persona) {
+  if (typeof value === 'string') return value.split('{persona}').join(persona);
+  if (Array.isArray(value)) return value.map((v) => forPersona(v, persona));
+  if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, forPersona(v, persona)]));
+  return value;
+}
+
+const callName = (c) => `${c.script} ${c.sub}`;
+
+/**
+ * The structural changes (PC2b RV7), each with a strict check of the value it
+ * replaces, so a stale entry fails instead of passing:
+ *
+ *   insert-call   `where` names the anchor call; `from` names the call that
+ *                 follows it now ('' at the end); `to`, the call inserted
+ *                 between the two.
+ *   add-flag      `where` names a call and the flag it does not carry yet;
+ *                 `from`, the flag it goes right after (carried once); `to`,
+ *                 its value (null for a bare flag).
+ *   replace-call  `where` names a call; `from`, the call as it reads now
+ *                 (script, sub and args, deep-equal); `to`, the call that
+ *                 replaces it.
+ *   null-guard    `where` names a guard; `from`, its whole text as it reads
+ *                 now; `to` null, the guard gone.
+ */
+const STRUCTURAL = {
+  'insert-call'(record, d) {
+    const m = CALL_WHERE.exec(d.where);
+    if (!m) throw new Error(`insert-call names no call: ${d.where}`);
+    const at = locateCall(record, d.where, m[1], m[2], m[3]);
+    const next = record.calls[at + 1];
+    strictEqual(next === undefined ? '' : callName(next), d.from, `${d.where}: insert-call finds ${JSON.stringify(d.from)} after it`);
+    record.calls.splice(at + 1, 0, structuredClone(d.to));
+  },
+  'add-flag'(record, d) {
+    const m = FLAG_WHERE.exec(d.where);
+    if (!m) throw new Error(`add-flag names no call flag: ${d.where}`);
+    const { args } = record.calls[locateCall(record, d.where, m[1], m[2], m[3])];
+    strictEqual(args.filter(([f]) => f === m[4]).length, 0, `${d.where}: add-flag finds the flag absent`);
+    const after = args.map(([f], i) => [f, i]).filter(([f]) => f === d.from);
+    strictEqual(after.length, 1, `${d.where}: add-flag finds ${d.from} once`);
+    args.splice(after[0][1] + 1, 0, [m[4], d.to]);
+  },
+  'replace-call'(record, d) {
+    const m = CALL_WHERE.exec(d.where);
+    if (!m) throw new Error(`replace-call names no call: ${d.where}`);
+    const at = locateCall(record, d.where, m[1], m[2], m[3]);
+    deepStrictEqual(record.calls[at], d.from, `${d.where}: replace-call finds the call as recorded`);
+    record.calls[at] = structuredClone(d.to);
+  },
+  'null-guard'(record, d) {
+    const m = /^guards\.([a-z_]+)$/.exec(d.where);
+    if (!m || typeof record.guards[m[1]] !== 'string') throw new Error(`null-guard names no recorded guard: ${d.where}`);
+    strictEqual(record.guards[m[1]], d.from, `${d.where}: null-guard finds the guard as recorded`);
+    strictEqual(d.to, null, `${d.where}: null-guard sets null`);
+    record.guards[m[1]] = null;
+  },
+};
+
+export const STRUCTURAL_OPS = Object.freeze(Object.keys(STRUCTURAL));
+
+/**
+ * One allowed difference applied to `record` (in place) for `persona`. Without
+ * `op` it replaces a string inside a recorded value, where `from` occurs
+ * exactly once; with `op`, a structural change (STRUCTURAL).
+ */
+export function applyDifference(record, difference, persona) {
+  const d = forPersona(difference, persona);
+  if (d.op !== undefined) {
+    if (!Object.hasOwn(STRUCTURAL, d.op)) throw new Error(`unknown allowed-difference op: ${d.op}`);
+    STRUCTURAL[d.op](record, d);
+    return;
+  }
+  const [get, set] = locate(record, d.where);
+  strictEqual(get().split(d.from).length - 1, 1, `allowed difference at ${d.where} finds ${JSON.stringify(d.from)} once`);
+  set(get().replace(d.from, () => d.to));
+}
+
 /**
  * What a runbook must do now: the recorded characterization with each change a
- * region makes on purpose applied. A difference applies only where its `from`
- * occurs exactly once, so a stale or widened entry fails instead of passing.
- * `{persona}` stands for the runbook's persona.
+ * region makes on purpose applied, in the fixture's order. A difference
+ * applies only where the value it replaces reads as recorded, so a stale or
+ * widened entry fails instead of passing. `{persona}` stands for the
+ * runbook's persona.
  */
 export function expectedFor(key) {
   const expected = structuredClone(FIXTURE.runbooks[key]);
   const persona = key.split('/')[0];
-  for (const d of FIXTURE.allowed_differences.filter((x) => x.runbooks.includes(key))) {
-    const [get, set] = locate(expected, d.where);
-    const from = d.from.split('{persona}').join(persona);
-    const to = d.to.split('{persona}').join(persona);
-    strictEqual(get().split(from).length - 1, 1, `${key}: allowed difference at ${d.where} finds ${JSON.stringify(from)} once`);
-    set(get().replace(from, () => to));
-  }
+  for (const d of FIXTURE.allowed_differences.filter((x) => x.runbooks.includes(key))) applyDifference(expected, d, persona);
   return expected;
 }

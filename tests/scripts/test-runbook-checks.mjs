@@ -69,6 +69,15 @@ test('completionReenumerations reports prose that lists the fields, and not the 
   ok(completionReenumerations([...BLOCK, ''].join('\n'), 'doc.md', new Set()).length > 0, 'the block went unseen as prose');
 });
 
+test('completionReenumerations: a key inside a CLI flag is no field mention, the bare word still is (PC2b)', () => {
+  const flag = ['  --next-action \'<compact selected_next + why + next_command>\' \\', '  --next-step-kind verb \\', '  --next-step-confidence HIGH', ''].join('\n');
+  deepStrictEqual(completionReenumerations(flag, 'doc.md'), []);
+  const word = flag.replace('--next-step-confidence HIGH', 'the confidence HIGH');
+  deepStrictEqual(completionReenumerations(word, 'doc.md'), [
+    'doc.md:1 — prose re-enumeration of 3 template fields (selected_next, confidence, next_command); point at the template block / contract section instead',
+  ]);
+});
+
 test('the completion checks pass a committed runbook and catch a block broken in a copy of it', () => {
   const text = read(COMPOSE);
   const whole = completionBlocks(text, COMPOSE);

@@ -9,5 +9,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --phase-label "Phase 0: Resume into ${VERB}" \
   --phase-note "Resumed from prior verb. Profile=<...>." \
   --current-phase phase-0-resume \
+  --clear-next-step true \
   --next-action "Run ${VERB} skill" --event resumed || exit $?
 ```

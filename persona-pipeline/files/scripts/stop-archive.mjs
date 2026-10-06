@@ -18,11 +18,16 @@
 //     non-fatal: every error path returns `{archived: false, reason: ...}`
 //     instead of throwing past the caller.
 //
-// The four hard gates (terminal_marker, terminal phase whitelist,
-// HEAD-moved, no active children) are AND-combined. The conventional
+// The five hard gates (terminal_marker, terminal phase whitelist,
+// HEAD-moved, no active children, no pending owner gate) are AND-combined. The conventional
 // commit subject is a soft gate — failing it produces a stderr warning
 // but does NOT block the archive (ADR-0017 §sub-5: "still allow archive
 // but emit a warning to stderr").
+//
+// Every path evaluates the gates twice: on its own read, to decide, and again
+// on the bytes archiveWorkflow reads under the workflow's file lock (its
+// `recheck`), so a gate written in between — an owner gate above all — keeps
+// the workflow live (PC2b review).
 
 import {
   archiveWorkflow,
@@ -42,7 +47,7 @@ import { personaName } from './lib/persona.mjs';
 import { readFile } from 'node:fs/promises';
 
 /**
- * Evaluate the four hard gates + the conventional-commit warning gate.
+ * Evaluate the five hard gates + the conventional-commit warning gate.
  * Pure: takes everything as input, returns a verdict object.
  *
  * @param {object}  args
@@ -88,6 +93,13 @@ export function evaluateStopArchive({ frontmatter, headSha, headSubject }) {
     gateFailures.push('no_active_children');
   }
 
+  // Gate 5 (ADR-0063 D6, ADR-0066 PC2b) — no owner gate pending. A workflow
+  // waiting on its owner is not done, whatever its marker says; archiving it
+  // would bury the gate where no resolving surface looks.
+  if (frontmatter?.awaiting_owner_gate !== undefined) {
+    gateFailures.push('awaiting_owner');
+  }
+
   // Soft gate — Conventional commit subject. Always evaluated, never
   // adds to gateFailures.
   if (headSubject && !isConventionalCommitSubjectInline(headSubject)) {
@@ -116,6 +128,8 @@ export function evaluateStopArchive({ frontmatter, headSha, headSubject }) {
  * @param {?string}  [args.headSha]
  * @param {?string}  [args.headSubject]
  * @param {NodeJS.WriteStream} [args.stderr]
+ * @param {Function} [args.archive]            — archiveWorkflow; a test passes a
+ *   wrapper to write between the gates' read and the archive's lock
  * @returns {Promise<{archived: boolean, reason?: string, gateFailures?: string[], to?: string}>}
  */
 export async function runStopArchive({
@@ -126,6 +140,7 @@ export async function runStopArchive({
   headSha = null,
   headSubject = null,
   stderr = process.stderr,
+  archive = archiveWorkflow,
 }) {
   // Step 1 — snapshot. Mirrors the legacy stop.mjs behaviour so the
   // last_snapshot + host_history record is written even if the gates
@@ -171,19 +186,22 @@ export async function runStopArchive({
     };
   }
 
-  // Step 4 — archive. Failure here is logged but does not throw past
-  // the caller — host stop lifecycle must not be blocked.
+  // Step 4 — archive, the gates re-evaluated on the locked read. Failure here
+  // is logged but does not throw past the caller — host stop lifecycle must
+  // not be blocked.
   let archiveResult;
   try {
-    archiveResult = await archiveWorkflow({
+    archiveResult = await archive({
       workflowPath,
       host,
       repoRoot,
+      recheck: (locked) => evaluateStopArchive({ frontmatter: locked, headSha, headSubject }).gateFailures,
     });
     if (!archiveResult.archived) {
       return {
         archived: false,
         reason: archiveResult.reason ?? 'archive-no-op',
+        ...(archiveResult.gateFailures ? { gateFailures: archiveResult.gateFailures } : {}),
       };
     }
   } catch (err) {
@@ -217,13 +235,14 @@ export async function runStopArchive({
  *
  * Criterion, per `branchRefState` of the workflow's baseline branch:
  *   - every case requires `terminal_marker === true` AND `current_phase` ∈
- *     TERMINAL_PHASES — the work is done (set-terminal ran);
+ *     TERMINAL_PHASES — the work is done (set-terminal ran) — and no owner
+ *     gate pending (ADR-0063 D6);
  *   - the checked-out branch is skipped: the per-branch path owns it, and
  *     snapshots it and fires the handoff backstop first. When git cannot say
  *     which branch is checked out (`checkedOutBranch` → `'unknown'`), every
  *     kept branch is left alone, since any of them could be that one; a
  *     confirmed detached HEAD owns no branch;
- *   - `'present'` (kept, not checked out): the four Stop gates are evaluated
+ *   - `'present'` (kept, not checked out): the Stop gates are evaluated
  *     against that branch's own tip (`branchTip`), as a Stop on that branch
  *     would. HEAD belongs to another branch and is never used. Because nobody
  *     is on the branch to see it, the tip must also descend from the baseline
@@ -240,10 +259,10 @@ export async function runStopArchive({
  * file is skipped with a warning, never blocking the rest of the sweep or the
  * host Stop lifecycle.
  *
- * @returns {Promise<Array<{workflowPath: string, archived: boolean, to?: string, reason?: string}>>}
+ * @returns {Promise<Array<{workflowPath: string, archived: boolean, to?: string, reason?: string, gateFailures?: string[]}>>}
  *   one entry per workflow the sweep acted on (archived or attempted).
  */
-export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = process.stderr }) {
+export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = process.stderr, archive = archiveWorkflow }) {
   let files;
   try {
     files = await listWorkflowFilesAllHomes(repoRoot);
@@ -264,15 +283,14 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
       stderr.write(`${personaName()}/stop-archive: orphan-sweep skip ${workflowPath}: ${err.message}\n`);
       continue;
     }
-    if (!terminalMarkerCheck(frontmatter)) continue;
-    if (!terminalPhaseCheck(frontmatter?.current_phase)) continue;
+    if (sweepGateFailures(frontmatter).length > 0) continue;
     const branch = frontmatter?.git_baseline?.branch;
     if (typeof branch !== 'string' || branch.length === 0) continue;
     if (checkout.state === 'branch' && branch === checkout.branch) continue; // the per-branch path owns it
     const refState = branchRefState(repoRoot, branch);
     if (refState === 'present') {
       if (checkout.state === 'unknown') continue; // any kept branch could be the checked-out one
-      const result = await archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr });
+      const result = await archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr, archive });
       if (result) results.push(result);
       continue;
     }
@@ -281,12 +299,13 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
     // workflows never carry parent linkage, so there is no macro A4
     // interaction and no missed-writeback case to surface here.
     try {
-      const archiveResult = await archiveWorkflow({ workflowPath, host, repoRoot });
+      const archiveResult = await archive({ workflowPath, host, repoRoot, recheck: sweepGateFailures });
       results.push({
         workflowPath,
         archived: archiveResult.archived === true,
         to: archiveResult.to,
         reason: archiveResult.reason,
+        ...(archiveResult.gateFailures ? { gateFailures: archiveResult.gateFailures } : {}),
       });
     } catch (err) {
       stderr.write(`${personaName()}/stop-archive: orphan-sweep archive failed for ${workflowPath}: ${err.message}\n`);
@@ -297,11 +316,25 @@ export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = proce
 }
 
 /**
+ * The gates every sweep path holds, whatever its branch: the work is done (the
+ * terminal marker, a terminal phase) and no owner gate is pending — ADR-0063
+ * D6's gate 5, which holds even once the branch is gone. Checked on the
+ * sweep's read and again on the archive's locked read.
+ */
+function sweepGateFailures(frontmatter) {
+  const failures = [];
+  if (!terminalMarkerCheck(frontmatter)) failures.push('terminal_marker');
+  if (!terminalPhaseCheck(frontmatter?.current_phase)) failures.push('terminal_phase');
+  if (frontmatter?.awaiting_owner_gate !== undefined) failures.push('awaiting_owner');
+  return failures;
+}
+
+/**
  * Judge a terminal workflow whose branch still exists but is not checked out
  * against that branch's tip, and archive it when every gate passes. Returns
  * `null` when it is left alone (nothing was written).
  */
-async function archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr }) {
+async function archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, repoRoot, stderr, archive }) {
   const tip = branchTip(repoRoot, branch);
   if (!tip) return null;
   const verdict = evaluateStopArchive({ frontmatter, headSha: tip.sha, headSubject: tip.subject });
@@ -313,12 +346,18 @@ async function archiveOnKeptBranch({ workflowPath, frontmatter, branch, host, re
     stderr.write(`${personaName()}/stop-archive: warning: ${w}\n`);
   }
   try {
-    const archiveResult = await archiveWorkflow({ workflowPath, host, repoRoot });
+    const archiveResult = await archive({
+      workflowPath,
+      host,
+      repoRoot,
+      recheck: (locked) => evaluateStopArchive({ frontmatter: locked, headSha: tip.sha, headSubject: tip.subject }).gateFailures,
+    });
     return {
       workflowPath,
       archived: archiveResult.archived === true,
       to: archiveResult.to,
       reason: archiveResult.reason,
+      ...(archiveResult.gateFailures ? { gateFailures: archiveResult.gateFailures } : {}),
     };
   } catch (err) {
     stderr.write(`${personaName()}/stop-archive: orphan-sweep archive failed for ${workflowPath}: ${err.message}\n`);

@@ -1,9 +1,10 @@
 // Declaration format 1.1, the per-verb fields (ADR-0066 Decision 2), bound to
-// the runbooks that state the same facts. The investigate, frame, decide and
-// compose runbooks render these values from generated regions; refine and
-// start are still authored, so their declared convergence is a copy of what
-// their terminal block does. These cases keep each declared value and its
-// runbook text in step. Each binding is to a site, with a nonzero count.
+// the runbooks that state the same facts. The investigate, frame, decide,
+// compose, critique and refine runbooks render these values from generated
+// regions (refine's convergence through a variant, PC2b U5b); start is still
+// authored, so its declared convergence is a copy of what its terminal block
+// does. These cases keep each declared value and its runbook text in step.
+// Each binding is to a site, with a nonzero count.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -16,7 +17,7 @@ import { noteScaffold, shellBlocks, stripComments } from './_verb-runbooks.mjs';
 const runbook = (persona, verb) => readFileSync(join(pluginRoot(persona), 'commands', `${verb}.md`), 'utf8');
 const count = (text, needle) => text.split(needle).length - 1;
 const withVerbs = MANIFEST.personas.filter((p) => declaration(p).verbs !== undefined).sort();
-const NOTE_VERBS = ['investigate', 'frame', 'decide', 'compose'];
+const NOTE_VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 const NOTE_FIELDS = ['request_placeholder', 'artifact', 'rationale_gate', 'evidence_pointers', 'next_action'];
 
 // Where a declared value is today's text with a listed change (PC2a2 PD5).
@@ -29,7 +30,8 @@ const CONVERGED_GUARD = 'if [ "${CONVERGED:-no}" = "yes" ]; then';
 
 /**
  * Whether the runbook's terminal writes run only under a fail-closed
- * convergence check: true when every `set-terminal` call sits in the `then`
+ * convergence check: true when every terminal write (`set-terminal`, or
+ * `finish-verb` once generated, PC2b U5b) sits in the `then`
  * branch of `if [ "${CONVERGED:-no}" = "yes" ]; then` (nested ifs allowed),
  * with `CONVERGED` assigned earlier in the same block; false when none does.
  * Some guarded and some not fails the case: that is a defect whatever the
@@ -37,7 +39,11 @@ const CONVERGED_GUARD = 'if [ "${CONVERGED:-no}" = "yes" ]; then';
  * `fi` changes nothing; an `else` or `elif` anywhere on a line counts.
  */
 function terminalGuardedByConvergence(text) {
-  const blocks = shellBlocks(text).map((b) => stripComments(b.text)).filter((b) => /state\.mjs" set-terminal\b/.test(b));
+  // The finalize block: the one that reads the phase note (generated) or makes
+  // the authored terminal write. decide-style resolution blocks finish a verb
+  // too, but only after an owner's decision, never on convergence.
+  const TERMINAL = /state\.mjs" (set-terminal|finish-verb)\b/;
+  const blocks = shellBlocks(text).map((b) => stripComments(b.text)).filter((b) => TERMINAL.test(b) && !/awaiting-owner-clear\b/.test(b));
   strictEqual(blocks.length, 1, 'one block makes the terminal write');
   const verdicts = [];
   const frames = []; // { converged, branch }
@@ -47,10 +53,10 @@ function terminalGuardedByConvergence(text) {
     if (/^CONVERGED=/.test(t)) assigned = true;
     if (/(^|[;\s])if\s/.test(t) && /;\s*then$/.test(t)) frames.push({ converged: t === CONVERGED_GUARD && assigned, branch: 'then' });
     if (/(^|[;\s])(else|elif)(\s|;|$)/.test(t) && frames.length > 0) frames[frames.length - 1].branch = 'else';
-    if (/state\.mjs" set-terminal\b/.test(t)) verdicts.push(frames.some((f) => f.converged && f.branch === 'then'));
+    if (TERMINAL.test(t)) verdicts.push(frames.some((f) => f.converged && f.branch === 'then'));
     if (/(^|[;\s])fi(\s|;|$)/.test(t)) frames.pop();
   }
-  ok(verdicts.length > 0, 'a set-terminal call');
+  ok(verdicts.length > 0, 'a terminal write');
   ok(verdicts.every((v) => v === verdicts[0]), `every terminal write is guarded alike (${verdicts.join(', ')})`);
   return verdicts[0];
 }
@@ -133,11 +139,13 @@ for (const persona of ['founder', 'designer']) {
       strictEqual(count(text, `\nDEFAULT_PROFILE='${def}'\n`), 1, 'the block assigns the declared default');
     });
 
-    it('investigate: the ensemble type is the one its dispatch and ensemble-commit name', () => {
+    it('investigate: the ensemble type is the one its dispatch names; settle reads it from the run ledger (PC2b DD6)', () => {
       const text = runbook(persona, 'investigate');
       const type = verbs.investigate.ensemble_type;
       // Bare as authored, single-quoted as generated (Decision 4).
-      strictEqual(text.split(new RegExp(`--ensemble-type '?${type}'? --run-id`)).length - 1, 2);
+      strictEqual(text.split(`ENSEMBLE_TYPE='${type}'\n`).length - 1, 1, 'the dispatch assigns the type');
+      strictEqual(text.split('--ensemble-type "$ENSEMBLE_TYPE" --run-id').length - 1, 1, 'and names it once');
+      strictEqual(text.split(/--phase 'investigate' --run-id "\$RUN_ID" \\\n/).length - 1, 1, 'settle names the phase and the run id, no type');
       strictEqual(count(text, `### Ensemble launched: ${type} at <iso-utc>`), 1);
     });
 
@@ -161,7 +169,8 @@ for (const persona of ['founder', 'designer']) {
         const listed = LISTED_CHANGES[`${persona}/${verb}/next_action`] ?? ((s) => s);
         // Double-quoted as authored, single-quoted as generated (Decision 4).
         const actions = [...text.matchAll(/--next-action (?:"([^"]*)"|'([^']*)') \\$/gm)].map((m) => listed(m[1] ?? m[2]));
-        strictEqual(actions.filter((a) => a === v.next_action).length, 2, `the finalize append and finish write record ${JSON.stringify(v.next_action)}`);
+        // decide's Owner selection step finishes the verb a second way (PC2b DD7).
+        strictEqual(actions.filter((a) => a === v.next_action).length, verb === 'decide' ? 3 : 2, `the finalize append and finish write record ${JSON.stringify(v.next_action)}`);
       });
     }
   });

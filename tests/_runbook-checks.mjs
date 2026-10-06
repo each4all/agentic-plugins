@@ -88,7 +88,9 @@ export function completionReenumerations(text, label, blockLines = completionBlo
       if (!blockLines.has(j)) window.push(lines[j]);
     }
     const joined = window.join('\n');
-    const distinct = COMPLETION_FIELD_KEYS.filter((key) => new RegExp(`\\b${key}\\b`).test(joined));
+    // A key inside a CLI flag (`--next-step-confidence`) names a flag, not the
+    // field, so a hyphen before it does not count as a word boundary here.
+    const distinct = COMPLETION_FIELD_KEYS.filter((key) => new RegExp(`(?<![-\\w])${key}\\b`).test(joined));
     if (distinct.length >= 3 && !flagged.has(i)) {
       violations.push(
         `${label}:${i + 1} — prose re-enumeration of ${distinct.length} template fields (${distinct.join(', ')}); point at the template block / contract section instead`,

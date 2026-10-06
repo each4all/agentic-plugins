@@ -45,6 +45,15 @@ It refuses, and the block stops before the last write, while a run is still
 live (collect it first) or when an empty `RUN_ID` would hide a run that
 launched (set it to that run's id).
 
+This verb closes only once it converged (`terminal_requires_convergence`).
+Set `CONVERGED` in the block to `yes` only when the re-critique converged by
+the convergence rule above; anything else, an unset value included, reads as
+not converged. Converged, the last write is `finish-verb`. Not converged, the
+last write is an `append` that records the next step resolving the flagged
+item (`refine`, `decide` or `investigate`) and turns off a terminal marker an
+earlier verb left, so the workflow stays open and the Stop hook cannot
+archive it.
+
 The last write, `finish-verb`, records the proposal's next step in closed-enum
 form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit` (the owner
 saves and commits the artifact; {{persona}} runs no commit itself) or `done`,
@@ -88,31 +97,48 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
   --host "${AGENTIC_HOST:-claude}" --phase {{verb}} --run-id "$RUN_ID" \
   --verdict "$VERDICT" --summary "$SUMMARY" || exit $?
 
-# ADR-0029 §1 / completion-output contract §2 — set --next-action (the
-# append above and this terminal write) to the COMPACT form of the
-# proposal above (selected_next + one-line why + next_command) so the
-# durable state and the code-emitted completion footer agree with the
-# Active Next-Action Proposal. The value shown is the typical-case
-# default; override it, and the --next-step-* flags, when the verb's result
-# selects a different next step (e.g. the owner's save and commit).
-# ADR-0063 D3 — finish-verb is the verb's last write: the ADR-0017
-# §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
-# with the next step. ADR-0066 Decision 3: an inherited AGENTIC_AUTOPILOT
-# changes nothing here.
-# ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
-# archive gates are evaluated at the end of THIS turn, not at session close;
-# if a gate fails the workflow stays marked and a later Stop re-evaluates it.
-# Clearing the marker with `--terminal-marker false` works only before that
-# Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
-# --terminal-phase), and does not restore the previous phase or next_action.
-# On Codex the Stop hook runs only once the operator has trusted the plugin
-# hooks (`/hooks`), so evaluation waits for that. Full contract:
-# core/skills/_shared/references/session-handoff.md § Archive timing.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
-  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --next-action {{next_action}} \
-  --next-step-kind verb --next-step-verb {{next_verb}} \
-  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
+# FAIL-CLOSED: shell state does not survive between Bash calls, so an unset
+# CONVERGED reads as not converged, never as success. Assign it here, from
+# the re-critique verdict.
+CONVERGED="<yes|no — from the re-critique verdict; unset means no>"
+if [ "${CONVERGED:-no}" = "yes" ]; then
+  # ADR-0029 §1 / completion-output contract §2 — set --next-action (the
+  # append above and this terminal write) to the COMPACT form of the
+  # proposal above (selected_next + one-line why + next_command) so the
+  # durable state and the code-emitted completion footer agree with the
+  # Active Next-Action Proposal. The value shown is the typical-case
+  # default; override it, and the --next-step-* flags, when the verb's result
+  # selects a different next step (e.g. the owner's save and commit).
+  # ADR-0063 D3 — finish-verb is the verb's last write: the ADR-0017
+  # §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
+  # with the next step. ADR-0066 Decision 3: an inherited AGENTIC_AUTOPILOT
+  # changes nothing here.
+  # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
+  # archive gates are evaluated at the end of THIS turn, not at session close;
+  # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
+  # Clearing the marker with `--terminal-marker false` works only before that
+  # Stop fires, needs set-terminal's full flag set (--workflow-path, --host,
+  # --terminal-phase), and does not restore the previous phase or next_action.
+  # On Codex the Stop hook runs only once the operator has trusted the plugin
+  # hooks (`/hooks`), so evaluation waits for that. Full contract:
+  # core/skills/_shared/references/session-handoff.md § Archive timing.
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+    --next-action {{next_action}} \
+    --next-step-kind verb --next-step-verb {{next_verb}} \
+    --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
+else
+  # Not converged: the workflow stays open, with the next step that resolves
+  # the flagged item, and a terminal marker an earlier verb left turned off.
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+    --current-phase phase-2-presented \
+    --next-action '<Paused: the flagged item, and the next step that resolves it>' \
+    --next-step-kind verb --next-step-verb "<refine|decide|investigate>" \
+    --next-step-confidence "<HIGH|MEDIUM|LOW>" \
+    --clear-terminal-marker true --event updated || exit $?
+  echo "→ PAUSED (not converged): the workflow stays open, not terminal. Resolve the flagged item, then run the next step recorded above." >&2
+fi
 # The owner-decision form, for an owner gate named above this block: it
 # records the gate with the next step in one write, and the workflow stays
 # open until the owner resolves the gate.

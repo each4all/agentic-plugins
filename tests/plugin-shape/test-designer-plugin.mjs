@@ -1004,7 +1004,8 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
     match(skill, /inline image bytes|never as inline/i, 'critique SKILL must state the peer never receives inline image bytes');
     // The peer dispatch invocation must NEVER carry --image — the companion has
     // no image channel; vision is host-direct only.
-    const dispatch = cmd.match(/peer-runner\.mjs[\s\S]*?&\s*\n/);
+    // The runner command ends at its stderr redirection (PC2b RV9: no shell &).
+    const dispatch = cmd.match(/peer-runner\.mjs" run[\s\S]*?2> "\$PROMPT_FILE\.err"\s*\n/);
     ok(dispatch, 'commands/critique.md must dispatch the peer ensemble via peer-runner.mjs run');
     ok(!/--image/.test(dispatch[0]),
       'the peer-runner dispatch must never pass --image — the companion peer path has no image channel');
@@ -1136,13 +1137,14 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
 
   // Codex C1/C2: Phase 2 must NOT mark the workflow terminal on a non-converged /
   // paused refine (a new inconsistency / accessibility barrier / bounded-pass
-  // exhaustion / an unverifiable post-code re-render). set-terminal must be gated
-  // by the CONVERGED check, with an explicit paused branch leaving the wf active.
+  // exhaustion / an unverifiable post-code re-render). The terminal write
+  // (finish-verb since PC2b U5b) must be gated by the CONVERGED check, with an
+  // explicit paused branch leaving the wf active.
   it('Phase 2 guards the terminal write behind convergence — a paused refine is NOT marked terminal (Codex C1)', async () => {
     const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
-    const guarded = cmd.match(/if \[ "\$\{CONVERGED[\s\S]*?set-terminal/);
-    ok(guarded, 'commands/refine.md set-terminal must sit inside the CONVERGED convergence guard (not unconditional)');
-    match(cmd, /PAUSED[\s\S]{0,200}(left ACTIVE|NOT marked terminal)/i,
+    const guarded = cmd.match(/if \[ "\$\{CONVERGED:-no\}" = "yes" \]; then\n(?:[ \t]+#[^\n]*\n)*[ \t]+node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\/);
+    ok(guarded, 'commands/refine.md finish-verb must sit inside the CONVERGED convergence guard (not unconditional)');
+    match(cmd, /PAUSED[\s\S]{0,200}(left ACTIVE|NOT marked terminal|stays open, not terminal)/i,
       'commands/refine.md must describe the paused branch leaving the workflow ACTIVE (not terminal)');
   });
 
@@ -1186,9 +1188,11 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
 
   it('the Refine-verify ensemble dispatches via peer-runner.mjs and never passes --image (SD4 item 3)', async () => {
     const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
-    const dispatch = cmd.match(/peer-runner\.mjs[\s\S]*?&\s*\n/);
+    // The runner command ends at its stderr redirection (PC2b RV9: no shell &).
+    const dispatch = cmd.match(/peer-runner\.mjs" run[\s\S]*?2> "\$PROMPT_FILE\.err"\s*\n/);
     ok(dispatch, 'commands/refine.md must dispatch the peer ensemble via peer-runner.mjs run');
-    ok(/--ensemble-type 'refine-verify' /.test(dispatch[0]),
+    // The block assigns the type once and the runner names it (PC2b U5a).
+    ok(/^ENSEMBLE_TYPE='refine-verify'$/m.test(cmd) && /--ensemble-type "\$ENSEMBLE_TYPE" /.test(dispatch[0]),
       'the refine dispatch must use the refine-verify ensemble point type');
     ok(!/--image/.test(dispatch[0]),
       'the peer-runner dispatch must never pass --image — the companion peer path has no image channel');
@@ -1561,14 +1565,14 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
     // The refine C1 precedent, hardened: the guard must exist AND fail closed.
     // A `${CONVERGED:-yes}` default is not a guard — shell state does not survive
     // across Bash tool invocations, so a lost variable would mark a paused Phase 4
-    // terminal (and `set-terminal` defaults `--terminal-marker` to true).
-    const guarded = cmd.match(/if \[ "\$\{CONVERGED[\s\S]*?set-terminal/);
-    ok(guarded, 'commands/start.md set-terminal must sit inside the CONVERGED convergence guard (not unconditional)');
+    // terminal (and its terminal write, finish-verb since PC2b U5c, marks it).
+    const guarded = cmd.match(/if \[ "\$\{CONVERGED:-no\}" = "yes" \]; then\n(?:[ \t]+#[^\n]*\n)*[ \t]+node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" finish-verb \\/);
+    ok(guarded, 'commands/start.md finish-verb must sit inside the CONVERGED convergence guard (not unconditional)');
     match(cmd, /if \[ "\$\{CONVERGED:-no\}" = "yes" \]/,
       'commands/start.md must default CONVERGED to "no" (fail-closed), not "yes" (fail-open)');
     ok(!/\$\{CONVERGED:-yes\}/.test(cmd),
       'commands/start.md must not carry a fail-open ${CONVERGED:-yes} default');
-    match(cmd, /PAUSED[\s\S]{0,240}(left ACTIVE|NOT marked terminal)/i,
+    match(cmd, /PAUSED[\s\S]{0,240}(left ACTIVE|NOT marked terminal|stays open, not terminal)/i,
       'commands/start.md must describe the paused branch leaving the workflow ACTIVE (not terminal)');
     // The lifecycle macro must not absorb a single-verb workflow.
     match(cmd, /workflow_type[\s\S]{0,400}?verb-chain[\s\S]{0,400}?reject/i,
@@ -1659,9 +1663,11 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
       ...PR6_SKILLS.map((s) => `${SKILLS_REL}/${s}/SKILL.md`),
       'commands/start.md', 'commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md',
     ];
-    // A generated runbook region passes the type as a single-quoted literal
-    // (ADR-0066 Decision 4), so the value may be quoted.
-    const TYPE_RE = /--ensemble-type\s+'?([a-z-]+)'?/g;
+    // A generated runbook region assigns the type as a single-quoted literal
+    // (ADR-0066 Decision 4) and the runner names it through ENSEMBLE_TYPE
+    // (PC2b U5a), so a site may name the variable: it reads the assignment.
+    const TYPE_RE = /--ensemble-type\s+(?:'?([a-z-]+)'?|"\$ENSEMBLE_TYPE")/g;
+    const ASSIGNED_RE = /^ENSEMBLE_TYPE='([a-z-]+)'$/gm;
     // Each verb command's own dispatch, by site: a scan that lost every match in
     // the commands would otherwise still see the types the skills name.
     const COMMAND_TYPES = {
@@ -1674,16 +1680,17 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
     for (const rel of surfaces) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       const own = [];
+      const assigned = [...text.matchAll(ASSIGNED_RE)].map((a) => a[1]);
       for (const m of text.matchAll(DISPATCH_RE)) {
         blocks += 1;
         if (/--image/.test(m[0])) withImage.push(rel);
-        for (const t of m[0].matchAll(TYPE_RE)) own.push(t[1]);
+        for (const t of m[0].matchAll(TYPE_RE)) own.push(...(t[1] ? [t[1]] : assigned));
       }
       const verb = /^commands\/([a-z-]+)\.md$/.exec(rel)?.[1];
       if (Object.hasOwn(COMMAND_TYPES, verb)) {
         deepStrictEqual([...new Set(own)], [COMMAND_TYPES[verb]], `${rel}: the ensemble type its peer-runner dispatch names`);
       }
-      for (const m of text.matchAll(TYPE_RE)) dispatchedTypes.add(m[1]);
+      for (const m of text.matchAll(TYPE_RE)) for (const t of (m[1] ? [m[1]] : assigned)) dispatchedTypes.add(t);
     }
     ok(blocks >= 6, `expected the shipped peer-runner dispatch blocks to be found (got ${blocks}) — the scan must not pass vacuously`);
     deepStrictEqual(withImage, [],

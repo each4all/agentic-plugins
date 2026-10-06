@@ -1,0 +1,39 @@
+### Owner gates
+
+A genuine owner judgment ends a verb with an owner gate instead of a terminal
+write. The verb records the judgment in its phase note under the heading the
+table names, then its last write is `finish-verb --next-step-kind
+owner-decision --owner-gate <gate> --owner-gate-anchor <anchor>`: the gate
+and the next step in one write, with the workflow left open. Recording a gate
+turns an inherited terminal marker off, the Stop hook never archives a
+workflow with a gate pending (on its branch or in the off-branch sweep), and
+the session handoff names the gate's resolving surface as the next action.
+
+| gate | set when | heading · anchor | resolved by |
+|---|---|---|---|
+| `decide-conflict` | `/{{persona}}:decide` leaves the decision to the owner: a CONFLICT remained or a veto gate is unresolved | `Ensemble synthesis` · `ensemble-synthesis` | the owner's selection in `/{{persona}}:decide` (its Owner selection step clears the gate) |
+| `recurring-finding` | `/{{persona}}:refine`: a finding an earlier refine pass on this workflow already addressed survives verification again | `Recurring finding` · `recurring-finding` | the owner's fix-now-or-defer in `/{{persona}}:refine` (its Owner decision step clears the gate) |
+| `scope-routing` | a verb concludes the request does not belong in this verb or workflow (another route in the Routing Recommendation fits) | `Routing recommendation` · `routing-recommendation` | the owner picks the route, then `awaiting-owner-clear` with the next step |
+{{#capability commit_surface}}
+| `staging-set` | `/{{persona}}:commit` under autopilot: the staging set needs the owner | `Phase 7 plan` · `phase7-plan` | interactive `/{{persona}}:commit`, which clears it once the owner confirms the set |
+{{/capability}}
+{{#capability dispatch_target}}
+| `pr-handling` | under autopilot, the task itself needs an outward action: a push, a pull request, a release or an issue | `Outward action needed` · `pr-handling` | the owner takes or declines the action, then `awaiting-owner-clear` with the next step |
+{{/capability}}
+
+`state.mjs awaiting-owner-clear --gate <gate> --resolution "<the decision>"
+--next-step-kind … --next-step-confidence … [--next-step-verb …]` records the
+owner's decision, clears the gate and names the next step in one write; it
+refuses, writing nothing, when the gate set on the workflow is another one.
+{{^capability commit_surface}}
+`staging-set` belongs to a commit command, and {{persona}} declares
+`commit_surface` off, so `state.mjs` refuses to set it, naming the capability.
+{{/capability}}
+{{^capability dispatch_target}}
+`pr-handling` belongs to autopilot dispatch, and {{persona}} declares
+`dispatch_target` off, so `state.mjs` refuses to set it, naming the
+capability; an inherited `AGENTIC_AUTOPILOT` changes nothing a {{persona}}
+command writes (ADR-0066 Decision 3).
+{{/capability}}
+Reading a workflow file, `state.mjs` accepts all five gate names (ADR-0066
+Decision 7 validates each schema 1.4 key on its own).

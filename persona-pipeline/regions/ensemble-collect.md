@@ -21,6 +21,11 @@
    peer_unauthenticated, peer_invocation_error}` → degrade to local-only;
    `companion_error` with `error.kind: companion_misuse` → adapter bug,
    surface as a runtime error (not a degradation case).
-4. If the peer failed or returned empty output, record the failure and
-   proceed to Synthesize with orchestrator-only results (graceful
-   degradation, see *Failure Handling*).
+4. If the peer failed or returned empty output, proceed to Synthesize
+   with orchestrator-only results (graceful degradation, see *Failure
+   Handling*). Either way the finalize settles the attempt from its run
+   ledger (`peer-runner.mjs settle`), which records what the ledger shows:
+   verdict `failed` with its `error_kind`, `degraded` for a completed run
+   with no usable answer, or the synthesis verdict. The ledger shows an
+   empty or unreadable answer; for one that parses to nothing usable, only
+   structural shell, the synthesis verdict is `degraded`.

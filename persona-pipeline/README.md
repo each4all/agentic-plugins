@@ -47,14 +47,25 @@ PC2a3 completes the verb runbooks and begins the skills:
   with its declared profiles; start from `start-bootstrap.md` and
   `start-resume.md`), designer's critique and both personas' refine dispatch,
   start's two lifecycle paragraphs, and in critique and refine a one-line
-  finalize heading and the completion-footer paragraph. A block whose
-  behavior differs by persona stays authored until the settlement work
-  (PC2b) generates it: the finalize
-  blocks of critique and refine (designer's ensemble-commit guard and its
-  convergence guard), start's terminal block, and founder's critique
-  dispatch, which picks its ensemble type by profile. An authored block in a
-  file that holds regions opens with the generated resolver, copied by hand,
-  since a file uses one resolver form.
+  finalize heading and the completion-footer paragraph. The settlement work
+  (PC2b) generated the blocks whose behavior differed by persona: critique's
+  and refine's finalize (`verb-finalize.md`), start's terminal block
+  (`start-terminal.md`), and founder's critique dispatch, where the agent
+  sets the ensemble type by profile. Where a persona closes refine or start
+  only once it converged (`terminal_requires_convergence`), a variant renders
+  instead (`verb-finalize-convergent.md`, `start-terminal-convergent.md`):
+  the plain template plus a convergence paragraph and a fail-closed check
+  around the terminal write, which records the next step without closing
+  when the work did not converge. A contract rebuilds each variant from its
+  plain template, so the two cannot drift. refine adds a generated Owner
+  decision step (`refine-owner-decision.md`, the recurring-finding gate), as
+  decide adds its Owner selection (`decide-owner-selection.md`); where refine
+  waits for convergence, its variant (`refine-owner-decision-convergent.md`)
+  closes a deferral only once the refinement converged and otherwise clears
+  the gate with the next step, since a deferred finding does not converge by
+  itself. An authored
+  block in a file that holds regions opens with the generated resolver,
+  copied by hand, since a file uses one resolver form.
 - The privacy gate is generated in all seven verb runbooks
   (`verb-privacy-gate.md`: the persona's scope and spec from `peer`, the
   verb's genericize sentence a manifest value) and followed by the no-image
@@ -96,10 +107,62 @@ the brief spec may carry its section's heading, and the brief ensemble's
 Failure Handling region its `###` cases; in `ensemble-protocol.md` and
 `orchestration.md` every heading stays authored. The
 point-type templates, designer's vision sections, the privacy bullets and the
-brief spec's Privacy Gate stay authored, and so do designer's ensemble guard
-and convergence sentence until PC2b. Every verb skill's Present step cites the persona's own protocol,
+brief spec's Privacy Gate stay authored; designer's ensemble guard and its
+authored convergence sentence went in PC2b, replaced by `settle` and the
+convergent variants. Every verb skill's Present step cites the persona's own protocol,
 and the generated finalize note (compose, frame, investigate, decide) its own
 contract. engineer's copies stay hand-written until PC3.
+
+Stage 2b (PC2b) ports engineer's next step and owner gates (ADR-0063) to
+founder and designer, through the canonical source:
+
+- **Schema 1.4.** `state.mjs` writes new workflow files at `1.4` and keeps an
+  older file's schema; it reads the six 1.4 keys (`next_step_kind`,
+  `next_step_verb`, `next_step_confidence`, `awaiting_owner_gate`,
+  `awaiting_owner_pointer`, `awaiting_owner_since`) and validates each on its
+  own (ADR-0066 Decision 7), so no file is migrated.
+- **Owner gates.** `awaiting-owner-set` and `finish-verb --owner-gate` (in
+  code, `appendPhase`'s `ownerGate` too) set one gate at a time and turn an
+  inherited terminal marker off; `awaiting-owner-clear` records the owner's
+  resolution and the next step in one write. A persona can set `scope-routing`, `decide-conflict`
+  and `recurring-finding`; `staging-set` needs `commit_surface` and
+  `pr-handling` `dispatch_target`, so every setter refuses them here, naming
+  the capability. The Stop hook's gate 5 (`awaiting_owner`) keeps a gated
+  workflow on its branch, on a kept branch and in the off-branch sweep, and
+  the session handoff names the gate's resolving surface. Each path checks
+  the gates again on the bytes `archiveWorkflow` reads under the file lock
+  (`recheck`), so a gate written after the first read still keeps the
+  workflow; engineer's hand copy keeps the single read until PC3. decide's Owner
+  selection and refine's Owner decision are generated steps that clear their
+  gate; the routing contract's § Owner gates table lists the settable gates,
+  and a contract checks it against `state.mjs`.
+- **`finish-verb` and `autopilot-preflight`.** Every verb runbook's Phase 0
+  runs `autopilot-preflight` before any write, a resume clears the recorded
+  next step (`append --clear-next-step true`), and the last write is
+  `finish-verb` with the closed-enum next step (`verb`, `commit`, `done`,
+  `owner-decision`): with `commit_surface` off, `commit` means the owner
+  publishes, and `commit` and `done` both close `summary-complete`. An owner
+  gate makes the write non-terminal. ADR-0066 Decision 3's activation rule
+  is the off path: `AGENTIC_AUTOPILOT` turns autopilot behavior on only with
+  `dispatch_target` on, on Claude, so here the preflight prints one line saying
+  the variable is ignored, and nothing else reads it. The on path arrives with
+  engineer in PC3.
+- **Settlement.** `peer-runner.mjs settle` replaces the D2 guard: it reads
+  the ensemble attempt's run ledger and records nothing for a run that never
+  launched, verdict `failed` with the ledger's `error_kind` for one that
+  failed, was cancelled or was abandoned, and the synthesis verdict (or
+  `degraded` for an empty or unreadable answer; for an answer of structural
+  shell the synthesis passes `degraded` itself) for one that completed; it
+  refuses while a
+  run is live or when an empty run id would hide one. No dispatch detaches
+  with a shell `&`: the runner runs in the foreground of a host background
+  task.
+- **Mixed versions** (Decision 7). A release before PC2b reads a 1.4 file and
+  keeps its keys, but its Stop hook archives a gated workflow and its terminal
+  write leaves a stale next step: while a workflow carries an owner gate,
+  every host that touches it runs the PC2b release or later.
+  `tests/persona-pipeline/test-mixed-version.mjs` records what the previous
+  founder release does with a gated file.
 
 ## The declaration
 
@@ -117,9 +180,9 @@ gate names), `privacy_spec` (the plugin path of the spec that defines the
 gate, a regular file inside the plugin) and `images` (whether image bytes may
 go to the peer; both personas say `false`). founder and designer
 declare 1.2; engineer declares 1.0, with no verbs and no `peer`. The verb
-runbooks render these values from the declaration; the terminal blocks of
-`refine` and `start` are still authored, so their convergence flag is a copy
-of what that block does.
+runbooks render these values from the declaration, and the convergence flag
+picks the variant of `refine`'s finalize and `start`'s terminal block (a
+`when` on `terminal_requires_convergence`).
 `tests/persona-pipeline/test-declaration-verbs.mjs` binds each declared value
 to the runbook text that states it;
 `tests/persona-pipeline/test-verb-runbook-characterization.mjs` records what
@@ -219,8 +282,12 @@ before any write. The request placeholder works the same
 way: the region prose names it, and the block says
 `<the original request described above>`. The bootstrap `create`, the resume
 `append` and the finalize `append` stop the block when they fail
-(`|| exit $?`); `ensemble-commit` stays unguarded until the settlement
-transitions (PC2b) give the degraded path its own step.
+(`|| exit $?`). The finalize then runs `peer-runner.mjs settle` for the
+ensemble attempt, which decides from the run ledger what the workflow
+records (nothing for a run that never launched, verdict `failed` with the
+ledger's `error_kind` for one that failed, the synthesis verdict or
+`degraded` for one that completed) and stops the block when it refuses, and
+ends with `finish-verb` (PC2b).
 
 decide's Phase 0.5 region (`decide-resolve.md`) holds the args-file steps
 (ADR-0059) and the resolver block, which opens with the `ARGS_DIR` the agent
@@ -263,7 +330,13 @@ is to be taken over, which is how a hand-maintained copy joins the pipeline.
 `tests/persona-pipeline/` tests each canonical unit once per enrolled persona
 (`personasFor(dest)` in `_personas.mjs`), the region engine on fixtures, the
 declaration and its loader, the generator, the CLI entry guard, and the
-off-capability, broken-declaration and isolation behavior.
+off-capability, broken-declaration and isolation behavior (with
+`dispatch_target` off, an inherited `AGENTIC_AUTOPILOT` read by nothing but
+`state.mjs`), schema 1.4 and the owner gates (`test-state-schema-14.mjs`),
+settlement (`test-peer-runner-settle.mjs`), the start lifecycle through the
+real CLIs (`test-start-lifecycle.mjs`) and the previous founder release
+against a gated file (`test-mixed-version.mjs`, which reads the release tag
+and fails without it).
 `test-runbook-contracts.mjs` holds the runbook contracts (call order, the
 workflow each write targets, identity against the characterization's
 expected map, the phase-note transport, failure propagation, the privacy gate
@@ -271,10 +344,10 @@ before the dispatch, no image to the peer, the finalize block and decide's
 resolver block run with a stubbed `node`, and the fallback decide's prose
 names measured against its registry) over each persona's committed runbook
 and over the runbook assembled from the templates, so a defect the drift
-check cannot see still fails. Runbooks with an authored finalize have their
-own family there (the block's position after every extension marker, the
-extensions' anchor sentences, the guards run with each combination of
-outcomes), and so does `start` (its clean-baseline admission and
+check cannot see still fails. The convergent finalize of refine and start has
+its own family there (the block's position after every extension marker, the
+extensions' anchor sentences, the `CONVERGED` check run with each value, the
+variant rebuilt from its plain template), and so does `start` (its clean-baseline admission and
 `workflow_type` read run for every status). `test-skill-contracts.mjs` is the
 skill family: a skill runs nothing, so it checks the text an agent acts on
 (no unrendered placeholder, `<plugin-root>` in every generated block, each named

@@ -7,7 +7,10 @@ that surface only after parsing the peer's content.
 - Detect: `error.kind ∈ {peer_cli_not_found, peer_unauthenticated,
   peer_invocation_error}`, OR `peer-runner.mjs run` returns no companion
   path (`peer_cli_not_found` equivalent at the discovery layer).
-- Action: Skip dispatch silently. Proceed with local-only research.
+- Action: Proceed with local-only research, silently. A run the runner
+  started settles as verdict `failed` with this `error_kind`
+  (`peer-runner.mjs settle`); with no run launched there is nothing to
+  settle.
 - Surface: Mention in the user-facing completion summary that the
   ensemble was unavailable. Do NOT label findings inside the brief.
 
@@ -16,7 +19,8 @@ that surface only after parsing the peer's content.
 - Detect: `status: peer_error` with `error.kind: peer_run_error`, OR the
   background dispatch exits unmappably (treated as
   `peer_invocation_error`).
-- Action: Record the failure mode internally; proceed local-only.
+- Action: Proceed local-only; settling the attempt records verdict
+  `failed` with the ledger's `error_kind`.
 - Surface: Same as above.
 
 ### Peer returns empty output
@@ -24,7 +28,11 @@ that surface only after parsing the peer's content.
 - Detect: Envelope `status: success` but `stdout` parses to no claims,
   only structural shell, or is missing the per-sub-question response
   blocks.
-- Action: Treat as if the peer was unavailable. Proceed local-only.
+- Action: Treat as if the peer was unavailable. Proceed local-only;
+  settling the completed attempt records verdict `degraded`. `settle` sees
+  an empty or unreadable answer itself; an answer that parses to only
+  structural shell reads to it like any other, so pass `degraded` as the
+  synthesis verdict then.
 - Surface: Same as above.
 
 ### Peer returns malformed partial output

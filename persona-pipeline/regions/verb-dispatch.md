@@ -8,11 +8,14 @@ PROMPT_FILE="$(mktemp -t {{name}}-{{verb}}-prompt.XXXXXX).xml"
 RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the prompt to $PROMPT_FILE (the privacy gate above must have
 #     passed; the prompt carries only genericized text) ...
+# Run this block as a host background task (on Claude, the Bash tool's
+# run_in_background), never with a trailing `&`: the host tracks the runner
+# and notifies you when it exits, where a shell `&` would detach it from both.
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase {{verb}} \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
-  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
+  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"
 ```

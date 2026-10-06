@@ -27,7 +27,8 @@
 4. The peer's `stdout` is the structured answer to the {{ensemble_type}}
    prompt: claims and sources for each sub-question. Parse against the
    Normalized Claim Shape below.
-5. If the peer failed in any failure-mode, record the failure internally
-   and proceed to Synthesize with local-only findings. Mention
+5. If the peer failed in any failure-mode, proceed to Synthesize with
+   local-only findings; the finalize settles the attempt from its run
+   ledger (`peer-runner.mjs settle`), which records the failure. Mention
    degradation in the user-facing completion summary AFTER the brief is
    saved — never as a finding label inside the brief artifact.

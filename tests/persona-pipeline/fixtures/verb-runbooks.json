@@ -18,17 +18,12 @@
       "refine": "refine-verify"
     }
   },
-  "expected_commit_ensemble_types": {
-    "founder": {
-      "critique": "$ENSEMBLE_TYPE"
-    }
-  },
   "expected_launched": {
     "founder": {
-      "critique": "critique ($ENSEMBLE_TYPE)"
+      "critique": "critique (profile=<profile>)"
     },
     "designer": {
-      "critique": "critique (profile=<lens|all>)"
+      "critique": "critique (profile=<profile>)"
     }
   },
   "allowed_differences": [
@@ -304,6 +299,2744 @@
       "from": "### Active next-action proposal\n\n- selected_next:",
       "to": "### Active next-action proposal\n\n(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)\n- selected_next:",
       "why": "PC2a4 RV4: the finalize note cites the persona's own entry-routing contract, after the heading so the heading line stays exact"
+    },
+    {
+      "runbooks": [
+        "founder/compose",
+        "founder/critique",
+        "founder/decide",
+        "founder/frame",
+        "founder/investigate",
+        "founder/refine",
+        "designer/compose",
+        "designer/critique",
+        "designer/decide",
+        "designer/frame",
+        "designer/investigate",
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active",
+      "from": "state.mjs create",
+      "to": {
+        "script": "state.mjs",
+        "sub": "autopilot-preflight",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ]
+        ]
+      },
+      "why": "PC2b DD5: Phase 0 runs autopilot-preflight after find-active and before any write (ADR-0066 Decision 3: an inherited AGENTIC_AUTOPILOT is reported ignored; a pending owner gate is put to the user)"
+    },
+    {
+      "runbooks": [
+        "founder/start",
+        "designer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active",
+      "from": "state.mjs check-clean-baseline",
+      "to": {
+        "script": "state.mjs",
+        "sub": "autopilot-preflight",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ]
+        ]
+      },
+      "why": "PC2b DD5: start's Phase 0 is the verb Phase 0 template, preflight included"
+    },
+    {
+      "runbooks": [
+        "founder/compose",
+        "founder/critique",
+        "founder/decide",
+        "founder/frame",
+        "founder/investigate",
+        "founder/refine",
+        "designer/compose",
+        "designer/critique",
+        "designer/decide",
+        "designer/frame",
+        "designer/investigate",
+        "designer/refine"
+      ],
+      "op": "add-flag",
+      "where": "call:state.mjs append#1:--clear-next-step",
+      "from": "--current-phase",
+      "to": "true",
+      "why": "PC2b DD5: the resume append clears the next step the previous verb recorded, so a verb that stops before finish-verb leaves none behind (ADR-0063 D6)"
+    },
+    {
+      "runbooks": [
+        "founder/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs read",
+      "from": "state.mjs set-terminal",
+      "to": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--clear-next-step",
+            "true"
+          ],
+          [
+            "--event",
+            "resumed"
+          ]
+        ]
+      },
+      "why": "PC2b RV4: start's resume clears the next step only once workflow_type is start, keeping the lifecycle position; a verb-chain workflow is not written"
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs read",
+      "from": "decide-registry.mjs resolve",
+      "to": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--clear-next-step",
+            "true"
+          ],
+          [
+            "--event",
+            "resumed"
+          ]
+        ]
+      },
+      "why": "PC2b RV4: start's resume clears the next step only once workflow_type is start, keeping the lifecycle position; a verb-chain workflow is not written"
+    },
+    {
+      "runbooks": [
+        "founder/compose"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "compose"
+          ],
+          [
+            "--ensemble-type",
+            "plan-verify"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "compose"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b DD6/D2: the ensemble attempt is settled from its run ledger (peer-runner.mjs settle) instead of committed from shell variables: never launched records nothing, launched and failed records verdict failed with the ledger's error_kind, completed records the synthesis; a refusal stops the block before the last write"
+    },
+    {
+      "runbooks": [
+        "founder/compose"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Critique the composed planning artifact"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Critique the composed planning artifact"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "critique"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b DD3/DD7: the terminal write is finish-verb, which makes set-terminal's summary-complete write with the proposal's closed-enum next step (ADR-0063 D3, ported by ADR-0066 Decision 9)"
+    },
+    {
+      "runbooks": [
+        "founder/frame"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "frame"
+          ],
+          [
+            "--ensemble-type",
+            "frame"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "frame"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b DD6/D2: the ensemble attempt is settled from its run ledger (peer-runner.mjs settle) instead of committed from shell variables: never launched records nothing, launched and failed records verdict failed with the ledger's error_kind, completed records the synthesis; a refusal stops the block before the last write"
+    },
+    {
+      "runbooks": [
+        "founder/frame"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Decide on a business direction given this frame"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Decide on a business direction given this frame"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "decide"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b DD3/DD7: the terminal write is finish-verb, which makes set-terminal's summary-complete write with the proposal's closed-enum next step (ADR-0063 D3, ported by ADR-0066 Decision 9)"
+    },
+    {
+      "runbooks": [
+        "founder/investigate"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "investigate"
+          ],
+          [
+            "--ensemble-type",
+            "research-scan"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "investigate"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b DD6/D2: the ensemble attempt is settled from its run ledger (peer-runner.mjs settle) instead of committed from shell variables: never launched records nothing, launched and failed records verdict failed with the ledger's error_kind, completed records the synthesis; a refusal stops the block before the last write"
+    },
+    {
+      "runbooks": [
+        "founder/investigate"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "<one-sentence imperative for next verb>"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "<one-sentence imperative for next verb>"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "frame"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b DD3/DD7: the terminal write is finish-verb, which makes set-terminal's summary-complete write with the proposal's closed-enum next step (ADR-0063 D3, ported by ADR-0066 Decision 9)"
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "decide"
+          ],
+          [
+            "--ensemble-type",
+            "brainstorm"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "decide"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b DD6/D2: the ensemble attempt is settled from its run ledger (peer-runner.mjs settle) instead of committed from shell variables: never launched records nothing, launched and failed records verdict failed with the ledger's error_kind, completed records the synthesis; a refusal stops the block before the last write"
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Compose the planning artifact for the chosen direction"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Compose the planning artifact for the chosen direction"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b DD3/DD7: the terminal write is finish-verb, which makes set-terminal's summary-complete write with the proposal's closed-enum next step (ADR-0063 D3, ported by ADR-0066 Decision 9)"
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "PC2b DD7: decide's generated Owner selection step finds the workflow, clears the decide-conflict gate with the owner's resolution and next step in one write, then finishes the verb"
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#2",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "PC2b Review of code step 6: the resolver reads the workflow type first, so a gate met inside a start lifecycle is cleared and the lifecycle resumes, with no verb terminal write"
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs read",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC2b DD7: decide's generated Owner selection step finds the workflow, clears the decide-conflict gate with the owner's resolution and next step in one write, then finishes the verb; the resolution is read from a quoted heredoc (Review of code step 6)"
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs awaiting-owner-clear",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Compose the planning artifact for the chosen direction"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC2b DD7: decide's generated Owner selection step finds the workflow, clears the decide-conflict gate with the owner's resolution and next step in one write, then finishes the verb"
+    },
+    {
+      "runbooks": [
+        "designer/compose"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "compose"
+          ],
+          [
+            "--ensemble-type",
+            "plan-verify"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "compose"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b DD6/D2: the ensemble attempt is settled from its run ledger (peer-runner.mjs settle) instead of committed from shell variables: never launched records nothing, launched and failed records verdict failed with the ledger's error_kind, completed records the synthesis; a refusal stops the block before the last write"
+    },
+    {
+      "runbooks": [
+        "designer/compose"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Critique the composed design spec, and the rendered screen once built (/designer:critique)"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Critique the composed design spec, and the rendered screen once built (/designer:critique)"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "critique"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b DD3/DD7: the terminal write is finish-verb, which makes set-terminal's summary-complete write with the proposal's closed-enum next step (ADR-0063 D3, ported by ADR-0066 Decision 9)"
+    },
+    {
+      "runbooks": [
+        "designer/frame"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "frame"
+          ],
+          [
+            "--ensemble-type",
+            "frame"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "frame"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b DD6/D2: the ensemble attempt is settled from its run ledger (peer-runner.mjs settle) instead of committed from shell variables: never launched records nothing, launched and failed records verdict failed with the ledger's error_kind, completed records the synthesis; a refusal stops the block before the last write"
+    },
+    {
+      "runbooks": [
+        "designer/frame"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Decide on a design direction given this frame (/designer:decide)"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Decide on a design direction given this frame (/designer:decide)"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "decide"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b DD3/DD7: the terminal write is finish-verb, which makes set-terminal's summary-complete write with the proposal's closed-enum next step (ADR-0063 D3, ported by ADR-0066 Decision 9)"
+    },
+    {
+      "runbooks": [
+        "designer/investigate"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "investigate"
+          ],
+          [
+            "--ensemble-type",
+            "reference-scan"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "investigate"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b DD6/D2: the ensemble attempt is settled from its run ledger (peer-runner.mjs settle) instead of committed from shell variables: never launched records nothing, launched and failed records verdict failed with the ledger's error_kind, completed records the synthesis; a refusal stops the block before the last write"
+    },
+    {
+      "runbooks": [
+        "designer/investigate"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "<compact selected_next + why + next_command — e.g. Frame the UX problem from this cited brief (/designer:frame)>"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "<compact selected_next + why + next_command — e.g. Frame the UX problem from this cited brief (/designer:frame)>"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "frame"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b DD3/DD7: the terminal write is finish-verb, which makes set-terminal's summary-complete write with the proposal's closed-enum next step (ADR-0063 D3, ported by ADR-0066 Decision 9)"
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "decide"
+          ],
+          [
+            "--ensemble-type",
+            "brainstorm"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "decide"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b DD6/D2: the ensemble attempt is settled from its run ledger (peer-runner.mjs settle) instead of committed from shell variables: never launched records nothing, launched and failed records verdict failed with the ledger's error_kind, completed records the synthesis; a refusal stops the block before the last write"
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Compose the flows/specs for the chosen direction (/designer:compose)"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Compose the flows/specs for the chosen direction (/designer:compose)"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b DD3/DD7: the terminal write is finish-verb, which makes set-terminal's summary-complete write with the proposal's closed-enum next step (ADR-0063 D3, ported by ADR-0066 Decision 9)"
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "PC2b DD7: decide's generated Owner selection step finds the workflow, clears the decide-conflict gate with the owner's resolution and next step in one write, then finishes the verb"
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#2",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "PC2b Review of code step 6: the resolver reads the workflow type first, so a gate met inside a start lifecycle is cleared and the lifecycle resumes, with no verb terminal write"
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs read",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC2b DD7: decide's generated Owner selection step finds the workflow, clears the decide-conflict gate with the owner's resolution and next step in one write, then finishes the verb; the resolution is read from a quoted heredoc (Review of code step 6)"
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs awaiting-owner-clear",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Compose the flows/specs for the chosen direction (/designer:compose)"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC2b DD7: decide's generated Owner selection step finds the workflow, clears the decide-conflict gate with the owner's resolution and next step in one write, then finishes the verb"
+    },
+    {
+      "runbooks": [
+        "founder/compose",
+        "founder/frame",
+        "founder/investigate",
+        "founder/decide",
+        "designer/compose",
+        "designer/frame",
+        "designer/investigate",
+        "designer/decide"
+      ],
+      "where": "note",
+      "from": "- selected_next:         <verb | owner decision>",
+      "to": "- selected_next:         <verb | commit | done | owner decision>",
+      "why": "PC2b DD7: the proposal vocabulary gains commit (the owner saves and commits) and done, the closed next-step kinds finish-verb records"
+    },
+    {
+      "runbooks": [
+        "founder/compose",
+        "founder/frame",
+        "founder/investigate",
+        "founder/decide",
+        "designer/compose",
+        "designer/frame",
+        "designer/investigate",
+        "designer/decide"
+      ],
+      "where": "note",
+      "from": "or ${persona}:<verb> for a verb>",
+      "to": "or ${persona}:<verb> for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>",
+      "why": "PC2b DD7: as for selected_next, the next command each closed kind takes"
+    },
+    {
+      "runbooks": [
+        "founder/critique"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "critique"
+          ],
+          [
+            "--ensemble-type",
+            "$ENSEMBLE_TYPE"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "critique"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b U5a (DD6/D2): critique's finalize is generated; it settles the ensemble attempt from its run ledger instead of committing it from shell variables (designer's D2 guard goes with it)"
+    },
+    {
+      "runbooks": [
+        "founder/critique"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Refine the artifact to address the findings"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Refine the artifact to address the findings"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b U5a (DD3/DD7): critique's terminal write is finish-verb, recording the closed-enum next step with the summary-complete write"
+    },
+    {
+      "runbooks": [
+        "founder/critique"
+      ],
+      "where": "note",
+      "from": "### Ensemble launched: critique ($ENSEMBLE_TYPE) at <iso-utc>\n\n### Ensemble synthesis: critique (profile=<default|red-team>) verdict=<sound|concerns|veto|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Review report\n\nGate verdict: 규제노출 <PASS|COND|FAIL> · 안전리스크 <PASS|COND|FAIL>\n<CRITICAL / MAJOR / MINOR / SUGGESTION findings by section/claim;\n 'Looks Strong' observations at the end>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + the gate verdict>\n- evidence_pointers:     <finding sections / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb>\n",
+      "to": "### Ensemble launched: critique (profile=<profile>) at <iso-utc>\n\n### Ensemble synthesis: critique (profile=<profile>) verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Review report\n\nGate verdict: 규제노출 <PASS|COND|FAIL> · 안전리스크 <PASS|COND|FAIL>\n<CRITICAL / MAJOR / MINOR / SUGGESTION findings by section/claim;\n 'Looks Strong' observations at the end>\n\n### Active next-action proposal\n\n(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)\n- selected_next:         <verb | commit | done | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — 본질/근본 (essence/foundation) + the gate verdict>\n- evidence_pointers:     <finding sections / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>\n",
+      "why": "PC2b U5a: critique's note is the generated finalize scaffold (verb-finalize.md): the declared artifact, rationale and evidence, the persona's verdicts (verbs.critique.verdicts), the closed next-step vocabulary and the profile in the launched and synthesis headings"
+    },
+    {
+      "runbooks": [
+        "designer/critique"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs append#2",
+      "from": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase-label",
+            "Phase 1: Critique (synthesized)"
+          ],
+          [
+            "--phase-note",
+            "$NOTE"
+          ],
+          [
+            "--current-phase",
+            "phase-2-presented"
+          ],
+          [
+            "--next-action",
+            "<compact selected_next + why + next_command — e.g. 'Address CRITICAL/MAJOR findings (/designer:refine)' OR 'No blocking findings, gate not FAIL (PASS or CONDITIONAL with named preconditions) — proceed to commit'>"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase-label",
+            "Phase 1: Critique (synthesized)"
+          ],
+          [
+            "--phase-note",
+            "$NOTE"
+          ],
+          [
+            "--current-phase",
+            "phase-2-presented"
+          ],
+          [
+            "--next-action",
+            "<compact selected_next + why + next_command — e.g. Address CRITICAL/MAJOR findings (/designer:refine), or proceed to commit when nothing blocks and the gate is not FAIL>"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "why": "PC2b U5a: critique's finalize append records the declared next action (verbs.critique.next_action), read from a quoted heredoc note"
+    },
+    {
+      "runbooks": [
+        "designer/critique"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "critique"
+          ],
+          [
+            "--ensemble-type",
+            "review"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "critique"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b U5a (DD6/D2): critique's finalize is generated; it settles the ensemble attempt from its run ledger instead of committing it from shell variables (designer's D2 guard goes with it)"
+    },
+    {
+      "runbooks": [
+        "designer/critique"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "<compact selected_next + why + next_command — e.g. 'Address CRITICAL/MAJOR findings (/designer:refine)' OR 'No blocking findings, gate not FAIL (PASS or CONDITIONAL with named preconditions) — proceed to commit'>"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "<compact selected_next + why + next_command — e.g. Address CRITICAL/MAJOR findings (/designer:refine), or proceed to commit when nothing blocks and the gate is not FAIL>"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b U5a (DD3/DD7): critique's terminal write is finish-verb, recording the closed-enum next step with the summary-complete write"
+    },
+    {
+      "runbooks": [
+        "designer/critique"
+      ],
+      "op": "null-guard",
+      "where": "guards.ensemble_launched",
+      "from": "if [ -n \"${RUN_ID:-}\" ] && [ -n \"${VERDICT:-}\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" ensemble-commit \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --phase critique --ensemble-type review --run-id \"$RUN_ID\" \\\n    --verdict \"$VERDICT\" --summary \"$SUMMARY\" \\\n    --completed-at \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\nfi",
+      "to": null,
+      "why": "PC2b U5a (D2): settle decides from the ledger whether an attempt launched, so the shell guard on RUN_ID and VERDICT goes"
+    },
+    {
+      "runbooks": [
+        "designer/critique"
+      ],
+      "where": "note",
+      "from": "### Ensemble launched: critique (profile=<lens|all>) at <iso-utc>\n\n### Ensemble synthesis: critique verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Review report\n\nGate verdict: 접근성 Accessibility [PASS/CONDITIONAL/FAIL] (candidate-level; focus-order / keyboard / screen-reader unverified — runtime)\n\n<severity-grouped findings: CRITICAL / MAJOR / MINOR / SUGGESTION, each\n [element/region] [lens] — [finding + failure signal + criteria ref]; plus Looks Strong>\n\n### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — the decisive findings + the accessibility gate verdict>\n- evidence_pointers:     <finding sections / criteria refs / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb>\n",
+      "to": "### Ensemble launched: critique (profile=<profile>) at <iso-utc>\n\n### Ensemble synthesis: critique (profile=<profile>) verdict=<agreed|concerns|conflict>\n\n<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n### Review report\n\nGate verdict: 접근성 Accessibility [PASS/CONDITIONAL/FAIL] (candidate-level; focus-order / keyboard / screen-reader unverified — runtime)\n\n<severity-grouped findings: CRITICAL / MAJOR / MINOR / SUGGESTION, each\n [element/region] [lens] — [finding + failure signal + criteria ref]; plus Looks Strong>\n\n### Active next-action proposal\n\n(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)\n- selected_next:         <verb | commit | done | owner decision>\n- rejected_alternatives: <1-2 alternatives, each + one-line why-not>\n- rationale:             <why best — the decisive findings + the accessibility gate verdict>\n- evidence_pointers:     <finding sections / criteria refs / artifact path — pointers only>\n- confidence:            <HIGH | MEDIUM | LOW>\n- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>\n",
+      "why": "PC2b U5a: critique's note is the generated finalize scaffold (verb-finalize.md): the declared artifact, rationale and evidence, the persona's verdicts (verbs.critique.verdicts), the closed next-step vocabulary and the profile in the launched and synthesis headings"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs ensemble-commit",
+      "from": {
+        "script": "state.mjs",
+        "sub": "ensemble-commit",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "refine"
+          ],
+          [
+            "--ensemble-type",
+            "refine-verify"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ],
+          [
+            "--completed-at",
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ]
+        ]
+      },
+      "to": {
+        "script": "peer-runner.mjs",
+        "sub": "settle",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--phase",
+            "refine"
+          ],
+          [
+            "--run-id",
+            "$RUN_ID"
+          ],
+          [
+            "--verdict",
+            "$VERDICT"
+          ],
+          [
+            "--summary",
+            "$SUMMARY"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD6/D2): refine's finalize is generated; it settles the ensemble attempt from its run ledger instead of committing it from shell variables (designer's D2 guard goes with it)"
+    },
+    {
+      "runbooks": [
+        "founder/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Re-critique the revised artifact"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Re-critique the revised artifact"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "critique"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD3/DD7): refine's terminal write is finish-verb, recording the closed-enum next step (a re-critique) with the summary-complete write"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "<compact selected_next + why + next_command — e.g. 'Re-critique the revised artifact to confirm convergence (/designer:critique)' OR 'Converged, gate not FAIL — proceed / commit'>"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "<compact selected_next + why + next_command — e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "critique"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD3/DD7): refine's terminal write is finish-verb, recording the closed-enum next step (a re-critique) with the summary-complete write; designer's runs only once converged, as before"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "where": "call:state.mjs append#2:--next-action",
+      "from": "e.g. 'Re-critique the revised artifact to confirm convergence (/designer:critique)' OR 'Converged, gate not FAIL — proceed / commit'>",
+      "to": "e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>",
+      "why": "PC2b U5b: the next action is a declared value now (verbs.refine.next_action), a single-quoted shell literal, so the placeholder loses its inner single quotes"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--current-phase",
+            "phase-2-presented"
+          ],
+          [
+            "--next-action",
+            "<Paused: the flagged item, and the next step that resolves it>"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "<refine|decide|investigate>"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--clear-terminal-marker",
+            "true"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD7, RV4): a refine that did not converge records the next step that resolves the flagged item and turns off a terminal marker an earlier verb left, in its own non-terminal write (it wrote nothing before)"
+    },
+    {
+      "runbooks": [
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD7, RV6): the generated Owner decision step (recurring-finding) finds the workflow first, fix now"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs append#3",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD7, RV6): the generated Owner decision step (recurring-finding) finds the workflow first, fix now"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#2",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD7, RV6): fix now clears the recurring-finding gate with the owner's decision and this refine as the next step, in one write; the resolution is read from a quoted heredoc (Review of code step 6)"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs awaiting-owner-clear",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD7, RV6): the Owner decision's defer block finds the workflow first"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#3",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "PC2b Review of code step 6: the resolver reads the workflow type first, so a gate met inside a start lifecycle is cleared and the lifecycle resumes, with no verb terminal write"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs read",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD7, RV6): defer clears the recurring-finding gate with the deferral and commit (the owner saves and commits) as the next step; the resolution is read from a quoted heredoc (Review of code step 6)"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs awaiting-owner-clear#2",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "The recurring finding is deferred; the owner saves and commits the refined artifact"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC2b U5b (DD3, DD7): after a deferral the verb ends with finish-verb kind commit, summary-complete; the owner saves and commits (commit_surface off)"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "null-guard",
+      "where": "guards.ensemble_launched",
+      "from": "if [ -n \"${RUN_ID:-}\" ] && [ -n \"${VERDICT:-}\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" ensemble-commit \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --phase refine --ensemble-type refine-verify --run-id \"$RUN_ID\" \\\n    --verdict \"$VERDICT\" --summary \"$SUMMARY\" \\\n    --completed-at \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"\nfi",
+      "to": null,
+      "why": "PC2b U5b (D2): settle decides from the ledger whether an attempt launched, so the shell guard on RUN_ID and VERDICT goes"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "where": "guards.converged",
+      "from": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete \\\n    --terminal-marker true \\\n    --next-action \"$NEXT_ACTION\" \\\n    --event updated\nelse\n  echo \"→ Refine PAUSED (non-convergence / regression / vision re-critique unavailable) — workflow left ACTIVE, NOT marked terminal. Resolve the flagged item, then re-run /designer:refine or route to /designer:decide.\" >&2\nfi",
+      "to": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" finish-verb \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --next-action '<compact selected_next + why + next_command — e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>' \\\n    --next-step-kind verb --next-step-verb 'critique' \\\n    --next-step-confidence \"<HIGH|MEDIUM|LOW>\" || exit $?\nelse\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" append \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --current-phase phase-2-presented \\\n    --next-action '<Paused: the flagged item, and the next step that resolves it>' \\\n    --next-step-kind verb --next-step-verb \"<refine|decide|investigate>\" \\\n    --next-step-confidence \"<HIGH|MEDIUM|LOW>\" \\\n    --clear-terminal-marker true --event updated || exit $?\n  echo \"→ PAUSED (not converged): the workflow stays open, not terminal. Resolve the flagged item, then run the next step recorded above.\" >&2\nfi",
+      "why": "PC2b U5b (DD5, DD7): the convergence guard stays fail-closed; converged, its last write is finish-verb; not converged, an append that records the next step and turns an inherited terminal marker off, where it wrote nothing before"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine"
+      ],
+      "where": "note",
+      "from": "### Active next-action proposal\n\n- selected_next:         <verb | owner decision>\n",
+      "to": "### Active next-action proposal\n\n(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)\n- selected_next:         <verb | commit | done | owner decision>\n",
+      "why": "PC2b U5b (DD7): the generated scaffold cites the routing contract, and the proposal names the closed-enum kinds finish-verb records"
+    },
+    {
+      "runbooks": [
+        "founder/refine",
+        "designer/refine"
+      ],
+      "where": "note",
+      "from": " for a verb>\n",
+      "to": " for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>\n",
+      "why": "PC2b U5b (DD7): the next command names what each closed-enum kind takes without a commit command (commit_surface off)"
+    },
+    {
+      "runbooks": [
+        "founder/start"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Save/commit the business deliverable; optionally /founder:start the next item"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Save/commit the business deliverable; optionally /founder:start the next item"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b U5c (DD3/DD7): start's terminal write is finish-verb kind commit (the owner saves and commits the deliverable; commit_surface off), generated from the declared verbs.start.next_action"
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs set-terminal",
+      "from": {
+        "script": "state.mjs",
+        "sub": "set-terminal",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--terminal-phase",
+            "summary-complete"
+          ],
+          [
+            "--terminal-marker",
+            "true"
+          ],
+          [
+            "--next-action",
+            "Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "finish-verb",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b U5c (DD3/DD7): start's terminal write is finish-verb kind commit (the owner saves and commits the deliverable; commit_surface off), generated from the declared verbs.start.next_action"
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--next-action",
+            "<Paused: the flagged item, and the next step that resolves it>"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "<refine|decide|investigate>"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ],
+          [
+            "--clear-terminal-marker",
+            "true"
+          ],
+          [
+            "--event",
+            "updated"
+          ]
+        ]
+      },
+      "why": "PC2b U5c (DD7, RV4): a lifecycle that did not converge records the next step that resolves the flagged item and turns off a terminal marker an earlier write left, in its own non-terminal write (it wrote nothing before)"
+    },
+    {
+      "runbooks": [
+        "designer/start"
+      ],
+      "where": "guards.converged",
+      "from": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" set-terminal \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --terminal-phase summary-complete --terminal-marker true \\\n    --next-action \"Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface\" \\\n    --event updated\nelse\n  echo \"→ Lifecycle PAUSED at Phase 4 (non-convergence / new accessibility barrier / vision re-critique unavailable) — workflow left ACTIVE, NOT marked terminal. Resolve the flagged item, then re-run /designer:refine or route to /designer:decide.\" >&2\nfi",
+      "to": "if [ \"${CONVERGED:-no}\" = \"yes\" ]; then\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" finish-verb \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --next-action 'Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface' \\\n    --next-step-kind commit --next-step-confidence \"<HIGH|MEDIUM|LOW>\" || exit $?\nelse\n  node \"$CLAUDE_PLUGIN_ROOT/scripts/state.mjs\" append \\\n    --workflow-path \"$ACTIVE\" --host \"${AGENTIC_HOST:-claude}\" \\\n    --next-action '<Paused: the flagged item, and the next step that resolves it>' \\\n    --next-step-kind verb --next-step-verb \"<refine|decide|investigate>\" \\\n    --next-step-confidence \"<HIGH|MEDIUM|LOW>\" \\\n    --clear-terminal-marker true --event updated || exit $?\n  echo \"→ PAUSED (not converged): the workflow stays open, not terminal. Resolve the flagged item, then run the next step recorded above.\" >&2\nfi",
+      "why": "PC2b U5c (DD5, DD7): the convergence guard stays fail-closed; converged, its last write is finish-verb kind commit; not converged, an append that records the next step and turns an inherited terminal marker off, where it wrote nothing before"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs finish-verb#2",
+      "from": "",
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "<refine|decide|investigate>"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC2b Review of code step 6 (finding 3): designer waits for convergence (terminal_requires_convergence), so a deferral that leaves the refinement unconverged clears the recurring-finding gate with the next step that resolves what is still open and makes no terminal write; converged, the deferral clears with commit next and finishes as before"
     }
   ],
   "runbooks": {
