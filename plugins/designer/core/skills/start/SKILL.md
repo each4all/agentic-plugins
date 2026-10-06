@@ -158,7 +158,10 @@ peer path has no `--image` flag.
 ### Entry routing recommendation (before Phase 1)
 
 Present a short routing recommendation with **Options / Tradeoffs / Risks /
-Recommendation / Confidence / Evidence pointers / Default next command**:
+Recommendation / Confidence / Evidence pointers / Default next command**
+(the routes, the prompt shape and the quality-first defaults are defined in
+`../_shared/references/entry-routing-contract.md` § Routing Recommendation
+and the sections after it):
 
 - continue with `/designer:start` for one coherent design deliverable on
   the current branch;

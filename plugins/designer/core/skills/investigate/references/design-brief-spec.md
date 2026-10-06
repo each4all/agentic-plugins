@@ -288,6 +288,7 @@ The audit checklist enforces this.
 
 ## Citation Conventions
 
+<!-- pipeline:begin brief-spec-citations -->
 ### Numbering
 
 - Citations use bracketed integers `[N]` inline, paired with entries in the Sources section.
@@ -310,7 +311,9 @@ If a source has no clear title: use the page `<title>`; otherwise
 ### Access Date
 
 ISO format `YYYY-MM-DD`. Records when the source was fetched/read
-(distinct from `As-of`, the version/date the guidance describes).
+(distinct from `As-of`, the date or version the source's content
+describes).
+<!-- pipeline:end brief-spec-citations -->
 
 ---
 
@@ -476,15 +479,16 @@ Before saving the brief, verify:
 
 ## Ensemble Label Policy
 
+<!-- pipeline:begin brief-spec-label-policy -->
 When `designer:investigate --profile=design-brief` runs in command-mode,
-the bidirectional reference-scan ensemble (per `design-brief-ensemble.md`)
-may contribute claims and sources. The brief artifact does NOT carry any
-source-of-discovery labels:
+the bidirectional reference-scan ensemble (per
+`design-brief-ensemble.md`) may contribute claims and sources. The
+brief artifact does NOT carry any source-of-discovery labels:
 
 - No host-named markers anywhere in the brief — none of `[Local]`,
   `[Peer]`, `[Both]`, or any host-specific equivalent.
-- Numeric `[N]` citations remain the only labeling format in Findings and
-  Sources.
+- Numeric `[N]` citations remain the only labeling format in Findings
+  and Sources.
 - The peer's internal citation labels are NEVER copied verbatim into the
   brief — they are remapped to capture-order numbering by Citation
   Remapping (canonical rule in `design-brief-ensemble.md`).
@@ -493,3 +497,4 @@ The presence or absence of ensemble execution must NOT be inferable from
 reading the brief. Ensemble status (unavailable, partial, degraded) is
 communicated only in the user-facing completion summary that follows the
 save, never inside the brief artifact.
+<!-- pipeline:end brief-spec-label-policy -->

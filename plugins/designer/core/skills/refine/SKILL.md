@@ -156,6 +156,9 @@ an unresolved re-critique.
 
 ### Step 4: Present the result
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 ```
 ## Refinement Summary
 - Applied: [N findings / 1 revision / etc.]
@@ -238,6 +241,9 @@ re-render leaves the visual re-critique UNVERIFIED, not converged); no inline im
 bytes ever reach the peer.
 
 ### Step 5: Synthesize + converge
+
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
 
 After both sides return:
 
@@ -336,8 +342,10 @@ If a refinement reaches a **genuine 2+-branch decision point** — two viable
 remediation directions, or two ways to close the same gap — surface a **compact
 multi-axis lens** across the decisive design axes (사용성 Usability + the archetype
 axis) + the accessibility gate, reading `../decide/references/decision-axes.yml`
-(the `scripts/decide-registry.mjs resolve --size=minor` resolver gives the compact
-rendering of `balanced`; the registry file is readable even when the resolver CLI
+(the `scripts/decide-registry.mjs resolve` resolver, with the active profile in
+`AGENTIC_DESIGNER_PROFILE` and no `--size`, gives the profile's preset:
+`../_shared/references/entry-routing-contract.md` § Surfacing the multi-axis
+lens from a non-decide verb; the registry file is readable even when the resolver CLI
 is not). Bounded: only at a genuine 2+-branch point, never the full matrix for a
 trivial reversible fix. A weightier fork routes to `/designer:decide` rather than
 being settled inside the refine.

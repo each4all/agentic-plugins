@@ -80,6 +80,9 @@ a goal, not a metric; move it up to Goals and leave the metric marked
 
 ### Step 3: Present and confirm
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Present the UX problem model and ask the user:
 
 > "Does this accurately capture the design problem you want to solve, and
@@ -197,6 +200,9 @@ After both sides return:
 ### Step 5: Present
 
 <!-- pipeline:begin frame-present -->
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Use the same shape as auto-activated mode, at the deeper synthesized
 fidelity. Present clearly and confirm before downstream verbs.
 <!-- pipeline:end frame-present -->

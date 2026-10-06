@@ -142,6 +142,9 @@ the heuristic / criterion they rest on.
 
 ### Step 4: Synthesize
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Merge findings, dedupe, and sort by severity **CRITICAL > MAJOR > MINOR >
 SUGGESTION**. Compute the accessibility **gate verdict** (PASS / CONDITIONAL /
 FAIL — candidate-level). An unmitigated gate FAIL is CRITICAL.
@@ -248,6 +251,9 @@ CONFLICT findings both ways and let the user weigh them.
 
 ### Step 6: Present
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Emit the severity-grouped report (the Output format above), leading with the
 gate verdict. State plainly what remains **unverified** (focus order, keyboard,
 screen-reader — runtime).
@@ -323,9 +329,11 @@ If a critique surfaces a **genuine 2+-branch decision point** — two viable
 remediation directions, or two defensible severity reads of the same finding —
 surface a **compact multi-axis lens** across the decisive design axes (사용성
 Usability + the archetype axis) + the accessibility gate, reading
-`../decide/references/decision-axes.yml` (the
-`scripts/decide-registry.mjs resolve --size=minor` resolver gives the compact
-rendering of `balanced`). Bounded: only at a genuine 2+-branch point, never the
+`../decide/references/decision-axes.yml` (the `scripts/decide-registry.mjs
+resolve` resolver, with the active profile in `AGENTIC_DESIGNER_PROFILE` and no
+`--size`, gives the profile's preset:
+`../_shared/references/entry-routing-contract.md` § Surfacing the multi-axis
+lens from a non-decide verb). Bounded: only at a genuine 2+-branch point, never the
 full matrix for a trivial reversible fix. A weightier fork routes to
 `/designer:decide` rather than being settled inside the critique.
 
