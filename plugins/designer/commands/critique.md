@@ -51,6 +51,13 @@ if [ "$FIND_RC" -ne 0 ]; then
   echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
+# ADR-0066 Decision 3 — prints nothing interactively. When AGENTIC_AUTOPILOT
+# names a run it prints one line: the variable is ignored, this persona is no
+# autopilot dispatch target. When an owner gate is set on the workflow it
+# prints the gate and how the owner resolves it, to put to the user before
+# this command continues. It runs before any write.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" autopilot-preflight \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" || exit $?
 ```
 <!-- pipeline:end critique-phase-0 -->
 
@@ -97,6 +104,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --phase-label "Phase 0: Resume into ${VERB}" \
   --phase-note "Resumed from prior verb. Profile=<...>." \
   --current-phase phase-0-resume \
+  --clear-next-step true \
   --next-action "Run ${VERB} skill" --event resumed || exit $?
 ```
 <!-- pipeline:end critique-resume -->
@@ -180,13 +188,16 @@ PROMPT_FILE="$(mktemp -t 'designer'-'critique'-prompt.XXXXXX).xml"
 RUN_ID="${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the prompt to $PROMPT_FILE (the privacy gate above must have
 #     passed; the prompt carries only genericized text) ...
+# Run this block as a host background task (on Claude, the Bash tool's
+# run_in_background), never with a trailing `&`: the host tracks the runner
+# and notifies you when it exits, where a shell `&` would detach it from both.
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase 'critique' \
   --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
-  --ensemble-type 'review' --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
+  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err"
 ```
 <!-- pipeline:end critique-dispatch -->
 
@@ -208,13 +219,17 @@ Graceful degradation: companion missing or exit code 3
 ## Phase 2 — State finalize
 <!-- pipeline:end critique-finalize-heading -->
 
-```bash
-ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
-CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-NOTE="### Ensemble launched: critique (profile=<lens|all>) at <iso-utc>
+<!-- pipeline:begin critique-finalize -->
+The phase note this step records — fill in every `<…>`. When no run launched
+(the privacy gate kept the verb local-only, so no dispatch ran; a run whose
+companion is missing did launch, and settles `failed`), its first heading reads
+`### Ensemble skipped: critique (profile=<profile>) (privacy gate)` instead, and the synthesis
+is local-only:
 
-### Ensemble synthesis: critique verdict=<agreed|concerns|conflict>
+```markdown
+### Ensemble launched: critique (profile=<profile>) at <iso-utc>
+
+### Ensemble synthesis: critique (profile=<profile>) verdict=<agreed|concerns|conflict>
 
 <AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>
 
@@ -227,50 +242,92 @@ Gate verdict: 접근성 Accessibility [PASS/CONDITIONAL/FAIL] (candidate-level; 
 
 ### Active next-action proposal
 
-- selected_next:         <verb | owner decision>
+(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)
+- selected_next:         <verb | commit | done | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — the decisive findings + the accessibility gate verdict>
 - evidence_pointers:     <finding sections / criteria refs / artifact path — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /designer:<verb> … or \$designer:<verb> for a verb>
-"
+- next_command:          <exact next step: /designer:<verb> … or $designer:<verb> for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>
+```
 
-# ADR-0029 §1 — the workflow next-action mirrors the COMPACT form of the Active
-# Next-Action Proposal above (selected_next + one-line why + next_command), NOT a
-# fixed verb. `/designer:refine` is installed and runnable, but it is not the
-# automatic next step: when the critique is clean (no CRITICAL/MAJOR + the gate
-# is not FAIL) the next action is "commit / proceed", not refine. Derive it from
-# the actual result rather than hard-coding a refine handoff.
-NEXT_ACTION="<compact selected_next + why + next_command — e.g. 'Address CRITICAL/MAJOR findings (/designer:refine)' OR 'No blocking findings, gate not FAIL (PASS or CONDITIONAL with named preconditions) — proceed to commit'>"
+Then run the block with the filled-in note in place of its placeholder line,
+between the two `PHASE_NOTE` lines. The quoted heredoc hands the note to
+`state.mjs` as written: no quote, `$`, backtick or backslash in it is read by
+the shell. The first line that reads `PHASE_NOTE` alone ends the note, and
+the shell runs every line after it as a command, so when the note itself holds
+such a line, replace both `PHASE_NOTE` delimiters with a word no line of the
+note consists of.
+
+Set `RUN_ID` to the run id the dispatch generated, empty when no run launched,
+and `VERDICT` and `SUMMARY` to the synthesis's verdict and a one-line résumé
+of its breakdown. `peer-runner.mjs settle` decides from the run ledger what the
+workflow records, not from these values alone: a run that never launched
+records nothing; a run that launched and failed, was cancelled or was
+abandoned records verdict `failed` with the ledger's `error_kind`; a run that
+completed records the synthesis verdict, or `degraded` when its answer was
+empty or unreadable. An answer that parses to nothing usable, only structural
+shell, reads to `settle` like any other, so set `VERDICT` to `degraded` then.
+It refuses, and the block stops before the last write, while a run is still
+live (collect it first) or when an empty `RUN_ID` would hide a run that
+launched (set it to that run's id).
+
+The last write, `finish-verb`, records the proposal's next step in closed-enum
+form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit` (the owner
+saves and commits the artifact; designer runs no commit itself) or `done`,
+each closing the workflow `summary-complete`. End instead with an owner gate
+when the owner must judge, with the judgment under the gate's heading in the
+note:
+
+- `scope-routing` (heading `### Routing recommendation`, anchor
+  `routing-recommendation`): the request does not belong in this verb or
+  workflow; the owner picks the route, then clears the gate.
+
+The owner-decision form below records the gate with the next step in one
+write and leaves the workflow open, not terminal, until the owner resolves it.
+
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_DESIGNER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'designer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+# The run ledger lives under the repository root, where the dispatch put it.
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+# Where read takes no -d (dash) it assigns nothing, so clear NOTE first: a
+# value the shell inherited must not stand in for the note.
+unset NOTE
+IFS= read -r -d '' NOTE <<'PHASE_NOTE' || true
+<the phase note above, filled in>
+PHASE_NOTE
+# A shell whose read has no -d (dash) reads nothing: stop before any write.
+[ -n "$NOTE" ] || { echo "✗ No phase note was read; nothing was written." >&2; exit 1; }
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --phase-label "Phase 1: Critique (synthesized)" \
+  --phase-label 'Phase 1: Critique (synthesized)' \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
-  --next-action "$NEXT_ACTION" \
-  --event updated
+  --next-action '<compact selected_next + why + next_command — e.g. Address CRITICAL/MAJOR findings (/designer:refine), or proceed to commit when nothing blocks and the gate is not FAIL>' \
+  --event updated || exit $?
 
-# ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
-# GUARD: only record an ensemble result when the peer actually launched. If the
-# privacy gate forced local-only, or the companion was unavailable (graceful
-# degradation), the ensemble did NOT run — $RUN_ID / $VERDICT / $SUMMARY are
-# unset, so skip ensemble-commit and rely on the body note ("### Ensemble
-# degraded:" or "### Ensemble skipped (local-only, privacy):") instead. Recording
-# a blank result would fabricate a peer run that never happened.
-if [ -n "${RUN_ID:-}" ] && [ -n "${VERDICT:-}" ]; then
-  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
-    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-    --phase critique --ensemble-type review --run-id "$RUN_ID" \
-    --verdict "$VERDICT" --summary "$SUMMARY" \
-    --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-fi
+# ADR-0066 PC2b — settle the ensemble attempt from its ledger (never launched,
+# launched and failed, completed); a refusal stops the block before the last
+# write, so the workflow never closes with an attempt left unsettled.
+node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \
+  --repo-root "$REPO_ROOT" --workflow-path "$ACTIVE" \
+  --host "${AGENTIC_HOST:-claude}" --phase 'critique' --run-id "$RUN_ID" \
+  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?
 
-# ADR-0029 §1 / completion-output contract §2 — $NEXT_ACTION above is already
-# the COMPACT proposal form (selected_next + one-line why + next_command); the
-# durable state and the code-emitted completion footer surface it verbatim as
-# "recommended next work".
-# ADR-0017 §sub-decision 5 — atomic terminal write.
+# ADR-0029 §1 / completion-output contract §2 — set --next-action (the
+# append above and this terminal write) to the COMPACT form of the
+# proposal above (selected_next + one-line why + next_command) so the
+# durable state and the code-emitted completion footer agree with the
+# Active Next-Action Proposal. The value shown is the typical-case
+# default; override it, and the --next-step-* flags, when the verb's result
+# selects a different next step (e.g. the owner's save and commit).
+# ADR-0063 D3 — finish-verb is the verb's last write: the ADR-0017
+# §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
+# with the next step. ADR-0066 Decision 3: an inherited AGENTIC_AUTOPILOT
+# changes nothing here.
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # archive gates are evaluated at the end of THIS turn, not at session close;
 # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
@@ -280,13 +337,21 @@ fi
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
 # core/skills/_shared/references/session-handoff.md § Archive timing.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --terminal-phase summary-complete \
-  --terminal-marker true \
-  --next-action "$NEXT_ACTION" \
-  --event updated
+  --next-action '<compact selected_next + why + next_command — e.g. Address CRITICAL/MAJOR findings (/designer:refine), or proceed to commit when nothing blocks and the gate is not FAIL>' \
+  --next-step-kind verb --next-step-verb 'refine' \
+  --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
+# The owner-decision form, for an owner gate named above this block: it
+# records the gate with the next step in one write, and the workflow stays
+# open until the owner resolves the gate.
+# node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
+#   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+#   --next-action '<Owner: the judgment, in a few words>' \
+#   --next-step-kind owner-decision --next-step-confidence "<HIGH|MEDIUM|LOW>" \
+#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?
 ```
+<!-- pipeline:end critique-finalize -->
 
 ---
 
@@ -334,8 +399,9 @@ Workflow: <absolute path to workflow .md file>
 
 <!-- pipeline:begin critique-completion-footer -->
 The runtime completion footer is **code-emitted** on this verb's terminal
-path (ADR-0039, enabled for designer by ADR-0043): `state.mjs
-set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
+path (ADR-0039, enabled for designer by ADR-0043): the terminal write
+(`state.mjs finish-verb`, which takes `set-terminal`'s path) fires the
+ADR-0031 session-handoff sidecar, which shells out
 to the runtime `footer.mjs` and prints the rendered footer — context
 state, completion state (designer's manually-published mapping surfaces
 `publish-needed` when only the owner's save/commit remains) + state-derived

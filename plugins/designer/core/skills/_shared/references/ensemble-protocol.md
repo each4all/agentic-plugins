@@ -197,9 +197,14 @@ peer cannot perform.
    peer_unauthenticated, peer_invocation_error}` → degrade to local-only;
    `companion_error` with `error.kind: companion_misuse` → adapter bug,
    surface as a runtime error (not a degradation case).
-4. If the peer failed or returned empty output, record the failure and
-   proceed to Synthesize with orchestrator-only results (graceful
-   degradation, see *Failure Handling*).
+4. If the peer failed or returned empty output, proceed to Synthesize
+   with orchestrator-only results (graceful degradation, see *Failure
+   Handling*). Either way the finalize settles the attempt from its run
+   ledger (`peer-runner.mjs settle`), which records what the ledger shows:
+   verdict `failed` with its `error_kind`, `degraded` for a completed run
+   with no usable answer, or the synthesis verdict. The ledger shows an
+   empty or unreadable answer; for one that parses to nothing usable, only
+   structural shell, the synthesis verdict is `degraded`.
 <!-- pipeline:end ensemble-collect -->
 
 ### Step 3: Synthesize
@@ -269,6 +274,24 @@ Frontmatter is the machine-parsable retrospective surface; the body is
 the human-readable narrative. Both are written under the per-file lock
 and MAY be written in separate calls.
 
+**Each attempt is settled from its run ledger.** A verb's finalize runs
+`../../../../scripts/peer-runner.mjs settle` with the run id its dispatch
+generated (empty when no run launched) before its last write, and the
+ledger, not the agent, decides what the workflow records:
+
+- never launched (no dispatch ran: the privacy gate kept the verb
+  local-only): nothing, and the phase note's first heading reads
+  `### Ensemble skipped: …`;
+- launched, then failed, cancelled or abandoned: an `ensemble_results`
+  entry with verdict `failed` and the ledger's `error_kind` in its summary;
+- completed: the synthesis verdict, or `degraded` when the answer was empty
+  or unreadable (the synthesis is then local-only). An answer that parses to
+  nothing usable, only structural shell, reads to `settle` like any other:
+  the synthesis judges it, and its verdict is then `degraded`.
+
+`settle` refuses while the run is still live (collect it first), and when an
+empty run id would hide a run that launched for the same workflow and phase.
+
 **`peer-now` is structurally excluded** from `ensemble_results`, by two
 independent mechanisms:
 
@@ -287,11 +310,6 @@ verdicts. A `[Peer]` label phase note in the workflow body is peer-now's
 only trace in the workflow; the run's own ledger under
 `peer-runs/<run_id>/` keeps its handle and logs.
 <!-- pipeline:end ensemble-bookkeeping -->
-
-**Do not record an ensemble that never ran.** When the privacy gate
-forces local-only, or the companion is unavailable, skip
-`ensemble-commit` entirely and record `### Ensemble degraded:` or
-`### Ensemble skipped (local-only, privacy):` in the body instead.
 
 ---
 
@@ -868,8 +886,10 @@ orchestrator holds the vision perspective (host-direct). Both are held to
 - **Detect**: companion discovery returns empty (the `companions` plugin
   is not installed), or `error.kind ∈ {peer_cli_not_found,
   peer_unauthenticated, peer_invocation_error}`.
-- **Action**: Skip the dispatch silently. Proceed with orchestrator-only
-  analysis.
+- **Action**: Proceed with orchestrator-only analysis, silently. A run the
+  runner started settles as verdict `failed` with this `error_kind`
+  (`peer-runner.mjs settle`); with no run launched there is nothing to
+  settle.
 - **Surface**: Mention in the user-facing completion summary that the
   ensemble was unavailable. Do NOT label findings inside the saved
   artifact.
@@ -880,8 +900,8 @@ orchestrator holds the vision perspective (host-direct). Both are held to
 <!-- pipeline:begin ensemble-failure-error -->
 - **Detect**: `status: peer_error` with `error.kind: peer_run_error`, or
   the background dispatch exits unmappably.
-- **Action**: Record the failure mode internally; proceed
-  orchestrator-only.
+- **Action**: Proceed orchestrator-only; settling the attempt records
+  verdict `failed` with the ledger's `error_kind`.
 - **Surface**: Same as above.
 <!-- pipeline:end ensemble-failure-error -->
 
@@ -892,7 +912,11 @@ orchestrator holds the vision perspective (host-direct). Both are held to
   findings, or is structurally valid but missing required fields for some
   findings.
 - **Action**: Parse only the findings that pass structural validation;
-  discard the rest. Continue with the salvageable subset.
+  discard the rest. Continue with the salvageable subset. A completed run
+  with no usable answer at all settles as verdict `degraded`. `settle` sees
+  an empty or unreadable answer itself; an answer that parses to no
+  findings, only structural shell, reads to it like any other, so pass
+  `degraded` as the synthesis verdict then.
 - **Surface**: Mention in the completion summary that ensemble coverage
   was partial.
 <!-- pipeline:end ensemble-failure-empty -->

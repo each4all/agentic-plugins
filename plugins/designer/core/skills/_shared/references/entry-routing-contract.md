@@ -64,15 +64,20 @@ end with a fixed lifecycle-table literal (e.g. always "next:
 `/designer:decide`"). It MUST instead emit an evidence-based proposal
 derived from the verb's actual result and the current workflow state:
 
-- **selected_next**: the recommended next step — a verb or
-  `owner decision`, chosen from the verb's result, not from a fixed table.
-  A designer workflow has no commit step: the owner saves, commits or
-  publishes the design deliverable. A verb command's terminal write marks
-  the workflow `summary-complete`, and it stays active-terminal until its
-  archive gates pass (the footer reports it as `publish-needed` while only
-  the HEAD-movement gate is unmet). A verb whose terminal write waits for a
-  converged re-critique stays non-terminal until it converges, and a skill
-  invoked on its own, outside a workflow command, writes no workflow state.
+- **selected_next**: the recommended next step — a verb, `commit`,
+  `owner decision`, or `done`, chosen from the verb's result, not from a
+  fixed table. A designer workflow has no commit command: `commit` means
+  the owner saves, commits or publishes the design deliverable, and `done`
+  that nothing is left to publish (an investigation or decision whose output
+  is the phase note itself). Either way the verb command's terminal write,
+  `finish-verb`, records that next step and marks the workflow
+  `summary-complete`, and it stays active-terminal until its archive gates
+  pass (the footer reports it as `publish-needed` while only the
+  HEAD-movement gate is unmet). An `owner decision` that sets an owner gate
+  leaves the workflow open until the owner resolves the gate. A verb whose
+  terminal write waits for a converged re-critique stays non-terminal until it
+  converges, and a skill invoked on its own, outside a workflow command, writes
+  no workflow state.
 - **rejected_alternatives**: 1-2 plausible next steps that were
   considered, each with a one-line why-not.
 - **rationale**: why `selected_next` is best, grounded in the verb's
@@ -84,8 +89,9 @@ derived from the verb's actual result and the current workflow state:
 - **confidence**: HIGH / MEDIUM / LOW, based on available evidence.
 - **next_command**: the exact next step, matching `selected_next` — for
   a verb, the `/designer:<verb> …` (Claude) or `$designer:<verb>` (Codex)
-  mention; for `owner decision`, surfacing the decision to the owner rather
-  than a command to run. There is no `/designer:commit`.
+  mention; for `commit`, the owner's save and commit, which nothing here
+  runs; for `done`, none; for `owner decision`, surfacing the decision to
+  the owner rather than a command to run. There is no `/designer:commit`.
 
 The default verb sequence (Routing Recommendation table above) remains
 the **fallback** when evidence is genuinely neutral — but a fixed
@@ -102,6 +108,23 @@ The durable `state.mjs --next-action` write SHOULD carry the compact
 form (selected_next + one-line rationale + next_command); the fuller
 proposal (alternatives + evidence + confidence) belongs in the
 completion output and the phase note.
+
+**Closed-enum projection: `next_step` (ADR-0063 D6, ported by ADR-0066
+Stage 2).** A verb command's last write, `state.mjs finish-verb`, also
+records `selected_next` and `confidence` as three flat keys. `next_action`
+stays the free-text form for humans; a machine consumer reads the closed-enum
+keys and never parses `next_action`.
+
+| `selected_next` | `next_step_kind` | `next_step_verb` |
+|---|---|---|
+| a verb | `verb` | that verb |
+| `commit` | `commit` | absent |
+| `owner decision` | `owner-decision` | absent |
+| `done` | `done` | absent |
+
+`next_step_confidence` is the proposal's confidence. A verb's Phase 0 clears
+the three keys when it resumes a workflow (`append --clear-next-step true`),
+so a verb that stops before its last write leaves no next step behind.
 <!-- pipeline:end routing-proposal -->
 
 <!-- pipeline:begin routing-floor -->
@@ -121,6 +144,38 @@ runtime plugin's `docs/completion-output-contract.md`; every persona
 completion surface carries the template as a structure-pinned block
 (`tests/plugin-shape/test-completion-output-contract.mjs`).
 <!-- pipeline:end routing-floor -->
+
+<!-- pipeline:begin routing-owner-gates -->
+### Owner gates
+
+A genuine owner judgment ends a verb with an owner gate instead of a terminal
+write. The verb records the judgment in its phase note under the heading the
+table names, then its last write is `finish-verb --next-step-kind
+owner-decision --owner-gate <gate> --owner-gate-anchor <anchor>`: the gate
+and the next step in one write, with the workflow left open. Recording a gate
+turns an inherited terminal marker off, the Stop hook never archives a
+workflow with a gate pending (on its branch or in the off-branch sweep), and
+the session handoff names the gate's resolving surface as the next action.
+
+| gate | set when | heading · anchor | resolved by |
+|---|---|---|---|
+| `decide-conflict` | `/designer:decide` leaves the decision to the owner: a CONFLICT remained or a veto gate is unresolved | `Ensemble synthesis` · `ensemble-synthesis` | the owner's selection in `/designer:decide` (its Owner selection step clears the gate) |
+| `recurring-finding` | `/designer:refine`: a finding an earlier refine pass on this workflow already addressed survives verification again | `Recurring finding` · `recurring-finding` | the owner's fix-now-or-defer in `/designer:refine` (its Owner decision step clears the gate) |
+| `scope-routing` | a verb concludes the request does not belong in this verb or workflow (another route in the Routing Recommendation fits) | `Routing recommendation` · `routing-recommendation` | the owner picks the route, then `awaiting-owner-clear` with the next step |
+
+`state.mjs awaiting-owner-clear --gate <gate> --resolution "<the decision>"
+--next-step-kind … --next-step-confidence … [--next-step-verb …]` records the
+owner's decision, clears the gate and names the next step in one write; it
+refuses, writing nothing, when the gate set on the workflow is another one.
+`staging-set` belongs to a commit command, and designer declares
+`commit_surface` off, so `state.mjs` refuses to set it, naming the capability.
+`pr-handling` belongs to autopilot dispatch, and designer declares
+`dispatch_target` off, so `state.mjs` refuses to set it, naming the
+capability; an inherited `AGENTIC_AUTOPILOT` changes nothing a designer
+command writes (ADR-0066 Decision 3).
+Reading a workflow file, `state.mjs` accepts all five gate names (ADR-0066
+Decision 7 validates each schema 1.4 key on its own).
+<!-- pipeline:end routing-owner-gates -->
 
 <!-- pipeline:begin routing-preflight-intro -->
 ## Session-Level Continue-vs-Fresh Preflight (ADR-0031)
@@ -161,7 +216,7 @@ trivial reversible step or a pure read. designer surfaces it where its code
 runs (`session-handoff.md` § When it fires has the wiring):
 
 - **Standalone verb and lifecycle completion** — code-emitted: the terminal
-  write (`state.mjs set-terminal`) fires the handoff sidecar, which prints the
+  write (`state.mjs finish-verb`) fires the handoff sidecar, which prints the
   runtime footer with its continue-vs-fresh block, alongside (not inside) the
   Active Next-Action Proposal.
 - **The Stop hook backstop** — for a terminal workflow, the hook re-fires the

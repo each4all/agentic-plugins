@@ -176,14 +176,40 @@
         "consistency"
       ],
       "default_profile": "all",
-      "request_placeholder": "one-line genericized critique target"
+      "request_placeholder": "one-line genericized critique target",
+      "artifact": [
+        "### Review report",
+        "",
+        "Gate verdict: 접근성 Accessibility [PASS/CONDITIONAL/FAIL] (candidate-level; focus-order / keyboard / screen-reader unverified — runtime)",
+        "",
+        "<severity-grouped findings: CRITICAL / MAJOR / MINOR / SUGGESTION, each",
+        " [element/region] [lens] — [finding + failure signal + criteria ref]; plus Looks Strong>"
+      ],
+      "rationale_gate": "the decisive findings + the accessibility gate verdict",
+      "evidence_pointers": "finding sections / criteria refs / artifact path",
+      "next_action": "<compact selected_next + why + next_command — e.g. Address CRITICAL/MAJOR findings (/designer:refine), or proceed to commit when nothing blocks and the gate is not FAIL>"
     },
     "refine": {
       "request_placeholder": "one-line genericized refine target",
+      "artifact": [
+        "### Refinement summary",
+        "",
+        "- Applied: <N findings / 1 revision>",
+        "- Verified: <downstream elements reconcile; accessibility gate exposure",
+        "  unchanged; measurable success metrics intact; [to be validated] markers intact>",
+        "- Render status (post-code only): <re-rendered screen read host-direct | re-render unavailable / broke — vision re-critique UNVERIFIED | N/A (pre-code)>",
+        "- Re-critique: <converged — no new CRITICAL/MAJOR + accessibility gate not FAIL (PASS, or CONDITIONAL with named preconditions) | NOT converged — new findings / regression / gate FAIL / vision UNVERIFIED>",
+        "- Convergence: <CONVERGED | PAUSED — bounded passes exhausted / regression / render unavailable → routed to owner decision | /designer:decide | /designer:investigate>",
+        "- Deferred: <items not addressed and why>"
+      ],
+      "rationale_gate": "the design reconciles + the accessibility gate verdict",
+      "evidence_pointers": "revised elements / criteria refs / artifact path",
+      "next_action": "<compact selected_next + why + next_command — e.g. Re-critique the revised artifact to confirm convergence (/designer:critique), or proceed to commit when converged and the gate is not FAIL>",
       "terminal_requires_convergence": true
     },
     "start": {
       "request_placeholder": "one-line genericized design topic",
+      "next_action": "Hand the spec to the frontend (/engineer:start or /orchestrator:plan); optionally /designer:start the next surface",
       "terminal_requires_convergence": true
     }
   },

@@ -160,8 +160,9 @@ this protocol pins shape only):
 4. The peer's `stdout` is the structured answer to the reference-scan
    prompt: claims and sources for each sub-question. Parse against the
    Normalized Claim Shape below.
-5. If the peer failed in any failure-mode, record the failure internally
-   and proceed to Synthesize with local-only findings. Mention
+5. If the peer failed in any failure-mode, proceed to Synthesize with
+   local-only findings; the finalize settles the attempt from its run
+   ledger (`peer-runner.mjs settle`), which records the failure. Mention
    degradation in the user-facing completion summary AFTER the brief is
    saved — never as a finding label inside the brief artifact.
 <!-- pipeline:end brief-ensemble-collect -->
@@ -486,7 +487,10 @@ that surface only after parsing the peer's content.
 - Detect: `error.kind ∈ {peer_cli_not_found, peer_unauthenticated,
   peer_invocation_error}`, OR `peer-runner.mjs run` returns no companion
   path (`peer_cli_not_found` equivalent at the discovery layer).
-- Action: Skip dispatch silently. Proceed with local-only research.
+- Action: Proceed with local-only research, silently. A run the runner
+  started settles as verdict `failed` with this `error_kind`
+  (`peer-runner.mjs settle`); with no run launched there is nothing to
+  settle.
 - Surface: Mention in the user-facing completion summary that the
   ensemble was unavailable. Do NOT label findings inside the brief.
 
@@ -495,7 +499,8 @@ that surface only after parsing the peer's content.
 - Detect: `status: peer_error` with `error.kind: peer_run_error`, OR the
   background dispatch exits unmappably (treated as
   `peer_invocation_error`).
-- Action: Record the failure mode internally; proceed local-only.
+- Action: Proceed local-only; settling the attempt records verdict
+  `failed` with the ledger's `error_kind`.
 - Surface: Same as above.
 
 ### Peer returns empty output
@@ -503,7 +508,11 @@ that surface only after parsing the peer's content.
 - Detect: Envelope `status: success` but `stdout` parses to no claims,
   only structural shell, or is missing the per-sub-question response
   blocks.
-- Action: Treat as if the peer was unavailable. Proceed local-only.
+- Action: Treat as if the peer was unavailable. Proceed local-only;
+  settling the completed attempt records verdict `degraded`. `settle` sees
+  an empty or unreadable answer itself; an answer that parses to only
+  structural shell reads to it like any other, so pass `degraded` as the
+  synthesis verdict then.
 - Surface: Same as above.
 
 ### Peer returns malformed partial output
@@ -567,16 +576,20 @@ run result Step 2 reads):
   <run_id>`) before a retry, or proceed local-only.
 - `derived_status: completed_uncommitted` — the companion finished and
   wrote its envelope while the workflow still holds the pending entry:
-  read `paths.envelope` as Step 2 item 3 reads `envelope_path`, then
-  settle it with `state.mjs ensemble-commit`, with no new dispatch.
+  read `paths.envelope` as Step 2 item 3 reads `envelope_path`,
+  synthesize it, and settle it in the finalize (`peer-runner.mjs settle
+  --run-id <run_id>`), with no new dispatch.
 - Otherwise the run ended without an envelope to use: proceed local-only,
   or retry.
 
 A retry takes a fresh run id, since the runner refuses a `run_id` whose
-ledger already exists. The old pending entry stays until
-`state.mjs ensemble-commit` settles its `run_id`: settle it with a
-verdict that says the run was abandoned, whether the step retries or
-proceeds local-only.
+ledger already exists. The old pending entry stays until its attempt is
+settled: cancel the old run if it is still live, then settle it with
+`peer-runner.mjs settle --run-id <old run_id>`, whether the step retries
+or proceeds local-only. The ledger decides what that records (verdict
+`failed` with its `error_kind` for a run that ended without a usable
+answer), never a verdict the agent picks; the retry then settles under its
+own run id.
 
 Workflow re-entry uses designer's own continuity — `scripts/state.mjs`
 restores the workflow `.md`'s tasks frontmatter and current_phase per
