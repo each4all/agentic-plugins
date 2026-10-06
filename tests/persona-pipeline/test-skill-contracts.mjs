@@ -189,10 +189,15 @@ function extensionTexts(text) {
   return out;
 }
 
+// engineer's skills join the regions one group at a time in Stage 3 (PC3 U7).
+const ENGINEER_JOINED = new Set(['core/skills/checkpoint/SKILL.md', 'core/skills/peer-now/SKILL.md', 'core/skills/resume/SKILL.md']);
+
 describe('skill regions: the contracts hold for every enrolled persona', () => {
   it('the contracts reach the skill files they are about (guards a vacuous pass)', () => {
     deepStrictEqual([...FILES.keys()].map(skillOf).sort(), ['checkpoint', 'compose', 'critique', 'decide', 'frame', 'peer-now', 'refine', 'resume', 'start']);
-    for (const [dest, personas] of FILES) deepStrictEqual([...personas].sort(), ['designer', 'founder'], `${dest}: enrolled personas`);
+    for (const [dest, personas] of FILES) {
+      deepStrictEqual([...personas].sort(), ENGINEER_JOINED.has(dest) ? ['designer', 'engineer', 'founder'] : ['designer', 'founder'], `${dest}: enrolled personas`);
+    }
     deepStrictEqual(SKILL_SLOTS.map((e) => `${e.dest}#${e.id}`), ['core/skills/start/SKILL.md#start-archetype'], 'the skill slots');
     for (const slot of SKILL_SLOTS) ok(EXTENSION_ANCHORS[slot.id], `anchor sentences for the skill slot ${slot.id}`);
   });

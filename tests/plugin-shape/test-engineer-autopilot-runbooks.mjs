@@ -2,8 +2,9 @@
 //
 // The behavior lives in code (state.mjs autopilot-preflight / finish-verb,
 // phase7-commit.mjs --mode autopilot|close) and is exercised end to end in
-// tests/engineer/test-autopilot-verbs.mjs, test-engineer-commit.mjs and
-// test-verb-runbook-autopilot.mjs. This file pins that every runbook calls it
+// tests/persona-pipeline/test-autopilot-verbs.mjs and test-commit-surface.mjs
+// and tests/engineer/test-verb-runbook-autopilot.mjs. This file pins that
+// every runbook calls it
 // where it must, in the order that makes it safe:
 //   - Phase 0: the preflight runs before any write and stops the block when it
 //     refuses; resuming clears the previous next step and stops on failure;
@@ -33,6 +34,12 @@ function section(text, heading) {
   const next = text.indexOf('\n## ', start + heading.length);
   return text.slice(start, next < 0 ? undefined : next);
 }
+
+// PC3 U7: a verb whose runbook joined the persona pipeline renders its
+// finalize block from persona-pipeline/regions/verb-finalize.md, which settles
+// the ensemble attempt with peer-runner.mjs settle (ADR-0066 D2) and quotes
+// its literals; the others still commit it with state.mjs ensemble-commit.
+const generated = (text, verb) => text.includes(`<!-- pipeline:begin ${verb}-finalize -->`);
 
 function bashBlocks(text) {
   return [...text.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
@@ -65,27 +72,32 @@ describe('verb runbooks — Phase 0 (ADR-0063 D4, D6)', () => {
 describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
   for (const verb of VERBS) {
     it(`${verb}: every write stops the block on failure; the last write is finish-verb with the next step`, async () => {
-      const phase2 = section(await read(`commands/${verb}.md`), '## Phase 2 — State finalize');
+      const text = await read(`commands/${verb}.md`);
+      const phase2 = section(text, '## Phase 2 — State finalize');
       const block = bashBlocks(phase2)[0];
       ok(block, 'Phase 2 has its block');
       ok(!/state\.mjs" set-terminal/.test(block), 'no set-terminal call in a verb: finish-verb branches by mode');
+      const gen = generated(text, verb);
       const append = block.indexOf('state.mjs" append');
-      const commit = block.indexOf('state.mjs" ensemble-commit');
+      const commit = block.indexOf(gen ? 'peer-runner.mjs" settle' : 'state.mjs" ensemble-commit');
       const finish = block.indexOf('state.mjs" finish-verb');
-      ok(append >= 0 && commit > append && finish > commit, 'append → ensemble-commit → finish-verb');
+      ok(append >= 0 && commit > append && finish > commit, gen ? 'append → settle → finish-verb' : 'append → ensemble-commit → finish-verb');
       ok(/--event updated \|\| exit \$\?\n/.test(block.slice(append, commit)), 'the append stops the block when it fails');
-      ok(/--completed-at "[^\n]*" \|\| exit \$\?\n/.test(block.slice(commit, finish)), 'ensemble-commit stops the block when it fails');
+      ok((gen ? /--summary "\$SUMMARY" \|\| exit \$\?\n/ : /--completed-at "[^\n]*" \|\| exit \$\?\n/).test(block.slice(commit, finish)), 'the ensemble write stops the block when it fails');
       const finishCall = block.slice(finish).split('\n#')[0];
-      ok(/--next-action "[^"\n]*" \\\n/.test(finishCall), finishCall);
-      ok(/--next-step-kind verb --next-step-verb (?:[a-z]+|"<next verb>") \\\n/.test(finishCall), finishCall);
+      ok(/--next-action (?:"[^"\n]*"|'[^'\n]*') \\\n/.test(finishCall), finishCall);
+      ok(/--next-step-kind verb --next-step-verb (?:[a-z]+|'[a-z]+'|"<next verb>") \\\n/.test(finishCall), finishCall);
       ok(finishCall.includes('--next-step-confidence "<HIGH|MEDIUM|LOW>"'), 'confidence comes from the proposal');
       ok(!/--terminal-marker|--terminal-phase/.test(finishCall), finishCall);
     });
 
     it(`${verb}: the proposal templates offer done, and commit routes to /engineer:commit`, async () => {
       const text = await read(`commands/${verb}.md`);
-      strictEqual((text.match(/- selected_next:\s+<verb \| commit \| owner decision \| done>/g) ?? []).length, 2);
-      strictEqual((text.match(/\/engineer:commit for commit or done/g) ?? []).length, 2);
+      // Generated, the phase note holds the one proposal template and the
+      // Completion section points at it (a second copy is a re-enumeration).
+      const copies = generated(text, verb) ? 1 : 2;
+      strictEqual((text.match(/- selected_next:\s+<verb \| commit \| (?:owner decision \| done|done \| owner decision)>/g) ?? []).length, copies);
+      strictEqual((text.match(/\/engineer:commit for commit or done/g) ?? []).length, copies);
     });
 
     it(`${verb}: the peer runner runs as a host background task, never behind a shell &`, async () => {
@@ -94,6 +106,11 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
       ok(launch, 'a peer launch block');
       ok(!/&\s*$/m.test(launch.replace(/&&/g, '')), 'no line ends in a background &');
       ok(/run_in_background/.test(text.slice(0, text.indexOf(launch))), 'the text before it says to use the host background task');
+    });
+
+    it(`${verb}: the completion footer paragraph says autopilot prints none: the driver is the handoff`, async () => {
+      const flat = (await read(`commands/${verb}.md`)).replace(/\s+/g, ' ');
+      strictEqual(flat.split('Under an autopilot run `finish-verb` makes no terminal write, so no footer is printed: the driver is the handoff.').length - 1, 1);
     });
 
     it(`${verb}: the autopilot section names the rules file and the finish-verb contract`, async () => {
@@ -120,7 +137,14 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
   it('decide: a CONFLICT ends with the decide-conflict gate at the synthesis\'s confidence, resolved by the Owner selection step', async () => {
     const text = await read('commands/decide.md');
     const phase2 = section(text, '## Phase 2 — State finalize');
-    ok(/#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate decide-conflict --owner-gate-anchor ensemble-synthesis\n/.test(phase2), phase2);
+    if (generated(text, 'decide')) {
+      // PC3 U7: the generated finalize names each gate with its heading and
+      // anchor above the block, and the block's owner-decision form takes it.
+      ok(/^- `decide-conflict` \(the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`\): [^\n]*\n[^\n]*CONFLICT remained/m.test(phase2), phase2);
+      ok(/#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' \|\| exit \$\?\n/.test(phase2), phase2);
+    } else {
+      ok(/#   --next-step-kind owner-decision --next-step-confidence "<HIGH\|MEDIUM\|LOW>" \\\n#   --owner-gate decide-conflict --owner-gate-anchor ensemble-synthesis\n/.test(phase2), phase2);
+    }
     const sel = section(text, '## Owner selection (decide-conflict)');
     const [block] = bashBlocks(sel);
     ok(/--gate decide-conflict \\\n\s+--resolution "[^"\n]+" \\\n\s+--next-step-kind verb --next-step-verb compose --next-step-confidence HIGH \|\| exit \$\?\n/.test(block),
@@ -132,9 +156,17 @@ describe('verb runbooks — Phase 2 (ADR-0063 D3)', () => {
 
   it('refine: a recurring finding ends with the recurring-finding gate, resolved by the Owner decision step', async () => {
     const text = await read('commands/refine.md');
-    ok(/#   --owner-gate recurring-finding --owner-gate-anchor recurring-finding\n/.test(section(text, '## Phase 2 — State finalize')));
+    const phase2 = section(text, '## Phase 2 — State finalize');
+    if (generated(text, 'refine')) {
+      // PC3 U7: the generated finalize names the gate with its heading and
+      // anchor above the block, and the block's owner-decision form takes it.
+      ok(/^- `recurring-finding` \(heading `### Recurring finding`, anchor\n  `recurring-finding`\): /m.test(phase2), phase2);
+      ok(phase2.includes("#   --owner-gate '<gate>' --owner-gate-anchor '<anchor>' || exit $?\n"), phase2);
+    } else {
+      ok(/#   --owner-gate recurring-finding --owner-gate-anchor recurring-finding\n/.test(phase2));
+    }
     const blocks = bashBlocks(section(text, '## Owner decision (recurring-finding)'));
-    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution "[^"\n]+" \\\n\s+--next-step-kind verb --next-step-verb refine --next-step-confidence HIGH\n/.test(b)), 'fix now: one write, naming this refine');
+    ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution "[^"\n]+" \\\n\s+--next-step-kind verb --next-step-verb refine --next-step-confidence HIGH(?: \|\| exit \$\?)?\n/.test(b)), 'fix now: one write, naming this refine');
     ok(blocks.some((b) => /--gate recurring-finding \\\n\s+--resolution "[^"\n]+" \\\n\s+--next-step-kind commit --next-step-confidence HIGH \|\| exit \$\?\n/.test(b)), 'defer: one write naming commit, stopping the block on failure');
     for (const b of blocks) {
       ok(/ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" find-active/.test(b), 'every resolution block resolves the workflow itself');
@@ -208,8 +240,16 @@ describe('Codex verb mirrors and shared references', () => {
       'pr-handling': 'pr-handling',
     });
     const used = [];
-    for (const verb of ['decide', 'refine']) {
-      for (const m of (await read(`commands/${verb}.md`)).matchAll(/--owner-gate ([a-z-]+) --owner-gate-anchor ([a-z0-9-]+)/g)) used.push([m[1], m[2]]);
+    // PC3 U7: a generated finalize names each gate it can end with in a bullet
+    // above its block; each verb names exactly its own (the gate it owns, if
+    // any, scope-routing, and pr-handling with dispatch_target on).
+    const OWN = { decide: ['decide-conflict'], refine: ['recurring-finding'] };
+    for (const verb of VERBS) {
+      const text = await read(`commands/${verb}.md`);
+      for (const m of text.matchAll(/--owner-gate ([a-z-]+) --owner-gate-anchor ([a-z0-9-]+)/g)) used.push([m[1], m[2]]);
+      const bullets = [...text.matchAll(/^- `([a-z-]+)` \([^)]*?anchor\s+`([a-z0-9-]+)`\)/gm)].map((m) => [m[1], m[2]]);
+      if (generated(text, verb)) deepStrictEqual(bullets.map(([g]) => g), [...(OWN[verb] ?? []), 'scope-routing', 'pr-handling'], `${verb}: the gates its finalize names`);
+      used.push(...bullets);
     }
     const phase7 = await read('scripts/phase7-commit.mjs');
     for (const m of phase7.matchAll(/ownerGate: \{ gate: '([a-z-]+)', anchor: '([a-z0-9-]+)' \}/g)) used.push([m[1], m[2]]);

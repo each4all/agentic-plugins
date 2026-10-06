@@ -24,9 +24,9 @@ const T_TERM = 'tests/orchestrator/test-engineer-terminal.mjs';
 const T_DONE = 'tests/orchestrator/test-done-runbook.mjs';
 const T_PRE = 'tests/orchestrator/test-discover-engineer.mjs';
 const T_RB = 'tests/plugin-shape/test-orchestrator-landing-runbooks.mjs';
-const T_WB = 'tests/engineer/test-parent-writeback.mjs';
-const T_STOP = 'tests/engineer/test-stop-archive.mjs';
-const T_P7 = 'tests/engineer/test-phase7-commit.mjs';
+const T_WB = 'tests/persona-pipeline/test-parent-writeback.mjs';
+const T_STOP = 'tests/persona-pipeline/test-stop-archive.mjs';
+const T_P7 = 'tests/persona-pipeline/test-phase7-commit.mjs';
 
 const STATE = 'plugins/orchestrator/scripts/state.mjs';
 const LANDING = 'plugins/orchestrator/scripts/landing.mjs';
@@ -280,8 +280,10 @@ export const MUTATIONS = [
   },
   {
     id: 'W3', file: STOP, tests: [T_STOP],
-    from: '  try {\n    await writebackParent({',
-    to: '  if (frontmatter.parent_writeback_at) return;\n  try {\n    await writebackParent({',
+    // The canonical stop-archive imports parent-writeback.mjs inside the try
+    // (ADR-0066 Decision 3: never statically), since Stage 3.
+    from: "  try {\n    const { writebackParent } = await import('./parent-writeback.mjs');\n",
+    to: "  if (frontmatter.parent_writeback_at) return;\n  try {\n    const { writebackParent } = await import('./parent-writeback.mjs');\n",
     why: 'the P10 marker gates the Stop call, so a crash after the marker loses the note',
   },
   {

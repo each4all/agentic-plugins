@@ -47,7 +47,8 @@ async function sync(root, opts = {}) {
 const declaration = (overrides = {}) => ({
   name: 'alpha',
   deliverable_noun: 'alpha deliverable',
-  capabilities: { dispatch_target: true, commit_surface: false, legacy_homes: false, profile_presets: false },
+  // dispatch_target on needs commit_surface on (the generator's rule, PC3 U7).
+  capabilities: { dispatch_target: true, commit_surface: true, legacy_homes: false, profile_presets: false },
   ...overrides,
 });
 
@@ -324,6 +325,26 @@ describe('region rendering', () => {
         const d = derived(extra);
         ok(!Object.hasOwn(d, 'brief_file') && !Object.hasOwn(d, 'output_root_env'), `no investigate default profile, no brief names: ${JSON.stringify(extra)}`);
       }
+    });
+    it('a declared brief file and output-root variable win over the derivation; neither is derived without a default profile (PC3 U7, format 1.3)', () => {
+      const derived = (investigate) => renderingDeclaration(declaration({ name: 'web-ux', verbs: { investigate } })).derived;
+      const declared = derived({ profiles: ['analysis', 'cited-brief'], default_profile: 'analysis', brief_file: 'research_brief.md', output_root_env: 'RESEARCH_OUTPUT_ROOT' });
+      deepStrictEqual([declared.brief_file, declared.output_root_env], ['research_brief.md', 'RESEARCH_OUTPUT_ROOT']);
+      const one = derived({ profiles: ['analysis'], default_profile: 'analysis', brief_file: 'research_brief.md' });
+      deepStrictEqual([one.brief_file, one.output_root_env], ['research_brief.md', 'WEB_UX_OUTPUT_ROOT'], 'each declared name wins on its own');
+      const none = derived({ brief_file: 'research_brief.md', output_root_env: 'RESEARCH_OUTPUT_ROOT' });
+      ok(!Object.hasOwn(none, 'brief_file') && !Object.hasOwn(none, 'output_root_env'), 'no default profile, no brief names');
+    });
+    it('derives what the investigate headings name: the type and the profile with one profile, investigate (profile=<profile>) for both with several (PC3 U7)', () => {
+      const derived = (investigate) => renderingDeclaration(declaration({ name: 'web-ux', verbs: { investigate } })).derived;
+      const one = derived({ profiles: ['design-brief'], default_profile: 'design-brief', ensemble_type: 'reference-scan' });
+      deepStrictEqual([one.investigate_launched, one.investigate_synthesis], ['reference-scan', 'design-brief']);
+      const several = derived({ profiles: ['analysis', 'root-cause'], default_profile: 'analysis', ensemble_type: 'investigate' });
+      deepStrictEqual([several.investigate_launched, several.investigate_synthesis], ['investigate (profile=<profile>)', 'investigate (profile=<profile>)']);
+      const untyped = derived({ profiles: ['design-brief'], default_profile: 'design-brief' });
+      ok(!Object.hasOwn(untyped, 'investigate_launched') && untyped.investigate_synthesis === 'design-brief', 'one profile, no type: no launched heading to name');
+      const bare = derived({});
+      ok(!Object.hasOwn(bare, 'investigate_launched') && !Object.hasOwn(bare, 'investigate_synthesis'), 'no profiles, no headings');
     });
     it('derives the profile variable from the name, as the persona loader names it (PC2a4)', () => {
       strictEqual(renderingDeclaration(declaration({ name: 'web-ux' })).derived.profile_env, 'AGENTIC_WEB_UX_PROFILE');

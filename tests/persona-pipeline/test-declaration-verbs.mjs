@@ -11,13 +11,14 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { derivedFields } from '../../scripts/lib/persona-pipeline.mjs';
 import { MANIFEST, declaration, pluginRoot } from './_personas.mjs';
 import { noteScaffold, shellBlocks, stripComments } from './_verb-runbooks.mjs';
 
 const runbook = (persona, verb) => readFileSync(join(pluginRoot(persona), 'commands', `${verb}.md`), 'utf8');
 const count = (text, needle) => text.split(needle).length - 1;
-const withVerbs = MANIFEST.personas.filter((p) => declaration(p).verbs !== undefined).sort();
 const NOTE_VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
+const withVerbs = MANIFEST.personas.filter((p) => declaration(p).verbs !== undefined).sort();
 const NOTE_FIELDS = ['request_placeholder', 'artifact', 'rationale_gate', 'evidence_pointers', 'next_action'];
 
 // Where a declared value is today's text with a listed change (PC2a2 PD5).
@@ -61,12 +62,19 @@ function terminalGuardedByConvergence(text) {
   return verdicts[0];
 }
 
+// PC3 U7: engineer declares a verb once its runbook joins the regions (the
+// runbook holds the generated finalize), so the declared set and the joined
+// runbooks stay one set.
+const ENGINEER_JOINED_VERBS = NOTE_VERBS.filter((verb) => runbook('engineer', verb).includes(`<!-- pipeline:begin ${verb}-finalize -->`));
+
 describe('declaration 1.1: which personas declare verbs', () => {
-  it('founder and designer declare verbs (format 1.2, which adds peer); engineer stays 1.0 without them (DD4)', () => {
-    deepStrictEqual(withVerbs, ['designer', 'founder']);
-    for (const p of withVerbs) strictEqual(declaration(p).schema, 'persona-declaration-1.2');
-    strictEqual(declaration('engineer').schema, 'persona-declaration-1.0');
-    strictEqual(declaration('engineer').verbs, undefined);
+  it('founder and designer declare verbs (format 1.2, which adds peer); engineer declares 1.3 (which adds the investigate brief names), exactly the verbs whose runbooks joined the regions, and no peer (DD4, PC3 U7)', () => {
+    deepStrictEqual(withVerbs, ['designer', 'engineer', 'founder']);
+    for (const p of ['designer', 'founder']) strictEqual(declaration(p).schema, 'persona-declaration-1.2');
+    strictEqual(declaration('engineer').schema, 'persona-declaration-1.3');
+    strictEqual(declaration('engineer').peer, undefined);
+    ok(ENGINEER_JOINED_VERBS.length > 0, 'a joined engineer verb (guards a vacuous pass)');
+    deepStrictEqual(Object.keys(declaration('engineer').verbs).sort(), [...ENGINEER_JOINED_VERBS].sort());
   });
 
   for (const persona of ['founder', 'designer']) {
@@ -99,17 +107,19 @@ for (const persona of ['founder', 'designer']) {
   });
 }
 
-for (const persona of ['founder', 'designer']) {
+for (const persona of ['founder', 'designer', 'engineer']) {
   describe(`${persona}: the declared verb fields are what the runbooks say`, () => {
     const verbs = declaration(persona).verbs;
+    const declared = (verb) => Object.hasOwn(verbs, verb);
 
     for (const verb of ['refine', 'start']) {
+      if (!declared(verb)) continue;
       it(`${verb}: terminal_requires_convergence is true exactly when the terminal write waits for CONVERGED (DD5)`, () => {
         strictEqual(verbs[verb].terminal_requires_convergence, terminalGuardedByConvergence(runbook(persona, verb)));
       });
     }
 
-    it('compose: the Profiles list, its default, "Missing profile" and the argument hint name the declared profiles', () => {
+    if (declared('compose')) it('compose: the Profiles list, its default, "Missing profile" and the argument hint name the declared profiles', () => {
       const text = runbook(persona, 'compose');
       const { profiles, default_profile: def } = verbs.compose;
       const listed = [...text.matchAll(/^- `([a-z][a-z0-9-]*)`( \(default\))? — /gm)];
@@ -119,7 +129,7 @@ for (const persona of ['founder', 'designer']) {
       strictEqual(count(text, `\nargument-hint: --profile=${profiles.join('|')} | `), 1);
     });
 
-    it('investigate: the argument hint names the declared profiles; the bootstrap placeholder names the default', () => {
+    if (declared('investigate')) it('investigate: the argument hint names the declared profiles; the bootstrap placeholder names the default', () => {
       const text = runbook(persona, 'investigate');
       const { profiles, default_profile: def } = verbs.investigate;
       strictEqual(count(text, `\nargument-hint: --profile=${profiles.join('|')} | `), 1);
@@ -131,25 +141,46 @@ for (const persona of ['founder', 'designer']) {
       if (generated === 1) strictEqual(count(text, `\nDEFAULT_PROFILE='${def}'\n`), 1, 'the block assigns the declared default');
     });
 
-    it('critique: the argument hint names the declared profiles besides the default, which the bootstrap block assigns (PC2a3 QD6)', () => {
+    // PC3 U7: the brief names the declaration implies (declared, or derived
+    // from the default profile and the name) are the ones the persona's
+    // output-file rules use; engineer's rules are still authored, so a dropped
+    // declared name would bind its brief to a file and variable nothing reads.
+    if (declared('investigate')) it('investigate: the brief file and output-root variable the declaration implies are the ones its output-file rules name (PC3 U7)', () => {
+      const { brief_file: brief, output_root_env: env } = derivedFields(declaration(persona));
+      const rules = readFileSync(join(pluginRoot(persona), 'core/skills/investigate/references/output-file-rules.md'), 'utf8');
+      ok(count(rules, `\`${brief}\``) > 0, `output-file-rules.md names ${brief}`);
+      ok(count(rules, `## Output root override (\`${env}\`)`) === 1, `output-file-rules.md overrides the root with ${env}`);
+    });
+
+    if (declared('critique')) it('critique: the argument hint names the declared profiles besides the default, which the bootstrap block assigns (PC2a3 QD6)', () => {
       const text = runbook(persona, 'critique');
       const { profiles, default_profile: def } = verbs.critique;
       ok(profiles.length > 1 && profiles.includes(def), 'the declared profiles');
-      strictEqual(count(text, `\nargument-hint: --profile=${profiles.filter((p) => p !== def).join('|')} | `), 1, 'the argument hint');
+      // PC3 U7: a profile may name its optional sub-focus in brackets
+      // (engineer's full-codebase[:security|…]).
+      const others = profiles.filter((p) => p !== def).join('|').replace(/[|]/g, '\\|');
+      strictEqual((text.match(new RegExp(`\\nargument-hint: --profile=${others}(?:\\[:[^\\]\\n]+\\])? \\| `, 'g')) ?? []).length, 1, 'the argument hint');
       strictEqual(count(text, `\nDEFAULT_PROFILE='${def}'\n`), 1, 'the block assigns the declared default');
     });
 
-    it('investigate: the ensemble type is the one its dispatch names; settle reads it from the run ledger (PC2b DD6)', () => {
+    if (declared('investigate')) it('investigate: the ensemble type is the one its dispatch names; settle reads it from the run ledger (PC2b DD6)', () => {
       const text = runbook(persona, 'investigate');
       const type = verbs.investigate.ensemble_type;
       // Bare as authored, single-quoted as generated (Decision 4).
       strictEqual(text.split(`ENSEMBLE_TYPE='${type}'\n`).length - 1, 1, 'the dispatch assigns the type');
       strictEqual(text.split('--ensemble-type "$ENSEMBLE_TYPE" --run-id').length - 1, 1, 'and names it once');
       strictEqual(text.split(/--phase 'investigate' --run-id "\$RUN_ID" \\\n/).length - 1, 1, 'settle names the phase and the run id, no type');
-      strictEqual(count(text, `### Ensemble launched: ${type} at <iso-utc>`), 1);
+      // PC3 U7: with several profiles (engineer), the point type differs by
+      // profile, so both headings name the profile, as critique's do.
+      const several = verbs.investigate.profiles.length > 1;
+      const launched = several ? 'investigate (profile=<profile>)' : type;
+      const synthesis = several ? 'investigate (profile=<profile>)' : verbs.investigate.default_profile;
+      strictEqual(count(text, `### Ensemble launched: ${launched} at <iso-utc>`), 1);
+      strictEqual(count(text, `### Ensemble synthesis: ${synthesis} verdict=<`), 1);
     });
 
     for (const verb of NOTE_VERBS) {
+      if (!declared(verb)) continue;
       it(`${verb}: request placeholder, note artifact, rationale, evidence and next action`, () => {
         const text = runbook(persona, verb);
         const v = verbs[verb];

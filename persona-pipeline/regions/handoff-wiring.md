@@ -150,7 +150,7 @@ concurrent cross-branch overwrite of the slot can no longer mix one emit's
 completion flags with another emit's projection. The single-workflow marker
 shares the same LWW family: a different workflow's later claim replaces the
 tombstone, so under concurrent cross-branch terminals a still-active
-publish-needed workflow's Stop backstop can re-render an already-delivered
+terminal workflow's Stop backstop can re-render an already-delivered
 transition — accepted with the slot model (a slot-transaction redesign is a
 cross-persona follow-up, not this onboarding).
 
@@ -162,23 +162,43 @@ consumes this documentation, not the implementation):
 - **filename**: `<projectionFile>.footer-rendered`, i.e. the canonical
   slot's sibling
   `.agentic-plugins/state/{{persona}}/last-session-handoff.json.footer-rendered`
-  (the engineer slot shape — {{persona}} shares the single-projection-slot
-  structure);
+  (every persona shares the single-projection-slot structure);
 - **JSON shape**: `{"workflow_id": <id>, "status": "claimed"|"rendered",
-  "at": <iso-utc>}`;
+  "at": <iso-utc>, "transition": <key>, "claim": <token>}`;
 - a render **counts only** as `status === 'rendered'` for the matching
   `workflow_id`; a bare `claimed` marker is an in-flight/crashed render
   and never suppresses the backstop;
-- **tombstone semantics** ({{persona}} divergence from the engineer copy): a
+- **transition** (additive): which terminal transition of that workflow
+  rendered, a key over its terminal phase and next action. A workflow that
+  terminalizes again (a verb's finish, then its commit or close) is a new
+  transition, so an earlier transition's render suppresses neither the Stop
+  backstop nor the SessionStart nudge for it. A marker without the field
+  matches any transition of its workflow;
+- a `claimed` marker of another transition of the workflow, or one older
+  than a render can take (a render that died), is taken over by the next
+  emit; **claim** (additive) is the render attempt's token, and only the
+  attempt holding it upgrades or releases the marker. The marker is read and
+  written under a short lock file, `<projectionFile>.footer-rendered.lock`,
+  holding its owner's token, so overlapping emits cannot both take it over;
+- **tombstone semantics** (every persona since ADR-0066 D4): a
   `rendered` marker **survives** SessionStart consumption of the one-shot
-  projection. {{persona}}'s publish-needed workflow stays active-terminal until
-  the owner publishes, so the surviving tombstone is what keeps every later
+  projection. A terminal workflow can stay active across sessions, until HEAD
+  moves past its baseline or while another archive gate fails
+{{^capability commit_surface}}
+  ({{persona}}'s publish-needed workflow stays active-terminal until the
+  owner publishes),
+{{/capability}}
+{{#capability commit_surface}}
+  (a no-changes close stays active until its commit command archives it),
+{{/capability}}
+  so the surviving tombstone is what keeps every later
   Stop backstop from re-rendering the already-delivered transition
   (terminal write → SessionStart consume → Stop would otherwise re-render).
   Only a **new primary transition** (the `setTerminal` emit, which may
-  legitimately re-render a re-terminalized workflow) or a **different
-  workflow's** claim replaces it; a `claimed` marker is still removed on
-  consumption.
+  legitimately re-render a re-terminalized workflow), a **different
+  transition** of the same workflow, or a **different workflow's** claim
+  replaces it; a dead `claimed` marker is still removed on consumption, a
+  live one stays for its render to upgrade or release.
 
 Pinned by `tests/persona-pipeline/test-footer-activation.mjs` and
 `tests/persona-pipeline/test-handoff-backstop.mjs`, which run for every

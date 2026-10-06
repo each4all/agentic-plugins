@@ -9,7 +9,7 @@
 // contract (no fall-back to a stale cache). Host-free + deterministic: every
 // case injects env/home/selfUrl and builds throwaway fixtures. This is the
 // per-plugin copy of the engineer resolver (ADR-0039 §5 copy-not-import), so the
-// test matrix mirrors tests/engineer/test-discover-runtime.mjs. Run via
+// test matrix mirrors tests/persona-pipeline/test-discover-runtime.mjs. Run via
 // `node --test tests/orchestrator/test-discover-runtime.mjs`.
 
 import { describe, it } from 'node:test';

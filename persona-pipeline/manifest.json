@@ -129,14 +129,10 @@
       "dest": "scripts/state.mjs",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
-      "requires": [],
-      "off_only": [
-        "dispatch_target",
-        "commit_surface",
-        "legacy_homes"
-      ]
+      "requires": []
     },
     {
       "id": "stop-archive",
@@ -144,14 +140,10 @@
       "dest": "scripts/stop-archive.mjs",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
-      "requires": [],
-      "off_only": [
-        "dispatch_target",
-        "commit_surface",
-        "legacy_homes"
-      ]
+      "requires": []
     },
     {
       "id": "session-handoff",
@@ -159,15 +151,11 @@
       "dest": "scripts/session-handoff.mjs",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "requires": [
         "deliverable_noun"
-      ],
-      "off_only": [
-        "dispatch_target",
-        "commit_surface",
-        "legacy_homes"
       ]
     },
     {
@@ -176,6 +164,7 @@
       "dest": "scripts/discover-runtime.mjs",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "requires": [
@@ -188,11 +177,45 @@
       "dest": "scripts/peer-runner.mjs",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
+      "requires": []
+    },
+    {
+      "id": "parent-writeback",
+      "source": "files/scripts/parent-writeback.mjs",
+      "dest": "scripts/parent-writeback.mjs",
+      "personas": [
+        "engineer"
+      ],
       "requires": [],
-      "off_only": [
-        "legacy_homes"
+      "on_only": [
+        "dispatch_target"
+      ]
+    },
+    {
+      "id": "phase7-commit",
+      "source": "files/scripts/phase7-commit.mjs",
+      "dest": "scripts/phase7-commit.mjs",
+      "personas": [
+        "engineer"
+      ],
+      "requires": [],
+      "on_only": [
+        "commit_surface"
+      ]
+    },
+    {
+      "id": "start-args",
+      "source": "files/scripts/start-args.mjs",
+      "dest": "scripts/start-args.mjs",
+      "personas": [
+        "engineer"
+      ],
+      "requires": [],
+      "on_only": [
+        "commit_surface"
       ]
     },
     {
@@ -324,6 +347,7 @@
       "dest": "commands/checkpoint.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -339,6 +363,7 @@
       "dest": "commands/checkpoint.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -362,6 +387,7 @@
       "dest": "commands/checkpoint.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -381,6 +407,7 @@
       "dest": "commands/resume.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -396,6 +423,7 @@
       "dest": "commands/resume.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -419,6 +447,7 @@
       "dest": "commands/resume.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -438,6 +467,7 @@
       "dest": "commands/resume.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -457,6 +487,7 @@
       "dest": "commands/resume.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -476,6 +507,7 @@
       "dest": "commands/peer-now.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -491,6 +523,7 @@
       "dest": "commands/peer-now.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -510,6 +543,7 @@
       "dest": "commands/peer-now.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -529,6 +563,7 @@
       "dest": "commands/peer-now.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -548,6 +583,7 @@
       "dest": "commands/compose.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -563,6 +599,7 @@
       "dest": "commands/compose.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -582,6 +619,7 @@
       "dest": "commands/compose.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -613,6 +651,7 @@
       "dest": "commands/compose.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -672,6 +711,7 @@
       "dest": "commands/compose.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -699,6 +739,7 @@
       "dest": "commands/compose.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -757,6 +798,14 @@
         "owner_gates": {
           "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
+        },
+        "skip_cause": {
+          "field": "derived.ensemble_skip_cause",
+          "context": "markdown"
+        },
+        "skip_label": {
+          "field": "derived.ensemble_skip_label",
+          "context": "markdown"
         }
       }
     },
@@ -766,6 +815,7 @@
       "dest": "commands/compose.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -781,6 +831,7 @@
       "dest": "commands/frame.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -796,6 +847,7 @@
       "dest": "commands/frame.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -815,6 +867,7 @@
       "dest": "commands/frame.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -842,6 +895,7 @@
       "dest": "commands/frame.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -901,6 +955,7 @@
       "dest": "commands/frame.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -928,6 +983,7 @@
       "dest": "commands/frame.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -986,6 +1042,14 @@
         "owner_gates": {
           "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
+        },
+        "skip_cause": {
+          "field": "derived.ensemble_skip_cause",
+          "context": "markdown"
+        },
+        "skip_label": {
+          "field": "derived.ensemble_skip_label",
+          "context": "markdown"
         }
       }
     },
@@ -995,6 +1059,7 @@
       "dest": "commands/frame.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1010,6 +1075,7 @@
       "dest": "commands/investigate.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1025,6 +1091,7 @@
       "dest": "commands/investigate.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1044,6 +1111,7 @@
       "dest": "commands/investigate.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1075,6 +1143,7 @@
       "dest": "commands/investigate.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1134,6 +1203,7 @@
       "dest": "commands/investigate.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1161,6 +1231,7 @@
       "dest": "commands/investigate.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1189,11 +1260,11 @@
           "context": "markdown"
         },
         "launched": {
-          "field": "verbs.investigate.ensemble_type",
+          "field": "derived.investigate_launched",
           "context": "markdown"
         },
         "synthesis": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.investigate_synthesis",
           "context": "markdown"
         },
         "verdicts": {
@@ -1219,6 +1290,14 @@
         "owner_gates": {
           "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
+        },
+        "skip_cause": {
+          "field": "derived.ensemble_skip_cause",
+          "context": "markdown"
+        },
+        "skip_label": {
+          "field": "derived.ensemble_skip_label",
+          "context": "markdown"
         }
       }
     },
@@ -1228,6 +1307,7 @@
       "dest": "commands/investigate.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1243,6 +1323,7 @@
       "dest": "commands/decide.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1258,6 +1339,7 @@
       "dest": "commands/decide.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1277,6 +1359,7 @@
       "dest": "commands/decide.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1304,6 +1387,7 @@
       "dest": "commands/decide.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1327,6 +1411,7 @@
       "dest": "commands/decide.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1386,6 +1471,7 @@
       "dest": "commands/decide.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1413,6 +1499,7 @@
       "dest": "commands/decide.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1471,6 +1558,14 @@
         "owner_gates": {
           "value": "- `decide-conflict` (the `Ensemble synthesis` heading, anchor\n  `ensemble-synthesis`): the decision is left to the owner's selection, a\n  CONFLICT remained or a veto gate is unresolved; § Owner selection below\n  resolves it.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
+        },
+        "skip_cause": {
+          "field": "derived.ensemble_skip_cause",
+          "context": "markdown"
+        },
+        "skip_label": {
+          "field": "derived.ensemble_skip_label",
+          "context": "markdown"
         }
       }
     },
@@ -1480,6 +1575,7 @@
       "dest": "commands/decide.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1507,6 +1603,7 @@
       "dest": "commands/decide.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1522,6 +1619,7 @@
       "dest": "commands/refine.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1537,6 +1635,7 @@
       "dest": "commands/refine.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1556,6 +1655,7 @@
       "dest": "commands/refine.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1583,6 +1683,7 @@
       "dest": "commands/refine.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1642,6 +1743,7 @@
       "dest": "commands/refine.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1669,6 +1771,7 @@
       "dest": "commands/refine.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -1677,6 +1780,7 @@
       "template": "regions/verb-finalize.md",
       "dest": "commands/refine.md",
       "personas": [
+        "engineer",
         "founder"
       ],
       "when": {
@@ -1738,6 +1842,14 @@
         },
         "owner_gates": {
           "value": "- `recurring-finding` (heading `### Recurring finding`, anchor\n  `recurring-finding`): a finding an earlier refine pass on this workflow\n  already addressed survives verification again; fixing it again is the\n  owner's call, and § Owner decision below resolves it.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
+          "context": "markdown"
+        },
+        "skip_cause": {
+          "field": "derived.ensemble_skip_cause",
+          "context": "markdown"
+        },
+        "skip_label": {
+          "field": "derived.ensemble_skip_label",
           "context": "markdown"
         }
       }
@@ -1809,6 +1921,14 @@
         "owner_gates": {
           "value": "- `recurring-finding` (heading `### Recurring finding`, anchor\n  `recurring-finding`): a finding an earlier refine pass on this workflow\n  already addressed survives verification again; fixing it again is the\n  owner's call, and § Owner decision below resolves it.\n- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
+        },
+        "skip_cause": {
+          "field": "derived.ensemble_skip_cause",
+          "context": "markdown"
+        },
+        "skip_label": {
+          "field": "derived.ensemble_skip_label",
+          "context": "markdown"
         }
       }
     },
@@ -1817,6 +1937,7 @@
       "template": "regions/refine-owner-decision.md",
       "dest": "commands/refine.md",
       "personas": [
+        "engineer",
         "founder"
       ],
       "when": {
@@ -1870,6 +1991,7 @@
       "dest": "commands/refine.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1885,6 +2007,7 @@
       "dest": "commands/critique.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1900,6 +2023,7 @@
       "dest": "commands/critique.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1919,6 +2043,7 @@
       "dest": "commands/critique.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -1950,6 +2075,7 @@
       "dest": "commands/critique.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2009,6 +2135,7 @@
       "dest": "commands/critique.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2036,6 +2163,7 @@
       "dest": "commands/critique.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2045,6 +2173,7 @@
       "dest": "commands/critique.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2103,6 +2232,14 @@
         "owner_gates": {
           "value": "- `scope-routing` (heading `### Routing recommendation`, anchor\n  `routing-recommendation`): the request does not belong in this verb or\n  workflow; the owner picks the route, then clears the gate.",
           "context": "markdown"
+        },
+        "skip_cause": {
+          "field": "derived.ensemble_skip_cause",
+          "context": "markdown"
+        },
+        "skip_label": {
+          "field": "derived.ensemble_skip_label",
+          "context": "markdown"
         }
       }
     },
@@ -2112,6 +2249,7 @@
       "dest": "commands/critique.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2317,6 +2455,7 @@
       "dest": "core/skills/checkpoint/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2332,6 +2471,7 @@
       "dest": "core/skills/checkpoint/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2351,6 +2491,7 @@
       "dest": "core/skills/checkpoint/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2360,6 +2501,7 @@
       "dest": "core/skills/checkpoint/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2375,6 +2517,7 @@
       "dest": "core/skills/peer-now/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2394,6 +2537,7 @@
       "dest": "core/skills/peer-now/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2413,6 +2557,7 @@
       "dest": "core/skills/peer-now/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2422,6 +2567,7 @@
       "dest": "core/skills/resume/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2441,6 +2587,7 @@
       "dest": "core/skills/resume/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2456,6 +2603,7 @@
       "dest": "core/skills/resume/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2465,6 +2613,7 @@
       "dest": "core/skills/resume/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {

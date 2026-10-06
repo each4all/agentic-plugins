@@ -76,7 +76,13 @@ function createWorkflow(root, repo, head, extra = []) {
 
 // ---- capabilities that are off (Decision 3) ------------------------------------
 
-for (const persona of STATE_PERSONAS) {
+// The off-surface cases run for every state persona that has all three off;
+// engineer, which has them on, holds the on paths in its own contract tests.
+const ALL_OFF_PERSONAS = STATE_PERSONAS.filter((p) => {
+  const c = personaInfo(p).capabilities;
+  return !c.dispatch_target && !c.commit_surface && !c.legacy_homes;
+});
+for (const persona of ALL_OFF_PERSONAS) {
   const P = personaInfo(persona);
   describe(`${persona}: dispatch_target, commit_surface and legacy_homes are off, on every surface`, () => {
     it('the declaration says so (the negative tests below are data-driven from it)', () => {

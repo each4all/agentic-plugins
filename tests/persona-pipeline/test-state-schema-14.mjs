@@ -5,16 +5,19 @@
 // Covers:
 //   - "1.4" emitted and accepted; a fresh file carries none of the six keys
 //   - round-trip of every key through parse → assemble → parse
-//   - enum, format and co-presence rejections at the parser (ported from
-//     tests/engineer/test-state-schema-14.mjs)
+//   - enum, format and co-presence rejections at the parser
 //   - the reader's gate enum is engineer's five, whatever a persona can set
 //   - a file on disk schema "1.3" may carry the keys, and every writer keeps
 //     both its schema and the keys
-//   - the writers: append/set-terminal --next-step-*, --clear-next-step,
-//     awaiting-owner-set/-clear (one gate at a time, only the gates whose
-//     capability is on), finish-verb (terminal for every kind; an owner gate
-//     keeps it open), autopilot-preflight (AGENTIC_AUTOPILOT ignored with one
-//     line, dispatch_target off; the gate notice)
+//   - the writers: append/set-terminal --next-step-*, --clear-next-step, and
+//     inconsistent input refused before any write; awaiting-owner-set/-clear
+//     (one gate at a time, only the gates whose capability is on, a clear
+//     leaves next_step alone; with dispatch_target on, refused under
+//     autopilot), finish-verb (terminal for every kind; an owner gate keeps it
+//     open), autopilot-preflight (AGENTIC_AUTOPILOT ignored with one line,
+//     dispatch_target off; the gate notice)
+//   - a body that ends without a newline: a heading still starts its own line
+//   - isAutopilotRun: on only for a well-formed run id (dispatch_target on)
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
@@ -40,14 +43,30 @@ const BASELINE = {
   status_digest: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
 };
 
-function cliEnv() {
-  const env = { ...process.env };
+// The CLI child must not inherit an AGENTIC_* from whoever runs the suite (an
+// autopilot worker would), or every clear on an autopilot subject would be
+// refused for the wrong reason.
+function cliEnv(base = process.env) {
+  const env = { ...base };
   for (const k of Object.keys(env)) if (k.startsWith('AGENTIC_')) delete env[k];
   return env;
 }
 
+describe('the suite\'s own control', () => {
+  it('the CLI env drops an AGENTIC_AUTOPILOT the runner carries', () => {
+    const planted = { PATH: '/usr/bin', AGENTIC_AUTOPILOT: 'autopilot-20260930T010203Z-abcdef' };
+    deepStrictEqual(cliEnv(planted), { PATH: '/usr/bin' });
+  });
+});
+
 for (const persona of personasFor('scripts/state.mjs')) {
   const STATE_PATH = personaInfo(persona).path('scripts/state.mjs');
+  const CAPS = personaInfo(persona).capabilities;
+  // A case that pins one side of dispatch_target registers only for a persona
+  // on that side (ADR-0066 Decision 3): the off path where it is off, the
+  // autopilot path where it is on (autopilot is on only there, and on Claude).
+  const itDispatchOff = CAPS.dispatch_target ? () => {} : it;
+  const itDispatchOn = CAPS.dispatch_target ? it : () => {};
   const {
     SCHEMA_VERSION,
     SUPPORTED_SCHEMA_VERSIONS,
@@ -65,6 +84,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
     clearAwaitingOwner,
     finishVerb,
     settableOwnerGates,
+    isAutopilotRun,
   } = await import(pathToFileURL(STATE_PATH).href);
 
   const POINTER = `.agentic-plugins/state/${persona}/workflows/decide-x.md#decision-pending`;
@@ -283,15 +303,30 @@ for (const persona of personasFor('scripts/state.mjs')) {
         deepStrictEqual(await keysOf(filePath), { next_step_kind: 'commit', next_step_confidence: 'LOW' }, 'no flags leave it as it is');
         strictEqual(cli(['append', '--workflow-path', filePath, '--host', 'claude', '--clear-next-step', 'false']).status, 0);
         deepStrictEqual(await keysOf(filePath), { next_step_kind: 'commit', next_step_confidence: 'LOW' }, 'false changes nothing');
+        const r = cli(['append', '--workflow-path', filePath, '--host', 'claude', '--clear-next-step', 'false', '--next-step-kind', 'verb', '--next-step-verb', 'refine', '--next-step-confidence', 'LOW']);
+        strictEqual(r.status, 0, r.stderr);
+        deepStrictEqual(await keysOf(filePath), { next_step_kind: 'verb', next_step_verb: 'refine', next_step_confidence: 'LOW' }, 'false with a next step writes it');
         strictEqual(cli(['append', '--workflow-path', filePath, '--host', 'claude', '--clear-next-step', 'true']).status, 0);
+        deepStrictEqual(await keysOf(filePath), {}, 'true deletes all three, the verb included');
+        strictEqual(cli(['append', '--workflow-path', filePath, '--host', 'claude', '--clear-next-step', 'true']).status, 0, 'clearing an absent next step is a plain append');
         deepStrictEqual(await keysOf(filePath), {});
+      });
+    });
+
+    it('the JS API takes the logical shape: verb null for a non-verb kind', async () => {
+      await withFile(async (filePath) => {
+        await appendPhase({ workflowPath: filePath, host: 'claude', event: 'updated', nextStep: { kind: 'owner-decision', verb: null, confidence: 'LOW' } });
+        deepStrictEqual(await keysOf(filePath), { next_step_kind: 'owner-decision', next_step_confidence: 'LOW' });
       });
     });
 
     for (const [name, flags, pattern] of [
       ['clear with a next step', ['--clear-next-step', 'true', '--next-step-kind', 'done', '--next-step-confidence', 'HIGH'], /mutually exclusive/],
       ['a verb with kind done', ['--next-step-kind', 'done', '--next-step-verb', 'frame', '--next-step-confidence', 'HIGH'], /next_step_verb must be present exactly when/],
+      ['kind verb without a verb', ['--next-step-kind', 'verb', '--next-step-confidence', 'HIGH'], /next_step_verb must be present exactly when/],
       ['a kind without confidence', ['--next-step-kind', 'done'], /present together/],
+      ['a confidence without kind', ['--next-step-confidence', 'HIGH'], /next step kind is required/],
+      ['an unknown kind', ['--next-step-kind', 'ship', '--next-step-confidence', 'HIGH'], /next_step_kind must be one of/],
       ['a malformed boolean', ['--clear-next-step', 'yes'], /must be 'true' or 'false'/],
       ['a malformed marker boolean', ['--clear-terminal-marker', 'yes'], /--clear-terminal-marker must be 'true' or 'false'/],
     ]) {
@@ -325,26 +360,86 @@ for (const persona of personasFor('scripts/state.mjs')) {
 
     it('set-terminal --next-step-* records the next step with the terminal write', async () => {
       await withFile(async (filePath) => {
-        strictEqual(cli(['set-terminal', '--workflow-path', filePath, '--host', 'claude', '--terminal-phase', 'summary-complete', '--next-step-kind', 'done', '--next-step-confidence', 'MEDIUM']).status, 0);
+        strictEqual(cli(['set-terminal', '--workflow-path', filePath, '--host', 'claude', '--terminal-phase', 'summary-complete', '--next-step-kind', 'verb', '--next-step-verb', 'critique', '--next-step-confidence', 'MEDIUM']).status, 0);
         const f = await fmOf(filePath);
-        deepStrictEqual([f.current_phase, f.terminal_marker, f.next_step_kind, f.next_step_confidence], ['summary-complete', true, 'done', 'MEDIUM']);
+        deepStrictEqual([f.current_phase, f.terminal_marker, f.next_step_kind, f.next_step_verb, f.next_step_confidence], ['summary-complete', true, 'verb', 'critique', 'MEDIUM']);
+      });
+    });
+
+    it('set-terminal refuses an inconsistent next step before writing', async () => {
+      await withFile(async (filePath) => {
+        const before = await readFile(filePath, 'utf8');
+        await rejects(
+          setTerminal({ workflowPath: filePath, host: 'claude', terminalPhase: 'summary-complete', nextStep: { kind: 'verb', confidence: 'HIGH' } }),
+          /next_step_verb must be present exactly when/,
+        );
+        strictEqual(await readFile(filePath, 'utf8'), before);
       });
     });
   });
 
   describe(`${persona}: schema 1.4 — owner gates (awaiting-owner-set / -clear)`, () => {
-    it('only the gates whose capability is on can be set: the three, never staging-set or pr-handling', () => {
-      deepStrictEqual([...settableOwnerGates()].sort(), ['decide-conflict', 'recurring-finding', 'scope-routing']);
+    it('only the gates whose capability is on can be set: the three, and staging-set or pr-handling with its capability', () => {
+      const expected = ['decide-conflict', 'recurring-finding', 'scope-routing'];
+      if (CAPS.commit_surface) expected.push('staging-set');
+      if (CAPS.dispatch_target) expected.push('pr-handling');
+      deepStrictEqual([...settableOwnerGates()].sort(), expected.sort());
     });
 
     it('set writes the three keys from an anchor; since defaults to now; an inherited terminal marker turns off', async () => {
       await withFile(async (filePath, dir) => {
         await setTerminal({ workflowPath: filePath, host: 'claude', terminalPhase: 'summary-complete' });
+        const before = Math.floor(Date.now() / 1000) * 1000;
         const r = cli(['awaiting-owner-set', '--workflow-path', filePath, '--host', 'claude', '--gate', 'decide-conflict', '--anchor', 'ensemble-synthesis']);
         strictEqual(r.status, 0, r.stderr);
         const f = await fmOf(filePath);
-        deepStrictEqual([f.awaiting_owner_gate, f.awaiting_owner_pointer, f.terminal_marker], ['decide-conflict', relPointer(filePath, dir, 'ensemble-synthesis'), false]);
-        ok(Math.abs(Date.parse(f.awaiting_owner_since) - Date.now()) < 60_000, f.awaiting_owner_since);
+        deepStrictEqual(
+          [f.awaiting_owner_gate, f.awaiting_owner_pointer, f.terminal_marker, f.host_history.at(-1).event],
+          ['decide-conflict', relPointer(filePath, dir, 'ensemble-synthesis'), false, 'updated'],
+        );
+        const since = Date.parse(f.awaiting_owner_since);
+        ok(since >= before && since <= Date.now(), `since ${f.awaiting_owner_since} is not now`);
+      });
+    });
+
+    it('every gate this persona can set is set by --pointer and cleared; a clear with no next step leaves next_step alone and records what it cleared', async () => {
+      const gates = ['scope-routing', 'decide-conflict', 'recurring-finding'];
+      if (CAPS.commit_surface) gates.push('staging-set');
+      if (CAPS.dispatch_target) gates.push('pr-handling');
+      const since = '2026-09-30T01:02:03Z';
+      const escaped = POINTER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      await withFile(async (filePath) => {
+        await appendPhase({ workflowPath: filePath, host: 'claude', event: 'updated', nextStep: { kind: 'owner-decision', confidence: 'MEDIUM' } });
+        const nextStep = { next_step_kind: 'owner-decision', next_step_confidence: 'MEDIUM' };
+        for (const gate of gates) {
+          let r = cli(['awaiting-owner-set', '--workflow-path', filePath, '--host', 'claude', '--gate', gate, '--pointer', POINTER, '--since', since]);
+          strictEqual(r.status, 0, `${gate}: ${r.stderr}`);
+          deepStrictEqual(await keysOf(filePath), { ...nextStep, awaiting_owner_gate: gate, awaiting_owner_since: since, awaiting_owner_pointer: POINTER }, gate);
+          r = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', gate]);
+          strictEqual(r.status, 0, `${gate}: ${r.stderr}`);
+          deepStrictEqual(await keysOf(filePath), nextStep, `${gate}: the clear kept next_step`);
+          const { body } = parseWorkflowFile(await readFile(filePath, 'utf8'));
+          ok(new RegExp(`^### Owner gate resolved: ${gate} at \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z\\n\\nCleared awaiting_owner \\(since ${since}, pointer ${escaped}\\)\\.$`, 'm').test(body), body);
+        }
+      });
+    });
+
+    it('set refuses a gate no workflow stores and a malformed pointer or since, the file untouched', async () => {
+      await withFile(async (filePath) => {
+        const before = await readFile(filePath, 'utf8');
+        for (const [gate, pointer, since, pattern] of [
+          ['plan-approval', POINTER, undefined, /awaiting_owner_gate must be one of/],
+          ['plan-conflict', POINTER, undefined, /awaiting_owner_gate must be one of/],
+          ['duplicate-workflow', POINTER, undefined, /awaiting_owner_gate must be one of/],
+          ['merge-conflict', POINTER, undefined, /awaiting_owner_gate must be one of/],
+          ['decide-conflict', '/abs/x.md#a', undefined, /awaiting_owner_pointer must be/],
+          ['decide-conflict', POINTER, '2026-09-30', /awaiting_owner_since must be/],
+        ]) {
+          const r = cli(['awaiting-owner-set', '--workflow-path', filePath, '--host', 'claude', '--gate', gate, '--pointer', pointer, ...(since ? ['--since', since] : [])]);
+          strictEqual(r.status, 1, `${gate} ${pointer} ${since}: ${r.stderr}`);
+          ok(pattern.test(r.stderr), r.stderr);
+        }
+        strictEqual(await readFile(filePath, 'utf8'), before);
       });
     });
 
@@ -361,7 +456,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
 
-    for (const [gate, capability] of [['staging-set', 'commit_surface'], ['pr-handling', 'dispatch_target']]) {
+    for (const [gate, capability] of [['staging-set', 'commit_surface'], ['pr-handling', 'dispatch_target']].filter(([, cap]) => !CAPS[cap])) {
       it(`${gate} is refused, naming ${capability} — by the CLI, by finish-verb and by the programmatic path`, async () => {
         await withFile(async (filePath) => {
           const before = await readFile(filePath, 'utf8');
@@ -384,26 +479,75 @@ for (const persona of personasFor('scripts/state.mjs')) {
         await setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'decide-conflict', anchor: 'ensemble-synthesis', since: '2026-10-01T00:00:00Z' });
         await appendPhase({ workflowPath: filePath, host: 'claude', nextStep: { kind: 'owner-decision', confidence: 'HIGH' } });
         const r = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'decide-conflict',
-          '--next-step-kind', 'verb', '--next-step-verb', 'compose', '--next-step-confidence', 'HIGH', '--resolution', 'Direction B, for its reversibility.'], { AGENTIC_AUTOPILOT: RUN });
-        strictEqual(r.status, 0, `AGENTIC_AUTOPILOT is ignored: ${r.stderr}`);
+          '--next-step-kind', 'verb', '--next-step-verb', 'compose', '--next-step-confidence', 'HIGH', '--resolution', 'Direction B, for its reversibility.'],
+          // With dispatch_target off an inherited run is ignored; with it on,
+          // the clear is refused under autopilot (the itDispatchOn case below).
+          CAPS.dispatch_target ? {} : { AGENTIC_AUTOPILOT: RUN });
+        strictEqual(r.status, 0, r.stderr);
         deepStrictEqual(await keysOf(filePath), { next_step_kind: 'verb', next_step_verb: 'compose', next_step_confidence: 'HIGH' });
         const text = await readFile(filePath, 'utf8');
-        ok(/### Owner gate resolved: decide-conflict at \S+\n\nDirection B, for its reversibility\.\n\nCleared awaiting_owner \(since 2026-10-01T00:00:00Z, pointer /.test(text), text.slice(-400));
+        ok(/^### Owner gate resolved: decide-conflict at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n\nDirection B, for its reversibility\.\n\nCleared awaiting_owner \(since 2026-10-01T00:00:00Z, pointer /m.test(text), text.slice(-400));
         ok(text.includes(relPointer(filePath, dir, 'ensemble-synthesis')));
       });
     });
 
     it('clear refuses a gate that is not the one set, and when none is set', async () => {
       await withFile(async (filePath) => {
+        let before = await readFile(filePath, 'utf8');
         const none = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'scope-routing']);
         strictEqual(none.status, 1);
         ok(/no owner gate is set/.test(none.stderr), none.stderr);
+        strictEqual(await readFile(filePath, 'utf8'), before);
         await setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'recurring-finding', anchor: 'x' });
+        before = await readFile(filePath, 'utf8');
         const other = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'scope-routing']);
         strictEqual(other.status, 1);
         ok(/is recurring-finding, not scope-routing/.test(other.stderr), other.stderr);
-        strictEqual((await fmOf(filePath)).awaiting_owner_gate, 'recurring-finding');
+        strictEqual(await readFile(filePath, 'utf8'), before);
       });
+    });
+
+    itDispatchOn('clear is refused under autopilot and leaves the gate set', async () => {
+      await withFile(async (filePath) => {
+        await setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'decide-conflict', anchor: 'ensemble-synthesis' });
+        const before = await readFile(filePath, 'utf8');
+        const r = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'decide-conflict'], { AGENTIC_AUTOPILOT: RUN });
+        strictEqual(r.status, 1, r.stderr);
+        ok(/refused under autopilot/.test(r.stderr), r.stderr);
+        strictEqual(await readFile(filePath, 'utf8'), before);
+        await rejects(
+          clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'decide-conflict', env: { AGENTIC_AUTOPILOT: RUN } }),
+          /refused under autopilot/,
+        );
+        strictEqual(await readFile(filePath, 'utf8'), before);
+      });
+    });
+
+    itDispatchOn('a malformed AGENTIC_AUTOPILOT does not turn autopilot on: clear proceeds', async () => {
+      await withFile(async (filePath) => {
+        await setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'pr-handling', anchor: 'pr-handling' });
+        const r = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'pr-handling'], { AGENTIC_AUTOPILOT: '1' });
+        strictEqual(r.status, 0, r.stderr);
+        strictEqual('awaiting_owner_gate' in (await fmOf(filePath)), false);
+      });
+    });
+
+    // The predicate those two turn on (ADR-0063 §0.2). Every copy's line is
+    // held to engineer's by tests/plugin-shape/test-autopilot-enum-parity.mjs.
+    itDispatchOn('isAutopilotRun is on only for a well-formed run id', () => {
+      strictEqual(isAutopilotRun({ AGENTIC_AUTOPILOT: RUN }), true);
+      for (const v of [
+        undefined, '', '1', 'true', 'autopilot',
+        'autopilot-20260930T010203Z-ABCDEF',
+        'autopilot-20260930T010203Z-abcde',
+        'autopilot-20260930T010203-abcdef',
+        ` ${RUN}`,
+        `${RUN}\n`,
+        'consensus-20260930T010203Z-abcdef',
+      ]) {
+        strictEqual(isAutopilotRun({ AGENTIC_AUTOPILOT: v }), false, JSON.stringify(v));
+      }
+      strictEqual(isAutopilotRun({}), false);
     });
   });
 
@@ -420,7 +564,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     }
 
-    it('an inherited AGENTIC_AUTOPILOT does not suppress the terminal write (acceptance)', async () => {
+    itDispatchOff('an inherited AGENTIC_AUTOPILOT does not suppress the terminal write (acceptance)', async () => {
       await withFile(async (filePath) => {
         const r = cli(['finish-verb', '--workflow-path', filePath, '--host', 'claude', '--next-action', 'n', '--next-step-kind', 'done', '--next-step-confidence', 'HIGH'], { AGENTIC_AUTOPILOT: RUN });
         strictEqual(r.status, 0, r.stderr);
@@ -431,7 +575,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
 
-    it('with an owner gate: recorded with owner-decision in one write, an inherited marker turned off, not terminal', async () => {
+    itDispatchOff('with an owner gate: recorded with owner-decision in one write, an inherited marker turned off, not terminal', async () => {
       await withFile(async (filePath, dir) => {
         await setTerminal({ workflowPath: filePath, host: 'claude', terminalPhase: 'summary-complete' });
         const r = cli(['finish-verb', '--workflow-path', filePath, '--host', 'claude', '--next-action', 'The owner selects a direction',
@@ -462,13 +606,53 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     }
 
-    it('a file on disk schema "1.3" keeps "1.3" through finish-verb and the gate writers', async () => {
+    it('a file on disk schema "1.3" keeps "1.3" through every writer of a next step or a gate, finish-verb included', async () => {
       await withGatedFile('1.3', [], async (filePath) => {
-        await setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'scope-routing', anchor: 'r' });
-        await clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'scope-routing', nextStep: { kind: 'done', confidence: 'HIGH' } });
-        await finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'n', nextStep: { kind: 'verb', verb: 'frame', confidence: 'LOW' } });
+        // env {}: an inherited AGENTIC_AUTOPILOT would refuse the clear and
+        // keep finish-verb open where dispatch_target is on.
+        const writers = [
+          ['append', () => appendPhase({ workflowPath: filePath, host: 'claude', event: 'updated', nextStep: { kind: 'commit', confidence: 'HIGH' } })],
+          ['set-terminal', () => setTerminal({ workflowPath: filePath, host: 'claude', terminalPhase: 'summary-complete', terminalMarker: false, nextStep: { kind: 'done', confidence: 'HIGH' } })],
+          ['awaiting-owner-set', () => setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'scope-routing', anchor: 'r' })],
+          ['awaiting-owner-clear', () => clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'scope-routing', nextStep: { kind: 'done', confidence: 'HIGH' }, env: {} })],
+          ['finish-verb', () => finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'n', nextStep: { kind: 'verb', verb: 'frame', confidence: 'LOW' }, env: {} })],
+        ];
+        for (const [name, write] of writers) {
+          await write();
+          strictEqual((await fmOf(filePath)).schema, '1.3', `${name} must not promote the schema`);
+        }
         const f = await fmOf(filePath);
         deepStrictEqual([f.schema, f.next_step_verb, f.terminal_marker], ['1.3', 'frame', true]);
+      });
+    });
+  });
+
+  describe(`${persona}: schema 1.4 — a body that ends without a newline`, () => {
+    // Only a hand-edited file ends this way; every body this script writes
+    // ends with a newline. The heading must still start its own line.
+    async function stripFinalNewlines(filePath) {
+      const raw = await readFile(filePath, 'utf8');
+      const stripped = raw.replace(/\n+$/, '');
+      ok(stripped !== raw && !stripped.endsWith('\n'));
+      await writeFile(filePath, stripped);
+    }
+
+    it('awaiting-owner-clear puts its resolution heading on its own line', async () => {
+      await withFile(async (filePath) => {
+        await setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'decide-conflict', anchor: 'ensemble-synthesis' });
+        await stripFinalNewlines(filePath);
+        await clearAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'decide-conflict', env: {} });
+        const { body } = parseWorkflowFile(await readFile(filePath, 'utf8'));
+        ok(/^### Owner gate resolved: decide-conflict at /m.test(body), body);
+      });
+    });
+
+    it('append puts its phase heading on its own line', async () => {
+      await withFile(async (filePath) => {
+        await stripFinalNewlines(filePath);
+        await appendPhase({ workflowPath: filePath, host: 'claude', event: 'updated', phaseLabel: 'Phase 1: after a hand edit', phaseNote: 'note' });
+        const { body } = parseWorkflowFile(await readFile(filePath, 'utf8'));
+        ok(/^### Phase 1: after a hand edit$/m.test(body), body);
       });
     });
   });
@@ -481,7 +665,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
 
-    it('an inherited AGENTIC_AUTOPILOT: one line saying it is ignored, exit 0, and nothing written', async () => {
+    itDispatchOff('an inherited AGENTIC_AUTOPILOT: one line saying it is ignored, exit 0, and nothing written', async () => {
       await withFile(async (filePath) => {
         const before = await readFile(filePath, 'utf8');
         const r = cli(['autopilot-preflight', '--workflow-path', filePath, '--host', 'claude'], { AGENTIC_AUTOPILOT: RUN });
@@ -496,7 +680,7 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
 
-    it('a gate set: the notice names the gate, its pointer and its resolving surface in this persona, never a refusal', async () => {
+    itDispatchOff('a gate set: the notice names the gate, its pointer and its resolving surface in this persona, never a refusal', async () => {
       await withFile(async (filePath, dir) => {
         await setAwaitingOwner({ workflowPath: filePath, host: 'claude', gate: 'decide-conflict', anchor: 'ensemble-synthesis' });
         for (const [host, prefix] of [['claude', `/${persona}:`], ['codex', `$${persona}:`]]) {

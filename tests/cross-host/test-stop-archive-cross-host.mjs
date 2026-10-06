@@ -10,7 +10,8 @@
 // In-process invocation: runStopArchive imported directly per ADR-0018
 // §sub-5 "Hooks for both hosts are simulated in-process". Stop-script
 // stdin/cwd asymmetry is verified separately by
-// tests/engineer/test-stop-archive.mjs.
+// tests/persona-pipeline/test-stop-archive.mjs, for every persona (engineer
+// included).
 //
 // Discovered by `npm test`; run the cross-host files alone with `npm test -- tests/cross-host/test-*.mjs`.
 
@@ -90,7 +91,7 @@ async function setupArchivableFixture(host) {
       headSubject,
     });
     const archiveFiles = await readdir(
-      join(repoRoot, engineerState.ARCHIVE_DIR_REL),
+      join(repoRoot, engineerState.archiveDirRel()),
     );
     let archivedText = null;
     if (result.archived && result.to) {

@@ -75,7 +75,9 @@ import {
 } from './lib/persona-pipeline.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DECLARATION_FAMILY = 'persona-declaration-1.2';
+// The format the generated loader reads (lib/persona.mjs READER_MINOR): the
+// check forgives an unknown scalar only where the loader does too.
+const DECLARATION_FAMILY = 'persona-declaration-1.3';
 const REGISTRY_REL = 'core/skills/decide/references/decision-axes.yml';
 
 async function loadValidator() {
@@ -136,6 +138,13 @@ function crossFieldFailures({ persona, pluginDir, declaration, registry, units, 
   if (caps.profile_presets === false && decide.profile_presets !== undefined) {
     failures.push(`${where}: decide.profile_presets is set but capabilities.profile_presets is off (the map would do nothing)`);
   }
+  // PC3 U7: under an autopilot run (dispatch_target on, ADR-0066 Decision 3)
+  // finish-verb leaves the terminal marker for the commit surface, and the
+  // runbooks send commit and done to /<persona>:commit; without the surface
+  // nothing would close the workflow.
+  if (caps.dispatch_target === true && caps.commit_surface !== true) {
+    failures.push(`${where}: capabilities.dispatch_target is on but capabilities.commit_surface is off (under autopilot only the commit surface closes a workflow)`);
+  }
 
   if (registry.error) {
     failures.push(`${where}: cannot check decide against plugins/${persona}/${REGISTRY_REL}: ${registry.error}`);
@@ -167,7 +176,18 @@ function crossFieldFailures({ persona, pluginDir, declaration, registry, units, 
   }
 
   for (const unit of units) {
+    // A capability module (on_only) is generated into exactly the personas
+    // that declare every capability it carries on (ADR-0066 Decision 1).
+    const onOnly = unit.on_only ?? [];
+    if (onOnly.length > 0 && !unit.personas.includes(persona) && onOnly.every((cap) => caps[cap] === true)) {
+      failures.push(`${where}: ${persona} declares ${onOnly.join(' and ')} on, but the manifest does not generate unit ${unit.id} (${unit.dest}) into it`);
+    }
     if (!unit.personas.includes(persona)) continue;
+    for (const cap of onOnly) {
+      if (caps[cap] !== true) {
+        failures.push(`${where}: unit ${unit.id} (${unit.dest}) is a module of ${cap}, but ${persona} declares it off`);
+      }
+    }
     for (const field of unit.requires ?? []) {
       let cur = d;
       for (const part of field.split('.')) cur = isPlainObject(cur) && Object.hasOwn(cur, part) ? cur[part] : undefined;
@@ -215,11 +235,20 @@ function crossFieldFailures({ persona, pluginDir, declaration, registry, units, 
   // profile (derived.brief_file); the declared artifact must name exactly that
   // one file, so the convention stays bound to declared data.
   const briefFile = derivedFields(d).brief_file;
+  // PC3 U7: the brief's declared names belong to investigate, the verb that
+  // saves the brief.
+  for (const [verbName, verb] of Object.entries(d.verbs ?? {})) {
+    if (verbName === 'investigate') continue;
+    for (const key of ['brief_file', 'output_root_env']) {
+      if (Object.hasOwn(verb ?? {}, key)) failures.push(`${where}: verbs.${verbName}.${key} is declared, but only investigate saves a brief`);
+    }
+  }
   if (briefFile !== undefined) {
     const artifact = d.verbs?.investigate?.artifact;
     const named = Array.isArray(artifact) ? [...artifact.join('\n').matchAll(/(?<![\w.\/-])[\w.-]+\.md(?![\w.\/-])/g)].map((m) => m[0]) : [];
     if (named.length !== 1 || named[0] !== briefFile) {
-      failures.push(`${where}: verbs.investigate.artifact must name exactly one *.md file, ${briefFile} (the default profile ${d.verbs.investigate.default_profile} with - → _); it names ${named.length === 0 ? 'none' : named.join(', ')}`);
+      const source = Object.hasOwn(d.verbs.investigate, 'brief_file') ? 'the declared verbs.investigate.brief_file' : `the default profile ${d.verbs.investigate.default_profile} with - → _`;
+      failures.push(`${where}: verbs.investigate.artifact must name exactly one *.md file, ${briefFile} (${source}); it names ${named.length === 0 ? 'none' : named.join(', ')}`);
     }
   }
 

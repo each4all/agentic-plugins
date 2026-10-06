@@ -12,7 +12,9 @@
 //     (branch-agnostic via listAllMacros), so the guaranteed channel is
 //     populated even when the primary emit was missed or failed transiently.
 //
-// Host-free + deterministic. Mirrors tests/engineer/test-handoff-backstop.mjs +
+// Host-free + deterministic. Mirrors the persona suite
+// tests/persona-pipeline/test-handoff-backstop.mjs (engineer's cases since
+// ADR-0066 PC3) +
 // tests/orchestrator/test-handoff-sidecar.mjs. Run via
 // `node --test tests/orchestrator/test-handoff-backstop.mjs`.
 

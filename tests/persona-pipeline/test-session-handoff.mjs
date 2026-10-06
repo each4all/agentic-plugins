@@ -9,7 +9,8 @@
 // seam-accepted on a current runtime; the personas' sidecar/footer plumbing
 // landed with ADR-0043 S3/S4 (its suites are test-handoff-sidecar /
 // test-footer-activation / test-handoff-backstop). These tests assert each
-// persona's OWN projection shape, not the runtime round-trip.
+// persona's OWN projection shape and that the runtime seam
+// (normalizeProjection) accepts it unchanged.
 //
 // Run via `node --test tests/persona-pipeline/test-session-handoff.mjs`.
 
@@ -21,6 +22,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
+import { normalizeProjection } from '../../plugins/runtime/scripts/context.mjs';
 import { personasFor, personaInfo } from './_personas.mjs';
 
 const BASELINE_HEAD = '1111111111111111111111111111111111111111';
@@ -141,6 +143,11 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
       // Today's literal identity: the canonical home is .agentic-plugins/state/<name>.
       ok(projection.workflow_path.includes(`${P.workflowDirRel}/`),
         `repo-relative pointer must use the ${persona} canonical home: ${projection.workflow_path}`);
+      // The cross-plugin contract: the runtime seam accepts it unchanged.
+      const { projection: normalized, error } = normalizeProjection(projection);
+      strictEqual(error, null);
+      strictEqual(normalized.workflow_kind, persona);
+      strictEqual(normalized.archive_gate, 'not_terminal');
     });
 
     it('treats whitespace-only routing as absent and falls back to the default', async () => {
@@ -150,6 +157,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
         repoRoot: root, branch: 'feat/ws', headSha: MOVED_HEAD, headSubject: 'feat: ws', routing: '   ',
       });
       strictEqual(result.projection.routing_recommendation, RESUME);
+      strictEqual(normalizeProjection(result.projection).error, null); // not rejected by the seam
     });
 
     it('always returns a routing recommendation, even with no projection (ADR-0031 input (c))', async () => {

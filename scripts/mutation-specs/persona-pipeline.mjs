@@ -37,6 +37,8 @@
 //      and the known keys, a defect in one persona's copy or in every copy;
 //   E  ensemble settlement (PC2b DD6, RV1, RV2): each rule `settle` decides
 //      by, dropped or loosened;
+//   N  engineer converges (PC3): a defect in a canonical capability-on path,
+//      regenerated into every target, fails an engineer contract test;
 //   C  a control: an innocuous canonical edit, regenerated everywhere, keeps
 //      the drift check clean (expect SURVIVED).
 //
@@ -69,6 +71,7 @@ const T_CODEX = 'tests/plugin-shape/test-codex-plugin-root-contract.mjs';
 const T_ARCH = 'tests/scripts/test-set-terminal-archive-timing.mjs';
 const T_S14 = 'tests/persona-pipeline/test-state-schema-14.mjs';
 const T_SETTLE = 'tests/persona-pipeline/test-peer-runner-settle.mjs';
+const T_ENG_AP = 'tests/plugin-shape/test-engineer-autopilot-runbooks.mjs';
 
 export const TESTS = [T_SYNC];
 
@@ -1147,10 +1150,10 @@ export const MUTATIONS = [
     id: 'V1', tests: [T_DECL],
     prepare: (copy, tools) => canonicalDefect(copy, tools, {
       dest: 'scripts/lib/persona.mjs',
-      from: 'const READER_MINOR = 2;',
-      to: 'const READER_MINOR = 1;',
+      from: 'const READER_MINOR = 3;',
+      to: 'const READER_MINOR = 2;',
     }),
-    why: 'the loader reads as 1.1 again and forgives an unknown scalar the schema refuses at the same minor (the readers disagree)',
+    why: 'the loader reads as 1.2 again and forgives an unknown scalar the schema refuses at the same minor (the readers disagree)',
   },
   {
     id: 'V2', tests: [T_DECL],
@@ -2106,7 +2109,7 @@ export const MUTATIONS = [
   },
   {
     id: 'X16', tests: [T_REF], file: 'scripts/lib/persona-pipeline.mjs',
-    from: "derived.brief_file = `${profile.split('-').join('_')}.md`;", to: "derived.brief_file = profile.split('-').join('_');",
+    from: ": `${profile.split('-').join('_')}.md`;", to: ": profile.split('-').join('_');",
     killed_by: /the output-file rules name the brief file and output root the declaration implies \(RD7\)$/,
     why: 'derived.brief_file loses its .md, so the assembled output-file rules name a file the investigate verb never writes',
   },
@@ -2349,7 +2352,7 @@ export const MUTATIONS = [
     id: 'X55', tests: [T_REF],
     prepare: (copy, tools) => templateDefect(copy, tools, {
       template: 'regions/verb-finalize.md',
-      from: "`### Ensemble skipped: {{launched}} (privacy gate)`",
+      from: "`### Ensemble skipped: {{launched}} ({{skip_label}})`",
       to: "`### Ensemble skipped: {{launched}} (<privacy gate | companion unavailable>)`",
     }),
     killed_by: /the skills and the handoff name finish-verb as the terminal write \(PC2b DD8\)$/,
@@ -2395,6 +2398,463 @@ export const MUTATIONS = [
     prepare: (copy, tools) => templateDefect(copy, tools, { template: 'regions/ensemble-bookkeeping.md', from: ' An answer that parses to\n  nothing usable, only structural shell, reads to `settle` like any other:\n  the synthesis judges it, and its verdict is then `degraded`.', to: '' }),
     killed_by: /no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead \(D2, PC2b U5b\)$/,
     why: 'the bookkeeping section says settle alone decides degraded, hiding the answer of structural shell the synthesis must judge',
+  },
+
+  // ---- N: engineer converges (PC3) — a canonical defect regenerated into every --------
+  // target fails an engineer contract test: the capability-on paths engineer runs
+  // live only in the canonical source now (ADR-0066 Decision 5, Stage 3).
+  {
+    id: 'N1', tests: ['tests/persona-pipeline/test-autopilot-verbs.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "  if (named && capabilityOn('dispatch_target') && host === 'claude') {\n",
+      to: '  if (false) {\n',
+    }),
+    killed_by: [/^engineer: autopilot-preflight \(ADR-0063 D4\) > /, /^engineer: finish-verb \(ADR-0063 D3\) > /],
+    why: 'the autopilot on path is gone: engineer runs every autopilot step interactively, so a verb closes the workflow the driver leaves open for /engineer:commit',
+  },
+  {
+    id: 'N2', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: "  const publishNeeded = !capabilityOn('commit_surface')\n",
+      to: '  const publishNeeded = true\n',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > completion-flag minimum content \(completion-output contract\) > maps only-head_moved-unmet to blocked with the commit as its unblocking action/,
+    why: "engineer's terminal that waits for its commit is reported as the owner's manual publish (D4)",
+  },
+  {
+    id: 'N3', tests: ['tests/persona-pipeline/test-handoff-backstop.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '    ? [defaultProjectionFile(repoRoot), legacyProjectionFile(repoRoot)]\n',
+      to: '    ? [defaultProjectionFile(repoRoot)]\n',
+    }),
+    killed_by: /^engineer: SessionStart handoff backstop \(ADR-0043 S3\/S4\) > re-injects \+ consumes a LEGACY-home pending handoff/,
+    why: 'a pre-migration workflow\'s pending handoff is never re-surfaced (legacy_homes, D4)',
+  },
+  {
+    id: 'N4', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: "  } else if (phase === 'close-complete') {\n",
+      to: "  } else if (phase === 'no-such-phase') {\n",
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > completion-flag minimum content \(completion-output contract\) > a close-complete workflow blocked on head_moved names the no-changes close/,
+    why: 'an interrupted no-changes close is told to commit, though HEAD is not meant to move (D4)',
+  },
+  {
+    id: 'N5', tests: ['tests/persona-pipeline/test-commit-surface.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/phase7-commit.mjs',
+      from: '  const autopilot = autopilotActivation({ env: process.env, host: flags.host });\n',
+      to: "  const autopilot = { active: /^autopilot-/.test(process.env.AGENTIC_AUTOPILOT ?? ''), reason: null };\n",
+    }),
+    killed_by: /^engineer: the commit driver's autopilot activation matches state's \(ADR-0066 Decision 3\) > on Codex: /,
+    why: "the commit driver treats any named run as autopilot, so on Codex it refuses the execute and close that engineer's state, ignoring the run, tells the user to run",
+  },
+  {
+    id: 'N6', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/state.mjs',
+      from: "          origin: 'primary',\n",
+      to: '',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > CLI: re-running set-terminal with the same phase and next action renders the footer again$/,
+    why: "the terminal write's emit is a backstop: a re-terminalization with the same phase and next action renders no footer (D4)",
+  },
+  {
+    id: 'N7', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: "          '--workflow-projection-file', snapshotFile,\n",
+      to: "          '--workflow-projection-file', projectionFile,\n",
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > renders from its own snapshot: /,
+    why: "the footer reads the mutable slot, so a concurrent cross-branch emit's projection mixes into this emit's footer (D4)",
+  },
+  {
+    id: 'N8', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: "        resolveRender(await deliverToStderr(textRun.stdout.endsWith('\\n') ? textRun.stdout : `${textRun.stdout}\\n`));\n",
+      to: "        deliverToStderr(textRun.stdout.endsWith('\\n') ? textRun.stdout : `${textRun.stdout}\\n`);\n        resolveRender(true);\n",
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a footer whose stderr write fails after it returned counts as not rendered/,
+    why: 'a footer accepted by the stream but never delivered counts as rendered, so the SessionStart nudge is suppressed (D4)',
+  },
+  {
+    id: 'N9', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '  return transition === undefined || marker.transition === undefined || marker.transition === transition;\n',
+      to: '  return true;\n',
+    }),
+    killed_by: [
+      /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a later commit-complete transition whose primary emit was missed renders at the backstop, once$/,
+      /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a later close-complete transition whose primary emit was missed renders at the backstop, once$/,
+    ],
+    why: "the tombstone is keyed by workflow alone: a later transition whose primary emit was missed (an interrupted commit or close) never renders (D4)",
+  },
+  {
+    id: 'N10', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: "      const snapshotFile = `${projectionFile}.render-snapshot-${process.pid}-${randomBytes(6).toString('hex')}.json`;\n",
+      to: '      const snapshotFile = `${projectionFile}.render-snapshot-${process.pid}.json`;\n',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > two renders in one process on one slot each render their own workflow$/,
+    why: 'two renders in one process share a snapshot name, so one renders the other\'s workflow or loses its snapshot (D4)',
+  },
+  {
+    id: 'N15', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '  if (!terminalPhases().has(projection.phase)) return undefined;\n',
+      to: '',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a workflow reopened with its terminal marker inherited renders no footer at the Stop backstop$/,
+    why: 'every phase a reopened workflow moves through counts as a new transition, so each Stop renders a completion footer for unfinished work (D4)',
+  },
+  {
+    id: 'N16', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: "  process.stderr.on('error', () => {});\n",
+      to: '',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a stderr error event after the failed write callback does not crash the emit$/,
+    why: "an EPIPE on stderr after the terminal write crashes the completion that already landed (D4)",
+  },
+  {
+    id: 'N17', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '  const claimed = await withMarkerLock(markerFile, async (owns) => {\n',
+      to: '  const claimed = await (async (fn) => fn(async () => true))(async (owns) => {\n',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > two overlapping emits of one later transition render it once \(the marker lock\)$/,
+    why: 'two overlapping emits both read the earlier transition\'s render, both take the marker over and both render the later transition (D4)',
+  },
+  {
+    id: 'N18', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '  if (!held || Date.now() - held.mtimeMs <= MARKER_LOCK_STALE_MS) return false;\n',
+      to: '  return false;\n',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a marker lock left by a dead emit is broken; /,
+    why: 'a lock left by a dead emit is never broken, so no footer of that slot renders again (D4)',
+  },
+  {
+    id: 'N19', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '  if (!sameTransition(existing, transition)) return true;\n',
+      to: "  if (!sameTransition(existing, transition)) return existing.status === 'rendered';\n",
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a claim left by a dead render is taken over: /,
+    why: "an earlier transition's dead claim suppresses every later transition of the workflow until a SessionStart consume (D4)",
+  },
+  {
+    id: 'N20', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '  return claimIsStale(existing);\n',
+      to: '  return false;\n',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a claim left by a dead render is taken over: /,
+    why: 'a claim whose render died suppresses its transition until a SessionStart consume (D4)',
+  },
+  {
+    id: 'N24', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '    if (!(await owns())) return false;\n',
+      to: '',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > an emit whose lock was replaced while it held it claims nothing and removes no lock$/,
+    why: 'an emit whose lock a breaker replaced still writes its claim, beside the new holder (D4)',
+  },
+  {
+    id: 'N25', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '    if (await lockHolds(lockFile, token)) await rm(lockFile, { force: true }).catch(() => {});\n',
+      to: '    await rm(lockFile, { force: true }).catch(() => {});\n',
+    }),
+    killed_by: /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > an emit whose lock was replaced while it held it claims nothing and removes no lock$/,
+    why: "a former holder removes the lock that replaced its own, admitting a third emit (D4)",
+  },
+  {
+    id: 'N26', tests: ['tests/persona-pipeline/test-footer-activation.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: '  return !existing || existing.claim === claim;\n',
+      to: '  return !existing || existing.workflow_id !== undefined;\n',
+    }),
+    killed_by: [
+      /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a render whose claim another attempt took over renders without touching that claim$/,
+      /^engineer: completion-footer activation \(ADR-0043 S3\/S4\) > a render whose claim another attempt took over fails without touching that claim$/,
+    ],
+    why: "a paused render's upgrade or release overwrites the claim of the attempt that took it over (D4)",
+  },
+  {
+    id: 'N27', tests: ['tests/persona-pipeline/test-handoff-backstop.mjs'],
+    prepare: (copy, tools) => canonicalDefect(copy, tools, {
+      dest: 'scripts/session-handoff.mjs',
+      from: "    if (marker && (marker.status === 'rendered' || (marker.status === 'claimed' && !claimIsStale(marker)))) return;\n",
+      to: "    if (marker && marker.status === 'rendered') return;\n",
+    }),
+    killed_by: /consumePendingHandoff removes the one-shot file, PRESERVES a rendered tombstone, and removes a crashed claim$/,
+    why: 'SessionStart removes a live claim, so a second emit renders the same transition beside it (D4)',
+  },
+  // engineer's verb runbooks are characterized before they join the regions
+  // (PC3 U7): the independent identity and order checks bite on them too.
+  {
+    id: 'N21', tests: [T_CHAR],
+    file: 'plugins/engineer/commands/start.md',
+    from: 'node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \\\n  --mode execute \\\n  --workflow-path "$ACTIVE" \\\n',
+    to: 'node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \\\n  --mode execute \\\n  --workflow-path "$WORKFLOW" \\\n',
+    killed_by: [
+      /verb runbook characterization \(PC2a2 T0\) > engineer\/start > identity: /,
+      /verb runbook characterization \(PC2a2 T0\) > engineer\/start > order: /,
+    ],
+    why: "engineer's start commits a workflow no block set, not the one find-active found",
+  },
+  {
+    id: 'N22', tests: [T_CHAR],
+    file: 'plugins/engineer/commands/critique.md',
+    // PC3 U7: critique's finalize is generated; the settlement names the phase.
+    from: '  --host "${AGENTIC_HOST:-claude}" --phase \'critique\' --run-id "$RUN_ID" \\\n',
+    to: '  --host "${AGENTIC_HOST:-claude}" --phase \'compose\' --run-id "$RUN_ID" \\\n',
+    killed_by: /verb runbook characterization \(PC2a2 T0\) > engineer\/critique > identity: /,
+    why: "engineer's critique records its ensemble under another verb's phase",
+  },
+  {
+    id: 'N23', tests: [T_CHAR],
+    file: 'plugins/engineer/commands/compose.md',
+    // PC3 U7: compose is generated now, its literals single-quoted.
+    from: "  --next-action 'Critique the composed artifact' \\\n  --next-step-kind verb --next-step-verb 'critique' \\\n",
+    to: "  --next-action 'Run compose skill' \\\n  --next-step-kind verb --next-step-verb 'critique' \\\n",
+    killed_by: /verb runbook characterization \(PC2a2 T0\) > engineer\/compose > order: /,
+    why: "engineer's compose closes with a next action that disagrees with the one its phase note records",
+  },
+  {
+    id: 'N28', tests: [T_CHAR],
+    file: 'plugins/engineer/commands/start.md',
+    from: 'if [ "$BASELINE_STATUS" = "dirty" ]; then\n',
+    to: 'if [ "$BASELINE_STATUS" = "never" ]; then\n',
+    killed_by: /verb runbook characterization \(PC2a2 T0\) > engineer\/start > guards: start admits only/,
+    why: "engineer's start creates its workflow over a dirty baseline",
+  },
+  {
+    id: 'N29', tests: [T_CHAR],
+    file: 'plugins/engineer/commands/critique.md',
+    from: `RUN_ID="\${ENSEMBLE_TYPE}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"\n`,
+    to: '',
+    killed_by: /verb runbook characterization \(PC2a2 T0\) > engineer\/critique > identity: /,
+    why: "engineer's critique dispatches with a run id no block set",
+  },
+  // engineer's runbooks join the regions group by group (PC3 U7): a template
+  // defect regenerated into every enrolled persona fails engineer's contract.
+  {
+    id: 'N11', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/checkpoint-set.md',
+      from: '  --workflow-path "$ACTIVE" --host',
+      to: '  --workflow-path "$WORKFLOW" --host',
+    }),
+    killed_by: /engineer\/commands\/checkpoint\.md \(committed\) > the checkpoint is written to the workflow find-active found, after finding it$/,
+    why: "engineer's checkpoint command writes to a variable no block set, not the workflow find-active found",
+  },
+  {
+    id: 'N12', tests: [T_SKILL],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/skill-checkpoint-set.md',
+      from: '  --workflow-path "$ACTIVE" --host',
+      to: '  --workflow-path "$WORKFLOW" --host',
+    }),
+    killed_by: /engineer\/core\/skills\/checkpoint\/SKILL\.md \(committed\) > the checkpoint is written to the workflow Phase 1 found/,
+    why: "engineer's checkpoint skill (the Codex runbook) writes to a variable no step set",
+  },
+  {
+    id: 'N13', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/peer-now-locate.md',
+      from: '2>/tmp/{{name}}-peer-now-find.err)"\nFIND_RC=$?\n',
+      to: '2>/dev/null)"\n',
+    }),
+    killed_by: /engineer\/commands\/peer-now\.md \(committed\) > the privacy gate precedes the dispatch, which is synchronous, and the note goes to the workflow found$/,
+    why: "peer-now's find-active drops its exit code, so a per-branch duplicate reads as no workflow and the response is never recorded",
+  },
+  {
+    id: 'N14', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/resume-marker.md',
+      from: 'if [ -z "$BASE_HEAD_CHECK" ] || ! git cat-file -e "$BASE_HEAD_CHECK^{commit}" 2>/dev/null; then\n',
+      to: 'if false; then\n',
+    }),
+    killed_by: /engineer\/commands\/resume\.md \(committed\) > resume appends its marker only when the baseline commit is available$/,
+    why: 'resume records a resumed event over a baseline whose commit object is gone (ADR-0017 §sub-decision-1)',
+  },
+
+  // PC3 U7: engineer's frame and compose render from the verb templates; a
+  // defect in a template's capability-on branch, regenerated into every
+  // target, fails an engineer contract test.
+  {
+    id: 'N30', tests: [T_CHAR],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-bootstrap.md',
+      from: '  --next-action "Run ${VERB} skill" \\\n  "${PARENT_ARGS[@]}")" || exit $?\n',
+      to: '  --next-action "Run ${VERB} skill")" || exit $?\n',
+    }),
+    killed_by: /verb runbook characterization \(PC2a2 T0\) > engineer\/frame > does what the fixture recorded/,
+    why: "engineer's frame bootstrap drops the parent linkage, so a subtask /orchestrator:next dispatched records no parent (ADR-0019 §3)",
+  },
+  {
+    id: 'N31', tests: [T_ENG_AP],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-finalize.md',
+      from: '/{{persona}}:commit for commit or done; the owner-decision action otherwise>\n',
+      to: "the owner's save and commit for commit; none for done; the owner's decision otherwise>\n",
+    }),
+    killed_by: /verb runbooks — Phase 2 \(ADR-0063 D3\) > frame: the proposal templates offer done, and commit routes to \/engineer:commit$/,
+    why: "engineer's proposal sends commit to the owner instead of /engineer:commit",
+  },
+  {
+    id: 'N32', tests: [T_ENG_AP],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-finalize.md',
+      from: '  --verdict "$VERDICT" --summary "$SUMMARY" || exit $?\n',
+      to: '  --verdict "$VERDICT" --summary "$SUMMARY"\n',
+    }),
+    killed_by: /verb runbooks — Phase 2 \(ADR-0063 D3\) > compose: every write stops the block on failure; the last write is finish-verb with the next step$/,
+    why: 'a refused settlement no longer stops the block, so engineer closes the verb with its ensemble attempt unsettled',
+  },
+  {
+    id: 'N33', tests: [T_ENG_AP],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-completion-footer.md',
+      from: 'Under an autopilot run `finish-verb` makes no terminal write, so no footer is\nprinted: the driver is the handoff.\n',
+      to: '',
+    }),
+    killed_by: /verb runbooks — Phase 2 \(ADR-0063 D3\) > frame: the completion footer paragraph says autopilot prints none: the driver is the handoff$/,
+    why: "engineer's completion text no longer says an autopilot run prints no footer",
+  },
+  {
+    id: 'N34', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-bootstrap-profiled.md',
+      from: '  --next-action "Run ${VERB} skill" \\\n  "${PARENT_ARGS[@]}")" || exit $?\n',
+      to: '  --next-action "Run ${VERB} skill" \\\n  "${PARENT_ARGS[@]}")"\n',
+    }),
+    killed_by: /engineer\/commands\/compose\.md \(committed\) > bootstrap and resume write the workflow Phase 0 found, after it, and each stops the block when it fails \(PD6\)$/,
+    why: "engineer's compose bootstrap no longer stops when create fails",
+  },
+  {
+    id: 'N35', tests: ['tests/engineer/test-verb-runbook-autopilot.mjs'],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-finalize.md',
+      from: 'node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\\n',
+      to: 'true "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" settle \\\n',
+    }),
+    killed_by: /generated verb finalize, settled from the run ledger \(bash, PC3 U7\) > frame: /,
+    why: "engineer's generated finalize never settles: a completed run's verdict is not recorded and its pending row stays",
+  },
+  {
+    id: 'N36', tests: [T_CONTRACT],
+    prepare: (copy) => {
+      const path = join(copy, 'scripts/lib/persona-pipeline.mjs');
+      const text = readFileSync(path, 'utf8');
+      const from = "derived.ensemble_skip_label = gated ? 'privacy gate' : 'local-only';";
+      if (text.split(from).length !== 2) throw new MutationHarnessError('N36 anchor');
+      writeFileSync(path, text.replace(from, "derived.ensemble_skip_label = 'privacy gate';"));
+      regenerate(copy);
+    },
+    killed_by: /engineer\/commands\/frame\.md \(committed\) > privacy: /,
+    why: "engineer's never-launched note blames a privacy gate engineer does not have",
+  },
+  {
+    id: 'N37', tests: ['tests/engineer/test-verb-runbook-autopilot.mjs'],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/decide-owner-selection.md',
+      from: 'if [ "$WF_TYPE" = start ]; then\n',
+      to: 'if [ "$WF_TYPE" = never ]; then\n',
+    }),
+    killed_by: /Codex commit skill and owner-resolution blocks \(bash\) > decide's Owner selection stops at a refused clear/,
+    why: "engineer's Owner selection inside an /engineer:start lifecycle makes the verb's terminal write, which belongs to the lifecycle",
+  },
+  {
+    id: 'N38', tests: ['tests/engineer/test-verb-runbook-autopilot.mjs'],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/refine-owner-decision.md',
+      from: "  --next-action 'Commit the refined change; the recurring finding is deferred' \\\n",
+      to: "  --next-action 'The recurring finding is deferred; the owner saves and commits the refined artifact' \\\n",
+    }),
+    killed_by: /refine's Owner decision blocks \(bash\) > each resolves the workflow itself/,
+    why: "engineer's deferral tells the owner to save and commit, while /engineer:commit is what commits there (commit_surface)",
+  },
+  {
+    id: 'N39', tests: ['tests/engineer/test-verb-runbook-autopilot.mjs'],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/refine-owner-decision.md',
+      from: 'if [ "$WF_TYPE" = start ]; then\n',
+      to: 'if [ "$WF_TYPE" = never ]; then\n',
+    }),
+    killed_by: /refine's Owner decision blocks \(bash\) > each resolves the workflow itself/,
+    why: "engineer's deferral inside an /engineer:start lifecycle makes the verb's terminal write, which belongs to the lifecycle",
+  },
+  // PC3 U7: engineer's investigate picks its ensemble type by profile, names
+  // the profile in its note headings and saves its brief under declared names.
+  {
+    id: 'N40', tests: [T_CONTRACT],
+    prepare: (copy, tools) => templateDefect(copy, tools, {
+      template: 'regions/verb-dispatch.md',
+      from: '  --ensemble-type "$ENSEMBLE_TYPE" --run-id "$RUN_ID" \\\n',
+      to: '  --ensemble-type {{ensemble_type}} --run-id "$RUN_ID" \\\n',
+      only: 'engineer',
+    }),
+    killed_by: /engineer\/commands\/investigate\.md \(committed\) > engineer investigate, instantiated per profile: /,
+    why: "engineer's dispatch ignores the type the agent set for the profile, so a root-cause or cited-brief investigation dispatches as investigate",
+  },
+  {
+    id: 'N41', tests: [T_CHAR],
+    prepare: (copy) => {
+      const path = join(copy, 'scripts/lib/persona-pipeline.mjs');
+      const text = readFileSync(path, 'utf8');
+      const from = "    derived.investigate_synthesis = 'investigate (profile=<profile>)';\n";
+      if (text.split(from).length !== 2) throw new MutationHarnessError('N41 anchor');
+      writeFileSync(path, text.replace(from, '    derived.investigate_synthesis = profiles[0];\n'));
+      regenerate(copy);
+    },
+    killed_by: /verb runbook characterization \(PC2a2 T0\) > engineer\/investigate > does what the fixture recorded/,
+    why: "engineer's investigate synthesis heading names the analysis profile whatever profile ran",
+  },
+  {
+    id: 'N42', tests: [T_DECL], file: 'scripts/lib/persona-pipeline.mjs',
+    from: "    derived.brief_file = typeof investigate.brief_file === 'string' ? investigate.brief_file : `${profile.split('-').join('_')}.md`;\n",
+    to: "    derived.brief_file = `${profile.split('-').join('_')}.md`;\n",
+    killed_by: /an engineer investigate artifact that does not name its declared brief file/,
+    why: "engineer's declared brief file is ignored, so its brief is bound to analysis.md, a file it never saves",
+  },
+  {
+    id: 'N43', tests: [T_DECL], file: 'scripts/sync-persona-pipeline.mjs',
+    from: "const DECLARATION_FAMILY = 'persona-declaration-1.3';", to: "const DECLARATION_FAMILY = 'persona-declaration-1.2';",
+    killed_by: /fails on an unknown scalar in a declaration of the format the loader reads$/,
+    why: "the generator reads engineer's 1.3 declaration as a newer minor and forgives an unknown key its loader refuses, so every state write would fail",
+  },
+  {
+    id: 'N44', tests: [T_VERBS],
+    prepare: (copy) => {
+      const path = join(copy, 'plugins/engineer/persona.json');
+      const d = JSON.parse(readFileSync(path, 'utf8'));
+      if (d.verbs?.investigate?.output_root_env !== 'RESEARCH_OUTPUT_ROOT') throw new MutationHarnessError('N44 anchor');
+      delete d.verbs.investigate.output_root_env;
+      writeFileSync(path, `${JSON.stringify(d, null, 2)}\n`);
+    },
+    killed_by: /engineer: the declared verb fields are what the runbooks say > investigate: the brief file and output-root variable the declaration implies are the ones its output-file rules name/,
+    why: "engineer's declaration drops its output-root variable, so its brief is bound to ENGINEER_OUTPUT_ROOT, which its output-file rules never read",
   },
 
   // ---- C: control -------------------------------------------------------------------

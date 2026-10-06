@@ -1,16 +1,32 @@
 ## Owner selection (decide-conflict)
 
+{{^capability dispatch_target}}
 The `decide-conflict` gate is resolved by the owner's selection (ADR-0063 Q2,
 ported by ADR-0066 Decision 9), in either of two ways:
+{{/capability}}
+{{#capability dispatch_target}}
+The `decide-conflict` gate is resolved by the owner's selection (ADR-0063
+Q2), in either of two ways:
+{{/capability}}
 
 - **In this session**, right after `✓ Decision pending user input`: the user
   picks one of the directions just shown.
+{{^capability dispatch_target}}
 - **Later**, when Phase 0's preflight reports a pending `decide-conflict` gate
   (an earlier session stopped on it): present the directions recorded at the
   gate's pointer, the latest `Ensemble synthesis: decide verdict=conflict`
   note, and ask the user to choose instead of running a new comparison. If
   they want a fresh comparison, clear the gate first and run the phases above
   as usual.
+{{/capability}}
+{{#capability dispatch_target}}
+- **Later**, when Phase 0's preflight reports a pending `decide-conflict` gate
+  (an autopilot run, or an earlier session, stopped on it): present the
+  directions recorded at the gate's pointer, the latest `Ensemble synthesis:
+  decide verdict=conflict` note, and ask the user to choose instead of running
+  a new comparison. If they want a fresh comparison, clear the gate first and
+  run the phases above as usual.
+{{/capability}}
 
 Once they choose, write the resolution in place of its placeholder line
 (between the two `OWNER_RESOLUTION` lines; a line reading `OWNER_RESOLUTION`
@@ -66,3 +82,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 `awaiting-owner-clear` records `### Owner gate resolved: decide-conflict at
 <iso>` with the pointer it cleared and the resolution. It refuses, writing nothing,
 when the gate set on the workflow is not `decide-conflict`.
+{{#capability dispatch_target}}
+It refuses under an autopilot run too: only the owner resolves an owner gate.
+{{/capability}}

@@ -28,6 +28,9 @@ export const TESTS = [T_HEADLESS, T_PORT, T_RUNBOOK, T_DONE, T_PROV];
 
 const fallback = (plugin) => `[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/${plugin} -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"`;
 const opening = (plugin) => `CLAUDE_PLUGIN_ROOT="\${AGENTIC_${plugin.toUpperCase()}_ROOT:-\${CLAUDE_PLUGIN_ROOT}}"\n${fallback(plugin)}`;
+// The resolver a generated region opens with (ADR-0066): the override read with
+// printenv, the plugin name quoted in the cache path.
+const generatedOpening = (plugin) => `ROOT_OVERRIDE="$(printenv 'AGENTIC_${plugin.toUpperCase()}_ROOT' || true)"\nCLAUDE_PLUGIN_ROOT="\${ROOT_OVERRIDE:-\${CLAUDE_PLUGIN_ROOT}}"\n${fallback(`'${plugin}'`)}`;
 
 export const MUTATIONS = [
   // ── H: the headless rules ────────────────────────────────────────────────
@@ -57,14 +60,15 @@ export const MUTATIONS = [
   },
   {
     id: 'H4', tests: [T_HEADLESS], file: 'plugins/engineer/commands/refine.md',
-    from: `${opening('engineer')}\nREPO_ROOT="$(git rev-parse --show-toplevel)"\n`,
-    to: 'REPO_ROOT="$(git rev-parse --show-toplevel)"\n',
+    // PC3 U7: engineer's refine opens its blocks with the generated resolver.
+    from: `${generatedOpening('engineer')}\nPERSONA='engineer'\nREPO_ROOT="$(git rev-parse --show-toplevel)"\n`,
+    to: 'PERSONA=\'engineer\'\nREPO_ROOT="$(git rev-parse --show-toplevel)"\n',
     why: 'a block uses the plugin root with no resolver — the model is left to find the plugin',
   },
   {
     id: 'H5', tests: [T_HEADLESS], file: 'plugins/engineer/commands/refine.md',
-    from: `\`\`\`bash\n${opening('engineer')}\nPROMPT_FILE=`,
-    to: `\`\`\`bash\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE"\n${opening('engineer')}\nPROMPT_FILE=`,
+    from: `\`\`\`bash\n${generatedOpening('engineer')}\nENSEMBLE_TYPE='refine-verify'\n`,
+    to: `\`\`\`bash\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE"\n${generatedOpening('engineer')}\nENSEMBLE_TYPE='refine-verify'\n`,
     why: 'the root is used before the resolver sets it',
   },
   {

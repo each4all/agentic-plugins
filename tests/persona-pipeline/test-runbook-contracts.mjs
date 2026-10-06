@@ -198,6 +198,22 @@ function region(text, id) {
   return regionBody(text, found[0]);
 }
 
+/** The YAML frontmatter of a runbook (without its fences); fails when there is none. */
+function frontmatterOf(text) {
+  const close = text.indexOf('\n---\n', 4);
+  ok(text.startsWith('---\n') && close > 0, 'the runbook opens with its frontmatter');
+  return text.slice(4, close);
+}
+
+/** The text between two anchors, each present once and in that order. */
+function between(text, from, to) {
+  const start = text.indexOf(from);
+  const end = text.indexOf(to);
+  ok(start >= 0 && start === text.lastIndexOf(from), `${from}: once`);
+  ok(end > start && end === text.lastIndexOf(to), `${to}: once, after ${from}`);
+  return text.slice(start + from.length, end);
+}
+
 /** The offset of an operative sentence, matched across line wrapping. */
 function sentenceAt(text, sentence) {
   const re = new RegExp(sentence.split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), 'g');
@@ -361,11 +377,14 @@ describe('each convergent variant is its plain template plus the convergence che
   }
 });
 
+// engineer's runbooks join the regions one group at a time in Stage 3 (PC3 U7).
+const ENGINEER_JOINED = new Set(['commands/checkpoint.md', 'commands/peer-now.md', 'commands/resume.md', 'commands/frame.md', 'commands/compose.md', 'commands/decide.md', 'commands/critique.md', 'commands/refine.md', 'commands/investigate.md']);
+
 describe('runbook regions: the contracts hold for every enrolled persona', () => {
   it('the contracts reach the region files they are about (guards a vacuous pass)', () => {
     for (const dest of ['commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md', ...PIPELINE_VERB_DESTS, START]) {
       ok(covered(dest), `${dest} has no generated region`);
-      deepStrictEqual([...FILES.get(dest)].sort(), ['designer', 'founder'], `${dest}: enrolled personas`);
+      deepStrictEqual([...FILES.get(dest)].sort(), ENGINEER_JOINED.has(dest) ? ['designer', 'engineer', 'founder'] : ['designer', 'founder'], `${dest}: enrolled personas`);
     }
   });
 
@@ -382,7 +401,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             for (const b of blocks) {
               const lines = b.text.split('\n');
               const at = lines[0] === ARGS_DIR_LINE ? 1 : 0;
-              strictEqual(lines[at], `ROOT_OVERRIDE="$(printenv '${env}' || true)"`, `${persona}: block at line ${b.start + 1}`);
+              // A block nested in a list item is indented; the code is the same.
+              strictEqual(lines[at].trim(), `ROOT_OVERRIDE="$(printenv '${env}' || true)"`, `${persona}: block at line ${b.start + 1}`);
               ok(lines[at + 2].includes(`agentic-plugins/'${persona}' -mindepth`), `${persona}: cache path at line ${b.start + 1}`);
             }
             ok(!text.includes('{{'), 'a placeholder survived the render');
@@ -445,19 +465,89 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               ok(find[0] < read[0] && read[0] < mark[0], 'find-active, read, append in that order');
               ok(mark[0] < archive[0], 'the archive mode follows the resume mode');
             });
+
+            // ADR-0017 §sub-decision-1 host_history fidelity: no resumed event
+            // over a baseline whose commit object is not available.
+            it('resume appends its marker only when the baseline commit is available', () => {
+              const blocks = shellBlocks(text).filter((b) => /--event resumed/.test(b.text));
+              strictEqual(blocks.length, 1, 'one marker block');
+              const code = blocks[0].text;
+              const read = code.indexOf('BASE_HEAD_CHECK="$(');
+              const guard = code.indexOf('! git cat-file -e "$BASE_HEAD_CHECK^{commit}"');
+              const otherwise = code.indexOf('\nelse\n', guard);
+              const append = code.indexOf('state.mjs" append', otherwise);
+              ok(read >= 0 && read < guard, 'the baseline head is re-read in the marker block');
+              ok(guard >= 0 && otherwise > guard && append > otherwise && code.indexOf('\nfi', append) > append, code);
+            });
+
+            it('resume takes no argument or archive with an optional workflow id, and Phase 0 routes an argument starting with archive to archive mode', () => {
+              ok(/^argument-hint: .*\barchive \[<workflow-id>\]/m.test(frontmatterOf(text)), 'the argument hint offers archive [<workflow-id>]');
+              const phase0 = squash(between(text, '## Phase 0', '## Phase 1'));
+              ok(phase0.includes('Starts with `archive` (case-insensitive)') && /\barchive mode\b/i.test(phase0), phase0);
+            });
+
+            it('after find-active, resume branches on its exit status and output: no active workflow, a single path, a per-branch duplicate', () => {
+              const branches = squash(between(text, '<!-- pipeline:end resume-locate -->', '<!-- pipeline:begin resume-read -->'));
+              for (const branch of ['- **Exit 0, empty stdout** →', '- **Exit 0, single path', '- **Exit 1, per-branch duplicate error']) ok(branches.includes(branch), `${branch}: ${branches}`);
+              ok(branches.includes('No active workflow; nothing to resume.'), 'the no-active outcome');
+            });
+
+            it('a dirty report closes with the no-auto-reconcile notice, stated once between the drift read and the resume marker', () => {
+              const notice = 'current plugin does not auto-reconcile; review and decide [resume / archive / abort]';
+              strictEqual(text.split(notice).length - 1, 1, 'the notice, once');
+              ok(between(text, '<!-- pipeline:end resume-read -->', '<!-- pipeline:begin resume-marker -->').includes(notice), 'between the drift read and the marker');
+            });
           }
 
           if (dest === 'commands/peer-now.md') {
+            // A persona that declares a peer policy gates the prompt before it
+            // leaves the host; engineer declares none and has no gate.
             it('the privacy gate precedes the dispatch, which is synchronous, and the note goes to the workflow found', () => {
               const gate = text.indexOf('PRIVACY GATE:');
               const run = shellSites(text, /peer-runner\.mjs" run/);
-              ok(gate >= 0, 'the privacy prohibition is present');
-              ok(gate < run[0], 'the privacy prohibition precedes the dispatch block');
+              if (declaration(persona).peer) {
+                ok(gate >= 0, 'the privacy prohibition is present');
+                ok(gate < run[0], 'the privacy prohibition precedes the dispatch block');
+              } else {
+                strictEqual(gate, -1, 'no privacy prohibition without a declared peer policy');
+              }
               strictEqual(shellSites(text, /> "\$RUN_JSON" 2> "\$RUN_ERR"\nRUN_RC=\$\?/).length, 1, 'the runner\'s exit code is read right after it');
-              const find = shellSites(text, /^ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" find-active --repo-root/m);
+              const find = shellSites(text, /^ACTIVE="\$\(node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" find-active --repo-root "\$REPO_ROOT" 2>\/tmp\/[^\n]*-find\.err\)"\nFIND_RC=\$\?$/m);
               const note = shellSites(text, /state\.mjs" append \\\n\s+--workflow-path "\$ACTIVE" /);
-              deepStrictEqual([find.length, note.length], [1, 1], 'site counts');
+              deepStrictEqual([find.length, note.length], [1, 1], 'site counts: find-active keeps its exit code, so a per-branch duplicate is told apart from no workflow');
               ok(run[0] < find[0] && find[0] < note[0], 'dispatch, find-active, append in that order');
+            });
+
+            it('peer-now takes --peer and exactly one of the two prompt forms', () => {
+              ok(/^argument-hint: --peer <claude\|codex> \(--prompt-text "\.\.\." \| --prompt-file <path>\)$/m.test(frontmatterOf(text)), frontmatterOf(text));
+            });
+
+            it('dispatch, run: the run id is a peer-now- id, surfaced on stderr before the runner call, which keys the run with it', () => {
+              const [block] = shellBlocks(region(text, 'peer-now-dispatch'));
+              ok(block, 'the dispatch block');
+              ok(block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') >= 0 && block.text.indexOf('echo "peer-now run_id=$RUN_ID" >&2') < block.text.indexOf('peer-runner.mjs" run'), 'the run id is surfaced before the runner call');
+              const r = runBlock('bash', block.text, persona, {});
+              strictEqual(r.status, 0, r.stderr);
+              const id = /^peer-now run_id=(peer-now-\d{8}T\d{6}Z-[0-9a-f]{6})$/m.exec(r.stderr)?.[1];
+              ok(id, `a peer-now run id on stderr: ${r.stderr}`);
+              deepStrictEqual(r.log, ['run'], 'one runner call');
+              for (const part of [` --run-id ${id} `, ' --kind peer-now ', ' --output-format text ']) ok(r.argv[0].includes(part), `${part}: ${r.argv[0]}`);
+            });
+
+            it('after find-active, peer-now branches three ways (standalone, a single path, a per-branch duplicate sent to this persona\'s resume), and the note, run, is a [Peer] phase note on that workflow that leaves the phase alone', () => {
+              const branches = squash(between(text, '<!-- pipeline:end peer-now-locate -->', '<!-- pipeline:begin peer-now-note -->'));
+              ok(/\bstandalone\b/i.test(branches) && /\bsingle path\b/i.test(branches) && /\bper-branch duplicate\b/i.test(branches), branches);
+              ok(branches.includes(`/${persona}:resume`), 'the duplicate branch points at this persona\'s resume');
+              const [block] = shellBlocks(region(text, 'peer-now-note'));
+              ok(block, 'the note block');
+              const setup = ["ACTIVE='/w/active.md'", "PEER='codex'", "RUN_ID='peer-now-x'", "HANDLE_PATH='/h/handle.json'", "printf 'the peer said hi' > response", 'STDOUT_PATH=response'].join('\n');
+              const r = runBlock('bash', `${setup}\n${block.text}`, persona, {});
+              strictEqual(r.status, 0, r.stderr);
+              deepStrictEqual(r.log, ['append'], 'one append');
+              for (const part of [' --workflow-path /w/active.md ', ' --phase-label [Peer] codex consultation ']) ok(r.argv[0].includes(part), `${part}: ${r.argv[0]}`);
+              ok(r.argv[0].trimEnd().endsWith(' --event updated'), r.argv[0]);
+              ok(!/ --(current-phase|next-action|verb|clear-next-step) /.test(r.argv[0]), `the note leaves the phase alone: ${r.argv[0]}`);
+              strictEqual(r.note, 'peer: codex\nrun_id: peer-now-x\nhandle: /h/handle.json\nprompt-mode: verbatim\n\n### Response\n\nthe peer said hi');
             });
           }
 
@@ -777,10 +867,18 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             it('privacy: the prohibition sentence precedes the dispatch; the no-image rule where images are off; designer\'s screenshot sentence too; no --image', () => {
               const run = shellSites(text, /peer-runner\.mjs" run \\/);
               const prohibition = sentenceAt(text, PROHIBITION[verb] ?? PROHIBITION.other);
-              strictEqual(prohibition.length, 1, 'the prohibition sentence');
-              ok(prohibition[0] < run[0], 'the prohibition precedes the dispatch block');
               const noImage = sentenceAt(text, NO_IMAGE);
-              strictEqual(noImage.length, declaration(persona).peer.images === false ? 1 : 0, 'the no-image rule, exactly where images are off');
+              // A persona that declares no peer policy (engineer, PC3 U7) has
+              // no privacy gate and no no-image rule, as in peer-now.
+              const peer = declaration(persona).peer;
+              strictEqual(prohibition.length, peer ? 1 : 0, 'the prohibition sentence, exactly where a peer policy is declared');
+              ok(prohibition.every((at) => at < run[0]), 'the prohibition precedes the dispatch block');
+              strictEqual(noImage.length, peer?.images === false ? 1 : 0, 'the no-image rule, exactly where images are off');
+              // The never-launched note names the privacy gate only where a
+              // persona has one (PC3 U7, derived.ensemble_skip_*).
+              const skipped = squash(text).match(/its first heading reads `### Ensemble skipped: [^`]* \(([a-z -]+)\)` instead/);
+              ok(skipped, 'the never-launched heading');
+              strictEqual(skipped[1], peer ? 'privacy gate' : 'local-only', 'the skip names the privacy gate exactly where one is declared');
               ok(noImage.every((at) => at < run[0]), 'the no-image rule precedes the dispatch block');
               if (persona === 'designer') {
                 const screenshot = sentenceAt(text, SCREENSHOT[verb] ?? SCREENSHOT.other);
@@ -840,23 +938,79 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             }
 
             // QD5, RV14: founder critique's dispatch is generated; the agent sets
-            // its type by profile in the block, and settle reads it from the ledger.
-            if (persona === 'founder' && verb === 'critique') it('founder critique, instantiated per profile: red-team dispatches adversarial-scan; default, unknown and missing review; settle names the same run (QD5, RV14)', () => {
+            // its type by profile in the block, and settle reads it from the
+            // ledger. PC3 U7: engineer's critique joins the same way, its
+            // adversarial profile full-codebase (with or without a sub-focus).
+            const ADVERSARIAL = {
+              founder: {
+                profile: 'red-team',
+                prose: "for `--profile=red-team`, set `ENSEMBLE_TYPE='adversarial-scan'` in it before running it, and build the prompt from §Adversarial-scan.",
+                fallback: 'Missing profile → default. Unknown profile → fallback to default with a one-line warning.',
+              },
+              engineer: {
+                profile: 'full-codebase',
+                prose: "for `--profile=full-codebase`, with or without a sub-focus, set `ENSEMBLE_TYPE='adversarial-scan'` in it before running it, and build the prompt from § Adversarial-scan.",
+                fallback: 'Missing profile → default (recent diff). Unknown profile → fallback to default with one-line warning.',
+              },
+            };
+            if (verb === 'critique' && Object.hasOwn(ADVERSARIAL, persona)) it(`${persona} critique, instantiated per profile: ${ADVERSARIAL[persona].profile} dispatches adversarial-scan; default, unknown and missing review; settle names the same run (QD5, RV14)`, () => {
+              const adv = ADVERSARIAL[persona];
               const dispatch = blockWith(/peer-runner\.mjs" run \\/).text;
               const finalize = blockWith(/peer-runner\.mjs" settle \\/).text;
               const TYPE_LINE = /^ENSEMBLE_TYPE='review'$/m;
               ok(TYPE_LINE.test(dispatch), 'the block assigns review, the default profile\'s type');
               ok(/^ {2}--ensemble-type "\$ENSEMBLE_TYPE" --run-id "\$RUN_ID" \\$/m.test(dispatch), 'the dispatch names the type the block assigned, once');
-              strictEqual(sentenceAt(text, "for `--profile=red-team`, set `ENSEMBLE_TYPE='adversarial-scan'` in it before running it, and build the prompt from §Adversarial-scan.").length, 1, 'the prose says when to change it');
-              strictEqual(sentenceAt(text, 'Missing profile → default. Unknown profile → fallback to default with a one-line warning.').length, 1, 'the fallback sentence');
-              for (const [profile, expected] of [['default', 'review'], ['red-team', 'adversarial-scan'], ['unknown', 'review'], ['missing', 'review']]) {
-                const script = profile === 'red-team' ? dispatch.replace(TYPE_LINE, "ENSEMBLE_TYPE='adversarial-scan'") : dispatch;
+              strictEqual(sentenceAt(text, adv.prose).length, 1, 'the prose says when to change it');
+              const flat = text.replace(/\s+/g, ' ');
+              ok(flat.indexOf(adv.prose) < flat.indexOf('peer-runner.mjs" run'), 'the prose comes before the block it changes');
+              strictEqual(sentenceAt(text, adv.fallback).length, 1, 'the fallback sentence');
+              for (const [profile, expected] of [['default', 'review'], [adv.profile, 'adversarial-scan'], ['unknown', 'review'], ['missing', 'review']]) {
+                const script = profile === adv.profile ? dispatch.replace(TYPE_LINE, "ENSEMBLE_TYPE='adversarial-scan'") : dispatch;
                 const sent = runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
                 strictEqual(sent.status, 0, sent.stderr);
                 ok(sent.argv.length === 1 && sent.argv[0].includes(` --ensemble-type ${expected} `), `${profile}: the dispatch names ${expected}`);
                 ok(sent.out.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}`);
                 const done = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='${sent.out}'; VERDICT='sound'; SUMMARY='s'\n${finalize}`, persona, { note: 'n' });
                 ok(done.argv.find((a) => / settle /.test(a)).includes(` --phase critique --run-id ${sent.out} `), `${profile}: settle names the run the dispatch started`);
+              }
+            });
+
+            // PC3 U7: engineer's investigate joins as its critique did: the block
+            // assigns the analysis profile's type, and the prose sets the
+            // root-cause or cited-brief type there by profile; settle reads the
+            // type from the ledger.
+            const PROFILED_INVESTIGATE = {
+              engineer: {
+                base: 'investigate',
+                profiles: {
+                  'root-cause': "for `--profile=root-cause`, set `ENSEMBLE_TYPE='root-cause'` in it before running it, and build the prompt from § Investigate;",
+                  'cited-brief': "for `--profile=cited-brief`, set `ENSEMBLE_TYPE='cited-brief'` in it before running it, and build the prompt from `core/skills/investigate/references/cited-brief-ensemble.md` § Prompt Construction.",
+                },
+                fallback: 'Missing profile → `analysis`. Unknown profile → fallback to `analysis` with a one-line warning.',
+              },
+            };
+            if (verb === 'investigate' && Object.hasOwn(PROFILED_INVESTIGATE, persona)) it(`${persona} investigate, instantiated per profile: root-cause and cited-brief dispatch their own type; analysis, unknown and missing investigate; settle names the same run (PC3 U7)`, () => {
+              const spec = PROFILED_INVESTIGATE[persona];
+              const dispatch = blockWith(/peer-runner\.mjs" run \\/).text;
+              const finalize = blockWith(/peer-runner\.mjs" settle \\/).text;
+              const TYPE_LINE = new RegExp(`^ENSEMBLE_TYPE='${spec.base}'$`, 'm');
+              ok(TYPE_LINE.test(dispatch), 'the block assigns the default profile\'s type');
+              ok(/^ {2}--ensemble-type "\$ENSEMBLE_TYPE" --run-id "\$RUN_ID" \\$/m.test(dispatch), 'the dispatch names the type the block assigned, once');
+              const flat = text.replace(/\s+/g, ' ');
+              for (const prose of Object.values(spec.profiles)) {
+                strictEqual(sentenceAt(text, prose).length, 1, `the prose says when to change it: ${prose}`);
+                ok(flat.indexOf(prose) < flat.indexOf('peer-runner.mjs" run'), 'the prose comes before the block it changes');
+              }
+              strictEqual(sentenceAt(text, spec.fallback).length, 1, 'the fallback sentence');
+              const cases = [['analysis', spec.base], ...Object.keys(spec.profiles).map((p) => [p, p]), ['unknown', spec.base], ['missing', spec.base]];
+              for (const [profile, expected] of cases) {
+                const script = Object.hasOwn(spec.profiles, profile) ? dispatch.replace(TYPE_LINE, `ENSEMBLE_TYPE='${expected}'`) : dispatch;
+                const sent = runBlock('bash', `ACTIVE='/w/active.md'\n${script}\nprintf '%s' "$RUN_ID" > out`, persona, {});
+                strictEqual(sent.status, 0, sent.stderr);
+                ok(sent.argv.length === 1 && sent.argv[0].includes(` --ensemble-type ${expected} `), `${profile}: the dispatch names ${expected}`);
+                ok(sent.out.startsWith(`${expected}-`), `${profile}: the run id carries ${expected}`);
+                const done = runBlock('bash', `ACTIVE='/w/active.md'; RUN_ID='${sent.out}'; VERDICT='agreed'; SUMMARY='s'\n${finalize}`, persona, { note: 'n' });
+                ok(done.argv.find((a) => / settle /.test(a)).includes(` --phase investigate --run-id ${sent.out} `), `${profile}: settle names the run the dispatch started`);
               }
             });
 

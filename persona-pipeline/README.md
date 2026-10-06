@@ -21,13 +21,15 @@ The canonical scripts are persona-neutral. Each reads its persona from the
 plugin's own `persona.json` through `scripts/lib/persona.mjs` when it runs,
 never at import. A capability a persona declares off behaves as the trimmed
 copy did; a unit that carries only a capability's off path is never enrolled
-into a persona that declares it on (`off_only` in the manifest).
+into a persona that declares it on (`off_only` in the manifest), and a
+capability module is enrolled into exactly the personas that declare its
+capability on (`on_only`: the check fails it in a persona with the capability
+off, and fails a persona with the capability on that does not receive it).
 
 Stage 1 (PC1) covers the scripts and hooks. engineer receives the units it
 shares unchanged (the decide libraries and registry, `validate-commit`,
-`dispatch-peer`, the hooks, the lib modules); its `state.mjs`,
-`session-handoff.mjs`, `stop-archive.mjs`, `discover-runtime.mjs`,
-`peer-runner.mjs` and capability modules stay hand-maintained until Stage 3.
+`dispatch-peer`, the hooks, the lib modules); the rest of its scripts
+converge in Stage 3 (see below).
 `scripts/lib/args-file.mjs` is not a unit: five packages share it, and
 `tests/plugin-shape/test-args-file-transport.mjs` keeps them byte-equal.
 
@@ -132,7 +134,7 @@ founder and designer, through the canonical source:
   the session handoff names the gate's resolving surface. Each path checks
   the gates again on the bytes `archiveWorkflow` reads under the file lock
   (`recheck`), so a gate written after the first read still keeps the
-  workflow; engineer's hand copy keeps the single read until PC3. decide's Owner
+  workflow; engineer receives it with its generated copy in PC3. decide's Owner
   selection and refine's Owner decision are generated steps that clear their
   gate; the routing contract's § Owner gates table lists the settable gates,
   and a contract checks it against `state.mjs`.
@@ -164,6 +166,85 @@ founder and designer, through the canonical source:
   `tests/persona-pipeline/test-mixed-version.mjs` records what the previous
   founder release does with a gated file.
 
+Stage 3 converges engineer, unit by unit, each green before the next, in two
+subtasks: PC3 (what follows) and PC3b (the rest, listed last):
+
+- **Generated for engineer:** `discover-runtime.mjs` (D7: the capability file
+  is a parameter and the floor is the declared `runtime_footer_floor`, which
+  engineer declares `0.63.0`), `peer-runner.mjs` (with the `legacy_homes`
+  on path: the pre-migration `.claude/agentic-<persona>/peer-runs` home, read
+  from the home that holds the run, and `settle`), and `state.mjs` (with
+  every capability on path: the `legacy_homes` dual-home storage, the
+  `dispatch_target` parent linkage, its frontmatter keys, the P10 marker and
+  `detach-archive`, autopilot mode on Claude, and the `commit_surface` state,
+  `close-complete` in `terminalPhases()` and `beginCommit`), and
+  `stop-archive.mjs` (with the `dispatch_target` parent note after a
+  successful archive, on the current and on a kept branch, and the
+  parent-linked orphan report; engineer gains the gate recheck under the
+  file lock, so a refused archive notes nothing on the parent), and
+  `session-handoff.mjs` (D4: both lines merged. engineer gains the footer
+  render from an immutable per-process snapshot, the delivery-failure and
+  stale-projection fail-closed paths, the origin-claimed render with the
+  `rendered` tombstone that survives the SessionStart consume, single-lined
+  flag values and the unknown-gate fallback beside a known gate; founder and
+  designer gain the owner-gate surfaces their capabilities add. With
+  `commit_surface` on a blocked gate maps to `blocked` with the commit, or the
+  no-changes close for a `close-complete` workflow, as its unblocking action;
+  off, to `publish-needed`. With `legacy_homes` on the one-shot slot follows
+  the workflow's storage home and the SessionStart backstop reads both
+  slots. engineer declares `deliverable_noun`, which the unit requires).
+- **Capability modules** (`on_only`): `parent-writeback.mjs`
+  (`dispatch_target`), `phase7-commit.mjs` and `start-args.mjs`
+  (`commit_surface`). `phase7-commit.mjs` imports `parent-writeback.mjs` only
+  when `dispatch_target` is on.
+- **engineer's suite, moved so far** (Decision 5): the discover-runtime,
+  peer-runner, stop-archive, session-handoff, sidecar, footer and backstop
+  cases merged into their parametrized suites with capability-on cases; the
+  capability modules' suites (`test-parent-writeback.mjs`,
+  `test-phase7-commit.mjs`, `test-commit-surface.mjs`) and the
+  capability-on state suites (`test-autopilot-verbs.mjs`,
+  `test-state-schema-13.mjs`) run for the personas that declare the
+  capability on; the shared ones engineer alone had (`test-checkpoint.mjs`,
+  `test-ensemble-results.mjs`, `test-session-start.mjs`,
+  `test-state-schema-12.mjs`, `test-state-schema-forward-compat.mjs`,
+  `test-validate-commit.mjs`) run for every persona; and engineer's copies of
+  the class 1 suites the parametrized suite already ran for it
+  (`dispatch-peer`, `yaml-mini`, `decide-args`, `decide-scores`,
+  `decide-sensitivity`, `decide-weights`) are gone, as are its
+  `test-state-schema-14.mjs`, `test-peer-now.mjs` and `test-resume.mjs`,
+  each assertion mapped to a parametrized case or a runbook contract. What
+  stays under `tests/engineer/` is persona content (the four decide suites,
+  `test-cited-brief.mjs`, `test-diagnose-redundancy.mjs`) and the runbook
+  integration that moves with start and commit (`test-start-command.mjs`,
+  `test-verb-runbook-autopilot.mjs`).
+  `scripts/mutation-specs/persona-pipeline.mjs` group N puts a defect in a
+  canonical capability-on path into every target and expects an engineer
+  contract test to fail.
+- **engineer's runbooks, joining group by group:** `checkpoint`,
+  `peer-now` and `resume` (merges: engineer's stronger paths became the
+  templates), then the six verbs (`frame`, `compose`, `decide`, `critique`,
+  `refine`, `investigate`). The verb templates branch on the
+  capabilities: with `dispatch_target` on, the Phase 0 comment states the
+  autopilot rules, the bootstrap passes the orchestrator's parent linkage
+  (`PARENT_ARGS`), and the finalize and footer say what an autopilot run does
+  (the next step only, no footer, `pr-handling`); with `commit_surface` on,
+  `commit` and `done` route to `/<persona>:commit` and the footer maps the
+  remaining commit to `blocked`. Each off path renders what founder and
+  designer rendered before. engineer's finalize settles the ensemble attempt
+  (`peer-runner.mjs settle`) as theirs does. decide's Owner selection and
+  refine's Defer, inside a `/<persona>:start` lifecycle, clear the gate and
+  stop, leaving the terminal write to the lifecycle; with `commit_surface` on
+  the Defer commits with `/<persona>:commit`. critique and investigate pick
+  their ensemble type by profile as founder's critique does: the block
+  assigns the default profile's type and the prose has the agent set the
+  other there; with several investigate profiles both note headings name the
+  profile. `compose.md` keeps an authored sentence with the
+  `${AGENTIC_ENGINEER_ROOT:-` spelling the orchestrator's autopilot probe
+  reads, until that probe accepts the generated resolver.
+- **Still hand-maintained, converged in PC3b:** engineer's `start`, `commit`
+  and `audit` runbooks, its skills other than checkpoint, peer-now and
+  resume, and its references.
+
 ## The declaration
 
 `plugins/<persona>/persona.json` names its format, `persona-declaration-1.<minor>`.
@@ -178,8 +259,13 @@ re-critique (`terminal_requires_convergence`). Format 1.2 adds `peer`, what
 the persona lets reach the peer: `privacy_scope` (the material its privacy
 gate names), `privacy_spec` (the plugin path of the spec that defines the
 gate, a regular file inside the plugin) and `images` (whether image bytes may
-go to the peer; both personas say `false`). founder and designer
-declare 1.2; engineer declares 1.0, with no verbs and no `peer`. The verb
+go to the peer; both personas say `false`). Format 1.3 adds investigate's
+`brief_file` and `output_root_env`, for a persona whose brief is not named
+after its default profile (engineer: `research_brief.md` under
+`RESEARCH_OUTPUT_ROOT`, from its cited-brief profile, while its default is
+analysis). founder and designer declare 1.2; engineer declares 1.3, with the
+verbs whose runbooks have joined the regions (PC3) and no `peer`, so its
+runbooks hold no privacy gate. The verb
 runbooks render these values from the declaration, and the convergence flag
 picks the variant of `refine`'s finalize and `start`'s terminal block (a
 `when` on `terminal_requires_convergence`).

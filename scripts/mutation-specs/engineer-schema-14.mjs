@@ -14,9 +14,12 @@
 // autopilot predicate, B the phase-note boundary, F forward compatibility,
 // T the tests' own controls. V8, W7, W8, G6–G9 and B1 are the survivors the
 // Codex Plan-verify review found against the first version of the tests.
+//
+// The tests are the parametrized suite (ADR-0066 Stage 3): the edits go to
+// engineer's generated state.mjs, so only its engineer cases see them.
 
-const T14 = 'tests/engineer/test-state-schema-14.mjs';
-const TFC = 'tests/engineer/test-state-schema-forward-compat.mjs';
+const T14 = 'tests/persona-pipeline/test-state-schema-14.mjs';
+const TFC = 'tests/persona-pipeline/test-state-schema-forward-compat.mjs';
 
 const STATE = 'plugins/engineer/scripts/state.mjs';
 
@@ -62,7 +65,7 @@ export const MUTATIONS = [
   },
   {
     id: 'V7', file: STATE, tests: [T14],
-    from: "    validateEnumScalar('awaiting_owner_gate', fm.awaiting_owner_gate, VALID_ENGINEER_OWNER_GATES);",
+    from: "    validateEnumScalar('awaiting_owner_gate', fm.awaiting_owner_gate, VALID_WORKFLOW_OWNER_GATES);",
     to: '',
     why: 'a macro-owned gate (plan-approval) is stored on an engineer workflow',
   },
@@ -146,7 +149,7 @@ export const MUTATIONS = [
   },
   {
     id: 'G4', file: STATE, tests: [T14],
-    from: '  if (isAutopilotRun(env)) {',
+    from: '  if (autopilotMode({ env, host }).active) {',
     to: '  if (false) {',
     why: 'an autopilot run clears the owner gate that should stop it (ADR-0063 Q2)',
   },
@@ -201,25 +204,18 @@ export const MUTATIONS = [
   // ---- F: forward compatibility ----------------------------------------------
   {
     id: 'F1', tests: [TFC],
-    prepare: (copy, tools) => {
-      tools.applyEdit(copy, {
-        file: STATE,
-        from: "  'parent_writeback_at',\n  // ADR-0063 D6 schema 1.4",
-        to: '  // ADR-0063 D6 schema 1.4',
-      });
-      tools.applyEdit(copy, {
-        file: STATE,
-        from: "  'awaiting_owner_pointer',\n];",
-        to: "  'awaiting_owner_pointer',\n  'parent_writeback_at',\n];",
-      });
-    },
+    // parent_writeback_at is a dispatch_target key, spliced in before the 1.4
+    // keys by frontmatterKeyOrder() since ADR-0066 Stage 3.
+    file: STATE,
+    from: "    order.splice(order.indexOf('next_step_kind'), 0, 'parent_writeback_at');",
+    to: "    order.push('parent_writeback_at');",
     why: 'the 1.4 keys are not at the tail, so every 1.3 reader write reorders them',
   },
 
   // ---- T: the tests' own controls --------------------------------------------
   {
     id: 'T1', file: T14, tests: [T14],
-    from: '  delete env.AGENTIC_AUTOPILOT;',
+    from: "  for (const k of Object.keys(env)) if (k.startsWith('AGENTIC_')) delete env[k];",
     to: '  void 0;',
     why: 'the CLI child inherits the runner\'s AGENTIC_AUTOPILOT, so clears are refused for the wrong reason',
   },

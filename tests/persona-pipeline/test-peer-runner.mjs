@@ -308,7 +308,8 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
       });
     });
 
-    it('run always writes peer-run ledgers to the canonical persona home, even with a legacy-shaped dir present (legacy_homes off)', async () => {
+    // legacy_homes off (ADR-0066 Decision 3): the canonical home only.
+    if (!P.capabilities.legacy_homes) it('run always writes peer-run ledgers to the canonical persona home, even with a legacy-shaped dir present (legacy_homes off)', async () => {
       await withTmpRepo(async (repoRoot) => {
         const companionsRoot = await writeFakeCompanions(repoRoot);
         // A stray legacy-shaped home must neither attract the ledger nor
@@ -339,9 +340,7 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
       });
     });
 
-    it('peerRunsDir rejects a legacy home request (canonical-only contract)', () => {
-      // The manifest enrolls peer-runner only into personas with legacy homes off.
-      strictEqual(P.capabilities.legacy_homes, false);
+    if (!P.capabilities.legacy_homes) it('peerRunsDir rejects a legacy home request (canonical-only contract)', () => {
       let threw = false;
       try {
         peerRunPaths('/tmp/x', 'r1', { home: 'legacy' });
@@ -350,6 +349,98 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
         ok(/unknown peer-run state home/.test(err.message));
       }
       strictEqual(threw, true, `home=legacy must be an unknown home for ${persona}`);
+    });
+
+    // legacy_homes on (ADR-0025): the pre-migration .claude/agentic-<persona>
+    // home is kept while legacy state exists, and a dual-home tree is refused.
+    if (P.capabilities.legacy_homes) it('run keeps peer-run ledgers in the legacy home while legacy state exists (legacy_homes on)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const companionsRoot = await writeFakeCompanions(repoRoot);
+        const legacyWorkflowDir = join(repoRoot, '.claude', `agentic-${persona}`, 'workflows');
+        await mkdir(legacyWorkflowDir, { recursive: true });
+        await writeFile(join(legacyWorkflowDir, 'wf.md'), 'legacy workflow marker\n', 'utf8');
+
+        await runPeer({
+          repoRoot,
+          runId: 'legacy-ledger',
+          kind: 'manual',
+          peer: 'claude',
+          promptText: '<task>legacy</task>',
+          outputFormat: 'json',
+          cwd: repoRoot,
+          env: fakeEnv(companionsRoot),
+        });
+
+        const legacyPaths = peerRunPaths(repoRoot, 'legacy-ledger', { home: 'legacy' });
+        const canonicalPaths = peerRunPaths(repoRoot, 'legacy-ledger');
+        ok(legacyPaths.handle.includes(`/.claude/agentic-${persona}/peer-runs/`));
+        strictEqual(await exists(legacyPaths.handle), true);
+        strictEqual(await exists(canonicalPaths.handle), false);
+
+        const status = await statusPeerRun({ repoRoot, runId: 'legacy-ledger' });
+        strictEqual(status.paths.handle, legacyPaths.handle);
+        strictEqual(status.handle.status, 'completed');
+      });
+    });
+
+    if (P.capabilities.legacy_homes) it('run refuses to create peer-run state when canonical and legacy homes both contain state (legacy_homes on)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const companionsRoot = await writeFakeCompanions(repoRoot);
+        await mkdir(join(repoRoot, P.workflowDirRel), { recursive: true });
+        await writeFile(join(repoRoot, P.workflowDirRel, 'canonical.md'), 'canonical marker\n', 'utf8');
+        await mkdir(join(repoRoot, '.claude', `agentic-${persona}`, 'peer-runs', 'legacy-run'), { recursive: true });
+
+        await rejects(
+          runPeer({
+            repoRoot,
+            runId: 'blocked-ledger',
+            kind: 'manual',
+            peer: 'claude',
+            promptText: '<task>blocked</task>',
+            outputFormat: 'json',
+            cwd: repoRoot,
+            env: fakeEnv(companionsRoot),
+          }),
+          /Workflow storage migration blocked/,
+        );
+      });
+    });
+
+    if (P.capabilities.legacy_homes) it('sweep reads the runs of a legacy-only home from that home (legacy_homes on)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const paths = await writeHandleFixture(repoRoot, 'legacy-sweep', { status: 'running', pid: 99999999 }, { home: 'legacy' });
+        await writeFile(paths.envelope, JSON.stringify({ status: 'success', peer_host: 'claude', peer_model: null, stdout: 'done', exit_code: 0 }), { mode: 0o600 });
+        const report = await sweepPeerRuns({ repoRoot, staleGraceMs: 60_000 });
+        deepStrictEqual(report.reconciled, [{ run_id: 'legacy-sweep', from: 'running', to: 'completed' }]);
+        strictEqual((await readHandle(paths.handle)).status, 'completed');
+      });
+    });
+
+    if (P.capabilities.legacy_homes) it('a peer-now run beside a legacy workflow lands in the legacy home and leaves the workflow untouched (legacy_homes on)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const companionsRoot = await writeFakeCompanions(repoRoot);
+        const workflowPath = join(repoRoot, '.claude', `agentic-${persona}`, 'workflows', 'wf.md');
+        await mkdir(resolve(workflowPath, '..'), { recursive: true });
+        const before = ['---', 'schema_version: "1.1"', 'ensemble_results: []', '---', 'body', ''].join('\n');
+        await writeFile(workflowPath, before, 'utf8');
+
+        await runPeer({
+          repoRoot,
+          runId: 'peer-now-side-channel',
+          kind: 'peer-now',
+          workflowPath,
+          peer: 'claude',
+          promptText: 'verbatim',
+          outputFormat: 'text',
+          cwd: repoRoot,
+          env: fakeEnv(companionsRoot),
+        });
+
+        strictEqual(await readFile(workflowPath, 'utf8'), before);
+        const handle = await readHandle(peerRunPaths(repoRoot, 'peer-now-side-channel', { home: 'legacy' }).handle);
+        strictEqual(handle.kind, 'peer-now');
+        strictEqual(handle.status, 'completed');
+      });
     });
     it('missing companion fails the run as peer_cli_not_found and records what was tried', async () => {
       await withTmpRepo(async (repoRoot) => {
@@ -376,6 +467,37 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
         strictEqual(handle.companion.path, null);
         strictEqual(handle.companion.source, 'env');
         strictEqual(handle.companion.reason, 'not installed');
+      });
+    });
+    // The peer-now runbook's dispatch and its status control, through the CLI.
+    it('CLI: a peer-now run with no companion exits 3 with its result JSON, and status --json reads that ledger back (kind peer-now, failed, no workflow)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const companionsRoot = await writeMissingCompanions(repoRoot);
+        const promptFile = join(repoRoot, 'p.txt');
+        await writeFile(promptFile, 'verbatim probe');
+        const env = fakeEnv(companionsRoot, { HOME: repoRoot });
+        const runId = 'peer-now-missing-companion';
+        const run = spawnSync(process.execPath, [
+          PEER_RUNNER_PATH, 'run',
+          '--repo-root', repoRoot,
+          '--run-id', runId,
+          '--kind', 'peer-now',
+          '--peer', 'codex',
+          '--prompt-file', promptFile,
+          '--output-format', 'text',
+          '--cwd', repoRoot,
+        ], { encoding: 'utf8', env, cwd: repoRoot });
+        strictEqual(run.status, 3, `expected the missing-companion exit 3; stderr: ${run.stderr}`);
+        const result = JSON.parse(run.stdout);
+        deepStrictEqual([result.run_id, result.status, result.error_kind], [runId, 'failed', 'peer_cli_not_found']);
+        strictEqual(result.handle_path, peerRunPaths(repoRoot, runId).handle, 'the run exposes the handle in this persona\'s ledger');
+
+        const status = spawnSync(process.execPath, [
+          PEER_RUNNER_PATH, 'status', '--repo-root', repoRoot, '--run-id', runId, '--json',
+        ], { encoding: 'utf8', env, cwd: repoRoot });
+        strictEqual(status.status, 0, `status stderr: ${status.stderr}`);
+        const parsed = JSON.parse(status.stdout);
+        deepStrictEqual([parsed.handle.kind, parsed.status, parsed.handle.workflow_path], ['peer-now', 'failed', null]);
       });
     });
     it('reports envelope_path only when an envelope was written: unparsable stdout fails as envelope_parse_error with none (PC2a4 RV10)', async () => {

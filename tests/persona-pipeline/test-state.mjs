@@ -33,10 +33,10 @@
 // Run via `node --test tests/persona-pipeline/test-state.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, deepStrictEqual, rejects, match } from 'node:assert/strict';
+import { strictEqual, ok, deepStrictEqual, rejects, match, throws } from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { personasFor, personaInfo } from './_personas.mjs';
@@ -103,6 +103,13 @@ async function writeWorkflowFixture(path, branch) {
 
 for (const persona of personasFor('scripts/state.mjs')) {
   const P = personaInfo(persona);
+  // Off-path pins register only for a persona with the capability off
+  // (ADR-0066 Decision 3).
+  const itLegacyOff = P.capabilities.legacy_homes ? () => {} : it;
+  const itLegacyOn = P.capabilities.legacy_homes ? it : () => {};
+  const describeDispatchOff = P.capabilities.dispatch_target ? () => {} : describe;
+  const describeDispatchOn = P.capabilities.dispatch_target ? describe : () => {};
+  const LEGACY_WORKFLOW_DIR_REL = `.claude/agentic-${persona}/workflows`;
   const STATE_PATH = P.path('scripts/state.mjs');
   const STATE_URL = pathToFileURL(STATE_PATH).href;
 
@@ -418,7 +425,7 @@ host_history:
   });
 
   describe(`${persona}: state.mjs — createWorkflow round-trip with special characters`, () => {
-    it('creates new workflow state under canonical .agentic-plugins/state by default', async () => {
+    itLegacyOff('creates new workflow state under canonical .agentic-plugins/state by default', async () => {
       await withTmpRepo(async (repoRoot) => {
         const { filePath } = await createWorkflow({
           repoRoot,
@@ -439,11 +446,102 @@ host_history:
       });
     });
 
-    // legacy_homes off — the engineer state.mjs's legacy-home continuity /
-    // dual-home ambiguity / migration-block tests are intentionally
-    // absent: this unit carries a canonical-only state home (ADR-0066
-    // Decision 3).
-    it(`ignores a stray .claude/agentic-${persona} directory entirely (canonical-only contract)`, async () => {
+    // legacy_homes on (ADR-0025): the pre-migration `.claude/agentic-<persona>`
+    // home is read and written beside the canonical one, writes keep going to
+    // a legacy home that holds state, and a split between the two homes fails
+    // closed (ADR-0066 Decision 3; engineer's cases since Stage 3).
+    itLegacyOn('creates new workflow state under canonical .agentic-plugins/state by default, reporting both homes', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const { filePath } = await createWorkflow({
+          repoRoot,
+          verb: 'investigate',
+          host: 'codex',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'canonical state home',
+        });
+        ok(filePath.includes(`/${P.workflowDirRel}/`), filePath);
+        const storage = await resolveWorkflowStorage(repoRoot);
+        strictEqual(storage.home, 'canonical');
+        strictEqual(storage.canonicalHasState, true);
+        strictEqual(storage.legacyHasState, false);
+      });
+    });
+
+    itLegacyOn(`keeps writing to the legacy state home while legacy ${persona} state exists`, async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const legacyDir = join(repoRoot, LEGACY_WORKFLOW_DIR_REL);
+        await mkdir(legacyDir, { recursive: true });
+        await writeWorkflowFixture(
+          join(legacyDir, 'investigate-20260101T000000Z-aaaaaa.md'),
+          'legacy/main',
+        );
+
+        const { filePath } = await createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          host: 'claude',
+          gitBaseline: { ...MIN_BASELINE, branch: 'feature/new' },
+          originalRequest: 'legacy write continuity',
+        });
+
+        ok(filePath.includes(`/${LEGACY_WORKFLOW_DIR_REL}/`), filePath);
+        const storage = await resolveWorkflowStorage(repoRoot);
+        strictEqual(storage.home, 'legacy');
+        strictEqual(storage.canonicalHasState, false);
+        strictEqual(storage.legacyHasState, true);
+      });
+    });
+
+    itLegacyOn('fails closed when canonical and legacy homes both have an active workflow on the same branch', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        await mkdir(join(repoRoot, P.workflowDirRel), { recursive: true });
+        await mkdir(join(repoRoot, LEGACY_WORKFLOW_DIR_REL), { recursive: true });
+        await writeWorkflowFixture(
+          join(repoRoot, P.workflowDirRel, 'investigate-20260101T000000Z-aaaaaa.md'),
+          'test',
+        );
+        await writeWorkflowFixture(
+          join(repoRoot, LEGACY_WORKFLOW_DIR_REL, 'investigate-20260101T000001Z-bbbbbb.md'),
+          'test',
+        );
+
+        await rejects(
+          () => findActiveWorkflowByBranch(repoRoot, 'test'),
+          new RegExp(`Ambiguous ${persona} workflow storage`),
+        );
+      });
+    });
+
+    itLegacyOn(`blocks ordinary writes when canonical and legacy homes both contain ${persona} state`, async () => {
+      await withTmpRepo(async (repoRoot) => {
+        await mkdir(join(repoRoot, P.workflowDirRel), { recursive: true });
+        await mkdir(join(repoRoot, LEGACY_WORKFLOW_DIR_REL), { recursive: true });
+        await writeWorkflowFixture(
+          join(repoRoot, P.workflowDirRel, 'investigate-20260101T000000Z-aaaaaa.md'),
+          'canonical/branch',
+        );
+        await writeWorkflowFixture(
+          join(repoRoot, LEGACY_WORKFLOW_DIR_REL, 'investigate-20260101T000001Z-bbbbbb.md'),
+          'legacy/branch',
+        );
+
+        await rejects(
+          () => createWorkflow({
+            repoRoot,
+            verb: 'compose',
+            host: 'codex',
+            gitBaseline: MIN_BASELINE,
+            originalRequest: 'blocked split home',
+          }),
+          /Workflow storage migration blocked/,
+        );
+      });
+    });
+
+    // legacy_homes off — no legacy-home continuity, dual-home ambiguity or
+    // migration block: this persona carries a canonical-only state home
+    // (ADR-0066 Decision 3).
+    itLegacyOff(`ignores a stray .claude/agentic-${persona} directory entirely (canonical-only contract)`, async () => {
       await withTmpRepo(async (repoRoot) => {
         // Simulate a user hand-creating a legacy-shaped home; the persona
         // must neither read nor prefer it.
@@ -826,6 +924,14 @@ host_history:
         strictEqual(proc.stdout.trim(), filePath);
       });
     });
+
+    it('(f) no workflow at all → stdout=empty, exit=0 (the "no active workflow" branch of resume and peer-now)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const proc = runCli(['find-active', '--repo-root', repoRoot]);
+        strictEqual(proc.status, 0, `stderr: ${proc.stderr}`);
+        strictEqual(proc.stdout, '');
+      });
+    });
   });
 
   describe(`${persona}: state.mjs — withFileLock serialization (Phase 6 fix #1 ownership protocol)`, () => {
@@ -923,21 +1029,24 @@ host_history:
       strictEqual(ENSEMBLE_RESULTS_RETENTION_CAP, 20);
     });
 
-    it('workflow and archive dirs are canonical-only (legacy_homes off — no LEGACY_* exports)', async () => {
+    it('the state homes: canonical always, the legacy home only with legacy_homes on', async () => {
       // Pins today's literal identity, derived from the persona name
       // (ADR-0066 V1); the dirs are functions read at call time.
       strictEqual(stateDirRel(), `.agentic-plugins/state/${persona}`);
       strictEqual(workflowDirRel(), `.agentic-plugins/state/${persona}/workflows`);
       strictEqual(creationLockRel(), `.agentic-plugins/state/${persona}/.creation-lock`);
       strictEqual(archiveDirRel(), `.agentic-plugins/state/${persona}/archive`);
-      // physical-trim pin — retire at ADR-0066 Stage 3 (behavioral tests carry it)
+      // ADR-0066 Stage 3 retired the physical-trim pin (no LEGACY_* export):
+      // the behavior is what a capability decides. Off, the legacy home is an
+      // unknown home; on, it is the ADR-0025 pre-migration directory.
       const mod = await import(STATE_URL);
-      ok(!('LEGACY_STATE_DIR_REL' in mod) && !('LEGACY_WORKFLOW_DIR_REL' in mod)
-        && !('LEGACY_ARCHIVE_DIR_REL' in mod) && !('LEGACY_CREATION_LOCK_REL' in mod),
-        `${persona} state.mjs must not export legacy-home constants (legacy_homes off, ADR-0066 Decision 3)`);
-      // The constants became functions: no legacy-home export in either form.
-      deepStrictEqual(Object.keys(mod).filter((k) => /legacy/i.test(k)), [],
-        `${persona} state.mjs must not export a legacy-home constant or function`);
+      if (P.capabilities.legacy_homes) {
+        strictEqual(mod.workflowDir('/r', { home: 'legacy' }), `/r/.claude/agentic-${persona}/workflows`);
+        strictEqual(mod.archiveDir('/r', { home: 'legacy' }), `/r/.claude/agentic-${persona}/archive`);
+        strictEqual(mod.legacyStateDirRel(), `.claude/agentic-${persona}`);
+      } else {
+        throws(() => mod.workflowDir('/r', { home: 'legacy' }), /unknown workflow state home: legacy/);
+      }
     });
   });
 
@@ -1420,6 +1529,100 @@ host_history:
     });
   });
 
+  // The calls /<persona>:resume and /<persona>:peer-now make (their runbook
+  // regions are generated for every persona, so the CLI contract is shared).
+  describe(`${persona}: state.mjs CLI — read, append and archive as resume and peer-now call them`, () => {
+    function cli(args) {
+      return spawnSync(process.execPath, [STATE_PATH, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }
+
+    it('read --workflow-path prints the frontmatter as JSON: git_baseline as recorded, current_phase and next_action (the resume drift report inputs)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const gitBaseline = {
+          branch: 'feature/x',
+          head: 'abcdef0123456789abcdef0123456789abcdef01',
+          status_digest: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        };
+        const { filePath } = await createWorkflow({
+          repoRoot,
+          verb: 'investigate',
+          host: 'claude',
+          gitBaseline,
+          originalRequest: 'drift inputs',
+          currentPhase: 'phase-1-running',
+          nextAction: 'investigate the auth flow',
+        });
+        const proc = cli(['read', '--workflow-path', filePath]);
+        strictEqual(proc.status, 0, `stderr: ${proc.stderr}`);
+        const parsed = JSON.parse(proc.stdout);
+        deepStrictEqual(parsed.git_baseline, gitBaseline);
+        strictEqual(parsed.current_phase, 'phase-1-running');
+        strictEqual(parsed.next_action, 'investigate the auth flow');
+      });
+    });
+
+    it('append without --current-phase or --next-action keeps both and writes the phase label and note to the body (peer-now\'s [Peer] note)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const { filePath } = await createWorkflow({
+          repoRoot,
+          verb: 'investigate',
+          host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'peer-now phase preservation',
+          currentPhase: 'phase-1-running',
+          nextAction: 'investigate the auth flow',
+        });
+        const proc = cli([
+          'append',
+          '--workflow-path', filePath,
+          '--host', 'claude',
+          '--phase-label', '[Peer] codex consultation',
+          '--phase-note', 'verbatim peer probe — does not advance phase',
+          '--event', 'updated',
+        ]);
+        strictEqual(proc.status, 0, `stderr: ${proc.stderr}`);
+        const { frontmatter, body } = await readWorkflow(filePath);
+        strictEqual(frontmatter.current_phase, 'phase-1-running', 'current_phase is unchanged when --current-phase is omitted');
+        strictEqual(frontmatter.next_action, 'investigate the auth flow', 'next_action is unchanged when --next-action is omitted');
+        strictEqual(frontmatter.host_history.at(-1).event, 'updated');
+        ok(body.includes('[Peer] codex consultation'), 'the phase label is in the body');
+        ok(body.includes('verbatim peer probe — does not advance phase'), 'the phase note is in the body');
+      });
+    });
+
+    it('archive prints the archived path under archive/, empties the active list and records "archived"; a second archive of the same path is a no-op reporting source-missing', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const { filePath } = await createWorkflow({
+          repoRoot,
+          verb: 'investigate',
+          host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'archive round trip',
+        });
+        const args = ['archive', '--workflow-path', filePath, '--host', 'claude', '--repo-root', repoRoot];
+        const first = cli(args);
+        strictEqual(first.status, 0, `stderr: ${first.stderr}`);
+        const archived = first.stdout.trim();
+        ok(archived.includes(`/${archiveDirRel()}/`), `archived under ${archiveDirRel()}: ${archived}`);
+        strictEqual(basename(archived), basename(filePath), 'no collision: the file keeps its name');
+        deepStrictEqual(await listWorkflowFiles(repoRoot), [], 'the active list is empty');
+        strictEqual((await readWorkflow(archived)).frontmatter.host_history.at(-1).event, 'archived');
+        const archivedText = await readFile(archived, 'utf8');
+
+        const second = cli(args);
+        strictEqual(second.status, 0, `stderr: ${second.stderr}`);
+        strictEqual(second.stdout, '', 'nothing archived the second time');
+        match(second.stderr, /source-missing/);
+        const again = await archiveWorkflow({ workflowPath: filePath, host: 'claude', repoRoot });
+        deepStrictEqual([again.archived, again.reason], [false, 'source-missing']);
+        strictEqual(await readFile(archived, 'utf8'), archivedText, 'the archived copy is untouched');
+      });
+    });
+  });
+
   describe(`${persona}: state.mjs — gate helpers (ADR-0017 §sub-5)`, () => {
     it('terminalMarkerCheck — true only on explicit terminal_marker===true', () => {
       strictEqual(terminalMarkerCheck({ terminal_marker: true }), true);
@@ -1873,7 +2076,294 @@ host_history:
   // (misdispatch defense).
   // ============================================================================
 
-  describe(`${persona}: state.mjs — no-parent-linkage contract (dispatch_target off, ADR-0066 Decision 3)`, () => {
+  describeDispatchOn(`${persona}: state.mjs — ADR-0019 PR-A parent-linkage fields (schema 1.1 additive, dispatch_target on)`, () => {
+    it('parses a hand-crafted 1.1 file with parent_workflow + originating_subtask set', () => {
+      const text =
+        '---\n' +
+        'schema: "1.1"\n' +
+        'workflow_id: "investigate-20260510T070000Z-aabbcc"\n' +
+        `persona: "${persona}"\n` +
+        'verb: "investigate"\n' +
+        'profile: "architecture"\n' +
+        'original_request: "subtask dispatched by orchestrator"\n' +
+        'started_at: "2026-05-10T07:00:00Z"\n' +
+        'updated_at: "2026-05-10T07:00:00Z"\n' +
+        'repo_root: "/tmp/repo"\n' +
+        'git_baseline:\n' +
+        '  branch: "feat/sub-1"\n' +
+        '  head: "0000000000000000000000000000000000000000"\n' +
+        '  status_digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"\n' +
+        'current_phase: "phase-0"\n' +
+        'next_action: "Run investigate skill"\n' +
+        'tasks: []\n' +
+        'host_history:\n' +
+        '  - host: "claude"\n' +
+        '    at: "2026-05-10T07:00:00Z"\n' +
+        '    event: "created"\n' +
+        'parent_workflow: "macro-plan-20260510T065959Z-aaaaaa"\n' +
+        'originating_subtask: "PR1"\n' +
+        '---\n\n# body\n';
+      const { frontmatter } = parseWorkflowFile(text);
+      strictEqual(frontmatter.parent_workflow, 'macro-plan-20260510T065959Z-aaaaaa');
+      strictEqual(frontmatter.originating_subtask, 'PR1');
+      strictEqual('parent_detached' in frontmatter, false);
+    });
+
+    it('parses a 1.1 file with parent_detached: true (set later by /finalize/abort)', () => {
+      const text =
+        '---\n' +
+        'schema: "1.1"\n' +
+        'workflow_id: "compose-20260510T080000Z-ddeeff"\n' +
+        `persona: "${persona}"\n` +
+        'verb: "compose"\n' +
+        'profile: ""\n' +
+        'original_request: "schema bump implementation"\n' +
+        'started_at: "2026-05-10T08:00:00Z"\n' +
+        'updated_at: "2026-05-10T08:30:00Z"\n' +
+        'repo_root: "/tmp/repo"\n' +
+        'git_baseline:\n' +
+        '  branch: "feat/sub-2"\n' +
+        '  head: "0000000000000000000000000000000000000000"\n' +
+        '  status_digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"\n' +
+        'current_phase: "phase-1"\n' +
+        'next_action: "implement"\n' +
+        'tasks: []\n' +
+        'host_history:\n' +
+        '  - host: "codex"\n' +
+        '    at: "2026-05-10T08:00:00Z"\n' +
+        '    event: "created"\n' +
+        'terminal_marker: false\n' +
+        'parent_workflow: "macro-plan-20260510T080000Z-bbbbbb"\n' +
+        'originating_subtask: "PR2"\n' +
+        'parent_detached: true\n' +
+        '---\n\n# body\n';
+      const { frontmatter } = parseWorkflowFile(text);
+      strictEqual(frontmatter.parent_workflow, 'macro-plan-20260510T080000Z-bbbbbb');
+      strictEqual(frontmatter.originating_subtask, 'PR2');
+      strictEqual(frontmatter.parent_detached, true);
+      strictEqual(frontmatter.terminal_marker, false);
+    });
+
+    it('rejects empty-string parent_workflow', () => {
+      const text =
+        `---\nschema: "1.1"\nworkflow_id: "x"\npersona: "${persona}"\nverb: "investigate"\n` +
+        'profile: ""\noriginal_request: ""\nstarted_at: ""\nupdated_at: ""\n' +
+        'repo_root: ""\ngit_baseline:\n  branch: ""\n  head: ""\n  status_digest: ""\n' +
+        'current_phase: ""\nnext_action: ""\ntasks: []\nhost_history: []\n' +
+        'parent_workflow: ""\noriginating_subtask: "PR1"\n---\n\n';
+      const err = (() => {
+        try { parseWorkflowFile(text); return null; } catch (e) { return e; }
+      })();
+      ok(err, 'expected empty parent_workflow to throw');
+      ok(/parent_workflow must be a non-empty string/.test(err.message), `message: ${err.message}`);
+    });
+
+    it('rejects empty-string originating_subtask', () => {
+      const text =
+        `---\nschema: "1.1"\nworkflow_id: "x"\npersona: "${persona}"\nverb: "investigate"\n` +
+        'profile: ""\noriginal_request: ""\nstarted_at: ""\nupdated_at: ""\n' +
+        'repo_root: ""\ngit_baseline:\n  branch: ""\n  head: ""\n  status_digest: ""\n' +
+        'current_phase: ""\nnext_action: ""\ntasks: []\nhost_history: []\n' +
+        'parent_workflow: "macro-x"\noriginating_subtask: ""\n---\n\n';
+      const err = (() => {
+        try { parseWorkflowFile(text); return null; } catch (e) { return e; }
+      })();
+      ok(err, 'expected empty originating_subtask to throw');
+      ok(/originating_subtask must be a non-empty string/.test(err.message), `message: ${err.message}`);
+    });
+
+    it('rejects non-boolean parent_detached', () => {
+      const text =
+        `---\nschema: "1.1"\nworkflow_id: "x"\npersona: "${persona}"\nverb: "investigate"\n` +
+        'profile: ""\noriginal_request: ""\nstarted_at: ""\nupdated_at: ""\n' +
+        'repo_root: ""\ngit_baseline:\n  branch: ""\n  head: ""\n  status_digest: ""\n' +
+        'current_phase: ""\nnext_action: ""\ntasks: []\nhost_history: []\n' +
+        'parent_detached: "yes"\n---\n\n';
+      const err = (() => {
+        try { parseWorkflowFile(text); return null; } catch (e) { return e; }
+      })();
+      ok(err, 'expected string parent_detached to throw');
+      ok(/parent_detached must be a boolean/.test(err.message), `message: ${err.message}`);
+    });
+
+    it('createWorkflow round-trip persists parent_workflow + originating_subtask', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        await createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'orchestrator dispatched compose',
+          parentWorkflow: 'macro-plan-20260510T090000Z-zzzzzz',
+          originatingSubtask: 'PR3',
+        });
+        const [filePath] = await listWorkflowFiles(repoRoot);
+        const { frontmatter } = await readWorkflow(filePath);
+        strictEqual(frontmatter.parent_workflow, 'macro-plan-20260510T090000Z-zzzzzz');
+        strictEqual(frontmatter.originating_subtask, 'PR3');
+        // parent_detached omitted at create-time per ADR-0019 §3
+        strictEqual('parent_detached' in frontmatter, false);
+      });
+    });
+
+    it('createWorkflow rejects half-set linkage (parent_workflow only)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        await rejects(
+          createWorkflow({
+            repoRoot,
+            verb: 'investigate',
+            host: 'claude',
+            gitBaseline: MIN_BASELINE,
+            originalRequest: 'half-set parent should fail',
+            parentWorkflow: 'macro-plan-orphan',
+            // originatingSubtask intentionally omitted
+          }),
+          /parent_workflow and originating_subtask must be set together/,
+        );
+      });
+    });
+
+    it('createWorkflow rejects half-set linkage (originating_subtask only)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        await rejects(
+          createWorkflow({
+            repoRoot,
+            verb: 'investigate',
+            host: 'claude',
+            gitBaseline: MIN_BASELINE,
+            originalRequest: 'half-set subtask should fail',
+            originatingSubtask: 'PR4',
+            // parentWorkflow intentionally omitted
+          }),
+          /parent_workflow and originating_subtask must be set together/,
+        );
+      });
+    });
+
+    it('createWorkflow rejects explicitly-empty parent_workflow string', async () => {
+      // ADR-0019 dispatch shims may expand unset env vars to empty `--flag ''`
+      // args. Treating that as "omitted" would silently drop the parent
+      // association. Only undefined/null mean omitted; '' is invalid.
+      await withTmpRepo(async (repoRoot) => {
+        await rejects(
+          createWorkflow({
+            repoRoot,
+            verb: 'compose',
+            host: 'claude',
+            gitBaseline: MIN_BASELINE,
+            originalRequest: 'empty parentWorkflow should reject',
+            parentWorkflow: '',
+            originatingSubtask: 'PR-x',
+          }),
+          /parentWorkflow must be a non-empty string when provided/,
+        );
+      });
+    });
+
+    it('createWorkflow rejects explicitly-empty originating_subtask string', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        await rejects(
+          createWorkflow({
+            repoRoot,
+            verb: 'compose',
+            host: 'claude',
+            gitBaseline: MIN_BASELINE,
+            originalRequest: 'empty originatingSubtask should reject',
+            parentWorkflow: 'macro-x',
+            originatingSubtask: '',
+          }),
+          /originatingSubtask must be a non-empty string when provided/,
+        );
+      });
+    });
+
+    it('CLI create rejects empty --parent-workflow flag (shim safety)', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const result = spawnSync(process.execPath, [
+          STATE_PATH,
+          'create',
+          '--repo-root', repoRoot,
+          '--verb', 'investigate',
+          '--host', 'claude',
+          '--git-baseline-branch', MIN_BASELINE.branch,
+          '--git-baseline-head', MIN_BASELINE.head,
+          '--status-digest', MIN_BASELINE.status_digest,
+          '--parent-workflow', '',
+          '--originating-subtask', 'PR-shim',
+        ], { encoding: 'utf8' });
+        strictEqual(result.status, 1, `expected exit 1, got ${result.status}: ${result.stderr}`);
+        match(result.stderr, /parentWorkflow must be a non-empty string when provided/);
+      });
+    });
+
+    it('createWorkflow without parent linkage omits both fields', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        await createWorkflow({
+          repoRoot,
+          verb: 'investigate',
+          host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'manual workflow no parent',
+        });
+        const [filePath] = await listWorkflowFiles(repoRoot);
+        const { frontmatter } = await readWorkflow(filePath);
+        strictEqual('parent_workflow' in frontmatter, false);
+        strictEqual('originating_subtask' in frontmatter, false);
+        strictEqual('parent_detached' in frontmatter, false);
+      });
+    });
+
+    it('CLI create --parent-workflow + --originating-subtask flags pass through', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        const out = execFileSync(process.execPath, [
+          STATE_PATH,
+          'create',
+          '--repo-root', repoRoot,
+          '--verb', 'compose',
+          '--host', 'claude',
+          '--git-baseline-branch', MIN_BASELINE.branch,
+          '--git-baseline-head', MIN_BASELINE.head,
+          '--status-digest', MIN_BASELINE.status_digest,
+          '--parent-workflow', 'macro-plan-cli-test',
+          '--originating-subtask', 'PR-cli',
+        ], { encoding: 'utf8' });
+        const filePath = out.trim();
+        const { frontmatter } = await readWorkflow(filePath);
+        strictEqual(frontmatter.parent_workflow, 'macro-plan-cli-test');
+        strictEqual(frontmatter.originating_subtask, 'PR-cli');
+      });
+    });
+
+    it('FRONTMATTER_KEY_ORDER places parent linkage fields after ADR-0017 1.1 fields', async () => {
+      await withTmpRepo(async (repoRoot) => {
+        await createWorkflow({
+          repoRoot,
+          verb: 'frame',
+          host: 'codex',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'serialization order test',
+          parentWorkflow: 'macro-order',
+          originatingSubtask: 'PR-order',
+        });
+        const [filePath] = await listWorkflowFiles(repoRoot);
+        const raw = await readFile(filePath, 'utf8');
+        // The serialized frontmatter must place parent_workflow AFTER
+        // host_history (last schema-1 field) and AFTER any ADR-0017 1.1
+        // optional fields. Since this workflow has no ADR-0017 fields
+        // populated, host_history is the immediate predecessor.
+        const idxHostHistory = raw.indexOf('\nhost_history:');
+        const idxParentWorkflow = raw.indexOf('\nparent_workflow:');
+        const idxOriginatingSubtask = raw.indexOf('\noriginating_subtask:');
+        ok(idxHostHistory > 0, 'host_history must appear');
+        ok(idxParentWorkflow > 0, 'parent_workflow must appear');
+        ok(idxOriginatingSubtask > 0, 'originating_subtask must appear');
+        ok(idxParentWorkflow > idxHostHistory, 'parent_workflow must serialize after host_history');
+        ok(idxOriginatingSubtask > idxParentWorkflow, 'originating_subtask must serialize after parent_workflow');
+      });
+    });
+  });
+
+  describeDispatchOff(`${persona}: state.mjs — no-parent-linkage contract (dispatch_target off, ADR-0066 Decision 3)`, () => {
     // The CLI's stderr for a refused create: `state.mjs create: <message>`.
     const linkageRefusal =
       `state.mjs create: ${persona} state.mjs create does not accept --parent-workflow/--originating-subtask: ` +
@@ -2301,5 +2791,34 @@ host_history:
           `no parent-linkage keys may serialize in ${persona} files (dispatch_target off, ADR-0066 Decision 3)`);
       });
     });
+
+    // dispatch_target on: the ADR-0020 group serializes after the ADR-0019
+    // parent-linkage group.
+    if (P.capabilities.dispatch_target) {
+      it('FRONTMATTER_KEY_ORDER places workflow_type after parent-linkage fields (ADR-0020 group placement, dispatch_target on)', async () => {
+        await withTmpRepo(async (repoRoot) => {
+          await createWorkflow({
+            repoRoot,
+            verb: 'compose',
+            host: 'claude',
+            gitBaseline: MIN_BASELINE,
+            originalRequest: 'serialization order test for workflow_type',
+            parentWorkflow: 'macro-plan-order',
+            originatingSubtask: 'PR-order',
+            workflowType: 'verb-chain',
+          });
+          const [filePath] = await listWorkflowFiles(repoRoot);
+          const raw = await readFile(filePath, 'utf8');
+          const idxOriginatingSubtask = raw.indexOf('\noriginating_subtask:');
+          const idxWorkflowType = raw.indexOf('\nworkflow_type:');
+          ok(idxOriginatingSubtask > 0, 'originating_subtask must appear');
+          ok(idxWorkflowType > 0, 'workflow_type must appear');
+          ok(
+            idxWorkflowType > idxOriginatingSubtask,
+            'workflow_type must serialize after originating_subtask (ADR-0020 group after ADR-0019 group)',
+          );
+        });
+      });
+    }
   });
 }

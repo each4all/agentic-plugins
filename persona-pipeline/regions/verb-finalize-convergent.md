@@ -1,7 +1,7 @@
 The phase note this step records — fill in every `<…>`. When no run launched
-(the privacy gate kept the verb local-only, so no dispatch ran; a run whose
+({{skip_cause}}; a run whose
 companion is missing did launch, and settles `failed`), its first heading reads
-`### Ensemble skipped: {{launched}} (privacy gate)` instead, and the synthesis
+`### Ensemble skipped: {{launched}} ({{skip_label}})` instead, and the synthesis
 is local-only:
 
 ```markdown
@@ -21,7 +21,12 @@ is local-only:
 - rationale:             <why best — {{rationale_gate}}>
 - evidence_pointers:     <{{evidence_pointers}} — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
+{{^capability commit_surface}}
 - next_command:          <exact next step: /{{persona}}:<verb> … or ${{persona}}:<verb> for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>
+{{/capability}}
+{{#capability commit_surface}}
+- next_command:          <exact next step: /{{persona}}:<verb> … or ${{persona}}:<verb> for a verb; /{{persona}}:commit for commit or done; the owner-decision action otherwise>
+{{/capability}}
 ```
 
 Then run the block with the filled-in note in place of its placeholder line,
@@ -55,13 +60,34 @@ earlier verb left, so the workflow stays open and the Stop hook cannot
 archive it.
 
 The last write, `finish-verb`, records the proposal's next step in closed-enum
+{{^capability commit_surface}}
 form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit` (the owner
 saves and commits the artifact; {{persona}} runs no commit itself) or `done`,
 each closing the workflow `summary-complete`. End instead with an owner gate
 when the owner must judge, with the judgment under the gate's heading in the
 note:
+{{/capability}}
+{{#capability commit_surface}}
+form: `--next-step-kind` `verb` (with `--next-step-verb`), `commit`
+(`/{{persona}}:commit` commits the change, or closes the workflow when there is
+none) or `done`, each closing the workflow `summary-complete`.
+{{/capability}}
+{{#capability dispatch_target}}
+Under an autopilot run it records the next step only and leaves the terminal
+marker for `/{{persona}}:commit`, the only command that closes a workflow
+there (`core/skills/_shared/references/autopilot-mode.md`).
+{{/capability}}
+{{#capability commit_surface}}
+End instead with an owner gate when the owner must judge, with the judgment
+under the gate's heading in the note:
+{{/capability}}
 
 {{owner_gates}}
+{{#capability dispatch_target}}
+- `pr-handling` (heading `### Outward action needed`, anchor `pr-handling`):
+  under an autopilot run, the task itself needs a push, a pull request or
+  another outward action; interactively the user acts instead.
+{{/capability}}
 
 The owner-decision form below records the gate with the next step in one
 write and leaves the workflow open, not terminal, until the owner resolves it.
@@ -108,11 +134,24 @@ if [ "${CONVERGED:-no}" = "yes" ]; then
   # durable state and the code-emitted completion footer agree with the
   # Active Next-Action Proposal. The value shown is the typical-case
   # default; override it, and the --next-step-* flags, when the verb's result
+  {{^capability commit_surface}}
   # selects a different next step (e.g. the owner's save and commit).
+  {{/capability}}
+  {{#capability commit_surface}}
+  # selects a different next step (e.g. commit).
+  {{/capability}}
   # ADR-0063 D3 — finish-verb is the verb's last write: the ADR-0017
   # §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
+  {{^capability dispatch_target}}
   # with the next step. ADR-0066 Decision 3: an inherited AGENTIC_AUTOPILOT
   # changes nothing here.
+  {{/capability}}
+  {{#capability dispatch_target}}
+  # with the next step, interactively. Under an autopilot run (ADR-0066
+  # Decision 3: AGENTIC_AUTOPILOT names a run, on Claude) it writes the next step
+  # only and leaves the terminal marker for the commit command, which alone
+  # closes a workflow there.
+  {{/capability}}
   # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
   # archive gates are evaluated at the end of THIS turn, not at session close;
   # if a gate fails the workflow stays marked and a later Stop re-evaluates it.

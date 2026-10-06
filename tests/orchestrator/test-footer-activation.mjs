@@ -11,7 +11,8 @@
 //     double-render what the primary already rendered)
 //   - SessionStart reconciliation suppresses the false "missed-footer" nudge
 //
-// Mirrors tests/engineer/test-footer-activation.mjs, adapted for the orchestrator
+// Mirrors the persona suite tests/persona-pipeline/test-footer-activation.mjs
+// (engineer's cases since ADR-0066 PC3), adapted for the orchestrator
 // macro fixture (createWorkflow verb=plan + setPlan). Host-free + deterministic:
 // throwaway macros in throwaway state homes; the runtime is pinned to the repo's
 // own plugins/runtime via AGENTIC_RUNTIME_ROOT for the "should render" paths so

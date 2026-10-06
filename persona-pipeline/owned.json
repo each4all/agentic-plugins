@@ -42,6 +42,7 @@
       "adapters/codex/hooks/stop.mjs",
       "hooks/hooks.json",
       "scripts/decide-registry.mjs",
+      "scripts/discover-runtime.mjs",
       "scripts/dispatch-peer.mjs",
       "scripts/lib/cli-entry.mjs",
       "scripts/lib/decide-args.mjs",
@@ -51,6 +52,13 @@
       "scripts/lib/hook-helpers.mjs",
       "scripts/lib/persona.mjs",
       "scripts/lib/yaml-mini.mjs",
+      "scripts/parent-writeback.mjs",
+      "scripts/peer-runner.mjs",
+      "scripts/phase7-commit.mjs",
+      "scripts/session-handoff.mjs",
+      "scripts/start-args.mjs",
+      "scripts/state.mjs",
+      "scripts/stop-archive.mjs",
       "scripts/validate-commit.mjs"
     ],
     "founder": [

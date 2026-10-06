@@ -8,8 +8,17 @@
 //     block fails before any write (new runbook text, old install);
 //   - the resume block clears the previous next step;
 //   - a verb's Phase 2: interactive = terminal write + next step; autopilot =
-//     next step only; a failed ensemble-commit stops the block before
+//     next step only; a refused settlement stops the block before
 //     finish-verb, so no next step is published;
+//   - the six verbs, whose finalize the persona pipeline generates
+//     (PC3 U7): settle decides from a real run ledger — a
+//     completed run records the synthesis verdict, a failed one `failed`, a
+//     never-launched attempt nothing — and refuses an empty run id that would
+//     hide a launched run, before finish-verb;
+//   - decide's Owner selection and refine's Owner decision: the owner's words
+//     reach the resolved note as written, and inside an /engineer:start
+//     lifecycle the block clears the gate and leaves the terminal write to
+//     the lifecycle;
 //   - /engineer:commit: Phase 0 + the Autopilot block commit, stop at the
 //     staging-set gate, and refuse outside autopilot; the interactive plan and
 //     close blocks; the staging-set clear block before an interactive commit.
@@ -108,6 +117,33 @@ function createWorkflow(dir, verb = 'critique') {
     '--original-request', 'runbook fixture'], { encoding: 'utf8' }).trim();
 }
 
+// A stub companions root (AGENTIC_COMPANIONS_ROOT): the runner finds a codex
+// companion that answers at once, or none at all.
+async function stubCompanions({ missing = false } = {}) {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'engineer-companions-')));
+  await writeFile(join(dir, 'discover-peer.mjs'), missing
+    ? 'export async function discoverPeerCompanion() { return { ok: false, reason: "not installed" }; }\n'
+    : 'export async function discoverPeerCompanion({ peer } = {}) { return { ok: true, path: new URL("./" + peer + "-companion.mjs", import.meta.url).pathname }; }\n');
+  if (!missing) {
+    await writeFile(join(dir, 'codex-companion.mjs'),
+      "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ status: 'success', peer_host: 'codex', peer_model: null, stdout: 'the peer answer', exit_code: 0 }));\n");
+    execFileSync('chmod', ['755', join(dir, 'codex-companion.mjs')]);
+  }
+  await writeFile(join(dir, 'prompt.xml'), '<task>fixture</task>\n');
+  return dir;
+}
+
+// The dispatch, as the runbook runs it: the real runner records the pending
+// row and the ledger.
+function launch(dir, wf, verb, type, runId, companions) {
+  const env = { ...process.env, AGENTIC_COMPANIONS_ROOT: companions };
+  delete env.AGENTIC_AUTOPILOT;
+  return spawnSync('node', [resolve(ENG, 'scripts/peer-runner.mjs'), 'run', '--repo-root', dir, '--kind', 'ensemble',
+    '--peer', 'codex', '--prompt-file', join(companions, 'prompt.xml'), '--output-format', 'json',
+    '--workflow-path', wf, '--phase', verb, '--host', 'claude', '--cwd', dir,
+    '--ensemble-type', type, '--run-id', runId], { cwd: dir, encoding: 'utf8', env });
+}
+
 const state = (...args) => execFileSync('node', [STATE, ...args], { encoding: 'utf8', env: { ...process.env, AGENTIC_AUTOPILOT: '' } });
 
 for (const shell of SHELLS) {
@@ -193,32 +229,103 @@ for (const shell of SHELLS) {
       });
     });
 
-    it('Phase 2: terminal + next step interactively; next step only under autopilot; a failed write publishes nothing', async () => {
-      await withRepo(async (dir) => {
-        const { phase2 } = await verbBlocks('critique');
-        const vars = { RUN_ID: 'review-1', VERDICT: 'agree', SUMMARY: 'fine' };
-        let wf = createWorkflow(dir);
-        let r = runBlock(shell, dir, phase2, { ACTIVE: wf, ...vars });
-        strictEqual(r.status, 0, r.stderr);
-        let fm = (await readWorkflow(wf)).frontmatter;
-        deepStrictEqual([fm.current_phase, fm.terminal_marker, fm.next_step_kind, fm.next_step_verb, fm.next_step_confidence],
-          ['summary-complete', true, 'verb', 'refine', 'HIGH']);
-        state('archive', '--workflow-path', wf, '--host', 'claude', '--repo-root', dir);
+    it('Phase 2: terminal + next step interactively; next step only under autopilot; a refused settlement publishes nothing', async () => {
+      const companions = await stubCompanions();
+      try {
+        await withRepo(async (dir) => {
+          // PC3 U7: critique's finalize is generated and settles the attempt
+          // from its run ledger; RUN_ID is empty when no run launched.
+          const { phase2 } = await verbBlocks('critique');
+          const vars = { RUN_ID: '', VERDICT: 'agreed', SUMMARY: 'fine' };
+          let wf = createWorkflow(dir);
+          let r = runBlock(shell, dir, phase2, { ACTIVE: wf, ...vars });
+          strictEqual(r.status, 0, r.stderr);
+          let fm = (await readWorkflow(wf)).frontmatter;
+          deepStrictEqual([fm.current_phase, fm.terminal_marker, fm.next_step_kind, fm.next_step_verb, fm.next_step_confidence],
+            ['summary-complete', true, 'verb', 'refine', 'HIGH']);
+          state('archive', '--workflow-path', wf, '--host', 'claude', '--repo-root', dir);
 
-        wf = createWorkflow(dir);
-        r = runBlock(shell, dir, phase2, { ACTIVE: wf, ...vars, AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
-        strictEqual(r.status, 0, r.stderr);
-        fm = (await readWorkflow(wf)).frontmatter;
-        deepStrictEqual([fm.current_phase, fm.terminal_marker === true, fm.next_step_kind], ['phase-2-presented', false, 'verb']);
-        state('archive', '--workflow-path', wf, '--host', 'claude', '--repo-root', dir);
+          wf = createWorkflow(dir);
+          r = runBlock(shell, dir, phase2, { ACTIVE: wf, ...vars, AGENTIC_AUTOPILOT: AUTOPILOT_RUN_ID });
+          strictEqual(r.status, 0, r.stderr);
+          fm = (await readWorkflow(wf)).frontmatter;
+          deepStrictEqual([fm.current_phase, fm.terminal_marker === true, fm.next_step_kind], ['phase-2-presented', false, 'verb']);
+          state('archive', '--workflow-path', wf, '--host', 'claude', '--repo-root', dir);
 
-        wf = createWorkflow(dir);
-        r = runBlock(shell, dir, phase2, { ACTIVE: wf, ...vars, RUN_ID: '' });
-        ok(r.status !== 0, 'an empty run id fails ensemble-commit, and the block stops');
-        fm = (await readWorkflow(wf)).frontmatter;
-        deepStrictEqual([fm.next_step_kind, fm.terminal_marker === true], [undefined, false], 'finish-verb never ran');
-      });
+          // An empty run id while a launched run is pending: settle refuses,
+          // and the block stops before finish-verb.
+          wf = createWorkflow(dir);
+          strictEqual(launch(dir, wf, 'critique', 'review', 'review-hidden', companions).status, 0);
+          r = runBlock(shell, dir, phase2, { ACTIVE: wf, ...vars });
+          ok(r.status !== 0, 'a refused settlement stops the block');
+          fm = (await readWorkflow(wf)).frontmatter;
+          deepStrictEqual([fm.next_step_kind, fm.terminal_marker === true], [undefined, false], 'finish-verb never ran');
+        });
+      } finally {
+        await rm(companions, { recursive: true, force: true });
+      }
     });
+  });
+
+  describe(`generated verb finalize, settled from the run ledger (${shell}, PC3 U7)`, () => {
+    for (const [verb, type] of [['investigate', 'investigate'], ['frame', 'frame'], ['compose', 'plan-verify'], ['decide', 'brainstorm'], ['critique', 'review'], ['refine', 'refine-verify']]) {
+      it(`${verb}: completed → the synthesis verdict, failed → failed, never launched → nothing, each then finish-verb; an empty run id hiding a launched run stops the block first`, async () => {
+        const ok_ = await stubCompanions();
+        const gone = await stubCompanions({ missing: true });
+        try {
+          await withRepo(async (dir) => {
+            const { phase2 } = await verbBlocks(verb);
+            ok(phase2.includes('peer-runner.mjs" settle'), 'the generated finalize settles');
+            const vars = { VERDICT: 'agreed', SUMMARY: 'fine' };
+            const results = async (wf) => {
+              const fm = (await readWorkflow(wf)).frontmatter;
+              return { fm, results: fm.ensemble_results ?? [], pending: fm.pending_ensemble ?? [] };
+            };
+
+            // Completed: the synthesis verdict, the pending row gone, the terminal write.
+            let wf = createWorkflow(dir, verb);
+            let r = launch(dir, wf, verb, type, `${type}-done`, ok_);
+            strictEqual(r.status, 0, r.stderr);
+            r = runBlock(shell, dir, phase2, { ACTIVE: wf, RUN_ID: `${type}-done`, ...vars });
+            strictEqual(r.status, 0, r.stderr);
+            let got = await results(wf);
+            deepStrictEqual(got.results.map((e) => [e.run_id, e.verdict]), [[`${type}-done`, 'agreed']]);
+            deepStrictEqual([got.pending.length, got.fm.current_phase, got.fm.next_step_kind], [0, 'summary-complete', 'verb']);
+            state('archive', '--workflow-path', wf, '--host', 'claude', '--repo-root', dir);
+
+            // Launched and failed (no companion): verdict failed, whatever the synthesis said.
+            wf = createWorkflow(dir, verb);
+            launch(dir, wf, verb, type, `${type}-gone`, gone);
+            r = runBlock(shell, dir, phase2, { ACTIVE: wf, RUN_ID: `${type}-gone`, ...vars });
+            strictEqual(r.status, 0, r.stderr);
+            got = await results(wf);
+            deepStrictEqual(got.results.map((e) => [e.run_id, e.verdict]), [[`${type}-gone`, 'failed']]);
+            deepStrictEqual([got.pending.length, got.fm.current_phase], [0, 'summary-complete']);
+            state('archive', '--workflow-path', wf, '--host', 'claude', '--repo-root', dir);
+
+            // Never launched: nothing recorded, the verb still finishes.
+            wf = createWorkflow(dir, verb);
+            r = runBlock(shell, dir, phase2, { ACTIVE: wf, RUN_ID: '', ...vars });
+            strictEqual(r.status, 0, r.stderr);
+            got = await results(wf);
+            deepStrictEqual([got.results.length, got.pending.length, got.fm.current_phase], [0, 0, 'summary-complete']);
+            state('archive', '--workflow-path', wf, '--host', 'claude', '--repo-root', dir);
+
+            // An empty run id while a launched run is pending: settle refuses,
+            // and finish-verb never runs.
+            wf = createWorkflow(dir, verb);
+            strictEqual(launch(dir, wf, verb, type, `${type}-hidden`, ok_).status, 0);
+            r = runBlock(shell, dir, phase2, { ACTIVE: wf, RUN_ID: '', ...vars });
+            ok(r.status !== 0, 'the block stops');
+            got = await results(wf);
+            deepStrictEqual([got.fm.next_step_kind, got.fm.terminal_marker === true, got.pending.length], [undefined, false, 1]);
+          });
+        } finally {
+          await rm(ok_, { recursive: true, force: true });
+          await rm(gone, { recursive: true, force: true });
+        }
+      });
+    }
   });
 
   describe(`/engineer:commit runbook blocks (${shell})`, () => {
@@ -368,7 +475,12 @@ for (const shell of SHELLS) {
     it('decide\'s Owner selection stops at a refused clear, writing no selection (round-2 #7)', async () => {
       await withRepo(async (dir) => {
         const text = await readFile(resolve(ENG, 'commands/decide.md'), 'utf8');
-        const block = blocks(section(text, '## Owner selection (decide-conflict)'))[0];
+        // The generated block reads the resolution from a quoted heredoc
+        // (PC3 U7); the owner's words go in place of its placeholder line.
+        const placeholder = '<Owner selection: the direction the owner chose, and why>';
+        const raw = blocks(section(text, '## Owner selection (decide-conflict)'))[0];
+        ok(raw.includes(`\n${placeholder}\nOWNER_RESOLUTION\n`), 'the resolution placeholder sits inside the heredoc');
+        const block = raw.replace(placeholder, 'Owner selection: option A, the $simplest `one`');
         const wf = createWorkflow(dir, 'decide');
         state('awaiting-owner-set', '--workflow-path', wf, '--host', 'claude', '--gate', 'scope-routing', '--anchor', 'routing-recommendation');
         const before = await readFile(wf, 'utf8');
@@ -385,7 +497,22 @@ for (const shell of SHELLS) {
         const { frontmatter: fm, body } = await readWorkflow(wf);
         deepStrictEqual([fm.awaiting_owner_gate, fm.next_step_kind, fm.next_step_verb, fm.current_phase, fm.terminal_marker],
           [undefined, 'verb', 'compose', 'summary-complete', true]);
-        ok(/### Owner gate resolved: decide-conflict at [^\n]+\n\nOwner selection: /.test(body), 'the decision sits in the resolved note (round-3 F1)');
+        ok(/### Owner gate resolved: decide-conflict at [^\n]+\n\nOwner selection: option A, the \$simplest `one`/.test(body), 'the decision sits in the resolved note as written (round-3 F1)');
+        state('archive', '--workflow-path', wf, '--host', 'claude', '--repo-root', dir);
+
+        // Inside an /engineer:start lifecycle the block clears the gate and
+        // stops: the lifecycle makes its one terminal write (PC3 U7).
+        const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+        const sw = execFileSync('node', [STATE, 'create', '--repo-root', dir, '--verb', 'investigate', '--host', 'claude', '--workflow-type', 'start',
+          '--git-baseline-branch', 'feat/r', '--git-baseline-head', head, '--status-digest', 'x', '--original-request', 'start fixture'], { encoding: 'utf8' }).trim();
+        state('finish-verb', '--workflow-path', sw, '--host', 'claude', '--next-action', 'owner', '--next-step-kind', 'owner-decision',
+          '--next-step-confidence', 'MEDIUM', '--owner-gate', 'decide-conflict', '--owner-gate-anchor', 'ensemble-synthesis');
+        r = runBlock(shell, dir, block);
+        strictEqual(r.status, 0, r.stderr);
+        ok(r.stderr.includes('Resume the lifecycle with /engineer:start'), r.stderr);
+        const s = (await readWorkflow(sw)).frontmatter;
+        deepStrictEqual([s.awaiting_owner_gate, s.next_step_kind, s.next_step_verb, s.current_phase === 'summary-complete', s.terminal_marker === true],
+          [undefined, 'verb', 'compose', false, false]);
       });
     });
   });
@@ -396,7 +523,15 @@ for (const shell of SHELLS) {
     it('each resolves the workflow itself and records the decision with the next step in one write', async () => {
       await withRepo(async (dir) => {
         const text = await readFile(resolve(ENG, 'commands/refine.md'), 'utf8');
-        const [fixNow, defer] = blocks(section(text, '## Owner decision (recurring-finding)')).map(dedent);
+        // The generated blocks read the owner's resolution from a quoted
+        // heredoc (PC3 U7); the owner's words go in place of its placeholder.
+        const owner = (block, placeholder, words) => {
+          ok(block.includes(`\n${placeholder}\nOWNER_RESOLUTION\n`), placeholder);
+          return block.replace(placeholder, words);
+        };
+        const [rawFix, rawDefer] = blocks(section(text, '## Owner decision (recurring-finding)')).map(dedent);
+        const fixNow = owner(rawFix, '<Owner decision: fix the finding now>', 'Owner decision: fix the cache key now');
+        const defer = owner(rawDefer, '<Owner decision: defer the finding, with the reason and where it is tracked>', 'Owner decision: defer the cache key — tracked in C99');
         const wf = createWorkflow(dir, 'refine');
         const gate = () => state('finish-verb', '--workflow-path', wf, '--host', 'claude', '--next-action', 'owner', '--next-step-kind', 'owner-decision',
           '--next-step-confidence', 'HIGH', '--owner-gate', 'recurring-finding', '--owner-gate-anchor', 'recurring-finding');
@@ -411,7 +546,25 @@ for (const shell of SHELLS) {
         const read = await readWorkflow(wf);
         fm = read.frontmatter;
         deepStrictEqual([fm.awaiting_owner_gate, fm.next_step_kind, fm.current_phase, fm.terminal_marker], [undefined, 'commit', 'summary-complete', true]);
-        ok(/### Owner gate resolved: recurring-finding at [^\n]+\n\nOwner decision: defer /.test(read.body), read.body);
+        ok(/### Owner gate resolved: recurring-finding at [^\n]+\n\nOwner decision: defer the cache key — tracked in C99/.test(read.body), read.body);
+        // commit_surface on: the deferral's next action is the commit, which
+        // /engineer:commit makes (PC3 U7).
+        strictEqual(fm.next_action, 'Commit the refined change; the recurring finding is deferred');
+        state('archive', '--workflow-path', wf, '--host', 'claude', '--repo-root', dir);
+
+        // Inside an /engineer:start lifecycle the Defer block clears the gate
+        // and stops: the lifecycle makes its one terminal write (PC3 U7).
+        const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+        const sw = execFileSync('node', [STATE, 'create', '--repo-root', dir, '--verb', 'investigate', '--host', 'claude', '--workflow-type', 'start',
+          '--git-baseline-branch', 'feat/r', '--git-baseline-head', head, '--status-digest', 'x', '--original-request', 'start fixture'], { encoding: 'utf8' }).trim();
+        state('finish-verb', '--workflow-path', sw, '--host', 'claude', '--next-action', 'owner', '--next-step-kind', 'owner-decision',
+          '--next-step-confidence', 'HIGH', '--owner-gate', 'recurring-finding', '--owner-gate-anchor', 'recurring-finding');
+        r = runBlock(shell, dir, defer);
+        strictEqual(r.status, 0, r.stderr);
+        ok(r.stderr.includes('Resume the lifecycle with /engineer:start'), r.stderr);
+        const s = (await readWorkflow(sw)).frontmatter;
+        deepStrictEqual([s.awaiting_owner_gate, s.next_step_kind, s.current_phase === 'summary-complete', s.terminal_marker === true],
+          [undefined, 'commit', false, false]);
       });
     });
   });

@@ -71,6 +71,7 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
   } = await import(pathToFileURL(P.path('scripts/session-handoff.mjs')).href);
 
   const PROJECTION_REL = `${P.stateDirRel}/last-session-handoff.json`;
+  const LEGACY_PROJECTION_REL = `.claude/agentic-${persona}/last-session-handoff.json`;
   const PENDING_MARK = P.handoffTag;
 
   const SAMPLE = {
@@ -196,6 +197,14 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
         strictEqual(await exists(target2), false, 'file consumed');
         strictEqual(await exists(marker), false, 'a non-completed claim is removed');
 
+        // A live claim (its render still running) stays for that render to
+        // upgrade or release (PC3).
+        const target3 = await writeProjection(dir);
+        await writeFile(marker, `${JSON.stringify({ workflow_id: SAMPLE.workflow_id, status: 'claimed', at: new Date().toISOString(), claim: 'live' })}\n`, 'utf8');
+        await consumePendingHandoff(target3);
+        strictEqual(await exists(target3), false, 'file consumed');
+        strictEqual(JSON.parse(await readFile(marker, 'utf8')).claim, 'live', 'a live claim stays');
+
         await doesNotReject(() => consumePendingHandoff(target), 'absent file → no throw');
         await doesNotReject(() => consumePendingHandoff(undefined), 'undefined → no throw');
       } finally {
@@ -226,6 +235,36 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
         strictEqual(await exists(target), false, 'one-shot file consumed');
       });
     });
+
+    // legacy_homes (ADR-0025): the primary sidecar writes the one-shot file
+    // under the terminalized workflow's home, so a pre-migration workflow's
+    // projection lives under the legacy root. With the capability on the
+    // backstop reads and consumes it there too (Codex Plan-verify finding);
+    // with it off nothing reads the legacy home (ADR-0066 Decision 3).
+    if (P.capabilities.legacy_homes) {
+      it('re-injects + consumes a LEGACY-home pending handoff (home-aware backstop, legacy_homes on)', async () => {
+        await withTmpRepo(async (dir) => {
+          const target = await writeProjection(dir, SAMPLE, LEGACY_PROJECTION_REL);
+          const r = await runHook({ cwd: dir }, SESSION_START);
+          strictEqual(r.code, 0);
+          ok(r.stdout.includes(`[${PENDING_MARK}]`), `legacy re-injection missing: ${r.stdout}`);
+          strictEqual(await exists(target), false, 'legacy one-shot file consumed');
+          const pending = await readPendingHandoff(dir);
+          strictEqual(pending, null, 'nothing left in either slot');
+        });
+      });
+    } else {
+      it('never reads a legacy-home pending handoff (legacy_homes off)', async () => {
+        await withTmpRepo(async (dir) => {
+          const target = await writeProjection(dir, SAMPLE, LEGACY_PROJECTION_REL);
+          strictEqual(await readPendingHandoff(dir), null, 'the legacy slot is no candidate');
+          const r = await runHook({ cwd: dir }, SESSION_START);
+          strictEqual(r.code, 0);
+          ok(!r.stdout.includes(`[${PENDING_MARK}]`), `no re-injection from the legacy home: ${r.stdout}`);
+          ok(await exists(target), 'the legacy file is left as it was');
+        });
+      });
+    }
 
     it('a rendered footer suppresses the nudge; the hook consumes the one-shot but keeps the tombstone (ADR-0039 §4)', async () => {
       await withTmpRepo(async (dir) => {

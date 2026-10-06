@@ -107,7 +107,7 @@ const LOCATORS = [
     capability: STATE,
     sources: CACHE_SOURCES,
     locate: (m, a) => m.locateOrchestratorPluginRoot(a),
-    // writebackParent reports the fallback; tests/engineer/test-parent-writeback.mjs covers it.
+    // writebackParent reports the fallback; tests/persona-pipeline/test-parent-writeback.mjs covers it.
     resolve: null,
   },
   {

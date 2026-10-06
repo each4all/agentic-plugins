@@ -5,10 +5,10 @@
 // acceptance), extended per persona as the ADR-0043 onboardings landed (S3
 // added founder; S4 added designer, completing the four-persona matrix per
 // ADR-0043 §5 shared-surface serialization). The per-plugin suites
-// (tests/engineer/test-footer-activation.mjs,
-// tests/orchestrator/test-footer-activation.mjs,
-// tests/persona-pipeline/test-footer-activation.mjs, parametrized over founder
-// and designer) prove each path's mechanics in
+// (tests/orchestrator/test-footer-activation.mjs and
+// tests/persona-pipeline/test-footer-activation.mjs, parametrized over the
+// three personas since engineer converged, ADR-0066 PC3) prove each path's
+// mechanics in
 // depth; THIS suite proves the same load-bearing acceptance criteria hold
 // UNIFORMLY across every persona terminal path × host, driven through each
 // plugin's REAL completion CLI (no direct imports of the persona internals — a
@@ -34,7 +34,7 @@
 //        AGENTIC_RUNTIME_ROOT env override is an explicit operator trust bypass
 //        that does NOT version-gate — discover-runtime.mjs:159-168 — so the
 //        version floor is a cache-ladder concern, covered precisely at the
-//        resolver level by tests/{engineer,orchestrator}/test-discover-runtime.mjs
+//        resolver level by tests/{persona-pipeline,orchestrator}/test-discover-runtime.mjs
 //        "too-old cache → null (no stale-cache fallback)".)
 //   AC4  ADR-0010 §5 boundary: no persona plugin (engineer/orchestrator/
 //        founder/designer) STATICALLY, DYNAMICALLY, or via re-export imports the L1 runtime

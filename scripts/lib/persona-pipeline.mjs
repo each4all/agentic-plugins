@@ -101,7 +101,7 @@ export function validateManifest(manifest) {
   for (const [i, unit] of manifest.units.entries()) {
     const w = `${where}.units[${i}]`;
     if (!isPlainObject(unit)) fail(w, 'is not an object');
-    onlyKeys(unit, ['id', 'source', 'dest', 'personas', 'requires', 'off_only'], w);
+    onlyKeys(unit, ['id', 'source', 'dest', 'personas', 'requires', 'off_only', 'on_only'], w);
     if (typeof unit.id !== 'string' || !ID_RE.test(unit.id)) fail(w, 'id must match [a-z][a-z0-9._-]*');
     if (unitIds.has(unit.id)) fail(w, `duplicate unit id ${JSON.stringify(unit.id)}`);
     unitIds.add(unit.id);
@@ -114,6 +114,11 @@ export function validateManifest(manifest) {
     stringList(unit.off_only ?? [], `${w}.off_only`);
     for (const cap of unit.off_only ?? []) {
       if (!CAPABILITIES.includes(cap)) fail(`${w}.off_only`, `unknown capability ${JSON.stringify(cap)}`);
+    }
+    stringList(unit.on_only ?? [], `${w}.on_only`);
+    for (const cap of unit.on_only ?? []) {
+      if (!CAPABILITIES.includes(cap)) fail(`${w}.on_only`, `unknown capability ${JSON.stringify(cap)}`);
+      if ((unit.off_only ?? []).includes(cap)) fail(`${w}.on_only`, `${cap} is also in off_only`);
     }
   }
 
@@ -488,8 +493,22 @@ function lookupField(declaration, field) {
  *     `artifact` names that same file (PC2a4).
  *   - `output_root_env`: the variable that overrides where that brief is
  *     saved, `<NAME>_OUTPUT_ROOT`, from the name (PC2a4).
- *   Both are absent without `verbs.investigate.default_profile` (engineer's
- *   1.0 declaration has none, and its brief keeps its own legacy names).
+ *   Both are absent without `verbs.investigate.default_profile`. A declared
+ *   `verbs.investigate.brief_file` / `output_root_env` wins over the
+ *   derivation (PC3 U7: engineer's default profile is analysis, while its
+ *   brief comes from the cited-brief profile as research_brief.md under
+ *   RESEARCH_OUTPUT_ROOT).
+ *   - `investigate_launched`, `investigate_synthesis`: what the investigate
+ *     note's launched and synthesis headings name. With one declared profile,
+ *     the ensemble type and the profile (founder: research-scan,
+ *     business-brief); with several, whose point type differs by profile,
+ *     `investigate (profile=<profile>)` for both, as critique's headings
+ *     (PC3 U7, engineer). Absent without `verbs.investigate.profiles`.
+ *   - `ensemble_skip_cause`, `ensemble_skip_label`: why a verb's ensemble
+ *     never launched, as the finalize note states it. With a peer policy
+ *     (`peer`) the privacy gate is what keeps a verb local-only; without one
+ *     (engineer, which has no privacy gate) the verb simply ran local-only
+ *     (PC3 U7).
  *   - `profile_env`: the variable the decide resolver reads the L4 profile
  *     from, `AGENTIC_<NAME>_PROFILE`, from the name as `lib/persona.mjs`
  *     `profileEnvVar` derives it; the resolver reads it only with the
@@ -501,15 +520,27 @@ export function derivedFields(declaration) {
   if (typeof name !== 'string' || !/^[a-z][a-z0-9-]*$/.test(name)) return {};
   const upper = name.toUpperCase().split('-').join('_');
   const derived = { root_env: `AGENTIC_${upper}_ROOT`, profile_env: `AGENTIC_${upper}_PROFILE` };
+  const gated = declaration?.peer !== undefined;
+  derived.ensemble_skip_cause = gated ? 'the privacy gate kept the verb local-only, so no dispatch ran' : 'the verb ran local-only, so no dispatch ran';
+  derived.ensemble_skip_label = gated ? 'privacy gate' : 'local-only';
   const spec = declaration?.peer?.privacy_spec;
   if (typeof spec === 'string' && spec.length > 0) {
     derived.skill_privacy_spec = `../${posix.relative('core/skills', spec)}`;
     derived.shared_privacy_spec = posix.relative('core/skills/_shared/references', spec);
   }
-  const profile = declaration?.verbs?.investigate?.default_profile;
+  const investigate = declaration?.verbs?.investigate;
+  const profile = investigate?.default_profile;
   if (typeof profile === 'string' && profile.length > 0) {
-    derived.brief_file = `${profile.split('-').join('_')}.md`;
-    derived.output_root_env = `${upper}_OUTPUT_ROOT`;
+    derived.brief_file = typeof investigate.brief_file === 'string' ? investigate.brief_file : `${profile.split('-').join('_')}.md`;
+    derived.output_root_env = typeof investigate.output_root_env === 'string' ? investigate.output_root_env : `${upper}_OUTPUT_ROOT`;
+  }
+  const profiles = investigate?.profiles;
+  if (Array.isArray(profiles) && profiles.length === 1) {
+    if (typeof investigate.ensemble_type === 'string') derived.investigate_launched = investigate.ensemble_type;
+    derived.investigate_synthesis = profiles[0];
+  } else if (Array.isArray(profiles) && profiles.length > 1) {
+    derived.investigate_launched = 'investigate (profile=<profile>)';
+    derived.investigate_synthesis = 'investigate (profile=<profile>)';
   }
   return derived;
 }

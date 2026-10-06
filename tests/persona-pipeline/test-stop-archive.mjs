@@ -21,6 +21,13 @@
 // (plugins/<persona>/scripts/...), so every case exercises the file that
 // persona ships.
 //
+// A case about one capability (ADR-0066 Decision 3) registers only for the
+// personas whose declaration sets it that way: the parent writeback, the
+// detach-archive CLI and the parent-linked sweep cases with dispatch_target
+// on, their absence with it off; the legacy-home sweep with legacy_homes on,
+// its absence with it off. The dispatch_target-on cases drive the
+// repository's orchestrator plugin (plugins/orchestrator) as the parent.
+//
 // Run via `node --test tests/persona-pipeline/test-stop-archive.mjs`.
 
 import { describe, it } from 'node:test';
@@ -32,7 +39,7 @@ import { join, basename } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-import { personasFor, personaInfo } from './_personas.mjs';
+import { REPO_ROOT, personasFor, personaInfo } from './_personas.mjs';
 
 const PERSONAS = personasFor('scripts/stop-archive.mjs');
 
@@ -99,8 +106,88 @@ async function listMarkdown(dir) {
   }
 }
 
+// The parent of a dispatch_target workflow: the repository's orchestrator
+// plugin, reached through the AGENTIC_ORCHESTRATOR_ROOT override that
+// parent-writeback.mjs honours before any other discovery.
+const ORCHESTRATOR_ROOT = join(REPO_ROOT, 'plugins', 'orchestrator');
+const ORCHESTRATOR_STATE = join(ORCHESTRATOR_ROOT, 'scripts', 'state.mjs');
+
+async function withOrchestratorEnv(value, fn) {
+  const saved = process.env.AGENTIC_ORCHESTRATOR_ROOT;
+  if (value === null || value === undefined) {
+    delete process.env.AGENTIC_ORCHESTRATOR_ROOT;
+  } else {
+    process.env.AGENTIC_ORCHESTRATOR_ROOT = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) {
+      delete process.env.AGENTIC_ORCHESTRATOR_ROOT;
+    } else {
+      process.env.AGENTIC_ORCHESTRATOR_ROOT = saved;
+    }
+  }
+}
+
+async function bootstrapMacroPlan(repoRoot, subtaskId = 'T1') {
+  // Create the orchestrator macro workflow + a single in_progress subtask.
+  // Uses the real orchestrator state.mjs CLI so the on-disk shape matches
+  // production semantics. The macro lands in the orchestrator's own workflow
+  // home; `create` prints its path.
+  const createOut = execFileSync(
+    process.execPath,
+    [
+      ORCHESTRATOR_STATE,
+      'create',
+      '--repo-root', repoRoot,
+      '--verb', 'plan',
+      '--host', 'claude',
+      '--git-baseline-branch', 'orch-macro',
+      '--git-baseline-head', 'a'.repeat(40),
+      '--status-digest', MIN_DIGEST,
+      '--original-request', 'pr-c stop-archive integration macro',
+    ],
+    { encoding: 'utf8' },
+  ).trim();
+  const macroPath = createOut;
+  const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
+  const subtasksFile = join(repoRoot, `subtasks-${subtaskId}.json`);
+  await writeFile(
+    subtasksFile,
+    JSON.stringify([{
+      id: subtaskId,
+      verb: 'compose',
+      branch: `feat/${subtaskId.toLowerCase()}`,
+      blocked_by: [],
+      status: 'in_progress',
+    }]),
+  );
+  execFileSync(
+    process.execPath,
+    [
+      ORCHESTRATOR_STATE,
+      'plan-set',
+      '--workflow-path', macroPath,
+      '--host', 'claude',
+      '--subtasks-json-file', subtasksFile,
+    ],
+    { encoding: 'utf8' },
+  );
+  return { macroPath, macroId };
+}
+
 for (const persona of PERSONAS) {
   const P = personaInfo(persona);
+  // A capability's cases register only for a persona that declares it the way
+  // the case needs (ADR-0066 Decision 3): the Off helpers for a persona that
+  // declares it off, the On helpers for one that declares it on.
+  const describeDispatchOff = P.capabilities.dispatch_target ? () => {} : describe;
+  const itDispatchOff = P.capabilities.dispatch_target ? () => {} : it;
+  const itLegacyOff = P.capabilities.legacy_homes ? () => {} : it;
+  const describeDispatchOn = P.capabilities.dispatch_target ? describe : () => {};
+  const itDispatchOn = P.capabilities.dispatch_target ? it : () => {};
+  const itLegacyOn = P.capabilities.legacy_homes ? it : () => {};
   const STATE_PATH = P.path('scripts/state.mjs');
   const CLAUDE_STOP_PATH = P.path('adapters/claude/hooks/stop.mjs');
   const CODEX_STOP_PATH = P.path('adapters/codex/hooks/stop.mjs');
@@ -630,15 +717,15 @@ for (const persona of PERSONAS) {
   });
 
   // ==========================================================================
-  // dispatch_target off — ADR-0066 Decision 3. The engineer sibling (on) fires
-  // the ADR-0019 §4 parent writeback at this point in the stop lifecycle; a
-  // persona with dispatch_target off (every persona stop-archive.mjs is
-  // generated into: the manifest unit is off_only on it) must archive cleanly
-  // with ZERO cross-plugin side effects, even when an engineer-shaped file
-  // carries parent keys (forward-compat unknowns).
+  // The parent step — ADR-0066 Decision 3. A persona with dispatch_target on
+  // notes the archived workflow's terminal commit on its orchestrator parent
+  // at this point in the stop lifecycle (ADR-0019 §4, as changed by ADR-0062;
+  // the cases after these). A persona with dispatch_target off must archive
+  // cleanly with ZERO cross-plugin side effects, even when an engineer-shaped
+  // file carries parent keys (forward-compat unknowns).
   // ==========================================================================
 
-  describe(`${persona}: stop-archive — no parent writeback ever (dispatch_target off, ADR-0066 Decision 3)`, () => {
+  describeDispatchOff(`${persona}: stop-archive — no parent writeback ever (dispatch_target off, ADR-0066 Decision 3)`, () => {
     it('archives normally; no orchestrator CLI is spawned (no parent linkage exists)', async () => {
       await withRepo(async ({ repoRoot, baselineHead }) => {
         const { filePath } = await createWorkflow({
@@ -709,6 +796,282 @@ for (const persona of PERSONAS) {
     });
   });
 
+  // dispatch_target on — ADR-0019 PR-C, as changed by ADR-0062. These cases
+  // drive runStopArchive directly (rather than spawning the host stop.mjs
+  // entrypoint) so the orchestrator root is injected via env and the parent
+  // file is inspected in-process. The note heading (`### engineer terminal:`)
+  // and the subtask's `engineer_workflow_id` are the orchestrator's own format.
+
+  describeDispatchOn(`${persona}: ADR-0019 PR-C / ADR-0062 — runStopArchive parent writeback (parent in workflows/, dispatch_target on)`, () => {
+    async function terminalChild(repoRoot, baselineHead, macroId, extra = () => {}) {
+      const { filePath, workflowId } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'pr-c child workflow',
+        gitBaseline: { branch: 'main', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+        parentWorkflow: macroId,
+        originatingSubtask: 'T1',
+      });
+      await setFrontmatter(filePath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+        extra(fm);
+      });
+      return { childPath: filePath, childId: workflowId };
+    }
+
+    const stop = (childPath, repoRoot, headSha, stderrBuf) => withOrchestratorEnv(ORCHESTRATOR_ROOT, () =>
+      runStopArchive({
+        workflowPath: childPath,
+        host: 'claude',
+        repoRoot,
+        headSha,
+        headSubject: `feat(plugins/${persona}): pr-c child terminal commit`,
+        stderr: { write: (s) => stderrBuf.push(s) },
+      }));
+
+    // ADR-0062 §Decision 2: the child's terminal commit is a branch commit
+    // that a squash or rebase merge never lands, so the Stop hook notes it and
+    // leaves the subtask open for /orchestrator:done.
+    it('notes the terminal commit on the parent without completing the subtask', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        const { childPath, childId } = await terminalChild(repoRoot, baselineHead, macroId);
+        const newHead = makeAdvanceCommit(repoRoot);
+        const stderrBuf = [];
+        const result = await stop(childPath, repoRoot, newHead, stderrBuf);
+
+        strictEqual(result.archived, true);
+        strictEqual((await listWorkflows(repoRoot)).length, 0);
+        strictEqual((await listArchive(repoRoot)).length, 1);
+
+        const macroText = await readFile(macroPath, 'utf8');
+        match(macroText, /status: "in_progress"/);
+        ok(!/^\s*commit: /m.test(macroText), 'no commit is recorded on the subtask');
+        ok(!/terminal_marker: true/.test(macroText), 'the macro is not promoted to terminal');
+        match(macroText, new RegExp(`engineer_workflow_id: "${childId}"`));
+        ok(macroText.includes(`### engineer terminal: "T1" @ ${childId} ${newHead}`), macroText);
+      });
+    });
+
+    it('with the P10 marker set and the note already written, writes nothing more', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        const { childPath, childId } = await terminalChild(repoRoot, baselineHead, macroId,
+          (fm) => { fm.parent_writeback_at = '2026-09-27T10:00:00Z'; });
+        const newHead = makeAdvanceCommit(repoRoot);
+        // What P10 wrote before this Stop.
+        execFileSync(process.execPath, [
+          ORCHESTRATOR_STATE, 'subtask-engineer-terminal', `--workflow-path=${macroPath}`,
+          '--host=claude', '--subtask-id=T1', `--engineer-workflow-id=${childId}`, `--branch-commit=${newHead}`,
+        ], { encoding: 'utf8' });
+        const before = await readFile(macroPath, 'utf8');
+        const result = await stop(childPath, repoRoot, newHead, []);
+        strictEqual(result.archived, true);
+        strictEqual(await readFile(macroPath, 'utf8'), before);
+      });
+    });
+
+    // ADR-0066 PC3 — the canonical stop-archive re-checks the gates on the bytes
+    // archiveWorkflow reads under the file lock. An owner gate written after the
+    // first read refuses the archive, and a refused archive notes nothing on the
+    // parent: the note follows a successful archive only.
+    it('an owner gate written between the read and the lock: no archive, and no note on the parent', async () => {
+      const { setAwaitingOwner, archiveWorkflow } = MODULES.get(persona).state;
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        const { childPath } = await terminalChild(repoRoot, baselineHead, macroId);
+        const newHead = makeAdvanceCommit(repoRoot);
+        const before = await readFile(macroPath, 'utf8');
+        const result = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () => runStopArchive({
+          workflowPath: childPath,
+          host: 'claude',
+          repoRoot,
+          headSha: newHead,
+          headSubject: `feat(plugins/${persona}): pr-c child terminal commit`,
+          stderr: { write: () => true },
+          archive: async (args) => {
+            await setAwaitingOwner({ workflowPath: childPath, host: 'claude', gate: 'scope-routing', anchor: 'routing-recommendation' });
+            return archiveWorkflow(args);
+          },
+        }));
+        strictEqual(result.archived, false);
+        ok(result.gateFailures.includes('awaiting_owner'), JSON.stringify(result.gateFailures));
+        strictEqual((await listWorkflows(repoRoot)).length, 1);
+        strictEqual(await readFile(macroPath, 'utf8'), before, 'the parent is untouched');
+      });
+    });
+
+    it('with the P10 marker set but no note (a crash between the two), still writes the note', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        const { childPath, childId } = await terminalChild(repoRoot, baselineHead, macroId,
+          (fm) => { fm.parent_writeback_at = '2026-09-27T10:00:00Z'; });
+        const newHead = makeAdvanceCommit(repoRoot);
+        const result = await stop(childPath, repoRoot, newHead, []);
+        strictEqual(result.archived, true);
+        ok((await readFile(macroPath, 'utf8')).includes(`### engineer terminal: "T1" @ ${childId} ${newHead}`));
+      });
+    });
+  });
+
+  describeDispatchOn(`${persona}: ADR-0019 PR-C — parent_workflow unset → no writeback attempted (dispatch_target on)`, () => {
+    it('archives normally without spawning the orchestrator CLI', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { filePath: childPath } = await createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          originalRequest: 'no parent linkage',
+          gitBaseline: {
+            branch: 'main',
+            head: baselineHead,
+            status_digest: MIN_DIGEST,
+          },
+          host: 'claude',
+        });
+        await setFrontmatter(childPath, (fm) => {
+          fm.current_phase = 'summary-complete';
+          fm.terminal_marker = true;
+        });
+        const newHead = makeAdvanceCommit(repoRoot);
+
+        const stderrBuf = [];
+        const result = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () =>
+          runStopArchive({
+            workflowPath: childPath,
+            host: 'claude',
+            repoRoot,
+            headSha: newHead,
+            headSubject: `feat(plugins/${persona}): unparented terminal commit`,
+            stderr: { write: (s) => stderrBuf.push(s) },
+          }),
+        );
+
+        strictEqual(result.archived, true);
+        // No writeback diagnostics emitted (writeback path skipped): neither
+        // parent-writeback.mjs's own nor stop-archive's report of a writeback
+        // that threw, which an attempt without a parent id ends in.
+        const stderrStr = stderrBuf.join('');
+        ok(!/writeback|orchestrator/i.test(stderrStr),
+          `did not expect parent-writeback diagnostics, got: ${stderrStr}`);
+      });
+    });
+  });
+
+  describeDispatchOn(`${persona}: ADR-0019 PR-C — parent in archive/ → archive proceeds, writeback skipped with warning (dispatch_target on)`, () => {
+    it('emits the archive-fallback warning and leaves the archived parent untouched', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+
+        // Move the macro into the orchestrator's archive/ to simulate
+        // /orchestrator:finalize having beat us to it.
+        const orchArchiveDir = join(repoRoot, '.claude', 'agentic-orchestrator', 'archive');
+        await mkdir(orchArchiveDir, { recursive: true });
+        const archivedMacro = join(orchArchiveDir, `${macroId}.md`);
+        const macroText = await readFile(macroPath, 'utf8');
+        await writeFile(archivedMacro, macroText);
+        await rm(macroPath);
+
+        const { filePath: childPath } = await createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          originalRequest: 'parent already archived',
+          gitBaseline: {
+            branch: 'main',
+            head: baselineHead,
+            status_digest: MIN_DIGEST,
+          },
+          host: 'claude',
+          parentWorkflow: macroId,
+          originatingSubtask: 'T1',
+        });
+        await setFrontmatter(childPath, (fm) => {
+          fm.current_phase = 'summary-complete';
+          fm.terminal_marker = true;
+        });
+        const newHead = makeAdvanceCommit(repoRoot);
+
+        const stderrBuf = [];
+        const result = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () =>
+          runStopArchive({
+            workflowPath: childPath,
+            host: 'claude',
+            repoRoot,
+            headSha: newHead,
+            headSubject: `feat(plugins/${persona}): post-finalize child`,
+            stderr: { write: (s) => stderrBuf.push(s) },
+          }),
+        );
+
+        strictEqual(result.archived, true,
+          `the ${persona} archive should still succeed even when parent is frozen`);
+        const stderrStr = stderrBuf.join('');
+        // The archive fallback itself, not the dangling-linkage warning (which
+        // also names parent_workflow and the archive homes).
+        ok(stderrStr.includes(`${persona}/parent-writeback: parent_workflow=${macroId} is in archive/`), stderrStr);
+        ok(!/dangling/i.test(stderrStr), stderrStr);
+
+        // Archived macro must remain untouched (frozen state).
+        const archivedText = await readFile(archivedMacro, 'utf8');
+        ok(!archivedText.includes('status: "completed"'),
+          'archived macro must not be mutated');
+      });
+    });
+  });
+
+  describeDispatchOn(`${persona}: ADR-0019 PR-C — orchestrator root unresolved → archive proceeds, writeback skipped (dispatch_target on)`, () => {
+    it(`emits the orchestrator-not-found warning without rolling back the ${persona} archive`, async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+
+        const { filePath: childPath } = await createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          originalRequest: 'orchestrator not found',
+          gitBaseline: {
+            branch: 'main',
+            head: baselineHead,
+            status_digest: MIN_DIGEST,
+          },
+          host: 'claude',
+          parentWorkflow: macroId,
+          originatingSubtask: 'T1',
+        });
+        await setFrontmatter(childPath, (fm) => {
+          fm.current_phase = 'summary-complete';
+          fm.terminal_marker = true;
+        });
+        const newHead = makeAdvanceCommit(repoRoot);
+
+        const stderrBuf = [];
+        // Force discovery failure via AGENTIC_ORCHESTRATOR_ROOT pointing
+        // at a garbage absolute path — the env override branch short-
+        // circuits all other discovery (Claude cache / Codex cache /
+        // sibling fallback are not attempted when env override is set),
+        // so the discovery returns null regardless of where the persona
+        // plugin itself is.
+        const result = await withOrchestratorEnv('/nonexistent/orchestrator/install/path', () =>
+          runStopArchive({
+            workflowPath: childPath,
+            host: 'claude',
+            repoRoot,
+            headSha: newHead,
+            headSubject: `feat(plugins/${persona}): no orch root`,
+            stderr: { write: (s) => stderrBuf.push(s) },
+          }),
+        );
+        strictEqual(result.archived, true);
+
+        const stderrStr = stderrBuf.join('');
+        match(stderrStr, /orchestrator.*not.*found/i);
+        // the persona's workflow is still archived
+        strictEqual((await listWorkflows(repoRoot)).length, 0);
+        strictEqual((await listArchive(repoRoot)).length, 1);
+      });
+    });
+  });
+
   describe(`${persona}: Stop hook — idempotency: re-running on already-archived workflow no-ops`, () => {
     it('second invocation finds no active workflow → exits 0 without error', async () => {
       await withRepo(async ({ repoRoot, baselineHead }) => {
@@ -749,20 +1112,27 @@ for (const persona of PERSONAS) {
   });
 
   // ---------------------------------------------------------------------------
-  // The persona's state.mjs CLI surface around archiving (dispatch_target off,
+  // The persona's state.mjs CLI surface around archiving (ADR-0019 PR-E,
   // ADR-0066 Decision 3):
   //
-  //   stop-archive     — RETAINED as a general remote-archive surface:
-  //                      wraps runStopArchive with explicit --head-sha /
-  //                      --head-subject / --status-digest so the A3
-  //                      head_moved gate is evaluated against an
-  //                      explicitly-supplied SHA. Emits a JSON envelope
-  //                      on stdout. No cross-plugin caller exists.
-  //   detach-archive   — INTENTIONALLY ABSENT: the engineer sibling ships
-  //                      it solely for orchestrator /finalize·/abort
-  //                      mid-flight detach, and orchestrator dispatch to a
-  //                      dispatch_target-off persona is out of scope. The
-  //                      suite below asserts the subcommand stays unknown.
+  //   stop-archive     — every persona: wraps runStopArchive with explicit
+  //                      --head-sha / --head-subject / --status-digest so
+  //                      the A3 head_moved gate is evaluated against an
+  //                      explicitly-supplied SHA (with dispatch_target on,
+  //                      the terminal child's own branch HEAD, which
+  //                      orchestrator /finalize·/abort probe; off, no
+  //                      cross-plugin caller exists). Emits a JSON envelope
+  //                      on stdout.
+  //   detach-archive   — dispatch_target on only: the orchestrator
+  //                      /finalize·/abort mid-flight detach writes
+  //                      parent_detached:true + terminal_marker:false, then
+  //                      archives, with no parent writeback (the
+  //                      orchestrator already marked the subtask in its
+  //                      step 1). Off, orchestrator dispatch to the persona
+  //                      is out of scope and the subcommand stays unknown.
+  //
+  // orchestrator invokes both through `execFile(node, [stateMjsPath, ...])`;
+  // the JSON envelope on stdout is the contract it parses.
 
   function runStateCli(args, { cwd } = {}) {
     const cp = spawnSync(
@@ -773,7 +1143,7 @@ for (const persona of PERSONAS) {
     return { code: cp.status, stdout: cp.stdout, stderr: cp.stderr };
   }
 
-  describe(`${persona}: CLI — no detach-archive subcommand (dispatch_target off, ADR-0066 Decision 3)`, () => {
+  describeDispatchOff(`${persona}: CLI — no detach-archive subcommand (dispatch_target off, ADR-0066 Decision 3)`, () => {
     it('rejects detach-archive as an unknown subcommand', async () => {
       await withRepo(async ({ repoRoot }) => {
         const result = spawnSync(process.execPath, [
@@ -786,6 +1156,135 @@ for (const persona of PERSONAS) {
         match(result.stderr, /unknown subcommand: detach-archive/);
         ok(!/detached/.test(result.stdout),
           'no detach envelope may be emitted — the subcommand must not exist');
+      });
+    });
+  });
+
+  describeDispatchOn(`${persona}: ADR-0019 PR-E — state.mjs detach-archive CLI (mid-flight child path, dispatch_target on)`, () => {
+    it('writes parent_detached:true + terminal_marker:false then archives + emits JSON envelope', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { filePath } = await createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          originalRequest: 'detach-archive happy path',
+          gitBaseline: {
+            branch: 'feat/child-mid-flight',
+            head: baselineHead,
+            status_digest: MIN_DIGEST,
+          },
+          host: 'claude',
+        });
+        // No terminal_marker, no terminal phase — this is mid-flight.
+
+        const { code, stdout, stderr } = runStateCli(
+          [
+            'detach-archive',
+            '--workflow-path', filePath,
+            '--host', 'claude',
+            '--repo-root', repoRoot,
+          ],
+          { cwd: repoRoot },
+        );
+        strictEqual(code, 0, `stderr: ${stderr}`);
+
+        // JSON envelope on stdout: {detached:true, to:<archive-path>}
+        let envelope;
+        try {
+          envelope = JSON.parse(stdout.trim());
+        } catch (err) {
+          throw new Error(`detach-archive stdout is not JSON: ${stdout.trim()} (${err.message})`);
+        }
+        strictEqual(envelope.detached, true);
+        ok(
+          typeof envelope.to === 'string' && envelope.to.includes(archiveDirRel()),
+          `expected envelope.to under ${archiveDirRel()}, got ${envelope.to}`,
+        );
+
+        // File is now in archive/ with mutated frontmatter.
+        strictEqual((await listWorkflows(repoRoot)).length, 0, 'workflow file should be archived');
+        const archived = await listArchive(repoRoot);
+        strictEqual(archived.length, 1, 'archive should contain one entry');
+        const archivedPath = join(repoRoot, archiveDirRel(), archived[0]);
+        const archivedText = await readFile(archivedPath, 'utf8');
+        const { frontmatter } = parseWorkflowFile(archivedText);
+        strictEqual(
+          frontmatter.parent_detached,
+          true,
+          'parent_detached must be true after detach-archive',
+        );
+        strictEqual(
+          frontmatter.terminal_marker,
+          false,
+          'terminal_marker must be explicitly false (not absent)',
+        );
+      });
+    });
+
+    it('does NOT fire parent writeback even when parent_workflow is set', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        // Bootstrap a macro parent + mid-flight child with parent linkage.
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        const { filePath: childPath } = await createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          originalRequest: 'detach-archive: parent writeback must NOT fire',
+          gitBaseline: {
+            branch: 'feat/t1',
+            head: baselineHead,
+            status_digest: MIN_DIGEST,
+          },
+          host: 'claude',
+          parentWorkflow: macroId,
+          originatingSubtask: 'T1',
+        });
+        // Pre-snapshot the macro text — the persona's parseWorkflowFile
+        // rejects orchestrator's schema (different frontmatter key set), so we
+        // compare raw bytes the same way the parent-writeback cases above do.
+        const beforeText = await readFile(macroPath, 'utf8');
+
+        await withOrchestratorEnv(ORCHESTRATOR_ROOT, async () => {
+          const { code } = runStateCli(
+            [
+              'detach-archive',
+              '--workflow-path', childPath,
+              '--host', 'claude',
+              '--repo-root', repoRoot,
+            ],
+            { cwd: repoRoot },
+          );
+          strictEqual(code, 0);
+        });
+
+        // Macro must be byte-identical — detach-archive does NOT fire any
+        // parent writeback (no orchestrator CLI spawn). The only writes were
+        // to the child file + its archive destination, both outside the
+        // orchestrator workflow file.
+        const afterText = await readFile(macroPath, 'utf8');
+        strictEqual(
+          afterText,
+          beforeText,
+          'detach-archive must NOT mutate the orchestrator macro file (no parent writeback)',
+        );
+      });
+    });
+
+    it('returns non-zero exit when workflow-path does not exist', async () => {
+      await withRepo(async ({ repoRoot }) => {
+        const ghost = join(repoRoot, P.workflowDirRel, 'no-such.md');
+        const { code, stderr } = runStateCli(
+          [
+            'detach-archive',
+            '--workflow-path', ghost,
+            '--host', 'claude',
+            '--repo-root', repoRoot,
+          ],
+          { cwd: repoRoot },
+        );
+        ok(code !== 0, 'detach-archive on missing file must exit non-zero');
+        ok(
+          stderr.length > 0,
+          'stderr must surface a diagnostic when workflow file is absent',
+        );
       });
     });
   });
@@ -957,7 +1456,7 @@ for (const persona of PERSONAS) {
             '--host', 'claude',
             '--repo-root', repoRoot,
             '--head-sha', crossBranchHead,
-            '--head-subject', 'feat(plugins/engineer): cross-branch',
+            '--head-subject', `feat(plugins/${persona}): cross-branch`,
             '--status-digest', MIN_DIGEST,
           ],
           { cwd: repoRoot },
@@ -1045,6 +1544,36 @@ for (const persona of PERSONAS) {
         });
       });
     }
+
+    // dispatch_target on: the parent note the sweep writes carries the kept
+    // branch's own tip, never the checked-out HEAD.
+    itDispatchOn('archives a terminal workflow on a kept branch that is not checked out, noting that branch tip (not HEAD) on the parent', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+        execFileSync('git', ['switch', '-q', '-c', 'feat/t1'], { cwd: repoRoot });
+        const tip = makeAdvanceCommit(repoRoot, `feat(plugins/${persona}): t1 work`);
+        execFileSync('git', ['switch', '-q', 'main'], { cwd: repoRoot });
+        const head = makeAdvanceCommit(repoRoot, `feat(plugins/${persona}): unrelated main work`);
+        ok(head !== tip);
+        const { filePath, workflowId } = await createWorkflow({
+          repoRoot, verb: 'compose', originalRequest: 'kept off-branch child',
+          gitBaseline: { branch: 'feat/t1', head: baselineHead, status_digest: MIN_DIGEST },
+          host: 'claude', parentWorkflow: macroId, originatingSubtask: 'T1',
+        });
+        await setFrontmatter(filePath, (fm) => {
+          fm.current_phase = 'commit-complete';
+          fm.terminal_marker = true;
+        });
+        const results = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () =>
+          runStopArchiveOrphanSweep({ repoRoot, host: 'claude', stderr: { write() {} } }));
+        strictEqual(results.filter((r) => r.archived).length, 1);
+        strictEqual((await listWorkflows(repoRoot)).length, 0);
+        strictEqual((await listArchive(repoRoot)).length, 1);
+        const macroText = await readFile(macroPath, 'utf8');
+        ok(macroText.includes(`### engineer terminal: "T1" @ ${workflowId} ${tip}`), macroText);
+        ok(!macroText.includes(head), 'the checked-out HEAD is never written to the parent');
+      });
+    });
 
     it('leaves a terminal workflow on a kept branch whose tip has not moved, and writes nothing to it', async () => {
       await withRepo(async ({ repoRoot, baselineHead }) => {
@@ -1192,6 +1721,50 @@ for (const persona of PERSONAS) {
       });
     });
 
+    // The C3 sequence (dispatch_target on): commit and set-terminal on the
+    // subtask branch, merge, /orchestrator:done, then /orchestrator:next
+    // switches branches, all before the turn's Stop. That Stop runs on the
+    // successor branch. The orchestrator's A4 child scan reads the engineer
+    // homes, engineer being the persona with dispatch_target on.
+    for (const [host, hostScript] of [['claude', CLAUDE_STOP_PATH], ['codex', CODEX_STOP_PATH]]) {
+      itDispatchOn(`the ${host} Stop hook on the successor branch archives a completed subtask's child left on its kept branch`, async () => {
+        await withRepo(async ({ repoRoot, baselineHead }) => {
+          const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+          execFileSync('git', ['switch', '-q', '-c', 'feat/t1'], { cwd: repoRoot });
+          makeAdvanceCommit(repoRoot, `feat(plugins/${persona}): t1 work`);
+          const { filePath, workflowId } = await createWorkflow({
+            repoRoot, verb: 'compose', originalRequest: 'c3 child',
+            gitBaseline: { branch: 'feat/t1', head: baselineHead, status_digest: MIN_DIGEST },
+            host, parentWorkflow: macroId, originatingSubtask: 'T1',
+          });
+          await setFrontmatter(filePath, (fm) => {
+            fm.current_phase = 'commit-complete';
+            fm.terminal_marker = true;
+          });
+          execFileSync('git', ['switch', '-q', 'main'], { cwd: repoRoot });
+          const landed = makeAdvanceCommit(repoRoot, `feat(plugins/${persona}): t1 work (#1)`);
+          execFileSync(process.execPath, [
+            ORCHESTRATOR_STATE, 'subtask-update', `--workflow-path=${macroPath}`, `--host=${host}`,
+            '--subtask-id=T1', '--status=completed', `--engineer-workflow-id=${workflowId}`,
+            `--commit=${landed}`, '--closed-at=2026-09-28T00:00:00Z', '--event=updated',
+          ], { encoding: 'utf8' });
+          execFileSync('git', ['switch', '-q', '-c', 'feat/t2'], { cwd: repoRoot });
+          const { noActiveEngineerChildrenScan } = await import(pathToFileURL(ORCHESTRATOR_STATE).href);
+          strictEqual(await noActiveEngineerChildrenScan(repoRoot, macroId), 1);
+
+          const { code, stderr } = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () => spawnStopHook({
+            hostScript, cwd: repoRoot, payload: JSON.stringify({ cwd: repoRoot }),
+          }));
+          strictEqual(code, 0, `stderr: ${stderr}`);
+          strictEqual((await listWorkflows(repoRoot)).length, 0, stderr);
+          strictEqual(await noActiveEngineerChildrenScan(repoRoot, macroId), 0);
+          const macroText = await readFile(macroPath, 'utf8');
+          match(macroText, new RegExp(`commit: "${landed}"`));
+          ok(!macroText.includes('### engineer terminal:'), 'a completed subtask takes no terminal note');
+        });
+      });
+    }
+
     it('leaves a NON-terminal workflow on a deleted branch (terminal_marker gate guards it)', async () => {
       await withRepo(async ({ repoRoot, baselineHead }) => {
         await createWorkflow({
@@ -1207,9 +1780,32 @@ for (const persona of PERSONAS) {
       });
     });
 
-    it('ignores files in a legacy-shaped home entirely (canonical-only sweep, legacy_homes off)', async () => {
-      // stop-archive.mjs is generated only into personas with legacy_homes off
-      // (the manifest unit is off_only on it, ADR-0066 Decision 3).
+    itLegacyOn('archives a LEGACY-home orphan into the legacy archive (both-homes sweep)', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { filePath } = await createWorkflow({
+          repoRoot, verb: 'compose', originalRequest: 'legacy-orphan',
+          gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+          host: 'claude',
+        });
+        await makeTerminal(filePath);
+        // Relocate the workflow into the persona's LEGACY home (ADR-0025) so the
+        // sweep must reach it via listWorkflowFilesAllHomes, and archiveWorkflow
+        // must route it back into the LEGACY archive
+        // (inferStorageFromWorkflowPath).
+        const legacyDir = join(repoRoot, `.claude/agentic-${persona}/workflows`);
+        await mkdir(legacyDir, { recursive: true });
+        await rename(filePath, join(legacyDir, basename(filePath)));
+        const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+        strictEqual(results.filter((r) => r.archived).length, 1);
+        const legacyArchive = await readdir(join(repoRoot, `.claude/agentic-${persona}/archive`)).catch(() => []);
+        strictEqual(legacyArchive.filter((e) => e.endsWith('.md')).length, 1);
+        strictEqual((await listArchive(repoRoot)).length, 0, 'nothing lands in the canonical archive');
+      });
+    });
+
+    itLegacyOff('ignores files in a legacy-shaped home entirely (canonical-only sweep, legacy_homes off)', async () => {
+      // Registered only for a persona that declares legacy_homes off
+      // (ADR-0066 Decision 3); the on counterpart is the case above.
       strictEqual(P.capabilities.legacy_homes, false);
       await withRepo(async ({ repoRoot, baselineHead }) => {
         const { filePath } = await createWorkflow({
@@ -1272,7 +1868,7 @@ for (const persona of PERSONAS) {
       });
     });
 
-    it('archives an orphan carrying engineer-shaped parent keys as a PLAIN orphan (no parent special-casing)', async () => {
+    itDispatchOff('archives an orphan carrying engineer-shaped parent keys as a PLAIN orphan (no parent special-casing)', async () => {
       await withRepo(async ({ repoRoot, baselineHead }) => {
         const { filePath } = await createWorkflow({
           repoRoot, verb: 'compose', originalRequest: 'parent-keyed orphan',
@@ -1296,6 +1892,34 @@ for (const persona of PERSONAS) {
         strictEqual((await listWorkflows(repoRoot)).length, 0);
         ok(!/parent-linked|writeback|orchestrator/i.test(stderrChunks.join('')),
           `${persona} sweep must not special-case parent keys (dispatch_target off, ADR-0066 Decision 3)`);
+      });
+    });
+
+    // dispatch_target on: archiving the orphan is the cleanup the macro's A4
+    // gate waits for, and the sweep says so, since the parent note cannot be
+    // replayed for a deleted branch (A3 still guards the macro).
+    itDispatchOn('archives a PARENT-LINKED orphan (A4 cleanup; A3 still guards the macro)', async () => {
+      await withRepo(async ({ repoRoot, baselineHead }) => {
+        const { filePath } = await createWorkflow({
+          repoRoot, verb: 'compose', originalRequest: 'parent-linked orphan',
+          gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+          host: 'claude',
+        });
+        await setFrontmatter(filePath, (fm) => {
+          fm.current_phase = 'summary-complete';
+          fm.terminal_marker = true;
+          fm.parent_workflow = 'macro-plan-20260101T000000Z-aaaaaa';
+          fm.originating_subtask = 'sub1';
+        });
+        const stderrChunks = [];
+        const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude', stderr: { write: (s) => stderrChunks.push(s) } });
+        strictEqual(results.filter((r) => r.archived).length, 1);
+        strictEqual((await listWorkflows(repoRoot)).length, 0);
+        const said = stderrChunks.join('');
+        ok(said.includes('archiving parent-linked orphan')
+          && said.includes('parent=macro-plan-20260101T000000Z-aaaaaa, subtask=sub1')
+          && said.includes('/orchestrator:done'),
+        `the sweep names the parent and the reconciliation step: ${said}`);
       });
     });
 

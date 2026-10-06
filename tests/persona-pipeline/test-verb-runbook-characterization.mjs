@@ -1,7 +1,10 @@
 // PC2a2 T0 and PC2a3 T0': founder and designer's verb runbooks characterized
 // before their shell blocks become generated regions — compose, decide, frame
 // and investigate (PC2a2), critique, refine and start (PC2a3, recorded before
-// their regions).
+// their regions). PC3 U7: engineer's seven, recorded before its verb runbooks
+// join the regions; until they do, engineer's authored finalize commits the
+// ensemble with ensemble-commit and closes with finish-verb, and its start
+// runs the Phase 7 commit driver.
 //
 // fixtures/verb-runbooks.json records, per runbook, the ordered script calls
 // with their argument values by flag (read as the shell reads them, so a
@@ -26,7 +29,7 @@ const arg = (call, flag) => {
 };
 
 describe('verb runbook characterization (PC2a2 T0)', () => {
-  it('the fixture covers the fourteen runbooks; every allowed difference is a listed, reasoned change to a known runbook', () => {
+  it('the fixture covers the twenty-one runbooks; every allowed difference is a listed, reasoned change to a known runbook', () => {
     const keys = VERB_RUNBOOK_PERSONAS.flatMap((p) => VERB_RUNBOOK_VERBS.map((v) => `${p}/${v}`)).sort();
     deepStrictEqual(Object.keys(FIXTURE.runbooks).sort(), keys);
     ok(Array.isArray(FIXTURE.allowed_differences));
@@ -34,7 +37,7 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       const structural = Object.hasOwn(d, 'op');
       deepStrictEqual(Object.keys(d).sort(), structural ? ['from', 'op', 'runbooks', 'to', 'where', 'why'] : ['from', 'runbooks', 'to', 'where', 'why'], JSON.stringify(d));
       ok(d.runbooks.length > 0 && d.runbooks.every((k) => keys.includes(k)), `${d.where}: runbooks`);
-      ok(/^PC2(?:a[234]|b) /.test(d.why), `${d.where}: a change with its reason`);
+      ok(/^(?:PC2(?:a[234]|b)|PC3) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }
@@ -123,6 +126,18 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
 
         it('identity: persona, verb, phase and ensemble type match the expected map', () => {
           const [[create]] = of('state.mjs', 'create');
+          if (persona === 'engineer' && verb === 'start') {
+            // engineer's lifecycle names no --persona (create takes the
+            // declaration's own), creates its start workflow in its first
+            // verb, and commits through the Phase 7 driver: plan, then the
+            // approved execute.
+            strictEqual(create.args.some(([f]) => f === '--persona'), false);
+            deepStrictEqual([arg(create, '--verb'), arg(create, '--workflow-type')], ['investigate', 'start']);
+            deepStrictEqual([of('peer-runner.mjs', 'run').length, of('state.mjs', 'ensemble-commit').length], [0, 0]);
+            deepStrictEqual(calls.filter((c) => c.script === 'phase7-commit.mjs').map((c) => [arg(c, '--mode'), arg(c, '--workflow-path')]), [['plan', '$ACTIVE'], ['execute', '$ACTIVE']]);
+            deepStrictEqual([got.run_id_prefixes, got.mktemp_templates], [[], []]);
+            return;
+          }
           strictEqual(arg(create, '--persona'), persona);
           if (verb === 'start') {
             // The lifecycle macro creates a start workflow in its first verb,
@@ -159,6 +174,9 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
             // back from a variable the agent sets there (recorded as it is, QD5).
             strictEqual(arg(commit, '--ensemble-type'), FIXTURE.expected_commit_ensemble_types?.[persona]?.[verb] ?? type);
           }
+          // engineer's authored investigate reads the run id's prefix from
+          // ENSEMBLE_TYPE, which the agent sets: the prefix is that symbol (its
+          // critique did too until it joined the regions in PC3 U7).
           deepStrictEqual(got.run_id_prefixes, [type]);
           deepStrictEqual(got.mktemp_templates.filter((t) => t.endsWith('-prompt.XXXXXX')), [`${persona}-${verb}-prompt.XXXXXX`]);
         });
@@ -169,6 +187,20 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
             ok(sites.length > nth, `${script} ${sub} #${nth + 1}`);
             return sites[nth][1];
           };
+          if (persona === 'engineer' && verb === 'start') {
+            // engineer's start: the clean-baseline gate before the bootstrap,
+            // the workflow_type read on resume, then the Phase 7 driver's plan
+            // and execute, every one on $ACTIVE.
+            const order = [index('state.mjs', 'find-active'), index('state.mjs', 'check-clean-baseline'), index('state.mjs', 'create'), index('state.mjs', 'read'), index('phase7-commit.mjs', null, 0), index('phase7-commit.mjs', null, 1)];
+            deepStrictEqual([...order].sort((a, b) => a - b), order);
+            for (const c of [calls[index('state.mjs', 'read')], calls[order[4]], calls[order[5]]]) strictEqual(arg(c, '--workflow-path'), '$ACTIVE');
+            deepStrictEqual([of('state.mjs', 'finish-verb').length, of('state.mjs', 'set-terminal').length], [0, 0]);
+            // The dirty-baseline refusal runs before the bootstrap writes.
+            const text = runbookText(persona, verb);
+            const dirty = text.indexOf('if [ "$BASELINE_STATUS" = "dirty" ]; then');
+            ok(dirty > 0 && dirty < text.indexOf('scripts/state.mjs" create'), 'the dirty guard precedes the bootstrap');
+            return;
+          }
           if (verb === 'start') {
             // start: the clean-baseline gate before the bootstrap, the
             // workflow_type read on resume, the terminal write at the end.
@@ -185,10 +217,11 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           const run = index('peer-runner.mjs', 'run');
           const note = index('state.mjs', 'append', 1);
           // PC2b: settle and finish-verb where the finalize is settled (the
-          // generated four), ensemble-commit and set-terminal until then.
+          // generated four), ensemble-commit and set-terminal until then;
+          // engineer's authored finalize, ensemble-commit and finish-verb.
           const settled = of('peer-runner.mjs', 'settle').length > 0;
           const commit = settled ? index('peer-runner.mjs', 'settle') : index('state.mjs', 'ensemble-commit');
-          const terminal = settled ? index('state.mjs', 'finish-verb') : index('state.mjs', 'set-terminal');
+          const terminal = settled || persona === 'engineer' ? index('state.mjs', 'finish-verb') : index('state.mjs', 'set-terminal');
           ok(find < create && create < resume && resume < run && run < note && note < commit && commit < terminal);
           if (settled) {
             // The closed-enum next step the typical case records: the verb
@@ -234,12 +267,19 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           if (verb === 'start') {
             strictEqual(exits(g.baseline_rc), 1, 'a failed baseline check exits');
             ok(g.baseline_rc.includes('exit "$BASELINE_RC"'), 'with its status');
-            const arms = g.baseline_status.split('\n').filter((l) => /^\s*[^\s()]+\)/.test(l)).map((l) => l.trim().split(')')[0]);
-            deepStrictEqual(arms, ['clean|accepted', 'dirty', '*'], 'the admitted values, the dirty arm, the wildcard');
-            strictEqual(exits(g.baseline_status), 2, 'the dirty and the wildcard arm exit');
+            if (persona === 'engineer') {
+              // engineer's start refuses a dirty status with an if, not a case.
+              strictEqual(g.baseline_status, null);
+              strictEqual(exits(g.baseline_dirty), 1, 'a dirty baseline exits');
+            } else {
+              const arms = g.baseline_status.split('\n').filter((l) => /^\s*[^\s()]+\)/.test(l)).map((l) => l.trim().split(')')[0]);
+              deepStrictEqual(arms, ['clean|accepted', 'dirty', '*'], 'the admitted values, the dirty arm, the wildcard');
+              strictEqual(exits(g.baseline_status), 2, 'the dirty and the wildcard arm exit');
+            }
           } else {
             deepStrictEqual([g.baseline_rc, g.baseline_status], [null, null]);
           }
+          if (!(persona === 'engineer' && verb === 'start')) strictEqual(g.baseline_dirty, null);
           // The D2 guard went with the generated finalize (critique in PC2b
           // U5a, refine in U5b): settle decides from the ledger.
           strictEqual(g.ensemble_launched, null, 'no D2 guard on ensemble-commit');

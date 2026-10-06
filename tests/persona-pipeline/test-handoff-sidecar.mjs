@@ -19,7 +19,7 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, doesNotReject } from 'node:assert/strict';
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -77,6 +77,28 @@ for (const persona of personasFor('scripts/session-handoff.mjs')) {
       const projection = JSON.parse(await readFile(projectionFile, 'utf8'));
       strictEqual(projection.workflow_kind, persona);
       ok(projection.workflow_id && projection.archive_gate, 'projection carries bounded fields');
+    });
+
+    // With no explicit projectionFile (the Stop backstop), the slot follows the
+    // workflow's storage home where legacy_homes is on, so the backstop writes
+    // where the primary set-terminal would; with it off there is one slot.
+    it(`without an explicit file, writes ${P.capabilities.legacy_homes ? 'a legacy-home workflow\'s projection to the legacy slot' : 'every projection to the canonical slot'} (legacy_homes ${P.capabilities.legacy_homes ? 'on' : 'off'})`, async () => {
+      const root = await mkdtemp(join(tmpdir(), `${persona}-sidecar-home-`));
+      const canonicalPath = createWorkflow(root, 'feat/home');
+      const legacyDir = join(root, `.claude/agentic-${persona}/workflows`);
+      await mkdir(legacyDir, { recursive: true });
+      const legacyPath = join(legacyDir, basename(canonicalPath));
+      await writeFile(legacyPath, await readFile(canonicalPath, 'utf8'), 'utf8');
+      const canonicalSlot = join(root, PROJECTION_REL);
+      const legacySlot = join(root, `.claude/agentic-${persona}/last-session-handoff.json`);
+
+      const fromLegacy = await emitTerminalHandoffSidecar({ repoRoot: root, workflowPath: legacyPath });
+      strictEqual(fromLegacy.emitted, true);
+      strictEqual(fromLegacy.projectionFile, P.capabilities.legacy_homes ? legacySlot : canonicalSlot);
+      strictEqual(await exists(legacySlot), P.capabilities.legacy_homes);
+
+      const fromCanonical = await emitTerminalHandoffSidecar({ repoRoot: root, workflowPath: canonicalPath });
+      strictEqual(fromCanonical.projectionFile, canonicalSlot, 'a canonical-home workflow always uses the canonical slot');
     });
 
     it('projects the workflow by PATH, not by current branch (cross-branch correctness)', async () => {
