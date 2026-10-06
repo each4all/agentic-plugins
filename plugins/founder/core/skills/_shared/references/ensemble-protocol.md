@@ -37,6 +37,7 @@ maximum-quality decision support; the peer call is paid at every phase
 boundary regardless of the `Ensemble Affinity` rating recorded in the
 Business Task Profile (`./orchestration.md` Step 1).
 
+<!-- pipeline:begin ensemble-always-max -->
 The peer call uses the host's configured model with maximum
 effort/depth. Skills do **not** pass `--model` or `--effort` flags —
 each host's config file (`~/.codex/config.toml`,
@@ -44,11 +45,13 @@ each host's config file (`~/.codex/config.toml`,
 
 `Ensemble Affinity` (LOW / MEDIUM / HIGH) is retained as a Task Profile
 axis (records context about the task) but does **not** gate dispatch.
+<!-- pipeline:end ensemble-always-max -->
 
 ---
 
 ## Bidirectional invocation pattern
 
+<!-- pipeline:begin ensemble-bidirectional -->
 Direction is symmetric:
 
 | Orchestrator | Peer        | Peer invocation                                                |
@@ -60,9 +63,9 @@ Both companion CLIs ship in the agentic-plugins `companions` plugin and
 implement `companions/contract.md` v0.1.1. The contract exposes a single
 subcommand `task --prompt-file <path>` accepting an XML prompt. founder
 expresses every ensemble point type as a `task` invocation with a
-type-specific prompt template; review-style ensembles (review,
-refine-verify, adversarial-scan) embed the review semantics in the
-prompt itself rather than relying on separate subcommands.
+type-specific prompt template; review-style ensembles embed the review
+semantics in the prompt itself rather than relying on separate
+subcommands.
 
 The orchestrator is the currently-invoking host; the peer is the other
 host. Skills never hard-code one side or the other — they refer to
@@ -71,41 +74,50 @@ host. Skills never hard-code one side or the other — they refer to
 command-runbook ensembles), with `../../../../scripts/dispatch-peer.mjs`
 retained as the blocking compatibility surface. On discovery failure the
 dispatch is skipped silently per *Failure Handling* below.
+<!-- pipeline:end ensemble-bidirectional -->
 
 ---
 
 ## When This Protocol Applies
 
+<!-- pipeline:begin ensemble-when-applies -->
 Activates automatically at every command-defined phase boundary in
 `/founder:*` commands. Each command file specifies which phase invokes
 which ensemble point type (see *Ensemble Point Types* below).
 
 - Claude: `/founder:<verb> …` (slash command)
-- Codex: `$founder:<verb> …` (skill mention; per ADR-0036 SD2
+- Codex: `$founder:<verb> …` (skill mention; per ADR-0021
   cognitive-runbook parity, full slash-command parity is deferred to
   ADR-0013 reserved)
 
 Does NOT apply to:
 - Skills auto-activated outside any `/founder:*` command (auto-activated
   mode runs without ensemble dispatch — the lightweight in-context path).
+- The three meta skills (`checkpoint` / `resume` / `peer-now`). `peer-now`
+  dispatches the companion, but as a **side-channel**, not an ensemble —
+  see *State Bookkeeping* below.
 - Binary confirmations or progress updates within the same session.
 - Internal orchestration decisions.
+<!-- pipeline:end ensemble-when-applies -->
 
 ---
 
 ## Execution Pattern
 
+<!-- pipeline:begin ensemble-execution-intro -->
 Every ensemble point follows three steps: **Launch**, **Collect**,
 **Synthesize**.
+<!-- pipeline:end ensemble-execution-intro -->
 
 ### Step 1: Launch
 
+<!-- pipeline:begin ensemble-launch -->
 1. Determine the ensemble point type (see *Ensemble Point Types* below).
 2. **Pass the privacy gate** (see *Privacy* below) for the topic AND
-   everything that will travel in the peer prompt. Proprietary venture
-   concepts, interview/customer data, and unpublished business material
-   pass an explicit gate before BOTH web search AND peer-host dispatch.
-   Genericize before constructing the prompt.
+   everything that will travel in the peer prompt:
+   proprietary venture concepts, interview/customer data, and unpublished business material
+   pass an explicit privacy gate before BOTH web search AND peer-host
+   dispatch. Genericize before constructing the prompt.
 3. Resolve the peer companion via the companion-cache discovery
    (`AGENTIC_COMPANIONS_ROOT` env override honored, per ADR-0008). If
    discovery fails, the ensemble degrades to local-only.
@@ -122,17 +134,29 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
    background the call (Bash `run_in_background` on Claude; the `task`
    subcommand on Codex) so its own analysis proceeds in parallel.
 6. The orchestrator proceeds immediately to its own parallel analysis.
+<!-- pipeline:end ensemble-launch -->
 
 ### Step 2: Collect
 
+<!-- pipeline:begin ensemble-collect -->
 1. Wait for the background dispatch notification — do NOT poll, sleep,
    or proactively check status.
-2. Read the peer-runner JSON, then read `envelope_path` for the parsed
-   companion envelope (or `stdout_path` / `stderr_path` when diagnosing a
-   degraded run). The envelope keys are pinned by
-   `companions/contract.md` §4.2:
-   `{status, peer_host, peer_model, stdout, exit_code, [error, metadata]}`.
-3. Classify by `status`: `success` → parse the peer answer;
+2. Read the peer-runner JSON first. Its `status` (`completed`, `failed`
+   or `cancelled`), `error_kind` and `envelope_path` describe the run,
+   not the peer's answer. When `envelope_path` is null there is no
+   envelope to read, and the run degrades to local-only: `error_kind`
+   says why — `peer_cli_not_found` (no companion resolved),
+   `envelope_parse_error` (the companion's stdout was not JSON), or a
+   spawn, signal or cancel kind. Diagnose it from `stdout_path` /
+   `stderr_path`.
+3. Otherwise read `envelope_path` for the parsed companion envelope. Its
+   keys are pinned by `companions/contract.md` §4.2:
+   `{status, peer_host, peer_model, stdout, exit_code, [error, metadata]}`;
+   an envelope the runner marked `error_kind: envelope_shape_invalid`
+   breaks that contract (a missing or mistyped key, or a `status` that
+   disagrees with its `exit_code` or `error`) and is malformed, with no
+   answer to parse. Classify by the envelope's
+   `status`: `success` → parse the peer answer;
    `peer_error` (`error.kind: peer_run_error`) → peer malformed/empty;
    `companion_error` with `error.kind ∈ {peer_cli_not_found,
    peer_unauthenticated, peer_invocation_error}` → degrade to local-only;
@@ -141,14 +165,18 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
 4. If the peer failed or returned empty output, record the failure and
    proceed to Synthesize with orchestrator-only results (graceful
    degradation, see *Failure Handling*).
+<!-- pipeline:end ensemble-collect -->
 
 ### Step 3: Synthesize
 
+<!-- pipeline:begin ensemble-synthesize-intro -->
 Classify every finding, recommendation, direction, or conclusion from
 both sources into one of four base synthesis categories.
+<!-- pipeline:end ensemble-synthesize-intro -->
 
 #### Base Synthesis Categories
 
+<!-- pipeline:begin ensemble-categories -->
 | Category   | Condition                                          | Presentation                                        |
 |------------|----------------------------------------------------|-----------------------------------------------------|
 | AGREED     | Both orchestrator and peer reached same conclusion | Present with elevated confidence. Label: **[Both]** |
@@ -166,6 +194,7 @@ refer to *orchestrator* and *peer*, never specifically to one named host.
 This reflects bidirectional symmetry: the same synthesis produced from
 either side should be structurally indistinguishable except for
 capability differences.
+<!-- pipeline:end ensemble-categories -->
 
 **Artifact label policy.** These source-of-discovery labels live in
 **workflow phase notes** for orchestration transparency. They are
@@ -175,8 +204,9 @@ marker, per the Ensemble Label Policy in
 `../../investigate/references/business-brief-spec.md`. A reader of the
 artifact should not be able to tell whether the ensemble ran at all.
 
-### State Bookkeeping (Stage 2.5+)
+### State Bookkeeping
 
+<!-- pipeline:begin ensemble-bookkeeping -->
 Ensemble dispatch and synthesis are recorded in **two complementary
 locations**, both through founder's `../../../../scripts/state.mjs`:
 
@@ -197,21 +227,44 @@ Frontmatter is the machine-parsable retrospective surface; the body is
 the human-readable narrative. Both are written under the per-file lock
 and MAY be written in separate calls.
 
+**`peer-now` is structurally excluded** from `ensemble_results`, by two
+independent mechanisms:
+
+1. `../../../../scripts/peer-runner.mjs` registers a `pending_ensemble` row
+   only when `kind === 'ensemble'` — the `handle.kind !== 'ensemble'`
+   early return. A `--kind peer-now` run cannot reach that write path.
+2. The `peer-now` meta skill omits the three ensemble-accounting flags:
+   `--workflow-path` / `--phase` / `--ensemble-type`. It **does** pass
+   `--run-id`, which is the peer-run **ledger** key (it names the
+   `peer-runs/<run_id>/` directory and lets `peer-runner.mjs status` /
+   `cancel` address the run), not an ensemble key. Passing it is correct
+   and does not create an ensemble record.
+
+`ensemble_results` stays reserved for verb-skill structured ensemble
+verdicts. A `[Peer]` label phase note in the workflow body is peer-now's
+only trace in the workflow; the run's own ledger under
+`peer-runs/<run_id>/` keeps its handle and logs.
+<!-- pipeline:end ensemble-bookkeeping -->
+
 ---
 
 ## Prompt Construction Rules
 
+<!-- pipeline:begin ensemble-prompt-intro -->
 All peer prompts are XML block structures passed to the companions `task`
 subcommand via `--prompt-file <path>`. The orchestrator materializes the
 prompt to a tempfile to keep it out of `ps aux` and avoid the `ARG_MAX`
 ceiling.
+<!-- pipeline:end ensemble-prompt-intro -->
 
 ### Required blocks for every ensemble prompt
 
-- `<task>`: Concrete business job description with genericized context
+<!-- pipeline:begin ensemble-required-blocks -->
+- `<task>`: Concrete job description with genericized context
 - `<structured_output_contract>`: Exact output shape
 - `<grounding_rules>`: Ground claims in evidence; label inferences
   `INFERENCE:`; vendor/marketing claims need corroboration
+<!-- pipeline:end ensemble-required-blocks -->
 
 ### Additional blocks by ensemble point type
 
@@ -237,10 +290,12 @@ ceiling.
   in `../../investigate/references/business-brief-ensemble.md` §Prompt
   Construction)
 
+<!-- pipeline:begin ensemble-privacy-contract -->
 Every founder ensemble prompt carries a `<privacy_contract>` block —
 external transmission to the peer host is treated with the same
 discipline as web search (see *Privacy* below). This is the load-bearing
 difference from the engineer protocol, where most points omit it.
+<!-- pipeline:end ensemble-privacy-contract -->
 
 ### Do not pass --model or --effort
 
@@ -252,9 +307,11 @@ configuration.
 
 ## Independence Rule
 
+<!-- pipeline:begin ensemble-independence -->
 The peer must analyze independently. Do not include the orchestrator's
 in-progress findings, hypotheses, draft conclusions, confidence ratings,
 or intermediate results in the peer prompt.
+<!-- pipeline:end ensemble-independence -->
 
 Both hosts receive the same raw context: the genericized topic /
 directions / artifact, the market geographies (jurisdictions) in scope,
@@ -266,20 +323,25 @@ is to find gaps in that specific plan. The exception is scoped to the
 plan text — the orchestrator's *judgments about* the plan are still
 withheld.
 
+<!-- pipeline:begin ensemble-independence-bidirectional -->
 The Independence Rule is explicitly **bidirectional**: when the local
 host is Claude, Claude does not leak its findings into the
 `codex-companion` prompt; when the local host is Codex, Codex does not
 leak its findings into the `claude-companion` prompt.
+<!-- pipeline:end ensemble-independence-bidirectional -->
 
 ---
 
 ## Privacy
 
-founder's privacy gate covers external **peer-host dispatch** in addition
-to web search. Specifically: proprietary venture concepts,
-interview/customer data, and unpublished business material **pass an
-explicit gate before BOTH web search AND peer-host dispatch** — the gate
-is checked once and governs every external transmission in the phase.
+<!-- pipeline:begin ensemble-privacy-intro -->
+founder's privacy gate covers external **peer-host dispatch** in
+addition to web search. Specifically:
+proprietary venture concepts, interview/customer data, and unpublished business material
+**pass an explicit privacy gate before BOTH web search AND peer-host
+dispatch** — the gate is checked once and governs every external
+transmission in the phase.
+<!-- pipeline:end ensemble-privacy-intro -->
 
 - Everything transmitted in the peer prompt (topic, directions,
   sub-questions, draft plan, artifact under review) is treated as
@@ -295,6 +357,7 @@ is checked once and governs every external transmission in the phase.
   software for healthcare providers"), pass the substituted form to the
   peer too — never the original pre-genericization value.
 
+<!-- pipeline:begin ensemble-privacy-bidirectional -->
 The privacy gate is **bidirectional** — the same discipline applies
 whether the local host is Claude (sending to Codex) or Codex (sending to
 Claude). **The pre-genericization value MUST never leave the local
@@ -302,15 +365,18 @@ host.** When the user declines genericization or aborts the session, do
 NOT dispatch to the peer. See
 `../../investigate/references/business-brief-spec.md` § Privacy Gate for
 the canonical rule.
+<!-- pipeline:end ensemble-privacy-bidirectional -->
 
 ---
 
 ## Ensemble Point Types
 
+<!-- pipeline:begin ensemble-point-types-intro -->
 Each `/founder:<verb>` command's phases dispatch one or more of these
 point types. The verb→type mapping is in each command's body. All types
 use the companions `task --prompt-file <path>` subcommand per the
 Bidirectional invocation pattern above.
+<!-- pipeline:end ensemble-point-types-intro -->
 
 ### Frame (frame phase)
 
@@ -802,6 +868,7 @@ the peer receives the genericized draft artifact and returns gaps.
 
 ### Peer unavailable, not installed, or unauthenticated
 
+<!-- pipeline:begin ensemble-failure-unavailable -->
 - **Detect**: companion discovery returns empty (the `companions` plugin
   is not installed), or `error.kind ∈ {peer_cli_not_found,
   peer_unauthenticated, peer_invocation_error}`.
@@ -810,17 +877,21 @@ the peer receives the genericized draft artifact and returns gaps.
 - **Surface**: Mention in the user-facing completion summary that the
   ensemble was unavailable. Do NOT label findings inside the saved
   artifact.
+<!-- pipeline:end ensemble-failure-unavailable -->
 
 ### Peer timeout or runtime error
 
+<!-- pipeline:begin ensemble-failure-error -->
 - **Detect**: `status: peer_error` with `error.kind: peer_run_error`, or
   the background dispatch exits unmappably.
 - **Action**: Record the failure mode internally; proceed
   orchestrator-only.
 - **Surface**: Same as above.
+<!-- pipeline:end ensemble-failure-error -->
 
 ### Peer returns empty or malformed output
 
+<!-- pipeline:begin ensemble-failure-empty -->
 - **Detect**: Envelope `status: success` but `stdout` parses to no
   findings, or is structurally valid but missing required fields for some
   findings.
@@ -828,6 +899,7 @@ the peer receives the genericized draft artifact and returns gaps.
   discard the rest. Continue with the salvageable subset.
 - **Surface**: Mention in the completion summary that ensemble coverage
   was partial.
+<!-- pipeline:end ensemble-failure-empty -->
 
 ### Large artifact / large venture scope
 
@@ -843,11 +915,13 @@ the peer receives the genericized draft artifact and returns gaps.
 
 ### Graceful degradation principle
 
+<!-- pipeline:begin ensemble-graceful -->
 Ensemble failure must never block the workflow. Orchestrator-only results
-are always sufficient to proceed — the brief, plan, or critique report is
-always assembled and saved on the local-only path. The peer adds value
-when available but is not required, and the saved artifact never reveals
-whether the ensemble ran.
+are always sufficient to proceed — the brief, the business deliverable or
+the critique report is always assembled and saved on the local-only path.
+The peer adds value when available but is not required, and the saved
+artifact never reveals whether the ensemble ran.
+<!-- pipeline:end ensemble-graceful -->
 
 ---
 

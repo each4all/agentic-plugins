@@ -119,7 +119,10 @@ an image never reaches the peer as bytes.
 ### Entry routing recommendation (before Phase 1)
 
 Present a short routing recommendation with **Options / Tradeoffs / Risks /
-Recommendation / Confidence / Evidence pointers / Default next command**:
+Recommendation / Confidence / Evidence pointers / Default next command**
+(the routes, the prompt shape and the quality-first defaults are defined in
+`../_shared/references/entry-routing-contract.md` § Routing Recommendation
+and the sections after it):
 
 - continue with `/founder:start` for one coherent business deliverable on
   the current branch;

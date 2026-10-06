@@ -70,6 +70,9 @@ with what was decided.
 
 ### Step 4: Present and confirm
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Present the artifact and confirm before any downstream action. For a
 non-trivial plan, present section by section and confirm the
 business-model + unit-economics sections explicitly — they carry the most
@@ -116,6 +119,9 @@ Note CONFLICT items for user resolution.
 ### Step 5: Present
 
 <!-- pipeline:begin compose-present -->
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting.
+
 Present the synthesized artifact and confirm before downstream verbs.
 <!-- pipeline:end compose-present -->
 

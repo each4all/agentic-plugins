@@ -213,6 +213,7 @@ enforces this.
 
 ## Citation Conventions
 
+<!-- pipeline:begin brief-spec-citations -->
 ### Numbering
 
 - Citations use bracketed integers `[N]` inline, paired with entries in the Sources section.
@@ -235,7 +236,9 @@ If a source has no clear title: use the page `<title>`; otherwise
 ### Access Date
 
 ISO format `YYYY-MM-DD`. Records when the source was fetched/read
-(distinct from `As-of`, the date the data describes).
+(distinct from `As-of`, the date or version the source's content
+describes).
+<!-- pipeline:end brief-spec-citations -->
 
 ---
 
@@ -376,6 +379,7 @@ Before saving the brief, verify:
 
 ## Ensemble Label Policy
 
+<!-- pipeline:begin brief-spec-label-policy -->
 When `founder:investigate --profile=business-brief` runs in command-mode,
 the bidirectional research-scan ensemble (per
 `business-brief-ensemble.md`) may contribute claims and sources. The
@@ -393,3 +397,4 @@ The presence or absence of ensemble execution must NOT be inferable from
 reading the brief. Ensemble status (unavailable, partial, degraded) is
 communicated only in the user-facing completion summary that follows the
 save, never inside the brief artifact.
+<!-- pipeline:end brief-spec-label-policy -->
