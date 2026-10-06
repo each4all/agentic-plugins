@@ -196,7 +196,10 @@ invoking command writes the investigation results to its workflow file.
 This skill itself does not write workflow state — it hands findings to
 the invoking command, which owns the write.
 
-That write is terminal, and on Claude the Stop hook fires at **every turn end**,
+Run by `/founder:investigate`, that write is the command's last one, `state.mjs
+finish-verb`: it records the proposal's closed-enum next step and, unless it
+ends with an owner gate, is terminal (inside `/founder:start` no phase makes a
+verb's terminal write). On Claude the Stop hook fires at **every turn end**,
 so the archive gates are evaluated at the end of **that same turn**, not at
 session close — the workflow archives then if they all pass, and otherwise stays
 marked for a later Stop. Clearing the marker (`--terminal-marker false`, with
@@ -226,12 +229,12 @@ Proposal** instead of a fixed next verb — derived from these findings,
 not a fixed table:
 
 ```
-- selected_next:         <verb | owner decision>
+- selected_next:         <verb | commit | done | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + the evidence-quality gate>
 - evidence_pointers:     <brief path / sub-questions / Open Questions — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb; the action otherwise>
+- next_command:          <exact next step: /founder:<verb> … or $founder:<verb> for a verb; the owner's save and commit for commit; none for done; the owner's decision otherwise>
 ```
 
 Typical `selected_next` candidates for business-brief: `/founder:frame`

@@ -50,6 +50,25 @@ inside a code repository works but is the friction ADR-0036 §F3
 records. State lives at `<repo>/.agentic-plugins/state/founder/`
 (ADR-0025 canonical home; created at first use, never committed).
 
+## Owner gates and mixed versions (ADR-0066 Decision 7)
+
+From the release that carries ADR-0066 Stage 2b, founder writes new workflow
+files at schema 1.4: each verb records its next step in closed-enum form, and
+a verb that needs the owner's judgment — a decision whose directions conflict, a refine finding that keeps
+coming back, a request that belongs in another verb or workflow — ends with an owner gate
+instead of closing. The Stop hook never archives a workflow while its gate is
+pending. Existing files are not migrated; they stay readable as they are.
+
+While a workflow carries an owner gate, every host that touches it must run
+that release or a later one. An earlier founder reads the file and keeps its
+keys, but its Stop hook archives the gated workflow, and its terminal write
+leaves a stale next step behind
+(`tests/persona-pipeline/test-mixed-version.mjs` records this against the
+previous release). Install the release on both hosts, and on Codex check that
+the catalog pin has moved to it, before sharing a gated workflow. Recovery
+goes forward only: upgrade the host that is behind, never rewrite the file
+for an older one.
+
 ## Roadmap status (ADR-0036 §Implementation Roadmap)
 
 | PR | Scope | Status |

@@ -359,7 +359,7 @@ async function releaseFooterClaim(markerFile, workflowId) {
 // terminalizes WITHOUT auto-committing — the owner publishes the deliverable
 // manually — so it does NOT copy engineer's blocked / next-work-available
 // dichotomy. The per-gate rule from the persona's own evaluator (evaluateStopArchive: terminal_marker /
-// terminal_phase / head_moved / no_active_children):
+// terminal_phase / head_moved / no_active_children / awaiting_owner):
 //   - blocked with ONLY head_moved unmet  → publish-needed (the deliverable is
 //     ready for the owner's save/commit decision; head_moved is a fail-closed
 //     collapse that also covers a failed git probe — the wording must not
@@ -379,6 +379,8 @@ function blockedGateNextActions() {
     // (evaluateStopArchive treats a null probe as "HEAD did not move").
     head_moved: `Save/commit the ${noun} so HEAD moves past the workflow baseline — ${name} never auto-commits; publishing is the owner's manual step (a failed git probe also reports this gate).`,
     no_active_children: `Settle the incomplete child-completion entries recorded on this workflow before archiving it (${name} workflows normally carry none — an unexpected entry indicates external state mutation).`,
+    // ADR-0063 D6 gate 5 (PC2b): the gate's resolving surface, by gate.
+    awaiting_owner: `Resolve the pending owner gate (awaiting_owner_gate) through its resolving surface: decide-conflict, the Owner selection step of ${commandPrefix()}decide; recurring-finding, the Owner decision step of ${commandPrefix()}refine; scope-routing, the owner picks the route the phase note recommends. Inside a ${commandPrefix()}start lifecycle, resume it with ${commandPrefix()}start instead, which clears the gate with the phase it continues at. A workflow waiting on its owner is not archived.`,
     terminal_phase: 'Advance current_phase to an archive-whitelisted terminal phase (commit-complete, summary-complete, or fix-complete).',
   };
 }

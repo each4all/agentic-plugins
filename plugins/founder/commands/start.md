@@ -59,6 +59,13 @@ if [ "$FIND_RC" -ne 0 ]; then
   echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
   exit "$FIND_RC"
 fi
+# ADR-0066 Decision 3 — prints nothing interactively. When AGENTIC_AUTOPILOT
+# names a run it prints one line: the variable is ignored, this persona is no
+# autopilot dispatch target. When an owner gate is set on the workflow it
+# prints the gate and how the owner resolves it, to put to the user before
+# this command continues. It runs before any write.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" autopilot-preflight \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" || exit $?
 ```
 <!-- pipeline:end start-phase-0 -->
 
@@ -126,6 +133,15 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'founder' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 WF_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.stdout.write("verb-chain")}})')"
+# Resuming into the lifecycle clears the next step the last phase recorded, so
+# a phase that stops before its own last write leaves none behind (ADR-0063
+# D6); the position (verb, phase, next action) is kept. A verb-chain workflow
+# is refused below and is not written.
+if [ "$WF_TYPE" = start ]; then
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
+    --clear-next-step true --event resumed || exit $?
+fi
 ```
 <!-- pipeline:end start-resume -->
 
@@ -184,6 +200,28 @@ Each phase boundary writes state via `state.mjs append --verb <verb>
 --current-phase <phase> --next-action <...> --event updated` and dispatches
 the per-phase peer ensemble per
 `core/skills/_shared/references/ensemble-protocol.md` (always-max).
+
+Inside the lifecycle each verb runs in place, so three rules hold at every
+phase (ADR-0066 PC2b):
+
+- **Each ensemble attempt is settled.** After its synthesis note, settle the
+  phase's attempt from its run ledger with `peer-runner.mjs settle --phase
+  <verb> --run-id <that attempt's run id>` (empty when no run launched), before
+  the next phase. A repeated phase (a second refine pass) dispatches under a
+  new run id and settles each attempt.
+- **No phase closes the workflow.** A verb's own terminal write
+  (`finish-verb`) never runs inside the lifecycle; the Terminal block below is
+  its one terminal write.
+- **An owner gate pauses the lifecycle.** When a phase meets one (a decide
+  CONFLICT, a recurring finding, a request that belongs elsewhere), record it
+  after the phase note with `state.mjs awaiting-owner-set --gate <gate>
+  --anchor <anchor>`, a write that leaves the workflow open, and pause. Once
+  the owner decides, clear it with `state.mjs awaiting-owner-clear --gate
+  <gate> --resolution <the owner's decision> --next-step-kind verb
+  --next-step-verb <the next phase's verb> --next-step-confidence HIGH`, and
+  continue at that phase. The verb's own resolving step (decide's Owner
+  selection, refine's Owner decision) ends in a terminal write, so the
+  lifecycle does not run it.
 <!-- pipeline:end start-phase-boundary -->
 
 <!-- pipeline:begin start-privacy-no-image -->
@@ -199,6 +237,12 @@ Present the final business artifact and save it (durable
 `business_brief.md` / venture plan / canvas at its
 `<root>/YYYY-MM-DD_<topic-slug>/` location). Write terminal state:
 
+<!-- pipeline:begin start-terminal -->
+The last write, `finish-verb`, records the lifecycle's next step in
+closed-enum form, `--next-step-kind commit`: the owner saves and commits the
+deliverable (founder runs no commit itself). It closes the workflow
+`summary-complete`, and the code-emitted completion footer follows.
+
 ```bash
 ROOT_OVERRIDE="$(printenv 'AGENTIC_FOUNDER_ROOT' || true)"
 CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
@@ -206,6 +250,10 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 # ADR-0029 §1 / completion-output contract §2 — write the COMPACT form
 # (selected_next + one-line why + next_command) into --next-action; the
 # code-emitted footer surfaces it verbatim as "recommended next work".
+# ADR-0063 D3 — finish-verb is the lifecycle's last write: the ADR-0017
+# §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
+# with the next step. ADR-0066 Decision 3: an inherited AGENTIC_AUTOPILOT
+# changes nothing here.
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # archive gates are evaluated at the end of THIS turn, not at session close;
 # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
@@ -215,15 +263,15 @@ CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
 # core/skills/_shared/references/session-handoff.md § Archive timing.
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --terminal-phase summary-complete --terminal-marker true \
-  --next-action "Save/commit the business deliverable; optionally /founder:start the next item" \
-  --event updated
+  --next-action 'Save/commit the business deliverable; optionally /founder:start the next item' \
+  --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
 ```
+<!-- pipeline:end start-terminal -->
 
 founder does NOT auto-commit — the user saves the deliverable to their
-per-venture content repository (ADR-0036 §SD5). The `set-terminal` above
+per-venture content repository (ADR-0036 §SD5). The `finish-verb` above
 fires the ADR-0031 session-handoff sidecar, which **code-emits** the
 runtime completion footer on stderr (ADR-0039, enabled by ADR-0043 S3):
 context state, completion state (`publish-needed` while only the owner's

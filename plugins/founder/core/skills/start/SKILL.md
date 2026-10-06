@@ -100,6 +100,18 @@ inspects the returned `status` (`clean` / `dirty` / `accepted`). On `dirty`
 the gate refuses to bootstrap and presents resolutions: clean the tree,
 stash, or set `ACCEPT_CURRENT_TREE=1` to acknowledge the dirty tree.
 `.agentic-plugins/state/**` is excluded from the dirty check.
+
+**Inside the lifecycle** (both hosts, ADR-0066 PC2b): Phase 0 runs
+`state.mjs autopilot-preflight` once, before any write, and a resumed start
+workflow clears the next step it carried. Each phase's ensemble attempt is
+settled from its run ledger (`peer-runner.mjs settle`) before the next phase,
+a repeated phase under a new run id. No phase makes a verb's terminal write;
+the lifecycle's one terminal write is `finish-verb` at the end, once it
+converged where the persona waits for convergence. An owner gate met in a
+phase (a decide CONFLICT, a recurring finding) is recorded with
+`state.mjs awaiting-owner-set`, which leaves the workflow open; the lifecycle
+pauses, and continues at the next phase once the owner's decision clears it
+(`state.mjs awaiting-owner-clear` with that phase as the next step).
 <!-- pipeline:end start-command-intro -->
 
 ### Privacy gate (applies to every phase that calls the peer or the web)
@@ -206,6 +218,10 @@ Present the final business artifact and save it (the durable
 # ADR-0029 §1 / completion-output contract §2 — write the COMPACT form
 # (selected_next + one-line why + next_command) into --next-action; the
 # code-emitted footer surfaces it verbatim as "recommended next work".
+# ADR-0063 D3 — finish-verb is the lifecycle's last write: the ADR-0017
+# §sub-decision 5 atomic terminal write (summary-complete + terminal marker)
+# with the next step, kind commit (the owner saves and commits). ADR-0066
+# Decision 3: an inherited AGENTIC_AUTOPILOT changes nothing here.
 # ARCHIVE TIMING — on Claude the Stop hook fires at EVERY turn end, so the
 # archive gates are evaluated at the end of THIS turn, not at session close;
 # if a gate fails the workflow stays marked and a later Stop re-evaluates it.
@@ -215,15 +231,14 @@ Present the final business artifact and save it (the durable
 # On Codex the Stop hook runs only once the operator has trusted the plugin
 # hooks (`/hooks`), so evaluation waits for that. Full contract:
 # core/skills/_shared/references/session-handoff.md § Archive timing.
-node "<plugin-root>/scripts/state.mjs" set-terminal \
+node "<plugin-root>/scripts/state.mjs" finish-verb \
   --workflow-path "$ACTIVE" --host <claude|codex> \
-  --terminal-phase summary-complete --terminal-marker true \
   --next-action "Save/commit the business deliverable; optionally /founder:start the next item" \
-  --event updated
+  --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
 ```
 
 founder does NOT auto-commit — the user saves the deliverable to their
-per-venture content repository (ADR-0036 §SD5). The `set-terminal` above
+per-venture content repository (ADR-0036 §SD5). The `finish-verb` above
 fires the ADR-0031 session-handoff sidecar, which **code-emits** the
 runtime completion footer on stderr (ADR-0039, enabled by ADR-0043 S3):
 context state, completion state (`publish-needed` while only the owner's

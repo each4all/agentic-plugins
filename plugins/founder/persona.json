@@ -156,14 +156,36 @@
         "red-team"
       ],
       "default_profile": "default",
-      "request_placeholder": "one-line genericized review target"
+      "request_placeholder": "one-line genericized review target",
+      "artifact": [
+        "### Review report",
+        "",
+        "Gate verdict: 규제노출 <PASS|COND|FAIL> · 안전리스크 <PASS|COND|FAIL>",
+        "<CRITICAL / MAJOR / MINOR / SUGGESTION findings by section/claim;",
+        " 'Looks Strong' observations at the end>"
+      ],
+      "rationale_gate": "본질/근본 (essence/foundation) + the gate verdict",
+      "evidence_pointers": "finding sections / artifact path",
+      "next_action": "Refine the artifact to address the findings"
     },
     "refine": {
       "request_placeholder": "one-line genericized refine target",
+      "artifact": [
+        "### Refinement summary",
+        "",
+        "- Applied: <N findings / 1 revision>",
+        "- Verified: <downstream sections reconcile; gate exposure unchanged;",
+        "  [to be validated] markers intact>",
+        "- Deferred: <items not addressed and why>"
+      ],
+      "rationale_gate": "본질/근본 (essence/foundation) + consistency/gate check",
+      "evidence_pointers": "revised sections / artifact path",
+      "next_action": "Re-critique the revised artifact",
       "terminal_requires_convergence": false
     },
     "start": {
       "request_placeholder": "one-line genericized business topic",
+      "next_action": "Save/commit the business deliverable; optionally /founder:start the next item",
       "terminal_requires_convergence": false
     }
   },

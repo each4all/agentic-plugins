@@ -18,14 +18,18 @@ reads founder state), and what the code-emitted terminal path guarantees.
 
 - at **standalone verb / lifecycle completion** — **code-emitted**
   (ADR-0039 via ADR-0043): the terminal mutation (`state.mjs
-  set-terminal`, the production completion entry point for the six verb
-  commands and the `/founder:start` terminal step) fires
+  finish-verb`, the production completion entry point for the six verb
+  commands and the `/founder:start` terminal step, which makes
+  `set-terminal`'s write) fires
   `emitTerminalHandoffSidecar`, which — after writing the projection —
   shells out to the runtime `footer.mjs` and prints the completion footer
   (context state, completion state + next action, workflow id/path,
   artifact pointers, recommended next work, and the continue-vs-fresh
   session-handoff) on the caller's **stderr**. The model does **not**
-  hand-compose it at completion; it surfaces the emitted one.
+  hand-compose it at completion; it surfaces the emitted one. A
+  `finish-verb` that records an owner gate is not a terminal write and
+  emits nothing: the footer comes with the terminal write that follows the
+  owner's resolution.
 
   The sidecar supplies **no** `--context-state`: it owns no context-budget
   sensor, and footer.mjs reads a supplied value as a caller assertion.
@@ -55,10 +59,12 @@ It is not emitted on a trivial reversible step.
 
 ## Archive timing — Claude same-turn Stop vs Codex
 
-`state.mjs set-terminal --terminal-marker true` is **not** a deferred marker on
-Claude. The Stop hook fires at **every turn end**, so the archive gates — terminal
-marker, terminal phase, HEAD movement, no active children — are evaluated at the
-end of **that same turn**, not when the session closes. If they all pass the
+The terminal write (`state.mjs finish-verb`, or `set-terminal --terminal-marker
+true`) is **not** a deferred marker on Claude.
+The Stop hook fires at **every turn end**, so the archive gates — terminal
+marker, terminal phase, HEAD movement, no active children, no owner gate
+pending — are evaluated at the end of **that same turn**, not when the session
+closes. If they all pass the
 founder workflow is archived then; if any fails it stays marked and a later Stop
 re-evaluates it. Same-turn *evaluation* is the guarantee; same-turn *archival* is
 not, and the move itself is best-effort and non-fatal.
@@ -72,7 +78,9 @@ usually fails on the same turn and the archive lands after the owner commits.
 Consequences for a runbook author:
 
 - **Decide before writing the marker.** If the workflow must stay open past this
-  turn, do not set `--terminal-marker true` yet.
+  turn, do not make the terminal write yet: end with an owner gate
+  (`finish-verb --owner-gate`, never terminal) or with an `append` that records
+  the next step.
 - **The unset window closes at that Stop, and it is a partial rollback.**
   `set-terminal --terminal-marker false` is accepted by both CLIs (covered by
   `tests/orchestrator/test-handoff-sidecar.mjs`), but it is not a bare flag —
@@ -93,8 +101,8 @@ The founder sidecar follows engineer's **path-targeted projection**
 semantics plus orchestrator's **hardened delivery**:
 
 - the projection is computed for the **exact workflow being terminated
-  (by path)**, never a current-branch lookup — `set-terminal` can be
-  invoked cross-branch;
+  (by path)**, never a current-branch lookup — `finish-verb` and
+  `set-terminal` can be invoked cross-branch;
 - **stderr only, never stdout** (the completion scripts' stdout is a
   load-bearing machine channel: path-only / JSON);
 - **fail-closed silent** — a missing/too-old runtime emits nothing and
@@ -118,8 +126,8 @@ semantics plus orchestrator's **hardened delivery**:
 
 **Scope honesty (inherited limitations):** the branch-agnostic Stop-hook
 **orphan sweep** archives terminal workflows whose branch is not checked
-out — deleted, or kept and moved past its baseline — **without** a final
-sidecar emit attempt, same as engineer's sweep (orchestrator's Stop runs
+out — deleted, or kept and moved past its baseline, and never one with an
+owner gate pending — **without** a final sidecar emit attempt, same as engineer's sweep (orchestrator's Stop runs
 its handoff backstop before its archive scan). A workflow that
 terminalizes and whose branch is deleted or switched away from before any
 Stop fires on it gets no backstop emit, so a missed primary emit leaves it
@@ -159,7 +167,7 @@ consumes this documentation, not the implementation):
   projection. founder's publish-needed workflow stays active-terminal until
   the owner publishes, so the surviving tombstone is what keeps every later
   Stop backstop from re-rendering the already-delivered transition
-  (set-terminal → SessionStart consume → Stop would otherwise re-render).
+  (terminal write → SessionStart consume → Stop would otherwise re-render).
   Only a **new primary transition** (the `setTerminal` emit, which may
   legitimately re-render a re-terminalized workflow) or a **different
   workflow's** claim replaces it; a `claimed` marker is still removed on
@@ -183,8 +191,9 @@ from founder's **own** terminal semantics, not engineer's dichotomy:
   `head_moved` is a fail-closed collapse that also covers a failed git
   probe — the wording never overclaims a single cause);
 - archive gate `blocked` with any **other** gate unmet (`terminal_phase`,
-  `no_active_children`) → **`blocked`**, with gate-specific unblocking
-  actions;
+  `no_active_children`, `awaiting_owner`) → **`blocked`**, with
+  gate-specific unblocking actions (for `awaiting_owner`, the pending gate's
+  resolving surface);
 - otherwise → **`next-work-available`**.
 
 The reason names the projection phase (+ the failed gate tokens when
@@ -248,7 +257,7 @@ the peer-runner's ADR-0040 §5 notification, and went with it (ADR-0064).
 
 The primary emission fires **synchronously at completion** and is fully
 host-symmetric: a Codex `$founder:<verb>` completion runs the same
-`set-terminal` CLI and renders the same footer. What is not
+`finish-verb` CLI and renders the same footer. What is not
 non-interactively provable on Codex is the *hook-borne* re-surfacing
 (Stop backstop + SessionStart re-injection): those ride the packaged
 hooks, which require the stage-appropriate hook gate plus a `/hooks`
