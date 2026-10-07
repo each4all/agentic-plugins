@@ -1,5 +1,17 @@
 1. Wait for the background dispatch notification — do NOT poll, sleep,
    or proactively check status.
+{{#capability dispatch_target}}
+
+   **Autopilot (ADR-0063, Claude only):** the driver's stream-json host
+   keeps the session alive while a background task is pending and
+   re-invokes the model when it completes, so wait for the notification
+   exactly as written; never sleep-poll a file (`autopilot-mode.md` § Peer
+   ensembles). The step report the host takes when you end a turn to wait
+   is provisional: on the notification, finish Synthesize, settle the
+   attempt (Phase 2's `peer-runner.mjs settle`) and make the verb's last
+   write, then report again.
+
+{{/capability}}
 2. Read the peer-runner JSON first. Its `status` (`completed`, `failed`
    or `cancelled`), `error_kind` and `envelope_path` describe the run,
    not the peer's answer. When `envelope_path` is null there is no

@@ -1,3 +1,4 @@
+{{^capability commit_surface}}
 - archive gate `blocked` with **only `head_moved` unmet** →
   **`publish-needed`** (the deliverable awaits the owner's save/commit;
   `head_moved` is a fail-closed collapse that also covers a failed git
@@ -9,11 +10,29 @@
 - otherwise → **`next-work-available`**.
 
 The reason names the projection phase (+ the failed gate tokens when
-blocked); the recommended next work carries the workflow's `next_action`
-verbatim; `publish-needed` and `blocked` completions always pass an
+blocked); the recommended next work carries the workflow's `next_action`,
+normalized to one line; `publish-needed` and `blocked` completions always pass an
 explicit `--completion-next-action` (the contract's §3.2 marker-free
 floor: a {{persona}} terminal footer never renders a `[generic fallback]`
 marker).
+{{/capability}}
+{{#capability commit_surface}}
+- archive gate `blocked` with any gate unmet (`head_moved`,
+  `terminal_phase`, `no_active_children`, `awaiting_owner`) → **`blocked`**,
+  with gate-specific unblocking actions: for `head_moved`, the commit (for
+  a `close-complete` workflow, `/{{persona}}:commit` again, since a
+  no-changes close makes no commit and archives the workflow itself;
+  `head_moved` is a fail-closed collapse that also covers a failed git
+  probe); for `awaiting_owner`, the pending gate's resolving surface;
+- otherwise → **`next-work-available`**.
+
+There is no `publish-needed`: {{persona}} commits through its own commit
+surface. The reason names the projection phase (+ the failed gate tokens
+when blocked); the recommended next work carries the workflow's
+`next_action`, normalized to one line; `blocked` completions always pass an explicit
+`--completion-next-action` (the contract's §3.2 marker-free floor:
+{{persona}}'s terminal footer never renders a `[generic fallback]` marker).
+{{/capability}}
 
 ## How to compute + pass the projection (pre-work / manual preflight)
 
@@ -46,7 +65,13 @@ case "$STATUS" in
     # (ADR-0018 §sub-2). Surface: "no active branch context".
     ;;
   no_active_workflow|fail_closed)
+{{^capability legacy_homes}}
     # No active workflow of this persona, or a corrupt state. Degrade: NO projection,
+{{/capability}}
+{{#capability legacy_homes}}
+    # No active workflow of this persona, or a corrupt or ambiguous state (a
+    # canonical + legacy split, legacy_homes). Degrade: NO projection,
+{{/capability}}
     # but routing is still available — pass it standalone so the seam keeps
     # the routing-shaped next command:
     #   runtime:context check --risk <green|yellow|red> --routing-recommendation "$ROUTING"
@@ -57,10 +82,12 @@ esac
 ## Runtime discovery floor (ADR-0043 §4)
 
 `discover-runtime.mjs` gates on one floor, the **footer floor**
-`MIN_RUNTIME_VERSION` (gates on `scripts/footer.mjs`): the first released
-runtime containing the ADR-0043 S2 enum expansion. A runtime below it would
-reject `workflow_kind: {{persona}}` and render the unsupported-kind degradation
-text, so discovery fail-closes instead (silent, no stale-cache fallback).
+`minRuntimeVersion()` (gates on `scripts/footer.mjs`): the declared
+`runtime_footer_floor`, **{{footer_floor}}** for {{persona}}, the first released
+runtime that renders a `workflow_kind: {{persona}}` footer. A runtime below it
+would not — it lacks the complete render interface, or it rejects the kind and
+renders the unsupported-kind degradation text — so discovery fail-closes
+instead (silent, no stale-cache fallback).
 
 The second floor, `NOTIFY_MIN_RUNTIME_VERSION` on `scripts/notify.mjs`, served
 the peer-runner's ADR-0040 §5 notification, and went with it (ADR-0064).
@@ -69,7 +96,13 @@ the peer-runner's ADR-0040 §5 notification, and went with it (ADR-0064).
 
 The primary emission fires **synchronously at completion** and is fully
 host-symmetric: a Codex `${{persona}}:<verb>` completion runs the same
+{{^capability commit_surface}}
 `finish-verb` CLI and renders the same footer. What is not
+{{/capability}}
+{{#capability commit_surface}}
+`finish-verb` CLI and renders the same footer, and `${{persona}}:start` and
+`${{persona}}:commit` run the same Phase 7 driver. What is not
+{{/capability}}
 non-interactively provable on Codex is the *hook-borne* re-surfacing
 (Stop backstop + SessionStart re-injection): those ride the packaged
 hooks, which require the stage-appropriate hook gate plus a `/hooks`
@@ -82,13 +115,19 @@ re-injection depends on the attested Codex hook state.
 ## Rollback note (ADR-0043 §5)
 
 Rollback order is **personas first, runtime second**: the discovery floor
-compares versions, not capabilities, so a runtime release that reverted
-the four-persona seam would still satisfy `>= {{footer_floor}}` and {{persona}} sidecars
+compares versions, not capabilities, so a runtime release that stopped
+accepting `workflow_kind: {{persona}}` would still satisfy `>= {{footer_floor}}` and {{persona}} sidecars
 would keep firing into honest-but-silent rejection. Rolling back the
 {{persona}} package alone is safe; it leaves the durable one-shot artifacts
 behind — remove
 `.agentic-plugins/state/{{persona}}/last-session-handoff.json*` (projection +
-rendered-marker tombstone) so a later re-enable cannot surface a
+rendered-marker tombstone)
+{{#capability legacy_homes}}
+and the pre-migration slot's
+`.claude/agentic-{{persona}}/last-session-handoff.json*`, whether or not a
+workflow still lives there (a pending handoff outlives its workflow)
+{{/capability}}
+so a later re-enable cannot surface a
 pre-rollback handoff as current.
 
 ## Boundaries
@@ -99,9 +138,18 @@ pre-rollback handoff as current.
   handoff artifacts — the projection slot, the render snapshot, and the
   footer-rendered marker. The runtime footer it feeds is advisory and
   pointer-only.
+{{^capability legacy_homes}}
 - **Fail-closed.** A corrupt {{persona}} state yields no projection; the seam
   degrades to context-risk + routing rather than trusting a partial
   projection.
+{{/capability}}
+{{#capability legacy_homes}}
+- **Fail-closed.** A corrupt {{persona}} state yields no projection, and so
+  does an ambiguous one (a canonical + legacy split) for the branch-based
+  preflight, which finds the workflow itself (the terminal sidecar is handed
+  its path); the seam degrades to context-risk + routing rather than
+  trusting a partial projection.
+{{/capability}}
 - **No auto-fresh on detached HEAD.** The branch-based preflight reports
   "no active branch context" and never recommends a fresh session from a
   state with no branch to anchor to. The path-targeted terminal sidecar

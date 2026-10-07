@@ -23,8 +23,8 @@ and MAY be written in separate calls.
 generated (empty when no run launched) before its last write, and the
 ledger, not the agent, decides what the workflow records:
 
-- never launched (no dispatch ran: the privacy gate kept the verb
-  local-only): nothing, and the phase note's first heading reads
+- never launched ({{skip_cause}}):
+  nothing, and the phase note's first heading reads
   `### Ensemble skipped: …`;
 - launched, then failed, cancelled or abandoned: an `ensemble_results`
   entry with verdict `failed` and the ledger's `error_kind` in its summary;

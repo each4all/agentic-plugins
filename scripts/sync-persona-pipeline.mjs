@@ -77,7 +77,7 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // The format the generated loader reads (lib/persona.mjs READER_MINOR): the
 // check forgives an unknown scalar only where the loader does too.
-const DECLARATION_FAMILY = 'persona-declaration-1.3';
+const DECLARATION_FAMILY = 'persona-declaration-1.4';
 const REGISTRY_REL = 'core/skills/decide/references/decision-axes.yml';
 
 async function loadValidator() {
@@ -210,6 +210,10 @@ function crossFieldFailures({ persona, pluginDir, declaration, registry, units, 
       failures.push(`${where}: verbs.${verb}.default_profile ${JSON.stringify(v.default_profile)} is not one of its profiles (${v.profiles.join(', ')})`);
     }
   }
+  const investigate = isPlainObject(d.verbs?.investigate) ? d.verbs.investigate : {};
+  if (Object.hasOwn(investigate, 'brief_profile') && !(Array.isArray(investigate.profiles) && investigate.profiles.includes(investigate.brief_profile))) {
+    failures.push(`${where}: verbs.investigate.brief_profile ${JSON.stringify(investigate.brief_profile)} is not one of its profiles (${(investigate.profiles ?? []).join(', ')})`);
+  }
 
   // Format 1.2: the privacy spec the peer policy cites is a regular file of
   // the plugin — not a directory, and not a link that leads out of it.
@@ -231,15 +235,16 @@ function crossFieldFailures({ persona, pluginDir, declaration, registry, units, 
     }
   }
 
-  // PC2a4: the investigate brief's file name is derived from its default
+  // PC2a4: the investigate brief's file name is derived from its brief
   // profile (derived.brief_file); the declared artifact must name exactly that
   // one file, so the convention stays bound to declared data.
   const briefFile = derivedFields(d).brief_file;
-  // PC3 U7: the brief's declared names belong to investigate, the verb that
-  // saves the brief.
+  // PC3 U7 (format 1.3) and PC3b U5d (1.4): the brief's declared names belong
+  // to investigate, the verb that saves the brief, and its brief profile is
+  // one of its profiles.
   for (const [verbName, verb] of Object.entries(d.verbs ?? {})) {
     if (verbName === 'investigate') continue;
-    for (const key of ['brief_file', 'output_root_env']) {
+    for (const key of ['brief_file', 'output_root_env', 'brief_profile', 'brief_ensemble_type']) {
       if (Object.hasOwn(verb ?? {}, key)) failures.push(`${where}: verbs.${verbName}.${key} is declared, but only investigate saves a brief`);
     }
   }
@@ -247,7 +252,7 @@ function crossFieldFailures({ persona, pluginDir, declaration, registry, units, 
     const artifact = d.verbs?.investigate?.artifact;
     const named = Array.isArray(artifact) ? [...artifact.join('\n').matchAll(/(?<![\w.\/-])[\w.-]+\.md(?![\w.\/-])/g)].map((m) => m[0]) : [];
     if (named.length !== 1 || named[0] !== briefFile) {
-      const source = Object.hasOwn(d.verbs.investigate, 'brief_file') ? 'the declared verbs.investigate.brief_file' : `the default profile ${d.verbs.investigate.default_profile} with - → _`;
+      const source = Object.hasOwn(d.verbs.investigate, 'brief_file') ? 'the declared verbs.investigate.brief_file' : `the brief profile ${derivedFields(d).brief_profile} with - → _`;
       failures.push(`${where}: verbs.investigate.artifact must name exactly one *.md file, ${briefFile} (${source}); it names ${named.length === 0 ? 'none' : named.join(', ')}`);
     }
   }

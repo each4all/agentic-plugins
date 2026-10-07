@@ -1,5 +1,11 @@
 ## Offering the Choice
 
+{{#capability dispatch_target}}
+**Autopilot mode (ADR-0063, Claude only):** when the command's Phase 0
+preflight printed the autopilot banner, do not offer the choice: present in
+batch (`autopilot-mode.md`). Everything below is the interactive rule.
+
+{{/capability}}
 At the first major presentation point in a command or skill workflow, ask:
 
 > How would you like to review this?

@@ -119,9 +119,13 @@ const PIPELINE_VERB_DESTS = VERB_DESTS;
 // The runbooks whose finalize sits under a generated finalize heading, after
 // every extension their slots hold (PC2a3 QD7, QD8).
 const HEADING_DESTS = ['commands/critique.md', 'commands/refine.md'];
-// start: its bootstrap (the clean-baseline gate) and its workflow_type read
-// are generated; the lifecycle list and the terminal block stay authored.
+// start: its Phase 0, bootstrap (the clean-baseline gate) and workflow_type
+// read, its phase-boundary rules and its terminal block are generated; the
+// lifecycle list stays authored. engineer's joined in PC3b U2.
 const START = 'commands/start.md';
+// The commit surface's runbook (PC3b U4): enrolled exactly where commit_surface
+// is on.
+const COMMIT = 'commands/commit.md';
 
 // Each extension a slot holds (QD8): the sentences its authored text must
 // state, so a marker left without the text it stands for fails.
@@ -230,7 +234,7 @@ function sentenceAt(text, sentence) {
  * by `delimiter` when given; `after` is appended to the block.
  * `inheritedNote` puts a NOTE in the shell's environment beforehand.
  */
-function runBlock(shell, block, persona, { note = '', failAppend = false, delimiter = null, active = '', findStatus = 0, resolveStatus = 0, inheritedNote = null, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0 }) {
+function runBlock(shell, block, persona, { note = '', failAppend = false, delimiter = null, active = '', findStatus = 0, resolveStatus = 0, inheritedNote = null, after = '', baseline = '', baselineStatus = 0, readOutput = '', readStatus = 0, preflightStatus = 0, settleStatus = 0, clearStatus = 0, argsText = null, diag = '', diagStatus = 0, phase7Status = 0 }) {
   const dir = mkdtempSync(join(tmpdir(), 'pc2a2b-finalize.'));
   try {
     mkdirSync(join(dir, 'bin'));
@@ -241,6 +245,10 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       '#!/bin/sh',
       // An inline script (start's JSON reads) runs on the real node.
       'if [ "$1" = -e ]; then exec "$STUB_REAL_NODE" "$@"; fi',
+      // start's args file is read by the real extractor (PC3b U2); the Phase 7
+      // driver is a script without a subcommand, logged by its mode.
+      'case "$1" in */start-args.mjs) printf \'start-args\\n\' >> "$STUB_LOG"; shift; exec "$STUB_REAL_NODE" "$STUB_START_ARGS" "$@";; esac',
+      'case "$1" in */phase7-commit.mjs) printf \'phase7 %s\\n\' "$3" >> "$STUB_LOG"; printf \'%s\' "$*" | tr \'\\n\' \' \' >> "$STUB_ARGV"; printf \'\\n\' >> "$STUB_ARGV"; exit "$STUB_PHASE7_RC";; esac',
       'printf \'%s\\n\' "$2" >> "$STUB_LOG"',
       'printf \'%s\' "$*" | tr \'\\n\' \' \' >> "$STUB_ARGV"; printf \'\\n\' >> "$STUB_ARGV"',
       'if [ "$2" = find-active ]; then printf \'%s\\n\' "$STUB_ACTIVE"; exit "$STUB_FIND_RC"; fi',
@@ -248,6 +256,7 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       'if [ "$2" = settle ]; then exit "$STUB_SETTLE_RC"; fi',
       'if [ "$2" = awaiting-owner-clear ]; then exit "$STUB_CLEAR_RC"; fi',
       'if [ "$2" = check-clean-baseline ]; then printf \'%s\' "$STUB_BASELINE"; exit "$STUB_BASELINE_RC"; fi',
+      'if [ "$2" = diagnose-redundancy ]; then printf \'%s\' "$STUB_DIAG"; exit "$STUB_DIAG_RC"; fi',
       'if [ "$2" = read ]; then printf \'%s\' "$STUB_READ"; exit "$STUB_READ_RC"; fi',
       'if [ "$2" = create ]; then printf \'%s\\n\' "$STUB_CREATED"; exit 0; fi',
       'if [ "$2" = resolve ]; then printf \'%s\\n\' "$4" > "$STUB_ARGS"; printf \'%s\\n\' "$STUB_CONTEXT"; printf \'%s\\n\' "$STUB_DIAGNOSTIC" >&2; exit "$STUB_RESOLVE_RC"; fi',
@@ -260,6 +269,13 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
     ].join('\n'), { mode: 0o755 });
     // The delimiter first, then the note, which may hold the old delimiter.
     let script = delimiter === null ? block : block.replace("<<'PHASE_NOTE'", () => `<<'${delimiter}'`).replace('\nPHASE_NOTE\n', () => `\n${delimiter}\n`);
+    // A start block that reads an args file gets one, as the runbook's steps
+    // write it (PC3b U2).
+    if (argsText !== null) {
+      mkdirSync(join(dir, 'start-args'));
+      writeFileSync(join(dir, 'start-args', 'args.json'), JSON.stringify({ agentic_args: 1, text: argsText }));
+      script = script.replace("ARGS_DIR='<directory from step 1>'", () => `ARGS_DIR='${join(dir, 'start-args')}'`);
+    }
     script = script.replace('\n<the phase note above, filled in>\n', () => `\n${note}\n`);
     script += after;
     const env = {
@@ -284,6 +300,10 @@ function runBlock(shell, block, persona, { note = '', failAppend = false, delimi
       STUB_PREFLIGHT_RC: String(preflightStatus),
       STUB_SETTLE_RC: String(settleStatus),
       STUB_CLEAR_RC: String(clearStatus),
+      STUB_DIAG: diag,
+      STUB_DIAG_RC: String(diagStatus),
+      STUB_PHASE7_RC: String(phase7Status),
+      STUB_START_ARGS: join(pluginRoot(persona), 'scripts', 'start-args.mjs'),
       STUB_CONTEXT: RESOLVER_CONTEXT,
       STUB_DIAGNOSTIC: RESOLVER_DIAGNOSTIC,
       ...(inheritedNote === null ? {} : { NOTE: inheritedNote }),
@@ -377,8 +397,63 @@ describe('each convergent variant is its plain template plus the convergence che
   }
 });
 
+// Which ADR enabled a persona's footer is history, not a capability (PC3b U5a
+// review, then the finish and terminal templates): every template that states
+// the code-emitted footer, the skills' included, rendered under every legal
+// capability combination (dispatch_target needs commit_surface), attributes
+// it to ADR-0039 alone, so an attribution placed under a capability shows even
+// where no persona's declaration renders it.
+describe('the code-emitted footer names ADR-0039 alone, in every template and every legal combination (PC3b)', () => {
+  const FOOTER = /The runtime completion footer is \*\*code-emitted\*\* on [^(]*\(([^)]*)\)/g;
+  const templates = [...new Map(MANIFEST.regions
+    .filter((r) => readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8').includes('The runtime completion footer is **code-emitted**'))
+    .map((r) => [r.template, r])).values()];
+  it('finds every template that states the footer', () => {
+    deepStrictEqual(templates.map((r) => r.template).sort(), [
+      'regions/commit-completion-footer.md', 'regions/skill-start-finish-commit.md', 'regions/skill-start-finish-convergent.md', 'regions/skill-start-finish.md',
+      'regions/skill-verb-finish-convergent.md', 'regions/skill-verb-finish.md', 'regions/start-commit.md', 'regions/start-terminal-convergent.md',
+      'regions/start-terminal.md', 'regions/verb-completion-footer.md',
+    ]);
+    const both = (r) => /`blocked`/.test(readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8')) && /`publish-needed`/.test(readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8'));
+    deepStrictEqual(templates.filter(both).map((r) => r.template).sort(), ['regions/skill-verb-finish-convergent.md', 'regions/skill-verb-finish.md', 'regions/verb-completion-footer.md'], 'the templates whose completion state the matrix checks');
+  });
+  for (const dispatch of [false, true]) {
+    for (const commit of [false, true]) {
+      for (const legacy of [false, true]) {
+        if (dispatch && !commit) continue;
+        it(`dispatch_target ${dispatch}, commit_surface ${commit}, legacy_homes ${legacy}`, () => {
+          for (const r of templates) {
+            const base = declaration(r.personas[0]);
+            const source = readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8');
+            const rendered = renderTemplate(source, {
+              declaration: renderingDeclaration({ ...base, capabilities: { ...base.capabilities, dispatch_target: dispatch, commit_surface: commit, legacy_homes: legacy } }),
+              substitutions: r.substitutions ?? {}, label: r.template,
+            });
+            const out = squash(rendered);
+            ok(!out.includes('{{'), `${r.template}: nothing left unrendered`);
+            deepStrictEqual([...out.matchAll(FOOTER)].map((m) => m[1]), ['ADR-0039'], `${r.template}: the footer, stated once, attributed to ADR-0039 alone`);
+            ok(!/ADR-0043|enabled for \S+ by ADR-/.test(out), `${r.template}: no capability-keyed attribution`);
+            // The footer's paragraph joins across its capability blocks with
+            // no line that starts a Markdown list (review of this unit).
+            const para = rendered.split(/\n[ \t]*\n/).find((p) => p.includes('The runtime completion footer is **code-emitted**'));
+            ok(!/^ {0,3}(?:[-+*]|\d+[.)])\s/m.test(para), `${r.template}: a line of the footer paragraph starts a list`);
+            // Where the template states both completion states, the one it
+            // renders follows commit_surface, whatever the other capabilities
+            // are. Chosen by the states, not by the template's capability
+            // keys, which the defect itself may change (N101).
+            if (/`blocked`/.test(source) && /`publish-needed`/.test(source)) {
+              strictEqual(/`blocked`/.test(out), commit, `${r.template}: blocked exactly with commit_surface`);
+              strictEqual(/`publish-needed`/.test(out), !commit, `${r.template}: publish-needed exactly without it`);
+            }
+          }
+        });
+      }
+    }
+  }
+});
+
 // engineer's runbooks join the regions one group at a time in Stage 3 (PC3 U7).
-const ENGINEER_JOINED = new Set(['commands/checkpoint.md', 'commands/peer-now.md', 'commands/resume.md', 'commands/frame.md', 'commands/compose.md', 'commands/decide.md', 'commands/critique.md', 'commands/refine.md', 'commands/investigate.md']);
+const ENGINEER_JOINED = new Set(['commands/checkpoint.md', 'commands/peer-now.md', 'commands/resume.md', 'commands/frame.md', 'commands/compose.md', 'commands/decide.md', 'commands/critique.md', 'commands/refine.md', 'commands/investigate.md', 'commands/start.md']);
 
 describe('runbook regions: the contracts hold for every enrolled persona', () => {
   it('the contracts reach the region files they are about (guards a vacuous pass)', () => {
@@ -386,6 +461,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
       ok(covered(dest), `${dest} has no generated region`);
       deepStrictEqual([...FILES.get(dest)].sort(), ENGINEER_JOINED.has(dest) ? ['designer', 'engineer', 'founder'] : ['designer', 'founder'], `${dest}: enrolled personas`);
     }
+    const commitOn = ['designer', 'engineer', 'founder'].filter((p) => declaration(p).capabilities?.commit_surface === true);
+    ok(covered(COMMIT) && commitOn.length > 0, `${COMMIT} has no generated region`);
+    deepStrictEqual([...FILES.get(COMMIT)].sort(), commitOn, `${COMMIT}: enrolled personas`);
+    deepStrictEqual([...FILES.keys()].sort(), [...ENGINEER_JOINED, COMMIT].sort(), 'every runbook with regions is one the contracts name');
   });
 
   for (const [dest, personas] of FILES) {
@@ -444,6 +523,37 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             if (dest === 'commands/peer-now.md') strictEqual(runs.length, 1, 'peer-now dispatches once');
             strictEqual(shellSites(text, /--image\b/).length, 0, `${persona}: --image in a shell block`);
           });
+
+          if (PIPELINE_VERB_DESTS.includes(dest)) {
+            // The path-targeted sidecar renders on a detached HEAD under the
+            // runtime's usual continue-vs-fresh policy; only the branch
+            // preflight never recommends a fresh session there (plan-verify
+            // peer, PC3b U3b, measured with the real projection functions).
+            it('the completion footer states the detached-HEAD rule as the scripts apply it', () => {
+              const verb = dest.slice('commands/'.length, -'.md'.length);
+              const footer = squash(region(text, `${verb}-completion-footer`));
+              ok(footer.includes('On a detached HEAD the branch-based preflight reports "no active branch context" and never recommends a fresh session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the footer as on a branch, its continue-vs-fresh advice included.'), footer);
+              ok(!/Detached HEAD never auto-recommends/i.test(footer), 'not the blanket rule the sidecar does not keep');
+            });
+
+            // Which ADR enabled a persona's footer is history, not a capability
+            // (PC3b U5a review): the footer names ADR-0039 alone, and the
+            // completion state, by commit surface, sits inside the one sentence.
+            it('the completion footer names ADR-0039 alone, and its completion state by commit surface', () => {
+              const verb = dest.slice('commands/'.length, -'.md'.length);
+              const raw = region(text, `${verb}-completion-footer`);
+              // Squashing hides a break that starts a Markdown list mid-sentence
+              // (review of this unit), so the raw lines are read first.
+              ok(!/^ {0,3}(?:[-+*]|\d+[.)])\s/m.test(raw), 'no line of the footer paragraph starts a list');
+              const footer = squash(raw);
+              ok(footer.includes('The runtime completion footer is **code-emitted** on this verb\'s terminal path (ADR-0039): the terminal write (`state.mjs finish-verb`, which takes `set-terminal`\'s path) fires the ADR-0031 session-handoff sidecar, which shells out to the runtime `footer.mjs` and prints the rendered footer — context state, completion state ('), 'the emitting write, ADR-0039 alone');
+              ok(!/ADR-0043/.test(footer), 'no ADR-0043 attribution');
+              const commit = declaration(persona).capabilities.commit_surface === true;
+              const tail = ' + state-derived next action, workflow id/path, artifact pointers, recommended next work, and the continue-vs-fresh session-handoff — on that command\'s **stderr**.';
+              strictEqual(footer.includes(`completion state (\`blocked\`, with the commit as its unblocking action, when only the commit remains)${tail}`), commit, 'blocked, exactly where the persona has a commit surface');
+              strictEqual(footer.includes(`completion state (${persona}'s manually-published mapping surfaces \`publish-needed\` when only the owner's save/commit remains)${tail}`), !commit, 'publish-needed, exactly where the owner commits');
+            });
+          }
 
           if (dest === 'commands/checkpoint.md') {
             it('the checkpoint is written to the workflow find-active found, after finding it', () => {
@@ -551,6 +661,76 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             });
           }
 
+          if (dest === COMMIT) {
+            // PC3b U4: the commit surface's runbook. Every block resolves the
+            // workflow itself (a shell variable does not outlive a Bash call).
+            const only = (id) => {
+              const found = shellBlocks(region(text, id));
+              strictEqual(found.length, 1, `${persona}/commit: one block in ${id}`);
+              return found[0].text;
+            };
+            const dispatch = declaration(persona).capabilities.dispatch_target === true;
+
+            it('commit Phase 0, run: find-active, a checked read and the /start refusal precede the commit preflight on $ACTIVE; each failure stops the block before the preflight (PC3b U4)', () => {
+              const block = only('commit-phase-0');
+              const cases = [
+                // [find output, find exit, read output, read exit, preflight exit] → [exit, calls]
+                ['/w/a.md', 0, '{"workflow_type":"verb-chain"}', 0, 0, 0, ['find-active', 'read', 'autopilot-preflight']],
+                ['/w/a.md', 0, '{}', 0, 0, 0, ['find-active', 'read', 'autopilot-preflight']],
+                ['/w/a.md', 0, '{"workflow_type":"start"}', 0, 0, 1, ['find-active', 'read']],
+                // A read that fails stops with its status, whatever it printed.
+                ['/w/a.md', 0, '{"workflow_type":"verb-chain"}', 3, 0, 3, ['find-active', 'read']],
+                ['/w/a.md', 0, 'not json', 0, 0, 1, ['find-active', 'read']],
+                ['/w/a.md', 0, '{}', 0, 4, 4, ['find-active', 'read', 'autopilot-preflight']],
+                ['', 0, '{}', 0, 0, 1, ['find-active']],
+                ['/w/a.md', 5, '{}', 0, 0, 5, ['find-active']],
+              ];
+              for (const [active, findStatus, readOutput, readStatus, preflightStatus, status, log] of cases) {
+                const what = `${JSON.stringify([active, findStatus, readOutput, readStatus, preflightStatus])}`;
+                const r = runBlock('bash', block, persona, { active, findStatus, readOutput, readStatus, preflightStatus });
+                deepStrictEqual([r.status, r.log], [status, log], `${what}: ${r.stderr}`);
+                if (log.includes('read')) ok(r.argv[1].endsWith(' read --workflow-path /w/a.md'), `${what}: the read targets the found workflow: ${r.argv[1]}`);
+                if (log.includes('autopilot-preflight')) ok(/ autopilot-preflight --workflow-path \/w\/a\.md --host \S+ --surface commit$/.test(r.argv[2]), `${what}: the commit surface's preflight on $ACTIVE: ${r.argv[2]}`);
+                if (status === 0) strictEqual(r.stdout, 'Workflow: /w/a.md\n', what);
+              }
+              const start = runBlock('bash', block, persona, { active: '/w/a.md', readOutput: '{"workflow_type":"start"}' });
+              ok(start.stderr.includes(`is an /${persona}:start workflow; its own Phase 7 commits it`), start.stderr);
+              const none = runBlock('bash', block, persona, { active: '' });
+              ok(none.stderr.includes(`No active ${persona} workflow on pc2a2b — nothing for /${persona}:commit to commit or close.`), none.stderr);
+            });
+
+            it('commit staging clear, run: one write on the workflow found — the gate, the next step commit and its next action; a refused clear stops the block (PC3b U4)', () => {
+              const block = only('commit-staging-clear');
+              const r = runBlock('bash', block, persona, { active: '/w/a.md', after: '\nprintf ran > out\n' });
+              deepStrictEqual([r.status, r.log, r.out], [0, ['find-active', 'awaiting-owner-clear'], 'ran'], r.stderr);
+              for (const part of [' --workflow-path /w/a.md ', ' --gate staging-set ', ` --next-action Commit the confirmed staging set with /${persona}:commit `, ' --next-step-kind commit --next-step-confidence HIGH']) {
+                ok(r.argv[1].includes(part), `${part}: ${r.argv[1]}`);
+              }
+              const refused = runBlock('bash', block, persona, { active: '/w/a.md', clearStatus: 6, after: '\nprintf ran > out\n' });
+              deepStrictEqual([refused.status, refused.out], [6, null], 'a refused clear stops the block');
+              const none = runBlock('bash', block, persona, { active: '' });
+              deepStrictEqual([none.status, none.log], [1, ['find-active']], 'no workflow, no write');
+            });
+
+            it('commit driver blocks, run: each finds the workflow, hands it to the driver in its own mode, propagates the driver\'s exit, and never reaches the driver without one; the autopilot block exactly where dispatch_target is on, with no bypass flag (PC3b U4)', () => {
+              strictEqual(parseRegions(text).regions.some((x) => x.id === 'commit-autopilot'), dispatch, 'the autopilot region');
+              const modes = [['commit-plan', 'plan'], ['commit-execute', 'execute'], ['commit-close', 'close'], ...(dispatch ? [['commit-autopilot', 'autopilot']] : [])];
+              for (const [id, mode] of modes) {
+                const block = only(id);
+                const r = runBlock('bash', block, persona, { active: '/w/a.md' });
+                deepStrictEqual([r.status, r.log], [0, ['find-active', `phase7 ${mode}`]], `${id}: ${r.stderr}`);
+                ok(r.argv[1].includes(` --mode ${mode} --workflow-path /w/a.md --repo-root /`), `${id}: ${r.argv[1]}`);
+                strictEqual(runBlock('bash', block, persona, { active: '/w/a.md', phase7Status: 3 }).status, 3, `${id}: the driver's exit`);
+                deepStrictEqual(runBlock('bash', block, persona, { active: '' }).log, ['find-active'], `${id}: no workflow, no driver`);
+                if (mode === 'autopilot') {
+                  const tokens = r.argv[1].split(' ');
+                  for (const flag of ['--confirm-non-interactive', '--non-interactive', '--include-extra', '--accept-current-tree', '--subject', '--subject-pkg', '--suggested-subjects']) ok(!tokens.includes(flag), `the autopilot block passes ${flag}`);
+                  ok(!block.includes('ACCEPT_CURRENT_TREE'), 'the autopilot block reads no accept bypass');
+                }
+              }
+            });
+          }
+
           if (dest === START) {
             const blocks = shellBlocks(text);
             const blockWith = (re) => {
@@ -558,12 +738,59 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               strictEqual(found.length, 1, `${persona}/start: one block matches ${re}`);
               return found[0];
             };
+            // PC3b U2: with commit_surface on, the bootstrap reads an args file
+            // (the description, an optional --base-branch), runs the redundancy
+            // probe first, and the lifecycle's one terminal write is the Phase 7
+            // driver; off, the request is the placeholder and the terminal write
+            // is finish-verb kind commit.
+            const commits = declaration(persona).capabilities.commit_surface === true;
+            const terminalBlock = () => (commits ? blockWith(/phase7-commit\.mjs" \\\n\s+--mode plan/) : blockWith(/state\.mjs" finish-verb \\/));
+            const FEATURE_TEXT = `Fix it's "A"; $(id) > f --base-branch 'feat/x'`;
+
+            // PC3b U3c: the footer the lifecycle's terminal write emits is
+            // stated by the terminal region, once. founder's and designer's
+            // authored paragraph after it claimed the blanket detached-HEAD
+            // rule the path-targeted sidecar does not keep, and named
+            // ADR-0043 by stage.
+            it('the terminal region states the footer, once, with the detached-HEAD rule as the scripts apply it', () => {
+              const id = commits ? 'start-commit' : convergent(persona, 'start') ? 'start-terminal-convergent' : 'start-terminal';
+              for (const other of ['start-commit', 'start-terminal', 'start-terminal-convergent'].filter((x) => x !== id)) {
+                strictEqual(parseRegions(text).regions.filter((r) => r.id === other).length, 0, `only the terminal variant the declaration selects, not ${other}`);
+              }
+              const terminal = squash(region(text, id));
+              for (const sentence of [
+                'Do **not** hand-compose a second footer; surface the emitted one.',
+                'It is advisory, pointer-only and fail-closed (a missing or too-old runtime emits nothing, and the SessionStart backstop still re-surfaces the handoff); it never mutates host session context.',
+                'On a detached HEAD the branch-based preflight reports "no active branch context" and never recommends a fresh session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the footer as on a branch, its continue-vs-fresh advice included.',
+                'Wiring details: `core/skills/_shared/references/session-handoff.md`.',
+              ]) ok(terminal.includes(sentence), `${persona}/start: ${sentence}`);
+              // Which ADR enabled a persona's footer is history, not a
+              // capability (PC3b U5a review): ADR-0039 alone, for every persona.
+              ok(!/ADR-0043/.test(terminal), 'no ADR-0043 attribution');
+              strictEqual(terminal.includes('completion state (`publish-needed` while only the owner\'s save and commit remain)'), !commits, 'the publish-needed mapping, exactly where the owner commits');
+              // How the footer is emitted, by the write that emits it (plan-verify
+              // peer, PC3b U3c: engineer's was not required).
+              ok(terminal.includes(commits
+                ? 'The runtime completion footer is **code-emitted** on this terminal path (ADR-0039): `set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out to the runtime `footer.mjs`'
+                : 'The runtime completion footer is **code-emitted** on this terminal write (ADR-0039): `finish-verb` takes `set-terminal`\'s path, which fires the ADR-0031 session-handoff sidecar; it shells out to the runtime `footer.mjs`'), 'the write that emits the footer');
+              strictEqual(terminal.split('**code-emitted**').length - 1, 1, 'stated once in the region');
+              // A terminal workflow stays on the branch until the Stop hook
+              // archives it, and start resumes it until then (plan-verify peer,
+              // PC3b U3c).
+              strictEqual(terminal.includes(`The workflow is then terminal, and the Stop hook archives it once every archive gate passes (here, once the owner's commit moves HEAD); until then \`/${persona}:start\` on this branch finds it and resumes it, so start the next deliverable after the archive, or on another branch.`), !commits, 'when the next start bootstraps, where the owner commits');
+              if (convergent(persona, 'start')) ok(terminal.includes('so the workflow stays open, the Stop hook cannot archive it, and no footer prints.'), 'not converged, no footer prints');
+              // Nothing outside the region states the footer again.
+              const outside = text.slice(0, text.indexOf(`<!-- pipeline:begin ${id} -->`)) + text.slice(text.indexOf(`<!-- pipeline:end ${id} -->`));
+              for (const fact of [/code-emit/i, /Detached HEAD never auto-recommends/i, /ADR-0043 S\d/, /the branch-based preflight is what reports/i]) {
+                ok(!fact.test(outside), `${persona}/start: ${fact} stated outside the terminal region`);
+              }
+            });
 
             it('start Phase 0 runs autopilot-preflight on $ACTIVE after the find guard and before the baseline check or any write; a refusal stops the block (PC2b DD5)', () => {
               const block = blockWith(/find-active --repo-root "\$REPO_ROOT"\)"$/m);
               ok(/node "\$CLAUDE_PLUGIN_ROOT\/scripts\/state\.mjs" autopilot-preflight --workflow-path "\$ACTIVE" --host "\$\{AGENTIC_HOST:-claude\}" \|\| exit \$\?$/m.test(logical(block.text)), logical(block.text));
               const pre = shellSites(text, /state\.mjs" autopilot-preflight/);
-              const later = shellSites(text, /state\.mjs" (check-clean-baseline|create|append|set-terminal|finish-verb)\b/);
+              const later = shellSites(text, /(state\.mjs" (check-clean-baseline|diagnose-redundancy|create|append|set-terminal|finish-verb)|phase7-commit\.mjs")/);
               strictEqual(pre.length, 1, 'one preflight');
               ok(later.length > 0 && later.every((w) => pre[0] < w), 'before the baseline check and every write');
               const refused = runBlock('bash', block.text, persona, { active: '', preflightStatus: 4, after: '\nprintf ran > out\n' });
@@ -572,10 +799,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
 
             it('start bootstrap, run: only a clean or accepted baseline creates the workflow (investigate, workflow_type start); any other status, or a failed check, stops before any write', () => {
               const block = blockWith(/state\.mjs" check-clean-baseline /).text;
+              const reads = commits ? ['start-args'] : [];
               const cases = [
                 ['{"status":"clean"}', 0, 0],
                 ['{"status":"accepted"}', 0, 0],
-                ['{"status":"dirty"}', 0, 1],
+                ['{"status":"dirty","categories":{"modified":["a.md"],"staged":[],"untracked":[]}}', 0, 1],
                 ['{}', 0, 1],
                 ['{"status":""}', 0, 1],
                 ['{"status":"unknown"}', 0, 1],
@@ -585,24 +813,74 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 ['{"status":"clean"}', 4, 4],
               ];
               for (const [baseline, baselineStatus, status] of cases) {
-                const r = runBlock('bash', block, persona, { baseline, baselineStatus, after: '\nprintf \'%s\' "$ACTIVE" > out\n' });
+                const r = runBlock('bash', block, persona, { baseline, baselineStatus, argsText: commits ? FEATURE_TEXT : null, after: '\nprintf \'%s\' "$ACTIVE" > out\n' });
                 const what = `${JSON.stringify(baseline)} (check exit ${baselineStatus})`;
                 strictEqual(r.status, status, `${what}: ${r.stderr}`);
+                const check = r.argv[0];
+                // The check takes the accept bypass as a flag (PC3b U2).
+                ok(check.includes(' check-clean-baseline --repo-root ') && check.trimEnd().endsWith(' --accept-current-tree false'), `${what}: ${check}`);
                 if (status === 0) {
-                  deepStrictEqual(r.log, ['check-clean-baseline', 'create'], what);
+                  deepStrictEqual(r.log, [...reads, 'check-clean-baseline', 'create'], what);
                   ok(r.argv[1].includes(' --verb investigate --workflow-type start ') && r.argv[1].includes(` --persona ${persona} `), `${what}: the start workflow, for ${persona}`);
                   // The block sets the repository and branch itself (a fresh shell has neither).
                   ok(/ --repo-root \/\S+( |$)/.test(r.argv[0]) && / --repo-root \/\S+ /.test(r.argv[1]), `${what}: an absolute repository root`);
                   ok(r.argv[1].includes(' --git-baseline-branch pc2a2b '), `${what}: the branch the shell is on`);
+                  // With commit_surface the description the args file held, the
+                  // embedded --base-branch removed and nothing in it run.
+                  if (commits) ok(r.argv[1].includes(` --original-request Fix it's "A"; $(id) > f --current-phase `), `${what}: the description: ${r.argv[1]}`);
                   strictEqual(r.out, '/w/created.md', `${what}: $ACTIVE holds the workflow create printed`);
                 } else {
-                  deepStrictEqual(r.log, ['check-clean-baseline'], `${what}: nothing written`);
+                  deepStrictEqual(r.log, [...reads, 'check-clean-baseline'], `${what}: nothing written`);
                 }
-                if (baseline === '{"status":"dirty"}') ok(r.stderr.includes(`/${persona}:start gates a clean baseline`), 'the dirty message names the persona');
+                if (baseline.startsWith('{"status":"dirty"')) {
+                  ok(r.stderr.includes(`/${persona}:start gates a clean baseline`), 'the dirty message names the persona');
+                  // commit_surface: the categories, and the worktree and
+                  // sweep-into-commit resolutions (ADR-0028 §Layer-1).
+                  for (const part of ['"modified": [', '• worktree: /runtime:worktree plan', "• accept: set ACCEPT_CURRENT_TREE=1 to sweep the current tree into the workflow's commit"]) strictEqual(r.stderr.includes(part), commits, `${part}: ${r.stderr}`);
+                }
+              }
+              // ACCEPT_CURRENT_TREE=1 set in the block, unexported, still reaches the check.
+              const accepted = runBlock('bash', `ACCEPT_CURRENT_TREE=1\n${block}`, persona, { baseline: '{"status":"accepted"}', argsText: commits ? FEATURE_TEXT : null });
+              strictEqual(accepted.status, 0, accepted.stderr);
+              ok(accepted.argv[0].trimEnd().endsWith(' --accept-current-tree true'), accepted.argv[0]);
+              if (commits) {
+                // An args file outside the grammar stops the block before any write.
+                const refused = runBlock('bash', block, persona, { baseline: '{"status":"clean"}', argsText: '' });
+                deepStrictEqual([refused.status, refused.log], [2, ['start-args']], refused.stderr);
               }
             });
 
-            it('start resume, run: workflow_type is start only when the workflow says so; a missing, empty, malformed or failed read is verb-chain; only a start workflow is written — its next step cleared, its position kept (PC2b RV4)', () => {
+            if (commits) {
+              it('start redundancy probe (commit_surface), run: it reads the base branch from its args file, writes nothing, pauses on a finding, and never stops on a failed probe (ADR-0020 §Sub-decision 7)', () => {
+                const block = blockWith(/state\.mjs" diagnose-redundancy /).text;
+                ok(block.startsWith("ARGS_DIR='<directory from step 1>'\n"), 'the probe reads an args file of its own');
+                const cases = [
+                  ['{"status":"redundancy","scanned":{"git_present":true},"evidence":{"commits":["abc"]},"recommended_action":"review"}', 0, ['⚠ Redundancy detected on branch', '"commits": [', '- proceed:', '- abort:', '→ PAUSED: put the evidence to the user and wait for proceed or abort.']],
+                  ['{"status":"clear","scanned":{"git_present":true}}', 0, []],
+                  ['{"status":"clear","scanned":{"git_present":false}}', 0, ['git is not on PATH']],
+                  ['{"status":"clear","scanned":{"base_resolution_failed":true}}', 0, ["Base branch 'feat/x' did not resolve"]],
+                  ['', 3, []],
+                ];
+                for (const [diag, diagStatus, says] of cases) {
+                  const r = runBlock('bash', block, persona, { diag, diagStatus, argsText: FEATURE_TEXT });
+                  const what = `${JSON.stringify(diag)} (exit ${diagStatus})`;
+                  strictEqual(r.status, 0, `${what}: ${r.stderr}`);
+                  deepStrictEqual(r.log, ['start-args', 'diagnose-redundancy'], `${what}: nothing written`);
+                  ok(r.argv[0].includes(' --base-branch feat/x'), `${what}: the base the args file named: ${r.argv[0]}`);
+                  for (const part of says) ok(r.stdout.includes(part), `${what}: ${part}: ${r.stdout}`);
+                  strictEqual(r.stdout.includes('PAUSED'), diag.startsWith('{"status":"redundancy"'), `${what}: the pause only on a finding`);
+                  if (diagStatus !== 0) ok(r.stderr.includes('diagnose-redundancy failed (exit 3)'), r.stderr);
+                }
+                const refused = runBlock('bash', block, persona, { argsText: '' });
+                deepStrictEqual([refused.status, refused.log], [2, ['start-args']], 'an args file outside the grammar stops the probe');
+                // The prose puts the finding to the user before the bootstrap block runs.
+                const prose = squash(between(text, blockWith(/state\.mjs" diagnose-redundancy /).text, blockWith(/state\.mjs" check-clean-baseline /).text));
+                ok(prose.includes(`ask for an explicit proceed-or-abort decision: \`/${persona}:start\` never archives on redundancy`) && prose.includes('Abort stops here, with nothing written.'), prose);
+                ok(prose.includes('run the bootstrap block with a new args file'), prose);
+              });
+            }
+
+            it('start resume, run: a start workflow is written — its next step cleared, its position kept; any other workflow, or a failed read, stops the block unwritten (PC2b RV4, PC3b U2)', () => {
               const block = blockWith(/state\.mjs" read --workflow-path "\$ACTIVE"/).text;
               const cases = [
                 ['{"workflow_type":"start"}', 0, 'start'],
@@ -610,16 +888,24 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                 ['{}', 0, 'verb-chain'],
                 ['', 0, 'verb-chain'],
                 ['{not json', 0, 'verb-chain'],
-                ['', 3, 'verb-chain'],
+                // A failed read stops with its status, whatever it printed.
+                ['', 3, null],
+                ['{"workflow_type":"start"}', 3, null],
               ];
               for (const [readOutput, readStatus, expected] of cases) {
                 const r = runBlock('bash', `ACTIVE='/w/active.md'\n${block}`, persona, { readOutput, readStatus, after: '\nprintf \'%s\' "$WF_TYPE" > out\n' });
-                strictEqual(r.out, expected, `${JSON.stringify(readOutput)} (exit ${readStatus}): ${r.stderr}`);
+                const what = `${JSON.stringify(readOutput)} (exit ${readStatus})`;
                 ok(r.argv[0].includes(' --workflow-path /w/active.md'), 'the workflow Phase 0 found');
-                if (expected !== 'start') {
-                  deepStrictEqual(r.log, ['read'], 'a verb-chain workflow: only the read');
+                if (expected === null) {
+                  deepStrictEqual([r.status, r.out, r.log], [3, null, ['read']], `${what}: stopped with the read's status`);
                   continue;
                 }
+                if (expected !== 'start') {
+                  deepStrictEqual([r.status, r.out, r.log], [1, null, ['read']], `${what}: refused, only the read`);
+                  ok(r.stderr.includes(`workflow_type=${expected}, not start: /${persona}:start does not take a single-verb workflow into its lifecycle`) && r.stderr.includes(`/${persona}:resume archive`), r.stderr);
+                  continue;
+                }
+                strictEqual(r.out, 'start', what);
                 deepStrictEqual(r.log, ['read', 'append'], 'a start workflow: the read, then the clear');
                 ok(r.argv[1].includes(' --workflow-path /w/active.md ') && r.argv[1].includes(' --clear-next-step true '), r.argv[1]);
                 ok(!/--(current-phase|next-action|verb|phase-label|phase-note) /.test(r.argv[1]), `the position is kept: ${r.argv[1]}`);
@@ -632,7 +918,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
             // commit (the owner saves and commits); a persona that waits for
             // convergence makes it only once Phase 4 converged, and otherwise
             // records the next step, turning an inherited marker off.
-            it('start terminal, run: finish-verb kind commit, only once converged where the persona waits for it (fail-closed); otherwise a non-terminal append with the next step (PC2b U5c)', () => {
+            if (!commits) it('start terminal, run: finish-verb kind commit, only once converged where the persona waits for it (fail-closed); otherwise a non-terminal append with the next step (PC2b U5c)', () => {
               const block = blockWith(/state\.mjs" finish-verb \\/).text;
               const waits = convergent(persona, 'start');
               strictEqual(CONVERGED_LINE.test(block), waits, 'the block assigns CONVERGED exactly where the persona waits for convergence');
@@ -658,16 +944,58 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               }
             });
 
+            // PC3b U2: the Phase 7 commit, two blocks — plan (writes nothing),
+            // then execute with the subject the user confirmed — and no
+            // finish-verb anywhere in the lifecycle's blocks.
+            if (commits) it('start commit (commit_surface), run: plan, then execute with the confirmed subject, each on $ACTIVE in the repository; a failure stops its block with its status; no finish-verb (PC3b U2)', () => {
+              const plan = blockWith(/phase7-commit\.mjs" \\\n\s+--mode plan/).text;
+              const execute = blockWith(/phase7-commit\.mjs" \\\n\s+--mode execute/).text;
+              ok(text.indexOf(plan) < text.indexOf(execute), 'plan before execute');
+              strictEqual(shellSites(text, /state\.mjs" (finish-verb|set-terminal)\b/).length, 0, 'the driver writes set-terminal; no block does');
+              const p = runBlock('bash', `ACTIVE='/w/active.md'\n${plan}`, persona, { after: '\nprintf ran > out\n' });
+              deepStrictEqual([p.status, p.log, p.out], [0, ['phase7 plan'], 'ran'], p.stderr);
+              ok(/ --mode plan --workflow-path \/w\/active\.md --repo-root \/\S+ --host claude/.test(p.argv[0]), p.argv[0]);
+              const pFailed = runBlock('bash', `ACTIVE='/w/active.md'\n${plan}`, persona, { phase7Status: 5, after: '\nprintf ran > out\n' });
+              deepStrictEqual([pFailed.status, pFailed.out], [5, null], 'a failed plan stops its block');
+              ok(execute.includes("APPROVED_SUBJECT='<the subject the user confirmed>'"), 'the execute block assigns the confirmed subject');
+              const approved = execute.replace("APPROVED_SUBJECT='<the subject the user confirmed>'", () => "APPROVED_SUBJECT='feat(x): it'\\''s done'");
+              const e = runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { after: '\nprintf ran > out\n' });
+              deepStrictEqual([e.status, e.log, e.out], [0, ['phase7 execute'], 'ran'], e.stderr);
+              ok(/ --mode execute --workflow-path \/w\/active\.md --repo-root \/\S+ --host claude --subject feat\(x\): it's done --confirm-non-interactive/.test(e.argv[0]), e.argv[0]);
+              const eFailed = runBlock('bash', `ACTIVE='/w/active.md'\n${approved}`, persona, { phase7Status: 6, after: '\nprintf ran > out\n' });
+              deepStrictEqual([eFailed.status, eFailed.out], [6, null], 'a failed execute stops its block, the workflow left open');
+              // Plan-verify peer (MAJOR): a fresh shell has no ACTIVE; each
+              // block then binds the workflow find-active names on this branch,
+              // and stops before the driver when there is none.
+              for (const [name, block, mode] of [['plan', plan, 'plan'], ['execute', approved, 'execute']]) {
+                const fresh = runBlock('bash', block, persona, { active: '/w/found.md', after: '\nprintf ran > out\n' });
+                deepStrictEqual([fresh.status, fresh.log, fresh.out], [0, ['find-active', `phase7 ${mode}`], 'ran'], `${name}: ${fresh.stderr}`);
+                ok(fresh.argv[1].includes(' --workflow-path /w/found.md '), `${name}: the workflow find-active named: ${fresh.argv[1]}`);
+                const none = runBlock('bash', block, persona, { active: '', after: '\nprintf ran > out\n' });
+                deepStrictEqual([none.status, none.log, none.out], [1, ['find-active'], null], `${name}: no workflow, no driver: ${none.stderr}`);
+                const failed = runBlock('bash', block, persona, { active: '/w/found.md', findStatus: 5, after: '\nprintf ran > out\n' });
+                deepStrictEqual([failed.status, failed.log], [5, ['find-active']], `${name}: a failed find stops the block`);
+              }
+              // The archive-timing rule precedes the execute block it governs.
+              const timing = text.indexOf('ARCHIVE TIMING — decide before running execute mode.');
+              ok(timing > text.indexOf(plan) && timing < text.indexOf(execute), 'the archive-timing rule between plan and execute');
+            });
+
             it('start privacy: the prohibition precedes the lifecycle, the no-image rule follows the phase-boundary paragraph (where the phases dispatch) and precedes the terminal write; designer\'s screenshot sentence precedes the lifecycle', () => {
+              const prohibition = sentenceAt(text, PROHIBITION.start);
+              // A persona that declares no peer policy (engineer) has no gate.
+              if (!declaration(persona).peer) {
+                deepStrictEqual([prohibition.length, sentenceAt(text, NO_IMAGE).length, text.includes('PRIVACY GATE:')], [0, 0, false]);
+                return;
+              }
               const lifecycle = text.indexOf('## Entry routing + Phases 1–4 + terminal');
               ok(lifecycle > 0, 'the lifecycle section');
-              const prohibition = sentenceAt(text, PROHIBITION.start);
               strictEqual(prohibition.length, 1, 'the prohibition sentence');
               ok(prohibition[0] < lifecycle, 'before the lifecycle');
               const noImage = sentenceAt(text, NO_IMAGE);
               strictEqual(noImage.length, declaration(persona).peer.images === false ? 1 : 0, 'the no-image rule, exactly where images are off');
               const boundaryEnd = text.indexOf('<!-- pipeline:end start-phase-boundary -->');
-              const terminalAt = text.indexOf(blockWith(/state\.mjs" finish-verb \\/).text);
+              const terminalAt = text.indexOf(terminalBlock().text);
               ok(boundaryEnd > 0 && noImage.every((at) => boundaryEnd < at && at < terminalAt), 'the no-image rule after the phase-boundary paragraph, before the terminal write');
               if (persona === 'designer') {
                 const screenshot = sentenceAt(text, SCREENSHOT.start);
@@ -686,10 +1014,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               // test-start-lifecycle.mjs against the real scripts.
               for (const rule of [
                 '**Each ensemble attempt is settled.** After its synthesis note, settle the phase\'s attempt from its run ledger with `peer-runner.mjs settle --phase <verb> --run-id <that attempt\'s run id>` (empty when no run launched), before the next phase. A repeated phase (a second refine pass) dispatches under a new run id and settles each attempt.',
-                '**No phase closes the workflow.** A verb\'s own terminal write (`finish-verb`) never runs inside the lifecycle; the Terminal block below is its one terminal write.',
-                'record it after the phase note with `state.mjs awaiting-owner-set --gate <gate> --anchor <anchor>`, a write that leaves the workflow open, and pause. Once the owner decides, clear it with `state.mjs awaiting-owner-clear --gate <gate> --resolution <the owner\'s decision> --next-step-kind verb --next-step-verb <the next phase\'s verb> --next-step-confidence HIGH`, and continue at that phase. The verb\'s own resolving step (decide\'s Owner selection, refine\'s Owner decision) ends in a terminal write, so the lifecycle does not run it.',
+                '**No phase closes the workflow.** A verb\'s own terminal write (`finish-verb`) never runs inside the lifecycle; the lifecycle\'s last step below makes its one terminal write.',
+                'record it after the phase note with `state.mjs awaiting-owner-set --gate <gate> --anchor <anchor>`, a write that leaves the workflow open, and pause. Once the owner decides, clear it with `state.mjs awaiting-owner-clear --gate <gate> --resolution <the owner\'s decision> --next-step-kind verb --next-step-verb <the next phase\'s verb> --next-step-confidence HIGH --next-action <the next phase\'s action>`, and continue at that phase. The verb\'s own resolving step (decide\'s Owner selection, refine\'s Owner decision), run inside the lifecycle, clears the gate and stops instead of making the verb\'s terminal write; resume the lifecycle from it.',
               ]) ok(boundary.includes(rule), rule);
-              ok(text.indexOf('<!-- pipeline:end start-phase-boundary -->') < text.indexOf(blockWith(/state\.mjs" finish-verb \\/).text), 'the rules precede the terminal block they name');
+              ok(text.indexOf('<!-- pipeline:end start-phase-boundary -->') < text.indexOf(terminalBlock().text), 'the rules precede the terminal block they name');
               const bootstrap = text.indexOf('<!-- pipeline:begin start-bootstrap -->');
               ok(bootstrap > 0 && bootstrap < text.indexOf('<!-- pipeline:begin start-initial-verb -->'), 'the initial verb is stated after the bootstrap that creates the workflow');
             });
@@ -698,7 +1026,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const exts = extensionTexts(text);
               const slots = MANIFEST.extension_points.filter((e) => e.dest === dest && e.personas.includes(persona)).map((e) => e.id);
               deepStrictEqual(exts.map((e) => e.id).sort(), [...slots].sort(), 'one marker per slot this persona owns');
-              const terminal = blockWith(/state\.mjs" finish-verb \\/);
+              const terminal = terminalBlock();
               for (const ext of exts) {
                 ok(ext.line < terminal.start, `extension ${ext.id} precedes the terminal write`);
                 for (const sentence of EXTENSION_ANCHORS[ext.id] ?? [null]) {
@@ -1014,6 +1342,10 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               }
             });
 
+            // PC3b U1 (peer review of step 1): a stop inside the lifecycle is an
+            // exit, not just a message: a write placed after the block is never
+            // reached there, and is reached where the block falls through.
+            const AFTER = '\nnode "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append --workflow-path "$ACTIVE" --host claude';
             if (verb === 'decide') it('Owner selection, run: it finds the workflow, clears decide-conflict with the resolution and the next step, then finishes the verb; a failed find or clear, or no workflow, stops the block (PC2b DD7)', () => {
               const block = blockWith(/state\.mjs" awaiting-owner-clear \\/).text;
               ok(text.indexOf(block) > text.indexOf('<!-- pipeline:end decide-finalize -->'), 'after Phase 2, whose owner-decision form records the gate');
@@ -1023,6 +1355,11 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               deepStrictEqual(r.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
               for (const part of [' --workflow-path /w/active.md ', ' --gate decide-conflict ', ' --resolution <Owner selection: the direction the owner chose, and why> ', ' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH']) ok(r.argv[2].includes(part), `${part}: ${r.argv[2]}`);
               ok(r.argv[3].includes(' --workflow-path /w/active.md ') && r.argv[3].includes(' --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH'), r.argv[3]);
+              // PC3b U1 (PC3 step-7 peer finding 2): the clear replaces the
+              // gate's next action with the one the verb then finishes with.
+              const declaredNext = declaration(persona).verbs.decide.next_action;
+              ok(r.argv[2].includes(` --next-action ${declaredNext} `), r.argv[2]);
+              ok(r.argv[3].includes(` --next-action ${declaredNext} `), r.argv[3]);
               // Review of code step 6: a resolution with a quote reaches state.mjs whole.
               const quoted = runBlock('bash', block.replace('<Owner selection: the direction the owner chose, and why>', "keep the team's \"existing\" `nav` $HOME"), persona, CHAIN);
               strictEqual(quoted.status, 0, quoted.stderr);
@@ -1031,8 +1368,19 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const lifecycle = runBlock('bash', block, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([lifecycle.status, lifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: no finish-verb');
               ok(lifecycle.stderr.includes(`Resume the lifecycle with /${persona}:start`), lifecycle.stderr);
+              // PC3b U1 (PC3 step-7 peer findings 2 and 3): inside the lifecycle
+              // the clear names the resume as the next action and records no
+              // next step, since the lifecycle owns its phase order (compose
+              // follows decide in one persona's lifecycle, explore in another's).
+              ok(lifecycle.argv[2].includes(` --next-action Resume /${persona}:start: the lifecycle continues after decide with the selected direction --clear-next-step true`), lifecycle.argv[2]);
+              ok(!/ --next-step-(kind|verb|confidence) /.test(lifecycle.argv[2]), `no next step inside the lifecycle: ${lifecycle.argv[2]}`);
+              const stopped = runBlock('bash', block + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              deepStrictEqual([stopped.status, stopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start the block exits: nothing after it runs');
               const unread = runBlock('bash', block, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
               deepStrictEqual([unread.status, unread.log], [1, ['find-active', 'read']], 'an unreadable type stops the block before any write');
+              // A read that fails after printing a parsable type also stops it.
+              const failedRead = runBlock('bash', block, persona, { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}', readStatus: 5 });
+              deepStrictEqual([failedRead.status, failedRead.log], [1, ['find-active', 'read']], 'a failed read stops the block, whatever it printed');
               const failed = runBlock('bash', block, persona, { ...CHAIN, clearStatus: 3 });
               deepStrictEqual([failed.status, failed.log], [3, ['find-active', 'read', 'awaiting-owner-clear']], 'a refused clear stops the block');
               const none = runBlock('bash', block, persona, { active: '' });
@@ -1116,19 +1464,45 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               const defer = converged(deferAsCommitted, persona, verb);
               const finalizeEnd = `<!-- pipeline:end ${waits ? 'refine-finalize-convergent' : 'refine-finalize'} -->`;
               ok(text.indexOf(fix) > text.indexOf(finalizeEnd) && text.indexOf(finalizeEnd) > 0, 'after Phase 2, whose owner-decision form records the gate');
-              const f = runBlock('bash', fix, persona, { active: '/w/active.md' });
-              strictEqual(f.status, 0, f.stderr);
-              deepStrictEqual(f.log, ['find-active', 'awaiting-owner-clear']);
-              for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ' --resolution <Owner decision: fix the finding now> ', ' --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH']) ok(f.argv[1].includes(part), `${part}: ${f.argv[1]}`);
               const CHAIN = { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}' };
+              const f = runBlock('bash', fix, persona, CHAIN);
+              strictEqual(f.status, 0, f.stderr);
+              deepStrictEqual(f.log, ['find-active', 'read', 'awaiting-owner-clear']);
+              for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ' --resolution <Owner decision: fix the finding now> ', ' --next-action Fix the recurring finding in this refine, then re-critique ', ' --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH']) ok(f.argv[2].includes(part), `${part}: ${f.argv[2]}`);
+              // PC3b U1 (PC3 step-7 peer finding 1): inside a start lifecycle
+              // Fix now clears the gate and stops, so this refine's own phases
+              // (whose finalize is a terminal write) do not run before the
+              // lifecycle's terminal step; the lifecycle's refine phase fixes it.
+              const fixLifecycle = runBlock('bash', fix, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              deepStrictEqual([fixLifecycle.status, fixLifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: fix now clears and stops');
+              ok(fixLifecycle.argv[2].includes(` --next-action Resume /${persona}:start: its refine phase fixes the recurring finding --next-step-kind verb --next-step-verb refine --next-step-confidence HIGH`), fixLifecycle.argv[2]);
+              ok(fixLifecycle.stderr.includes(`Resume the lifecycle with /${persona}:start`), fixLifecycle.stderr);
+              const fixUnread = runBlock('bash', fix, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
+              deepStrictEqual([fixUnread.status, fixUnread.log], [1, ['find-active', 'read']], 'fix now: an unreadable type stops the block before any write');
+              // The stop is an exit: a write after the block runs on the
+              // verb-chain path only.
+              const fixStopped = runBlock('bash', fix + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              deepStrictEqual([fixStopped.status, fixStopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'fix now inside start exits: nothing after it runs');
+              const fixThrough = runBlock('bash', fix + AFTER, persona, CHAIN);
+              deepStrictEqual([fixThrough.status, fixThrough.log], [0, ['find-active', 'read', 'awaiting-owner-clear', 'append']], 'outside start the block falls through (the sentinel is reachable)');
+              for (const [name, b] of [['fix now', fix], ['defer', defer]]) {
+                const failedRead = runBlock('bash', b, persona, { active: '/w/active.md', readOutput: '{"workflow_type":"verb-chain"}', readStatus: 5 });
+                deepStrictEqual([failedRead.status, failedRead.log], [1, ['find-active', 'read']], `${name}: a failed read stops the block, whatever it printed`);
+              }
               const d = runBlock('bash', defer, persona, CHAIN);
               strictEqual(d.status, 0, d.stderr);
               deepStrictEqual(d.log, ['find-active', 'read', 'awaiting-owner-clear', 'finish-verb']);
               for (const part of [' --workflow-path /w/active.md ', ' --gate recurring-finding ', ' --next-step-kind commit --next-step-confidence HIGH']) ok(d.argv[2].includes(part), `${part}: ${d.argv[2]}`);
+              // The clear's next action is the one the deferral finishes with.
+              const deferNext = / --next-action (.+?) --next-step-kind commit /.exec(d.argv[3])?.[1];
+              ok(deferNext && d.argv[2].includes(` --next-action ${deferNext} --next-step-kind commit `), `the clear and the finish name one next action: ${d.argv[2]}`);
               ok(d.argv[3].includes(' --workflow-path /w/active.md ') && d.argv[3].includes(' --next-step-kind commit --next-step-confidence HIGH'), d.argv[3]);
               // Review of code step 6: inside a start lifecycle the deferral is cleared and the lifecycle resumes.
               const lifecycle = runBlock('bash', defer, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
               deepStrictEqual([lifecycle.status, lifecycle.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'inside start: no finish-verb');
+              ok(lifecycle.argv[2].includes(` --next-action Resume /${persona}:start: the finding is deferred, and the lifecycle continues at its terminal step --next-step-kind commit `), lifecycle.argv[2]);
+              const deferStopped = runBlock('bash', defer + AFTER, persona, { ...CHAIN, readOutput: '{"workflow_type":"start"}' });
+              deepStrictEqual([deferStopped.status, deferStopped.log], [0, ['find-active', 'read', 'awaiting-owner-clear']], 'defer inside start exits: nothing after it runs');
               const unread = runBlock('bash', defer, persona, { active: '/w/active.md', readOutput: '', readStatus: 5 });
               deepStrictEqual([unread.status, unread.log], [1, ['find-active', 'read']], 'an unreadable type stops the block before any write');
               // Review of code step 6 (finding 3): deferring a finding does not
@@ -1145,7 +1519,7 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
                     const paused = runBlock('bash', script, persona, { ...CHAIN, readOutput: `{"workflow_type":"${type}"}` });
                     strictEqual(paused.status, 0, `${label}, ${type}: ${paused.stderr}`);
                     deepStrictEqual(paused.log, ['find-active', 'read', 'awaiting-owner-clear'], `${label}, ${type}: no terminal write`);
-                    for (const part of [' --gate recurring-finding ', ' --next-step-kind verb --next-step-verb <refine|decide|investigate> --next-step-confidence <HIGH|MEDIUM|LOW>']) ok(paused.argv[2].includes(part), `${label}, ${type}: ${part}: ${paused.argv[2]}`);
+                    for (const part of [' --gate recurring-finding ', ' --next-action <what the next step resolves, in a few words> ', ' --next-step-kind verb --next-step-verb <refine|decide|investigate> --next-step-confidence <HIGH|MEDIUM|LOW>']) ok(paused.argv[2].includes(part), `${label}, ${type}: ${part}: ${paused.argv[2]}`);
                     ok(/PAUSED \(not converged\)/.test(paused.stderr), `${label}, ${type}: the pause is reported`);
                   }
                 }
@@ -1155,8 +1529,8 @@ describe('runbook regions: the contracts hold for every enrolled persona', () =>
               }
               const quoted = runBlock('bash', fix.replace('<Owner decision: fix the finding now>', "fix it: the team's call"), persona, CHAIN);
               strictEqual(quoted.status, 0, quoted.stderr);
-              ok(quoted.argv[1].includes(" --resolution fix it: the team's call "), quoted.argv[1]);
-              for (const [name, block, ran] of [['fix now', fix, ['find-active', 'awaiting-owner-clear']], ['defer', defer, ['find-active', 'read', 'awaiting-owner-clear']]]) {
+              ok(quoted.argv[2].includes(" --resolution fix it: the team's call "), quoted.argv[2]);
+              for (const [name, block, ran] of [['fix now', fix, ['find-active', 'read', 'awaiting-owner-clear']], ['defer', defer, ['find-active', 'read', 'awaiting-owner-clear']]]) {
                 const failed = runBlock('bash', block, persona, { ...CHAIN, clearStatus: 3 });
                 deepStrictEqual([failed.status, failed.log], [3, ran], `${name}: a refused clear stops the block`);
                 const none = runBlock('bash', block, persona, { active: '' });

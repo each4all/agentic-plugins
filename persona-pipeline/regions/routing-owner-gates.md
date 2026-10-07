@@ -15,16 +15,20 @@ the session handoff names the gate's resolving surface as the next action.
 | `recurring-finding` | `/{{persona}}:refine`: a finding an earlier refine pass on this workflow already addressed survives verification again | `Recurring finding` · `recurring-finding` | the owner's fix-now-or-defer in `/{{persona}}:refine` (its Owner decision step clears the gate) |
 | `scope-routing` | a verb concludes the request does not belong in this verb or workflow (another route in the Routing Recommendation fits) | `Routing recommendation` · `routing-recommendation` | the owner picks the route, then `awaiting-owner-clear` with the next step |
 {{#capability commit_surface}}
-| `staging-set` | `/{{persona}}:commit` under autopilot: the staging set needs the owner | `Phase 7 plan` · `phase7-plan` | interactive `/{{persona}}:commit`, which clears it once the owner confirms the set |
+| `staging-set` | `/{{persona}}:commit` under autopilot (with `dispatch_target` on, the one path that records it): the staging set needs the owner | `Phase 7 plan` · `phase7-plan` | interactive `/{{persona}}:commit`, which clears it once the owner confirms the set |
 {{/capability}}
 {{#capability dispatch_target}}
 | `pr-handling` | under autopilot, the task itself needs an outward action: a push, a pull request, a release or an issue | `Outward action needed` · `pr-handling` | the owner takes or declines the action, then `awaiting-owner-clear` with the next step |
 {{/capability}}
 
 `state.mjs awaiting-owner-clear --gate <gate> --resolution "<the decision>"
---next-step-kind … --next-step-confidence … [--next-step-verb …]` records the
-owner's decision, clears the gate and names the next step in one write; it
+--next-step-kind … --next-step-confidence … [--next-step-verb …] --next-action
+"<what comes next>"` records the owner's decision, clears the gate, names the
+next step and replaces the gate's `Owner: …` next action in one write; it
 refuses, writing nothing, when the gate set on the workflow is another one.
+Inside a `/{{persona}}:start` lifecycle, decide's Owner selection records no
+next step instead (`--clear-next-step true`): the lifecycle owns its phase
+order.
 {{^capability commit_surface}}
 `staging-set` belongs to a commit command, and {{persona}} declares
 `commit_surface` off, so `state.mjs` refuses to set it, naming the capability.

@@ -1565,9 +1565,10 @@ async function closeMode({ workflowPath, repoRoot, frontmatter, flags, stderr })
       ? `Closed without a commit; record completion with ${doneCommand} and a reason`
       : 'archive',
     event: 'updated',
-    // No session-handoff sidecar: its projection reads a HEAD that never
-    // moved as a blocked archive and would tell the owner to commit. The
-    // command's completion names the next step instead.
+    // No session-handoff sidecar: the close archives the workflow itself
+    // right below, so a footer would report a blocked archive (HEAD never
+    // moved) for a workflow about to leave. The command's completion names
+    // the next step instead.
     emitHandoff: false,
   });
   // A run stopped between the terminal write and this archive is retried by

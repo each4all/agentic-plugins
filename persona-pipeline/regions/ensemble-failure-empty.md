@@ -8,4 +8,4 @@
   findings, only structural shell, reads to it like any other, so pass
   `degraded` as the synthesis verdict then.
 - **Surface**: Mention in the completion summary that ensemble coverage
-  was partial.
+  was partial, and which sections the peer did not cover.

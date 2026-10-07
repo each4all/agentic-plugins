@@ -2265,6 +2265,7 @@
       "dest": "commands/start.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2280,6 +2281,7 @@
       "dest": "commands/start.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2299,6 +2301,7 @@
       "dest": "commands/start.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2313,6 +2316,10 @@
         "request_placeholder": {
           "field": "verbs.start.request_placeholder",
           "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
         }
       }
     },
@@ -2322,6 +2329,7 @@
       "dest": "commands/start.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2341,6 +2349,7 @@
       "dest": "commands/start.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2373,6 +2382,7 @@
       "dest": "commands/start.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2445,6 +2455,28 @@
         },
         "next_action": {
           "field": "verbs.start.next_action",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "start-commit",
+      "template": "regions/start-commit.md",
+      "dest": "commands/start.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
           "context": "shell"
         }
       }
@@ -2629,6 +2661,7 @@
       "dest": "core/skills/compose/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2638,6 +2671,7 @@
       "dest": "core/skills/compose/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2648,11 +2682,32 @@
       }
     },
     {
+      "id": "compose-finish",
+      "template": "regions/skill-verb-finish.md",
+      "dest": "core/skills/compose/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "compose",
+          "context": "markdown"
+        }
+      }
+    },
+    {
       "id": "decide-steps",
       "template": "regions/skill-decide-steps.md",
       "dest": "core/skills/decide/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2662,8 +2717,29 @@
       "dest": "core/skills/decide/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
+    },
+    {
+      "id": "decide-finish",
+      "template": "regions/skill-verb-finish.md",
+      "dest": "core/skills/decide/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "decide",
+          "context": "markdown"
+        }
+      }
     },
     {
       "id": "frame-present",
@@ -2671,8 +2747,29 @@
       "dest": "core/skills/frame/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
+    },
+    {
+      "id": "frame-finish",
+      "template": "regions/skill-verb-finish.md",
+      "dest": "core/skills/frame/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "frame",
+          "context": "markdown"
+        }
+      }
     },
     {
       "id": "start-command-intro",
@@ -2680,6 +2777,7 @@
       "dest": "core/skills/start/SKILL.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2726,6 +2824,26 @@
       }
     },
     {
+      "id": "critique-finish",
+      "template": "regions/skill-verb-finish.md",
+      "dest": "core/skills/critique/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "critique",
+          "context": "markdown"
+        }
+      }
+    },
+    {
       "id": "refine-privacy-gate",
       "template": "regions/verb-privacy-gate.md",
       "dest": "core/skills/refine/SKILL.md",
@@ -2759,6 +2877,71 @@
       "when": {
         "field": "peer.images",
         "equals": false
+      }
+    },
+    {
+      "id": "refine-finish",
+      "template": "regions/skill-verb-finish.md",
+      "dest": "core/skills/refine/SKILL.md",
+      "personas": [
+        "engineer",
+        "founder"
+      ],
+      "when": {
+        "field": "verbs.refine.terminal_requires_convergence",
+        "equals": false
+      },
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "refine",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "refine-finish-convergent",
+      "template": "regions/skill-verb-finish-convergent.md",
+      "dest": "core/skills/refine/SKILL.md",
+      "personas": [
+        "designer"
+      ],
+      "when": {
+        "field": "verbs.refine.terminal_requires_convergence",
+        "equals": true
+      },
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "refine",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "investigate-finish",
+      "template": "regions/skill-verb-finish.md",
+      "dest": "core/skills/investigate/SKILL.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "verb": {
+          "value": "investigate",
+          "context": "markdown"
+        }
       }
     },
     {
@@ -2798,11 +2981,74 @@
       }
     },
     {
+      "id": "start-finish",
+      "template": "regions/skill-start-finish.md",
+      "dest": "core/skills/start/SKILL.md",
+      "personas": [
+        "founder"
+      ],
+      "when": {
+        "field": "verbs.start.terminal_requires_convergence",
+        "equals": false
+      },
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "next_action": {
+          "field": "verbs.start.next_action",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "start-finish-convergent",
+      "template": "regions/skill-start-finish-convergent.md",
+      "dest": "core/skills/start/SKILL.md",
+      "personas": [
+        "designer"
+      ],
+      "when": {
+        "field": "verbs.start.terminal_requires_convergence",
+        "equals": true
+      },
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "next_action": {
+          "field": "verbs.start.next_action",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "start-finish-commit",
+      "template": "regions/skill-start-finish-commit.md",
+      "dest": "core/skills/start/SKILL.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
       "id": "routing-intro",
       "template": "regions/routing-intro.md",
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2818,6 +3064,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2837,6 +3084,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2846,6 +3094,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2865,6 +3114,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2874,6 +3124,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2889,6 +3140,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2904,6 +3156,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2913,6 +3166,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2922,6 +3176,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2937,6 +3192,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2956,6 +3212,7 @@
       "dest": "core/skills/_shared/references/entry-routing-contract.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2971,6 +3228,7 @@
       "dest": "core/skills/_shared/references/presentation-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -2986,6 +3244,7 @@
       "dest": "core/skills/_shared/references/presentation-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -2995,6 +3254,7 @@
       "dest": "core/skills/_shared/references/presentation-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3010,6 +3270,7 @@
       "dest": "core/skills/_shared/references/presentation-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3019,6 +3280,7 @@
       "dest": "core/skills/_shared/references/presentation-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3034,6 +3296,7 @@
       "dest": "core/skills/_shared/references/session-handoff.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3053,6 +3316,7 @@
       "dest": "core/skills/_shared/references/session-handoff.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3076,6 +3340,7 @@
       "dest": "core/skills/investigate/references/output-file-rules.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3084,7 +3349,7 @@
           "context": "markdown"
         },
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         },
         "brief_file": {
@@ -3103,6 +3368,7 @@
       "dest": "core/skills/investigate/references/output-file-rules.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3111,7 +3377,7 @@
           "context": "markdown"
         },
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         },
         "brief_file": {
@@ -3130,6 +3396,7 @@
       "dest": "core/skills/investigate/references/output-file-rules.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3138,7 +3405,7 @@
           "context": "markdown"
         },
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         },
         "brief_file": {
@@ -3157,6 +3424,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3166,6 +3434,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3181,6 +3450,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3196,12 +3466,13 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
     {
-      "id": "ensemble-launch",
-      "template": "regions/ensemble-launch.md",
+      "id": "ensemble-launch-privacy",
+      "template": "regions/ensemble-launch-privacy.md",
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
@@ -3215,11 +3486,22 @@
       }
     },
     {
+      "id": "ensemble-launch",
+      "template": "regions/ensemble-launch.md",
+      "dest": "core/skills/_shared/references/ensemble-protocol.md",
+      "personas": [
+        "designer",
+        "engineer",
+        "founder"
+      ]
+    },
+    {
       "id": "ensemble-collect",
       "template": "regions/ensemble-collect.md",
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3229,6 +3511,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3238,6 +3521,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3247,11 +3531,16 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
         "persona": {
           "field": "name",
+          "context": "markdown"
+        },
+        "skip_cause": {
+          "field": "derived.ensemble_skip_cause",
           "context": "markdown"
         }
       }
@@ -3262,6 +3551,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3295,6 +3585,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3304,6 +3595,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3347,6 +3639,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3362,6 +3655,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3371,6 +3665,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3380,6 +3675,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3389,6 +3685,7 @@
       "dest": "core/skills/_shared/references/ensemble-protocol.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ],
       "substitutions": {
@@ -3425,7 +3722,7 @@
           "context": "markdown"
         },
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3439,7 +3736,25 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-launch-privacy",
+      "template": "regions/brief-ensemble-launch-privacy.md",
+      "dest": "core/skills/investigate/references/business-brief-ensemble.md",
+      "personas": [
+        "founder"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3452,12 +3767,8 @@
         "founder"
       ],
       "substitutions": {
-        "privacy_scope": {
-          "field": "peer.privacy_scope",
-          "context": "markdown"
-        },
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         },
         "persona": {
@@ -3465,7 +3776,7 @@
           "context": "markdown"
         },
         "ensemble_type": {
-          "field": "verbs.investigate.ensemble_type",
+          "field": "derived.brief_ensemble_type",
           "context": "markdown"
         }
       }
@@ -3479,7 +3790,7 @@
       ],
       "substitutions": {
         "ensemble_type": {
-          "field": "verbs.investigate.ensemble_type",
+          "field": "derived.brief_ensemble_type",
           "context": "markdown"
         }
       }
@@ -3515,7 +3826,7 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3545,7 +3856,7 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3575,7 +3886,7 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3605,7 +3916,7 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         },
         "persona": {
@@ -3617,7 +3928,7 @@
           "context": "markdown"
         },
         "ensemble_type": {
-          "field": "verbs.investigate.ensemble_type",
+          "field": "derived.brief_ensemble_type",
           "context": "markdown"
         }
       }
@@ -3649,7 +3960,7 @@
           "context": "markdown"
         },
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3663,7 +3974,25 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-launch-privacy",
+      "template": "regions/brief-ensemble-launch-privacy.md",
+      "dest": "core/skills/investigate/references/design-brief-ensemble.md",
+      "personas": [
+        "designer"
+      ],
+      "substitutions": {
+        "privacy_scope": {
+          "field": "peer.privacy_scope",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3676,12 +4005,8 @@
         "designer"
       ],
       "substitutions": {
-        "privacy_scope": {
-          "field": "peer.privacy_scope",
-          "context": "markdown"
-        },
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         },
         "persona": {
@@ -3689,7 +4014,7 @@
           "context": "markdown"
         },
         "ensemble_type": {
-          "field": "verbs.investigate.ensemble_type",
+          "field": "derived.brief_ensemble_type",
           "context": "markdown"
         }
       }
@@ -3703,7 +4028,7 @@
       ],
       "substitutions": {
         "ensemble_type": {
-          "field": "verbs.investigate.ensemble_type",
+          "field": "derived.brief_ensemble_type",
           "context": "markdown"
         }
       }
@@ -3739,7 +4064,7 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3769,7 +4094,7 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3799,7 +4124,7 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         }
       }
@@ -3829,7 +4154,7 @@
       ],
       "substitutions": {
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         },
         "persona": {
@@ -3841,7 +4166,219 @@
           "context": "markdown"
         },
         "ensemble_type": {
-          "field": "verbs.investigate.ensemble_type",
+          "field": "derived.brief_ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-intro",
+      "template": "regions/brief-ensemble-intro.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-when",
+      "template": "regions/brief-ensemble-when.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-execution-intro",
+      "template": "regions/brief-ensemble-execution-intro.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-launch",
+      "template": "regions/brief-ensemble-launch.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "ensemble_type": {
+          "field": "derived.brief_ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-collect",
+      "template": "regions/brief-ensemble-collect.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "ensemble_type": {
+          "field": "derived.brief_ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-model",
+      "template": "regions/brief-ensemble-model.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-independence",
+      "template": "regions/brief-ensemble-independence.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-claim-shape-note",
+      "template": "regions/brief-ensemble-claim-shape-note.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-categories",
+      "template": "regions/brief-ensemble-categories.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-agreed",
+      "template": "regions/brief-ensemble-agreed.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-local-only",
+      "template": "regions/brief-ensemble-local-only.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-peer-only",
+      "template": "regions/brief-ensemble-peer-only.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-path-c",
+      "template": "regions/brief-ensemble-path-c.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-remapping",
+      "template": "regions/brief-ensemble-remapping.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-ensemble-failure",
+      "template": "regions/brief-ensemble-failure.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ]
+    },
+    {
+      "id": "brief-ensemble-state",
+      "template": "regions/brief-ensemble-state.md",
+      "dest": "core/skills/investigate/references/cited-brief-ensemble.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "brief_profile": {
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_file": {
+          "field": "derived.brief_file",
+          "context": "markdown"
+        },
+        "ensemble_type": {
+          "field": "derived.brief_ensemble_type",
           "context": "markdown"
         }
       }
@@ -3867,11 +4404,11 @@
           "context": "markdown"
         },
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         },
         "ensemble_type": {
-          "field": "verbs.investigate.ensemble_type",
+          "field": "derived.brief_ensemble_type",
           "context": "markdown"
         }
       }
@@ -3882,6 +4419,14 @@
       "dest": "core/skills/investigate/references/design-brief-spec.md",
       "personas": [
         "designer"
+      ]
+    },
+    {
+      "id": "brief-spec-citations",
+      "template": "regions/brief-spec-citations.md",
+      "dest": "core/skills/investigate/references/cited-brief-spec.md",
+      "personas": [
+        "engineer"
       ]
     },
     {
@@ -3897,11 +4442,33 @@
           "context": "markdown"
         },
         "brief_profile": {
-          "field": "verbs.investigate.default_profile",
+          "field": "derived.brief_profile",
           "context": "markdown"
         },
         "ensemble_type": {
-          "field": "verbs.investigate.ensemble_type",
+          "field": "derived.brief_ensemble_type",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "brief-spec-label-policy",
+      "template": "regions/brief-spec-label-policy.md",
+      "dest": "core/skills/investigate/references/cited-brief-spec.md",
+      "personas": [
+        "engineer"
+      ],
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        },
+        "brief_profile": {
+          "field": "derived.brief_profile",
+          "context": "markdown"
+        },
+        "ensemble_type": {
+          "field": "derived.brief_ensemble_type",
           "context": "markdown"
         }
       }
@@ -3912,6 +4479,7 @@
       "dest": "core/skills/_shared/references/orchestration.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
     },
@@ -3921,8 +4489,321 @@
       "dest": "core/skills/_shared/references/orchestration.md",
       "personas": [
         "designer",
+        "engineer",
         "founder"
       ]
+    },
+    {
+      "id": "plugin-root",
+      "template": "regions/plugin-root.md",
+      "dest": "commands/commit.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "commit-phase-0",
+      "template": "regions/commit-phase-0.md",
+      "dest": "commands/commit.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "commit-autopilot",
+      "template": "regions/commit-autopilot.md",
+      "dest": "commands/commit.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.dispatch_target",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "commit-plan",
+      "template": "regions/commit-plan.md",
+      "dest": "commands/commit.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "commit-staging-clear",
+      "template": "regions/commit-staging-clear.md",
+      "dest": "commands/commit.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "commit-execute",
+      "template": "regions/commit-execute.md",
+      "dest": "commands/commit.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "commit-close",
+      "template": "regions/commit-close.md",
+      "dest": "commands/commit.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "shell"
+        },
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "commit-completion-footer",
+      "template": "regions/commit-completion-footer.md",
+      "dest": "commands/commit.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      }
+    },
+    {
+      "id": "commit-host-availability",
+      "template": "regions/skill-commit-host-availability.md",
+      "dest": "core/skills/commit/SKILL.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "commit-command-resolution",
+      "template": "regions/skill-commit-command-resolution.md",
+      "dest": "core/skills/commit/SKILL.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "root_env": {
+          "field": "derived.root_env",
+          "context": "markdown"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "commit-phase-0",
+      "template": "regions/skill-commit-phase-0.md",
+      "dest": "core/skills/commit/SKILL.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "commit-plan",
+      "template": "regions/skill-commit-plan.md",
+      "dest": "core/skills/commit/SKILL.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "commit-staging-clear",
+      "template": "regions/skill-commit-staging-clear.md",
+      "dest": "core/skills/commit/SKILL.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
+    },
+    {
+      "id": "commit-execute",
+      "template": "regions/skill-commit-execute.md",
+      "dest": "core/skills/commit/SKILL.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "name": {
+          "field": "name",
+          "context": "shell"
+        },
+        "persona": {
+          "field": "name",
+          "context": "markdown"
+        }
+      }
+    },
+    {
+      "id": "commit-close",
+      "template": "regions/skill-commit-close.md",
+      "dest": "core/skills/commit/SKILL.md",
+      "personas": [
+        "engineer"
+      ],
+      "when": {
+        "field": "capabilities.commit_surface",
+        "equals": true
+      },
+      "substitutions": {
+        "name": {
+          "field": "name",
+          "context": "shell"
+        }
+      }
     }
   ],
   "extension_points": [

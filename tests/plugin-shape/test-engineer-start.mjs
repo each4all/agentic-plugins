@@ -1,5 +1,6 @@
-// plugins/engineer/commands/start.md — shape conformance tests
-// (ADR-0020 §Sub-decision 1, PR 3).
+// plugins/engineer/commands/start.md — engineer's own start text (ADR-0020
+// §Sub-decision 1): the lifecycle's phases, the entry routing, the citations
+// and the routes it names, in the command and the skill.
 //
 // /engineer:start is a lifecycle macro command (not a verb, not a verb-
 // level sugar alias, not a meta command — it bootstraps a new workflow).
@@ -8,10 +9,16 @@
 // commands per Codex plan-verify MAJOR #2) and updates state.mjs at
 // each phase boundary so SessionStart re-injection stays current.
 //
-// Run via `node --test tests/engineer/test-start-command.mjs`.
+// ADR-0066 PC3b U2: Phase 0's blocks, the phase-boundary rules and Phase 7
+// are generated (the start-* regions); test-runbook-contracts.mjs runs them
+// for every persona, the commit_surface path for engineer. U3: the skill's
+// "When invoked by command" intro is generated too (start-command-intro),
+// and test-skill-contracts.mjs holds it. What stays here is the text engineer
+// authors around them, and the routes its surfaces name. evaluateCleanBaseline
+// moved to tests/persona-pipeline/test-clean-baseline.mjs.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, match, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok, match } from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,8 +38,6 @@ const ROUTING_CONTRACT_PATH = resolve(
   REPO_ROOT,
   skillsPath(ENGINEER_ROOT, '_shared/references/entry-routing-contract.md'),
 );
-const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
-const { evaluateCleanBaseline } = await import(STATE_PATH);
 // The argv parser the runtime:worktree CLI runs on its arguments.
 const { parseArgs: parseWorktreeArgs } = await import(
   resolve(REPO_ROOT, 'plugins/runtime/scripts/worktree.mjs')
@@ -67,62 +72,14 @@ describe('/engineer:start — file existence + frontmatter', () => {
   });
 });
 
-describe('/engineer:start — Phase 0 continuity contract (ADR-0020 §Sub-decision 4 + §Sub-decision 7)', () => {
-  it('runs a detached-HEAD guard before any state.mjs invocation', async () => {
-    const text = await readFile(COMMAND_PATH, 'utf8');
-    ok(
-      /Detached HEAD|detached HEAD|--show-current/.test(text),
-      'Phase 0 must guard against detached HEAD (ADR-0018 §sub-2 branch-anchored workflows)',
-    );
-  });
+// The Phase 0 continuity contract (the detached-HEAD guard, find-active, the
+// redundancy probe and its proceed-or-abort pause, the bootstrap, the
+// workflow_type branch) is generated and run, block by block, in
+// tests/persona-pipeline/test-runbook-contracts.mjs (PC3b U2).
 
-  it('invokes state.mjs diagnose-redundancy in Phase 0 (ADR-0020 §Sub-decision 7)', async () => {
-    const text = await readFile(COMMAND_PATH, 'utf8');
-    ok(
-      /state\.mjs[\s\S]{0,200}diagnose-redundancy/.test(text),
-      'Phase 0 must invoke state.mjs diagnose-redundancy subcommand',
-    );
-  });
-
-  it('surfaces redundancy evidence to user for explicit proceed/abort (NOT auto-archive)', async () => {
-    // Codex plan-verify MINOR #4 — caller policy explicit. ADR-0020
-    // says /engineer:start surfaces the result and asks user; never
-    // auto-aborts on redundancy.
-    const text = await readFile(COMMAND_PATH, 'utf8');
-    ok(
-      /(proceed|abort|user decid)/i.test(text),
-      'Phase 0 redundancy handling must surface proceed/abort choice (no auto-archive)',
-    );
-  });
-
-  it('finds the active workflow via state.mjs find-active', async () => {
-    const text = await readFile(COMMAND_PATH, 'utf8');
-    ok(
-      /state\.mjs[\s\S]{0,200}find-active/.test(text),
-      'Phase 0 must call state.mjs find-active',
-    );
-  });
-
-  it('bootstraps a new workflow via state.mjs create with --workflow-type start', async () => {
-    const text = await readFile(COMMAND_PATH, 'utf8');
-    ok(
-      /state\.mjs[\s\S]{0,400}create[\s\S]{0,400}--workflow-type[\s\S]{0,40}start/.test(text),
-      'Phase 0 bootstrap must call state.mjs create --workflow-type start',
-    );
-  });
-
-  it('branches on workflow_type when an active workflow exists (auto-resume vs typed conflict)', async () => {
-    // ADR-0020 §Sub-decision 4 — start auto-resumes own workflows;
-    // verb-chain workflows surface a typed conflict.
-    const text = await readFile(COMMAND_PATH, 'utf8');
-    ok(/workflow_type/.test(text), 'body must reference workflow_type');
-    ok(
-      /verb-chain[\s\S]{0,400}(conflict|exit|reject)/i.test(text)
-        || /(conflict|exit|reject)[\s\S]{0,400}verb-chain/i.test(text),
-      'body must describe typed-conflict branch for verb-chain active workflow',
-    );
-  });
-});
+// The Codex entry sequence in SKILL.md (PC3b U2) is generated from
+// skill-start-command-intro.md since U3; test-skill-contracts.mjs checks its
+// order for every persona, the commit_surface steps for engineer.
 
 describe('/engineer:start — Phase 1-7 sequencing (ADR-0020 §Sub-decision 2)', () => {
   it('covers all 8 phases (Phase 0 through Phase 7)', async () => {
@@ -232,7 +189,9 @@ describe('/engineer:start — entry routing and decision contract', () => {
       'User constraints',
       'parallel-review',
     ]) {
-      ok(text.includes(token), `quality-first defaults missing ${token}`);
+      // Whitespace-insensitive: the generated routing-quality region wraps
+      // its lines where the template does (PC3b U5b).
+      ok(text.replace(/\s+/g, ' ').includes(token), `quality-first defaults missing ${token}`);
     }
   });
 
@@ -410,208 +369,6 @@ describe('/engineer:start — provenance citations', () => {
   });
 });
 
-// -----------------------------------------------------------------------------
-// Layer 1 — Phase 0 clean-baseline gate (ADR-0028 §Layer-1)
-//
-// `evaluateCleanBaseline` is the pure decision function: given the
-// porcelain output and the accept-current-tree bypass flag, it returns
-// {status, categories}. The CLI wrapper in state.mjs runs
-// `git status --porcelain=v1` and forwards the result.
-
-// ADR-0028 PR4 N4-quoted — fixtures use the NUL-separated wire format
-// emitted by `git status --porcelain=v1 -z`:
-//   non-rename:  "XY <path>\0"
-//   rename/copy: "R  <new>\0<old>\0"   (newpath first, then oldpath)
-// `-z` turns off git's C-quoting of paths with spaces / special chars,
-// so the workflow-storage exclusion prefix check works regardless of
-// the filename shape (PR3 N4-quoted Codex peer deferral).
-describe('evaluateCleanBaseline — pure decision function (ADR-0028 §Layer-1)', () => {
-  it('returns status=clean for empty porcelain output', () => {
-    const r = evaluateCleanBaseline({ statusPorcelain: '' });
-    strictEqual(r.status, 'clean');
-    deepStrictEqual(r.categories, { modified: [], staged: [], untracked: [] });
-  });
-
-  it('classifies a modified tracked file (" M") as modified', () => {
-    const r = evaluateCleanBaseline({ statusPorcelain: ' M plugins/engineer/scripts/state.mjs\0' });
-    strictEqual(r.status, 'dirty');
-    deepStrictEqual(r.categories.modified, ['plugins/engineer/scripts/state.mjs']);
-    deepStrictEqual(r.categories.staged, []);
-    deepStrictEqual(r.categories.untracked, []);
-  });
-
-  it('classifies a staged-add ("A ") as staged', () => {
-    const r = evaluateCleanBaseline({ statusPorcelain: 'A  docs/new.md\0' });
-    strictEqual(r.status, 'dirty');
-    deepStrictEqual(r.categories.staged, ['docs/new.md']);
-  });
-
-  it('classifies a staged-modify ("M ") as staged', () => {
-    const r = evaluateCleanBaseline({ statusPorcelain: 'M  AGENTS.md\0' });
-    strictEqual(r.status, 'dirty');
-    deepStrictEqual(r.categories.staged, ['AGENTS.md']);
-  });
-
-  it('classifies an untracked file ("??") as untracked', () => {
-    const r = evaluateCleanBaseline({ statusPorcelain: '?? scratch.txt\0' });
-    strictEqual(r.status, 'dirty');
-    deepStrictEqual(r.categories.untracked, ['scratch.txt']);
-  });
-
-  it('excludes .agentic-plugins/state/** from all categories (workflow storage)', () => {
-    // ADR-0028 §Layer-1: "tracked modifications, staged changes, or
-    // untracked files **excluding** the `.agentic-plugins/state` workflow
-    // storage". A workflow file change does NOT make the baseline dirty.
-    const r = evaluateCleanBaseline({
-      statusPorcelain:
-        '?? .agentic-plugins/state/engineer/workflows/x.md\0' +
-        ' M .agentic-plugins/state/engineer/workflows/y.md\0' +
-        'A  .agentic-plugins/state/engineer/workflows/z.md\0',
-    });
-    strictEqual(r.status, 'clean');
-    deepStrictEqual(r.categories, { modified: [], staged: [], untracked: [] });
-  });
-
-  it('preserves non-workflow-storage dirty entries alongside excluded workflow entries', () => {
-    const r = evaluateCleanBaseline({
-      statusPorcelain:
-        ' M plugins/engineer/scripts/state.mjs\0' +
-        ' M .agentic-plugins/state/engineer/workflows/x.md\0',
-    });
-    strictEqual(r.status, 'dirty');
-    deepStrictEqual(r.categories.modified, ['plugins/engineer/scripts/state.mjs']);
-  });
-
-  it('returns status=accepted when acceptCurrentTree=true overrides a dirty tree', () => {
-    // ADR-0028 §Layer-1 accept-current-tree bypass: ACCEPT_CURRENT_TREE=1
-    // env-var lets the workflow sweep the current tree into its commit.
-    // The categories field still surfaces what is dirty so phase7-commit.mjs
-    // can act on it.
-    const r = evaluateCleanBaseline({
-      statusPorcelain: ' M plugins/engineer/scripts/state.mjs\0',
-      acceptCurrentTree: true,
-    });
-    strictEqual(r.status, 'accepted');
-    deepStrictEqual(r.categories.modified, ['plugins/engineer/scripts/state.mjs']);
-  });
-
-  it('returns status=clean when acceptCurrentTree=true but tree is clean (idempotent)', () => {
-    const r = evaluateCleanBaseline({ statusPorcelain: '', acceptCurrentTree: true });
-    strictEqual(r.status, 'clean');
-  });
-
-  it('handles rename ("R ") porcelain entries with the renamed-to path', () => {
-    // -z format: "R  new\0old\0" (newpath first; opposite of plain v1
-    // "R  old -> new"). PR3 Codex peer plan-verify confirmed the -z
-    // rename row shape (`["R  new name.md", "old.md", ""]`).
-    const r = evaluateCleanBaseline({
-      statusPorcelain: 'R  docs/renamed.md\0old.md\0',
-    });
-    strictEqual(r.status, 'dirty');
-    deepStrictEqual(r.categories.staged, ['docs/renamed.md']);
-  });
-
-  it('N4 — inside-to-inside workflow-storage rename stays clean', () => {
-    // Both OLD and NEW are workflow storage → engineer's own bookkeeping
-    // moving between workflows/ and archive/. Counts as clean.
-    const r = evaluateCleanBaseline({
-      statusPorcelain:
-        'R  .agentic-plugins/state/engineer/archive/x.md\0' +
-        '.agentic-plugins/state/engineer/workflows/x.md\0',
-    });
-    strictEqual(r.status, 'clean');
-    deepStrictEqual(r.categories, { modified: [], staged: [], untracked: [] });
-  });
-
-  it('N4 — outside-into-workflow-storage rename is dirty (surfaces the OLD outside path)', () => {
-    // OLD is outside workflow-storage → user is moving a real source file
-    // into the engineer state tree. The OLD path disappears from the
-    // working tree; phase7 must surface that endpoint so the user can
-    // resolve. PR3 Codex peer review MINOR N4-assert: explicit endpoint
-    // check (length-only was too weak).
-    const r = evaluateCleanBaseline({
-      statusPorcelain:
-        'R  .agentic-plugins/state/engineer/workflows/AGENTS.md\0AGENTS.md\0',
-    });
-    strictEqual(r.status, 'dirty');
-    const allSurfaced = [...r.categories.staged, ...r.categories.modified];
-    ok(
-      allSurfaced.includes('AGENTS.md'),
-      `rename outside→inside must surface OLD path 'AGENTS.md' (got: ${JSON.stringify(allSurfaced)})`,
-    );
-  });
-
-  it('N4 — workflow-storage-into-outside rename is dirty (surfaces the NEW outside path)', () => {
-    // OLD inside, NEW outside → workflow-storage content is being moved
-    // out into the tracked tree. Dirty so phase7 stages or refuses.
-    // PR3 N4-assert: explicit endpoint check.
-    const r = evaluateCleanBaseline({
-      statusPorcelain:
-        'R  docs/y.md\0.agentic-plugins/state/engineer/workflows/y.md\0',
-    });
-    strictEqual(r.status, 'dirty');
-    const allSurfaced = [...r.categories.staged, ...r.categories.modified];
-    ok(
-      allSurfaced.includes('docs/y.md'),
-      `rename inside→outside must surface NEW path 'docs/y.md' (got: ${JSON.stringify(allSurfaced)})`,
-    );
-  });
-
-  // ----------------------------------------------------------------------
-  // ADR-0028 PR4 N4-quoted — special-char paths inside workflow storage
-  // must still be EXCLUDED. Under plain `--porcelain=v1` the path would
-  // be C-quoted (`"a b.md"`), and the workflow-storage prefix check
-  // (which expects `.agentic-plugins/...`) would see a literal `"` and
-  // incorrectly classify the file as outside the engineer state tree.
-  // `-z` emits raw bytes (no quoting), so the prefix check works.
-  describe('N4-quoted (PR4) — special-char paths under workflow storage', () => {
-    it('excludes a workflow-storage path containing a space', () => {
-      const r = evaluateCleanBaseline({
-        statusPorcelain:
-          ' M .agentic-plugins/state/engineer/workflows/with space.md\0',
-      });
-      strictEqual(r.status, 'clean');
-      deepStrictEqual(r.categories, { modified: [], staged: [], untracked: [] });
-    });
-
-    it('excludes a workflow-storage path containing a literal " character', () => {
-      // A real path on disk with an embedded double-quote — plain v1
-      // would surround it with quotes AND escape the inner quote.
-      // Under -z the byte is raw.
-      const r = evaluateCleanBaseline({
-        statusPorcelain:
-          'A  .agentic-plugins/state/engineer/workflows/q"x.md\0',
-      });
-      strictEqual(r.status, 'clean');
-    });
-
-    it('excludes a workflow-storage path with a tab byte', () => {
-      const r = evaluateCleanBaseline({
-        statusPorcelain:
-          '?? .agentic-plugins/state/engineer/workflows/with\ttab.md\0',
-      });
-      strictEqual(r.status, 'clean');
-    });
-
-    it('excludes an inside-to-inside rename whose endpoints contain spaces', () => {
-      const r = evaluateCleanBaseline({
-        statusPorcelain:
-          'R  .agentic-plugins/state/engineer/archive/new name.md\0' +
-          '.agentic-plugins/state/engineer/workflows/old name.md\0',
-      });
-      strictEqual(r.status, 'clean');
-    });
-
-    it('still surfaces dirty when an outside path with special chars is touched', () => {
-      const r = evaluateCleanBaseline({
-        statusPorcelain: ' M docs/note with space.md\0',
-      });
-      strictEqual(r.status, 'dirty');
-      deepStrictEqual(r.categories.modified, ['docs/note with space.md']);
-    });
-  });
-});
-
 describe('/engineer:start — Layer 1 clean-baseline gate (ADR-0028)', () => {
   it('invokes state.mjs check-clean-baseline before state.mjs create on the bootstrap path', async () => {
     const text = await readFile(COMMAND_PATH, 'utf8');
@@ -694,7 +451,7 @@ describe('/engineer:start — runtime:worktree routes name a subcommand the CLI 
     const gates = {
       'commands/start.md': {
         text: await readFile(COMMAND_PATH, 'utf8'),
-        line: /^\s*echo "\s*- worktree:.*$/m,
+        line: /^\s*echo "\s*• worktree:.*$/m,
       },
       'start/SKILL.md': {
         text: await readFile(SKILL_PATH, 'utf8'),

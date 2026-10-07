@@ -14,8 +14,8 @@ one message, in the order the decide output format sets:
 1. Each direction's full analysis (4 blocks, in order)
 2. The multi-perspective comparison table, after all directions (rows =
    axes, columns = A/B/C/D)
-3. The recommendation block (chosen direction + rationale + gate verdict +
-   alternative-conditions)
+3. The recommendation block (chosen direction + rationale + any gate
+   verdict its axes require + alternative-conditions)
 
 Splitting it into per-option segments would break the comparison the item
 exists for: the user weighs one decision's trade-off across its directions
@@ -106,6 +106,13 @@ For trivial confirmations, yes/no follow-ups, or self-evident next steps,
 do **not** use `AskUserQuestion`. Use a plain text question instead, framed
 as: *"Recommended: X. Proceed?"*
 
+{{#capability dispatch_target}}
+**Autopilot mode (ADR-0063, Claude only):** there is no one to answer, so
+proceed with X instead of asking (`autopilot-mode.md`). A choice that is a
+genuine owner judgment is not a ceremony: it stops the step with its owner
+gate (`entry-routing-contract.md` § Owner gates).
+
+{{/capability}}
 If the user replies with "what's the difference?" / "compare them
 specifically" after a multiple-choice prompt, drop the tool, present the
 detailed comparison + clear recommendation in the body, and ask for

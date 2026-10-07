@@ -3005,6 +3005,12 @@ export async function clearAwaitingOwner({
   // The next step the owner chose, written with the clear, so the
   // `owner-decision` next step the gate left behind does not linger.
   nextStep,
+  // Or no next step at all: inside a /start lifecycle the lifecycle owns its
+  // phase order, and its resume clears a recorded next step anyway.
+  clearNextStep = false,
+  // The next action that replaces the gate's "Owner: …" one, in the same
+  // write, so a block that stops after the clear leaves no stale instruction.
+  nextAction,
   // The owner's decision in words (the direction chosen, a deferral and its
   // reason). It lands in the resolved note of the same write.
   resolution,
@@ -3012,7 +3018,7 @@ export async function clearAwaitingOwner({
   now = new Date(),
 }) {
   validateHost(host);
-  const nextStepWrite = resolveNextStepWrite(nextStep, false);
+  const nextStepWrite = resolveNextStepWrite(nextStep, clearNextStep);
   if (resolution !== undefined && (typeof resolution !== 'string' || resolution.trim().length === 0)) {
     throw new Error('resolution must be non-empty text when given');
   }
@@ -3040,6 +3046,7 @@ export async function clearAwaitingOwner({
       `pointer ${frontmatter.awaiting_owner_pointer}).\n\n`;
     for (const k of AWAITING_OWNER_KEYS) delete frontmatter[k];
     applyNextStepWrite(frontmatter, nextStepWrite);
+    if (nextAction !== undefined) frontmatter.next_action = nextAction;
     frontmatter.updated_at = nowIso;
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
@@ -3161,10 +3168,12 @@ export async function autopilotPreflight({
     stdout:
       `Owner gate ${gate.gate} is pending since ${gate.since}: ${gate.pointer}.\n` +
       `Put it to the user before this command continues: ${how}.\n` +
-      `Clearing it by hand once it is resolved, with the next step the owner chose: ` +
+      `Clearing it by hand once it is resolved, with the next step the owner chose ` +
+      `and its action, which replaces the gate's (PC3b): ` +
       `node "${scriptPath}" awaiting-owner-clear --workflow-path "${workflowPath}" ` +
       `--host ${host} --gate ${gate.gate} --next-step-kind <verb|commit|done> ` +
-      `--next-step-confidence HIGH [--next-step-verb <verb>] --resolution "<the owner's decision>"\n`,
+      `--next-step-confidence HIGH [--next-step-verb <verb>] --resolution "<the owner's decision>" ` +
+      `--next-action "<the next step's action>"\n`,
     stderr,
   };
 }
@@ -4227,10 +4236,12 @@ function cliPrintHelp() {
       '',
       '  awaiting-owner-clear --workflow-path <path> --host <host> --gate <gate>',
       '                       [--next-step-kind <kind> --next-step-confidence <c>',
-      '                        [--next-step-verb <verb>]] [--resolution <text>]',
+      '                        [--next-step-verb <verb>] | --clear-next-step true]',
+      '                       [--next-action <text>] [--resolution <text>]',
       '    ADR-0063 D6 — clear the owner gate once the owner has decided, and',
       '    append an "Owner gate resolved" phase note, with the next step the',
-      '    owner chose and the decision in words in the same write. Exit 1 when',
+      '    owner chose (or none, --clear-next-step true), the next action that',
+      '    replaces the gate\'s, and the decision in words in the same write. Exit 1 when',
       `    the gate is not the one set${capabilityOn('dispatch_target') ? ', or under an autopilot run' : ''}.`,
       '',
       '  archive --workflow-path <path> --host <host> --repo-root <path>',
@@ -4614,6 +4625,8 @@ async function cliMain(argv) {
           host: flags.host,
           gate: flags.gate,
           nextStep: cliNextStep(flags),
+          clearNextStep: cliBoolean(flags, 'clear-next-step', false),
+          nextAction: flags['next-action'],
           resolution: flags.resolution,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);

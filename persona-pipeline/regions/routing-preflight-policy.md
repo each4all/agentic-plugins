@@ -40,6 +40,12 @@ snapshot of it, never from the shared slot, which is last-writer-wins across
 concurrent terminals. An emit that cannot project clears a stale projection
 from a prior emit rather than let it be served (`session-handoff.md`
 § Fail-closed baseline (ADR-0043 §2)).
+{{#capability legacy_homes}}
+A workflow that still lives in the pre-migration home,
+`.claude/agentic-{{persona}}/`, writes its projection to that home's
+`last-session-handoff.json` instead, and SessionStart reads both slots,
+canonical first.
+{{/capability}}
 
 ### Boundaries (carried from ADR-0024 / ADR-0031)
 
@@ -49,12 +55,19 @@ from a prior emit rather than let it be served (`session-handoff.md`
   context.
 - **Archive readiness is gate-driven and side-effect-free.** `archive_gate`
   comes from the owning plugin's **pure** evaluator, not the Stop runner. The
-  real archive happens only in the persona's Stop hook, preserving the
+  automatic archive happens in the persona's Stop hook, preserving the
   ADR-0017 auto-archive invariants: on the checked-out branch once every gate
   passes, HEAD movement past the baseline among them; and in the off-branch
   sweep, which judges a kept branch by its own tip and archives a terminal
   workflow whose branch was deleted with no HEAD-movement gate (a deleted
   branch has no tip to judge).
+{{#capability commit_surface}}
+  The commit command's no-changes close (`phase7-commit.mjs`) archives its
+  workflow itself, right after its terminal write: with nothing committed,
+  HEAD never moves past the baseline, so the Stop hook would never pass it.
+{{/capability}}
+  An owner archives a stale workflow on purpose with `/{{persona}}:resume
+  archive`.
 - **One projection per surface.** A completing surface projects **its own**
   workflow only; macro projection happens at the orchestrator surfaces. The
   two are never merged.

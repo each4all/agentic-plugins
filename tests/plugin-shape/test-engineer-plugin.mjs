@@ -774,6 +774,19 @@ describe('plugins/engineer — 12 commands (commands/<verb>.md — 6 verbs + aud
     );
   });
 
+  // PC3b: audit is an engineer-only alias, an authored extension in ADR-0066
+  // Decision 2's list, not a pipeline unit: nothing renders into it, so it must
+  // hold nothing a generated region would own.
+  it('audit stays an authored extension: no shell block, no pipeline marker, no manifest entry, and it executes commands/critique.md (ADR-0066 D2, PC3b)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/audit.md'), 'utf8');
+    ok(!/^\s*```(?:bash|sh|zsh)\b/m.test(text), 'commands/audit.md holds a shell block, which the resolver rule and a region would own');
+    ok(!text.includes('<!-- pipeline:'), 'commands/audit.md holds a pipeline marker');
+    ok(text.includes('`${CLAUDE_PLUGIN_ROOT}/commands/critique.md`'), 'commands/audit.md no longer executes critique');
+    const manifest = JSON.parse(await readFile(resolve(REPO_ROOT, 'persona-pipeline/manifest.json'), 'utf8'));
+    const dests = [...manifest.units, ...manifest.regions, ...manifest.extension_points].map((u) => u.dest ?? '');
+    ok(!dests.some((d) => d.endsWith('commands/audit.md')), 'a manifest entry targets commands/audit.md');
+  });
+
   it('checkpoint meta command surfaces required ADR-0017 sub-2 signals (argument-hint + state.mjs delegation)', async () => {
     // Meta commands per ADR-0017 are thin shims over `state.mjs`
     // subcommands. Verify the contract surface: argument-hint advertises
@@ -1565,6 +1578,82 @@ describe('plugins/engineer — investigate cited-brief profile (ADR-0014 absorpt
     // Permitted sentinels for un-cited claims.
     ok(/\[uncited inference\]/.test(text), 'spec missing [uncited inference] sentinel');
     ok(/research interrupted/.test(text), 'spec missing "research interrupted" sentinel');
+    // The whole sentinels, in the Audit Checklist (moved from
+    // tests/engineer/test-cited-brief.mjs, PC3b U5d review).
+    const audit = text.slice(text.indexOf('## Audit Checklist'));
+    ok(audit.includes('`[uncited inference]` with rationale'), 'the checklist permits [uncited inference]');
+    ok(audit.includes('`[research interrupted — partial coverage]`'), 'the checklist permits the whole [research interrupted — partial coverage] sentinel');
+  });
+
+  // Moved from tests/engineer/test-cited-brief.mjs with the brief references
+  // (PC3b U5d): engineer's own text around the generated regions. What the
+  // generated rules, spec and ensemble state is the reference contracts'
+  // (tests/persona-pipeline/test-reference-contracts.mjs RD7, RD8).
+  it('output-file-rules.md keeps the Stage 1 names and engineer\'s slug examples', async () => {
+    const text = await readFile(RULES_PATH, 'utf8');
+    ok(/\*\*Names kept from Stage 1\*\*: the filename `research_brief\.md` and the\s+variable `RESEARCH_OUTPUT_ROOT` come from the Stage 1 `plugins\/research` shape/.test(text), 'rules missing the Stage 1 names note');
+    ok(/both names are a stable interface across the absorption; renaming\s+either would be a separate ADR decision/.test(text), 'rules missing the stable-interface guarantee');
+    for (const [what, re] of [
+      ['ASCII passthrough', /Server-Sent Events vs WebSockets[\s\S]{0,80}server-sent_eve/],
+      ['CJK retention', /리서치 기능 도입 검토[\s\S]{0,80}리서치_기능_도입_검토/],
+      ['emoji-only fallback', /🎉🎊[\s\S]{0,80}\(empty\)\s*→\s*fallback/],
+      ['traversal fallback', /\.\.\/etc\/passwd[\s\S]{0,80}rejected at step 1/],
+      ['numeric passthrough', /\|\s*`2025`\s*\|\s*`2025`\s*\|/],
+    ]) ok(re.test(text), `examples missing the ${what} scenario`);
+  });
+
+  it('the existing-directory gate runs before any web search, and its abort is a Completion outcome', async () => {
+    const skill = await readFile(SKILL_PATH, 'utf8');
+    ok(/Existing-directory check/.test(skill) && /BEFORE\s+running web searches/.test(skill), 'SKILL.md missing the pre-dispatch existing-directory check');
+    const command = await readFile(COMMAND_PATH, 'utf8');
+    ok(/aborted at save/i.test(command) && /existing-directory gate/i.test(command), 'Completion missing the aborted-at-save outcome with its gate');
+  });
+
+  it('cited-brief-spec.md: twelve audit items, labels only where forbidden, capture-order numbering, four source tiers', async () => {
+    const text = await readFile(SPEC_PATH, 'utf8');
+    // 11 base items absorbed from Stage 1 plus the PEER-ONLY routing item.
+    const audit = text.match(/##\s+Audit Checklist[\s\S]+/);
+    ok(audit, 'Audit Checklist section not found');
+    strictEqual((audit[0].match(/^-\s+\[\s\]\s+\*\*[^*]/gm) || []).length, 12);
+    const policy = text.match(/##\s+Ensemble Label Policy[\s\S]*?(?=\n##\s|$)/);
+    const checklist = text.match(/##\s+Audit Checklist[\s\S]*?(?=\n##\s|$)/);
+    ok(policy && checklist, 'spec missing the label policy or the checklist');
+    const rest = text.replace(policy[0], '').replace(checklist[0], '');
+    for (const token of ['[Local]', '[Peer]', '[Both]']) ok(!rest.includes(token), `"${token}" outside the label policy and the checklist`);
+    ok(/research-execution capture order/.test(text) && /Do not renumber on edits/.test(text), 'spec missing capture-order numbering');
+    for (const tier of ['official-docs', 'standards', 'academic', 'secondary']) ok(new RegExp(`\\*\\*${tier}\\*\\*`).test(text), `spec missing source tier "${tier}"`);
+  });
+
+  it('PEER-ONLY claims route through Path A or Path B in the brief ensemble, the skill and the shared Research-scan point', async () => {
+    const ensemble = await readFile(ENSEMBLE_PATH, 'utf8');
+    ok(/Path A/.test(ensemble) && /Path B/.test(ensemble) && /Independence Rule/.test(ensemble), 'cited-brief-ensemble.md missing Path A / Path B');
+    ok(/Independence Rule[\s\S]{0,200}Path A[\s\S]{0,200}Path B/.test(await readFile(SKILL_PATH, 'utf8')), 'SKILL.md missing Path A / Path B routing');
+    const shared = await readFile(skillsPath(PLUGIN_ROOT, '_shared/references/ensemble-protocol.md'), 'utf8');
+    const section = shared.match(/###\s+Research-scan[\s\S]+?(?=###\s+Refine-verify|$)/);
+    ok(section, 'Research-scan point type not found');
+    ok(/Path A[\s\S]{0,200}Path B/.test(section[0]), 'Research-scan missing Path A / Path B');
+    ok(/MUST NOT be copied verbatim/.test(section[0]), 'Research-scan missing the no-verbatim peer label rule');
+  });
+
+  it('the cited-brief privacy gate covers web search and peer dispatch, and the prompt carries a privacy contract', async () => {
+    const skill = await readFile(SKILL_PATH, 'utf8');
+    ok(/web search queries/i.test(skill) && /peer-host dispatch/i.test(skill), 'SKILL.md privacy gate missing web search / peer dispatch');
+    const ensemble = await readFile(ENSEMBLE_PATH, 'utf8');
+    ok(/<privacy_contract>/.test(ensemble), 'ensemble missing the privacy_contract block');
+    ok(/Before dispatch, the cited-brief profile's privacy gate \(`\.\.\/SKILL\.md` Step 1,\s+re-confirmed in its Step 2 survey\) has passed/.test(ensemble), 'the Launch states the gate before dispatch');
+  });
+
+  it('no stale plugins/research tokens in user-facing surfaces (ADR-0014/0015)', async () => {
+    const FORBIDDEN = ['/research:research', 'research@agentic-plugins'];
+    const collect = async (dir) => (await readdir(dir, { recursive: true, withFileTypes: true }))
+      .filter((e) => e.isFile() && e.name.endsWith('.md')).map((e) => resolve(e.parentPath, e.name));
+    const files = [resolve(REPO_ROOT, 'README.md'), resolve(REPO_ROOT, 'plugins/companions/README.md'),
+      ...(await collect(resolveSkillsRoot(PLUGIN_ROOT))), ...(await collect(resolve(PLUGIN_ROOT, 'commands')))];
+    ok(files.length > 10, 'no engineer skills or commands found');
+    for (const path of files) {
+      const text = await readFile(path, 'utf8');
+      for (const token of FORBIDDEN) ok(!text.includes(token), `${path}: stale token "${token}"`);
+    }
   });
 });
 

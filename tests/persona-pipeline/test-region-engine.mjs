@@ -335,6 +335,17 @@ describe('region rendering', () => {
       const none = derived({ brief_file: 'research_brief.md', output_root_env: 'RESEARCH_OUTPUT_ROOT' });
       ok(!Object.hasOwn(none, 'brief_file') && !Object.hasOwn(none, 'output_root_env'), 'no default profile, no brief names');
     });
+    it('the brief profile and brief ensemble type: the default profile and ensemble type unless declared, and the brief file follows the brief profile (PC3b U5d, format 1.4)', () => {
+      const derived = (investigate) => renderingDeclaration(declaration({ name: 'web-ux', verbs: { investigate } })).derived;
+      const plain = derived({ profiles: ['design-brief'], default_profile: 'design-brief', ensemble_type: 'reference-scan' });
+      deepStrictEqual([plain.brief_profile, plain.brief_ensemble_type, plain.brief_file], ['design-brief', 'reference-scan', 'design_brief.md']);
+      const declared = derived({ profiles: ['analysis', 'cited-brief'], default_profile: 'analysis', ensemble_type: 'investigate', brief_profile: 'cited-brief', brief_ensemble_type: 'research-scan' });
+      deepStrictEqual([declared.brief_profile, declared.brief_ensemble_type, declared.brief_file], ['cited-brief', 'research-scan', 'cited_brief.md'], 'the brief file is named after the brief profile, not the default one');
+      const untyped = derived({ profiles: ['design-brief'], default_profile: 'design-brief' });
+      ok(untyped.brief_profile === 'design-brief' && !Object.hasOwn(untyped, 'brief_ensemble_type'), 'no ensemble type declared, none derived');
+      const none = derived({ brief_profile: 'cited-brief', brief_ensemble_type: 'research-scan' });
+      ok(!Object.hasOwn(none, 'brief_profile') && !Object.hasOwn(none, 'brief_ensemble_type'), 'no default profile, no brief profile or type');
+    });
     it('derives what the investigate headings name: the type and the profile with one profile, investigate (profile=<profile>) for both with several (PC3 U7)', () => {
       const derived = (investigate) => renderingDeclaration(declaration({ name: 'web-ux', verbs: { investigate } })).derived;
       const one = derived({ profiles: ['design-brief'], default_profile: 'design-brief', ensemble_type: 'reference-scan' });

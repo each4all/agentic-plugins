@@ -42,8 +42,10 @@ derived from the verb's actual result and the current workflow state:
 {{#capability commit_surface}}
 - **next_command**: the exact next step, matching `selected_next` — for
   a verb, the `/{{persona}}:<verb> …` (Claude) or `${{persona}}:<verb>` (Codex)
-  mention; for `commit` or `done`, `/{{persona}}:commit` /
-  `${{persona}}:commit`; for `owner decision`, surfacing the decision to the
+  mention; for `commit`, `/{{persona}}:commit` / `${{persona}}:commit` (a
+  `/{{persona}}:start` lifecycle commits at its Phase 7 instead); for `done`,
+  the same command, which closes the workflow without a commit when there is
+  nothing to commit; for `owner decision`, surfacing the decision to the
   owner rather than a command to run.
 {{/capability}}
 {{^capability commit_surface}}
@@ -70,11 +72,11 @@ form (selected_next + one-line rationale + next_command); the fuller
 proposal (alternatives + evidence + confidence) belongs in the
 completion output and the phase note.
 
-**Closed-enum projection: `next_step` (ADR-0063 D6, ported by ADR-0066
-Stage 2).** A verb command's last write, `state.mjs finish-verb`, also
-records `selected_next` and `confidence` as three flat keys. `next_action`
-stays the free-text form for humans; a machine consumer reads the closed-enum
-keys and never parses `next_action`.
+**Closed-enum projection: `next_step` (ADR-0063 D6, amending ADR-0029
+§3; every persona since ADR-0066 Stage 2).** A verb command's last write,
+`state.mjs finish-verb`, also records `selected_next` and `confidence` as
+three flat keys. `next_action` stays the free-text form for humans; a machine
+consumer reads the closed-enum keys and never parses `next_action`.
 
 | `selected_next` | `next_step_kind` | `next_step_verb` |
 |---|---|---|

@@ -71,7 +71,7 @@ const CANONICAL_PRIVACY_SENTINEL =
 // The region templates that state the gate: the verb runbooks' and skills'
 // privacy gate, the ensemble protocol's Launch step and Privacy section, and
 // the brief ensemble's Launch pre-conditions (PC2a4 RD4/RD5/RD8).
-const GATE_TEMPLATES = ['regions/verb-privacy-gate.md', 'regions/ensemble-launch.md', 'regions/ensemble-privacy-intro.md', 'regions/brief-ensemble-launch.md'];
+const GATE_TEMPLATES = ['regions/verb-privacy-gate.md', 'regions/ensemble-launch-privacy.md', 'regions/ensemble-privacy-intro.md', 'regions/brief-ensemble-launch.md'];
 const GENERATED_GATE_FILES = [
   'commands/compose.md',
   'commands/critique.md',
@@ -883,15 +883,12 @@ describe('plugins/founder — session-handoff runbook (ADR-0043 S3)', () => {
     ];
     for (const rel of surfaces) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      // investigate/SKILL.md never carried the deferral prose and stays
-      // footer-silent by design (its command file owns the completion
-      // surface); every other surface must defer to the code-emitted footer.
-      if (rel !== `${SKILLS_REL}/investigate/SKILL.md`) {
-        ok(/code-emit/.test(text),
-          `${rel} must defer to the code-emitted completion footer`);
-        ok(text.includes('references/session-handoff.md'),
-          `${rel} must point at the shared session-handoff runbook`);
-      }
+      // investigate/SKILL.md was footer-silent until its finish paragraph
+      // came from the shared region (PC3b U3b); every surface defers now.
+      ok(/code-emit/.test(text),
+        `${rel} must defer to the code-emitted completion footer`);
+      ok(text.includes('references/session-handoff.md'),
+        `${rel} must point at the shared session-handoff runbook`);
       ok(!/future work if demand arrives/.test(text),
         `${rel} must not carry the retired pre-S3 deferral prose`);
       ok(!/is future work, not\s*\npart of founder's surface/.test(text),

@@ -1,23 +1,33 @@
 This is the {{persona}}-side wiring for the **session-level continue-vs-fresh
 preflight** (ADR-0031) and the **code-emitted completion footer**
-(ADR-0039, enabled for {{persona}} by ADR-0043). The **canonical contracts** —
+(ADR-0039). The **canonical contracts** —
 the firing rules, the three inputs, the bounded projection schema, and the
 continue-vs-fresh decision policy — live in {{persona}}'s own
 `entry-routing-contract.md` § Session-Level Continue-vs-Fresh Preflight
 (ADR-0031), beside this file (the single source; restating the schema
 here would drift). The completion-flag minimum content is owned
 by the runtime's `docs/completion-output-contract.md`. This file holds only
-the {{persona}}-local wiring: how a {{persona}} surface computes its own bounded
+the {{persona}}-local wiring: how each {{persona}} surface computes its own bounded
 projection, passes it **into** the runtime seam (L3 → L1; the runtime never
 reads {{persona}} state), and what the code-emitted terminal path guarantees.
 
 ## When it fires
 
+{{^capability commit_surface}}
 - at **standalone verb / lifecycle completion** — **code-emitted**
-  (ADR-0039 via ADR-0043): the terminal mutation (`state.mjs
+  (ADR-0039): the terminal mutation (`state.mjs
   finish-verb`, the production completion entry point for the six verb
   commands and the `/{{persona}}:start` terminal step, which makes
   `set-terminal`'s write) fires
+{{/capability}}
+{{#capability commit_surface}}
+- at **standalone verb / lifecycle completion** — **code-emitted**
+  (ADR-0039): the terminal mutation (`state.mjs finish-verb`, the
+  production completion entry point for the six verb commands, which makes
+  `set-terminal`'s write; and the Phase 7 driver `phase7-commit.mjs`,
+  whose commit ends `/{{persona}}:start` and `/{{persona}}:commit` with the
+  same write) fires
+{{/capability}}
   `emitTerminalHandoffSidecar`, which — after writing the projection —
   shells out to the runtime `footer.mjs` and prints the completion footer
   (context state, completion state + next action, workflow id/path,
@@ -27,6 +37,16 @@ reads {{persona}} state), and what the code-emitted terminal path guarantees.
   `finish-verb` that records an owner gate is not a terminal write and
   emits nothing: the footer comes with the terminal write that follows the
   owner's resolution.
+{{#capability commit_surface}}
+  The Phase 7 driver's no-changes close emits nothing either: it archives
+  the workflow itself right after its terminal write, and the command's
+  completion names the next step.
+{{/capability}}
+{{#capability dispatch_target}}
+  Under an autopilot run (Claude, ADR-0063) `finish-verb` writes the next
+  step only, so it emits nothing: the commit command makes the terminal
+  write, and the driver is the handoff.
+{{/capability}}
 
   The sidecar supplies **no** `--context-state`: it owns no context-budget
   sensor, and footer.mjs reads a supplied value as a caller assertion.
@@ -72,12 +92,29 @@ so it carries no orchestrator parent and the step is removed outright
 (`scripts/stop-archive.mjs`).
 {{/capability}}
 {{#capability dispatch_target}}
-A workflow the orchestrator dispatched carries its parent, and the parent
-writeback runs after the archive move (`scripts/stop-archive.mjs`).
+A workflow the orchestrator dispatched carries its parent: after the archive
+move the Stop hook notes the workflow's terminal commit on it, best effort
+(`scripts/stop-archive.mjs`; a kept branch's sweep notes that branch's tip),
+except after a no-changes close, which made no commit. A Phase 7 commit sends
+the same note itself first (P10, synchronously, before its terminal write),
+so on that path the Stop's note is a retry, which is idempotent, and makes up
+for a P10 note that failed (Phase 7 goes on to its terminal write when it
+does); a Phase 7 that stops before its terminal write leaves the workflow
+unarchived, and running it again is the recovery. A verb's terminal write
+leaves the note to that Stop. The sweep archives a workflow whose branch was
+deleted without a note, since it has no commit to name, and reports it for
+`/orchestrator:done`. No note completes the macro subtask (ADR-0062):
+`/orchestrator:done` records completion after the pull request merges.
 {{/capability}}
 {{^capability commit_surface}}
 Note also that `/{{persona}}:start` does not auto-commit, so the HEAD-movement gate
 usually fails on the same turn and the archive lands after the owner commits.
+{{/capability}}
+{{#capability commit_surface}}
+Note also that a verb's terminal write usually fails the HEAD-movement gate on
+the same turn, until `/{{persona}}:commit` commits the change; a Phase 7 commit
+moves HEAD before its terminal write, so that turn's Stop can archive the
+workflow, and a no-changes close archives the workflow itself.
 {{/capability}}
 
 Consequences for a runbook author:
@@ -102,8 +139,9 @@ Consequences for a runbook author:
 
 ## Fail-closed baseline (ADR-0043 §2)
 
-The {{persona}} sidecar follows engineer's **path-targeted projection**
-semantics plus orchestrator's **hardened delivery**:
+The {{persona}} sidecar keeps the ADR-0043 §2 baseline, a
+**path-targeted projection** with **hardened delivery**, in the one
+`session-handoff.mjs` every persona runs (ADR-0066):
 
 - the projection is computed for the **exact workflow being terminated
   (by path)**, never a current-branch lookup — `finish-verb` and
@@ -127,6 +165,13 @@ semantics plus orchestrator's **hardened delivery**:
 {{^capability legacy_homes}}
   ({{persona}} declares `legacy_homes` off: canonical home only).
 {{/capability}}
+{{#capability legacy_homes}}
+  (`legacy_homes`: a workflow still stored under the pre-migration
+  `.claude/agentic-{{persona}}/` home writes its projection to that home's
+  `last-session-handoff.json`, and the SessionStart backstop reads both
+  slots, the canonical one first; workflow writes refuse a repository whose
+  two homes both hold state).
+{{/capability}}
   Concurrent cross-branch terminals are
   **last-writer-wins** on the slot (accepted by ADR-0043 §2; the marker
   prevents double render, not cross-workflow overwrite).
@@ -134,8 +179,9 @@ semantics plus orchestrator's **hardened delivery**:
 **Scope honesty (inherited limitations):** the branch-agnostic Stop-hook
 **orphan sweep** archives terminal workflows whose branch is not checked
 out — deleted, or kept and moved past its baseline, and never one with an
-owner gate pending — **without** a final sidecar emit attempt, same as engineer's sweep (orchestrator's Stop runs
-its handoff backstop before its archive scan). A workflow that
+owner gate pending — **without** a final sidecar emit attempt, one sweep in
+every persona's `scripts/stop-archive.mjs` (orchestrator's Stop runs its
+handoff backstop before its archive scan). A workflow that
 terminalizes and whose branch is deleted or switched away from before any
 Stop fires on it gets no backstop emit, so a missed primary emit leaves it
 with no footer and no pending handoff. Two further slot-model properties are
@@ -152,7 +198,7 @@ shares the same LWW family: a different workflow's later claim replaces the
 tombstone, so under concurrent cross-branch terminals a still-active
 terminal workflow's Stop backstop can re-render an already-delivered
 transition — accepted with the slot model (a slot-transaction redesign is a
-cross-persona follow-up, not this onboarding).
+cross-persona follow-up, outside this wiring).
 
 ## Footer-rendered marker (documented cross-package contract)
 
@@ -162,6 +208,9 @@ consumes this documentation, not the implementation):
 - **filename**: `<projectionFile>.footer-rendered`, i.e. the canonical
   slot's sibling
   `.agentic-plugins/state/{{persona}}/last-session-handoff.json.footer-rendered`
+{{#capability legacy_homes}}
+  (the legacy slot's sibling for a legacy-home workflow)
+{{/capability}}
   (every persona shares the single-projection-slot structure);
 - **JSON shape**: `{"workflow_id": <id>, "status": "claimed"|"rendered",
   "at": <iso-utc>, "transition": <key>, "claim": <token>}`;
