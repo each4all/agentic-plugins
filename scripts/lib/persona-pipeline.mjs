@@ -487,17 +487,26 @@ function lookupField(declaration, field) {
  *   - `shared_privacy_spec`: the same spec as a shared reference cites it,
  *     relative to `core/skills/_shared/references/` (PC2a4). Absent without a
  *     spec.
- *   - `brief_file`: the file the investigate brief is saved as, its default
+ *   - `brief_profile`: the investigate profile that saves the brief, its
+ *     default profile unless `verbs.investigate.brief_profile` declares
+ *     another (PC3b U5d, format 1.4: engineer's default profile is analysis,
+ *     while its brief comes from cited-brief). The brief references are named
+ *     after it (`<brief_profile>-spec.md`, `-ensemble.md`).
+ *   - `brief_ensemble_type`: the brief ensemble's point type, the investigate
+ *     ensemble type unless `verbs.investigate.brief_ensemble_type` declares
+ *     another (engineer: research-scan, while its default profile's ensemble
+ *     is investigate).
+ *   - `brief_file`: the file the investigate brief is saved as, its brief
  *     profile with `-` → `_` plus `.md` (`business-brief` →
  *     `business_brief.md`); the generator checks that the declared
  *     `artifact` names that same file (PC2a4).
  *   - `output_root_env`: the variable that overrides where that brief is
  *     saved, `<NAME>_OUTPUT_ROOT`, from the name (PC2a4).
- *   Both are absent without `verbs.investigate.default_profile`. A declared
- *   `verbs.investigate.brief_file` / `output_root_env` wins over the
- *   derivation (PC3 U7: engineer's default profile is analysis, while its
- *   brief comes from the cited-brief profile as research_brief.md under
- *   RESEARCH_OUTPUT_ROOT).
+ *   All four are absent without `verbs.investigate.default_profile` (the
+ *   ensemble type also without `ensemble_type` and a declared brief one). A
+ *   declared `verbs.investigate.brief_file` / `output_root_env` wins over the
+ *   derivation (PC3 U7: engineer's brief is research_brief.md under
+ *   RESEARCH_OUTPUT_ROOT, the names it kept from Stage 1).
  *   - `investigate_launched`, `investigate_synthesis`: what the investigate
  *     note's launched and synthesis headings name. With one declared profile,
  *     the ensemble type and the profile (founder: research-scan,
@@ -531,7 +540,11 @@ export function derivedFields(declaration) {
   const investigate = declaration?.verbs?.investigate;
   const profile = investigate?.default_profile;
   if (typeof profile === 'string' && profile.length > 0) {
-    derived.brief_file = typeof investigate.brief_file === 'string' ? investigate.brief_file : `${profile.split('-').join('_')}.md`;
+    const briefProfile = typeof investigate.brief_profile === 'string' ? investigate.brief_profile : profile;
+    derived.brief_profile = briefProfile;
+    const briefType = typeof investigate.brief_ensemble_type === 'string' ? investigate.brief_ensemble_type : investigate.ensemble_type;
+    if (typeof briefType === 'string') derived.brief_ensemble_type = briefType;
+    derived.brief_file = typeof investigate.brief_file === 'string' ? investigate.brief_file : `${briefProfile.split('-').join('_')}.md`;
     derived.output_root_env = typeof investigate.output_root_env === 'string' ? investigate.output_root_env : `${upper}_OUTPUT_ROOT`;
   }
   const profiles = investigate?.profiles;

@@ -14,7 +14,7 @@ import { runSync } from '../../scripts/sync-persona-pipeline.mjs';
 import { MANIFEST, REPO_ROOT, declaration, personaInfo, personasFound } from './_personas.mjs';
 
 const SCHEMA = JSON.parse(readFileSync(join(REPO_ROOT, 'persona-pipeline/persona.schema.json'), 'utf8'));
-const validate = (doc) => validateAgainstSchema(doc, SCHEMA, { readerVersion: 'persona-declaration-1.3' });
+const validate = (doc) => validateAgainstSchema(doc, SCHEMA, { readerVersion: 'persona-declaration-1.4' });
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
 // Documents the schema rejects; the loader must reject each of them too.
@@ -152,7 +152,7 @@ describe('scripts/lib/persona.mjs — the loader', () => {
 
   // The two readers agree on forward compatibility (ADR-0034 §4.1), at every
   // depth: an unknown scalar is forgiven only in a declaration of a newer minor
-  // than they read (1.3); an unknown object or list never is.
+  // than they read (1.4); an unknown object or list never is.
   it('agrees with the schema on unknown keys: older/same/newer minor × scalar/object/list × every object depth', async () => {
     const at = {
       root: (d) => d,
@@ -168,7 +168,7 @@ describe('scripts/lib/persona.mjs — the loader', () => {
       peer: (d) => d.peer,
     };
     const values = { scalar: 1, object: { x: 1 }, list: [1] };
-    const minors = { older: '1.2', same: '1.3', newer: '1.4' };
+    const minors = { older: '1.3', same: '1.4', newer: '1.5' };
     let forgiven = 0;
     let refused = 0;
     for (const [minorName, minor] of Object.entries(minors)) {
@@ -194,7 +194,7 @@ describe('scripts/lib/persona.mjs — the loader', () => {
 
   it('agrees with the schema where keys are patterns or items are typed: profile_presets keys, artifact items', async () => {
     const cases = [];
-    for (const minor of ['1.1', '1.2', '1.3', '1.4']) {
+    for (const minor of ['1.1', '1.2', '1.3', '1.4', '1.5']) {
       for (const value of [1, 'x', { x: 1 }]) {
         cases.push([`${minor}: a profile_presets key outside the id pattern holding ${JSON.stringify(value)}`, (d) => {
           d.schema = `persona-declaration-${minor}`;
@@ -210,7 +210,8 @@ describe('scripts/lib/persona.mjs — the loader', () => {
         d.verbs.compose.artifact = ['### Artifact', '', 'x'];
       }]);
       // Format 1.3: investigate's declared brief names (PC3 U7).
-      for (const [key, value] of [['brief_file', 'notes_brief.md'], ['brief_file', 'Notes.MD'], ['brief_file', 'notes'], ['brief_file', 7], ['output_root_env', 'NOTES_ROOT'], ['output_root_env', 'notes_root'], ['output_root_env', '']]) {
+      // Format 1.4: its brief profile and brief ensemble type (PC3b U5d).
+      for (const [key, value] of [['brief_file', 'notes_brief.md'], ['brief_file', 'Notes.MD'], ['brief_file', 'notes'], ['brief_file', 7], ['output_root_env', 'NOTES_ROOT'], ['output_root_env', 'notes_root'], ['output_root_env', ''], ['brief_profile', 'design-brief'], ['brief_profile', 'Design Brief'], ['brief_profile', 7], ['brief_ensemble_type', 'reference-scan'], ['brief_ensemble_type', ''], ['brief_ensemble_type', ['reference-scan']]]) {
         cases.push([`${minor}: investigate ${key} ${JSON.stringify(value)}`, (d) => {
           d.schema = `persona-declaration-${minor}`;
           d.verbs.investigate[key] = value;
@@ -327,15 +328,25 @@ describe('cross-field rules (the generator check)', () => {
     'a privacy spec that is a directory': ['designer', (d) => { d.peer.privacy_spec = 'core/skills/investigate/references'; }, /peer\.privacy_spec names core\/skills\/investigate\/references, which is not a regular file/],
     // PC2a4: derived.brief_file is the investigate default profile's file;
     // the declared artifact must name exactly that one file.
-    'an investigate artifact naming another brief file': ['founder', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to venture_brief.md>']; }, /verbs\.investigate\.artifact must name exactly one \*\.md file, business_brief\.md \(the default profile business-brief with - → _\); it names venture_brief\.md/],
+    'an investigate artifact naming another brief file': ['founder', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to venture_brief.md>']; }, /verbs\.investigate\.artifact must name exactly one \*\.md file, business_brief\.md \(the brief profile business-brief with - → _\); it names venture_brief\.md/],
     'an investigate artifact naming the brief file with a suffix': ['founder', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to business_brief.md.bak>']; }, /must name exactly one \*\.md file, business_brief\.md .*; it names none/],
     'an investigate artifact naming no file': ['designer', (d) => { d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to the brief>']; }, /verbs\.investigate\.artifact must name exactly one \*\.md file, design_brief\.md .*; it names none/],
     // PC3 U7 (format 1.3): the brief's declared names belong to investigate.
     'a brief file declared on another verb': ['engineer', (d) => { d.verbs.frame.brief_file = 'frame_brief.md'; }, /verbs\.frame\.brief_file is declared, but only investigate saves a brief/],
     'an output-root variable declared on another verb': ['engineer', (d) => { d.verbs.compose.output_root_env = 'COMPOSE_ROOT'; }, /verbs\.compose\.output_root_env is declared, but only investigate saves a brief/],
-    'an engineer investigate artifact that does not name its declared brief file': ['engineer', (d) => { d.verbs.investigate.brief_file = 'cited_brief.md'; }, /must name exactly one \*\.md file, cited_brief\.md \(the declared verbs\.investigate\.brief_file\); it names research_brief\.md/],
+    // notes_brief.md, not cited_brief.md: a declared name the brief-profile
+    // derivation (cited-brief → cited_brief.md) cannot produce, so the case
+    // fails when the declared name is ignored (mutation N42).
+    'an engineer investigate artifact that does not name its declared brief file': ['engineer', (d) => { d.verbs.investigate.brief_file = 'notes_brief.md'; }, /must name exactly one \*\.md file, notes_brief\.md \(the declared verbs\.investigate\.brief_file\); it names research_brief\.md/],
+    // PC3b U5d (format 1.4): the brief profile is one of investigate's
+    // profiles, and both brief fields belong to investigate; the brief file
+    // follows the brief profile, not the default one.
+    'a brief profile off the investigate profiles': ['engineer', (d) => { d.verbs.investigate.brief_profile = 'research-brief'; }, /verbs\.investigate\.brief_profile "research-brief" is not one of its profiles \(analysis, root-cause, cited-brief\)/],
+    'a brief profile declared on another verb': ['engineer', (d) => { d.verbs.compose.brief_profile = 'plan'; }, /verbs\.compose\.brief_profile is declared, but only investigate saves a brief/],
+    'a brief ensemble type declared on another verb': ['engineer', (d) => { d.verbs.critique.brief_ensemble_type = 'research-scan'; }, /verbs\.critique\.brief_ensemble_type is declared, but only investigate saves a brief/],
+    'a brief file that follows the default profile, not the brief profile': ['designer', (d) => { d.verbs.investigate.profiles = ['design-brief', 'audit']; d.verbs.investigate.default_profile = 'audit'; d.verbs.investigate.brief_profile = 'design-brief'; d.verbs.investigate.artifact = ['### Brief saved', '', '<absolute path to audit.md>']; d.schema = 'persona-declaration-1.4'; }, /must name exactly one \*\.md file, design_brief\.md \(the brief profile design-brief with - → _\); it names audit\.md/],
     // PC3 U7: the check reads the format the loader reads, so an unknown key in
-    // engineer's 1.3 declaration fails here as it fails every state write.
+    // engineer's 1.4 declaration fails here as it fails every state write.
     'an unknown scalar in a declaration of the format the loader reads': ['engineer', (d) => { d.verbs.investigate.brief_flie = 'research_brief.md'; }, /engineer\/persona\.json: \$\.verbs\.investigate\.member\[\d+\]: \[error\/unknown-key\]/],
     'a renamed investigate profile the artifact does not follow': ['founder', (d) => { d.verbs.investigate.profiles = ['venture-brief']; d.verbs.investigate.default_profile = 'venture-brief'; }, /must name exactly one \*\.md file, venture_brief\.md .*; it names business_brief\.md/],
   };
@@ -390,8 +401,8 @@ describe('cross-field rules (the generator check)', () => {
 
   it('a newer minor\'s extra scalar, which both readers ignore, is not read as a preset reference', async () => {
     const root = repoSubsetCopy();
-    editDecl(root, 'founder', (d) => { d.schema = 'persona-declaration-1.4'; d.decide.size_presets.future_label = 'later'; });
-    editDecl(root, 'designer', (d) => { d.schema = 'persona-declaration-1.4'; d.decide.profile_presets['Future Key'] = 'later'; });
+    editDecl(root, 'founder', (d) => { d.schema = 'persona-declaration-1.5'; d.decide.size_presets.future_label = 'later'; });
+    editDecl(root, 'designer', (d) => { d.schema = 'persona-declaration-1.5'; d.decide.profile_presets['Future Key'] = 'later'; });
     const { code, err } = await check(root);
     strictEqual(code, 0, err);
   });

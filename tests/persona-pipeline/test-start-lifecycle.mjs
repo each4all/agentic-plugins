@@ -99,12 +99,14 @@ for (const persona of personasFor('scripts/peer-runner.mjs')) {
         ok(paused.gateFailures.includes('awaiting_owner'), `gate 5 refuses: ${paused.gateFailures.join(', ')}`);
         ok(paused.gateFailures.includes('terminal_marker'), 'and nothing marked it terminal');
 
-        // The owner decides: the clear names the next phase, and the lifecycle
-        // continues without decide's own finish-verb.
+        // The owner decides: the clear names the next phase and its action
+        // (the gate's "Owner: …" action does not outlive it, PC3b U1), and the
+        // lifecycle continues without decide's own finish-verb.
+        strictEqual(f.next_action, 'Run decide', 'the gate set by awaiting-owner-set kept the phase\'s next action');
         state('awaiting-owner-clear', ...W, '--gate', 'decide-conflict', '--resolution', 'Owner selection: A',
-          '--next-step-kind', 'verb', '--next-step-verb', 'compose', '--next-step-confidence', 'HIGH');
+          '--next-step-kind', 'verb', '--next-step-verb', 'compose', '--next-step-confidence', 'HIGH', '--next-action', 'Run compose on direction A');
         f = await fm(active);
-        deepStrictEqual([f.awaiting_owner_gate, f.next_step_kind, f.next_step_verb], [undefined, 'verb', 'compose']);
+        deepStrictEqual([f.awaiting_owner_gate, f.next_step_kind, f.next_step_verb, f.next_action], [undefined, 'verb', 'compose', 'Run compose on direction A']);
         await stays('resolved');
 
         // Phase 4 refine twice: each attempt under its own run id, each settled.

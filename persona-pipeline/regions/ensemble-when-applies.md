@@ -13,5 +13,9 @@ Does NOT apply to:
 - The three meta skills (`checkpoint` / `resume` / `peer-now`). `peer-now`
   dispatches the companion, but as a **side-channel**, not an ensemble —
   see *State Bookkeeping* below.
+{{#capability commit_surface}}
+- The commit command (`/{{persona}}:commit`), which commits a verb chain's
+  change or closes its workflow and dispatches no peer.
+{{/capability}}
 - Binary confirmations or progress updates within the same session.
 - Internal orchestration decisions.

@@ -37,7 +37,7 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       const structural = Object.hasOwn(d, 'op');
       deepStrictEqual(Object.keys(d).sort(), structural ? ['from', 'op', 'runbooks', 'to', 'where', 'why'] : ['from', 'runbooks', 'to', 'where', 'why'], JSON.stringify(d));
       ok(d.runbooks.length > 0 && d.runbooks.every((k) => keys.includes(k)), `${d.where}: runbooks`);
-      ok(/^(?:PC2(?:a[234]|b)|PC3) /.test(d.why), `${d.where}: a change with its reason`);
+      ok(/^(?:PC2(?:a[234]|b)|PC3b?) /.test(d.why), `${d.where}: a change with its reason`);
       if (structural) ok(STRUCTURAL_OPS.includes(d.op), `${d.where}: a known op`);
       else ok(typeof d.from === 'string' && typeof d.to === 'string' && d.from !== d.to && d.from.length > 0, `${d.where}: a string change`);
     }
@@ -106,6 +106,34 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
       throws(() => apply({ op: 'null-guard', where: 'guards.ensemble_launched', from: record().guards.ensemble_launched, to: '' }), /sets null/);
     });
 
+    // PC3b U2: a call that moved into another block, and a guard a runbook
+    // adopts from the shared template.
+    it('remove-call drops a call read exactly as recorded, and refuses any other reading or a missing call', () => {
+      const r = apply({ op: 'remove-call', where: 'call:state.mjs append#1', from: record().calls[2], to: null });
+      deepStrictEqual(r.calls.map((c) => c.sub), ['find-active', 'create', 'append', 'set-terminal']);
+      deepStrictEqual(r.calls[2], record().calls[3], 'the other append stays');
+      throws(() => apply({ op: 'remove-call', where: 'call:state.mjs append#1', from: record().calls[3], to: null }), /finds the call as recorded/);
+      throws(() => apply({ op: 'remove-call', where: 'call:state.mjs read', from: record().calls[2], to: null }), /one such call/);
+      throws(() => apply({ op: 'remove-call', where: 'call:state.mjs create', from: record().calls[1], to: record().calls[1] }), /sets null/);
+    });
+
+    it('a call without a subcommand is named by its script alone, the n-th with #<n>', () => {
+      const withArgs = () => ({ ...record(), calls: [call('start-args.mjs', null, [['--args-file', 'a']]), ...record().calls, call('start-args.mjs', null, [['--args-file', 'b']])] });
+      const r = apply({ op: 'remove-call', where: 'call:start-args.mjs#2', from: withArgs().calls.at(-1), to: null }, withArgs());
+      deepStrictEqual(r.calls.filter((c) => c.script === 'start-args.mjs').map((c) => c.args[0][1]), ['a']);
+      strictEqual(apply({ where: 'call:start-args.mjs:--args-file', from: 'a', to: 'c' }, r).calls[0].args[0][1], 'c');
+      throws(() => apply({ where: 'call:start-args.mjs:--args-file', from: 'a', to: 'c' }, withArgs()), /one such call/);
+    });
+
+    it('set-guard sets a guard the runbook did not have, and refuses one it has or an empty text', () => {
+      const r = apply({ op: 'set-guard', where: 'guards.converged', from: null, to: 'if x; then\n  y\nfi' });
+      strictEqual(r.guards.converged, 'if x; then\n  y\nfi');
+      throws(() => apply({ op: 'set-guard', where: 'guards.ensemble_launched', from: null, to: 'x' }), /finds the guard absent/);
+      throws(() => apply({ op: 'set-guard', where: 'guards.converged', from: 'x', to: 'y' }), /replaces null/);
+      throws(() => apply({ op: 'set-guard', where: 'guards.converged', from: null, to: '' }), /sets a guard text/);
+      throws(() => apply({ op: 'set-guard', where: 'guards.unknown', from: null, to: 'x' }), /names no recorded guard/);
+    });
+
     it('an unknown op is refused; a string difference still needs its text exactly once', () => {
       throws(() => apply({ op: 'remove-everything', where: 'note', from: 'x', to: '' }), /unknown allowed-difference op/);
       strictEqual(apply({ where: 'call:state.mjs create:--verb', from: 'compose', to: 'frame' }).calls[1].args[0][1], 'frame');
@@ -127,13 +155,16 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
         it('identity: persona, verb, phase and ensemble type match the expected map', () => {
           const [[create]] = of('state.mjs', 'create');
           if (persona === 'engineer' && verb === 'start') {
-            // engineer's lifecycle names no --persona (create takes the
-            // declaration's own), creates its start workflow in its first
-            // verb, and commits through the Phase 7 driver: plan, then the
-            // approved execute.
-            strictEqual(create.args.some(([f]) => f === '--persona'), false);
-            deepStrictEqual([arg(create, '--verb'), arg(create, '--workflow-type')], ['investigate', 'start']);
+            // engineer's lifecycle (commit_surface, PC3b U2) creates its start
+            // workflow for itself in its first verb from the description its
+            // args file holds, clears the next step on resume, and commits
+            // through the Phase 7 driver: plan, then the approved execute.
+            strictEqual(arg(create, '--persona'), 'engineer');
+            deepStrictEqual([arg(create, '--verb'), arg(create, '--workflow-type'), arg(create, '--original-request')], ['investigate', 'start', '$FEATURE']);
             deepStrictEqual([of('peer-runner.mjs', 'run').length, of('state.mjs', 'ensemble-commit').length], [0, 0]);
+            const [[resume]] = of('state.mjs', 'append');
+            deepStrictEqual([arg(resume, '--workflow-path'), arg(resume, '--clear-next-step')], ['$ACTIVE', 'true']);
+            deepStrictEqual(calls.filter((c) => c.script === 'start-args.mjs').map((c) => arg(c, '--args-file')), ['<directory from step 1>/args.json', '<directory from step 1>/args.json']);
             deepStrictEqual(calls.filter((c) => c.script === 'phase7-commit.mjs').map((c) => [arg(c, '--mode'), arg(c, '--workflow-path')]), [['plan', '$ACTIVE'], ['execute', '$ACTIVE']]);
             deepStrictEqual([got.run_id_prefixes, got.mktemp_templates], [[], []]);
             return;
@@ -188,17 +219,14 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
             return sites[nth][1];
           };
           if (persona === 'engineer' && verb === 'start') {
-            // engineer's start: the clean-baseline gate before the bootstrap,
-            // the workflow_type read on resume, then the Phase 7 driver's plan
-            // and execute, every one on $ACTIVE.
-            const order = [index('state.mjs', 'find-active'), index('state.mjs', 'check-clean-baseline'), index('state.mjs', 'create'), index('state.mjs', 'read'), index('phase7-commit.mjs', null, 0), index('phase7-commit.mjs', null, 1)];
+            // engineer's start (PC3b U2): the preflight, the redundancy probe,
+            // the clean-baseline gate before the bootstrap, the workflow_type
+            // read on resume, then the Phase 7 driver's plan and execute — the
+            // lifecycle's one terminal write — every one on $ACTIVE.
+            const order = [index('state.mjs', 'find-active'), index('state.mjs', 'autopilot-preflight'), index('state.mjs', 'diagnose-redundancy'), index('state.mjs', 'check-clean-baseline'), index('state.mjs', 'create'), index('state.mjs', 'read'), index('phase7-commit.mjs', null, 0), index('phase7-commit.mjs', null, 1)];
             deepStrictEqual([...order].sort((a, b) => a - b), order);
-            for (const c of [calls[index('state.mjs', 'read')], calls[order[4]], calls[order[5]]]) strictEqual(arg(c, '--workflow-path'), '$ACTIVE');
+            for (const c of [calls[index('state.mjs', 'read')], calls[order[6]], calls[order[7]]]) strictEqual(arg(c, '--workflow-path'), '$ACTIVE');
             deepStrictEqual([of('state.mjs', 'finish-verb').length, of('state.mjs', 'set-terminal').length], [0, 0]);
-            // The dirty-baseline refusal runs before the bootstrap writes.
-            const text = runbookText(persona, verb);
-            const dirty = text.indexOf('if [ "$BASELINE_STATUS" = "dirty" ]; then');
-            ok(dirty > 0 && dirty < text.indexOf('scripts/state.mjs" create'), 'the dirty guard precedes the bootstrap');
             return;
           }
           if (verb === 'start') {
@@ -267,19 +295,15 @@ describe('verb runbook characterization (PC2a2 T0)', () => {
           if (verb === 'start') {
             strictEqual(exits(g.baseline_rc), 1, 'a failed baseline check exits');
             ok(g.baseline_rc.includes('exit "$BASELINE_RC"'), 'with its status');
-            if (persona === 'engineer') {
-              // engineer's start refuses a dirty status with an if, not a case.
-              strictEqual(g.baseline_status, null);
-              strictEqual(exits(g.baseline_dirty), 1, 'a dirty baseline exits');
-            } else {
-              const arms = g.baseline_status.split('\n').filter((l) => /^\s*[^\s()]+\)/.test(l)).map((l) => l.trim().split(')')[0]);
-              deepStrictEqual(arms, ['clean|accepted', 'dirty', '*'], 'the admitted values, the dirty arm, the wildcard');
-              strictEqual(exits(g.baseline_status), 2, 'the dirty and the wildcard arm exit');
-            }
+            // Every persona's start refuses with the shared case (engineer's
+            // if went in PC3b U2).
+            const arms = g.baseline_status.split('\n').filter((l) => /^\s*[^\s()]+\)/.test(l)).map((l) => l.trim().split(')')[0]);
+            deepStrictEqual(arms, ['clean|accepted', 'dirty', '*'], 'the admitted values, the dirty arm, the wildcard');
+            strictEqual(exits(g.baseline_status), 2, 'the dirty and the wildcard arm exit');
           } else {
             deepStrictEqual([g.baseline_rc, g.baseline_status], [null, null]);
           }
-          if (!(persona === 'engineer' && verb === 'start')) strictEqual(g.baseline_dirty, null);
+          strictEqual(g.baseline_dirty, null);
           // The D2 guard went with the generated finalize (critique in PC2b
           // U5a, refine in U5b): settle decides from the ledger.
           strictEqual(g.ensemble_launched, null, 'no D2 guard on ensemble-commit');

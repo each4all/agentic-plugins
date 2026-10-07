@@ -10,7 +10,7 @@
 // `${NAME}` inside double quotes expands to a literal assigned earlier in the
 // same block (`NAME='compose'`).
 
-import { deepStrictEqual, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -349,17 +349,18 @@ export function runbookText(persona, verb) {
 /**
  * The index in `record.calls` of the call `<script> <sub>` names: that call
  * must be the only one, or with `#<n>` the n-th such call (a runbook appends
- * twice, on resume and with its phase note).
+ * twice, on resume and with its phase note). A script called without a
+ * subcommand (`start-args.mjs`, `phase7-commit.mjs`) is named without one.
  */
-function locateCall(record, where, script, sub, nth) {
+function locateCall(record, where, script, sub = null, nth = undefined) {
   const sites = record.calls.map((c, i) => [c, i]).filter(([c]) => c.script === script && c.sub === sub);
   if (nth === undefined) strictEqual(sites.length, 1, `${where}: one such call`);
   else strictEqual(sites.length >= Number(nth), true, `${where}: at least ${nth} such calls`);
   return sites[nth === undefined ? 0 : Number(nth) - 1][1];
 }
 
-const CALL_WHERE = /^call:(\S+) ([a-z-]+)(?:#([1-9]))?$/;
-const FLAG_WHERE = /^call:(\S+) ([a-z-]+)(?:#([1-9]))?:(--[a-z-]+)$/;
+const CALL_WHERE = /^call:([a-z0-9-]+\.mjs)(?: ([a-z-]+))?(?:#([1-9][0-9]?))?$/;
+const FLAG_WHERE = /^call:([a-z0-9-]+\.mjs)(?: ([a-z-]+))?(?:#([1-9][0-9]?))?:(--[a-z-]+)$/;
 
 /**
  * The recorded value an allowed difference names, as a getter and a setter:
@@ -369,7 +370,7 @@ const FLAG_WHERE = /^call:(\S+) ([a-z-]+)(?:#([1-9]))?:(--[a-z-]+)$/;
 function locate(record, where) {
   const call = FLAG_WHERE.exec(where);
   if (call) {
-    const args = record.calls[locateCall(record, where, call[1], call[2], call[3])].args.filter(([f]) => f === call[4]);
+    const args = record.calls[locateCall(record, where, call[1], call[2] ?? null, call[3])].args.filter(([f]) => f === call[4]);
     strictEqual(args.length, 1, `${where}: the flag once`);
     return [() => args[0][1], (v) => { args[0][1] = v; }];
   }
@@ -406,12 +407,18 @@ const callName = (c) => `${c.script} ${c.sub}`;
  *                 replaces it.
  *   null-guard    `where` names a guard; `from`, its whole text as it reads
  *                 now; `to` null, the guard gone.
+ *   remove-call   `where` names a call; `from`, the call as it reads now
+ *                 (deep-equal); `to` null, the call gone (PC3b: a block that
+ *                 moved or merged).
+ *   set-guard     `where` names a guard the runbook did not have (null);
+ *                 `from` null; `to`, its whole text (PC3b: a runbook that
+ *                 adopts the shared guard).
  */
 const STRUCTURAL = {
   'insert-call'(record, d) {
     const m = CALL_WHERE.exec(d.where);
     if (!m) throw new Error(`insert-call names no call: ${d.where}`);
-    const at = locateCall(record, d.where, m[1], m[2], m[3]);
+    const at = locateCall(record, d.where, m[1], m[2] ?? null, m[3]);
     const next = record.calls[at + 1];
     strictEqual(next === undefined ? '' : callName(next), d.from, `${d.where}: insert-call finds ${JSON.stringify(d.from)} after it`);
     record.calls.splice(at + 1, 0, structuredClone(d.to));
@@ -419,7 +426,7 @@ const STRUCTURAL = {
   'add-flag'(record, d) {
     const m = FLAG_WHERE.exec(d.where);
     if (!m) throw new Error(`add-flag names no call flag: ${d.where}`);
-    const { args } = record.calls[locateCall(record, d.where, m[1], m[2], m[3])];
+    const { args } = record.calls[locateCall(record, d.where, m[1], m[2] ?? null, m[3])];
     strictEqual(args.filter(([f]) => f === m[4]).length, 0, `${d.where}: add-flag finds the flag absent`);
     const after = args.map(([f], i) => [f, i]).filter(([f]) => f === d.from);
     strictEqual(after.length, 1, `${d.where}: add-flag finds ${d.from} once`);
@@ -428,7 +435,7 @@ const STRUCTURAL = {
   'replace-call'(record, d) {
     const m = CALL_WHERE.exec(d.where);
     if (!m) throw new Error(`replace-call names no call: ${d.where}`);
-    const at = locateCall(record, d.where, m[1], m[2], m[3]);
+    const at = locateCall(record, d.where, m[1], m[2] ?? null, m[3]);
     deepStrictEqual(record.calls[at], d.from, `${d.where}: replace-call finds the call as recorded`);
     record.calls[at] = structuredClone(d.to);
   },
@@ -438,6 +445,22 @@ const STRUCTURAL = {
     strictEqual(record.guards[m[1]], d.from, `${d.where}: null-guard finds the guard as recorded`);
     strictEqual(d.to, null, `${d.where}: null-guard sets null`);
     record.guards[m[1]] = null;
+  },
+  'remove-call'(record, d) {
+    const m = CALL_WHERE.exec(d.where);
+    if (!m) throw new Error(`remove-call names no call: ${d.where}`);
+    const at = locateCall(record, d.where, m[1], m[2] ?? null, m[3]);
+    deepStrictEqual(record.calls[at], d.from, `${d.where}: remove-call finds the call as recorded`);
+    strictEqual(d.to, null, `${d.where}: remove-call sets null`);
+    record.calls.splice(at, 1);
+  },
+  'set-guard'(record, d) {
+    const m = /^guards\.([a-z_]+)$/.exec(d.where);
+    if (!m || !Object.hasOwn(record.guards, m[1])) throw new Error(`set-guard names no recorded guard: ${d.where}`);
+    strictEqual(record.guards[m[1]], null, `${d.where}: set-guard finds the guard absent`);
+    strictEqual(d.from, null, `${d.where}: set-guard replaces null`);
+    ok(typeof d.to === 'string' && d.to.length > 0, `${d.where}: set-guard sets a guard text`);
+    record.guards[m[1]] = d.to;
   },
 };
 

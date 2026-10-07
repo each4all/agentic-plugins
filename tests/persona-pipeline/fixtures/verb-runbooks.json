@@ -3914,6 +3914,1206 @@
       "from": "(per core/skills/_shared/references/entry-routing-contract.md\n § Active Next-Action Proposal — derived from these findings, not a fixed table)",
       "to": "(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)",
       "why": "PC3 U7: the citation line is the shared finalize note's (PC2a4 RV4), one line, naming the artifact"
+    },
+    {
+      "runbooks": [
+        "founder/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "Compose the planning artifact for the chosen direction"
+          ],
+          [
+            null,
+            "${NEXT_STEP[@]}"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (PC3 step-7 peer findings 2 and 3): the Owner selection's clear replaces the gate's \"Owner: …\" next action in the same write, and takes its next step from the workflow type (the NEXT_STEP array): compose outside a start lifecycle, none inside one (--clear-next-step true), since the lifecycle owns its phase order"
+    },
+    {
+      "runbooks": [
+        "designer/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "Compose the flows/specs for the chosen direction (/designer:compose)"
+          ],
+          [
+            null,
+            "${NEXT_STEP[@]}"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (PC3 step-7 peer findings 2 and 3): the Owner selection's clear replaces the gate's \"Owner: …\" next action in the same write, and takes its next step from the workflow type (the NEXT_STEP array): compose outside a start lifecycle, none inside one (--clear-next-step true), since the lifecycle owns its phase order"
+    },
+    {
+      "runbooks": [
+        "engineer/decide"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "compose"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "decide-conflict"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "Compose the artifact for the chosen direction"
+          ],
+          [
+            null,
+            "${NEXT_STEP[@]}"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (PC3 step-7 peer findings 2 and 3): the Owner selection's clear replaces the gate's \"Owner: …\" next action in the same write, and takes its next step from the workflow type (the NEXT_STEP array): compose outside a start lifecycle, none inside one (--clear-next-step true), since the lifecycle owns its phase order"
+    },
+    {
+      "runbooks": [
+        "founder/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#2",
+      "from": "state.mjs awaiting-owner-clear",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (PC3 step-7 peer finding 1): Fix now reads the workflow type first, so inside a start lifecycle it clears the gate and stops, leaving the fix to the lifecycle's refine phase and the terminal write to the lifecycle, instead of running this refine's own phases into a terminal write"
+    },
+    {
+      "runbooks": [
+        "founder/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear#1",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "Fix the recurring finding in this refine, then re-critique"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (peer finding 2): Fix now's clear replaces the gate's next action in the same write"
+    },
+    {
+      "runbooks": [
+        "founder/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear#2",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "The recurring finding is deferred; the owner saves and commits the refined artifact"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (peer finding 2): the Defer's clear replaces the gate's next action with the one its finish-verb writes, or the lifecycle resume inside a start lifecycle"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#2",
+      "from": "state.mjs awaiting-owner-clear",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (PC3 step-7 peer finding 1): Fix now reads the workflow type first, so inside a start lifecycle it clears the gate and stops, leaving the fix to the lifecycle's refine phase and the terminal write to the lifecycle, instead of running this refine's own phases into a terminal write"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear#1",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "Fix the recurring finding in this refine, then re-critique"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (peer finding 2): Fix now's clear replaces the gate's next action in the same write"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear#2",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "The recurring finding is deferred; the owner saves and commits the refined artifact"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (peer finding 2): the Defer's clear replaces the gate's next action with the one its finish-verb writes, or the lifecycle resume inside a start lifecycle"
+    },
+    {
+      "runbooks": [
+        "designer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear#3",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "<refine|decide|investigate>"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "<what the next step resolves, in a few words>"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "<refine|decide|investigate>"
+          ],
+          [
+            "--next-step-confidence",
+            "<HIGH|MEDIUM|LOW>"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (peer finding 2): the not-converged deferral's clear names the next action of the step it records, replacing the gate's"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "insert-call",
+      "where": "call:state.mjs find-active#2",
+      "from": "state.mjs awaiting-owner-clear",
+      "to": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (PC3 step-7 peer finding 1): Fix now reads the workflow type first, so inside a start lifecycle it clears the gate and stops, leaving the fix to the lifecycle's refine phase and the terminal write to the lifecycle, instead of running this refine's own phases into a terminal write"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear#1",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "Fix the recurring finding in this refine, then re-critique"
+          ],
+          [
+            "--next-step-kind",
+            "verb"
+          ],
+          [
+            "--next-step-verb",
+            "refine"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (peer finding 2): Fix now's clear replaces the gate's next action in the same write"
+    },
+    {
+      "runbooks": [
+        "engineer/refine"
+      ],
+      "op": "replace-call",
+      "where": "call:state.mjs awaiting-owner-clear#2",
+      "from": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "awaiting-owner-clear",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--gate",
+            "recurring-finding"
+          ],
+          [
+            "--resolution",
+            "$RESOLUTION"
+          ],
+          [
+            "--next-action",
+            "Commit the refined change; the recurring finding is deferred"
+          ],
+          [
+            "--next-step-kind",
+            "commit"
+          ],
+          [
+            "--next-step-confidence",
+            "HIGH"
+          ]
+        ]
+      },
+      "why": "PC3b U1 (peer finding 2): the Defer's clear replaces the gate's next action with the one its finish-verb writes, or the lifecycle resume inside a start lifecycle"
+    },
+    {
+      "runbooks": [
+        "designer/start",
+        "founder/start"
+      ],
+      "where": "call:state.mjs check-clean-baseline:--accept-current-tree",
+      "op": "add-flag",
+      "from": "--repo-root",
+      "to": "$ACCEPT_TREE",
+      "why": "PC3b U2: the bootstrap passes ACCEPT_CURRENT_TREE to the check as a flag, so a value set in the block without export still reaches it (the CLI reads only the exported variable); the shared line engineer joins"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:start-args.mjs",
+      "op": "remove-call",
+      "from": {
+        "script": "start-args.mjs",
+        "sub": null,
+        "args": [
+          [
+            "--args-file",
+            "<directory from step 1>/args.json"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "PC3b U2: the args file is read where the description is needed, in the bootstrap region after Phase 0, not before the detached-HEAD guard (a resume needs no description)"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs find-active",
+      "op": "insert-call",
+      "from": "state.mjs diagnose-redundancy",
+      "to": {
+        "script": "state.mjs",
+        "sub": "autopilot-preflight",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ]
+        ]
+      },
+      "why": "PC3b U2: engineer's start joins start-phase-0, which runs autopilot-preflight before any write: a pending owner gate is put to the user (the pause the handoff names), and an autopilot run refuses on one"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs autopilot-preflight",
+      "op": "insert-call",
+      "from": "state.mjs diagnose-redundancy",
+      "to": {
+        "script": "start-args.mjs",
+        "sub": null,
+        "args": [
+          [
+            "--args-file",
+            "<directory from step 1>/args.json"
+          ]
+        ]
+      },
+      "why": "PC3b U2: the redundancy probe block reads its base branch from its own args file (shell variables do not outlive a Bash call)"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs diagnose-redundancy",
+      "op": "insert-call",
+      "from": "state.mjs check-clean-baseline",
+      "to": {
+        "script": "start-args.mjs",
+        "sub": null,
+        "args": [
+          [
+            "--args-file",
+            "<directory from step 1>/args.json"
+          ]
+        ]
+      },
+      "why": "PC3b U2: the bootstrap block reads the description from a second args file; before, the runbook named no way for the description to reach create once the probe had run in its own call"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs check-clean-baseline",
+      "op": "replace-call",
+      "from": {
+        "script": "state.mjs",
+        "sub": "check-clean-baseline",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            null,
+            "${BASELINE_ARGS[@]}"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "check-clean-baseline",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--accept-current-tree",
+            "$ACCEPT_TREE"
+          ]
+        ]
+      },
+      "why": "PC3b U2: the shared baseline line; the accept-current-tree bypass is a flag set from ACCEPT_CURRENT_TREE, as BASELINE_ARGS did, without a shell array"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs create",
+      "op": "replace-call",
+      "from": {
+        "script": "state.mjs",
+        "sub": "create",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--verb",
+            "investigate"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--workflow-type",
+            "start"
+          ],
+          [
+            "--git-baseline-branch",
+            "$GIT_BRANCH"
+          ],
+          [
+            "--git-baseline-head",
+            "$GIT_HEAD"
+          ],
+          [
+            "--status-digest",
+            "$STATUS_DIGEST"
+          ],
+          [
+            "--current-phase",
+            "phase-0-bootstrap"
+          ],
+          [
+            "--next-action",
+            "Phase 1 brainstorm — investigate options, frame the model, decide a direction"
+          ],
+          [
+            "--original-request",
+            "$FEATURE"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "create",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ],
+          [
+            "--verb",
+            "investigate"
+          ],
+          [
+            "--workflow-type",
+            "start"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--persona",
+            "engineer"
+          ],
+          [
+            "--git-baseline-branch",
+            "$GIT_BRANCH"
+          ],
+          [
+            "--git-baseline-head",
+            "$GIT_HEAD"
+          ],
+          [
+            "--status-digest",
+            "$STATUS_DIGEST"
+          ],
+          [
+            "--original-request",
+            "$FEATURE"
+          ],
+          [
+            "--current-phase",
+            "phase-1-discover"
+          ],
+          [
+            "--next-action",
+            "Run Phase 1 discover+frame+decide composite"
+          ]
+        ]
+      },
+      "why": "PC3b U2: the shared bootstrap create: --persona as every generated create passes it, and the shared phase-1-discover phase and its next action (nothing reads either value; engineer's Phase 1 is the same investigate, frame, decide composite)"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs append#1",
+      "op": "replace-call",
+      "from": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--event",
+            "resumed"
+          ],
+          [
+            "--phase-label",
+            "Resume /engineer:start"
+          ],
+          [
+            "--phase-note",
+            "Auto-resume of active workflow_type=start on $GIT_BRANCH"
+          ]
+        ]
+      },
+      "to": {
+        "script": "state.mjs",
+        "sub": "append",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ],
+          [
+            "--host",
+            "${AGENTIC_HOST:-claude}"
+          ],
+          [
+            "--clear-next-step",
+            "true"
+          ],
+          [
+            "--event",
+            "resumed"
+          ]
+        ]
+      },
+      "why": "PC3b U2: the shared resume clears the next step the last phase recorded (ADR-0063 D6); host_history records the resumed event, so the resume phase note goes"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs read#2",
+      "op": "remove-call",
+      "from": {
+        "script": "state.mjs",
+        "sub": "read",
+        "args": [
+          [
+            "--workflow-path",
+            "$ACTIVE"
+          ]
+        ]
+      },
+      "to": null,
+      "why": "PC3b U2: the typed conflict is refused inside the shared resume block from the one read, so no second read"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:phase7-commit.mjs#2:--subject",
+      "from": "$APPROVED_SUBJECT",
+      "to": "<the subject the user confirmed>",
+      "why": "PC3b U2: plan and execute are two blocks, and the execute block assigns the subject the user confirmed (before, it read a variable nothing set)"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "guards.detached_head",
+      "from": "no active branch context (ADR-0031); engineer workflows",
+      "to": "${PERSONA} workflows",
+      "why": "PC3b U2: the shared Phase 0 guard names the persona through PERSONA"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "guards.baseline_rc",
+      "from": "check-clean-baseline failed (exit $BASELINE_RC); its error is above.\" >&2\n  exit \"$BASELINE_RC\"",
+      "to": "clean-baseline check failed (exit $BASELINE_RC); its error is above.\" >&2; exit \"$BASELINE_RC\"",
+      "why": "PC3b U2: the shared baseline guard"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "guards.baseline_status",
+      "op": "set-guard",
+      "from": null,
+      "to": "case \"$STATUS\" in\n  clean|accepted) ;;\n  dirty)\n    echo \"✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable.\" >&2\n    printf '%s' \"$BASELINE\" | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d);process.stdin.on(\"end\",()=>console.log(JSON.stringify(JSON.parse(s).categories,null,2)))' >&2\n    echo \"  Resolve, then re-run:\" >&2\n    echo \"    • clean:  git restore . ; git clean -fd\" >&2\n    echo \"    • stash:  git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n    echo \"    • worktree: /runtime:worktree plan  (suggests a git worktree add command once its checks pass; re-run in the new worktree)\" >&2\n    echo \"    • accept: set ACCEPT_CURRENT_TREE=1 to sweep the current tree into the workflow's commit (Phase 7 stages all of it)\" >&2\n    exit 1;;\n  *)\n    echo \"✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed).\" >&2\n    exit 1;;\nesac",
+      "why": "PC3b U2: engineer adopts the shared fail-closed status case: an empty or unknown status, or a parse failure, stops the bootstrap (its jq if let them through); with commit_surface the dirty arm prints the categories and offers the worktree and the sweep-into-commit resolutions"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "guards.baseline_dirty",
+      "op": "null-guard",
+      "from": "if [ \"$BASELINE_STATUS\" = \"dirty\" ]; then\n  echo \"✗ Working tree is dirty — /engineer:start requires a clean baseline (ADR-0028 §Layer-1).\" >&2\n  echo \"$BASELINE\" | jq .categories >&2\n  echo >&2\n  echo \"  Resolutions:\" >&2\n  echo \"    - clean:                git restore . ; git clean -fd  (then re-run)\" >&2\n  echo \"    - stash:                git stash push --include-untracked  (re-run, then git stash pop)\" >&2\n  echo \"    - worktree:             /runtime:worktree plan  (suggests a git worktree add command once its checks pass; re-run in the new worktree)\" >&2\n  echo \"    - accept-current-tree:  ACCEPT_CURRENT_TREE=1 /engineer:start ...  (sweep current tree into the workflow's commit)\" >&2\n  exit 1\nfi",
+      "to": null,
+      "why": "PC3b U2: replaced by the shared status case"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:state.mjs append#10",
+      "op": "insert-call",
+      "from": "phase7-commit.mjs null",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "PC3b U2 (plan-verify peer, MAJOR): each Phase 7 block binds the workflow itself when ACTIVE is unset (a shell variable does not outlive a Bash call), from find-active on this branch, and stops when there is none"
+    },
+    {
+      "runbooks": [
+        "engineer/start"
+      ],
+      "where": "call:phase7-commit.mjs#1",
+      "op": "insert-call",
+      "from": "phase7-commit.mjs null",
+      "to": {
+        "script": "state.mjs",
+        "sub": "find-active",
+        "args": [
+          [
+            "--repo-root",
+            "$REPO_ROOT"
+          ]
+        ]
+      },
+      "why": "PC3b U2 (plan-verify peer, MAJOR): each Phase 7 block binds the workflow itself when ACTIVE is unset (a shell variable does not outlive a Bash call), from find-active on this branch, and stops when there is none"
     }
   ],
   "runbooks": {

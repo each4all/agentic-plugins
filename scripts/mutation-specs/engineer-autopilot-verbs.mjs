@@ -18,8 +18,14 @@
 
 const T_AV = 'tests/persona-pipeline/test-autopilot-verbs.mjs';
 const T_EC = 'tests/persona-pipeline/test-commit-surface.mjs';
-const T_RB = 'tests/engineer/test-verb-runbook-autopilot.mjs';
+// The verb runbooks' blocks, run for every persona (PC3b U4b: moved from
+// tests/engineer/test-verb-runbook-autopilot.mjs); engineer's committed
+// runbooks and scripts are what the R and X mutations below break.
+const T_RB = 'tests/persona-pipeline/test-verb-runbook-runs.mjs';
 const T_SH = 'tests/plugin-shape/test-engineer-autopilot-runbooks.mjs';
+// The commit surface's runbook blocks, run (PC3b U4: moved from T_RB with the
+// commit regions).
+const T_CR = 'tests/persona-pipeline/test-commit-runbook.mjs';
 
 const STATE = 'plugins/engineer/scripts/state.mjs';
 const P7 = 'plugins/engineer/scripts/phase7-commit.mjs';
@@ -27,7 +33,7 @@ const STOP = 'plugins/engineer/scripts/stop-archive.mjs';
 const CRITIQUE = 'plugins/engineer/commands/critique.md';
 const COMMIT_MD = 'plugins/engineer/commands/commit.md';
 
-export const TESTS = [T_AV, T_EC, T_RB, T_SH];
+export const TESTS = [T_AV, T_EC, T_RB, T_SH, T_CR];
 
 const BEGIN_COMMIT_LOOP = '  await beginCommit({ workflowPath, host: flags.host });\n  for (let i = 0; i < shape.commits.length; i++) {';
 const LOOP_ONLY = '  for (let i = 0; i < shape.commits.length; i++) {';
@@ -135,7 +141,7 @@ export const MUTATIONS = [
   },
   {
     id: 'P7', file: P7, tests: [T_EC],
-    from: '  if (isAutopilotRun(process.env)) {\n    const bypass = [',
+    from: '  if (autopilot.active) {\n    const bypass = [',
     to: '  if (false) {\n    const bypass = [',
     why: 'under autopilot a confirm flag or ACCEPT_CURRENT_TREE bypasses the staging-set gate',
   },
@@ -241,13 +247,13 @@ export const MUTATIONS = [
     why: 'the peer runner is detached where the host cannot wait for it',
   },
   {
-    id: 'R5', file: COMMIT_MD, tests: [T_SH, T_RB],
+    id: 'R5', file: COMMIT_MD, tests: [T_CR],
     from: '  --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}"\n```\n\nReport its JSON `action`',
     to: '  --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}" --confirm-non-interactive\n```\n\nReport its JSON `action`',
     why: 'the autopilot block passes a confirm flag',
   },
   {
-    id: 'R6', file: COMMIT_MD, tests: [T_SH, T_RB],
+    id: 'R6', file: COMMIT_MD, tests: [T_CR],
     from: ' --surface commit || exit $?',
     to: ' || exit $?',
     why: '/engineer:commit prints the verb banner, which forbids the commit it exists to make',
@@ -268,7 +274,7 @@ export const MUTATIONS = [
   },
   {
     id: 'X3', file: P7, tests: [T_EC],
-    from: "  if ((flags.mode === 'execute' || flags.mode === 'close') && isAutopilotRun(process.env)) {",
+    from: "  if ((flags.mode === 'execute' || flags.mode === 'close') && autopilot.active) {",
     to: '  if (false) {',
     why: 'under autopilot a direct execute steps around the clean-baseline and pre-staged rules',
   },
@@ -285,21 +291,21 @@ export const MUTATIONS = [
     why: 'an interrupted close tells the owner to commit',
   },
   {
-    id: 'X6', file: 'plugins/engineer/core/skills/commit/SKILL.md', tests: [T_RB],
-    from: '```bash\nREPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?\n[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch." >&2; exit 1; }\nnode "<plugin-root>/scripts/phase7-commit.mjs" --mode plan \\',
-    to: '```bash\nnode "<plugin-root>/scripts/phase7-commit.mjs" --mode plan \\',
+    id: 'X6', file: 'plugins/engineer/core/skills/commit/SKILL.md', tests: [T_CR],
+    from: '```bash\nPERSONA=\'engineer\'\nREPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1\nACTIVE="$(node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?\n[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }\nnode "<plugin-root>/scripts/phase7-commit.mjs" --mode plan \\',
+    to: '```bash\nPERSONA=\'engineer\'\nnode "<plugin-root>/scripts/phase7-commit.mjs" --mode plan \\',
     why: 'the Codex plan block reuses a variable an earlier Bash call set, and fails in a fresh shell',
   },
   {
-    id: 'X7', file: COMMIT_MD, tests: [T_RB],
-    from: '  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate staging-set \\\n  --next-step-kind commit --next-step-confidence HIGH\n',
-    to: '  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate staging-set\n',
+    id: 'X7', file: COMMIT_MD, tests: [T_CR],
+    from: '  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate staging-set \\\n  --next-action "Commit the confirmed staging set with /${PERSONA}:commit" \\\n  --next-step-kind commit --next-step-confidence HIGH || exit $?\n',
+    to: '  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate staging-set || exit $?\n',
     why: 'the owner resolves the staging set, the commit fails, and owner-decision stops the driver again',
   },
   {
     id: 'X8', file: 'plugins/engineer/commands/decide.md', tests: [T_RB, T_SH],
-    from: '  --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH || exit $?\n',
-    to: '  --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH\n',
+    from: '  "${NEXT_STEP[@]}" || exit $?\n',
+    to: '  "${NEXT_STEP[@]}"\n',
     why: 'a refused clear is ignored, and the selection is written over another pending gate',
   },
 
@@ -319,9 +325,9 @@ export const MUTATIONS = [
   // ---- C: the tests' own controls ----------------------------------------------
   {
     id: 'C1', file: T_RB, tests: [T_RB],
-    from: '          const r = runBlock(shell, dir, find, { STUB_ACTIVE: wf }, old);',
-    to: '          const r = runBlock(shell, dir, find, { STUB_ACTIVE: wf }, ENG);',
-    why: 'the old-install case runs the current scripts, so it cannot fail: its stand-in really lacks the preflight. (The released-0.23.0 case skips in this harness, whose copy has no git tags.)',
+    from: '              const r = runBlock(shell, dir, find, { STUB_ACTIVE: wf }, old);',
+    to: '              const r = runBlock(shell, dir, find, { STUB_ACTIVE: wf }, P.root);',
+    why: 'the old-install case runs the current scripts, so it cannot fail: its stand-in really lacks the preflight. (The released-scripts case skips in this harness, whose copy has no git tags.)',
   },
   // Why P1 bites. The half-commit case has two assertions that can see a
   // missing beginCommit: the phase it leaves, and the Stop verdict. C2 keeps

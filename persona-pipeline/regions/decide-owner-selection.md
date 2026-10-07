@@ -31,8 +31,9 @@ Q2), in either of two ways:
 Once they choose, write the resolution in place of its placeholder line
 (between the two `OWNER_RESOLUTION` lines; a line reading `OWNER_RESOLUTION`
 alone would end it) and run the block. Inside a `/{{persona}}:start` lifecycle the
-block clears the gate and stops there: resume the lifecycle, which makes its
-one terminal write; elsewhere it ends the verb:
+block clears the gate and stops there: resume the lifecycle, which continues at
+its own phase after decide and makes its one terminal write; elsewhere it ends
+the verb:
 
 ```bash
 ROOT_OVERRIDE="$(printenv {{root_env}} || true)"
@@ -43,8 +44,11 @@ REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 [ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # A gate met inside a /start lifecycle is resolved there: the lifecycle makes
-# the one terminal write. A type that cannot be read stops the block.
-WF_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" \
+# the one terminal write. A failed read, or a type that cannot be parsed, stops
+# the block (the read is checked on its own: a pipe reports its last command).
+WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" \
+  || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
+WF_TYPE="$(printf '%s' "$WF_JSON" \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.exit(1)}})')" \
   || { echo "✗ Could not read the workflow type; nothing was written." >&2; exit 1; }
 # The owner's resolution, from a quoted heredoc: no quote, $, backtick or
@@ -54,15 +58,26 @@ IFS= read -r -d '' RESOLUTION <<'OWNER_RESOLUTION' || true
 <Owner selection: the direction the owner chose, and why>
 OWNER_RESOLUTION
 [ -n "$RESOLUTION" ] || { echo "✗ No resolution was read; nothing was written." >&2; exit 1; }
+# Inside a /start lifecycle the lifecycle owns its phase order, so the clear
+# records no next step (the lifecycle's resume clears one anyway) and names the
+# resume as the next action; elsewhere the next step is compose. Either way the
+# gate's "Owner: …" next action does not outlive the clear.
+if [ "$WF_TYPE" = start ]; then
+  NEXT_ACTION="Resume /${PERSONA}:start: the lifecycle continues after decide with the selected direction"
+  NEXT_STEP=(--clear-next-step true)
+else
+  NEXT_ACTION={{next_action}}
+  NEXT_STEP=(--next-step-kind verb --next-step-verb compose --next-step-confidence HIGH)
+fi
 # One write records the owner's decision, clears the gate and names the next
 # step, so the next step never becomes runnable without the decision behind
 # it; the block stops if it fails.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate decide-conflict \
-  --resolution "$RESOLUTION" \
-  --next-step-kind verb --next-step-verb compose --next-step-confidence HIGH || exit $?
+  --resolution "$RESOLUTION" --next-action "$NEXT_ACTION" \
+  "${NEXT_STEP[@]}" || exit $?
 if [ "$WF_TYPE" = start ]; then
-  echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); it continues at compose." >&2
+  echo "→ Gate cleared. Resume the lifecycle with /${PERSONA}:start (\$${PERSONA}:start on Codex); it continues at its phase after decide." >&2
   exit 0
 fi
 # ARCHIVE TIMING — this finish-verb is a terminal write: on Claude the Stop
@@ -80,7 +95,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
 ```
 
 `awaiting-owner-clear` records `### Owner gate resolved: decide-conflict at
-<iso>` with the pointer it cleared and the resolution. It refuses, writing nothing,
+<iso>` with the pointer it cleared and the resolution, and replaces the gate's
+next action. It refuses, writing nothing,
 when the gate set on the workflow is not `decide-conflict`.
 {{#capability dispatch_target}}
 It refuses under an autopilot run too: only the owner resolves an owner gate.

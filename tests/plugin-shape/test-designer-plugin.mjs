@@ -2093,8 +2093,13 @@ describe('plugins/designer — session-handoff runbook (ADR-0043 S4)', () => {
     const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
     ok(/tombstone/i.test(text) && /survives?/i.test(text),
       "the rendered-marker TOMBSTONE surviving SessionStart consumption must be documented — it is what keeps a publish-needed workflow's later Stop from re-rendering");
-    ok(text.includes('`MIN_RUNTIME_VERSION`') && text.includes('scripts/footer.mjs'),
+    // The floor is the declared runtime_footer_floor, read by
+    // minRuntimeVersion() (ADR-0066 V18); the MIN_RUNTIME_VERSION constant the
+    // text named until PC3b U5a is gone from the scripts.
+    ok(text.includes('`minRuntimeVersion()`') && text.includes('scripts/footer.mjs'),
       'the footer discovery floor must be named with its gating capability file (ADR-0043 §4)');
+    ok((await readFile(resolve(PLUGIN_ROOT, 'scripts/discover-runtime.mjs'), 'utf8')).includes('export function minRuntimeVersion()'),
+      'the floor function the text names is the one discover-runtime.mjs exports');
     ok(/personas first, runtime second/.test(text),
       'the ADR-0043 §5 rollback order must be documented');
     ok(text.includes('last-session-handoff.json*'),
@@ -2116,15 +2121,12 @@ describe('plugins/designer — session-handoff runbook (ADR-0043 S4)', () => {
     ];
     for (const rel of surfaces) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      // investigate/SKILL.md never carried the deferral prose and stays
-      // footer-silent by design (its command file owns the completion
-      // surface); every other surface must defer to the code-emitted footer.
-      if (rel !== `${SKILLS_REL}/investigate/SKILL.md`) {
-        ok(/code-emit/.test(text),
-          `${rel} must defer to the code-emitted completion footer`);
-        ok(text.includes('references/session-handoff.md'),
-          `${rel} must point at the shared session-handoff runbook`);
-      }
+      // investigate/SKILL.md was footer-silent until its finish paragraph
+      // came from the shared region (PC3b U3b); every surface defers now.
+      ok(/code-emit/.test(text),
+        `${rel} must defer to the code-emitted completion footer`);
+      ok(text.includes('references/session-handoff.md'),
+        `${rel} must point at the shared session-handoff runbook`);
       ok(!/future work if demand arrives/.test(text),
         `${rel} must not carry the retired pre-S4 deferral prose`);
       ok(!/is future work, not part/.test(text),

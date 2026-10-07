@@ -491,6 +491,42 @@ for (const persona of personasFor('scripts/state.mjs')) {
       });
     });
 
+    // PC3b U1 (PC3 step-7 peer finding 2): a block that stops after the clear
+    // (inside a /start lifecycle) must not leave the gate's "Owner: …" next
+    // action behind; inside the lifecycle the clear records no next step.
+    it('clear replaces the gate\'s next action, and --clear-next-step true leaves no next step; a next step and the clear together are refused', async () => {
+      await withFile(async (filePath) => {
+        const env = CAPS.dispatch_target ? {} : { AGENTIC_AUTOPILOT: RUN };
+        await finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'Owner: pick A or B', nextStep: { kind: 'owner-decision', confidence: 'HIGH' },
+          ownerGate: { gate: 'decide-conflict', anchor: 'ensemble-synthesis' }, env: {} });
+        let r = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'decide-conflict',
+          '--clear-next-step', 'true', '--next-action', 'Resume the lifecycle after decide', '--resolution', 'A'], env);
+        strictEqual(r.status, 0, r.stderr);
+        deepStrictEqual(await keysOf(filePath), {}, 'no next step and no gate key is left');
+        strictEqual(parseWorkflowFile(await readFile(filePath, 'utf8')).frontmatter.next_action, 'Resume the lifecycle after decide');
+        await finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'Owner: fix or defer', nextStep: { kind: 'owner-decision', confidence: 'HIGH' },
+          ownerGate: { gate: 'recurring-finding', anchor: 'recurring-finding' }, env: {} });
+        const before = await readFile(filePath, 'utf8');
+        r = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'recurring-finding',
+          '--clear-next-step', 'true', '--next-step-kind', 'verb', '--next-step-verb', 'refine', '--next-step-confidence', 'HIGH'], env);
+        strictEqual(r.status, 1, 'clearing the next step and writing one are refused together');
+        ok(/mutually exclusive/.test(r.stderr), r.stderr);
+        strictEqual(await readFile(filePath, 'utf8'), before, 'nothing written');
+        r = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'recurring-finding',
+          '--next-step-kind', 'verb', '--next-step-verb', 'refine', '--next-step-confidence', 'HIGH', '--next-action', 'Fix the finding in refine'], env);
+        strictEqual(r.status, 0, r.stderr);
+        const fm = parseWorkflowFile(await readFile(filePath, 'utf8')).frontmatter;
+        deepStrictEqual([fm.next_step_kind, fm.next_step_verb, fm.next_action, fm.awaiting_owner_gate], ['verb', 'refine', 'Fix the finding in refine', undefined]);
+        // Without --next-action the next action is kept (an older caller).
+        await finishVerb({ workflowPath: filePath, host: 'claude', nextAction: 'Owner: route it', nextStep: { kind: 'owner-decision', confidence: 'HIGH' },
+          ownerGate: { gate: 'scope-routing', anchor: 'routing-recommendation' }, env: {} });
+        r = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'scope-routing',
+          '--next-step-kind', 'done', '--next-step-confidence', 'HIGH'], env);
+        strictEqual(r.status, 0, r.stderr);
+        strictEqual(parseWorkflowFile(await readFile(filePath, 'utf8')).frontmatter.next_action, 'Owner: route it');
+      });
+    });
+
     it('clear refuses a gate that is not the one set, and when none is set', async () => {
       await withFile(async (filePath) => {
         let before = await readFile(filePath, 'utf8');
@@ -692,6 +728,32 @@ for (const persona of personasFor('scripts/state.mjs')) {
           ok(r.stdout.includes(`awaiting-owner-clear --workflow-path "${filePath}" --host ${host} --gate decide-conflict`), r.stdout);
           ok(/is ignored/.test(r.stderr), r.stderr);
         }
+      });
+    });
+
+  });
+
+  // PC3b U2: a gate met inside a start lifecycle is resolved there; the
+  // notice names the lifecycle's resume, and its clear recipe carries the
+  // next action that replaces the gate's (PC3b U1), so a hand clear that
+  // follows it leaves no stale "Owner: …" action behind. Every persona.
+  describe(`${persona}: autopilot-preflight — a gate inside a start lifecycle (PC3b U2)`, () => {
+    it('interactive, a gate on a start workflow: the notice sends the owner back to the lifecycle, and the recipe it prints, run, replaces the gate\'s next action', async () => {
+      await withRepo(async (dir) => {
+        await createWorkflow({ repoRoot: dir, verb: 'investigate', host: 'claude', persona, gitBaseline: BASELINE, originalRequest: 'a lifecycle', workflowType: 'start' });
+        const [filePath] = await listWorkflowFiles(dir);
+        strictEqual(cli(['append', '--workflow-path', filePath, '--host', 'claude', '--next-action', 'Owner: pick A or B', '--event', 'updated']).status, 0);
+        strictEqual(cli(['awaiting-owner-set', '--workflow-path', filePath, '--host', 'claude', '--gate', 'decide-conflict', '--anchor', 'ensemble-synthesis']).status, 0);
+        const r = cli(['autopilot-preflight', '--workflow-path', filePath, '--host', 'claude'], { AGENTIC_AUTOPILOT: '' });
+        strictEqual(r.status, 0, r.stderr);
+        ok(r.stdout.includes(`the owner resolves it, then /${persona}:start resumes the lifecycle, clearing the gate with the phase it continues at`), r.stdout);
+        const recipe = /node "[^"]+" (awaiting-owner-clear [^\n]+)\n/.exec(r.stdout)?.[1];
+        ok(recipe && recipe.endsWith(' --next-action "<the next step\'s action>"'), r.stdout);
+        // The recipe, filled in the way it says, clears the gate and the stale action.
+        const filled = cli(['awaiting-owner-clear', '--workflow-path', filePath, '--host', 'claude', '--gate', 'decide-conflict', '--next-step-kind', 'verb', '--next-step-confidence', 'HIGH', '--next-step-verb', 'compose', '--resolution', 'Owner selection: A', '--next-action', 'Run compose on direction A']);
+        strictEqual(filled.status, 0, filled.stderr);
+        const fm = parseWorkflowFile(await readFile(filePath, 'utf8')).frontmatter;
+        deepStrictEqual([fm.awaiting_owner_gate, fm.next_action, fm.workflow_type], [undefined, 'Run compose on direction A', 'start']);
       });
     });
   });

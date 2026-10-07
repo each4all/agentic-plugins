@@ -748,29 +748,45 @@ test('the runbooks and skills pass typed text by --args-file', async (t) => {
 
 // ── 7. A runbook block, run as written ──────────────────────────────────────
 
-test('engineer start: its own Phase 0 block hands the description to FEATURE intact', { skip: unlessConverted('engineer') }, async (t) => {
+// PC3b U2: engineer's start reads its args file twice — the redundancy probe
+// block for the base branch, the bootstrap block for the description — each
+// from a file of its own, run here up to the line that reads its value.
+test('engineer start: the probe block hands the base branch, and the bootstrap block the description, to the shell intact', { skip: unlessConverted('engineer') }, async (t) => {
   const text = readFileSync(join(PLUGINS, 'engineer', 'commands', 'start.md'), 'utf8');
-  const block = text.match(/```bash\n(ARGS_DIR='<directory from step 1>'\n[\s\S]*?start-args\.mjs[\s\S]*?)```/);
-  ok(block, 'the Phase 0 block was not found in plugins/engineer/commands/start.md');
-  const jq = spawnSync('jq', ['--version']).status === 0;
+  const blocks = [...text.matchAll(/```bash\n(ARGS_DIR='<directory from step 1>'\n[\s\S]*?)```/g)].map((m) => m[1]);
+  const upTo = (needle, marker) => {
+    const found = blocks.filter((b) => b.includes(needle));
+    strictEqual(found.length, 1, `one args block holds ${needle}`);
+    const lines = found[0].split('\n');
+    const at = lines.findIndex((l) => l.startsWith(marker));
+    ok(at > 0, `${marker} in the block that holds ${needle}`);
+    return `${lines.slice(0, at + 1).join('\n')}\n`;
+  };
+  const probe = upTo('diagnose-redundancy', 'BASE_BRANCH=');
+  const bootstrap = upTo('check-clean-baseline', '[ -n "$FEATURE" ]');
+  ok(bootstrap.includes('START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?'), 'the bootstrap block extracts from its own args file');
+  // The blocks resolve the plugin root from AGENTIC_ENGINEER_ROOT first: an
+  // inherited one (an autopilot step's) must not point them elsewhere.
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_'))), CLAUDE_PLUGIN_ROOT: join(PLUGINS, 'engineer') };
+  const typed = `--base-branch 'feat/x' it's "A"; $(id) > f\nnext\n\n`;
   for (const shell of ['bash', 'zsh']) {
     const available = spawnSync(shell, ['-c', 'exit 0']).status === 0;
-    const skip = !jq ? 'jq is not installed' : !available ? `${shell} is not installed` : false;
-    await t.test(`${shell}: trailing newlines, quotes and an embedded option`, { skip }, () => {
-      const dir = mkdtempSync(join(tmpdir(), 'agentic-args.'));
+    await t.test(`${shell}: trailing newlines, quotes and an embedded option`, { skip: available ? false : `${shell} is not installed` }, () => {
+      const dirs = [mkdtempSync(join(tmpdir(), 'agentic-args.')), mkdtempSync(join(tmpdir(), 'agentic-args.'))];
       const out = scratch('start-block');
       try {
-        writeFileSync(join(dir, 'args.json'), lib.encodeArgsFile(`--base-branch 'feat/x' it's "A"; $(id) > f\nnext\n\n`));
-        const script = `${block[1].replace("ARGS_DIR='<directory from step 1>'", `ARGS_DIR='${dir}'`)}`
-          + `printf '%s' "$FEATURE" > '${out}/feature'\nprintf '%s' "$BASE_BRANCH" > '${out}/base'\n`;
-        const r = spawnSync(shell, ['-c', script], { cwd: out, encoding: 'utf8', env: { ...process.env, CLAUDE_PLUGIN_ROOT: join(PLUGINS, 'engineer') } });
-        strictEqual(r.status, 0, r.stderr);
+        for (const dir of dirs) writeFileSync(join(dir, 'args.json'), lib.encodeArgsFile(typed));
+        const run = (block, dir, after) => spawnSync(shell, ['-c', `${block.replace("ARGS_DIR='<directory from step 1>'", `ARGS_DIR='${dir}'`)}${after}`], { cwd: out, encoding: 'utf8', env });
+        const p = run(probe, dirs[0], `printf '%s' "$BASE_BRANCH" > '${out}/base'\n`);
+        strictEqual(p.status, 0, p.stderr);
+        const b = run(bootstrap, dirs[1], `printf '%s' "$FEATURE" > '${out}/feature'\n`);
+        strictEqual(b.status, 0, b.stderr);
         strictEqual(readFileSync(join(out, 'feature'), 'utf8'), `it's "A"; $(id) > f\nnext\n\n`);
         strictEqual(readFileSync(join(out, 'base'), 'utf8'), 'feat/x');
-        ok(!existsSync(dir), 'the args directory survived the block');
-        deepStrictEqual(readdirSync(out).sort(), ['base', 'feature'], 'the block created files in its working directory');
+        for (const dir of dirs) ok(!existsSync(dir), 'an args directory survived its block');
+        deepStrictEqual(readdirSync(out).sort(), ['base', 'feature'], 'the blocks created files in their working directory');
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
         rmSync(out, { recursive: true, force: true });
       }
     });

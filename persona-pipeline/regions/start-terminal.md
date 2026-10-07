@@ -28,3 +28,24 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" finish-verb \
   --next-action {{next_action}} \
   --next-step-kind commit --next-step-confidence "<HIGH|MEDIUM|LOW>" || exit $?
 ```
+
+The runtime completion footer is **code-emitted** on this terminal write
+(ADR-0039): `finish-verb` takes
+`set-terminal`'s path, which fires the ADR-0031 session-handoff sidecar; it
+shells out to the runtime `footer.mjs` and prints the rendered footer —
+context state, completion state (`publish-needed` while only the owner's save
+and commit remain) + state-derived next action, workflow id/path, artifact
+pointers, recommended next work, and the continue-vs-fresh session handoff —
+on this command's **stderr**. The workflow is then terminal, and the Stop hook
+archives it once every archive gate passes (here, once the owner's commit
+moves HEAD); until then `/{{persona}}:start` on this branch finds it and
+resumes it, so start the next deliverable after the archive, or on another
+branch. Do **not** hand-compose a
+second footer; surface the emitted one. It is advisory, pointer-only and
+fail-closed (a missing or too-old runtime emits nothing, and the SessionStart
+backstop still re-surfaces the handoff); it never mutates host session
+context. On a detached HEAD the branch-based preflight reports "no active
+branch context" and never recommends a fresh session (ADR-0018 §sub-2); the
+path-targeted terminal sidecar renders the footer as on a branch, its
+continue-vs-fresh advice included. Wiring details:
+`core/skills/_shared/references/session-handoff.md`.

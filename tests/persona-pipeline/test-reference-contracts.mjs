@@ -18,13 +18,19 @@
 //     scripts that do the work (the preflight's projection slot and the
 //     off-branch sweep, PC2a4 RV1).
 //
+// engineer joins the shared references one at a time (ADR-0066 Stage 3,
+// PC3b U5): which personas each reference holds generated regions for is
+// pinned below, and a contract about a reference a persona does not hold yet
+// is skipped for it, with the reason. The citation check reads a persona's
+// whole corpus from the moment it holds any reference region.
+//
 // Each assertion is bound to its documents with a nonzero count, so a
 // contract that matches nothing fails instead of passing.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -43,22 +49,39 @@ const PROTOCOL = `${REFS}/presentation-protocol.md`;
 const HANDOFF = `${REFS}/session-handoff.md`;
 const OUTPUT_RULES = 'core/skills/investigate/references/output-file-rules.md';
 const ENSEMBLE = `${REFS}/ensemble-protocol.md`;
+const ORCHESTRATION = `${REFS}/orchestration.md`;
 const GATE_SENTENCE = 'pass an explicit privacy gate before BOTH web search AND peer-host dispatch';
+// The ensemble protocol's regions that state a peer privacy policy, held by
+// exactly the personas that declare one (PC3b U5c).
+const PRIVACY_REGIONS = ['ensemble-launch-privacy', 'ensemble-privacy-contract', 'ensemble-privacy-intro', 'ensemble-privacy-bidirectional'];
+// The brief ensemble's, likewise (PC3b U5d).
+const BRIEF_PRIVACY_REGIONS = ['brief-ensemble-launch-privacy', 'brief-ensemble-privacy-bidirectional'];
 const PROTOCOL_CITE = 'Follow the Presentation Mode Protocol (`../_shared/references/presentation-protocol.md`) before presenting';
 
 // The Present step of each verb skill, per invocation mode (PC2a4 RV6): the
 // auto-activated site and the command-invoked one are counted apart, and
 // `region` names the generated region a command site sits in. decide's
 // command mode runs the auto-activated steps (its `decide-steps` region), so
-// its one site serves both.
+// its one site serves both. Each heading is whole and per persona (engineer's
+// critique, refine and investigate number or name their steps their own way,
+// PC3b U5b), and must be unique in its mode: a pattern that took either
+// persona's heading let a citation moved to the wrong step pass (review).
 const PRESENT_SITES = {
   compose: { auto: /^### Step 4: Present and confirm$/m, command: /^### Step 5: Present$/m, region: 'compose-present' },
   frame: { auto: /^### Step 3: Present and confirm$/m, command: /^### Step 5: Present$/m, region: 'frame-present' },
   decide: { auto: /^### Step 4: Recommend$/m, command: null },
-  critique: { auto: /^### Step \d: Synthesize$/m, command: /^### Step 6: Present$/m },
-  refine: { auto: /^### Step 4: Present the result$/m, command: /^### Step 5: Synthesize/m },
-  investigate: { auto: /^### Step 4: Synthesize and present \(auto mode\)$/m, command: /^### Step 5: Present$/m },
+  critique: { auto: { founder: /^### Step 3: Synthesize$/m, designer: /^### Step 4: Synthesize$/m, engineer: /^### Step 3: Synthesize$/m }, command: { founder: /^### Step 6: Present$/m, designer: /^### Step 6: Present$/m, engineer: /^### Step 5: Present$/m } },
+  refine: { auto: /^### Step 4: Present the result$/m, command: { founder: /^### Step 5: Synthesize$/m, designer: /^### Step 5: Synthesize \+ converge$/m, engineer: /^### Step 5: Present$/m } },
+  investigate: { auto: { founder: /^### Step 4: Synthesize and present \(auto mode\)$/m, designer: /^### Step 4: Synthesize and present \(auto mode\)$/m, engineer: /^### Step 4: Synthesize and present$/m }, command: /^### Step 5: Present$/m },
 };
+
+/** A Present site's heading pattern for a persona (null: none in that mode). */
+function siteHeading(site, mode, persona) {
+  const h = site[mode];
+  if (h === null || h instanceof RegExp) return h;
+  ok(h[persona], `no Present-site heading for ${persona}`);
+  return h[persona];
+}
 
 /** A skill's text for one invocation mode: from its `## When …` heading to the next `## ` heading. */
 function modeText(text, mode) {
@@ -86,6 +109,31 @@ function referencePersonas() {
   return [...out].sort();
 }
 const PERSONAS = referencePersonas();
+
+/** Whether the manifest gives `persona` generated regions in `rel`. */
+const enrolled = (persona, rel) => MANIFEST.regions.some((r) => r.dest === rel && r.personas.includes(persona));
+
+/**
+ * The investigate brief profile and the brief ensemble's point type, read from
+ * the declaration directly, not through the derived fields: the declared
+ * ones, else the default profile and the investigate ensemble type (format
+ * 1.4, PC3b U5d: engineer's brief comes from cited-brief, a research-scan).
+ */
+const briefProfile = (persona) => { const v = declaration(persona).verbs.investigate; return v.brief_profile ?? v.default_profile; };
+const briefType = (persona) => { const v = declaration(persona).verbs.investigate; return v.brief_ensemble_type ?? v.ensemble_type; };
+/** The investigate brief reference of a kind (`ensemble`, `spec`) the declaration names. */
+const briefRef = (persona, kind) => `core/skills/investigate/references/${briefProfile(persona)}-${kind}.md`;
+
+/**
+ * The node:test options of a contract about `rels`: skipped, with the reason,
+ * while `persona` holds no generated regions in one of them.
+ */
+function holding(persona, ...rels) {
+  const missing = rels.filter((rel) => !enrolled(persona, rel));
+  return missing.length === 0
+    ? {}
+    : { skip: `${persona} holds no generated regions in ${missing.join(', ')} yet (engineer joins the shared references one at a time, PC3b U5)` };
+}
 
 function walk(dir, base = dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -246,11 +294,14 @@ function citesName(section, name, sep = null) {
 /**
  * Every citation of a document: a backticked `*.md` path, with the `§`
  * name after it (or inside the same backticks, the older form), the name
- * squashed across line breaks and stripped of quotes and backticks.
+ * squashed across line breaks and stripped of quotes and backticks. A path
+ * that is a Markdown link's text (`` [`x.md`](…) ``) carries the `§` after
+ * the link, and a quoted name may follow the `§` with no space (`§"…"`):
+ * PC3b U5c found a stale heading cited that way, which the check never read.
  */
 function citations(text) {
   const out = [];
-  const re = /`([^`\n]*\.md)(?:\s+§\s+([^`]+))?`(?=\s*§\s+([\s\S]{1,240})|)/g;
+  const re = /`([^`\n]*\.md)(?:\s+§\s+([^`]+))?`(?=(?:\]\([^)\s]*\))?\s*§(?:\s+|(?=["“'‘]))([\s\S]{1,240})|)/g;
   for (const m of text.matchAll(re)) {
     const line = text.slice(0, m.index).split('\n').length;
     const section = m[2] ?? m[3] ?? null;
@@ -310,12 +361,41 @@ function stateFacts(persona) {
   return JSON.parse(out);
 }
 
+/**
+ * What a persona's generated session-handoff, stop-archive and Phase 7 scripts
+ * do (PC3b U5a): the completion state of a terminal workflow that only waits
+ * for HEAD to move, the close's head_moved action, the legacy home, and the
+ * script texts. Run with AGENTIC_* scrubbed, as stateFacts is.
+ */
+function handoffFacts(persona) {
+  const root = pluginRoot(persona);
+  const url = (rel) => JSON.stringify(pathToFileURL(join(root, 'scripts', rel)).href);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_') && !k.startsWith('NODE_TEST')));
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', [
+    `const h = await import(${url('session-handoff.mjs')}); const s = await import(${url('state.mjs')});`,
+    "const p = { archive_gate: 'blocked', phase: 'summary-complete', next_action: 'n' };",
+    "const close = h.mapCompletionFlags({ ...p, phase: 'close-complete' }, ['terminal_marker', 'head_moved']);",
+    "process.stdout.write(JSON.stringify({ headMovedOnly: h.mapCompletionFlags(p, ['head_moved']).state, closeAction: close.completionNextAction ?? '', legacyDir: s.legacyStateDirRel() }));",
+  ].join('\n')], { encoding: 'utf8', env });
+  const read = (rel) => (existsSync(join(root, 'scripts', rel)) ? readFileSync(join(root, 'scripts', rel), 'utf8') : '');
+  return { ...JSON.parse(out), handoff: read('session-handoff.mjs'), stop: read('stop-archive.mjs'), phase7: read('phase7-commit.mjs') };
+}
+
 /** The first-column code cells of a Markdown table's rows (header and rule excluded). */
 const tableColumn = (text, col) => [...text.matchAll(/^\|(.*)\|[ \t]*$/gm)]
   .map((m) => m[1].split('|').map((c) => c.trim()))
   .filter((cells) => !cells.every((c) => /^-+$/.test(c)))
   .map((cells) => /^`([^`]+)`$/.exec(cells[col] ?? '')?.[1])
   .filter(Boolean);
+
+/**
+ * Why a persona's ensemble never launched, read from the declaration itself
+ * rather than through the derived field the template renders: its privacy
+ * gate with a peer policy, a local-only verb without one (PC3b U5c).
+ */
+const peerSkipCause = (persona) => (declaration(persona).peer
+  ? 'the privacy gate kept the verb local-only, so no dispatch ran'
+  : 'the verb ran local-only, so no dispatch ran');
 
 /** A region's body by id; fails when the document does not hold it once. */
 function region(text, id) {
@@ -324,9 +404,24 @@ function region(text, id) {
   return regionBody(text, found[0]);
 }
 
-describe('reference contracts: the shared references hold generated regions for founder and designer', () => {
-  it('the family reaches founder and designer', () => {
-    deepStrictEqual(PERSONAS, ['designer', 'founder']);
+describe('reference contracts: which personas each reference holds generated regions for', () => {
+  it('the enrollment, reference by reference (engineer joins one at a time, PC3b U5)', () => {
+    deepStrictEqual(PERSONAS, ['designer', 'engineer', 'founder']);
+    const dests = [...new Set(MANIFEST.regions.map((r) => r.dest).filter((d) => d.includes('/references/')))].sort();
+    deepStrictEqual(Object.fromEntries(dests.map((d) => [d, MANIFEST.personas.filter((p) => enrolled(p, d))])), {
+      [CONTRACT]: ['designer', 'engineer', 'founder'],
+      [ENSEMBLE]: ['designer', 'engineer', 'founder'],
+      [ORCHESTRATION]: ['designer', 'engineer', 'founder'],
+      [PROTOCOL]: ['designer', 'engineer', 'founder'],
+      [HANDOFF]: ['designer', 'engineer', 'founder'],
+      'core/skills/investigate/references/business-brief-ensemble.md': ['founder'],
+      'core/skills/investigate/references/business-brief-spec.md': ['founder'],
+      'core/skills/investigate/references/cited-brief-ensemble.md': ['engineer'],
+      'core/skills/investigate/references/cited-brief-spec.md': ['engineer'],
+      'core/skills/investigate/references/design-brief-ensemble.md': ['designer'],
+      'core/skills/investigate/references/design-brief-spec.md': ['designer'],
+      [OUTPUT_RULES]: ['designer', 'engineer', 'founder'],
+    });
   });
 });
 
@@ -336,10 +431,11 @@ for (const persona of PERSONAS) {
   describe(`${persona}: reference contracts`, () => {
     for (const [label, docs] of corpora(persona)) {
       it(`${label}: nothing left unrendered in a region-bearing reference`, () => {
-        const refs = [...docs.keys()].filter((rel) => rel.startsWith(`${REFS}/`) && MANIFEST.regions.some((r) => r.dest === rel && r.personas.includes(persona)));
-        ok(refs.includes(CONTRACT), `${persona} ships ${CONTRACT} with regions`);
-        ok(refs.includes(PROTOCOL), `${persona} ships ${PROTOCOL} with regions`);
-        ok(refs.includes(ENSEMBLE), `${persona} ships ${ENSEMBLE} with regions`);
+        const refs = [...docs.keys()].filter((rel) => rel.startsWith(`${REFS}/`) && enrolled(persona, rel));
+        // Every reference the manifest enrolls the persona in ships, with
+        // regions (the enrollment table above names them).
+        deepStrictEqual(refs.sort(), [...new Set(MANIFEST.regions.filter((r) => r.dest.startsWith(`${REFS}/`) && r.personas.includes(persona)).map((r) => r.dest))].sort());
+        ok(refs.includes(HANDOFF), `${persona} ships ${HANDOFF} with regions`);
         for (const rel of refs) ok(!docs.get(rel).includes('{{'), `${rel}: unrendered "{{"`);
       });
 
@@ -348,15 +444,15 @@ for (const persona of PERSONAS) {
         deepStrictEqual(failures, []);
         // Floors: the extraction must keep reaching the corpus it was
         // calibrated on (PC2a4 U1: founder 159 in-plugin citations, 38 with a
-        // §; designer 201, 67), so a broken extractor cannot pass by finding
-        // nothing.
-        const floor = { founder: [140, 34], designer: [180, 60] }[persona] ?? [100, 30];
+        // §; designer 201, 67; PC3b U5a: engineer 266, 104), so a broken
+        // extractor cannot pass by finding nothing.
+        const floor = { founder: [140, 34], designer: [180, 60], engineer: [240, 90] }[persona] ?? [100, 30];
         ok(counted >= floor[0], `${persona}: only ${counted} citations extracted`);
         ok(sections >= floor[1], `${persona}: only ${sections} § citations extracted`);
         if (loose.length > 0) t.diagnostic(`looser § matches (parenthetical suffix not cited): ${loose.join('; ')}`);
       });
 
-      it(`${label}: the session handoff cites this persona's own preflight section (D6)`, () => {
+      it(`${label}: the session handoff cites this persona's own preflight section (D6)`, holding(persona, HANDOFF), () => {
         const cites = citations(docs.get(`${REFS}/session-handoff.md`)).filter((c) => c.target.endsWith('entry-routing-contract.md'));
         strictEqual(cites.length, 1);
         strictEqual(resolveCitation(docs, `${REFS}/session-handoff.md`, cites[0].target), CONTRACT);
@@ -364,7 +460,7 @@ for (const persona of PERSONAS) {
         ok(squash(docs.get(`${REFS}/session-handoff.md`)).includes(`live in ${persona}'s own \`entry-routing-contract.md\` § Session-Level Continue-vs-Fresh Preflight`), 'the handoff names its own persona\'s contract, not engineer\'s');
       });
 
-      it(`${label}: the capability text agrees with the declaration`, () => {
+      it(`${label}: the capability text agrees with the declaration`, holding(persona, CONTRACT), () => {
         const contract = docs.get(CONTRACT);
         // PC2b DD7: the closed next-step kinds finish-verb records, whatever
         // commit_surface says; off, `commit` means the owner publishes.
@@ -387,6 +483,10 @@ for (const persona of PERSONAS) {
         ok(startRow, 'the routes table holds the start row');
         if (caps.commit_surface) {
           ok(startRow.includes('to commit'), startRow);
+          // PC3b U5b: both closed kinds run the commit command, and done
+          // closes without a commit, as phase7-commit's close mode does.
+          ok(squash(proposal).includes(`for \`commit\`, \`/${persona}:commit\` / \`$${persona}:commit\` (a \`/${persona}:start\` lifecycle commits at its Phase 7 instead); for \`done\`, the same command, which closes the workflow without a commit when there is nothing to commit;`), 'the next command each closed kind takes with a commit surface');
+          ok(!squash(proposal).includes('There is no `/'), 'a commit-surface persona does not deny its commit command');
         } else {
           deepStrictEqual(commitMentions, [CONTRACT], `only the contract may name /${persona}:commit, to say there is none`);
           ok(squash(proposal).includes(`There is no \`/${persona}:commit\`.`), 'the proposal says there is no commit command');
@@ -403,7 +503,7 @@ for (const persona of PERSONAS) {
       });
 
 
-      it(`${label}: the owner-gates and next-step tables agree with this persona's state.mjs (PC2b DD8)`, () => {
+      it(`${label}: the owner-gates and next-step tables agree with this persona's state.mjs (PC2b DD8)`, holding(persona, CONTRACT), () => {
         const facts = stateFacts(persona);
         const contract = docs.get(CONTRACT);
         const gates = squash(region(contract, 'routing-owner-gates'));
@@ -417,9 +517,15 @@ for (const persona of PERSONAS) {
         strictEqual(facts.all.length, 5);
         const kindRows = tableColumn(region(contract, 'routing-proposal'), 1).filter((c) => c !== 'next_step_kind');
         deepStrictEqual([...kindRows].sort(), facts.kinds, 'the closed-enum table maps onto exactly the kinds finish-verb accepts');
+        // PC3b U5b: confidence persists (ADR-0063 D6) for every persona, so the
+        // floor no longer lists it among the fields with no durable home.
+        const floor = squash(region(contract, 'routing-floor'));
+        ok(floor.includes('`confidence` had none either until ADR-0063 D6: it now persists as `next_step_confidence`'), 'the floor says confidence persists');
+        ok(!/`confidence` have \*\*no durable home/.test(floor) && !floor.includes('the full `rationale` and `confidence`'), 'the floor does not list confidence as unpersisted');
+        ok(/\bflags\['next-step-confidence'\]/.test(readFileSync(join(pluginRoot(persona), 'scripts', 'state.mjs'), 'utf8')), "this persona's state.mjs takes --next-step-confidence");
       });
 
-      it(`${label}: the skills and the handoff name finish-verb as the terminal write (PC2b DD8)`, () => {
+      it(`${label}: the skills and the runbooks name finish-verb as the terminal write (PC2b DD8)`, holding(persona, CONTRACT), () => {
         const vocabulary = ['verb', 'commit', 'done', 'owner decision'];
         const verbs = ['compose', 'frame', 'decide', 'critique', 'refine', 'investigate', 'start'];
         for (const verb of verbs) {
@@ -427,9 +533,16 @@ for (const persona of PERSONAS) {
           const text = docs.get(rel);
           ok(text, rel);
           ok(/\bfinish-verb\b/.test(text), `${rel}: names finish-verb`);
-          // set-terminal survives only as the marker-clearing escape.
-          for (const m of text.matchAll(/set-terminal(.{0,20})/gs)) {
-            ok(m[1].startsWith("'s full flag set"), `${rel}: names set-terminal outside the clearing escape: "${squash(m[0])}"`);
+          // set-terminal survives only as the marker-clearing escape, except
+          // where a commit surface makes the Phase 7 driver start's terminal
+          // write: there each other mention says the driver writes it
+          // (PC3b U5b review: a direct set-terminal step must still fail).
+          const driver = verb === 'start' && caps.commit_surface;
+          if (driver) ok(squash(text).includes("The lifecycle's one terminal write is the Phase 7 driver in execute mode (`phase7-commit.mjs`)"), `${rel}: names the Phase 7 driver as the terminal write`);
+          for (const m of text.matchAll(/([^\n]{0,24})set-terminal(.{0,20})/gs)) {
+            const escape = m[2].startsWith("'s full flag set");
+            const byDriver = driver && (/writes `?$/.test(m[1]) || /gate, and $/.test(m[1]));
+            ok(escape || byDriver, `${rel}: names set-terminal outside the clearing escape${driver ? " and the driver's own write" : ''}: "${squash(m[0])}"`);
           }
           for (const m of text.matchAll(/^[ \t]*- selected_next:[ \t]*<([^>\n]+)>/gm)) {
             deepStrictEqual(m[1].split('|').map((s) => s.trim()), vocabulary, `${rel}: the proposal offers the runbook's closed vocabulary`);
@@ -441,19 +554,17 @@ for (const persona of PERSONAS) {
           ok(text.includes(`ends with the \`${gate}\` owner gate instead of a terminal write`), `${verb}: names its gate`);
           ok(text.includes('`../_shared/references/entry-routing-contract.md` § Owner gates'), `${verb}: cites the gate table`);
         }
-        const wiring = squash(region(docs.get(HANDOFF), 'handoff-wiring'));
-        ok(wiring.includes('the terminal mutation (`state.mjs finish-verb`, the production completion entry point'), 'the handoff names finish-verb as the entry point');
-        ok(wiring.includes('no active children, no owner gate pending'), 'the archive gates include gate 5');
-        ok(wiring.includes('A `finish-verb` that records an owner gate is not a terminal write and emits nothing'), 'a gated finish-verb emits no footer');
-        ok(squash(region(docs.get(HANDOFF), 'handoff-recipe')).includes('runs the same `finish-verb` CLI'), 'the Codex parity names finish-verb');
         ok(squash(docs.get(CONTRACT)).includes('write (`state.mjs finish-verb`) fires the handoff sidecar'), 'the preflight wiring names finish-verb');
         let skips = 0;
         for (const [rel, text] of docs) {
           if (!rel.startsWith('commands/')) continue;
           ok(!/companion unavailable/.test(text), `${rel}: a missing companion is a launched run, never a skip`);
+          // The one reason no run launches: the privacy gate where the persona
+          // declares a peer policy, the local-only choice where it declares none.
+          const reason = declaration(persona).peer ? 'privacy gate' : 'local-only';
           for (const m of text.matchAll(/### Ensemble skipped: [a-z-]+(?: \(profile=<profile>\))? \(([^)\n]*)\)`/g)) {
             skips += 1;
-            strictEqual(m[1], 'privacy gate', `${rel}: the skip heading names the one reason no run launches`);
+            strictEqual(m[1], reason, `${rel}: the skip heading names the one reason no run launches`);
           }
         }
         ok(skips >= 6, `${persona}: only ${skips} skip headings found`);
@@ -467,7 +578,15 @@ for (const persona of PERSONAS) {
         }
       });
 
-      it(`${label}: the presentation protocol ships whole, with the decision item as its unit (RV3)`, () => {
+      it(`${label}: the session handoff names finish-verb as the terminal write (PC2b DD8)`, holding(persona, HANDOFF), () => {
+        const wiring = squash(region(docs.get(HANDOFF), 'handoff-wiring'));
+        ok(wiring.includes('the terminal mutation (`state.mjs finish-verb`, the production completion entry point'), 'the handoff names finish-verb as the entry point');
+        ok(wiring.includes('no active children, no owner gate pending'), 'the archive gates include gate 5');
+        ok(wiring.includes('A `finish-verb` that records an owner gate is not a terminal write and emits nothing'), 'a gated finish-verb emits no footer');
+        ok(squash(region(docs.get(HANDOFF), 'handoff-recipe')).includes('runs the same `finish-verb` CLI'), 'the Codex parity names finish-verb');
+      });
+
+      it(`${label}: the presentation protocol ships whole, with the decision item as its unit (RV3)`, holding(persona, PROTOCOL), () => {
         const protocol = docs.get(PROTOCOL);
         ok(protocol, `${persona} ships ${PROTOCOL}`);
         ok(!protocol.includes('{{'), 'nothing left unrendered');
@@ -481,16 +600,51 @@ for (const persona of PERSONAS) {
         const analyses = rules.indexOf("1. Each direction's full analysis");
         const table = rules.indexOf('2. The multi-perspective comparison table, after all directions');
         ok(analyses >= 0 && table > analyses && rules.indexOf('3. The recommendation block') > table, 'Example 1 orders the directions, the table, then the recommendation');
-        ok(squash(docs.get('core/skills/decide/SKILL.md')).includes('REQUIRED output format — after all directions:'), "decide's output format puts the table after all directions");
+        const decide = docs.get('core/skills/decide/SKILL.md');
+        ok(/REQUIRED output format — after all (?:directions|options):/.test(squash(decide)), "decide's output format puts the table after all directions");
+        // PC3b U5b: decide presents its one decision whole, as Example 1 does,
+        // where engineer's skill made each option an interview item.
+        ok(/one decision with its compared (?:directions|options) is a single decision item, presented whole\./.test(squash(stepSection(decide, /^### Step 4: Recommend$/m) ?? '')), "decide's Recommend step presents the decision whole");
+        ok(!/one decision item = one option/i.test(squash(decide)), 'decide does not make each option its own item');
         ok(rules.includes('compare the branches with the compact multi-axis lens of `entry-routing-contract.md` § Surfacing the multi-axis lens from a non-decide verb'), 'the interaction rule surfaces the lens');
         ok(!rules.includes('run the full decide skill'), 'the interaction rule does not run the full decide inline');
         ok(rules.includes('every confirmation and approval gate a verb states still applies'), 'the protocol changes delivery only');
         const taxonomy = protocol.slice(protocol.indexOf('### Decision item taxonomy by content type'), protocol.indexOf('<!-- pipeline:begin presentation-rules -->'));
         ok(taxonomy.includes('| Direction comparison (decide) | One decision with its compared directions |'), 'the decide row is one decision with its compared directions');
-        ok(!/autopilot/i.test(protocol), 'the autopilot sentences wait for PC2b');
+        // The compose row and the list of where the protocol applies agree
+        // with the compose skill's Present step (PC3b U5b review: engineer's
+        // taxonomy made each plan task an item where its skill presents the
+        // plan as one): one item, or section by section.
+        const applies = protocol.slice(protocol.indexOf('## When This Protocol Applies'), protocol.indexOf('<!-- pipeline:begin presentation-exclusions -->'));
+        ok(applies.length > 0, 'the list of where the protocol applies');
+        const composeRows = taxonomy.split('\n').filter((l) => /^\| [^|]*\(compose\b/.test(l));
+        strictEqual(composeRows.length, 1, 'one compose row in the taxonomy');
+        const composeStep = squash(stepSection(modeText(docs.get('core/skills/compose/SKILL.md'), 'auto') ?? '', /^### Step 4: Present and confirm$/m) ?? '');
+        if (composeStep.includes('as a single decision item')) {
+          ok(composeRows[0].includes('one item, as compose presents it'), `the compose row says the plan is one item: ${composeRows[0]}`);
+          ok(!/\bcompose\b/.test(applies), 'the plan, one item, is not among the multi-item cases');
+        } else {
+          ok(composeStep.includes('present section by section'), "the compose skill presents section by section");
+          ok(/\(compose\)/.test(applies), 'compose sections are among the multi-item cases');
+        }
+        // PC3b U5b: autopilot belongs to dispatch_target. With it on, the offer
+        // and the confirmation each say what a run does, in their generated
+        // region and nowhere else; with it off, nothing names autopilot.
+        const AUTOPILOT = '**Autopilot mode (ADR-0063, Claude only):**';
+        if (caps.dispatch_target) {
+          const offer = squash(region(protocol, 'presentation-offer'));
+          strictEqual(protocol.split(AUTOPILOT).length - 1, 2, 'two autopilot paragraphs in the protocol');
+          strictEqual(offer.split(AUTOPILOT).length - 1, 1, 'one in the offer');
+          strictEqual(rules.split(AUTOPILOT).length - 1, 1, 'one in the rules');
+          ok(offer.includes(`${AUTOPILOT} when the command's Phase 0 preflight printed the autopilot banner, do not offer the choice: present in batch (\`autopilot-mode.md\`).`), 'the offer presents in batch under a run');
+          ok(offer.indexOf(AUTOPILOT) < offer.indexOf('How would you like to review this?'), 'the autopilot rule precedes the offer');
+          ok(rules.includes(`${AUTOPILOT} there is no one to answer, so proceed with X instead of asking (\`autopilot-mode.md\`). A choice that is a genuine owner judgment is not a ceremony: it stops the step with its owner gate (\`entry-routing-contract.md\` § Owner gates).`), 'the confirmation proceeds under a run and an owner judgment stops it');
+        } else {
+          ok(!/autopilot/i.test(protocol), `${persona} declares dispatch_target off: no autopilot sentence`);
+        }
       });
 
-      it(`${label}: every verb skill's Present step follows the protocol, in each invocation mode (RV6)`, () => {
+      it(`${label}: every verb skill's Present step follows the protocol, in each invocation mode (RV6)`, holding(persona, PROTOCOL), () => {
         let sites = 0;
         for (const [verb, site] of Object.entries(PRESENT_SITES)) {
           const rel = `core/skills/${verb}/SKILL.md`;
@@ -498,12 +652,14 @@ for (const persona of PERSONAS) {
           for (const mode of ['auto', 'command']) {
             const body = modeText(text, mode);
             ok(body, `${rel}: ${mode} mode section`);
-            if (site[mode] === null) {
+            const heading = siteHeading(site, mode, persona);
+            if (heading === null) {
               ok(squash(region(text, `${verb}-steps`)).includes('Follow the auto-activated steps above'), `${rel}: command mode runs the auto-activated steps`);
               continue;
             }
-            const section = stepSection(body, site[mode]);
-            ok(section !== null, `${rel}: ${mode} mode has its Present step ${site[mode]}`);
+            strictEqual(body.match(new RegExp(heading.source, 'gm'))?.length ?? 0, 1, `${rel}: ${mode} mode has its Present step ${heading} once`);
+            const section = stepSection(body, heading);
+            ok(section !== null, `${rel}: ${mode} mode has its Present step ${heading}`);
             ok(squash(section).includes(PROTOCOL_CITE), `${rel}: the ${mode} Present step cites the presentation protocol`);
             if (mode === 'command' && site.region) ok(squash(region(text, site.region)).includes(PROTOCOL_CITE), `${rel}: the citation sits in the generated ${site.region} region`);
             sites += 1;
@@ -513,7 +669,7 @@ for (const persona of PERSONAS) {
         ok(!/no\s+separate formal presentation protocol/.test(docs.get('core/skills/investigate/SKILL.md')), 'investigate no longer says the persona ships no protocol');
       });
 
-      it(`${label}: the finalize note and the start routing cite the persona's own contract`, () => {
+      it(`${label}: the finalize note and the start routing cite the persona's own contract`, holding(persona, CONTRACT), () => {
         for (const verb of ['compose', 'frame', 'investigate', 'decide']) {
           const text = docs.get(`commands/${verb}.md`);
           ok(text.includes('### Active next-action proposal\n\n(per `core/skills/_shared/references/entry-routing-contract.md` § Active Next-Action Proposal — derived from this artifact, not a fixed table)\n- selected_next:'), `commands/${verb}.md: the finalize note cites the contract right after its heading`);
@@ -525,7 +681,7 @@ for (const persona of PERSONAS) {
         ok(routing && squash(routing).includes('`../_shared/references/entry-routing-contract.md` § Routing Recommendation and the sections after it):'), 'start points at the contract § Routing Recommendation');
       });
 
-      it(`${label}: the session handoff's capability and floor text agree with the declaration (RD6)`, () => {
+      it(`${label}: the session handoff's capability and floor text agree with the declaration (RD6)`, holding(persona, HANDOFF), () => {
         const text = docs.get(HANDOFF);
         const wiring = squash(region(text, 'handoff-wiring'));
         const decl = declaration(persona);
@@ -548,25 +704,112 @@ for (const persona of PERSONAS) {
         const block = recipe.slice(recipe.indexOf('```bash'), recipe.indexOf('```\n', recipe.indexOf('```bash') + 7));
         ok(block.includes(`PERSONA='${persona}'`) && block.includes('--routing "/${PERSONA}:resume"'), 'the recipe routes to this persona through a literal PERSONA');
         strictEqual(block.split(persona).length - 1, 1, 'the shell block names the persona only in its PERSONA literal');
+
+        // PC3b U5a: each capability branch states what this persona's own
+        // generated scripts do, read from the code, never restated here.
+        const facts = handoffFacts(persona);
+        const flat = squash(recipe);
+        // The completion state of a terminal workflow that only waits for HEAD
+        // to move: the state the recipe's first head_moved bullet maps to is
+        // the one mapCompletionFlags computes.
+        const bullet = recipe.split(/\n(?=- )/).find((b) => b.startsWith('- ') && b.includes('`head_moved`'));
+        const docState = /→\s+\*\*`([a-z-]+)`\*\*/.exec(bullet ?? '')?.[1];
+        strictEqual(docState, facts.headMovedOnly, `the recipe maps a head_moved-only block to ${docState}; ${persona}'s session-handoff.mjs computes ${facts.headMovedOnly}`);
+        strictEqual(flat.includes('→ **`publish-needed`**'), facts.headMovedOnly === 'publish-needed', 'publish-needed is mapped exactly where the code computes it');
+        if (caps.commit_surface) {
+          ok(flat.includes(`for a \`close-complete\` workflow, \`/${persona}:commit\` again`), 'a no-changes close is finished by the commit command again');
+          ok(facts.closeAction.includes(`/${persona}:commit`), `the code names the commit command for a close: ${facts.closeAction}`);
+        }
+        // The Phase 7 driver emits on its commit, never on its no-changes close.
+        strictEqual(wiring.includes('and the Phase 7 driver `phase7-commit.mjs`, whose commit ends'), caps.commit_surface, 'the Phase 7 driver is an emitting write exactly when commit_surface is on');
+        strictEqual(wiring.includes("The Phase 7 driver's no-changes close emits nothing either"), caps.commit_surface, 'the close emits nothing, stated exactly when commit_surface is on');
+        if (caps.commit_surface) {
+          // Each setTerminal call's own argument object, read whole, so a
+          // comment or a reordered key does not move the check.
+          const calls = facts.phase7.split('await setTerminal({').slice(1).map((c) => c.slice(0, c.indexOf('\n  });')));
+          const emits = (phase) => calls.filter((c) => new RegExp(`terminalPhase:\\s*'${phase}'`).test(c)).map((c) => /emitHandoff:\s*(true|false)\b/.exec(c)?.[1]);
+          deepStrictEqual(emits('commit-complete'), ['true'], "phase7-commit's commit emits the handoff");
+          deepStrictEqual(emits('close-complete'), ['false'], "phase7-commit's close emits nothing");
+        }
+        // dispatch_target: the parent note follows the archive, skips a
+        // no-changes close, and Phase 7 sends it before its terminal write.
+        strictEqual(wiring.includes('except after a no-changes close, which made no commit'), caps.dispatch_target, 'the close exception is stated exactly when dispatch_target is on');
+        strictEqual(wiring.includes('A Phase 7 commit sends the same note itself first (P10, synchronously, before its terminal write)'), caps.dispatch_target, 'P10 is stated exactly when dispatch_target is on');
+        strictEqual(wiring.includes('makes up for a P10 note that failed (Phase 7 goes on to its terminal write when it does)'), caps.dispatch_target, 'what the Stop note recovers is stated exactly when dispatch_target is on');
+        strictEqual(wiring.includes('The sweep archives a workflow whose branch was deleted without a note'), caps.dispatch_target, 'the deleted-branch orphan is stated exactly when dispatch_target is on');
+        if (caps.dispatch_target) {
+          ok(/frontmatter\.current_phase\s*===\s*'close-complete'\s*\)\s*return\b/.test(facts.stop), 'stop-archive skips the parent note after a close');
+          ok(facts.stop.includes('archiving parent-linked orphan'), "the sweep reports a deleted branch's parent-linked orphan instead of noting it");
+          const wb = facts.phase7.indexOf('await writebackParent({');
+          ok(wb > 0 && wb < facts.phase7.indexOf("terminalPhase: 'commit-complete',"), 'phase7-commit writes the parent note before its terminal write');
+          ok(facts.phase7.includes('parent-writeback failed but Phase 7 will continue'), 'a failed P10 note does not stop Phase 7');
+        }
+        // legacy_homes (PC3 step-3 MINOR 7): the legacy slot is named, read at
+        // SessionStart, and removed on rollback exactly when the code has it.
+        const legacy = `.claude/agentic-${persona}/`;
+        strictEqual(wiring.includes(`\`${legacy}\` home writes its projection to that home's`), caps.legacy_homes, 'the legacy projection slot is named exactly when legacy_homes is on');
+        strictEqual(flat.includes(`and the pre-migration slot's \`${legacy}last-session-handoff.json*\`, whether or not a workflow still lives there`), caps.legacy_homes, 'the rollback removes the legacy slot, unconditionally, exactly when legacy_homes is on');
+        strictEqual(facts.legacyDir, legacy.slice(0, -1), 'the legacy home the text names is the one state.mjs resolves');
+        ok(/capabilityOn\('legacy_homes'\)\s*\?\s*\[\s*defaultProjectionFile\(repoRoot\),\s*legacyProjectionFile\(repoRoot\)\s*\]/.test(facts.handoff), 'SessionStart reads both slots, canonical first, with legacy_homes on');
       });
 
-      it(`${label}: the output-file rules name the brief file and output root the declaration implies (RD7)`, () => {
+      // Docket C104: a shared region names no persona but its own, so a
+      // sentence true for founder and designer ("engineer's sweep") cannot
+      // turn false, or self-referential, once engineer renders it.
+      it(`${label}: the shared handoff and privacy regions name no other persona (C104)`, holding(persona, HANDOFF), () => {
+        const others = MANIFEST.personas.filter((p) => p !== persona);
+        let bodies = 0;
+        for (const [rel, ids] of [[HANDOFF, ['handoff-wiring', 'handoff-recipe']], [ENSEMBLE, ['ensemble-privacy-contract']]]) {
+          for (const id of ids) {
+            if (!MANIFEST.regions.some((r) => r.id === id && r.dest === rel && r.personas.includes(persona))) continue;
+            bodies += 1;
+            const named = squash(region(docs.get(rel), id)).match(new RegExp(`\\b(${others.join('|')})\\b`, 'g'));
+            deepStrictEqual(named, null, `${rel}#${id} names ${named}`);
+          }
+        }
+        ok(bodies >= 2, `${persona}: only ${bodies} regions read`);
+      });
+
+      it(`${label}: the output-file rules name the brief file and output root the declaration implies (RD7)`, holding(persona, OUTPUT_RULES), () => {
         const text = docs.get(OUTPUT_RULES);
         const decl = declaration(persona);
         // Read from the declaration directly, not through the derived fields.
         const files = mdFiles((decl.verbs.investigate.artifact ?? []).join('\n'));
         strictEqual(files.length, 1, 'the declared artifact names one brief file');
-        const env = `${persona.toUpperCase().replace(/-/g, '_')}_OUTPUT_ROOT`;
+        const env = decl.verbs.investigate.output_root_env ?? `${persona.toUpperCase().replace(/-/g, '_')}_OUTPUT_ROOT`;
         const generated = ['output-rules-intro', 'output-rules-layout', 'output-rules-files'].map((id) => region(text, id)).join('\n');
         ok(squash(generated).includes(`The brief file is **always** named \`${files[0]}\`.`), `the rules name ${files[0]}`);
         ok(generated.includes(`## Output root override (\`${env}\`)`), `the rules name ${env}`);
-        ok(generated.includes(`Each ${decl.verbs.investigate.default_profile} is saved to its own per-topic directory`), 'the rules name the declared profile');
+        ok(generated.includes(`Each ${briefProfile(persona)} is saved to its own per-topic directory`), 'the rules name the declared brief profile');
+        // PC3b U5d: no profile claimed future-only, where a persona has others.
+        ok(squash(generated).includes(`This is the only ${persona}:investigate profile that produces a separate user-facing artifact; every other profile, present or future, writes phase notes`), 'every other profile writes phase notes');
         const named = new Set([...generated.matchAll(/\b[a-z]+_brief\.md\b/g)].map((m) => m[0]));
         deepStrictEqual([...named], [files[0]], 'no other brief file name');
         ok(!/\bprevious (business|design)\b/.test(generated), 'the brief noun is unified');
       });
 
-      it(`${label}: the lens's default size keeps a profile preset where the persona has one`, () => {
+      // Moved from tests/engineer/test-cited-brief.mjs (PC3b U5d): what the
+      // generated rules guarantee about the save path, for every persona.
+      it(`${label}: the output-file rules sanitize the slug, sandbox the root and gate an existing directory (RD7)`, holding(persona, OUTPUT_RULES), () => {
+        const generated = ['output-rules-intro', 'output-rules-layout', 'output-rules-files'].map((id) => region(docs.get(OUTPUT_RULES), id)).join('\n');
+        for (const [what, re] of [
+          ['traversal rejection on the raw input first', /1\.\s+\*\*Traversal rejection \(raw input\)\*\*: if the raw topic string contains[\s\S]{0,120}two or more consecutive dots/],
+          ['step 2, lowercase', /2\.\s+\*\*Lowercase\*\*/],
+          ['step 3, the forbidden characters', /3\.\s+\*\*Strip filesystem-forbidden characters\*\*[\s\S]{0,120}`:`,\s*`\*`,\s*`\?`/],
+          ['step 4, whitespace to `_`', /4\.\s+\*\*Normalize whitespace\*\*[\s\S]{0,120}collapse to single `_`/],
+          ['step 5, CJK kept', /5\.\s+\*\*Allowed character class\*\*[\s\S]{0,200}CJK characters/],
+          ['step 6, 15 code points', /6\.\s+\*\*Truncate at 15 Unicode code points\*\*/],
+          ['step 7, the trailing `_`', /7\.\s+\*\*Remove trailing `_`\*\*/],
+          ['an absolute root, a tilde rejected', /\*\*Absolute path required\*\*: relative paths and tilde-prefixed paths\s+are rejected/],
+          ['a fallback to ./output/', /falls back to\s+`\.\/output\/`/],
+          ['the root created on use', /\*\*Auto-create on use\*\*[\s\S]{0,200}created with `mkdir -p`/],
+          ['the sandbox after symlink resolution', /\*\*Sandbox enforcement\*\*[\s\S]{0,200}resolves\s+outside the root after symlink resolution is rejected before the file\s+is written/],
+          ['three outcomes', /1\. \*\*Overwrite\*\*[\s\S]*2\. \*\*Distinct directory\*\*[\s\S]*3\. \*\*Abort\*\*/],
+          ['the distinct directory by default', /Default if the user does not respond: option 2 \(distinct directory\)/],
+        ]) ok(re.test(generated), `the rules state ${what}`);
+      });
+
+      it(`${label}: the lens's default size keeps a profile preset where the persona has one`, holding(persona, CONTRACT), () => {
         const lens = squash(region(docs.get(CONTRACT), 'routing-lens'));
         const fence = /```bash\n([\s\S]*?)```/.exec(region(docs.get(CONTRACT), 'routing-lens'))?.[1] ?? '';
         const call = fence.split('\n').find((l) => l.includes('decide-registry.mjs" resolve')) ?? '';
@@ -594,13 +837,24 @@ for (const persona of PERSONAS) {
         }
       });
 
-      it(`${label}: the preflight states what the generated scripts do (RV1)`, () => {
+      it(`${label}: the preflight states what the generated scripts do (RV1)`, holding(persona, CONTRACT), () => {
         const contract = docs.get(CONTRACT);
         const policy = squash(region(contract, 'routing-preflight-policy'));
         const slot = `.agentic-plugins/state/${persona}/last-session-handoff.json`;
         ok(policy.includes(`\`${slot}\``), 'the preflight names the projection slot');
         ok(policy.includes('clears a stale projection'), 'the preflight says a failed emit clears a stale projection');
         ok(policy.includes('archives a terminal workflow whose branch was deleted with no HEAD-movement gate'), 'the preflight states the off-branch sweep');
+        // PC3b U5b: the commit command's no-changes close archives its own
+        // workflow, and a legacy-home workflow writes the legacy slot; each
+        // stated exactly where the persona's scripts do it.
+        const phase7 = join(pluginRoot(persona), 'scripts', 'phase7-commit.mjs');
+        const closeArchives = existsSync(phase7) && /async function closeMode\([\s\S]*?await archiveWorkflow\(/.test(readFileSync(phase7, 'utf8'));
+        strictEqual(closeArchives, Boolean(caps.commit_surface), 'phase7-commit ships, and its close archives, exactly with commit_surface on');
+        strictEqual(policy.includes("The commit command's no-changes close (`phase7-commit.mjs`) archives its workflow itself"), closeArchives, 'the close archive is stated exactly where the code does it');
+        ok(policy.includes(`An owner archives a stale workflow on purpose with \`/${persona}:resume archive\`.`), 'the owner archive through resume is stated');
+        ok(/archive \[<?workflow-id>?\]/.test(readFileSync(join(pluginRoot(persona), 'commands', 'resume.md'), 'utf8')), "this persona's resume takes archive");
+        strictEqual(policy.includes(`\`.claude/agentic-${persona}/\`, writes its projection to that home's \`last-session-handoff.json\` instead`), Boolean(caps.legacy_homes), 'the legacy slot is stated exactly when legacy_homes is on');
+        ok(!policy.includes('real archive happens only'), 'the policy does not claim the Stop hook is the only archive');
         for (const retired of ['never written to a second state-like artifact', 'only via the Stop hook after a real commit', 'only after a real commit']) {
           ok(!policy.includes(retired), `the preflight restores engineer's "${retired}", false for the generated scripts`);
         }
@@ -614,24 +868,37 @@ for (const persona of PERSONAS) {
         ok(stop.includes("`'absent'` (deleted): archived with no head_moved gate"), "the generated sweep's comment states the deleted-branch rule the preflight repeats");
       });
 
-      it(`${label}: the ensemble Launch passes the privacy gate before any dispatch (RD5)`, () => {
+      it(`${label}: the ensemble Launch gates the declared privacy scope before any dispatch, and claims no gate without one (RD5, PC3b U5c)`, holding(persona, ENSEMBLE), () => {
         const text = docs.get(ENSEMBLE);
         const launch = squash(stepSection(text, /^### Step 1: Launch$/m) ?? '');
         const dispatch = launch.indexOf('`../../../../scripts/peer-runner.mjs run`');
         ok(dispatch > 0, 'the Launch step names the dispatch');
-        const gate = launch.indexOf(`${squash(declaration(persona).peer.privacy_scope)} ${GATE_SENTENCE}.`);
+        // The privacy regions are the persona's exactly when it declares a
+        // peer policy (`peer`); engineer declares none, so nothing it holds
+        // may claim a gate it does not have (PC3b U5c).
+        const peer = declaration(persona).peer;
+        const held = MANIFEST.regions.filter((r) => r.dest === ENSEMBLE && r.personas.includes(persona)).map((r) => r.id);
+        deepStrictEqual(held.filter((id) => PRIVACY_REGIONS.includes(id)), peer ? PRIVACY_REGIONS : [], 'the privacy regions follow the declared peer policy');
+        if (!peer) {
+          ok(held.length >= 17, `${persona}: only ${held.length} ensemble regions`);
+          for (const id of held) ok(!/privacy gate|genericiz/i.test(region(text, id)), `${id} claims a privacy gate ${persona} does not declare`);
+          ok(!/privacy gate|genericiz/i.test(launch), 'the Launch step claims no privacy gate');
+          ok(!/^## Privacy\b/m.test(text), 'no Privacy section');
+          return;
+        }
+        const gate = launch.indexOf(`${squash(peer.privacy_scope)} ${GATE_SENTENCE}.`);
         ok(gate > 0 && gate < dispatch, 'the Launch step gates the declared privacy scope before the dispatch step');
         ok(squash(region(text, 'ensemble-privacy-intro')).includes(`${GATE_SENTENCE}**`), 'the Privacy section states the gate');
         // A persona whose declared scope covers screenshots says, before the
         // dispatch step, that they are sensitive by default (designer's
         // authored sentence, kept ahead of the generated list, RV8).
-        if (/screenshot/i.test(declaration(persona).peer.privacy_scope)) {
+        if (/screenshot/i.test(peer.privacy_scope)) {
           const at = launch.indexOf('**Screenshots are sensitive by default**');
           ok(at >= 0 && at < dispatch, 'the screenshot sentence precedes the dispatch step');
         }
       });
 
-      it(`${label}: the ensemble Collect reads the runner result before any envelope, in the runner's own terms (RV10)`, () => {
+      it(`${label}: the ensemble Collect reads the runner result before any envelope, in the runner's own terms (RV10)`, holding(persona, ENSEMBLE), () => {
         const collect = squash(region(docs.get(ENSEMBLE), 'ensemble-collect'));
         const runnerAt = collect.indexOf('Read the peer-runner JSON first');
         const envelopeAt = collect.indexOf('`envelope_path` for the parsed companion envelope');
@@ -651,7 +918,7 @@ for (const persona of PERSONAS) {
         }
       });
 
-      it(`${label}: State Bookkeeping excludes peer-now, and the peer-now skill agrees (RV7)`, () => {
+      it(`${label}: State Bookkeeping excludes peer-now, and the peer-now skill agrees (RV7)`, holding(persona, ENSEMBLE), () => {
         const section = squash(stepSection(docs.get(ENSEMBLE), /^### State Bookkeeping$/m) ?? '');
         ok(section.includes('**`peer-now` is structurally excluded** from `ensemble_results`'), 'the exclusion is stated');
         ok(section.includes('It **does** pass `--run-id`, which is the peer-run **ledger** key'), 'the run id is the ledger key');
@@ -667,16 +934,31 @@ for (const persona of PERSONAS) {
         ok(runner.includes("if (handle.kind !== 'ensemble') return;"), 'the runner registers a pending row only for an ensemble');
       });
 
-      it(`${label}: the brief ensemble gates before dispatch and collects the runner result first, as the investigate runbook dispatches (RD8, RV10)`, () => {
+      it(`${label}: the brief ensemble gates before dispatch and collects the runner result first, as the investigate runbook dispatches (RD8, RV10)`, holding(persona, briefRef(persona, 'ensemble')), () => {
         const decl = declaration(persona);
-        const brief = docs.get(`core/skills/investigate/references/${decl.verbs.investigate.default_profile}-ensemble.md`);
+        const brief = docs.get(briefRef(persona, 'ensemble'));
         ok(brief, 'the brief ensemble is named by the declared brief profile');
         const launch = squash(stepSection(brief, /^### Step 1: Launch\b.*$/m) ?? '');
         const dispatch = launch.indexOf("`peer-runner.mjs run` resolves the peer-companion");
         ok(dispatch > 0, 'the Launch step names the dispatch');
-        const gate = launch.indexOf(`${squash(decl.peer.privacy_scope)} ${GATE_SENTENCE}`);
-        ok(gate > 0 && gate < dispatch, 'the pre-conditions gate the declared privacy scope before the dispatch step');
-        if (/screenshot/i.test(decl.peer.privacy_scope)) {
+        // Every persona's brief gates web search and the peer dispatch; the
+        // gate's region, which states the declared scope, and the bidirectional
+        // privacy region are the persona's exactly when it declares a peer
+        // policy (PC3b U5d, as RD5 for the shared protocol). engineer's gate is
+        // its cited-brief Step 1's, stated in its own words.
+        const gateAt = launch.search(/privacy gate/);
+        ok(gateAt >= 0 && gateAt < dispatch, 'a privacy gate precedes the dispatch step');
+        const held = MANIFEST.regions.filter((r) => r.dest === briefRef(persona, 'ensemble') && r.personas.includes(persona)).map((r) => r.id);
+        deepStrictEqual(held.filter((id) => BRIEF_PRIVACY_REGIONS.includes(id)), decl.peer ? BRIEF_PRIVACY_REGIONS : [], 'the brief privacy regions follow the declared peer policy');
+        if (decl.peer) {
+          const gate = launch.indexOf(`${squash(decl.peer.privacy_scope)} ${GATE_SENTENCE}`);
+          ok(gate > 0 && gate < dispatch, 'the gate states the declared privacy scope before the dispatch step');
+          ok(squash(region(brief, 'brief-ensemble-launch-privacy')).includes(`${squash(decl.peer.privacy_scope)} ${GATE_SENTENCE}`), 'in its region');
+        } else {
+          ok(held.length >= 16, `${persona}: only ${held.length} brief ensemble regions`);
+          for (const id of held) ok(!/privacy gate|genericiz/i.test(region(brief, id)), `${id} claims a privacy gate ${persona} does not declare`);
+        }
+        if (/screenshot/i.test(decl.peer?.privacy_scope ?? '')) {
           const at = launch.indexOf('**Screenshots are sensitive by default**');
           ok(at >= 0 && at < dispatch, 'the screenshot sentence precedes the dispatch step');
         }
@@ -695,9 +977,8 @@ for (const persona of PERSONAS) {
         ok(run.includes(`ENSEMBLE_TYPE='${decl.verbs.investigate.ensemble_type}'\n`) && run.includes('--ensemble-type "$ENSEMBLE_TYPE" --run-id'), 'under the declared ensemble type');
       });
 
-      it(`${label}: the brief recovery inspects the run before a retry, in the runner's terms (RV11)`, () => {
-        const decl = declaration(persona);
-        const state = squash(region(docs.get(`core/skills/investigate/references/${decl.verbs.investigate.default_profile}-ensemble.md`), 'brief-ensemble-state'));
+      it(`${label}: the brief recovery inspects the run before a retry, in the runner's terms (RV11)`, holding(persona, briefRef(persona, 'ensemble')), () => {
+        const state = squash(region(docs.get(briefRef(persona, 'ensemble')), 'brief-ensemble-state'));
         const inspect = state.indexOf('Inspect that run before dispatching again: `peer-runner.mjs status --run-id <run_id> --json`');
         const retry = state.indexOf('A retry takes a fresh run id, since the runner refuses a `run_id` whose ledger already exists.');
         ok(inspect >= 0, 'the recovery inspects the run');
@@ -718,23 +999,29 @@ for (const persona of PERSONAS) {
         ok(runner.includes('peer-run ledger already exists for run_id'), 'the runner refuses an existing run id');
       });
 
-      it(`${label}: the brief spec's label policy names the declared ensemble type and brief ensemble (RD8)`, () => {
-        const decl = declaration(persona);
-        const profile = decl.verbs.investigate.default_profile;
-        const policy = squash(region(docs.get(`core/skills/investigate/references/${profile}-spec.md`), 'brief-spec-label-policy'));
-        ok(policy.includes(`When \`${persona}:investigate --profile=${profile}\` runs in command-mode, the bidirectional ${decl.verbs.investigate.ensemble_type} ensemble (per \`${profile}-ensemble.md\`)`), policy.slice(0, 160));
+      it(`${label}: the brief spec's label policy names the declared ensemble type and brief ensemble (RD8)`, holding(persona, briefRef(persona, 'spec')), () => {
+        const profile = briefProfile(persona);
+        const policy = squash(region(docs.get(briefRef(persona, 'spec')), 'brief-spec-label-policy'));
+        ok(policy.includes(`When \`${persona}:investigate --profile=${profile}\` runs in command-mode, the bidirectional ${briefType(persona)} ensemble (per \`${profile}-ensemble.md\`)`), policy.slice(0, 160));
         for (const rule of [
           'No host-named markers anywhere in the brief — none of `[Local]`, `[Peer]`, `[Both]`, or any host-specific equivalent.',
           'Numeric `[N]` citations remain the only labeling format in Findings and Sources.',
           `they are remapped to capture-order numbering by Citation Remapping (canonical rule in \`${profile}-ensemble.md\`)`,
           'communicated only in the user-facing completion summary that follows the save, never inside the brief artifact.',
         ]) ok(policy.includes(rule), `the label policy states: ${rule}`);
-        ok(squash(region(docs.get(`core/skills/investigate/references/${profile}-spec.md`), 'brief-spec-citations')).includes('### Access Date ISO format `YYYY-MM-DD`.'), 'the citation conventions keep the access date');
+        const spec = docs.get(briefRef(persona, 'spec'));
+        const citations = squash(region(spec, 'brief-spec-citations'));
+        ok(citations.includes('### Access Date ISO format `YYYY-MM-DD`. Records when the source was fetched/read.'), 'the citation conventions keep the access date');
+        // PC3b U5d: the shared conventions name no As-of field (engineer's
+        // sources carry none); a spec whose brief structure has one says how
+        // the access date differs, in its own text after the region.
+        ok(!/As-of/.test(citations), 'the shared citation conventions name no As-of field');
+        const hasAsOf = /^\s*As-of:/m.test(spec.slice(0, spec.indexOf('## Citation Conventions')));
+        strictEqual(squash(spec).includes('The access date is distinct from `As-of`, the date or version the source\'s content describes.'), hasAsOf, 'the As-of distinction is stated exactly where the brief sources carry As-of');
       });
 
-      it(`${label}: the failure handling sections keep every case (RD8, RD9)`, () => {
-        const decl = declaration(persona);
-        const failure = region(docs.get(`core/skills/investigate/references/${decl.verbs.investigate.default_profile}-ensemble.md`), 'brief-ensemble-failure');
+      it(`${label}: the failure handling sections keep every case (RD8, RD9)`, holding(persona, briefRef(persona, 'ensemble')), () => {
+        const failure = region(docs.get(briefRef(persona, 'ensemble')), 'brief-ensemble-failure');
         const cases = [...failure.matchAll(/^### (.+)$/gm)].map((m) => m[1]);
         deepStrictEqual(cases, [
           'Peer host CLI unavailable, not installed, or unauthenticated',
@@ -756,17 +1043,26 @@ for (const persona of PERSONAS) {
           'Peer returns PEER-ONLY claim with no source URL': 'Discard the claim. Do NOT add it to Open Questions',
           'Graceful degradation principle': 'Ensemble failure NEVER blocks save.',
         })) ok(sections[name]?.includes(action), `${name}: ${action}`);
-        const orchestration = docs.get(`${REFS}/orchestration.md`);
+      });
+
+      it(`${label}: the orchestration failure handling keeps every case, and each Task Profile names this persona (RD9, PC3b U5b)`, holding(persona, ORCHESTRATION), () => {
+        const orchestration = docs.get(ORCHESTRATION);
         const local = squash(region(orchestration, 'orchestration-failure'));
         ok(/^#{2,3} Failure handling$/m.test(orchestration.slice(0, orchestration.indexOf('<!-- pipeline:begin orchestration-failure -->'))), 'under its Failure handling heading');
-        for (const fact of ['notify the user which perspective failed, ask retry-or-proceed', 'note the missing perspective in the synthesis', 'Peer ensemble failures are handled separately per the ensemble contract — graceful degradation, never blocks the workflow.']) {
+        for (const fact of ['If any local analysis fails to return (timeout, error, or empty result):', 'notify the user which perspective failed, ask retry-or-proceed', 'note the missing perspective in the synthesis', 'Peer ensemble failures are handled separately per the ensemble contract — graceful degradation, never blocks the workflow.']) {
           ok(local.includes(fact), `orchestration failure handling: ${fact}`);
         }
+        // Each persona ships its own copy (ADR-0010 §5): every Task Profile in
+        // it, the template and the examples, names this persona and no other.
+        const named = [...orchestration.matchAll(/^[ \t]+Persona:[ \t]+(.+)$/gm)].map((m) => m[1].trim());
+        ok(named.length >= 3, `${persona}: only ${named.length} Task Profile Persona lines`);
+        deepStrictEqual([...new Set(named)], [persona], 'every Task Profile names this persona');
+        ok(!/\bStage 3\b/.test(orchestration), 'no persona still to come');
       });
 
       // PC2b RV5: every agent-facing failure path follows the settle policy:
       // nothing is skipped or committed by hand.
-      it(`${label}: the protocol's collect step and each failure action settle the attempt from its run ledger (RV5)`, () => {
+      it(`${label}: the protocol's collect step and each failure action settle the attempt from its run ledger (RV5)`, holding(persona, ENSEMBLE), () => {
         const doc = docs.get(ENSEMBLE);
         const collect = squash(region(doc, 'ensemble-collect'));
         ok(collect.includes('Either way the finalize settles the attempt from its run ledger (`peer-runner.mjs settle`), which records what the ledger shows: verdict `failed` with its `error_kind`, `degraded` for a completed run with no usable answer, or the synthesis verdict. The ledger shows an empty or unreadable answer; for one that parses to nothing usable, only structural shell, the synthesis verdict is `degraded`.'), collect);
@@ -781,7 +1077,35 @@ for (const persona of PERSONAS) {
         }
       });
 
-      it(`${label}: no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead (D2, PC2b U5b)`, () => {
+      // PC3b U5c: what engineer's authored protocol said about autopilot and
+      // the runner's backgrounding is the shared text's, keyed to the
+      // capability that has it, and the commit command's exclusion is bound to
+      // the commit surface that dispatches no peer.
+      it(`${label}: the protocol's autopilot wait and commit-command exclusion follow the declaration, and no runner hides behind a shell \`&\` (RV12, PC3b U5c)`, holding(persona, ENSEMBLE), () => {
+        const doc = docs.get(ENSEMBLE);
+        const launch = squash(region(doc, 'ensemble-launch'));
+        ok(launch.includes('The runner runs in the foreground of that background task, never behind a shell `&`, which would detach it where the host can neither track it nor notify you when it exits.'), 'the Launch keeps the runner out of a shell &');
+        const collect = squash(region(doc, 'ensemble-collect'));
+        for (const sentence of [
+          '**Autopilot (ADR-0063, Claude only):** the driver\'s stream-json host keeps the session alive while a background task is pending and re-invokes the model when it completes, so wait for the notification exactly as written; never sleep-poll a file (`autopilot-mode.md` § Peer ensembles).',
+          'The step report the host takes when you end a turn to wait is provisional: on the notification, finish Synthesize, settle the attempt (Phase 2\'s `peer-runner.mjs settle`) and make the verb\'s last write, then report again.',
+        ]) strictEqual(collect.includes(sentence), Boolean(caps.dispatch_target), `dispatch_target ${caps.dispatch_target}: ${sentence}`);
+        strictEqual(/autopilot/i.test(collect), Boolean(caps.dispatch_target), 'the Collect step names autopilot exactly with dispatch_target on');
+        // The wait the autopilot sentence describes is the generated runbooks'
+        // own: each verb's dispatch runs as a host background task.
+        if (caps.dispatch_target) ok(docs.get('core/skills/_shared/references/autopilot-mode.md'), 'the cited autopilot rules ship');
+        const when = squash(region(doc, 'ensemble-when-applies'));
+        const exclusion = `- The commit command (\`/${persona}:commit\`), which commits a verb chain's change or closes its workflow and dispatches no peer.`;
+        strictEqual(when.includes(exclusion), Boolean(caps.commit_surface), `commit_surface ${caps.commit_surface}: the commit command's exclusion`);
+        strictEqual(docs.has('commands/commit.md'), Boolean(caps.commit_surface), 'the commit command ships exactly with commit_surface on');
+        if (caps.commit_surface) {
+          // Bound to the code: neither the commit runbook nor its Phase 7 driver dispatches a peer.
+          const surfaces = [docs.get('commands/commit.md'), docs.get('core/skills/commit/SKILL.md'), readFileSync(join(pluginRoot(persona), 'scripts', 'phase7-commit.mjs'), 'utf8')];
+          for (const text of surfaces) ok(text && !/peer-runner\.mjs|dispatch-peer\.mjs|--kind ensemble/.test(text), 'the commit surface dispatches no peer');
+        }
+      });
+
+      it(`${label}: no runbook guards ensemble-commit on shell variables, and the protocol says settle decides from the run ledger instead (D2, PC2b U5b)`, holding(persona, ENSEMBLE), () => {
         const section = squash(stepSection(docs.get(ENSEMBLE), /^### State Bookkeeping$/m) ?? '');
         // D2 is fixed at its source: every finalize settles the attempt from
         // its run ledger (peer-runner.mjs settle), so no runbook keeps a
@@ -797,7 +1121,9 @@ for (const persona of PERSONAS) {
         deepStrictEqual(settles, ['commands/compose.md', 'commands/critique.md', 'commands/decide.md', 'commands/frame.md', 'commands/investigate.md', 'commands/refine.md'], 'every verb finalize settles');
         for (const fact of [
           '**Each attempt is settled from its run ledger.** A verb\'s finalize runs `../../../../scripts/peer-runner.mjs settle` with the run id its dispatch generated (empty when no run launched) before its last write, and the ledger, not the agent, decides what the workflow records:',
-          '- never launched (no dispatch ran: the privacy gate kept the verb local-only): nothing, and the phase note\'s first heading reads `### Ensemble skipped: …`;',
+          // Why a run never launched is the persona's own: its privacy gate, or
+          // with no peer policy (engineer) simply a local-only verb (PC3b U5c).
+          `- never launched (${peerSkipCause(persona)}): nothing, and the phase note's first heading reads \`### Ensemble skipped: …\`;`,
           '- launched, then failed, cancelled or abandoned: an `ensemble_results` entry with verdict `failed` and the ledger\'s `error_kind` in its summary;',
           '- completed: the synthesis verdict, or `degraded` when the answer was empty or unreadable (the synthesis is then local-only). An answer that parses to nothing usable, only structural shell, reads to `settle` like any other: the synthesis judges it, and its verdict is then `degraded`.',
           '`settle` refuses while the run is still live (collect it first), and when an empty run id would hide a run that launched for the same workflow and phase.',
@@ -806,6 +1132,147 @@ for (const persona of PERSONAS) {
     }
   });
 }
+
+// PC3b U5a: the handoff templates rendered over every legal capability
+// combination (dispatch_target needs commit_surface; the sync refuses the
+// reverse), so a sentence placed under the wrong capability shows even where
+// no persona's declaration renders it today: engineer has the three on,
+// founder and designer have them off.
+describe('reference contracts: the handoff templates keep each claim under its capability, in every legal combination (PC3b U5a)', () => {
+  const regions = ['handoff-wiring', 'handoff-recipe'].map((id) => MANIFEST.regions.find((r) => r.id === id));
+  const base = declaration('engineer');
+  for (const dispatch of [false, true]) {
+    for (const commit of [false, true]) {
+      for (const legacy of [false, true]) {
+        if (dispatch && !commit) continue;
+        it(`dispatch_target ${dispatch}, commit_surface ${commit}, legacy_homes ${legacy}`, () => {
+          const decl = { ...base, capabilities: { ...base.capabilities, dispatch_target: dispatch, commit_surface: commit, legacy_homes: legacy } };
+          const out = regions.map((r) => renderTemplate(readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8'), {
+            declaration: renderingDeclaration(decl), substitutions: r.substitutions ?? {}, label: r.template,
+          })).join('\n');
+          const flat = squash(out);
+          ok(!out.includes('{{'), 'nothing left unrendered');
+          for (const re of [/autopilot run/i, /\/orchestrator:done/, /\bP10\b/, /ADR-006[23]\b/]) strictEqual(re.test(out), dispatch, `${re}: dispatch_target on only`);
+          for (const re of [/Phase 7/, /:commit`/, /close-complete/]) strictEqual(re.test(out), commit, `${re}: commit_surface on only`);
+          for (const re of [/→ \*\*`publish-needed`\*\*/, /does not auto-commit/, /publish-needed workflow stays active-terminal/]) strictEqual(re.test(flat), !commit, `${re}: commit_surface off only`);
+          // Which ADR enabled a persona's footer is history, not a capability
+          // (PC3b U5a review): the shared wiring names ADR-0039 alone, and
+          // each persona's title keeps its own provenance.
+          ok(!/enabled for \w+ by ADR-0043|ADR-0039 via ADR-0043/.test(flat), 'no capability-keyed ADR-0043 attribution');
+          for (const re of [/\.claude\/agentic-engineer/, /canonical \+ legacy split/]) strictEqual(re.test(flat), legacy, `${re}: legacy_homes on only`);
+          strictEqual(flat.includes('declares `legacy_homes` off'), !legacy, 'the legacy_homes off claim');
+          strictEqual(flat.includes('declares `dispatch_target` off'), !dispatch, 'the dispatch_target off claim');
+        });
+      }
+    }
+  }
+});
+
+// PC3b U5b: the routing templates rendered under every legal capability
+// combination, as the handoff templates are above.
+describe('reference contracts: the routing templates keep each claim under its capability, in every legal combination (PC3b U5b)', () => {
+  const regions = MANIFEST.regions.filter((r) => r.dest === CONTRACT && r.personas.includes('engineer'));
+  const base = declaration('engineer');
+  it('renders the twelve routing regions', () => strictEqual(regions.length, 12));
+  for (const dispatch of [false, true]) {
+    for (const commit of [false, true]) {
+      for (const legacy of [false, true]) {
+        if (dispatch && !commit) continue;
+        it(`dispatch_target ${dispatch}, commit_surface ${commit}, legacy_homes ${legacy}`, () => {
+          const decl = { ...base, capabilities: { ...base.capabilities, dispatch_target: dispatch, commit_surface: commit, legacy_homes: legacy } };
+          const out = regions.map((r) => renderTemplate(readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8'), {
+            declaration: renderingDeclaration(decl), substitutions: r.substitutions ?? {}, label: r.template,
+          })).join('\n');
+          const flat = squash(out);
+          ok(!out.includes('{{'), 'nothing left unrendered');
+          for (const claim of ['| `pr-handling` |']) strictEqual(flat.includes(claim), dispatch, `${claim}: dispatch_target on only`);
+          for (const claim of ['declares `dispatch_target` off', 'dispatches its subtasks into engineer only']) strictEqual(flat.includes(claim), !dispatch, `${claim}: dispatch_target off only`);
+          for (const claim of ['| `staging-set` |', "no-changes close (`phase7-commit.mjs`)", 'to commit on the current branch', 'lifecycle commits at its Phase 7 instead']) strictEqual(flat.includes(claim), commit, `${claim}: commit_surface on only`);
+          for (const claim of ['There is no `/', 'declares `commit_surface` off', 'to its saved artifact', '`publish-needed`']) strictEqual(flat.includes(claim), !commit, `${claim}: commit_surface off only`);
+          for (const claim of ['.claude/agentic-engineer/', 'SessionStart reads both slots']) strictEqual(flat.includes(claim), legacy, `${claim}: legacy_homes on only`);
+        });
+      }
+    }
+  }
+});
+
+// PC3b U5b: the presentation and orchestration templates under every legal
+// combination, region by region: with the autopilot paragraphs taken out, each
+// renders exactly what it renders with every capability off (so no shared
+// sentence hides under a capability, review), and those paragraphs render
+// with dispatch_target on only, one in the offer and one in the rules.
+describe('reference contracts: the presentation and orchestration templates name autopilot under dispatch_target only, in every legal combination (PC3b U5b)', () => {
+  const regions = MANIFEST.regions.filter((r) => (r.dest === PROTOCOL || r.dest === ORCHESTRATION) && r.personas.includes('engineer'));
+  const base = declaration('engineer');
+  const render = (caps) => Object.fromEntries(regions.map((r) => [r.id, renderTemplate(readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8'), {
+    declaration: renderingDeclaration({ ...base, capabilities: { ...base.capabilities, ...caps } }), substitutions: r.substitutions ?? {}, label: r.template,
+  })]));
+  const AUTOPILOT = /^\*\*Autopilot mode \(ADR-0063, Claude only\):\*\*[^]*?\n\n/gm;
+  const neutral = render({ dispatch_target: false, commit_surface: false, legacy_homes: false });
+  it('renders the five presentation and two orchestration regions, none empty', () => {
+    strictEqual(regions.length, 7);
+    for (const [id, text] of Object.entries(neutral)) ok(text.trim().length > 0, `${id}: renders empty with every capability off`);
+  });
+  for (const dispatch of [false, true]) {
+    for (const commit of [false, true]) {
+      for (const legacy of [false, true]) {
+        if (dispatch && !commit) continue;
+        it(`dispatch_target ${dispatch}, commit_surface ${commit}, legacy_homes ${legacy}`, () => {
+          const out = render({ dispatch_target: dispatch, commit_surface: commit, legacy_homes: legacy });
+          for (const [id, text] of Object.entries(out)) {
+            ok(!text.includes('{{'), `${id}: nothing left unrendered`);
+            const autopilot = text.match(AUTOPILOT) ?? [];
+            strictEqual(autopilot.length, dispatch && ['presentation-offer', 'presentation-rules'].includes(id) ? 1 : 0, `${id}: autopilot paragraphs`);
+            strictEqual(text.replace(AUTOPILOT, ''), neutral[id], `${id}: the same text as with every capability off, the autopilot paragraph aside`);
+            ok(/autopilot/i.test(text.replace(AUTOPILOT, '')) === false, `${id}: autopilot named outside its paragraph`);
+          }
+        });
+      }
+    }
+  }
+});
+
+// PC3b U5c: the ensemble templates engineer holds, under every legal
+// combination, region by region, as the presentation templates are above:
+// with the Collect step's autopilot paragraph and the commit command's
+// exclusion taken out, each renders what it renders with every capability
+// off; the paragraph renders with dispatch_target on only, the exclusion with
+// commit_surface on only, and no region claims a privacy gate for a persona
+// that declares no peer policy.
+describe('reference contracts: the ensemble templates keep each claim under its capability, in every legal combination (PC3b U5c)', () => {
+  const regions = MANIFEST.regions.filter((r) => r.dest === ENSEMBLE && r.personas.includes('engineer'));
+  const base = declaration('engineer');
+  const render = (caps) => Object.fromEntries(regions.map((r) => [r.id, renderTemplate(readFileSync(join(REPO_ROOT, 'persona-pipeline', r.template), 'utf8'), {
+    declaration: renderingDeclaration({ ...base, capabilities: { ...base.capabilities, ...caps } }), substitutions: r.substitutions ?? {}, label: r.template,
+  })]));
+  const AUTOPILOT = /\n\n {3}\*\*Autopilot \(ADR-0063, Claude only\):\*\*[^]*?\n\n(?=2\. )/g;
+  const COMMIT = /^- The commit command \(`\/engineer:commit`\)[^]*?\n(?=- )/gm;
+  const neutral = render({ dispatch_target: false, commit_surface: false, legacy_homes: false });
+  it('renders the seventeen ensemble regions engineer holds, none empty', () => {
+    strictEqual(regions.length, 17);
+    deepStrictEqual(regions.filter((r) => PRIVACY_REGIONS.includes(r.id)), []);
+    for (const [id, text] of Object.entries(neutral)) ok(text.trim().length > 0, `${id}: renders empty with every capability off`);
+  });
+  for (const dispatch of [false, true]) {
+    for (const commit of [false, true]) {
+      for (const legacy of [false, true]) {
+        if (dispatch && !commit) continue;
+        it(`dispatch_target ${dispatch}, commit_surface ${commit}, legacy_homes ${legacy}`, () => {
+          const out = render({ dispatch_target: dispatch, commit_surface: commit, legacy_homes: legacy });
+          for (const [id, text] of Object.entries(out)) {
+            ok(!text.includes('{{'), `${id}: nothing left unrendered`);
+            strictEqual((text.match(AUTOPILOT) ?? []).length, dispatch && id === 'ensemble-collect' ? 1 : 0, `${id}: autopilot paragraphs`);
+            strictEqual((text.match(COMMIT) ?? []).length, commit && id === 'ensemble-when-applies' ? 1 : 0, `${id}: commit-command exclusions`);
+            const rest = text.replace(AUTOPILOT, '\n').replace(COMMIT, '');
+            strictEqual(rest, neutral[id], `${id}: the same text as with every capability off, those two aside`);
+            ok(!/autopilot|:commit`/i.test(rest), `${id}: autopilot or the commit command named outside its block`);
+            ok(!/privacy gate|genericiz/i.test(text), `${id}: a privacy gate engineer does not declare`);
+          }
+        });
+      }
+    }
+  }
+});
 
 describe('reference contracts: the citation check catches what it exists for', () => {
   it('fails a bare sibling the plugin does not ship (the D6 form)', () => {
@@ -834,6 +1301,17 @@ describe('reference contracts: the citation check catches what it exists for', (
     const { failures } = checkCitations('founder', docs);
     strictEqual(failures.length, 2, failures.join('\n'));
     ok(failures[0].includes('§ Step 3: A missing step') && failures[1].includes('§ Entry routing (nonexistent)'), failures.join('\n'));
+  });
+
+  it('reads the § after a Markdown-link citation, quoted with no space (PC3b U5c)', () => {
+    const docs = new Map([
+      [`${REFS}/a.md`, 'See [`b.md`](./b.md)\n§"Missing heading") and [`b.md`](./b.md) §"State Bookkeeping").\n'],
+      [`${REFS}/b.md`, '# B\n\n### State Bookkeeping\n'],
+    ]);
+    const { failures, sections } = checkCitations('founder', docs);
+    strictEqual(sections, 2);
+    strictEqual(failures.length, 1, failures.join('\n'));
+    ok(failures[0].includes('§ Missing heading'), failures[0]);
   });
 
   it('exempts only the declared brief file by its whole name, never a name it contains', () => {

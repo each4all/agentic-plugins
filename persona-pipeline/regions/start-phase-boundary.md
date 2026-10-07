@@ -12,15 +12,16 @@ phase (ADR-0066 PC2b):
   the next phase. A repeated phase (a second refine pass) dispatches under a
   new run id and settles each attempt.
 - **No phase closes the workflow.** A verb's own terminal write
-  (`finish-verb`) never runs inside the lifecycle; the Terminal block below is
-  its one terminal write.
+  (`finish-verb`) never runs inside the lifecycle; the lifecycle's last step
+  below makes its one terminal write.
 - **An owner gate pauses the lifecycle.** When a phase meets one (a decide
   CONFLICT, a recurring finding, a request that belongs elsewhere), record it
   after the phase note with `state.mjs awaiting-owner-set --gate <gate>
   --anchor <anchor>`, a write that leaves the workflow open, and pause. Once
   the owner decides, clear it with `state.mjs awaiting-owner-clear --gate
   <gate> --resolution <the owner's decision> --next-step-kind verb
-  --next-step-verb <the next phase's verb> --next-step-confidence HIGH`, and
-  continue at that phase. The verb's own resolving step (decide's Owner
-  selection, refine's Owner decision) ends in a terminal write, so the
-  lifecycle does not run it.
+  --next-step-verb <the next phase's verb> --next-step-confidence HIGH
+  --next-action <the next phase's action>`, and continue at that phase. The
+  verb's own resolving step (decide's Owner selection, refine's Owner
+  decision), run inside the lifecycle, clears the gate and stops instead of
+  making the verb's terminal write; resume the lifecycle from it.

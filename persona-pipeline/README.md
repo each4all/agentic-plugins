@@ -214,9 +214,10 @@ subtasks: PC3 (what follows) and PC3b (the rest, listed last):
   `test-state-schema-14.mjs`, `test-peer-now.mjs` and `test-resume.mjs`,
   each assertion mapped to a parametrized case or a runbook contract. What
   stays under `tests/engineer/` is persona content (the four decide suites,
-  `test-cited-brief.mjs`, `test-diagnose-redundancy.mjs`) and the runbook
-  integration that moves with start and commit (`test-start-command.mjs`,
-  `test-verb-runbook-autopilot.mjs`).
+  `test-cited-brief.mjs`); `test-start-command.mjs` and
+  `test-diagnose-redundancy.mjs` moved with start, and
+  `test-verb-runbook-autopilot.mjs` with commit and the verb runs (PC3b,
+  below).
   `scripts/mutation-specs/persona-pipeline.mjs` group N puts a defect in a
   canonical capability-on path into every target and expects an engineer
   contract test to fail.
@@ -241,9 +242,324 @@ subtasks: PC3 (what follows) and PC3b (the rest, listed last):
   profile. `compose.md` keeps an authored sentence with the
   `${AGENTIC_ENGINEER_ROOT:-` spelling the orchestrator's autopilot probe
   reads, until that probe accepts the generated resolver.
-- **Still hand-maintained, converged in PC3b:** engineer's `start`, `commit`
-  and `audit` runbooks, its skills other than checkpoint, peer-now and
-  resume, and its references.
+- **Still hand-maintained, converged in PC3b:** engineer's `commit`
+  runbook, its skills other than checkpoint, peer-now and resume, and its
+  references (its `start` runbook, its skills, its `commit`, its session
+  handoff, its routing contract, its presentation protocol, its
+  orchestration framework, its ensemble protocol and its investigate brief
+  references joined in PC3b, below). engineer's `audit` is not a pipeline unit: an
+  engineer-only alias of `critique --profile=full-codebase` with no shell
+  block and no shared text, it stays an authored extension (ADR-0066
+  Decision 2's list).
+
+PC3b, so far:
+
+- **An owner gate met inside a `/<persona>:start` lifecycle is resolved
+  there** (PC3's step-7 review). decide's Owner selection and refine's Fix
+  now and Defer, run inside the lifecycle, clear the gate and stop, so the
+  lifecycle runs the fix in its refine phase and makes its one terminal
+  write; before, Fix now went on into the refine's own phases, whose finalize
+  closed the workflow ahead of the lifecycle's terminal step. Inside the
+  lifecycle decide's clear records no next step: the lifecycle owns its phase
+  order (compose follows decide in founder's and designer's, an explore phase
+  in engineer's), and its resume clears a recorded next step anyway. Every
+  clear replaces the gate's `Owner: …` next action in the same write
+  (`awaiting-owner-clear --next-action`; `--clear-next-step true` records no
+  next step), so a block that stops after the clear leaves no stale
+  instruction; so does the clear recipe `autopilot-preflight` prints for a
+  pending gate.
+- **engineer's `start` runbook joins the start regions** (plugin root,
+  Phase 0, bootstrap, resume, initial verb, phase-boundary rules), and its
+  Phase 0 gains `autopilot-preflight`, which puts a pending owner gate to the
+  user before the lifecycle continues. The templates branch on
+  `commit_surface`: on, the bootstrap reads the description and an optional
+  `--base-branch` from an args file (`start-args.mjs`), first in a redundancy
+  probe block that writes nothing and pauses on a finding for the user's
+  proceed or abort (`diagnose-redundancy`, informational), then in the
+  bootstrap block, whose dirty-tree refusal adds the categories and the
+  worktree and sweep-into-commit resolutions; and the terminal is a region of
+  its own, `start-commit.md` (`when` `capabilities.commit_surface` is
+  `true`), the Phase 7 driver's plan block, then its execute block with the
+  subject the user confirmed; each binds the workflow from `find-active` when
+  `ACTIVE` is unset, since a shell variable does not outlive a Bash call.
+  engineer's start skill states the same entry order for Codex. engineer declares `verbs.start` with its
+  `request_placeholder` and no `terminal_requires_convergence`, which picks a
+  `finish-verb` variant its lifecycle does not end with, so it is enrolled in
+  neither `start-terminal` variant. For every persona the bootstrap passes
+  `ACCEPT_CURRENT_TREE` to the check as a flag (a value set in the block
+  without export reached no check before), the resume reads the workflow on
+  its own (a failed read stops the block) and refuses any workflow that is
+  not a start one, unwritten, with the remedies (engineer's typed conflict,
+  now the template), and the phase-boundary rules name the lifecycle's last
+  step as its one terminal write. engineer's phase list, its per-phase state
+  writes and its entry routing stay authored. The characterization records
+  the changes with two more structural operations, `remove-call` and
+  `set-guard`, and names a script called without a subcommand by the script
+  alone. `tests/engineer/test-start-command.mjs` moved: the blocks are run by
+  the start contracts (engineer's commit_surface path too: the probe, the
+  bootstrap from a real args file, the Phase 7 plan and execute),
+  `evaluateCleanBaseline` to `tests/persona-pipeline/test-clean-baseline.mjs`
+  and `diagnose-redundancy` to `test-diagnose-redundancy.mjs` (both
+  parametrized), and the text engineer authors around the regions to
+  `tests/plugin-shape/test-engineer-start.mjs`.
+- **engineer's start, compose, frame and decide skills join their regions.**
+  start's "When invoked by command" intro (`skill-start-command-intro.md`)
+  now states the Codex entry in the command's order for every persona: the
+  guard, `find-active` and `autopilot-preflight` (which only reports a
+  pending owner gate) before any write; a start workflow resumes with its next
+  step cleared, and only there is a reported gate put to the user and
+  cleared; any other is refused unwritten, its gate included; then the
+  bootstrap. With `commit_surface` on it adds the args-file intake, the
+  redundancy probe, the four clean-baseline resolutions and the Phase 7
+  driver as the lifecycle's one terminal write. The check names its accept
+  flag (`--accept-current-tree true`), which a Codex run passes, and an
+  accepted tree is passed to both Phase 7 modes again (nothing remembers it).
+  compose, frame and decide take the shared Present, state-write, steps and
+  approval gate regions; with `commit_surface` on compose's state write names
+  the code profile's commit-manifest recording as the skill's one workflow
+  write, and with `dispatch_target` on the approval gate carries the
+  autopilot rule (record the recommendation as the next step; a CONFLICT
+  stops at `decide-conflict`). The skill contracts run for engineer in these
+  four files, the entry order among them (moved from
+  `test-engineer-start.mjs`), and a persona with no peer policy holds no
+  privacy region.
+- **The verb skills' finish paragraph is one region.** What the invoking
+  command's last write records, the footer it prints and the archive timing
+  were one fact in three wordings: founder's and designer's Completion
+  parenthetical (investigate's in its state write) and engineer's State-write
+  paragraph with its Session-level handoff section. `skill-verb-finish.md`
+  now closes the Completion section of every persona's compose, frame,
+  decide, critique, refine and investigate skill: run by the verb's command,
+  `finish-verb` records the closed-enum next step and, unless it ends with an
+  owner gate, is terminal; inside `/<persona>:start` no phase makes that
+  write; the footer is code-emitted, its completion state `blocked` with the
+  commit (`commit_surface` on) or `publish-needed` (off); with `dispatch_target` on autopilot is
+  Claude-only and its write prints no footer. Where refine closes only once
+  it converged (designer), the variant `skill-verb-finish-convergent.md`
+  opens with that rule (not converged, the workflow stays open with no
+  footer: the finalize's `append`, or the deferral's `awaiting-owner-clear`,
+  unless an owner gate ends it), then repeats the plain template, which a
+  contract checks byte for byte; the old text called that write terminal
+  too. On a detached HEAD only the branch-based preflight reports "no active
+  branch context" and recommends no fresh session; the path-targeted
+  terminal sidecar renders the footer as on a branch, continue-vs-fresh
+  advice included, and the verb runbooks' footer paragraph
+  (`verb-completion-footer.md`) and engineer's start commit say so too (they
+  promised no fresh-session advice at all). The owner gates it points to
+  are the routing contract's § Owner gates, or with `dispatch_target` on
+  `autopilot-mode.md`'s, engineer's table until its references join. engineer's
+  skills lose their copies, their citations of a `continuity-protocol.md` no
+  plugin holds, and the claim that the terminal sidecar renders nothing on a
+  detached HEAD (it is path-targeted and renders); refine's state write names
+  its commit-manifest recording as its one workflow write. The skill contract
+  checks the paragraph by capability, its citations against the persona's own
+  files, its place, and that nothing outside it says the same again.
+- **start's last write and its footer are stated once, in the runbook and in
+  the skill.** In the runbook, the terminal region now carries the footer
+  paragraph: `start-terminal.md` and its convergent variant gain it (with the
+  `publish-needed` mapping; designer's unconverged append prints
+  no footer), and `start-commit.md` states the same detached-HEAD rule and the
+  wiring pointer. founder's and designer's authored paragraph after the region
+  is gone (it promised no fresh-session advice on a detached HEAD and named
+  ADR-0043 by stage); their own sentences, founder's ADR-0036 save and
+  designer's artifact handoff, now open the terminal step. In the skill, a
+  `start-finish` region closes the terminal step in three variants chosen as
+  the runbook's terminal is: `skill-start-finish.md` (founder: the
+  `finish-verb` block, its next action from the declaration as the runbook's,
+  and the footer), its convergent variant (designer: the convergence rule, then
+  the plain template byte for byte) and `skill-start-finish-commit.md`
+  (engineer: the Phase 7 driver as the one terminal write, the footer and the
+  archive timing in the plain template's words, byte for byte). engineer's
+  skill loses its Phase 7 footer and archive-timing paragraphs and the
+  hand-passed completion projection; the projection stays at Phase 0, where its
+  detached-HEAD sentence now says the entry's guard stops first. Both texts say
+  when the next start bootstraps: a terminal workflow stays on the branch until
+  the Stop hook archives it (for founder and designer, once the owner's commit
+  moves HEAD), and `/<persona>:start` resumes it until then. The skill block
+  keeps its archive-timing annotation, and the skill footer its host-context
+  boundary (advisory, pointer-only, never mutating the session). engineer's
+  `session-handoff.md` § Boundaries states the detached-HEAD rule as founder's
+  and designer's do.
+- **The commit surface's runbook and skill are generated.** `/<persona>:commit`
+  belongs to `commit_surface` (ADR-0066 Decision 3), so its regions carry
+  `when` `capabilities.commit_surface` is `true` and are enrolled exactly where
+  a declaration turns it on (engineer); the autopilot block alone is keyed to
+  `dispatch_target` (`commit-autopilot`), and the templates' autopilot and
+  macro sentences sit in `dispatch_target` blocks, so a persona with the
+  commit surface and no dispatch target gets a commit without them. In the
+  command (`commit-*.md`): the plugin-root paragraph, Phase 0, the autopilot
+  block, the plan, the staging-set clear, the execute block with its archive
+  timing, the close and the footer paragraph; the intro and the Completion
+  report stay authored. In the skill (`skill-commit-*.md`): the host and
+  command-resolution tables and the same five blocks, each the command's with
+  `<plugin-root>` and `<claude|codex>` (a contract compares them). Two fixes
+  ride along, for engineer: Phase 0 reads the workflow type with the read
+  checked on its own (the pipe let a read that failed after printing a type
+  reach the commit, as in PC3b's owner blocks), and the staging-set clear
+  replaces the gate's `Owner: …` next action (`--next-action`), so a commit
+  that fails afterwards leaves no stale instruction. The Codex Phase 0 block
+  now runs the command's checks (the guard, the checked read, the `/start`
+  refusal) instead of leaving them to the agent. The commit cases of
+  `tests/engineer/test-verb-runbook-autopilot.mjs` moved to
+  `tests/persona-pipeline/test-commit-runbook.mjs` (every persona with the
+  commit surface, committed and assembled documents, bash and zsh), and the
+  runbook and skill contracts gained a commit family.
+- **The verb runbooks' blocks run for every persona.** The rest of
+  `tests/engineer/test-verb-runbook-autopilot.mjs` (Phase 0's preflight, an
+  old install, the resume clear, Phase 2, the six finalizes settled from a
+  real run ledger, decide's Owner selection and refine's Owner decision) moved
+  to `tests/persona-pipeline/test-verb-runbook-runs.mjs`, and the file is
+  gone. Each case runs per persona and shell over the committed runbook and
+  the one assembled from the templates (skipped where the two are byte-equal),
+  with the persona's real scripts, and branches by declaration: under an
+  autopilot run, the rules, the refusal at a gate and the non-terminal finish
+  with `dispatch_target` on, the run ignored with it off; the deferral's next
+  action by `commit_surface`; the convergent refine's open paths where
+  `terminal_requires_convergence` is on. The old-install case runs each
+  persona's newest release without the preflight, read from the tags.
+- **engineer's session handoff joins the handoff regions**, the first of its
+  shared references. `handoff-wiring.md` and `handoff-recipe.md` branch on
+  all three capabilities: with `commit_surface` the Phase 7 driver is named
+  among the writes that emit the footer (its no-changes close emits nothing:
+  it archives the workflow itself), and the completion mapping is `blocked`
+  with the commit (a close finishes with the commit command again), with no
+  `publish-needed`; with `dispatch_target` the parent note follows the
+  archive, best effort, skips a no-changes close, is sent by a Phase 7 commit
+  first (P10, the Stop's note then a retry), is never written for a deleted
+  branch's orphan, and an autopilot `finish-verb` emits nothing; with
+  `legacy_homes` the pre-migration slot under `.claude/agentic-<persona>/` is
+  named where a legacy-home workflow writes and SessionStart reads it, and the
+  rollback removes it whether or not a workflow still lives there (PC3
+  step-3 MINOR 7). Which ADR enabled a persona's footer is history, not a
+  capability: the wiring names ADR-0039 alone, and each persona's title keeps
+  its own provenance. Docket C104: the shared regions no longer compare the
+  persona with engineer ("engineer's path-targeted projection", "same as
+  engineer's sweep", the privacy contract's "engineer protocol"), and the
+  discovery floor names `minRuntimeVersion()`, the declared floor, where it
+  named a `MIN_RUNTIME_VERSION` no script has. The recommended next work is
+  said to be normalized to one line, as the sidecar does. The reference
+  contracts now pin which personas each reference holds regions for and skip
+  a contract, with the reason, where a persona does not hold its reference
+  yet; for engineer they read its whole corpus (two authored citations
+  reworded) and its session handoff, each capability branch checked against
+  the generated scripts, every legal capability combination rendered, and no
+  shared region naming another persona.
+- **engineer's routing contract joins the routing regions**: all twelve,
+  with engineer's own firing points, Standards and Root-Cause Gate, decision
+  sizing, decisive-axis fallback and review depth authored between them. Its
+  stale preflight sentences are gone (detached HEAD as a firing exception
+  only of the branch-based preflight, the projection persisted to the
+  per-persona slot, archival not only after a commit). The templates gain
+  what engineer's text held: with `commit_surface`, `done` runs the commit
+  command, which closes without a commit, and the commit command's
+  no-changes close archives its own workflow; with `legacy_homes`, the
+  pre-migration projection slot. For every persona the floor says
+  `confidence` persists as `next_step_confidence` (it listed it among the
+  fields with no durable home), the closed-enum heading names ADR-0063 D6's
+  amendment of ADR-0029 §3, the Stop hook is the automatic archive, not the
+  only one (an owner archives with `resume archive`), and every verb skill's
+  finish region cites the routing contract's § Owner gates (engineer's cited
+  `autopilot-mode.md`, whose own gate table, already drifting, became a
+  pointer plus when each gate is recorded). engineer's verb skills offer
+  `done` as their runbooks do, its decide and refine skills name their owner
+  gate, and its start skill's routing step is a heading that cites the
+  contract; its firing points keep the context-risk trigger, agent-instructed,
+  and every persona's Stop-hook backstop bullet names its checked-out-branch
+  scope. The routing templates are rendered for every legal capability
+  combination.
+- **engineer's presentation protocol and orchestration framework join their
+  regions.** Under `dispatch_target`, the protocol's offer and its
+  confirmation rule carry the autopilot sentences engineer authored (present
+  in batch; proceed with the recommendation, and stop with the owner gate on a
+  genuine owner judgment, now citing the routing contract's § Owner gates).
+  engineer takes the protocol's decision-item rule: one decide's compared
+  options are one item, presented whole, where its Example 1, its taxonomy
+  row and its decide skill made each option an interview item; the
+  interaction rule surfaces the compact lens instead of running the full
+  decide inline; its list of where the protocol applies names several open
+  decisions instead of one decide's options; and its compose row presents a
+  plan as one item, as its compose skill does (it made each task an item).
+  For every persona Example 1's recommendation block names "any gate verdict
+  its axes require" (engineer's axes declare no gate), and the orchestration
+  failure handling names the three ways a local analysis fails to return.
+  engineer's
+  orchestration keeps its agent roster and its Task Profile, which now names
+  engineer alone (it named designer as a persona still to come), under the
+  shared failure heading. The reference contracts run both references for
+  engineer: each Present site is one whole heading per persona, found once
+  in its mode; the orchestration half of RD9 is a contract of its own; and
+  both templates are rendered region by region for every legal capability
+  combination, each equal to its all-off text but for the autopilot
+  paragraph.
+- **engineer's ensemble protocol joins its regions**: the seventeen that
+  state no peer privacy policy. engineer declares none (no `peer`), so the
+  four that do stay founder's and designer's, and the Launch step's privacy
+  gate is now a region of its own (`ensemble-launch-privacy`), a paragraph
+  before the numbered steps, which lose a number (designer's screenshot and
+  vision sentences follow). Under `dispatch_target` the Collect step carries
+  engineer's autopilot wait (never sleep-poll; the report taken while waiting
+  is provisional), and under `commit_surface` the list of what the protocol
+  does not apply to names the commit command, which dispatches no peer. For
+  every persona the Launch keeps the runner out of a shell `&` (engineer's
+  ADR-0063 D5 sentence), State Bookkeeping names why a run never launched from
+  the declaration (`derived.ensemble_skip_cause`, as the finalize note does),
+  partial coverage names the sections the peer missed, and the graceful
+  degradation says the verb saves its artifact where it saves one (engineer's
+  critique saves no report). engineer's authored text loses what the settle
+  rule replaced or the code no longer does: the schema-version history, the
+  `codex_session_id` note (`settle` records none), stale pending entries
+  surfaced by `resume` (it reports none), `dispatch-peer.mjs` for
+  `peer-now` (it runs `peer-runner.mjs --kind peer-now`) and the "Peer:
+  not analyzed" marking; it keeps its point types, its additional and
+  required prompt blocks (repository context, not genericized), its raw
+  context and Plan-verify exception, and the large-change slicing. Enrolling
+  it ran RV7 for engineer, which found its peer-now skill listing `--run-id`
+  among the flags that opt a dispatch into `ensemble_results`; it now says
+  what founder's does. The reference contracts check the privacy regions
+  against the declared peer policy (none for engineer, and no enrolled region
+  of its may claim a gate), the autopilot wait and the commit exclusion by
+  capability with the commit surface's scripts, and the seventeen templates
+  rendered region by region for every legal capability combination. The
+  citation check now reads a `§` after a Markdown-link citation and a quoted
+  `§` with no space; engineer's cited-brief ensemble cited the renamed
+  heading that way, unread until then.
+- **engineer's investigate brief references join their regions**: the
+  output-file rules (all three), the brief spec (both) and the brief ensemble
+  (the sixteen that state no peer privacy policy). Declaration format 1.4
+  gives investigate a `brief_profile` and a `brief_ensemble_type` where they
+  are not the default profile and its ensemble type (engineer: cited-brief, a
+  research-scan, while its default is analysis, an investigate); the brief
+  bindings read `derived.brief_profile` and `derived.brief_ensemble_type`, and
+  `derived.brief_file` follows the brief profile. As in the ensemble protocol,
+  the brief Launch's privacy gate is a region of its own
+  (`brief-ensemble-launch-privacy`), a paragraph before the steps, which lose
+  the gate step and number the dispatch 1–4; engineer's gate is its
+  cited-brief Step 1's, stated in its authored text, and it holds neither
+  brief privacy region. The shared text no longer says only future profiles
+  write phase notes (engineer's analysis and root-cause do today), names the
+  persona's own file names without a Stage-1 claim (each persona says that in
+  its own words; engineer kept `research_brief.md` and `RESEARCH_OUTPUT_ROOT`
+  from Stage 1), and keeps `As-of` out of the citation conventions (founder's
+  and designer's sources carry it, engineer's do not). engineer's brief
+  ensemble takes the shared Collect (the runner result first, where it read
+  the envelope from the companion's stdout), failure handling (each attempt
+  settled from its ledger, where it skipped or recorded failures by hand) and
+  recovery (inspect the run before a retry, where it re-dispatched under the
+  same run id). `tests/engineer/test-cited-brief.mjs` moved: what the
+  generated rules guarantee to the reference contracts (RD7, for every
+  persona), engineer's own text to `tests/plugin-shape/test-engineer-plugin.mjs`.
+- **The code-emitted footer names ADR-0039 alone, everywhere.** As in the
+  session handoff, which ADR enabled a persona's footer is history, not a
+  capability: the verb skills' finish paragraph and its convergent variant, the
+  verb runbooks' footer paragraph, the start skill's finish and the start
+  runbook's terminal region (with their convergent variants) said "ADR-0039,
+  enabled for <persona> by ADR-0043" under `commit_surface` off, or in the
+  variant chosen by it. Each persona's `session-handoff.md` title keeps its
+  provenance, and every paragraph points to it. The verb skills' and verb
+  runbooks' sentence is now stated once, its completion state the only part
+  that branches. The contracts check ADR-0039 alone for every persona, and
+  every template that states the footer is rendered under every legal
+  capability combination with the footer attributed to ADR-0039 alone.
 
 ## The declaration
 
@@ -263,9 +579,14 @@ go to the peer; both personas say `false`). Format 1.3 adds investigate's
 `brief_file` and `output_root_env`, for a persona whose brief is not named
 after its default profile (engineer: `research_brief.md` under
 `RESEARCH_OUTPUT_ROOT`, from its cited-brief profile, while its default is
-analysis). founder and designer declare 1.2; engineer declares 1.3, with the
-verbs whose runbooks have joined the regions (PC3) and no `peer`, so its
-runbooks hold no privacy gate. The verb
+analysis). Format 1.4 adds investigate's `brief_profile` and
+`brief_ensemble_type`, where the profile that saves the brief and its
+ensemble's point type are not the default profile and `ensemble_type`
+(engineer: cited-brief and research-scan); the brief references are named
+after the brief profile. founder and designer declare 1.2; engineer declares
+1.4, with the verbs whose runbooks have joined the regions (PC3) and no
+`peer`, so its runbooks hold no privacy gate and its ensemble protocol no
+Privacy section. The verb
 runbooks render these values from the declaration, and the convergence flag
 picks the variant of `refine`'s finalize and `start`'s terminal block (a
 `when` on `terminal_requires_convergence`).
@@ -282,8 +603,10 @@ depth: a key the format does not know is refused, except a scalar in a
 declaration of a newer minor than the reader's, which is ignored; an unknown
 object or list is refused at any minor. The generator adds the rules the
 schema cannot state: the decide fallback equals the registry preset, a verb's
-`default_profile` is one of its `profiles` (both or neither), investigate's
-`artifact` names exactly one `*.md` file and it is `derived.brief_file`, and
+`default_profile` is one of its `profiles` (both or neither), so is
+investigate's `brief_profile`, the four brief fields are investigate's alone,
+investigate's `artifact` names exactly one `*.md` file and it is
+`derived.brief_file`, and
 every field an enrolled unit or region reads is present. A declaration that fails one is
 reported as its own failure, and no region renders from it.
 
@@ -303,10 +626,15 @@ substitutions. A template holds only `{{name}}` placeholders and
   profile from (with `profile_presets` on); `derived.skill_privacy_spec` is
   `peer.privacy_spec` as a skill cites it, relative to its own directory, and
   `derived.shared_privacy_spec` the same spec relative to
-  `core/skills/_shared/references/`. `derived.brief_file` is the file the
-  investigate brief is saved as, its `default_profile` with `-` → `_` plus
-  `.md`, and `derived.output_root_env` the `<NAME>_OUTPUT_ROOT` variable that
-  moves it; both exist only with `verbs.investigate.default_profile`. A
+  `core/skills/_shared/references/`. `derived.brief_profile` is the
+  investigate profile that saves the brief (a declared `brief_profile`, else
+  `default_profile`) and `derived.brief_ensemble_type` its ensemble's point
+  type (a declared `brief_ensemble_type`, else `ensemble_type`).
+  `derived.brief_file` is the file the brief is saved as, a declared
+  `brief_file`, else the brief profile with `-` → `_` plus `.md`, and
+  `derived.output_root_env` the variable that moves it, a declared
+  `output_root_env`, else `<NAME>_OUTPUT_ROOT`; all four exist only with
+  `verbs.investigate.default_profile`. A
   derived field whose input is absent is absent, so a template that reads it
   fails to render.
 - A region may carry `when: {field, equals}`, a variant: its `personas` must
@@ -422,7 +750,9 @@ off-capability, broken-declaration and isolation behavior (with
 settlement (`test-peer-runner-settle.mjs`), the start lifecycle through the
 real CLIs (`test-start-lifecycle.mjs`) and the previous founder release
 against a gated file (`test-mixed-version.mjs`, which reads the release tag
-and fails without it).
+and fails without it). `test-verb-runbook-runs.mjs` and
+`test-commit-runbook.mjs` run the verb runbooks' and the commit surface's
+blocks as written, in bash and zsh, with the persona's real scripts.
 `test-runbook-contracts.mjs` holds the runbook contracts (call order, the
 workflow each write targets, identity against the characterization's
 expected map, the phase-note transport, failure propagation, the privacy gate

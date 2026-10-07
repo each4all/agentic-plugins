@@ -41,7 +41,7 @@ const SEMVER_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 // The format minor this loader reads. A newer minor's unknown scalar is
 // forgiven; an unknown object or list is refused at any minor (ADR-0034 §4.1,
 // as the schema validator reads it).
-const READER_MINOR = 3;
+const READER_MINOR = 4;
 // The document cap the schema validator applies (SCHEMA_MAX_BYTES), measured
 // the same way: the declaration pretty-printed, in UTF-8 bytes.
 const MAX_BYTES = 64 * 1024;
@@ -51,7 +51,7 @@ const VERBS = Object.freeze(['investigate', 'frame', 'decide', 'compose', 'criti
 const VERB_KEYS = [
   'profiles', 'default_profile', 'request_placeholder', 'ensemble_type', 'artifact',
   'rationale_gate', 'evidence_pointers', 'next_action', 'terminal_requires_convergence',
-  'brief_file', 'output_root_env',
+  'brief_file', 'output_root_env', 'brief_profile', 'brief_ensemble_type',
 ];
 const BRIEF_FILE_RE = /^[a-z][a-z0-9_-]*\.md$/;
 const ENV_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -229,7 +229,8 @@ function verbProblems(verbs, unknown, no) {
       && !(Array.isArray(v.profiles) && v.profiles.length >= 1 && v.profiles.length <= 16 && v.profiles.every(isId))) {
       no(`${at}.profiles must be a list of 1..16 profile ids`);
     }
-    for (const key of ['default_profile', 'ensemble_type']) {
+    // Format 1.4: investigate's brief profile and brief ensemble type, ids too.
+    for (const key of ['default_profile', 'ensemble_type', 'brief_profile', 'brief_ensemble_type']) {
       if (v[key] !== undefined && !isId(v[key])) no(`${at}.${key} must be an id`);
     }
     for (const key of ['request_placeholder', 'rationale_gate', 'evidence_pointers', 'next_action']) {

@@ -63,15 +63,18 @@ function terminalGuardedByConvergence(text) {
 }
 
 // PC3 U7: engineer declares a verb once its runbook joins the regions (the
-// runbook holds the generated finalize), so the declared set and the joined
-// runbooks stay one set.
-const ENGINEER_JOINED_VERBS = NOTE_VERBS.filter((verb) => runbook('engineer', verb).includes(`<!-- pipeline:begin ${verb}-finalize -->`));
+// runbook holds the generated finalize, or start's generated bootstrap, PC3b
+// U2), so the declared set and the joined runbooks stay one set.
+const ENGINEER_JOINED_VERBS = [
+  ...NOTE_VERBS.filter((verb) => runbook('engineer', verb).includes(`<!-- pipeline:begin ${verb}-finalize -->`)),
+  ...(runbook('engineer', 'start').includes('<!-- pipeline:begin start-bootstrap -->') ? ['start'] : []),
+];
 
 describe('declaration 1.1: which personas declare verbs', () => {
-  it('founder and designer declare verbs (format 1.2, which adds peer); engineer declares 1.3 (which adds the investigate brief names), exactly the verbs whose runbooks joined the regions, and no peer (DD4, PC3 U7)', () => {
+  it('founder and designer declare verbs (format 1.2, which adds peer); engineer declares 1.4 (1.3 adds the investigate brief names, 1.4 its brief profile and ensemble type), exactly the verbs whose runbooks joined the regions, and no peer (DD4, PC3 U7)', () => {
     deepStrictEqual(withVerbs, ['designer', 'engineer', 'founder']);
     for (const p of ['designer', 'founder']) strictEqual(declaration(p).schema, 'persona-declaration-1.2');
-    strictEqual(declaration('engineer').schema, 'persona-declaration-1.3');
+    strictEqual(declaration('engineer').schema, 'persona-declaration-1.4');
     strictEqual(declaration('engineer').peer, undefined);
     ok(ENGINEER_JOINED_VERBS.length > 0, 'a joined engineer verb (guards a vacuous pass)');
     deepStrictEqual(Object.keys(declaration('engineer').verbs).sort(), [...ENGINEER_JOINED_VERBS].sort());
@@ -114,10 +117,36 @@ for (const persona of ['founder', 'designer', 'engineer']) {
 
     for (const verb of ['refine', 'start']) {
       if (!declared(verb)) continue;
+      // PC3b U2: with commit_surface on, start's one terminal write is the
+      // Phase 7 commit driver, no finish-verb, so it declares no convergence
+      // flag (the flag picks a finish-verb variant it does not render).
+      if (verb === 'start' && declaration(persona).capabilities.commit_surface) {
+        it('start: commit_surface on — no convergence flag, and the terminal write is the Phase 7 driver, not finish-verb (PC3b U2)', () => {
+          strictEqual(Object.hasOwn(verbs.start, 'terminal_requires_convergence'), false);
+          const code = shellBlocks(runbook(persona, 'start')).map((b) => stripComments(b.text)).join('\n');
+          strictEqual(/state\.mjs" (set-terminal|finish-verb)\b/.test(code), false, 'no finish-verb or set-terminal');
+          strictEqual(count(code, 'phase7-commit.mjs" \\\n  --mode execute'), 1, 'the Phase 7 execute');
+        });
+        continue;
+      }
       it(`${verb}: terminal_requires_convergence is true exactly when the terminal write waits for CONVERGED (DD5)`, () => {
         strictEqual(verbs[verb].terminal_requires_convergence, terminalGuardedByConvergence(runbook(persona, verb)));
       });
     }
+
+    // PC3b U2: start's request placeholder, named where the bootstrap takes the
+    // request: the prose above the block, or with commit_surface the args
+    // file's description.
+    if (declared('start')) it('start: the request placeholder is the one the bootstrap prose names', () => {
+      const flat = runbook(persona, 'start').replace(/\s+/g, ' ');
+      const { request_placeholder: placeholder } = verbs.start;
+      if (declaration(persona).capabilities.commit_surface) {
+        strictEqual(count(flat, `The arguments above are the ${placeholder}, with an optional \`--base-branch <ref>\` anywhere in it`), 1);
+        strictEqual(count(flat, '--original-request "$FEATURE"'), 1, 'create takes the description the args file held');
+      } else {
+        strictEqual(count(flat, `\`<the original request described above>\` with a ${placeholder};`), 1);
+      }
+    });
 
     if (declared('compose')) it('compose: the Profiles list, its default, "Missing profile" and the argument hint name the declared profiles', () => {
       const text = runbook(persona, 'compose');

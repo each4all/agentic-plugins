@@ -1,28 +1,26 @@
-// plugins/engineer/scripts/state.mjs — diagnoseRedundancy subcommand
-// tests (ADR-0020 §Sub-decision 7, PR 3).
+// scripts/state.mjs — the diagnose-redundancy subcommand (ADR-0020
+// §Sub-decision 7), canonical in persona-pipeline/ and run for every persona
+// that receives state.mjs (moved from tests/engineer/ in ADR-0066 PC3b U2).
 //
-// The helper runs in /engineer:start Phase 0 BEFORE a workflow is
-// bootstrapped to detect overlap with recently-merged or in-flight
-// changes on the current branch. Probes are reused from
-// commands/resume.md:168-198 plus an optional `gh pr list` check.
+// The start runbook of a persona with commit_surface runs it in Phase 0
+// BEFORE a workflow is bootstrapped, to detect overlap with recently merged or
+// in-flight changes on the current branch; the probes are git's, plus an
+// optional `gh pr list` check.
 //
 // Status rule: redundancy iff (commits ahead of merge-base with
-// --base-branch) OR (open PR on current branch). Conservative —
-// caller (/engineer:start runbook) surfaces evidence and asks the
-// user proceed/abort. The helper itself never auto-archives.
+// --base-branch) OR (open PR on current branch). Conservative — the caller
+// (the start runbook's probe block) surfaces evidence and asks the user
+// proceed/abort. The helper itself never auto-archives.
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, match } from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
-const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
-const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
-
-const { diagnoseRedundancy } = await import(STATE_PATH);
+import { personaInfo, personasFor } from './_personas.mjs';
 
 function gitInit(dir, branch) {
   execFileSync('git', ['init', '-q', '-b', branch], { cwd: dir, stdio: 'ignore' });
@@ -39,7 +37,7 @@ function gitCommit(dir, message, files = {}) {
 }
 
 async function withTmpRepo(fn, { branch = 'main' } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'engineer-diagnose-test-'));
+  const dir = await mkdtemp(join(tmpdir(), 'diagnose-redundancy-test-'));
   try {
     gitInit(dir, branch);
     // Initial commit so HEAD resolves.
@@ -52,7 +50,11 @@ async function withTmpRepo(fn, { branch = 'main' } = {}) {
   }
 }
 
-describe('state.mjs — diagnoseRedundancy (ADR-0020 §Sub-decision 7)', () => {
+for (const persona of personasFor('scripts/state.mjs')) {
+const STATE_PATH = personaInfo(persona).path('scripts/state.mjs');
+const { diagnoseRedundancy } = await import(pathToFileURL(STATE_PATH).href);
+
+describe(`${persona}: state.mjs — diagnoseRedundancy (ADR-0020 §Sub-decision 7)`, () => {
   it('returns status=no-redundancy on a clean branch with no commits ahead of base', async () => {
     await withTmpRepo(async (repoRoot) => {
       // No work since initial — base is HEAD, no commits ahead, no PRs.
@@ -203,3 +205,4 @@ describe('state.mjs — diagnoseRedundancy (ADR-0020 §Sub-decision 7)', () => {
   // `git_present=true` + `base_resolution_failed=true` pair above
   // exercises the surrounding logic transparently.
 });
+}

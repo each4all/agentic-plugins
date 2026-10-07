@@ -147,6 +147,8 @@ for (const persona of personasFor('scripts/state.mjs').filter((p) => personaInfo
           ok(r.stdout.includes(`#here`), r.stdout);
           ok(r.stdout.includes(how), `${gate}: ${r.stdout}`);
           ok(r.stdout.includes(`awaiting-owner-clear --workflow-path "${wf}" --host claude --gate ${gate} --next-step-kind`), r.stdout);
+          // PC3b U2: the recipe names the next action that replaces the gate's.
+          ok(r.stdout.includes(' --next-action "<the next step\'s action>"\n'), r.stdout);
           const cleared = runCli(['awaiting-owner-clear', '--workflow-path', wf, '--host', 'claude', '--gate', gate]);
           strictEqual(cleared.status, 0, cleared.stderr);
         }
