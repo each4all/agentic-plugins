@@ -1,4 +1,10 @@
 // plugins/runtime plugin-shape conformance test (ADR-0024 runtime/operator track).
+//
+// E1's rule (owner-approved 2026-10-05) decides what a text assertion here may
+// pin: what a host or program reads (manifests, catalogs, frontmatter, the
+// openai.yaml interface, the script a surface runs, schema files), or an
+// instruction that changes what the agent running a runtime surface may run,
+// when it stops or how it hands off. Each one says which, beside it.
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, rejects } from 'node:assert/strict';
@@ -34,12 +40,32 @@ async function readJSON(path) {
   return JSON.parse(text);
 }
 
+// Markdown wraps and bolds freely; an instruction is the same instruction
+// across a reflow, so the pins below match the flattened text.
+const flat = (text) => text.replace(/\*\*/g, '').replace(/\s+/g, ' ');
+
+// Every line that starts a `node "…/scripts/<file>.mjs"` invocation names
+// `script`, and at least one does.
+function nodeLinesRunOnly(text, script) {
+  const lines = text.split('\n').filter((line) => /^\s*node "[^"]*\/scripts\//.test(line));
+  return lines.length > 0 && lines.every((line) => line.includes(`/scripts/${script}"`));
+}
+
+async function surfaceText(name) {
+  return {
+    command: flat(await readFile(resolve(PLUGIN_ROOT, `commands/${name}.md`), 'utf-8')),
+    skill: flat(await readFile(skillsPath(PLUGIN_ROOT, name, 'SKILL.md'), 'utf-8')),
+  };
+}
+
+// Contract: Claude Code and Codex read these manifest fields to install, list and
+// load the plugin — a missing or mistyped field breaks install or the listing.
 describe('plugins/runtime manifest pair', () => {
   it('Claude manifest is valid JSON with required L1 runtime fields', async () => {
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(manifest.name, 'runtime');
     ok(/^\d+\.\d+\.\d+$/.test(manifest.version), 'version is semver');
-    ok(manifest.description.includes('ADR-0024'), 'description cites ADR-0024');
+    strictEqual(typeof manifest.description, 'string');
     ok(manifest.keywords.includes('runtime'));
     ok(manifest.keywords.includes('doctor'));
     ok(manifest.keywords.includes('settings'));
@@ -59,27 +85,21 @@ describe('plugins/runtime manifest pair', () => {
   it('Codex manifest is valid JSON with skills/interface', async () => {
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
     strictEqual(manifest.name, 'runtime');
+    // Contract: Codex loads skills from this path — a wrong path loads none.
     strictEqual(manifest.skills, './core/skills/',
       'the Codex manifest must declare the relocated root (2026-09-18 Amendment to ADR-0006)');
     strictEqual(manifest.interface.displayName, 'Runtime');
     strictEqual(manifest.interface.developerName, 'each4all');
     strictEqual(manifest.interface.category, 'Productivity');
     deepStrictEqual(manifest.interface.capabilities, ['Read', 'Write']);
-    ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:doctor')));
-    ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:settings')));
-    ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:consensus')));
-    ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:context')));
-  });
-
-  // ADR-0064 §Decision 5 retired `runtime:cutover`. Beyond the keyword, the
-  // shared description, the Codex interface copy and its default prompts are
-  // where a manifest would still advertise it.
-  it('neither manifest advertises the retired runtime:cutover', async () => {
-    for (const rel of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json']) {
-      const raw = await readFile(resolve(PLUGIN_ROOT, rel), 'utf-8');
-      ok(raw.includes('runtime'), `${rel} was not read`);
-      ok(!/cutover/i.test(raw), `${rel} still mentions cutover`);
-    }
+    // Contract: Codex offers defaultPrompt as starter prompts — one naming a
+    // skill the plugin does not ship (a retired `$runtime:cutover`, say) starts
+    // nothing.
+    ok(manifest.interface.defaultPrompt.length > 0, 'defaultPrompt offers at least one prompt');
+    const shipped = RUNTIME_COMMAND_SURFACES.map((surface) => surface.name);
+    const named = manifest.interface.defaultPrompt.flatMap((p) => [...p.matchAll(/\$runtime:([a-z0-9-]+)/g)].map((m) => m[1]));
+    ok(named.length > 0, 'the default prompts name a runtime skill');
+    deepStrictEqual(named.filter((name) => !shipped.includes(name)), [], 'every $runtime:<skill> a default prompt names ships');
   });
 
   // Their versions are validate-versions' to check (ADR-0065 Decision 8 rule 6).
@@ -95,6 +115,8 @@ describe('plugins/runtime manifest pair', () => {
 
 describe('plugins/runtime command-skill parity', () => {
   it('keeps Claude command wrappers and Codex skill wrappers aligned', async () => {
+    // Contract: Claude Code lists commands/*.md and Codex loads one directory per
+    // skill — a surface shipped on one host only is missing on the other.
     const expectedNames = RUNTIME_COMMAND_SURFACES.map((surface) => surface.name).sort();
     const commandFiles = (await readdir(resolve(PLUGIN_ROOT, 'commands')))
       .filter((entry) => entry.endsWith('.md'))
@@ -109,21 +131,30 @@ describe('plugins/runtime command-skill parity', () => {
 
     for (const surface of RUNTIME_COMMAND_SURFACES) {
       const scriptRef = `scripts/${surface.script}`;
-      const slashToken = `/runtime:${surface.name}`;
       const codexToken = `$runtime:${surface.name}`;
       const command = await readFile(resolve(PLUGIN_ROOT, `commands/${surface.name}.md`), 'utf-8');
+      // Contract: Claude Code reads command frontmatter — without it the command
+      // loses its description and argument hint in the listing.
       ok(command.startsWith('---\n'), `${surface.name} command has frontmatter`);
       ok(/^description:\s*\S/m.test(command), `${surface.name} command has description`);
       ok(/^argument-hint:\s*/m.test(command), `${surface.name} command has argument hint`);
+      // Contract: the agent running the command runs the script its `node` lines
+      // name — a line naming another surface's script runs that surface instead.
       ok(command.includes(scriptRef), `${surface.name} command references ${scriptRef}`);
+      ok(nodeLinesRunOnly(command, surface.script), `${surface.name} command: every node invocation runs ${scriptRef}`);
 
       const skill = await readFile(skillsPath(PLUGIN_ROOT, surface.name, 'SKILL.md'), 'utf-8');
+      // Contract: Codex reads `name` from SKILL.md frontmatter and resolves
+      // `$runtime:<name>` by it — a mismatch makes the mention resolve nothing.
       ok(new RegExp(`^name:\\s*${surface.name}\\s*$`, 'm').test(skill), `${surface.name} skill has matching name`);
-      ok(skill.includes(slashToken), `${surface.name} skill documents Claude command token`);
-      ok(skill.includes(codexToken), `${surface.name} skill documents Codex command token`);
+      // Contract: the Codex agent runs this script — as for the command above.
       ok(skill.includes(scriptRef), `${surface.name} skill references ${scriptRef}`);
+      ok(nodeLinesRunOnly(skill, surface.script), `${surface.name} skill: every node invocation runs ${scriptRef}`);
 
       const agent = await readFile(skillsPath(PLUGIN_ROOT, surface.name, 'agents', 'openai.yaml'), 'utf-8');
+      // Contract: Codex reads openai.yaml — a default prompt that does not name its
+      // own skill starts another one, and an implicit policy lets Codex run a
+      // runtime command the user never asked for.
       ok(agent.includes(codexToken), `${surface.name} agent default prompt references Codex command token`);
       ok(/allow_implicit_invocation:\s*false/.test(agent), `${surface.name} agent is explicit-only`);
 
@@ -138,6 +169,8 @@ describe('plugins/runtime command-skill parity', () => {
 // to check (ADR-0065 Decision 8 rule 6). The release job's sync writes them
 // after the release commit, so a test reading them would turn that commit
 // red; a first release has no Codex entry until the sync adds it.
+// Contract: the host catalogs and release-please read these entries — a wrong
+// source, policy or package key leaves the plugin uninstallable or unreleased.
 describe('plugins/runtime marketplace and release registration', () => {
   it('Claude marketplace catalog has a runtime entry for the package directory', async () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));
@@ -171,193 +204,16 @@ describe('plugins/runtime marketplace and release registration', () => {
     ok(paths.includes('.claude-plugin/plugin.json'));
     ok(paths.includes('.codex-plugin/plugin.json'));
   });
-});
 
-describe('plugins/runtime doctor surface', () => {
-  it('ships doctor command, skill wrapper, agent yaml, and executable script', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/doctor.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/doctor.mjs'));
-    ok(/read-only/i.test(command));
-    ok(command.includes('--execute-deep-peer-smoke'));
-    ok(command.includes('Experience Parity'));
-    ok(command.includes('Manual Follow-ups'));
-    ok(command.includes('/hooks'));
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'doctor/SKILL.md'), 'utf-8');
-    ok(/^name:\s*doctor\s*$/m.test(skill));
-    ok(skill.includes('Authentication output must stay sanitized'));
-    ok(skill.includes('--execute-deep-peer-smoke'));
-    ok(skill.includes('experience_parity'));
-    ok(skill.includes('Manual Follow-ups'));
-    ok(skill.includes('/hooks'));
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'doctor/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:doctor'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'doctor.mjs has executable bit');
-  });
-});
-
-describe('plugins/runtime bootstrap surface', () => {
-  it('ships bootstrap command, skill wrapper, agent yaml, and executable script with the §3 grammar advertised', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/bootstrap.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/bootstrap.mjs'));
-    const argumentHint = command.split('\n').find((line) => line.startsWith('argument-hint:'));
-    ok(argumentHint, 'commands/bootstrap.md has an argument-hint');
-    // The §3 grammar, advertised: every verb and every flag the parser accepts.
-    for (const verb of ['plan', 'status', 'resume', 'verify', 'abandon']) {
-      ok(argumentHint.includes(verb), `commands/bootstrap.md argument-hint advertises the '${verb}' verb`);
-    }
-    for (const flag of ['--bundle', '--plugins', '--answers', '--format', '--run-id', '--latest', '--latest-open', '--reason']) {
-      ok(argumentHint.includes(flag), `commands/bootstrap.md argument-hint advertises ${flag}`);
-    }
-    ok(!argumentHint.includes('--out'), 'there is no --out (§3: writes are constrained to the authorized home)');
-    // Interview pacing is the command's ONLY ownership — schema decisions live
-    // in the packaged contract, and the pacing order is the contract's §Decision-8.
-    ok(/diagnose/i.test(command) && /re-probe/i.test(command), 'commands/bootstrap.md carries the interview pacing order');
-    ok(/--expected-plan-hash/.test(command), 'commands/bootstrap.md presents the §1.6 plan-hash executor handoff');
-
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'bootstrap/SKILL.md'), 'utf-8');
-    ok(/^name:\s*bootstrap\s*$/m.test(skill));
-    ok(skill.includes('machine-bootstrap-contract.md'), 'skill points at the packaged normative contract');
-    ok(/never an? (second )?executor|no second executor/i.test(skill), 'skill states the no-second-executor boundary');
-    ok(/read-only/i.test(skill) && skill.includes('status'), 'skill states the R0 status/verify boundary');
-
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'bootstrap/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:bootstrap'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/bootstrap.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'bootstrap.mjs has executable bit');
-
-    // ADR-0064 removed the portable machine profile (Decision 3) and the egress
-    // receipt testimony (Decisions 1 and 6): neither stays advertised on a public
-    // surface. The parser's refusal of each is pinned in test-bootstrap-cli.mjs.
-    for (const [label, surface] of [['commands/bootstrap.md', command], [`${SKILLS_REL}/bootstrap/SKILL.md`, skill], ['bootstrap agent yaml', agent]]) {
-      ok(!surface.includes('--profile-file'), `${label} no longer advertises the removed plan --profile-file`);
-      ok(!/\bprofile (export|seed)\b/.test(surface), `${label} no longer advertises the removed profile verbs`);
-      ok(!surface.includes('attest-receipt'), `${label} no longer advertises the removed attest-receipt answer`);
-    }
-    ok(!/\battest\b/.test(argumentHint), 'commands/bootstrap.md argument-hint no longer advertises the removed attest verb');
-  });
-
-  // machine-bootstrap-contract.md §11.3 — the packaged contract is asserted BY
-  // CONTENT (the footer-contract.md precedent): these tokens are the floor that
-  // keeps the document from drifting while CI stays green.
-  it('pins the packaged machine-bootstrap contract by content (§11.3)', async () => {
-    const contract = await readFile(resolve(PLUGIN_ROOT, 'docs/machine-bootstrap-contract.md'), 'utf-8');
-    for (const token of [
-      'Machine Bootstrap Contract',
-      'runtime:bootstrap',
-      'scripts/bootstrap.mjs',
-      'runtime-bootstrap-run-1',
-      'configured-not-verified',
-      'Stage 0',
-      'probeMachineHostState',
-    ]) {
-      ok(contract.includes(token), `machine-bootstrap-contract.md contains ${JSON.stringify(token)}`);
-    }
-    ok(/artifact-only/i.test(contract), 'contract states the artifact-only boundary');
-    ok(/machine-scoped/i.test(contract), 'contract states the machine scope');
-    ok(/write-ahead/i.test(contract), 'contract states the write-ahead durability rule');
-  });
-
-  // §11.3 second half — README.md's Stage 0 block and the contract's §2 block
-  // carry the SAME commands, and the in-code STAGE0_COMMANDS copy matches both,
-  // so the operator-facing doc, the normative contract, and the printed
-  // detection output cannot drift apart. The ROOT README is bound too (S8c):
-  // ADR-0046 Context §1 names it as the drift site where the marketplace-add
-  // step diverged into four mutually inconsistent forms. Each surface must
-  // carry a fenced block whose ordered, comment-free command lines EQUAL the
-  // exported STAGE0_COMMANDS exactly — a whole-file includes() would accept
-  // reordered, duplicated, or extra commands (Plan-verify finding).
-  it('keeps the README, contract §2, root README, and in-code Stage 0 command blocks identical', async () => {
-    const { STAGE0_COMMANDS } = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/bootstrap.mjs')).href);
-    const canonical = [...STAGE0_COMMANDS.claude, ...STAGE0_COMMANDS.codex];
-    strictEqual(canonical.length, 4, 'STAGE0_COMMANDS carries the four canonical commands');
-    const surfaces = [
-      ['contract §2', resolve(PLUGIN_ROOT, 'docs/machine-bootstrap-contract.md')],
-      ['plugin README', resolve(PLUGIN_ROOT, 'README.md')],
-      ['root README', resolve(REPO_ROOT, 'README.md')],
-    ];
-    for (const [label, path] of surfaces) {
-      const text = await readFile(path, 'utf-8');
-      const blocks = [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) =>
-        m[1].split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#')));
-      const exact = blocks.filter((commands) => {
-        try { deepStrictEqual(commands, canonical); return true; } catch { return false; }
-      });
-      ok(exact.length >= 1, `${label} carries a fenced Stage 0 block exactly equal to STAGE0_COMMANDS (ordered, no extras)`);
-    }
-  });
-
-  // The root README's egress env-var test went with egress-config.mjs, the
-  // code authority it imported the names from (ADR-0064 R4n2).
-});
-
-describe('plugins/runtime settings surface', () => {
-  it('ships settings command, skill wrapper, agent yaml, and executable script', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/settings.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/settings.mjs'));
-    ok(/dry-run/i.test(command));
-    ok(command.includes('--apply'));
-    // ADR-0035 §6 hard-remove: the deleted flag must stay out of the command doc.
-    ok(!command.includes('[--apply-codex-plugin-hooks]'));
-    ok(command.includes('/hooks'));
-    // Probe-free mode (settings-report-contract.md) is documented on every surface.
-    ok(command.includes('--skip-host-cli-probes'));
-    ok(command.includes('settings-report-contract.md'));
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'settings/SKILL.md'), 'utf-8');
-    ok(/^name:\s*settings\s*$/m.test(skill));
-    ok(skill.includes('Host-native Claude Code'));
-    ok(skill.includes('Non-executable host-CLI install plans'));
-    ok(skill.includes('--execute-plugin-management'));
-    ok(!skill.includes('[--apply-codex-plugin-hooks]'));
-    ok(skill.includes('/hooks'));
-    ok(skill.includes('--skip-host-cli-probes'));
-    ok(skill.includes('settings-report-contract.md'));
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'settings/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:settings'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    ok(agent.includes('--skip-host-cli-probes'));
-
-    // ADR-0057 removed the permission plan and its three flags, so the
-    // discoverability pins that named them went with the surfaces they pinned.
-    // The two properties that block underneath them did NOT go, and are re-pointed
-    // here rather than deleted with their first subject:
-    //
-    //   (a) the MUTATION BOUNDARY. Measured during the removal: the exact sentence
-    //       "never writes host config" lived inside the `--permission-plan` bullet
-    //       on both surfaces, so deleting that bullet silently took the general
-    //       boundary statement with it. This assertion is what caught it.
-    //   (b) the SAFETY-GRADING CEILING. `bypassPermissions` / `danger-full-access`
-    //       are never proposed as a target default. That rule is a property of
-    //       PROFILE SEEDING (machine-profile.mjs UNSAFE_CLAUDE_MODES), not of the
-    //       advisory, so it was pinned on bootstrap's surface. ADR-0064 Decision 3
-    //       removed profile seeding and its pin; the policy stands in ADR-0057 D8
-    //       and ADR-0038 §6, and no runtime surface proposes a posture any more.
-    for (const [label, surface] of [['commands/settings.md', command], [`${SKILLS_REL}/settings/SKILL.md`, skill]]) {
-      ok(/never writes host config/i.test(surface), `${label} states the no-host-config-write boundary`);
-    }
-    // And the removed surface stays removed on every public surface.
-    for (const [label, surface] of [['commands/settings.md', command], [`${SKILLS_REL}/settings/SKILL.md`, skill], ['settings agent yaml', agent]]) {
-      ok(!surface.includes('--permission-plan'), `${label} no longer advertises the removed --permission-plan`);
-    }
-  });
-
-  // The plugin set drifted: this skill claimed four plugins, the runtime README
-  // claimed four, the root README six, and the catalogs eight — with nothing
-  // holding them in agreement. `PLUGIN_NAMES` is what settings and doctor
-  // actually iterate, so it is the authority; every runtime-owned surface that
-  // enumerates the set is pinned against it, and so is the Claude catalog.
-  it('keeps the runtime-owned plugin lists in agreement with PLUGIN_NAMES and the Claude catalog', async () => {
-    // PLUGIN_NAMES's single definition now lives in the machine probe (the machine-
-    // bootstrap seam extracted from doctor); doctor re-exports it. Read the authority
-    // from its source of truth, and pin that doctor still re-exports it.
+  // `PLUGIN_NAMES` is what settings and doctor iterate.
+  it('PLUGIN_NAMES agrees with the Claude catalog', async () => {
+    // Contract: settings and doctor iterate PLUGIN_NAMES to plan and diagnose
+    // installs — a catalog plugin missing from it is never planned or checked.
     const machineProbeSrc = await readFile(resolve(PLUGIN_ROOT, 'scripts/lib/machine-probe.mjs'), 'utf-8');
     const namesMatch = machineProbeSrc.match(/export const PLUGIN_NAMES = \[([^\]]+)\]/);
     ok(namesMatch, 'machine-probe.mjs defines PLUGIN_NAMES');
+    // Contract: doctor's importers read PLUGIN_NAMES from doctor.mjs — a dropped
+    // re-export breaks them at import.
     const doctorSrc = await readFile(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'), 'utf-8');
     ok(/export \{[^}]*\bPLUGIN_NAMES\b[^}]*\}/.test(doctorSrc), 'doctor.mjs re-exports PLUGIN_NAMES for its public surface');
     const pluginNames = namesMatch[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).sort();
@@ -367,96 +223,298 @@ describe('plugins/runtime settings surface', () => {
     // The Codex catalog is held to the Claude one by validate-marketplace, less
     // any package whose first release it has not pinned yet (ADR-0065
     // Decision 8 rules 2, 3 and 6), so PLUGIN_NAMES reaches it through that.
-
-    // Every runtime-owned prose surface that enumerates the set must name all of
-    // them. A four-name list here is how the drift started.
-    const proseSurfaces = [`${SKILLS_REL}/settings/SKILL.md`, `${SKILLS_REL}/doctor/SKILL.md`, 'README.md'];
-    for (const rel of proseSurfaces) {
-      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf-8');
-      for (const name of pluginNames) {
-        ok(text.includes(`\`${name}\``), `${rel} names the ${name} plugin`);
-      }
-    }
-    // The ROOT README consumer inventory drifted to six names (attention and
-    // designer missing) — the exact ADR-0046 Context §1 site. Pin it too (S8c).
-    const rootReadme = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8');
-    for (const name of pluginNames) {
-      ok(rootReadme.includes(`\`${name}\``), `root README.md names the ${name} plugin`);
-    }
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/settings.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'settings.mjs has executable bit');
   });
 
-  it('follow-ups document plugin-management boundaries plus deferred consensus/context/footer scope', async () => {
-    const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer', 'Probe-free `runtime:settings` mode']) {
-      ok(followUps.includes(token), `${token} documented`);
-    }
-    // The two baseline-drift rows are CLOSED, not dropped: ADR-0060 deleted the
-    // documents they asked later work to refresh first, and §Decision 7 asks for
-    // a disposition per row rather than a silent removal.
-    for (const title of ['Codex capability drift beyond the current baseline', 'Claude-vs-Codex parity drift beyond the current baseline']) {
-      ok(followUps.includes(`- ~~${title}~~ — **RESOLVED BY REMOVAL ([ADR-0060]`), `${title} carries its ADR-0060 disposition`);
-    }
-    ok(/Claude agent teams must not be treated as the portable cross-host team-mode substrate/i.test(followUps), 'Claude team-mode boundary documented');
-  });
-
-  // artifact-policy.md was cited by three surfaces and opened by NO test — the exact
-  // drift hole machine-bootstrap-contract.md §11 names (a doc "cited by filename but
-  // no test ever opens it" can drift arbitrarily while CI stays green). It is a
-  // PACKAGED doc that must be correct when bootstrap ships, so pin it by content:
-  // the machine-global root, each governed axis, and the constants it shares with
-  // the code. The cap is asserted against the CODE's constant rather than a literal,
-  // so a future cap change cannot leave the doc quietly lying.
-  it('documents the machine-global artifact scope with its root, security, pointer, inventory, and retention rules', async () => {
-    const policy = await readFile(resolve(PLUGIN_ROOT, 'docs/artifact-policy.md'), 'utf-8');
-    for (const token of [
-      '## Machine-global artifacts',
-      '~/.agentic-plugins/runs/bootstrap/<run-id>/run.json',
-      '~/.agentic-plugins/.locks/bootstrap.lock',
-      '### Security',
-      '### Pointers',
-      '### Inventory',
-      '### Retention',
-    ]) {
-      ok(policy.includes(token), `artifact-policy.md documents ${token}`);
-    }
-    ok(/fails? closed/i.test(policy), 'the $HOME-is-the-repo fail-closed posture is documented');
-    ok(/0700/.test(policy) && /0600/.test(policy), 'the filesystem modes are documented');
-    ok(/never auto-deleted/i.test(policy), 'the no-auto-delete retention posture is documented');
-
-    // Doc/code agreement, not just doc existence: the machine cap and the repo cap
-    // are both stated, and the machine one matches the constant the inventory uses.
-    const stateReaders = await readFile(resolve(PLUGIN_ROOT, 'scripts/lib/state-readers.mjs'), 'utf-8');
-    const capMatch = stateReaders.match(/export const MACHINE_BOOTSTRAP_RETENTION_CAP = (\d+)/);
-    ok(capMatch, 'state-readers.mjs defines MACHINE_BOOTSTRAP_RETENTION_CAP');
-    ok(
-      new RegExp(`\\b${capMatch[1]} runs`).test(policy) || new RegExp(`last \\*\\*${capMatch[1]}\\*\\*`).test(policy),
-      `artifact-policy.md states the machine retention cap of ${capMatch[1]} that the code enforces`,
-    );
+  // Contract: runtime:bootstrap prints STAGE0_COMMANDS for the operator to run
+  // and records the marketplace command as that step's apply_command, and the
+  // host CLI resolves `<owner>/<repo>` and `<plugin>@<catalog>` — a wrong
+  // repository, plugin or catalog name is an install command that fails.
+  it('the Stage 0 commands bootstrap presents name the published repository, plugin and catalogs', async () => {
+    const { STAGE0_COMMANDS } = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/bootstrap.mjs')).href);
+    const { CANONICAL_MARKETPLACE } = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/lib/machine-probe.mjs')).href);
+    const plugin = (await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'))).name;
+    const claudeCatalog = (await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'))).name;
+    const codexCatalog = (await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'))).name;
+    deepStrictEqual(STAGE0_COMMANDS, {
+      claude: [`claude plugin marketplace add ${CANONICAL_MARKETPLACE.repo}`, `claude plugin install ${plugin}@${claudeCatalog}`],
+      codex: [`codex plugin marketplace add ${CANONICAL_MARKETPLACE.repo}`, `codex plugin add ${plugin}@${codexCatalog}`],
+    });
   });
 });
 
-describe('plugins/runtime migrate surface', () => {
-  it('ships migrate command, skill wrapper, agent yaml, and executable script', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/migrate.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/migrate.mjs'));
-    ok(/dry-run/i.test(command));
-    ok(command.includes('--apply'));
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'migrate/SKILL.md'), 'utf-8');
-    ok(/^name:\s*migrate\s*$/m.test(skill));
-    ok(skill.includes('ADR-0025'));
-    ok(skill.includes('No workflow schema conversion'));
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'migrate/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:migrate workflow-storage'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    for (const script of ['migrate.mjs', 'migrate-workflow-storage.mjs']) {
+// The instructions the agent running each runtime surface follows: what it may
+// run, what it must leave to the operator, and what it may hand to the main
+// session. AGENTS.md states them for runtime as a whole ("Runtime never loops
+// consensus without bound, relaxes a host's permissions, mutates a host
+// session's context or Codex trust state, or puts raw peer output in the main
+// session"). Each surface's own boundary is pinned below on the surface the
+// agent reads, the command and the Codex skill where both carry one; the
+// consensus round cap is code (consensus.mjs MAX_ROUNDS_CAP, held by
+// tests/runtime/test-consensus.mjs), not an instruction.
+describe('plugins/runtime agent boundaries', () => {
+  it('doctor: read-only, execution proofs only on the user’s execute flag, and sanitized output', async () => {
+    const { command, skill } = await surfaceText('doctor');
+    // Contract: the agent running /runtime:doctor — without it the agent "fixes"
+    // what doctor found: installs a plugin, edits settings, runs a login, sweeps
+    // a ledger or relaxes the sandbox, none of which the user asked for.
+    ok(command.includes('It is read-only: it does not install plugins, mutate settings, run authentication, sweep ledgers, or relax sandbox/permission settings.'),
+      'commands/doctor.md states the read-only boundary');
+    // Contract: the Codex agent running doctor — without the gate it adds the
+    // execute flag itself and runs a live peer smoke the user only asked to plan.
+    ok(skill.includes('`--deep-peer-smoke` remains plan-only unless the user also supplies `--execute-deep-peer-smoke`'),
+      'doctor skill gates the deep peer smoke on the user’s execute flag');
+    // Contract: the Codex agent relaying doctor's report — without it the agent
+    // may paste account email, org id or tokens into the session.
+    ok(skill.includes('Authentication output must stay sanitized'), 'doctor skill keeps authentication output sanitized');
+    // Contract: the Codex agent hands host-native follow-ups to the operator —
+    // without it the agent implies runtime applied them, or tries to itself.
+    ok(skill.includes('surface the `Manual Follow-ups` checklist'), 'doctor skill hands manual follow-ups to the operator');
+  });
+
+  it('bootstrap: the interview order, and the operator alone applies and executes', async () => {
+    const { command, skill } = await surfaceText('bootstrap');
+    // Contract: the agent conducting the interview — out of order it asks before
+    // the probe or confirms before re-probing.
+    for (const [label, text] of [['commands/bootstrap.md', command], [`${SKILLS_REL}/bootstrap/SKILL.md`, skill]]) {
+      ok(text.includes('diagnose → ask → render → apply-command → re-probe + confirm'), `${label} paces the interview in order`);
+    }
+    // Contract: the agent running /runtime:bootstrap — without it the agent applies
+    // fragments or runs plugin management itself, a second executor.
+    ok(command.includes('runs the presented `runtime:settings --execute-plugin-management --expected-plan-hash <hash>` themselves. This command never applies a fragment and never executes plugin management'),
+      'commands/bootstrap.md leaves applying and plugin management to the operator');
+    // Contract: the Codex agent running $runtime:bootstrap — the same boundary, and
+    // proofs only on an explicit operator `execute` answer.
+    ok(skill.includes('No second executor: plugin management is presented to `runtime:settings --execute-plugin-management`'),
+      'bootstrap skill states the no-second-executor boundary');
+    ok(skill.includes('only on an explicit operator `execute` answer'), 'bootstrap skill runs proofs only on an operator execute answer');
+  });
+
+  it('bootstrap: the argument hint advertises the grammar the parser accepts, and nothing it refuses', async () => {
+    const raw = await readFile(resolve(PLUGIN_ROOT, 'commands/bootstrap.md'), 'utf-8');
+    const { skill } = await surfaceText('bootstrap');
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'bootstrap/agents/openai.yaml'), 'utf-8');
+    // Contract: Claude Code shows argument-hint as the arguments to type, and the
+    // agent passes what was typed — a verb or flag missing or misspelled there
+    // is one the user cannot find, and one the parser refuses (pinned in
+    // test-bootstrap-cli.mjs) is a usage error the hint invited.
+    const argumentHint = raw.split('\n').find((line) => line.startsWith('argument-hint:'));
+    ok(argumentHint, 'commands/bootstrap.md has an argument-hint');
+    for (const verb of ['plan', 'status', 'resume', 'verify', 'abandon']) {
+      ok(argumentHint.includes(verb), `commands/bootstrap.md argument-hint advertises the '${verb}' verb`);
+    }
+    for (const flag of ['--bundle', '--plugins', '--answers', '--format', '--run-id', '--latest', '--latest-open', '--reason']) {
+      ok(argumentHint.includes(flag), `commands/bootstrap.md argument-hint advertises ${flag}`);
+    }
+    ok(!argumentHint.includes('--out'), 'there is no --out (§3: writes are constrained to the authorized home)');
+    ok(!/\battest\b/.test(argumentHint), 'commands/bootstrap.md argument-hint does not advertise the removed attest verb');
+    // Contract: the agent and Codex read these surfaces for what to pass — ADR-0064
+    // removed the profile file, the profile verbs and the receipt answer, and the
+    // parser refuses each.
+    for (const [label, surface] of [['commands/bootstrap.md', raw], [`${SKILLS_REL}/bootstrap/SKILL.md`, skill], ['bootstrap agent yaml', agent]]) {
+      ok(!surface.includes('--profile-file'), `${label} does not advertise the removed plan --profile-file`);
+      ok(!/\bprofile (export|seed)\b/.test(surface), `${label} does not advertise the removed profile verbs`);
+      ok(!surface.includes('attest-receipt'), `${label} does not advertise the removed attest-receipt answer`);
+    }
+  });
+
+  it('settings: never writes host config, and attests the Codex hook review only after it', async () => {
+    const { command, skill } = await surfaceText('settings');
+    // Contract: the agent running settings — without it the agent may edit host
+    // config, credentials or permission settings to "apply" a plan. ADR-0057
+    // removed the bullet that once carried this sentence and took the boundary
+    // with it, which this assertion caught.
+    for (const [label, text] of [['commands/settings.md', command], [`${SKILLS_REL}/settings/SKILL.md`, skill]]) {
+      ok(/never writes host config/i.test(text), `${label} states the no-host-config-write boundary`);
+    }
+    // Contract: the Codex agent running --attest-codex-hook-review — run early, it
+    // records a review the operator never made and doctor clears the follow-up.
+    ok(skill.includes('Run it only after the active Codex session has opened `/hooks` and the operator has reviewed/trusted'),
+      'settings skill attests the hook review only after the operator made it');
+    // Contract: the Codex agent running settings — without it the agent runs the
+    // host-native install guidance itself.
+    ok(skill.includes('never installs the host CLIs itself'), 'settings skill leaves host-CLI installs to the operator');
+    // Contract: Codex runs the settings default prompt — a misspelled flag there,
+    // or one settings refuses (ADR-0057 removed --permission-plan, ADR-0035 §6
+    // --apply-codex-plugin-hooks), sends the agent into a usage error.
+    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'settings/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('--skip-host-cli-probes'), 'settings default prompt names the probe-free flag');
+    for (const [label, text] of [['commands/settings.md', command], [`${SKILLS_REL}/settings/SKILL.md`, skill], ['settings agent yaml', agent]]) {
+      ok(!text.includes('--permission-plan'), `${label} does not advertise the removed --permission-plan`);
+      ok(!text.includes('[--apply-codex-plugin-hooks]'), `${label} does not advertise the removed --apply-codex-plugin-hooks`);
+    }
+  });
+
+  it('migrate: no workflow schema conversion', async () => {
+    const { skill } = await surfaceText('migrate');
+    // Contract: the Codex agent running migrate — without it the agent rewrites
+    // workflow files it was only meant to move.
+    ok(skill.includes('No workflow schema conversion'), 'migrate skill forbids schema conversion');
+    for (const script of ['migrate-workflow-storage.mjs']) {
       const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts', script));
       ok((scriptStat.mode & 0o111) !== 0, `${script} has executable bit`);
     }
   });
 
+  it('consensus: peers execute only through `execute --execute`, and raw output stays out of the main session', async () => {
+    const { command, skill } = await surfaceText('consensus');
+    // Contract: the agent running consensus — without it the agent dispatches
+    // peers on plan or record, outside the explicit executor.
+    ok(command.includes('Companion dispatch requires the explicit `execute --execute` boundary'), 'consensus command gates dispatch on execute --execute');
+    ok(skill.includes('No peer execution except `execute --execute`'), 'consensus skill gates dispatch on execute --execute');
+    // Contract: the Codex agent relaying consensus — without it raw peer output
+    // lands in the main session.
+    ok(skill.includes('raw peer output out of the main session'), 'consensus skill keeps raw peer output out of the main session');
+  });
+
+  it('worktree: the agent never creates worktrees itself', async () => {
+    const { command, skill } = await surfaceText('worktree');
+    // Contract: the agent running /runtime:worktree — without it the agent runs the
+    // suggested `git worktree add` it was only meant to present.
+    ok(command.includes('are not executed. Run them manually only after accepting the plan.'), 'worktree command leaves the suggested commands to the operator');
+    // Contract: the Codex agent running worktree — without it the agent runs the
+    // suggested `git worktree add` itself.
+    ok(skill.includes('never creates branches or worktrees'), 'worktree skill never creates branches or worktrees');
+    ok(skill.includes('No `git worktree add`'), 'worktree skill forbids git worktree add');
+  });
+
+  it('context: no host session mutation, and a bounded main-session output', async () => {
+    const { command, skill } = await surfaceText('context');
+    // Contract: the agent running context — without it the agent trims or
+    // rewrites the host session context it was asked to measure.
+    ok(command.includes('does not trim, rewrite, or mutate host session context'), 'context command does not mutate host session context');
+    ok(skill.includes('No host session context mutation'), 'context skill does not mutate host session context');
+    // Contract: what the agent hands to the main session — without it the agent
+    // pastes consensus or peer raw output there.
+    ok(command.includes('Main-session output is limited to context summary, risk level, artifact pointers, and recommended next-session prompt/action.'), 'context command bounds main-session output');
+    ok(skill.includes('No consensus raw output or peer raw output in the main session'), 'context skill keeps raw output out of the main session');
+  });
+
+  it('dashboard: no host CLI probes, no state mutation, no unbounded loop', async () => {
+    const { command, skill } = await surfaceText('dashboard');
+    // Contract: the agent running dashboard — without these it spawns claude/codex
+    // to fill a gap, writes under .agentic-plugins/, or watches without an exit.
+    ok(command.includes('never probes host CLIs'), 'dashboard command never probes host CLIs');
+    ok(skill.includes('No host CLI probing'), 'dashboard skill never probes host CLIs');
+    ok(skill.includes('No state mutation'), 'dashboard skill does not mutate state');
+    ok(skill.includes('No unbounded loops'), 'dashboard skill does not loop without bound');
+  });
+});
+
+// Each surface's own parser, as a probe that answers whether it takes a token.
+// A parser refuses a flag it does not know by naming it ("Unknown argument:
+// --x", "flag --x is not part of the 'plan' grammar"), and a subcommand it does
+// not know with an unknown-verb, unknown-subcommand or must-be-one-of message;
+// a missing value or a conflicting flag is a different refusal. A parser that
+// throws anything but a usage error (a TypeError, say) fails the test rather
+// than reading as acceptance. No probe gets past argument parsing: retention
+// exports only its CLI entry, which refuses an unknown subcommand or format
+// before it reads anything, so its probe brackets the token with one.
+const FLAG_REFUSAL = /\bunknown\b|is not part of|there is no|accepted on exactly/i;
+const SUBCOMMAND_REFUSAL = /unknown (?:verb|subcommand|argument)|command must be one of|unexpected positional/i;
+
+async function refuses(parse, token) {
+  let message = '';
+  try {
+    const result = await parse();
+    if (result && result.ok === false) message = String(result.reason);
+  } catch (err) {
+    if (err?.constructor !== Error && err?.constructor?.name !== 'UsageError') {
+      throw new Error(`the parser threw ${err?.constructor?.name} on ${JSON.stringify(token)}, not a usage error: ${err?.message}`);
+    }
+    message = String(err.message);
+  }
+  return token.startsWith('--') ? FLAG_REFUSAL.test(message) && message.includes(token) : SUBCOMMAND_REFUSAL.test(message);
+}
+
+async function argumentProbes() {
+  const script = (file) => import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts', file)).href);
+  const [bootstrap, consensus, context, dashboard, doctor, migrate, workflowStorage, retention, settings, worktree] = await Promise.all([
+    'bootstrap.mjs', 'consensus.mjs', 'context.mjs', 'dashboard.mjs', 'doctor.mjs',
+    'migrate.mjs', 'migrate-workflow-storage.mjs', 'retention.mjs', 'settings.mjs', 'worktree.mjs',
+  ].map(script));
+  const alone = (parse) => (token) => refuses(() => parse([token]), token);
+  return {
+    // A verb first, then that verb's flags: a flag is taken if one verb takes
+    // it, or on its own (`--help`).
+    bootstrap: async (token) => {
+      if (!(await refuses(() => bootstrap.parseBootstrapArgs([token]), token))) return false;
+      if (!token.startsWith('--')) return true;
+      for (const verb of ['plan', 'status', 'resume', 'verify', 'abandon']) {
+        if (!(await refuses(() => bootstrap.parseBootstrapArgs([verb, token]), token))) return false;
+      }
+      return true;
+    },
+    consensus: alone(consensus.parseArgs),
+    context: alone(context.parseArgs),
+    dashboard: alone(dashboard.parseDashboardArgs),
+    doctor: alone(doctor.parseArgs),
+    // The dispatcher refuses a retired subcommand by name and hands the rest
+    // of argv to the workflow-storage parser.
+    migrate: async (token) => {
+      const { subcommand, rest } = migrate.splitSubcommand([token]);
+      if (Object.hasOwn(migrate.RETIRED_MIGRATE_SUBCOMMANDS, subcommand)) return true;
+      return refuses(() => workflowStorage.parseArgs(rest), token);
+    },
+    retention: (token) => refuses(
+      () => retention.runRetentionCli(token.startsWith('--') ? ['__probe__', token] : [token, '--format', '__probe__']),
+      token,
+    ),
+    settings: alone(settings.parseArgs),
+    worktree: alone(worktree.parseArgs),
+  };
+}
+
+describe('plugins/runtime advertised arguments', () => {
+  // Contract: Claude Code shows a command's argument-hint as the arguments to
+  // type, and Codex runs a skill's default prompt (and the plugin's starter
+  // prompts) as written; the agent passes those tokens to the surface's script.
+  // A flag or subcommand there that the parser does not take — misspelled, or
+  // retired — is a usage error the surface itself invited. Subcommands are read
+  // from the prompts, which name one in a runnable position; a hint lists its
+  // subcommands in a grammar this test does not parse.
+  it('every flag a hint or default prompt names, and every subcommand a prompt names, is one its parser takes', async () => {
+    const probes = await argumentProbes();
+    deepStrictEqual(Object.keys(probes).sort(), RUNTIME_COMMAND_SURFACES.map((surface) => surface.name).sort(),
+      'every runtime surface has a parser probe');
+    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
+    for (const { name } of RUNTIME_COMMAND_SURFACES) {
+      const command = await readFile(resolve(PLUGIN_ROOT, `commands/${name}.md`), 'utf-8');
+      const agent = await readFile(skillsPath(PLUGIN_ROOT, name, 'agents', 'openai.yaml'), 'utf-8');
+      const hint = command.split('\n').find((line) => line.startsWith('argument-hint:'));
+      const prompt = agent.split('\n').find((line) => line.trimStart().startsWith('default_prompt:'));
+      ok(hint && prompt, `${name}: the argument-hint and the default prompt are found`);
+      // A starter prompt may name several skills; each takes the part after its token.
+      const starters = manifest.interface.defaultPrompt
+        .flatMap((p) => p.split('$runtime:').slice(1))
+        .filter((part) => new RegExp(`^${name}\\b`).test(part))
+        .map((part) => `$runtime:${part}`);
+      // Whole tokens, up to the grammar's own delimiters: a pattern that stopped
+      // at the first character outside [a-z0-9-] would read `--watch_count` as
+      // `--watch` and probe a flag the surface never named. A prompt is a
+      // sentence, so a token ending it loses the period or colon; a hint is
+      // grammar, so its tokens are probed as written — stripping there would
+      // repair a malformed `[--watch-count. <n>]` into the flag it misspells.
+      const FLAG = /--[^\s[\]|<>"'=,;()`]+/g;
+      const whole = (token) => token.replace(/[.:]+$/, '');
+      const flags = new Set([
+        ...[...hint.matchAll(FLAG)].map((m) => m[0]),
+        ...[prompt, ...starters].flatMap((text) => [...text.matchAll(FLAG)].map((m) => whole(m[0]))),
+      ]);
+      const subcommands = new Set([prompt, ...starters]
+        .flatMap((text) => [...text.matchAll(new RegExp(`\\$runtime:${name} ([^\\s"';,()]+)`, 'g'))].map((m) => whole(m[1])))
+        .filter((word) => word !== 'to' && !word.startsWith('--')));
+      for (const token of [...flags, ...subcommands]) {
+        ok(!(await probes[name](token)), `${name}: the argument-hint or a default prompt names ${token}, which the ${name} parser refuses`);
+      }
+      // Non-vacuity: the extraction finds flags, and the probe sees the parser
+      // refuse what it does not take.
+      ok(flags.size > 0, `${name}: the argument-hint names flags (found ${flags.size})`);
+      ok(await probes[name]('--not-a-runtime-flag'), `${name}: the probe must see the parser refuse an unknown flag`);
+    }
+  });
+});
+
+describe('plugins/runtime the shared operator-text primitive', () => {
   // The `legacy-egress-intents` subcommand, doctor's legacy-intent blocker and
   // the egress intent WAL went with egress (ADR-0064 R4n2), and so did the
   // tests that pinned their read-only surface, quiesce wording and single WAL
@@ -490,30 +548,13 @@ describe('plugins/runtime migrate surface', () => {
   });
 });
 
-describe('plugins/runtime consensus surface', () => {
-  it('ships consensus command, skill wrapper, agent yaml, and executable script', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/consensus.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/consensus.mjs'));
-    ok(command.includes('artifact'));
-    ok(command.includes('execute --execute'));
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'consensus/SKILL.md'), 'utf-8');
-    ok(/^name:\s*consensus\s*$/m.test(skill));
-    ok(skill.includes('raw peer output out of the main session'));
-    ok(skill.includes('No peer execution except `execute --execute`'));
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'consensus/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:consensus'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/consensus.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'consensus.mjs has executable bit');
-  });
-});
-
 describe('plugins/runtime compat surface — removed (ADR-0060)', () => {
   it('ships no compat command, skill, script or baseline document', async () => {
     // The command-skill parity case above enumerates what IS shipped; this one
     // pins what is not, so a surface restored by a stray revert or a bad merge
     // fails by name instead of only as a longer directory listing.
+    // Contract: Claude Code lists commands/*.md and Codex loads skill directories —
+    // a restored file ships a command whose code is gone.
     for (const removed of [
       'commands/compat.md',
       `${SKILLS_REL}/compat`,
@@ -529,156 +570,11 @@ describe('plugins/runtime compat surface — removed (ADR-0060)', () => {
   });
 });
 
-describe('plugins/runtime worktree surface', () => {
-  it('ships worktree command, skill wrapper, agent yaml, and executable script', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/worktree.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/worktree.mjs'));
-    ok(/read-only/i.test(command));
-    ok(command.includes('git worktree add'));
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'worktree/SKILL.md'), 'utf-8');
-    ok(/^name:\s*worktree\s*$/m.test(skill));
-    ok(skill.includes('never creates branches or worktrees'));
-    ok(skill.includes('No `git worktree add`'));
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'worktree/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:worktree'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/worktree.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'worktree.mjs has executable bit');
-  });
-});
-
-describe('plugins/runtime context surface', () => {
-  it('ships context command, skill wrapper, agent yaml, and executable script', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/context.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/context.mjs'));
-    ok(command.includes('does not trim, rewrite, or mutate host session context'));
-    ok(command.includes('Main-session output is limited'));
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'context/SKILL.md'), 'utf-8');
-    ok(/^name:\s*context\s*$/m.test(skill));
-    ok(skill.includes('No host session context mutation'));
-    ok(skill.includes('No consensus raw output or peer raw output in the main session'));
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'context/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:context'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/context.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'context.mjs has executable bit');
-  });
-});
-
-describe('plugins/runtime dashboard surface', () => {
-  it('ships dashboard command, skill wrapper, agent yaml, and executable script', async () => {
-    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/dashboard.md'), 'utf-8');
-    ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/dashboard.mjs'));
-    ok(/read-only/i.test(command));
-    ok(command.includes('never probes host CLIs'));
-    ok(command.includes('--watch'));
-    const skill = await readFile(skillsPath(PLUGIN_ROOT, 'dashboard/SKILL.md'), 'utf-8');
-    ok(/^name:\s*dashboard\s*$/m.test(skill));
-    ok(skill.includes('No host CLI probing'));
-    ok(skill.includes('No state mutation'));
-    ok(skill.includes('No unbounded loops'));
-    const agent = await readFile(skillsPath(PLUGIN_ROOT, 'dashboard/agents/openai.yaml'), 'utf-8');
-    ok(agent.includes('$runtime:dashboard'));
-    ok(/allow_implicit_invocation:\s*false/.test(agent));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/dashboard.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'dashboard.mjs has executable bit');
-  });
-});
-
-describe('plugins/runtime footer helper', () => {
-  it('ships footer helper and pointer-only contract docs', async () => {
-    const contract = await readFile(resolve(PLUGIN_ROOT, 'docs/footer-contract.md'), 'utf-8');
-    ok(contract.includes('Completion Footer Contract'));
-    ok(/advisory/i.test(contract));
-    ok(/pointer-only/i.test(contract));
-    ok(contract.includes('completion state'));
-    ok(contract.includes('review-needed'));
-    ok(contract.includes('closed'));
-    ok(contract.includes('scripts/footer.mjs'));
-    const script = await readFile(resolve(PLUGIN_ROOT, 'scripts/footer.mjs'), 'utf-8');
-    ok(script.includes('Runtime completion footer (advisory)'));
-    ok(script.includes('completion_state'));
-    ok(script.includes('context-run-id'));
-    ok(script.includes('does not mutate host session context'));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/footer.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'footer.mjs has executable bit');
-  });
-});
-
-describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
-  // session-capture-contract.md §11 — the packaged contract is asserted BY
-  // CONTENT (the machine-bootstrap-contract §11.3 / footer-contract precedent):
-  // these tokens are the floor that keeps the document from drifting while CI
-  // stays green.
-  it('pins the packaged session-capture contract by content (§11)', async () => {
-    const contract = await readFile(resolve(PLUGIN_ROOT, 'docs/session-capture-contract.md'), 'utf-8');
-    for (const token of [
-      'Session Capture Contract',
-      'runtime-session-capture-1.0',
-      'runtime-session-entry-1.0',
-      'runtime-session-note-1.0',
-      'session_capture',
-      'publish-session',
-      'slot.json',
-      'entry.json',
-      'note.json',
-      'commit record',
-      'fp1:',
-      'last-writer-wins',
-      'never suppressed on',
-      'unknown, never clean',
-      '4096',
-      '300 s',
-      '60 s',
-      '24 h',
-      '160',
-      'O_EXCL',
-      'UTF-8 bytes',
-      'stop-hook',
-      'loadSessionConfig',
-      // §13 (ADR-0044 S4): the dynamically-read publisher-floor declaration
-      // and the half-enabled readiness states the diagnosis surfaces.
-      'data/runtime-floors.json',
-      'attention-runtime-floors-1.0',
-      'publish_session',
-      'attention-missing',
-      'attention-disabled',
-      'publisher-sensor-not-shipped',
-      'floor-declaration-malformed',
-      'runtime-below-publisher-floor',
-      'safe-mode-hooks-disabled',
-      'CLAUDE_CODE_SAFE_MODE',
-      // §14-§17 (ADR-0045 S7b): the entry-side extension — schema id, gate
-      // keys and env channel, dispositions, marker pair, linkage token, and
-      // the entry-side staleness threshold.
-      'runtime-entry-brief-1.0',
-      'entry-brief',
-      'entry_brief_empty',
-      'AGENTIC_ENTRY_BRIEF',
-      'user-scope-only',
-      'owner-choice-required',
-      'no-branch-context',
-      'indeterminate',
-      '[agentic-entry-brief]',
-      'linkageToken',
-      '7 d',
-      'aliased-to-user',
-    ]) {
-      ok(contract.includes(token), `session-capture-contract.md contains ${JSON.stringify(token)}`);
-    }
-    ok(/fail-closed/i.test(contract), 'contract states the fail-closed consumer rule');
-    ok(/untrusted\s+quoted\s+data/i.test(contract), 'contract states the untrusted-data rule');
-    // Whitespace-tolerant: markdown reflows can split the phrase across lines
-    // or emphasis markers without weakening the stated rule.
-    ok(/no\s+imperative[\s*]+field/i.test(contract), 'contract states the no-imperative-field rule');
-  });
-
-  // The three schemas the contract names must actually be packaged — a doc
-  // pointing at an unpackaged schema is exactly the "cited by filename but
-  // not shipped" drift hole the packaged-contract vehicle exists to close.
+describe('plugins/runtime packaged schemas', () => {
+  // The three schemas the session-capture contract names must actually be
+  // packaged.
+  // Contract: the runtime's schema loader validates these artifacts on read and
+  // write — a missing file fails the load, and an open schema accepts unknown keys.
   it('packages the session-capture and entry-brief schemas the contract names', async () => {
     for (const file of [
       'data/schemas/runtime-session-capture-1.0.json',
@@ -690,65 +586,5 @@ describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
       strictEqual(schema.additionalProperties, false, `${file} follows the closed-schema rule`);
       ok(Array.isArray(schema.required) && schema.required.includes('schema'), `${file} requires its schema id`);
     }
-  });
-
-  // JUDGED HERE rather than deferred, because a later subtask that wanted a
-  // different document shape would have had to touch a protected asset a
-  // second time (ADR-0052's release obligation, superseded by ADR-0065).
-  //
-  // ⚠ THE ASSURANCE SECTION AND ITS SCHEMA ARE GONE (ADR-0056 §Decisions 1
-  // and 5), and their absence is asserted rather than assumed. The section was
-  // an author-editable free-text region inside a PROTECTED asset, and the one
-  // way its removal could silently regress is a later edit re-adding it — at
-  // which point the packaged baseline would carry a record no reader parses and
-  // `$id` reuse would become possible.
-  //
-  // ⚠ THIS IS A PROSE-TOKEN CHECK, WHICH THIS FILE'S OWN NOTE WARNS ABOUT, and
-  // the direction is what makes it safe here. The warning is against asserting
-  // PRESENCE by substring — satisfiable by any sentence containing the phrase.
-  // Asserting ABSENCE has the opposite failure mode: a false red on an innocent
-  // mention, which is loud and cheap, rather than a false green on a broken
-  // record. The sentinels are matched because they are the machine-readable
-  // delimiters, not the human heading.
-  it('the compatibility-assurance schema stays removed, and so does the baseline that carried its section', async () => {
-    // ADR-0056 removed the assurance block from the packaged baseline; ADR-0060
-    // then removed the baseline itself, which is the stronger form of the same
-    // guarantee.
-    await rejects(() => readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8'), /ENOENT/);
-    await rejects(
-      () => readJSON(resolve(PLUGIN_ROOT, 'data/schemas/runtime-host-assurance-1.0.json')),
-      /ENOENT/,
-      'the assurance schema is removed and its $id is never reused (ADR-0056 §Decision 5)',
-    );
-  });
-});
-
-describe('plugins/runtime repo documentation', () => {
-  // The stage docs no longer restate the shipped runtime version or the
-  // installed proof, so nothing here compares them with the manifest
-  // (ADR-0065 Decisions 1 and 2). A shipped version is read from
-  // .release-please-manifest.json, the changelogs and the release tags.
-  const loadDocs = async () => ({
-    readme: await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8'),
-  });
-
-  it('keeps the README describing the shipped runtime surfaces', async () => {
-    const { readme } = await loadDocs();
-    for (const token of [
-      'runtime:doctor',
-      'runtime:settings',
-      'runtime:consensus',
-      'runtime:worktree',
-      'runtime:context',
-      'workflow-storage migration',
-      'completion footer',
-    ]) {
-      ok(readme.includes(token), `README.md documents ${token}`);
-    }
-
-    ok(!readme.includes('runtime:compat'), 'README.md must not advertise the command ADR-0060 removed');
-    ok(!readme.includes('runtime:cutover'), 'README.md must not advertise the command ADR-0064 retired');
-    ok(!readme.includes('### Coming next'), 'README.md should not list shipped runtime surfaces as coming next');
-    ok(!readme.includes('Runtime dynamic consensus, context hygiene, and completion footer'), 'README.md must not carry stale ADR-0024 follow-up wording');
   });
 });

@@ -23,7 +23,6 @@ import {
   argsFileTypedTextProblems,
   completionBlocks,
   completionReenumerations,
-  investigateProfilePlaceholderProblems,
   resolverForms,
   resolverProblems,
   terminalInvocations,
@@ -78,6 +77,12 @@ test('completionReenumerations: a key inside a CLI flag is no field mention, the
   ]);
 });
 
+// Contract: tests/plugin-shape/test-completion-output-contract.mjs runs both
+// helpers over every runbook, and the agent emits its handoff proposal from the
+// six-key block they check (completion-output contract §4.1) — a helper that
+// finds no block in a real runbook, or misses a misspelt key, lets that gate
+// pass a block the agent fills with a field missing; the re-enumeration check
+// keeps a second, drifting list of the fields out of the prose around it.
 test('the completion checks pass a committed runbook and catch a block broken in a copy of it', () => {
   const text = read(COMPOSE);
   const whole = completionBlocks(text, COMPOSE);
@@ -132,6 +137,10 @@ test('archiveTimingProblems binds the facts to the comment block directly above 
   );
 });
 
+// Contract: tests/scripts/test-set-terminal-archive-timing.mjs runs this helper
+// over every runbook, for the agent about to make a terminal write — a helper
+// that finds no site in a real runbook, or misses a dropped fact, passes a note
+// that no longer says the Stop hook fires at every turn end.
 test('archiveTimingProblems passes a committed runbook and catches a fact removed in a copy of it', () => {
   const text = read(COMPOSE);
   const whole = archiveTimingProblems(text, COMPOSE);
@@ -173,6 +182,11 @@ test('resolverProblems accepts both founder forms, and the runtime variable', ()
   deepStrictEqual(resolverProblems(fenced(runtimeUse), 'runtime', 'doc.md').offenders, [`doc.md:2: ${runtimeUse}`]);
 });
 
+// Contract: tests/plugin-shape/test-headless-safe-runbooks.mjs runs this helper
+// over every command runbook; the agent runs each block, and its resolver lines
+// set the plugin root a headless `claude -p` Bash call lacks (ADR-0063 S0) — a
+// helper blind to a removed resolver passes a block that runs
+// `node "/scripts/…"` with an empty root.
 test('resolverProblems passes a committed runbook and catches a resolver removed in a copy of it', () => {
   const text = read(COMPOSE);
   const whole = resolverProblems(text, 'founder', COMPOSE);
@@ -199,7 +213,7 @@ const ARGS_RUNBOOK = [
   '$ARGUMENTS',
   '',
   '1. Run `mktemp -d "${TMPDIR:-/tmp}/agentic-args.XXXXXX"`.',
-  '2. Write `{"agentic_args": 1, "text": "…"}` into `args.json` there.',
+  '2. With your file-writing tool, not the shell, write `{"agentic_args": 1, "text": "…"}` into `args.json` there.',
   '3. Run `node cli.mjs --args-file "$ARGS_DIR/args.json"`.',
   '',
 ].join('\n');
@@ -207,9 +221,11 @@ const ARGS_RUNBOOK = [
 test('argsFileRunbookProblems names each missing step', () => {
   deepStrictEqual(argsFileRunbookProblems(ARGS_RUNBOOK, 'doc.md'), []);
   deepStrictEqual(argsFileRunbookProblems(broken(ARGS_RUNBOOK, '"text": "…"', '"text": "x"'), 'doc.md'), ['doc.md: no file-writing step']);
+  deepStrictEqual(argsFileRunbookProblems(broken(ARGS_RUNBOOK, 'With your file-writing tool, not the shell', 'With the shell, not your file-writing tool'), 'doc.md'), ['doc.md: the file is not written with the file-writing tool']);
   deepStrictEqual(argsFileRunbookProblems('# Doc\n', 'doc.md'), [
     'doc.md: no mktemp step',
     'doc.md: no file-writing step',
+    'doc.md: the file is not written with the file-writing tool',
     'doc.md: the CLI is not given the file',
   ]);
 });
@@ -224,27 +240,24 @@ test('argsFileTypedTextProblems wants the substituted text above the mktemp step
   deepStrictEqual(argsFileTypedTextProblems(broken(broken(ARGS_RUNBOOK, '$ARGUMENTS\n', ''), 'description: x', 'description: $ARGUMENTS'), 'doc.md'), message);
 });
 
-test('investigateProfilePlaceholderProblems wants the placeholder that names the arguments above', () => {
-  deepStrictEqual(investigateProfilePlaceholderProblems('--profile "<profile from the arguments above — brief>"', 'doc.md'), []);
-  deepStrictEqual(investigateProfilePlaceholderProblems('--profile "<profile from $ARGUMENTS — brief>"', 'doc.md'), ['doc.md']);
-});
-
-test('the args-file checks pass committed runbooks and catch each pin broken in a copy', () => {
+// Contract: tests/plugin-shape/test-args-file-transport.mjs runs these pins over
+// the args-file runbooks (ADR-0059), which the agent follows to hand typed text
+// to a CLI — without the mktemp/write/--args-file steps, or with the text not
+// shown above them, the agent has no file to pass the CLI or nothing to write
+// into it.
+test('the args-file checks pass a committed runbook and catch each pin broken in a copy of it', () => {
   const DECIDE = 'plugins/founder/commands/decide.md';
-  const INVESTIGATE = 'plugins/founder/commands/investigate.md';
   const decide = read(DECIDE);
-  const investigate = read(INVESTIGATE);
   deepStrictEqual(argsFileRunbookProblems(decide, DECIDE), []);
   deepStrictEqual(argsFileTypedTextProblems(decide, DECIDE), []);
-  deepStrictEqual(investigateProfilePlaceholderProblems(investigate, INVESTIGATE), []);
 
   deepStrictEqual(
     argsFileRunbookProblems(broken(decide, '--args-file "$ARGS_DIR/args.json"', '"$ARGS_DIR/args.json"'), DECIDE),
     [`${DECIDE}: the CLI is not given the file`],
   );
-  deepStrictEqual(argsFileTypedTextProblems(broken(decide, '\n$ARGUMENTS\n', '\n'), DECIDE), [`${DECIDE}: the typed text is not shown before the steps`]);
   deepStrictEqual(
-    investigateProfilePlaceholderProblems(broken(investigate, '<profile from the arguments above — ', '<profile from $ARGUMENTS — '), INVESTIGATE),
-    [INVESTIGATE],
+    argsFileRunbookProblems(broken(decide, 'With your file-writing tool, not the shell', 'With the shell, not your file-writing tool'), DECIDE),
+    [`${DECIDE}: the file is not written with the file-writing tool`],
   );
+  deepStrictEqual(argsFileTypedTextProblems(broken(decide, '\n$ARGUMENTS\n', '\n'), DECIDE), [`${DECIDE}: the typed text is not shown before the steps`]);
 });

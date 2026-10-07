@@ -1,5 +1,5 @@
-// S9 completion-output contract — cross-persona template conformance +
-// doc ↔ code lockstep (plugins/runtime/docs/completion-output-contract.md §5.3/§5.4).
+// S9 completion-output contract — cross-persona template conformance
+// (plugins/runtime/docs/completion-output-contract.md §5.3).
 //
 // Pins:
 //   1. Every `- selected_next:` block across the four personas' commands and
@@ -10,9 +10,11 @@
 //   3. No surrounding-prose re-enumeration of the field list (3+ field tokens
 //      on one line outside a block) in commands/skills — the enumeration drift
 //      vector the single shared template removes.
-//   4. The contract document itself stays in lockstep with the canonical key
-//      order, the footer's completion-state enum, the provenance vocabulary,
-//      and the generic-fallback marker string.
+//
+// The contract document itself is not checked: no program reads it, and
+// footer.mjs's completion states, generic-fallback marker and per-field
+// sources are rendered and asserted by tests/runtime/test-footer.mjs and
+// tests/runtime/test-footer-completion-provenance.mjs.
 //
 // Each persona's skills root is RESOLVED from that persona's own Codex manifest
 // rather than spelled `skills` here. ADR-0006's 2026-09-18 Amendment moved CORE
@@ -31,16 +33,16 @@ import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveSkillsRoot, skillsPath } from '../_helpers.mjs';
-import { COMPLETION_FIELD_KEYS, completionBlocks, completionReenumerations } from '../_runbook-checks.mjs';
+import { completionBlocks, completionReenumerations } from '../_runbook-checks.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const pluginDir = (persona) => join(REPO_ROOT, 'plugins', persona);
-const CONTRACT_DOC = join(REPO_ROOT, 'plugins/runtime/docs/completion-output-contract.md');
-const FOOTER_SCRIPT = join(REPO_ROOT, 'plugins/runtime/scripts/footer.mjs');
 
 // Site floors (ratchet): observed conformant-block counts at contract time.
 // Raising is free; a drop below the floor means a completion surface lost its
-// template and must be deliberate (update the contract doc + this floor).
+// template and must be deliberate (lower this floor in the same change).
+// Contract: the agents finishing these surfaces — the floor is how a block
+// that vanished from a surface outside the required list below is noticed.
 const PERSONA_FLOORS = {
   // 18 + /engineer:commit's command and skill (ADR-0063 D3), less one per
   // verb runbook that joined the persona pipeline (PC3 U7: frame, compose,
@@ -118,6 +120,11 @@ describe('completion-output contract — cross-persona template conformance', ()
       for (const file of files) {
         const content = await readFile(file, 'utf8');
         const rel = relative(REPO_ROOT, file);
+        // Contract: the agent completing a verb or macro step hands off by
+        // filling this six-field block — a block with a field missing or out of
+        // order drops the next step, its rationale or the command to run, and a
+        // prose list of the fields beside it gives the agent a second, drifting
+        // field list.
         const { sites, blockLines, violations: found } = completionBlocks(content, rel);
         violations.push(...found);
         totalSites += sites;
@@ -126,6 +133,9 @@ describe('completion-output contract — cross-persona template conformance', ()
       }
       // Required-surface manifest: every named surface must exist and carry a
       // conformant block (not just contribute to the aggregate).
+      // Contract: the agent finishing one of these surfaces — a surface that
+      // lost its block ends the run with no hand-off for the owner or the next
+      // session to act on.
       for (const required of requiredSurfaceFiles(persona)) {
         const rel = relative(REPO_ROOT, required);
         if (!sitesByFile.has(required)) {
@@ -145,47 +155,4 @@ describe('completion-output contract — cross-persona template conformance', ()
       );
     });
   }
-
-  it('the contract document carries the canonical template block in key order', async () => {
-    const doc = await readFile(CONTRACT_DOC, 'utf8');
-    const { sites, violations } = completionBlocks(doc, 'completion-output-contract.md');
-    strictEqual(violations.length, 0, violations.join('\n'));
-    ok(sites >= 1, 'the contract doc must define the canonical template block');
-    // Canonical order stated in one place — the doc's key list matches the
-    // test's (the shared key list mirrors the doc; both must move together).
-    let cursor = -1;
-    for (const key of COMPLETION_FIELD_KEYS) {
-      const at = doc.indexOf(`- ${key}:`);
-      ok(at > cursor, `contract doc lists '${key}' out of canonical order`);
-      cursor = at;
-    }
-  });
-
-  it('doc ↔ code lockstep: completion states, provenance vocabulary, marker string', async () => {
-    const doc = await readFile(CONTRACT_DOC, 'utf8');
-    const footerSource = await readFile(FOOTER_SCRIPT, 'utf8');
-
-    // Completion-state enum from footer.mjs source (VALID_COMPLETION_STATES).
-    const enumMatch = footerSource.match(/VALID_COMPLETION_STATES = new Set\(\[([^\]]+)\]/);
-    ok(enumMatch, 'footer.mjs must declare VALID_COMPLETION_STATES');
-    const states = [...enumMatch[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]);
-    strictEqual(states.length, 6, 'completion-state enum size changed — update the contract doc');
-    for (const state of states) {
-      ok(doc.includes(state), `contract doc must mention completion state '${state}'`);
-    }
-
-    // Provenance vocabulary + marker string in both doc and renderer.
-    for (const tier of ['explicit', 'derived', 'generic']) {
-      ok(doc.includes(tier), `contract doc must document the '${tier}' provenance tier`);
-    }
-    ok(doc.includes('[generic fallback]'), 'contract doc must name the generic-fallback marker');
-    ok(
-      footerSource.includes("' [generic fallback]'"),
-      'footer.mjs renderer must use the documented marker string',
-    );
-    ok(
-      footerSource.includes('completion.sources') || footerSource.includes('sources:'),
-      'footer.mjs must emit per-field completion sources',
-    );
-  });
 });

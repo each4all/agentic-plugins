@@ -41,11 +41,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { replayTopic } from '../_args-file-replay.mjs';
-import {
-  argsFileRunbookProblems,
-  argsFileTypedTextProblems,
-  investigateProfilePlaceholderProblems,
-} from '../_runbook-checks.mjs';
+import { argsFileRunbookProblems, argsFileTypedTextProblems } from '../_runbook-checks.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const PLUGINS = join(REPO_ROOT, 'plugins');
@@ -117,6 +113,9 @@ const gitStatus = () => spawnSync('git', ['status', '--porcelain', '--untracked-
 
 test('the args-file library is one library', async (t) => {
   await t.test('every package that carries a copy carries the same bytes', () => {
+    // Contract: each installed package's CLIs import its own copy, while the
+    // library cases below import runtime's — a copy that drifts reads args
+    // files in its package other than those cases show.
     const copies = readdirSync(PLUGINS)
       .filter((p) => existsSync(join(PLUGINS, p, 'scripts', 'lib', 'args-file.mjs')))
       .sort();
@@ -723,25 +722,31 @@ function markdown(dir, acc = []) {
 test('the runbooks and skills pass typed text by --args-file', async (t) => {
   const all = markdown(PLUGINS).map(rel);
   await t.test('exactly these runbooks and skills name the option', () => {
+    // Contract: the agent running these runbooks and Codex skills hands the
+    // CLI its typed text by --args-file — a listed one that drops the option
+    // puts the text back into shell source (cut at `;`, redirected at `>`,
+    // exit 0), and the runtime skills have no other check; an unlisted one
+    // that adds it escapes the per-runbook checks below.
     const naming = all.filter((f) => readFileSync(join(REPO_ROOT, f), 'utf8').includes('--args-file')).sort();
     deepStrictEqual(naming, [...ARGS_FILE_RUNBOOKS, ...ARGS_FILE_SKILLS].sort());
   });
   // Each check fails on its document's first finding, with that finding as
   // the message.
   await t.test('every runbook creates the directory, writes the file, and passes the option', () => {
+    // Contract: the agent running the runbook — the `mktemp -d` step names a
+    // directory the reader owns and removes, the file-writing step gives the
+    // version-1 JSON the reader accepts, and the CLI call reads that file; a
+    // runbook missing one leaves the CLI without the text, or leaves the file behind.
     for (const f of ARGS_FILE_RUNBOOKS.filter((r) => !r.endsWith('designer/commands/start.md'))) {
       for (const problem of argsFileRunbookProblems(readFileSync(join(REPO_ROOT, f), 'utf8'), f)) fail(problem);
     }
   });
   await t.test('every runbook shows the typed text above the steps that copy it', () => {
+    // Contract: the command body after Claude's argument substitution, which
+    // the agent copies the text from — a runbook that no longer shows
+    // $ARGUMENTS before the `mktemp -d` step leaves the agent nothing to write.
     for (const f of ARGS_FILE_RUNBOOKS.filter((r) => !r.endsWith('designer/commands/start.md'))) {
       for (const problem of argsFileTypedTextProblems(readFileSync(join(REPO_ROOT, f), 'utf8'), f)) fail(problem);
-    }
-  });
-  await t.test('the investigate profile placeholders no longer carry host-substituted text', () => {
-    for (const p of CONVERTED_PERSONAS) {
-      const f = `plugins/${p}/commands/investigate.md`;
-      for (const problem of investigateProfilePlaceholderProblems(readFileSync(join(REPO_ROOT, f), 'utf8'), f)) fail(problem);
     }
   });
 });
@@ -753,6 +758,9 @@ test('the runbooks and skills pass typed text by --args-file', async (t) => {
 // from a file of its own, run here up to the line that reads its value.
 test('engineer start: the probe block hands the base branch, and the bootstrap block the description, to the shell intact', { skip: unlessConverted('engineer') }, async (t) => {
   const text = readFileSync(join(PLUGINS, 'engineer', 'commands', 'start.md'), 'utf8');
+  // Contract: the test extracts the two args blocks by their opening line, the
+  // call each holds and the line each is cut after, then runs them — a block
+  // these no longer find is one the cases below cannot run.
   const blocks = [...text.matchAll(/```bash\n(ARGS_DIR='<directory from step 1>'\n[\s\S]*?)```/g)].map((m) => m[1]);
   const upTo = (needle, marker) => {
     const found = blocks.filter((b) => b.includes(needle));
@@ -764,10 +772,10 @@ test('engineer start: the probe block hands the base branch, and the bootstrap b
   };
   const probe = upTo('diagnose-redundancy', 'BASE_BRANCH=');
   const bootstrap = upTo('check-clean-baseline', '[ -n "$FEATURE" ]');
-  ok(bootstrap.includes('START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?'), 'the bootstrap block extracts from its own args file');
   // The blocks resolve the plugin root from AGENTIC_ENGINEER_ROOT first: an
   // inherited one (an autopilot step's) must not point them elsewhere.
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTIC_'))), CLAUDE_PLUGIN_ROOT: join(PLUGINS, 'engineer') };
+  const run = (shell, block, dir, after, cwd) => spawnSync(shell, ['-c', `${block.replace("ARGS_DIR='<directory from step 1>'", `ARGS_DIR='${dir}'`)}${after}`], { cwd, encoding: 'utf8', env });
   const typed = `--base-branch 'feat/x' it's "A"; $(id) > f\nnext\n\n`;
   for (const shell of ['bash', 'zsh']) {
     const available = spawnSync(shell, ['-c', 'exit 0']).status === 0;
@@ -776,15 +784,38 @@ test('engineer start: the probe block hands the base branch, and the bootstrap b
       const out = scratch('start-block');
       try {
         for (const dir of dirs) writeFileSync(join(dir, 'args.json'), lib.encodeArgsFile(typed));
-        const run = (block, dir, after) => spawnSync(shell, ['-c', `${block.replace("ARGS_DIR='<directory from step 1>'", `ARGS_DIR='${dir}'`)}${after}`], { cwd: out, encoding: 'utf8', env });
-        const p = run(probe, dirs[0], `printf '%s' "$BASE_BRANCH" > '${out}/base'\n`);
+        const p = run(shell, probe, dirs[0], `printf '%s' "$BASE_BRANCH" > '${out}/base'\n`, out);
         strictEqual(p.status, 0, p.stderr);
-        const b = run(bootstrap, dirs[1], `printf '%s' "$FEATURE" > '${out}/feature'\n`);
+        const b = run(shell, bootstrap, dirs[1], `printf '%s' "$FEATURE" > '${out}/feature'\n`, out);
         strictEqual(b.status, 0, b.stderr);
         strictEqual(readFileSync(join(out, 'feature'), 'utf8'), `it's "A"; $(id) > f\nnext\n\n`);
         strictEqual(readFileSync(join(out, 'base'), 'utf8'), 'feat/x');
         for (const dir of dirs) ok(!existsSync(dir), 'an args directory survived its block');
         deepStrictEqual(readdirSync(out).sort(), ['base', 'feature'], 'the blocks created files in their working directory');
+      } finally {
+        for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+        rmSync(out, { recursive: true, force: true });
+      }
+    });
+
+    // Contract: the agent running either block — it stops at start-args when
+    // start-args refuses the arguments (`|| exit $?` after the call), exiting
+    // with start-args' status and leaving its message last on stderr. Without
+    // the stop, the probe block fails later on an empty document (status 1)
+    // and the bootstrap block runs on to its empty-description check, whose
+    // message then comes last.
+    await t.test(`${shell}: a refused argument stops each block at start-args`, { skip: available ? false : `${shell} is not installed` }, () => {
+      const dirs = [mkdtempSync(join(tmpdir(), 'agentic-args.')), mkdtempSync(join(tmpdir(), 'agentic-args.'))];
+      const out = scratch('start-refused');
+      try {
+        // No ref after --base-branch: start-args exits 2.
+        for (const dir of dirs) writeFileSync(join(dir, 'args.json'), lib.encodeArgsFile('Fix --base-branch'));
+        for (const [name, block, dir] of [['probe', probe, dirs[0]], ['bootstrap', bootstrap, dirs[1]]]) {
+          const r = run(shell, block, dir, `printf reached > '${out}/${name}'\n`, out);
+          strictEqual(r.status, 2, `${name}: the block did not exit with start-args' status — ${r.stderr}`);
+          ok(r.stderr.trimEnd().split('\n').at(-1).startsWith('✗ arguments: '), `${name}: the block ran past start-args' refusal — ${r.stderr}`);
+        }
+        deepStrictEqual(readdirSync(out), [], 'a block reached the line after its cut');
       } finally {
         for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
         rmSync(out, { recursive: true, force: true });

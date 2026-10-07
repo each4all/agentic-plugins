@@ -64,9 +64,8 @@ Settings reports and plans:
 - agentic-plugins marketplace registration for every plugin in `doctor.mjs`'s
   `PLUGIN_NAMES` — `attention`, `companions`, `designer`, `engineer`, `founder`,
   `image`, `orchestrator`, and `runtime`. Settings iterates that list; an earlier
-  four-name list here undercounted it. `tests/plugin-shape/test-runtime-plugin.mjs`
-  now pins this list against `PLUGIN_NAMES` and both marketplace catalogs, so the
-  drift cannot silently return.
+  four-name list here undercounted it; where this list and `PLUGIN_NAMES`
+  disagree, `PLUGIN_NAMES` is right.
 - Known Claude/Codex plugin install/cache state for those plugins.
 - Codex temporary marketplace cache state, reported separately from per-plugin
   install cache evidence.

@@ -263,11 +263,13 @@ contract section instead).
    (`tests/plugin-shape/test-completion-output-contract.mjs`): every
    `- selected_next:` block across the four personas' commands/skills carries
    the six keys in canonical order; per-persona site floors hold; no
-   surrounding-prose re-enumeration of 3+ field tokens on one line; this
-   document's own template block stays in lockstep.
-4. **Doc ↔ code lockstep** (same test file): the six completion states, the
-   provenance vocabulary, and the ` [generic fallback]` marker documented
-   here match the `footer.mjs` constants and renderer.
+   surrounding-prose re-enumeration of 3+ field tokens on one line.
+4. ~~**Doc ↔ code lockstep**~~ — retired 2026-10-07 with the check that this
+   document's own template block stays in lockstep (E1's rule, owner-approved
+   2026-10-05): no program reads this document. The completion states, the
+   provenance tiers and the ` [generic fallback]` marker are held where
+   `footer.mjs` renders them (items 1 and 2), and `tests/runtime/test-footer.mjs`
+   closes the completion-state enum at its six states.
 
 ## 6. Non-goals
 

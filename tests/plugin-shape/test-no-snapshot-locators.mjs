@@ -119,10 +119,15 @@ describe('ADR-0061 §Decision 3 — the Codex marketplace clone is never a disco
       .sort();
     // Every S2 sibling resolver refuses the clone through that entry; nothing
     // else carries it.
+    // Contract: codeLines() below excuses this exact line from the clone scan —
+    // carried by any other file, it would hide a real clone locator there.
     deepStrictEqual(using, MOVED_BY_S2.filter((path) => !path.endsWith('peer-execution-context.mjs')).sort());
   });
 
   it('only the machine-probe observation references the clone', () => {
+    // Contract: Node runs this code from both hosts' installs — a locator that
+    // resolves from ~/.codex/.tmp/marketplaces runs main-branch code beside
+    // skills Codex loaded from a release commit (ADR-0061 §Decision 3).
     const referencing = productionCode()
       .filter((path) => CLONE_REFERENCE.test(codeLines(readFileSync(join(REPO_ROOT, path), 'utf8'))))
       .sort();

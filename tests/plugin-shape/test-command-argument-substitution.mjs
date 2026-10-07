@@ -235,6 +235,9 @@ test('Claude command-argument substitution', async (t) => {
     }
 
     const { plugins, files } = claudeBodies(PLUGINS_DIR);
+    // Contract: Claude Code reads `commands` and `skills` from plugin.json to
+    // find the bodies it loads beyond the default directories — a plugin that
+    // declares either has bodies the scans below never read.
     for (const p of plugins) {
       const manifest = JSON.parse(readFileSync(join(PLUGINS_DIR, p, '.claude-plugin', 'plugin.json'), 'utf8'));
       for (const key of ['commands', 'skills']) {
@@ -251,6 +254,11 @@ test('Claude command-argument substitution', async (t) => {
   const { files: CORPUS } = claudeBodies(PLUGINS_DIR);
 
   await t.test('no command body carries a positional parameter or an indexed argument', () => {
+    // Contract: the command body after Claude's argument substitution, which
+    // the agent runs — Claude replaces `$N` (escaped or not) and
+    // `$ARGUMENTS[N]` with one of the typed words, so a shell helper reading "$1"
+    // reads a flag, or runs a quoted argument as shell; `${N}` and `$1abc`
+    // read a positional parameter the runbook does not have.
     const offenders = [];
     for (const f of CORPUS) {
       const { body } = splitFrontmatter(readFileSync(f, 'utf8'));
@@ -263,12 +271,19 @@ test('Claude command-argument substitution', async (t) => {
   });
 
   await t.test('no command declares named arguments', () => {
+    // Contract: Claude Code reads `arguments:` from the command's frontmatter
+    // — declared, every `$<name>` in the body becomes a substitution, and a
+    // name the user did not type becomes "".
     const declaring = CORPUS.filter((f) => declaresArgumentNames(splitFrontmatter(readFileSync(f, 'utf8')).frontmatter));
     deepStrictEqual(declaring.map((f) => rel(REPO_ROOT, f)), [],
       'an `arguments:` frontmatter key makes `$<name>` a substitution too (a missing token becomes "")');
   });
 
   await t.test('typed text reaches no fenced code (ADR-0059)', () => {
+    // Contract: the command body after Claude's argument substitution, whose
+    // fenced blocks the agent runs — typed text that lands in one is shell
+    // source again (an apostrophe crashes it, `;` cuts it, `>` writes a file,
+    // and it exits 0); the agent passes the text by --args-file instead.
     const found = {};
     for (const f of CORPUS) {
       const lines = argumentLinesInCode(splitFrontmatter(readFileSync(f, 'utf8')).body);

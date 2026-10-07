@@ -1975,6 +1975,8 @@ describe('runtime settings', () => {
     // The Codex SKILL is the load-bearing one: a Codex operator reads the skill's
     // invocation line, so a flag documented only in the Claude-oriented prose is
     // a host-parity gap, not a typo.
+    // Contract: the agent running settings takes its arguments from these
+    // surfaces — a config key missing from them cannot be set on that host.
     const { CONFIG_KEYS } = await import('../../plugins/runtime/scripts/lib/runtime-config.mjs');
     const flags = [...CONFIG_KEYS.map((key) => `--${key.replace(/_/g, '-')}`), '--unset'];
     // The Codex skill is found through the runtime's own Codex manifest rather than
@@ -1988,9 +1990,24 @@ describe('runtime settings', () => {
       [relative(runtimeRoot, skillMd)]: skillMd,
       'scripts/settings.mjs usage()': join(runtimeRoot, 'scripts/settings.mjs'),
     };
+    // The lines the arguments are taken from, not the whole file: a flag that
+    // survives only in later prose is not on the line the agent copies, and
+    // usage() is the function's body, not the parser beside it.
+    const argumentLines = {
+      'commands/settings.md': (text) => text.split('\n').filter((line) => line.startsWith('argument-hint:')),
+      [relative(runtimeRoot, skillMd)]: (text) => text.split('\n').filter((line) => line.startsWith('node "<runtime-plugin-root>/scripts/settings.mjs"') && !line.includes('--args-file')),
+      'scripts/settings.mjs usage()': (text) => {
+        const start = text.indexOf('function usage() {');
+        return start < 0 ? [] : [text.slice(start, text.indexOf('\n}\n', start))];
+      },
+    };
+    // A whole flag, not a prefix: `--model` must not pass on `--model-effort-fallback`.
+    const advertises = (text, flag) => new RegExp(`${flag}(?![\\w-])`).test(text);
     for (const [label, path] of Object.entries(surfaces)) {
-      const text = await readFile(path, 'utf8');
-      const missing = flags.filter((flag) => !text.includes(flag));
+      const lines = argumentLines[label](await readFile(path, 'utf8'));
+      ok(lines.length > 0, `${label}: the argument line is found`);
+      const text = lines.join('\n');
+      const missing = flags.filter((flag) => !advertises(text, flag));
       deepStrictEqual(missing, [], `${label} does not advertise: ${missing.join(', ')}`);
     }
     // Non-vacuous: the sweep must actually have a population to check.

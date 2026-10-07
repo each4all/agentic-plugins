@@ -103,6 +103,8 @@ test('runbook shell portability', async (t) => {
   });
 
   await t.test('no runbook uses the bash-only `set -f` / `set +f` form', () => {
+    // Contract: the operator's shell runs the block — under zsh `set -f` leaves
+    // globbing on, so an unquoted `?` or `*` fails "no matches found" (above).
     const offenders = [];
     for (const f of FILES) {
       readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
@@ -114,6 +116,8 @@ test('runbook shell portability', async (t) => {
   });
 
   await t.test('every globbing guard is restored in the same file', () => {
+    // Contract: the shell running the runbook — a `set -o noglob` never undone
+    // leaves globbing off for every later line that shell runs.
     const unbalanced = [];
     for (const f of FILES) {
       const lines = readFileSync(f, 'utf8').split('\n');
@@ -145,6 +149,9 @@ test('args-file transport (ADR-0059 Decision 8, amended 2026-09-29)', async (t) 
   });
 
   await t.test('every block that reads an args file opens with the ARGS_DIR assignment', () => {
+    // Contract: the agent runs the block after writing args.json into the
+    // directory mktemp printed — a block that does not set ARGS_DIR first hands
+    // the reader "/args.json", or a directory the model never wrote.
     const offenders = [];
     for (const { file, block } of readers) {
       if (ILLUSTRATIONS.has(file)) continue;
@@ -155,6 +162,8 @@ test('args-file transport (ADR-0059 Decision 8, amended 2026-09-29)', async (t) 
   });
 
   await t.test('no block installs a shell cleanup: the reading CLI removes the file', () => {
+    // Contract: Codex's exec policy and an owner's `Bash(rm:*)` ask rule — a
+    // trap's `rm` makes `codex exec` refuse the block and stops a headless run.
     deepStrictEqual(trapLines, [], 'a trap here runs `rm`, which Codex refuses and an rm ask rule stops (C74)');
   });
 

@@ -356,8 +356,9 @@ S2 (this slice) — all mutation-verified:
 - Schemas: each of the three families loads through `loadSchema`, accepts
   a canonical-valid document, and rejects mutations (unknown key, wrong
   type, multi-line where single-line is required, bad schema id).
-- This document is pinned **by content** (the machine-bootstrap-contract
-  §11.3 precedent) in `tests/plugin-shape/test-runtime-plugin.mjs`.
+- This document was pinned **by content** (the machine-bootstrap-contract
+  §11.3 precedent) in `tests/plugin-shape/test-runtime-plugin.mjs` until
+  2026-10-07, when E1's rule retired the pin: no program reads this document.
 
 S3a/S3b (the executor slices) add: gate-off default no-op; commit-record
 no-op; mixed-generation forced republish; lock contention/takeover/skew

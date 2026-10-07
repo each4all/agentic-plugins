@@ -218,6 +218,11 @@ test('every set-terminal invocation states when the Stop hook evaluates the gate
     );
   }
 
+  // Contract: the agent running a runbook block that makes the terminal write
+  // (state.mjs set-terminal / finish-verb) — without the ARCHIVE TIMING note
+  // directly above it, the agent writes the marker expecting a later close, the
+  // same turn's Stop archives the workflow, and `--terminal-marker false`, the
+  // one escape (open only until that Stop), goes unused.
   assert.deepEqual(problems, [], `unannotated set-terminal invocations:\n  ${problems.join('\n  ')}`);
 });
 
@@ -228,6 +233,11 @@ test('the implicit auto-terminal paths carry the statement too', () => {
     'the pinned list must name exactly these four paths — a duplicated or swapped entry removes a path\'s coverage while every assertion below still passes',
   );
 
+  // Contract: the agent running /orchestrator:next, /orchestrator:done and
+  // /engineer:commit, whose terminal write a script makes (subtask-update's
+  // auto-terminal pass, phase7-commit.mjs) with no set-terminal line for the
+  // sweep to find — a missing note, a missing fact or an inverted one hides
+  // that this turn's Stop evaluates the archive gates.
   const problems = [];
   for (const entry of IMPLICIT_TERMINAL_PATHS) {
     const full = pinnedPath(entry);
@@ -264,6 +274,10 @@ test('no markdown in the repo still teaches session-end archiving', () => {
       }
     });
   }
+  // Contract: an agent reading the repo's markdown before a terminal write —
+  // the runbooks, the plugin READMEs, AGENTS.md and the ADRs a session starts
+  // from — a line that still says the Stop hook archives at session end or
+  // close teaches it to write the marker and expect a later, deliberate close.
   assert.deepEqual(
     offenders, [],
     'Stop fires at every turn end, not at session close — these lines still claim otherwise:\n  ' +
@@ -292,14 +306,26 @@ test('every shared reference carries the canonical archive-timing section', () =
   );
   for (const full of refs) {
     const rel = path.relative(REPO_ROOT, full);
+    // Contract: the agent following the runbooks' "Full contract:
+    // …/session-handoff.md § Archive timing" pointer — the section is found by
+    // that heading; without it the pointer leads nowhere, and without a fact the
+    // agent misses the same-turn Stop, the escape, or the Codex deferral.
     const body = section(fs.readFileSync(full, 'utf8'), '## Archive timing');
     assert.ok(body, `${rel} lacks the "## Archive timing" section`);
     for (const f of missingFacts(body, REQUIRED_FACTS)) {
       assert.fail(`${rel} archive-timing section omits ${f.re} (${f.why})`);
     }
+    // Contract: the same agent — a section that says the hook archives at every
+    // turn end, rather than evaluates the gates there, tells it each terminal
+    // write archives that turn, though a failed gate (HEAD not moved, a child
+    // still active) leaves the workflow for a later Stop. Bound to the sentence
+    // that states the per-turn firing: the section uses the word elsewhere too
+    // ("no evaluation happens" under Codex), and a whole-section match passed
+    // with this sentence rewritten to "are archived at the end".
+    const turnEnd = body.replace(/\s+/g, ' ').split(/(?<=\.) /).find((s) => /every turn end/i.test(s));
     assert.match(
-      body, /evaluated|evaluation/,
-      `${rel} must say the gates are EVALUATED at turn end — archival follows only if they pass`,
+      turnEnd ?? '', /\bevaluat(?:ed|ion)\b/,
+      `${rel} must say, where it says the hook fires at every turn end, that the gates are EVALUATED then — archival follows only if they pass`,
     );
   }
 });
