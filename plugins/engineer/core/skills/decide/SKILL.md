@@ -137,11 +137,6 @@ any such prose hint, the skill uses the `default` preset at `standard`
 depth.
 <!-- @decide:axis-table:end -->
 
-Follow the Presentation Mode Protocol
-(`../_shared/references/presentation-protocol.md`) before presenting
-the comparison. In interview mode, one decision item = one option
-with its multi-perspective analysis.
-
 <!-- @decide:per-option-output:begin -->
 #### REQUIRED output format — for each option:
 
@@ -330,6 +325,11 @@ sanity invariant pinned by `tests/persona-pipeline/test-decide-scores.mjs`).
 
 ### Step 4: Recommend
 
+Follow the Presentation Mode Protocol
+(`../_shared/references/presentation-protocol.md`) before presenting: one
+decision with its compared options is a single decision item, presented
+whole.
+
 Always provide a recommendation. Never leave the user with only a
 comparison.
 
@@ -496,7 +496,9 @@ Build the Task Profile per
 
 ### Steps 1-4
 
-Follow the auto-activated steps above.
+<!-- pipeline:begin decide-steps -->
+Follow the auto-activated steps above, at command fidelity.
+<!-- pipeline:end decide-steps -->
 
 ### Step 5: Peer ensemble parallel analysis
 
@@ -528,7 +530,8 @@ Synthesize per `../_shared/references/ensemble-protocol.md`:
 
 ### Approval gate
 
-**Wait for user to choose a direction** — do not proceed without
+<!-- pipeline:begin decide-approval-gate -->
+**Wait for the user to choose a direction** — do not proceed without
 explicit approval.
 
 **Autopilot mode (Claude only, ADR-0063 D4 / R4):** there is no one to
@@ -536,23 +539,15 @@ choose, so do not wait. Without a CONFLICT the recommendation is the
 direction: record it as the next step with the synthesis's confidence (the
 driver continues only on HIGH and halts otherwise). A CONFLICT stops at the
 `decide-conflict` owner gate (the command's Phase 2 owner-decision variant).
+<!-- pipeline:end decide-approval-gate -->
 
 ### State write (when invoked from a workflow command)
 
-When `/engineer:decide` is invoked as a sub-step of a workflow
+When `/engineer:decide` is invoked as a sub-step of an engineer workflow
 command, the invoking command writes the decision (`chosen`,
-`rationale`, `rejected`) to its workflow file per
-`continuity-protocol.md` Phase-boundary Write Rules (Deliverable D).
+`rationale`, `rejected`) to its workflow file.
 
 When invoked standalone, no workflow file write occurs.
-
-The invoking command's last write, `state.mjs finish-verb`, also records
-the closed-enum form of this skill's Active Next-Action Proposal —
-`next_step_kind`, `next_step_verb` and `next_step_confidence` (ADR-0063 D6;
-`../_shared/references/entry-routing-contract.md` § Active Next-Action
-Proposal). The fields are host-shared. Autopilot mode, which changes the
-ceremonies and leaves the terminal marker unset, is Claude-only (ADR-0063);
-ignore it on Codex.
 
 ---
 
@@ -565,12 +560,12 @@ next verb, per `../_shared/references/entry-routing-contract.md`
 table:
 
 ```
-- selected_next:         <verb | commit | owner decision>
+- selected_next:         <verb | commit | done | owner decision>
 - rejected_alternatives: <1-2 alternatives, each + one-line why-not>
 - rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
 - evidence_pointers:     <phase notes / files / artifacts — pointers only>
 - confidence:            <HIGH | MEDIUM | LOW>
-- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; /engineer:commit or $engineer:commit for commit or done; the owner-decision action otherwise>
 ```
 
 Typical `selected_next` candidates for decide: `/engineer:compose` to
@@ -583,19 +578,47 @@ is genuinely neutral — do not end with a hardcoded "next: X". When
 stays lightweight (ADR-0029 §3): it emits this proposal shape and routing
 reasoning without dispatching a peer.
 
----
+**When the choice stays with the owner** — a CONFLICT the user has not
+settled (engineer's axis presets carry no veto gate) — the proposal's
+`selected_next` is
+`owner decision`, and `/engineer:decide` ends with the `decide-conflict` owner
+gate instead of a terminal write; its Owner selection step records the
+owner's choice and clears the gate
+(`../_shared/references/entry-routing-contract.md` § Owner gates).
 
-## Session-level handoff preflight (ADR-0031)
+<!-- pipeline:begin decide-finish -->
+Run by `/engineer:decide`, the command's last write, `state.mjs
+finish-verb`, records this proposal's closed-enum form — `next_step_kind`,
+`next_step_verb` and `next_step_confidence` (ADR-0063 D6;
+`../_shared/references/entry-routing-contract.md` § Active Next-Action
+Proposal); the fields are host-shared. Unless it ends with an owner gate, that
+write is terminal. Inside `/engineer:start` no phase makes a verb's
+terminal write: the lifecycle makes its one terminal write at its end. A
+standalone skill invocation writes no workflow state and emits no footer.
+The owner gates, and the step that resolves each:
+`../_shared/references/entry-routing-contract.md` § Owner gates.
 
-The completion footer — including the ADR-0031 continue-vs-fresh
-session-handoff — is **code-emitted** on this verb's terminal path (ADR-0039):
-the terminal write `state.mjs finish-verb` makes (set-terminal
-`summary-complete`) fires the session-handoff sidecar, which renders the
-runtime `footer.mjs` on the terminal command's stderr. Do not hand-compose the
-footer or hand-pass the projection here; surface the emitted one. On detached
-HEAD the sidecar reports "no active branch context" and does not auto-recommend
-a fresh session. This mirrors the `/engineer:decide`
-command's preflight so `$engineer:decide` on Codex surfaces it identically.
+Autopilot mode, which changes the ceremonies and leaves the terminal marker
+unset, is Claude-only (ADR-0063); ignore it on Codex. Under an autopilot run
+`finish-verb` writes the next step only and leaves the terminal marker for the
+commit command, which alone closes a workflow there, so no footer is printed:
+the driver is the handoff.
+
+The runtime completion footer is **code-emitted** on that terminal write
+(ADR-0039): its completion state is
+`blocked`, with the commit as its unblocking action, when only the commit
+remains — `/engineer:commit` commits the change, or closes the workflow
+when there is none.
+The write fires the session-handoff sidecar, which renders the runtime
+`footer.mjs`, the ADR-0031 continue-vs-fresh session handoff included, on that
+command's stderr. Do not hand-compose a second footer or hand-pass the
+projection; surface the emitted one. On a detached HEAD the branch-based
+preflight reports "no active branch context" and never recommends a fresh
+session (ADR-0018 §sub-2); the path-targeted terminal sidecar renders the
+footer as on a branch, its continue-vs-fresh advice included.
+`$engineer:decide` on Codex surfaces the footer as
+`/engineer:decide` does. Wiring:
+`core/skills/_shared/references/session-handoff.md`.
 
 On Claude the Stop hook fires at **every turn end**, so that terminal write puts
 the workflow in front of the archive gates at the end of **that same turn**, not
@@ -606,6 +629,7 @@ that Stop fires and does not restore the previous phase. On Codex the hook runs
 only once the operator has trusted the plugin hooks (`/hooks`), so evaluation
 waits. Full contract: `core/skills/_shared/references/session-handoff.md`
 § Archive timing.
+<!-- pipeline:end decide-finish -->
 
 ---
 

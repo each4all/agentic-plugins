@@ -21,11 +21,13 @@ for each Phase 1–7 below, follow the matching `§ Phase N` section
 of SKILL.md for the cognitive description, user-approval gates, and
 ensemble dispatch points.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_ENGINEER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
+version in the plugin cache. Keep those opening lines when you run a block: a
 shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 **Quality-first defaults**: optimize for
 `best-results-over-token-minimization`, not token saving. Default peer breadth
@@ -37,23 +39,58 @@ findings converge or a design-level issue is surfaced.
 
 ---
 
-## Phase 0 — Argument parsing
+## Phase 0 — Bootstrap (continuity, redundancy probe, clean-baseline gate)
 
-The arguments above are a feature description with an optional
+Engineer workflows are anchored to a branch (ADR-0018 §sub-2):
+`/engineer:start` refuses a detached HEAD rather than bootstrap a workflow
+that cannot be found again by branch. `find-active` runs first, so the resume
+and typed-conflict paths short-circuit without the redundancy probe, which
+only matters when this branch is about to receive a new workflow (ADR-0020
+§Implementation Guide step 1).
+
+<!-- pipeline:begin start-phase-0 -->
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+GIT_BRANCH="$(git branch --show-current)"
+# ADR-0018 §sub-2 — the persona's workflows are anchored to a branch.
+if [ -z "$GIT_BRANCH" ]; then
+  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "  Switch to a branch first: git switch <branch>" >&2
+  exit 1
+fi
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+  find-active --repo-root "$REPO_ROOT")"
+FIND_RC=$?
+if [ "$FIND_RC" -ne 0 ]; then
+  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
+  exit "$FIND_RC"
+fi
+# ADR-0063 D4 — prints nothing in interactive mode. Under an autopilot run it
+# prints the rules this command then follows
+# (core/skills/_shared/references/autopilot-mode.md), and refuses when an owner
+# gate is set on the workflow; interactively it prints a pending gate for the
+# user. It runs before any write, so a refusal leaves the workflow as it was.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" autopilot-preflight \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" || exit $?
+```
+<!-- pipeline:end start-phase-0 -->
+
+Empty `$ACTIVE` → **redundancy probe, clean-baseline gate, then bootstrap**
+with `workflow_type=start`:
+
+<!-- pipeline:begin start-bootstrap -->
+The arguments above are the feature description, with an optional
 `--base-branch <ref>` anywhere in it (ADR-0059 Decision 7;
-`scripts/start-args.mjs`):
-
-- Empty → rejected with a one-line diagnostic (exit 2), and the block
-  stops. `/engineer:start` requires a feature description so the
-  workflow's `original_request` has substance.
-- `--base-branch <ref>` → `<ref>` is the redundancy probe's base
-  (Phase 0c-bootstrap). Default when omitted: `origin/main`.
-- The text without the option is the feature description.
-
-The arguments above reach the extractor through an args file, never
-through the shell (ADR-0059): typed text spliced into a command line is cut
-at `;`, expanded at `$(…)` and redirected at `>`, and the damage can exit
-zero. Before the block below:
+`scripts/start-args.mjs`). Empty arguments are refused (exit 2), so the
+workflow's `original_request` has substance; `<ref>` is the redundancy
+probe's base, `origin/main` when it is omitted. They reach the extractor
+through an args file, never through the shell (ADR-0059): typed text spliced
+into a command line is cut at `;`, expanded at `$(…)` and redirected at `>`,
+and the damage can exit zero. Before each of the two blocks below:
 
 1. Create a private directory for the file, and note the path it prints:
 
@@ -67,230 +104,167 @@ zero. Before the block below:
    are none).
 
 Then run the block with `ARGS_DIR` set to that directory. The extractor takes
-the text as the feature description and removes one `--base-branch <ref>`
-wherever it sits; a second `--base-branch`, the `--base-branch=<ref>`
-spelling, or a missing ref is refused. Nothing else in the description is
-quoted, expanded or split. The command removes the args file and its
-directory once it has read them.
+the text as the description and removes one `--base-branch <ref>` wherever it
+sits; a second `--base-branch`, the `--base-branch=<ref>` spelling, or a
+missing ref is refused. Nothing else in the description is quoted, expanded
+or split. It removes the args file and its directory once it has read them,
+so the second block needs a new one.
 
-`BASE_BRANCH` and `FEATURE` are read by later blocks — the Phase 0c
-redundancy probe and the bootstrap `state.mjs create` — and shell variables do
-not outlive a Bash call, while the extractor removes the args file once it
-has read it. So run this block in the same Bash call as whichever of those comes next.
-When the flow stops between them (a redundancy finding waits for the user's
-proceed-or-abort decision), write the args file again (steps 1–2) and run this
-block again ahead of the bootstrap. Never paste the description into a
-command line instead.
+The redundancy probe (ADR-0020 §Sub-decision 7) asks whether this branch
+already holds overlapping work: recent commits and open pull requests against
+the base. It writes nothing, and a failed probe never blocks the start.
 
 ```bash
 ARGS_DIR='<directory from step 1>'
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
-printf '%s\n' "$START_ARGS"
-BASE_BRANCH="$(printf '%s' "$START_ARGS" | jq -r .base_branch)"
-# A command substitution drops trailing newlines; the sentinel keeps them.
-FEATURE="$(printf '%s' "$START_ARGS" | jq -j .feature; printf x)"; FEATURE="${FEATURE%x}"
-```
-
----
-
-## Phase 0a — Detached HEAD guard (ADR-0018 §sub-2)
-
-Engineer workflows are anchored to a branch. `/engineer:start` rejects
-detached-HEAD invocation rather than bootstrapping a workflow that
-cannot be re-found later by branch.
-
-```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
-if [ -z "$GIT_BRANCH" ]; then
-  echo "✗ Detached HEAD detected — no active branch context (ADR-0031); engineer workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
-  echo "  Switch to a branch first: git switch <branch>" >&2
-  exit 1
-fi
-```
-
----
-
-## Phase 0b — Active workflow branching (ADR-0020 §Sub-decision 4)
-
-`find-active` runs first so resume / typed-conflict paths short-circuit
-without the redundancy probe (the probe is only meaningful when this
-branch is going to receive a NEW workflow). ADR-0020 §Implementation
-Guide step 1 specifies this ordering.
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-  find-active --repo-root "$REPO_ROOT")"
-FIND_RC=$?
-if [ "$FIND_RC" -ne 0 ]; then
-  echo "✗ find-active failed (exit $FIND_RC); its error is above." >&2
-  exit "$FIND_RC"
-fi
-```
-
-Branch on the result:
-
-### Empty `$ACTIVE` → Phase 0c redundancy probe + bootstrap
-
-The redundancy probe runs **only** on the empty-active branch — there
-is no point asking "does this branch already have overlapping work?"
-when the answer to "is there an active workflow?" is yes (the resume
-path handles that case). This ordering matches ADR-0020
-§Implementation Guide step 1's empty-active branch.
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
+BASE_BRANCH="$(printf '%s' "$START_ARGS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).base_branch))')" || exit $?
 DIAG="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" diagnose-redundancy \
   --repo-root "$REPO_ROOT" --base-branch "$BASE_BRANCH")"
 DIAG_RC=$?
 if [ "$DIAG_RC" -ne 0 ]; then
-  echo "✗ diagnose-redundancy failed (exit $DIAG_RC); its error is above." >&2
-  # Continue bootstrap — the probe is informational. A failed probe
-  # MUST NOT block the user from starting a workflow.
-  DIAG=""
+  # The probe is informational: a failed probe never blocks the start.
+  echo "⚠ diagnose-redundancy failed (exit $DIAG_RC); its error is above. Proceeding without overlap detection." >&2
+  DIAG=''
 fi
-DIAG_STATUS="$(echo "$DIAG" | jq -r '.status // ""' 2>/dev/null)"
-GIT_PRESENT="$(echo "$DIAG" | jq -r '.scanned.git_present // false' 2>/dev/null)"
-BASE_FAILED="$(echo "$DIAG" | jq -r '.scanned.base_resolution_failed // false' 2>/dev/null)"
+# One line: the status, then whether git was found and whether the base resolved.
+FINDING="$(printf '%s' "$DIAG" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{let r={};try{r=JSON.parse(s)||{}}catch{}const sc=r.scanned||{};process.stdout.write([r.status||"",sc.git_present===false?"no-git":"",sc.base_resolution_failed===true?"no-base":""].join(" "))})')"
+case "$FINDING" in
+  *no-git*) echo "⚠ git is not on PATH — the redundancy probe is blind. Proceeding without overlap detection." ;;
+  *no-base*) echo "⚠ Base branch '$BASE_BRANCH' did not resolve — pass --base-branch <ref> if another base applies (e.g. stacked branches). Proceeding without overlap detection." ;;
+  redundancy*)
+    echo "⚠ Redundancy detected on branch '$GIT_BRANCH' (base=$BASE_BRANCH):"
+    printf '%s' "$DIAG" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const r=JSON.parse(s);for(const k of ["scanned","evidence","recommended_action"])console.log(JSON.stringify(r[k],null,2))})'
+    echo
+    echo "  Options:"
+    echo "    - proceed: run the bootstrap block below if the evidence is unrelated"
+    echo "    - abort:   stop here; review the evidence (recent commits / open PRs)"
+    echo "               and either continue the existing PR or archive it first"
+    echo "→ PAUSED: put the evidence to the user and wait for proceed or abort." ;;
+esac
 ```
 
-**Caller policy** (ADR-0020 §Sub-decision 7 + Codex plan-verify MINOR
-#4): when `DIAG_STATUS=redundancy`, **surface the evidence to the user
-and ask for an explicit proceed-or-abort decision**. `/engineer:start`
-does NOT auto-archive on redundancy — that is a user judgment, not a
-plugin policy. Likewise, `git_present=false` (no git on PATH) or
-`base_resolution_failed=true` (origin/main not fetched / typo) are
-non-fatal informational signals.
+On a redundancy finding, put the evidence to the user and ask for an
+explicit proceed-or-abort decision: `/engineer:start` never archives on
+redundancy, which is a user judgment, not a plugin policy. Abort stops here,
+with nothing written. A missing git or an unresolved base is informational.
+
+To proceed, or when the probe found nothing, run the bootstrap block with a
+new args file (steps 1–2). It runs the clean-baseline gate (ADR-0028
+§Layer-1) before `state.mjs create`: the Phase 7 commit stages the paths the
+workflow recorded that git shows changed, a signal that holds only when the
+baseline was clean. A dirty baseline would let the commit sweep adjacent,
+unrelated changes into the workflow's commit, unless the user accepts the
+current tree (`ACCEPT_CURRENT_TREE=1`), which stages all of it at Phase 7.
+`.agentic-plugins/state/**`, the workflow storage, never counts as dirty.
 
 ```bash
-if [ "$GIT_PRESENT" = "false" ]; then
-  echo "⚠ git is not on PATH — redundancy probe blind. Proceeding without overlap detection."
-elif [ "$BASE_FAILED" = "true" ]; then
-  echo "⚠ Base branch '$BASE_BRANCH' did not resolve — pass --base-branch <ref> if a different baseline applies (e.g., stacked branches). Proceeding without overlap detection."
-elif [ "$DIAG_STATUS" = "redundancy" ]; then
-  echo "⚠ Redundancy detected on branch '$GIT_BRANCH' (base=$BASE_BRANCH):"
-  echo "$DIAG" | jq '.scanned, .evidence, .recommended_action'
-  echo
-  echo "  Options:"
-  echo "    - proceed: continue bootstrap if the evidence is unrelated"
-  echo "    - abort:   stop here; review the evidence (recent commits / open PRs)"
-  echo "               and either continue the existing PR or archive it first"
-  # Surface to the user; do not auto-abort.
-fi
-```
-
-### Layer 1 clean-baseline gate (ADR-0028 §Layer-1)
-
-Before `state.mjs create`, inspect the working tree. The Phase 7 commit
-automation relies on the post-baseline manifest delta to know which paths
-the workflow intended to touch — that signal only holds when the
-baseline itself was clean (or the user explicitly bypassed the gate via
-`ACCEPT_CURRENT_TREE=1`). A dirty baseline plus an unmodified resolution
-would let phase7-commit.mjs sweep adjacent unrelated changes into the
-workflow's commit.
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-BASELINE_ARGS=()
-if [ "${ACCEPT_CURRENT_TREE:-}" = "1" ]; then
-  BASELINE_ARGS=(--accept-current-tree true)
-fi
-BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline \
-  --repo-root "$REPO_ROOT" "${BASELINE_ARGS[@]}")"
+ARGS_DIR='<directory from step 1>'
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+GIT_BRANCH="$(git branch --show-current)"
+START_ARGS="$(node "$CLAUDE_PLUGIN_ROOT/scripts/start-args.mjs" --args-file "$ARGS_DIR/args.json")" || exit $?
+# A command substitution drops trailing newlines; the sentinel keeps them.
+FEATURE="$(printf '%s' "$START_ARGS" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s).feature))'; printf x)"; FEATURE="${FEATURE%x}"
+[ -n "$FEATURE" ] || { echo "✗ No feature description was read; nothing was written." >&2; exit 2; }
+# ACCEPT_CURRENT_TREE=1, exported or set in this block, accepts a dirty tree;
+# the flag carries it to the check either way.
+case "${ACCEPT_CURRENT_TREE:-}" in 1) ACCEPT_TREE=true ;; *) ACCEPT_TREE=false ;; esac
+BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline --repo-root "$REPO_ROOT" --accept-current-tree "$ACCEPT_TREE")"
 BASELINE_RC=$?
 if [ "$BASELINE_RC" -ne 0 ]; then
-  echo "✗ check-clean-baseline failed (exit $BASELINE_RC); its error is above." >&2
-  exit "$BASELINE_RC"
+  echo "✗ clean-baseline check failed (exit $BASELINE_RC); its error is above." >&2; exit "$BASELINE_RC"
 fi
-BASELINE_STATUS="$(echo "$BASELINE" | jq -r .status)"
-if [ "$BASELINE_STATUS" = "dirty" ]; then
-  echo "✗ Working tree is dirty — /engineer:start requires a clean baseline (ADR-0028 §Layer-1)." >&2
-  echo "$BASELINE" | jq .categories >&2
-  echo >&2
-  echo "  Resolutions:" >&2
-  echo "    - clean:                git restore . ; git clean -fd  (then re-run)" >&2
-  echo "    - stash:                git stash push --include-untracked  (re-run, then git stash pop)" >&2
-  echo "    - worktree:             /runtime:worktree plan  (suggests a git worktree add command once its checks pass; re-run in the new worktree)" >&2
-  echo "    - accept-current-tree:  ACCEPT_CURRENT_TREE=1 /engineer:start ...  (sweep current tree into the workflow's commit)" >&2
-  exit 1
-fi
-# BASELINE_STATUS is 'clean' (empty tree) or 'accepted' (dirty + bypass).
-# Both proceed; phase7-commit.mjs honors the accept-current-tree mode by
-# staging all of git_changes rather than the manifest intersection.
-```
-
-Bootstrap the new workflow with `--workflow-type start`, recording
-`verb: investigate` as the Phase 1 brainstorm entry point. Subsequent
-phase boundaries rotate `verb` to the phase-primary value via
-`state.mjs append --verb`.
-
-```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+STATUS="$(printf '%s' "$BASELINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{process.stdout.write("")}})')"
+# Fail CLOSED: only an explicit clean/accepted proceeds. A dirty tree, an
+# empty status, or any unrecognized value stops the bootstrap — the gate
+# must never fail open on a parse error or a non-zero check.
+case "$STATUS" in
+  clean|accepted) ;;  # proceed
+  dirty)
+    echo "✗ Working tree not clean — /${PERSONA}:start gates a clean baseline before bootstrapping a deliverable." >&2
+    printf '%s' "$BASELINE" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>console.log(JSON.stringify(JSON.parse(s).categories,null,2)))' >&2
+    echo "  Resolve, then re-run:" >&2
+    echo "    • clean:  git restore . ; git clean -fd" >&2
+    echo "    • stash:  git stash push --include-untracked  (re-run, then git stash pop)" >&2
+    echo "    • worktree: /runtime:worktree plan  (suggests a git worktree add command once its checks pass; re-run in the new worktree)" >&2
+    echo "    • accept: set ACCEPT_CURRENT_TREE=1 to sweep the current tree into the workflow's commit (Phase 7 stages all of it)" >&2
+    exit 1;;
+  *)
+    echo "✗ clean-baseline check returned an unrecognized status ('$STATUS') — refusing to bootstrap (fail-closed)." >&2
+    exit 1;;
+esac
 GIT_HEAD="$(git rev-parse HEAD)"
 STATUS_DIGEST="$(git status --porcelain=v1 -z --untracked-files=normal | shasum -a 256 | cut -d' ' -f1)"
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
   --repo-root "$REPO_ROOT" \
-  --verb investigate --host "${AGENTIC_HOST:-claude}" \
-  --workflow-type start \
-  --git-baseline-branch "$GIT_BRANCH" \
-  --git-baseline-head "$GIT_HEAD" \
+  --verb investigate --workflow-type start \
+  --host "${AGENTIC_HOST:-claude}" --persona 'engineer' \
+  --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
   --status-digest "$STATUS_DIGEST" \
-  --current-phase phase-0-bootstrap \
-  --next-action "Phase 1 brainstorm — investigate options, frame the model, decide a direction" \
-  --original-request "$FEATURE")"
+  --original-request "$FEATURE" \
+  --current-phase phase-1-discover \
+  --next-action "Run Phase 1 discover+frame+decide composite")" || exit $?
 ```
+<!-- pipeline:end start-bootstrap -->
 
-### Non-empty `$ACTIVE` → inspect `workflow_type`
+Non-empty `$ACTIVE` → **read `workflow_type` first** (ADR-0020 §Sub-decision
+4): the lifecycle macro never absorbs a single-verb (`verb-chain`) workflow
+into its phase space, and never archives one either:
 
+<!-- pipeline:begin start-resume -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-ACTIVE_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
-  --workflow-path "$ACTIVE" | jq -r '.workflow_type // "verb-chain"')"
-```
-
-- **`workflow_type=start`** → auto-resume. Append a resume marker and
-  continue from the recorded `current_phase`. Same shape as the
-  engineer six-verb commands' Phase 0 append-on-resume.
-
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
+# The read is checked on its own: a read that fails stops the block, whatever
+# it printed, before the type is parsed.
+WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" || exit $?
+WF_TYPE="$(printf '%s' "$WF_JSON" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{try{process.stdout.write(JSON.parse(s).workflow_type||"verb-chain")}catch{process.stdout.write("verb-chain")}})')"
+# Resuming into the lifecycle clears the next step the last phase recorded, so
+# a phase that stops before its own last write leaves none behind (ADR-0063
+# D6); the position (verb, phase, next action) is kept. Any other workflow is
+# refused, unwritten: the lifecycle never takes a single-verb workflow into
+# its phase space (ADR-0020 §Sub-decision 4).
+if [ "$WF_TYPE" = start ]; then
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-    --event resumed \
-    --phase-label "Resume /engineer:start" \
-    --phase-note "Auto-resume of active workflow_type=start on $GIT_BRANCH"
-  ```
-
-- **`workflow_type=verb-chain`** (or absent / legacy) → **typed
-  conflict**, exit non-zero. ADR-0020 §Sub-decision 4 explicitly
-  rejects auto-archive of a verb-chain workflow under `/engineer:start`:
-  the user must clear it deliberately (switch branch, let it reach
-  `commit-complete`, or `/engineer:resume archive <id>`).
-
-  ```bash
-  CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-  [ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-  CURRENT_PHASE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
-    --workflow-path "$ACTIVE" | jq -r .current_phase)"
-  echo "✗ Active workflow on '$GIT_BRANCH' is workflow_type=verb-chain, not start." >&2
-  echo "  /engineer:start would mutate a single-verb workflow's current_phase into the lifecycle macro phase space — reject." >&2
+    --clear-next-step true --event resumed || exit $?
+else
+  echo "✗ The active workflow on this branch is workflow_type=${WF_TYPE}, not start: /${PERSONA}:start does not take a single-verb workflow into its lifecycle." >&2
   echo "  Active workflow: $ACTIVE" >&2
-  echo "  current_phase:   $CURRENT_PHASE" >&2
-  echo "  To proceed with /engineer:start, first clear the active workflow:" >&2
-  echo "    - switch branch (git switch -c <new>)" >&2
-  echo "    - let it reach commit-complete (Stop hook auto-archives)" >&2
-  echo "    - /engineer:resume archive $(basename "$ACTIVE" .md)" >&2
+  echo "  Continue it with its /${PERSONA}:<verb>, or archive it (/${PERSONA}:resume archive), or switch branch (git switch -c <new>); then re-run /${PERSONA}:start." >&2
   exit 1
-  ```
+fi
+```
+<!-- pipeline:end start-resume -->
+
+- `workflow_type == start` → **resume into start**: report the active
+  workflow's `verb` / `current_phase` / `next_action` and continue the
+  lifecycle from where it stopped (do not re-bootstrap). An owner gate
+  Phase 0 reported is put to the user first; once resolved, clear it with
+  the phase the lifecycle continues at (§ Phase boundaries).
+- `workflow_type != start` (a `verb-chain` workflow, or a legacy one
+  without the field) → **typed conflict**: the block stopped without
+  writing. The user clears the workflow deliberately — continue it with its
+  `/engineer:<verb>`, let it commit (`/engineer:commit`) or archive it
+  (`/engineer:resume archive <id>`), or switch branch — then re-runs
+  `/engineer:start`.
+
+<!-- pipeline:begin start-initial-verb -->
+The initial `verb` is `investigate` (Phase 1a); rotate the `verb` field at
+each phase boundary via `state.mjs append --verb <verb>` so SessionStart
+re-injection sees the active cognitive activity (SKILL.md § intra-document
+execution model).
+<!-- pipeline:end start-initial-verb -->
 
 ---
 
@@ -327,8 +301,8 @@ Phase 0 before sequencing the lifecycle, per
 projection for the current branch and pass it — or, when no active workflow
 exists, the standalone routing — to the runtime seam, so the routing
 recommendation above is sized by context-budget risk + archive-gate readiness.
-On detached HEAD the Phase 0a guard already reports "no active branch context";
-do not auto-recommend a fresh session.
+On detached HEAD the Phase 0 guard stops the command before any write
+(workflows are anchored to a branch); do not auto-recommend a fresh session.
 
 Before recommending a quick implementation/refinement path, state the
 standards and root-cause quality gate: the source of truth or standard,
@@ -348,6 +322,40 @@ sensitivity. The full sizing taxonomy lives in
 
 ---
 
+## Phase boundaries (Phases 1–6)
+
+<!-- pipeline:begin start-phase-boundary -->
+Each phase boundary writes state via `state.mjs append --verb <verb>
+--current-phase <phase> --next-action <...> --event updated` and dispatches
+the per-phase peer ensemble per
+`core/skills/_shared/references/ensemble-protocol.md` (always-max).
+
+Inside the lifecycle each verb runs in place, so three rules hold at every
+phase (ADR-0066 PC2b):
+
+- **Each ensemble attempt is settled.** After its synthesis note, settle the
+  phase's attempt from its run ledger with `peer-runner.mjs settle --phase
+  <verb> --run-id <that attempt's run id>` (empty when no run launched), before
+  the next phase. A repeated phase (a second refine pass) dispatches under a
+  new run id and settles each attempt.
+- **No phase closes the workflow.** A verb's own terminal write
+  (`finish-verb`) never runs inside the lifecycle; the lifecycle's last step
+  below makes its one terminal write.
+- **An owner gate pauses the lifecycle.** When a phase meets one (a decide
+  CONFLICT, a recurring finding, a request that belongs elsewhere), record it
+  after the phase note with `state.mjs awaiting-owner-set --gate <gate>
+  --anchor <anchor>`, a write that leaves the workflow open, and pause. Once
+  the owner decides, clear it with `state.mjs awaiting-owner-clear --gate
+  <gate> --resolution <the owner's decision> --next-step-kind verb
+  --next-step-verb <the next phase's verb> --next-step-confidence HIGH
+  --next-action <the next phase's action>`, and continue at that phase. The
+  verb's own resolving step (decide's Owner selection, refine's Owner
+  decision), run inside the lifecycle, clears the gate and stops instead of
+  making the verb's terminal write; resume the lifecycle from it.
+<!-- pipeline:end start-phase-boundary -->
+
+---
+
 ## Phase 1 — Brainstorm composite (investigate → frame → decide)
 
 Composite of three verbs per ADR-0020 §Sub-decision 2; rotate the
@@ -356,8 +364,9 @@ re-injection sees the active cognitive activity (intra-document
 execution, no recursive slash dispatch):
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 # Sub-phase 1a — Investigate (option generation)
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
@@ -390,8 +399,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 ## Phase 2 — Explore codebase (investigate --profile=analysis)
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb investigate --profile analysis \
@@ -405,8 +415,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 ## Phase 3 — Plan-verify (compose --profile=plan + critique)
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb compose --profile plan \
@@ -433,8 +444,9 @@ abort vs single-pass continuation.
 ## Phase 4 — Implement (compose --profile=code)
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb compose --profile code \
@@ -448,8 +460,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 ## Phase 5 — Review (critique --profile=parallel-review)
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb critique --profile parallel-review \
@@ -463,8 +476,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 ## Phase 6 — Resolve (refine)
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb refine \
@@ -477,112 +491,108 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 
 ## Phase 7 — Commit (ADR-0028 §Layer-3)
 
-Terminal runbook. Phase 7 invokes the `phase7-commit.mjs` driver
-(host-shared per ADR-0022 commands-hold-bootstrap / skills-hold-cognition
-split): the driver computes the staging set from `commit_manifest` ∩
-`git_changes`, splits per release-please package boundary (ADR-0016 +
-P8), commits with the user-confirmed subject(s), runs post-commit gates
-(P11 pending-ensemble, no-active-children, clean-after-commit, P10
-sync writebackParent), and finally writes `set-terminal` LAST per the
-P5 terminal-marker-last invariant.
+<!-- pipeline:begin start-commit -->
+The lifecycle's one terminal write is the Phase 7 commit driver,
+`phase7-commit.mjs` (ADR-0028 §Layer-3): it computes the staging set from
+`commit_manifest` ∩ `git_changes`, splits it per release-please package
+(ADR-0016, P8), commits with the subject(s) the user confirmed, runs the
+post-commit gates (P11 pending ensemble, no active children, clean after
+commit, the P10 parent writeback), and writes `set-terminal` last (P5). No
+`finish-verb` runs here.
 
-Phase 7 NEVER auto-commits (P6). The flow is two-step: first the agent
-invokes `--mode plan` to get suggested subjects, presents them to the
-user, gets approval; then invokes `--mode execute --subject "..."`
-with the user-confirmed text.
+Phase 7 never commits on its own (P6). It takes two steps, each its own
+block: plan mode reads the workflow and git and suggests subjects; present
+them to the user with [a]ccept / [e]dit / [c]ancel, and when the plan says
+`ask_user` also confirm the staging set and its extras. The user picks one
+of: the intersection only (the default, no extra flag); specific extras
+opted back in (`--include-extra <path>` for each, PR4 A4); or the whole
+working tree (`--accept-current-tree`, all or nothing). Then execute mode
+commits with the subject(s) the user confirmed.
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
-# Step 1 — plan mode: read workflow + git state, suggest subjects.
-PHASE7_PLAN="$(node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+# A shell variable does not outlive a Bash call: unless ACTIVE is set, the
+# workflow is the one find-active names on this branch.
+if [ -z "${ACTIVE:-}" ]; then
+  ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
+fi
+[ -n "$ACTIVE" ] || { echo "✗ No active workflow on this branch; Phase 7 has nothing to commit." >&2; exit 1; }
+# Step 1 — plan mode: read the workflow and git, suggest subjects. It writes
+# nothing.
+node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
   --mode plan \
   --workflow-path "$ACTIVE" \
   --repo-root "$REPO_ROOT" \
-  --host "${AGENTIC_HOST:-claude}")"
-PHASE7_PLAN_RC=$?
-if [ "$PHASE7_PLAN_RC" -ne 0 ]; then
-  echo "✗ phase7-commit --mode plan failed (exit $PHASE7_PLAN_RC); its error is above." >&2
-  exit "$PHASE7_PLAN_RC"
+  --host "${AGENTIC_HOST:-claude}" || exit $?
+```
+
+In the execute block, set `APPROVED_SUBJECT` to the subject the user
+confirmed. When the plan splits the commit across packages (`shouldSplit`),
+pass one `--subject-pkg '<package path>=<subject>'` per package instead of
+`--subject`; the body (P1, with the P9 trailer allowlist) is shared by every
+per-package commit. Add each extra the user opted in with `--include-extra
+<path>`, or `--accept-current-tree` for the whole tree; when the bootstrap
+accepted the current tree (`ACCEPT_CURRENT_TREE=1`), pass it again here, so
+the driver stages all of `git_changes` rather than the intersection.
+
+ARCHIVE TIMING — decide before running execute mode. The driver writes
+`set-terminal` as its last step, and on Claude the Stop hook fires at every
+turn end, so the archive gates are evaluated at the end of this turn, not at
+session close. If the workflow must stay open past this turn, do not run
+execute mode yet: clearing the marker afterwards works only before that Stop
+fires and needs set-terminal's full flag set (`--workflow-path`, `--host`,
+`--terminal-phase`). Full contract:
+`core/skills/_shared/references/session-handoff.md` § Archive timing.
+
+```bash
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+# A shell variable does not outlive a Bash call: unless ACTIVE is set, the
+# workflow is the one find-active names on this branch.
+if [ -z "${ACTIVE:-}" ]; then
+  ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 fi
-# Agent: parse $PHASE7_PLAN (JSON), present commits[].suggested_subject
-# to the user with [a]ccept / [e]dit / [c]ancel. If ask_user=true also
-# confirm the staging_set + extras with the user. The user picks ONE of:
-#   - intersection only (default; no extra flag)
-#   - opt specific extras back in (PR4 A4 — repeat --include-extra <path>
-#     for each extras-list entry the user wants in this commit)
-#   - sweep the entire working tree (--accept-current-tree; all-or-nothing)
-
-# ARCHIVE TIMING — decide BEFORE running execute mode. The driver writes
-# set-terminal internally as its last step (P5), and on Claude the Stop hook
-# fires at EVERY turn end, so the archive gates are evaluated at THIS turn's
-# end, not at session close. If the workflow must stay open past this turn,
-# do not run execute mode yet; clearing the marker afterwards works only
-# before that Stop fires and needs the full set-terminal flag set
-# (--workflow-path, --host, --terminal-phase). Full contract:
-# core/skills/_shared/references/session-handoff.md § Archive timing.
-
-# Step 2 — execute mode: receive the approved subject(s), commit + gate.
-# Single-commit form:
+[ -n "$ACTIVE" ] || { echo "✗ No active workflow on this branch; Phase 7 has nothing to commit." >&2; exit 1; }
+APPROVED_SUBJECT='<the subject the user confirmed>'
+# Step 2 — execute mode: commit with the approved subject, run the gates, then
+# set-terminal. A failure leaves the workflow open (no terminal marker); the
+# driver names the recovery on stderr: refine, then run this start command
+# again, which resumes at Phase 7.
 node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
   --mode execute \
   --workflow-path "$ACTIVE" \
   --repo-root "$REPO_ROOT" \
   --host "${AGENTIC_HOST:-claude}" \
   --subject "$APPROVED_SUBJECT" \
-  --confirm-non-interactive
-# Or, when shouldSplit=true (multi-package), repeat --subject-pkg:
-# node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
-#   --mode execute --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
-#   --host "$AGENTIC_HOST" --confirm-non-interactive \
-#   --subject-pkg 'plugins/engineer=feat(engineer): ...' \
-#   --subject-pkg 'plugins/runtime=docs(runtime): ...'
-# Or, when manifest-subset-of-git extras need to be opted in (PR4 A4):
-# node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
-#   --mode execute --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
-#   --host "$AGENTIC_HOST" --subject "$APPROVED_SUBJECT" \
-#   --confirm-non-interactive \
-#   --include-extra docs/intro.md \
-#   --include-extra docs/migration.md
-
-PHASE7_RC=$?
-if [ "$PHASE7_RC" -ne 0 ]; then
-  # Driver already emitted the refine-fallback message on stderr.
-  # The workflow remains active (terminal_marker unset); recovery is
-  # via /engineer:refine + a follow-up /engineer:start that resumes
-  # at Phase 7.
-  exit "$PHASE7_RC"
-fi
-# On success the driver already ran P10 writebackParent SYNCHRONOUSLY (for a
-# macro subtask: a note on the macro, not its completion — /orchestrator:done
-# records that after the merge, ADR-0062) and
-# then wrote set-terminal; the Stop hook evaluates the auto-archive gates
-# (ADR-0017 §sub-decision 5) and only retries the writeback idempotently, or
-# backstops a driver that died between the two writes. On Claude that
-# evaluation happens at THIS turn's end — see the ARCHIVE TIMING note above.
+  --confirm-non-interactive || exit $?
+# On success the driver already ran the P10 parent writeback synchronously
+# (for a macro subtask: a note on the macro, not its completion, which
+# /orchestrator:done records after the merge, ADR-0062) and then wrote
+# set-terminal; the Stop hook evaluates the archive gates (ADR-0017
+# §sub-decision 5) and only retries the writeback idempotently, or backstops a
+# driver that died between the two writes.
 ```
 
-For multi-package splits the body composition (P1 + P9 trailer
-allowlist) is shared across all per-package commits; only the subject
-varies per `--subject-pkg`. Layer 1 forwarding: when the bootstrap was
-flagged `accept-current-tree`, re-pass `ACCEPT_CURRENT_TREE=1` (or
-`--accept-current-tree`) into the execute step so the driver stages all
-of `git_changes` rather than the manifest intersection.
-
-The base runtime completion footer is **code-emitted** on the Phase 7 terminal
-path (ADR-0039): `phase7-commit.mjs` → `set-terminal` fires the ADR-0031
-session-handoff sidecar, which shells out to the runtime `footer.mjs` and prints
-the rendered footer — context state, completion state + state-derived next
-action, workflow id/path, artifact pointers, recommended next work, and the
-continue-vs-fresh session-handoff — on the commit command's **stderr**. Do
-**not** hand-compose that base footer; surface the emitted one. It is advisory +
-pointer-only and fail-closed (a missing/too-old runtime emits nothing, and the
-SessionStart backstop still re-surfaces the handoff); it never mutates host
-session context. On detached HEAD the sidecar reports "no active branch context"
-and does not auto-recommend a fresh session (already guarded at Phase 0a). The
-continue-vs-fresh preflight at **Phase 0** (before sequencing a fresh lifecycle)
-is a separate, pre-work surface and still applies per
+The runtime completion footer is **code-emitted** on this terminal path
+(ADR-0039): `set-terminal` fires the ADR-0031 session-handoff sidecar, which
+shells out to the runtime `footer.mjs` and prints the rendered footer —
+context state, completion state + state-derived next action, workflow
+id/path, artifact pointers, recommended next work, and the continue-vs-fresh
+session handoff — on the commit command's **stderr**. Do **not** hand-compose
+a second footer; surface the emitted one. It is advisory, pointer-only and
+fail-closed (a missing or too-old runtime emits nothing, and the SessionStart
+backstop still re-surfaces the handoff); it never mutates host session
+context. On a detached HEAD the branch-based preflight reports "no active
+branch context" and never recommends a fresh session (ADR-0018 §sub-2); the
+path-targeted terminal sidecar renders the footer as on a branch, its
+continue-vs-fresh advice included. Wiring details:
 `core/skills/_shared/references/session-handoff.md`.
+<!-- pipeline:end start-commit -->
 
 When the deliverable boundary is reached, include PR handling readiness
 fields in the footer. Ask the user what to do with PR handling only when
@@ -610,3 +620,8 @@ failed.
   `terminal_marker`, terminal phase, HEAD movement, and no-active-children
   transparently. `workflow_type` is read transparently and does NOT
   affect gate logic.
+- ADR-0066 — Phase 0's blocks, the phase-boundary rules and Phase 7 are
+  generated from `persona-pipeline/` (the `start-*` regions, shared with
+  founder and designer; the redundancy probe and Phase 7 follow the
+  `commit_surface` capability). The phase list, its state writes and the
+  entry routing stay authored here.

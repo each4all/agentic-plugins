@@ -23,21 +23,25 @@ the original pattern.
 Every phase boundary in `/engineer:*` commands automatically
 dispatches the peer ensemble. **There is no `LOW` skip.** Engineer's
 user value is maximum-quality output; the peer call is paid at every
-phase boundary regardless of affinity rating.
+phase boundary regardless of the `Ensemble Affinity` rating recorded in
+the Task Profile (`./orchestration.md` Step 1), which informs the
+orchestrator's local agent count instead.
 
+<!-- pipeline:begin ensemble-always-max -->
 The peer call uses the host's configured model with maximum
 effort/depth. Skills do **not** pass `--model` or `--effort` flags —
 each host's config file (`~/.codex/config.toml`,
 `~/.claude/settings.json`, etc.) is the single source of truth.
 
-`Ensemble Affinity` (LOW / MEDIUM / HIGH) is retained as a Task
-Profile axis (records context about the task) for orchestrator-side
-agent-count decisions, but does **not** gate dispatch.
+`Ensemble Affinity` (LOW / MEDIUM / HIGH) is retained as a Task Profile
+axis (records context about the task) but does **not** gate dispatch.
+<!-- pipeline:end ensemble-always-max -->
 
 ---
 
 ## Bidirectional invocation pattern
 
+<!-- pipeline:begin ensemble-bidirectional -->
 Direction is symmetric:
 
 | Orchestrator | Peer        | Peer invocation                                                |
@@ -45,207 +49,231 @@ Direction is symmetric:
 | Claude Code  | Codex CLI   | `codex-companion` (resolved via `companions` plugin discovery) |
 | Codex CLI    | Claude Code | `claude-companion` (resolved via `companions` plugin discovery)|
 
-Both companion CLIs ship in the agentic-plugins `companions` plugin
-and implement `companions/contract.md` v0.1.1. The contract exposes a
-single subcommand `task --prompt-file <path>` accepting an XML
-prompt. The engineer ensemble protocol expresses every ensemble point
-type as a `task` invocation with a type-specific prompt template;
-review-style ensembles (critique, refine-verify, adversarial-scan)
-embed review semantics in the prompt itself rather than relying on
-separate subcommands.
+Both companion CLIs ship in the agentic-plugins `companions` plugin and
+implement `companions/contract.md` v0.1.1. The contract exposes a single
+subcommand `task --prompt-file <path>` accepting an XML prompt. engineer
+expresses every ensemble point type as a `task` invocation with a
+type-specific prompt template; review-style ensembles embed the review
+semantics in the prompt itself rather than relying on separate
+subcommands.
 
-The orchestrator is the currently-invoking host; the peer is the
-other host. Skills never hard-code "Claude side" or "Codex side" —
-they refer to *orchestrator* and *peer*.
-
-Discovery uses the canonical `companions/discover-peer.mjs` library
-extracted in Stage 2 Deliverable B (per ADR-0008 §(e)
-*Install-order semantics + graceful degradation*). The host adapter
-calls it before any dispatch; on discovery failure, the dispatch is
-skipped silently per *Failure Handling* below.
+The orchestrator is the currently-invoking host; the peer is the other
+host. Skills never hard-code one side or the other — they refer to
+*orchestrator* and *peer*. Discovery + dispatch mechanics live in
+`../../../../scripts/peer-runner.mjs` (the managed runner for
+command-runbook ensembles), with `../../../../scripts/dispatch-peer.mjs`
+retained as the blocking compatibility surface. On discovery failure the
+dispatch is skipped silently per *Failure Handling* below.
+<!-- pipeline:end ensemble-bidirectional -->
 
 ---
 
 ## When This Protocol Applies
 
+<!-- pipeline:begin ensemble-when-applies -->
 Activates automatically at every command-defined phase boundary in
-`/engineer:*` commands. Each command file specifies which phase
-invokes which ensemble point type (see *Ensemble Point Types*
-below).
+`/engineer:*` commands. Each command file specifies which phase invokes
+which ensemble point type (see *Ensemble Point Types* below).
+
+- Claude: `/engineer:<verb> …` (slash command)
+- Codex: `$engineer:<verb> …` (skill mention; per ADR-0021
+  cognitive-runbook parity, full slash-command parity is deferred to
+  ADR-0013 reserved)
 
 Does NOT apply to:
-- Skills invoked outside any `/engineer:*` command (auto-activated
-  mode runs without ensemble unless the invoking command activated
-  it).
-- Binary confirmations or progress updates.
+- Skills auto-activated outside any `/engineer:*` command (auto-activated
+  mode runs without ensemble dispatch — the lightweight in-context path).
+- The three meta skills (`checkpoint` / `resume` / `peer-now`). `peer-now`
+  dispatches the companion, but as a **side-channel**, not an ensemble —
+  see *State Bookkeeping* below.
+- The commit command (`/engineer:commit`), which commits a verb chain's
+  change or closes its workflow and dispatches no peer.
+- Binary confirmations or progress updates within the same session.
 - Internal orchestration decisions.
+<!-- pipeline:end ensemble-when-applies -->
 
 ---
 
 ## Execution Pattern
 
+<!-- pipeline:begin ensemble-execution-intro -->
 Every ensemble point follows three steps: **Launch**, **Collect**,
 **Synthesize**.
+<!-- pipeline:end ensemble-execution-intro -->
 
 ### Step 1: Launch
 
-1. Determine the ensemble point type (see *Ensemble Point Types*
-   below).
-2. Resolve the peer companion via `companions/discover-peer.mjs`
-   (per ADR-0008 §(b) *Resolution order* and §(b.1) *Resolution
-   precedence*). Honor `AGENTIC_COMPANIONS_ROOT` if the user
-   provided an override.
-3. Construct the peer prompt per the type-specific template (see
-   *Prompt Construction Rules*). All ensemble types use the
-   companions `task --prompt-file <path>` subcommand; the
-   ensemble's intent is encoded entirely in the XML prompt body.
-4. Invoke the companion as a background task with the prompt
-   written to a tempfile. The host-shared canonical runner
-   (`plugins/engineer/scripts/peer-runner.mjs`, ADR-0023 PR-C)
-   implements managed dispatch for command-runbook ensemble paths:
-   it records the `pending_ensemble` row, spawns the resolved
-   companion directly, and writes raw stdout/stderr plus the final
-   envelope under the hidden peer-run ledger. `dispatch-peer.mjs`
-   remains the blocking compatibility surface for callers that have
-   not migrated and for side-channel `peer-now` use. The orchestrator's
-   slash command (Claude) or skill agent (Codex) is responsible for
-   arranging background execution per its own host primitives (Bash
-   `run_in_background` on Claude; Codex `task` subcommand on Codex
-   side). The runner itself runs in the foreground of that background
-   task — never behind a shell `&`, which detaches it where the host
-   cannot track it or notify on its exit (ADR-0063 D5).
-5. The orchestrator proceeds immediately to its own parallel
-   analysis.
+<!-- pipeline:begin ensemble-launch -->
+1. Determine the ensemble point type (see *Ensemble Point Types* below).
+2. Resolve the peer companion via the companion-cache discovery
+   (`AGENTIC_COMPANIONS_ROOT` env override honored, per ADR-0008). If
+   discovery fails, the ensemble degrades to local-only.
+3. Construct the peer prompt per the type-specific template (see *Prompt
+   Construction Rules*). Write it to a per-dispatch UTF-8 tempfile and
+   pass it via `--prompt-file <path>` per `companions/contract.md` §2.2 —
+   never as a positional argument and never inlined into a shell command,
+   so the prompt never crosses shell parsing, process argv, or `ps aux`.
+4. Invoke the companion in **JSON envelope mode** through
+   `../../../../scripts/peer-runner.mjs run`, which records the matching
+   `pending_ensemble` row and writes raw stdout/stderr plus the parsed
+   envelope under the hidden peer-run ledger. The orchestrator SHOULD
+   background the call (Bash `run_in_background` on Claude; the `task`
+   subcommand on Codex) so its own analysis proceeds in parallel. The
+   runner runs in the foreground of that background task, never behind a
+   shell `&`, which would detach it where the host can neither track it
+   nor notify you when it exits.
+5. The orchestrator proceeds immediately to its own parallel analysis.
+<!-- pipeline:end ensemble-launch -->
 
 ### Step 2: Collect
 
-1. Orchestrator completes its own analysis (Task tool agents on
-   Claude side, in-context analysis on Codex side, etc.).
-2. Read the peer-runner JSON from the completed background task, then
-   read `envelope_path` for the parsed companion envelope (or
-   `stdout_path` / `stderr_path` when diagnosing degraded runs).
-3. If the peer has not finished yet, wait for the background
-   notification — do not poll or sleep. **Autopilot (ADR-0063, Claude
-   only):** the driver's stream-json host keeps the session alive while a
-   background task is pending and re-invokes the model when it completes, so
-   wait for the notification exactly as written; never sleep-poll a file
-   (`autopilot-mode.md` § Peer ensembles). The step report the host takes
-   when you end a turn to wait is provisional: on the notification, finish
-   Synthesize, record the ensemble result (Phase 2's `peer-runner.mjs
-   settle`, or `ensemble-commit` where Phase 2 still calls it) and the
-   verb's last write, then report
-   again.
-4. If the peer failed or returned empty output, record the failure
-   and proceed to Synthesize with orchestrator-only results
-   (graceful degradation, see *Failure Handling*).
+<!-- pipeline:begin ensemble-collect -->
+1. Wait for the background dispatch notification — do NOT poll, sleep,
+   or proactively check status.
+
+   **Autopilot (ADR-0063, Claude only):** the driver's stream-json host
+   keeps the session alive while a background task is pending and
+   re-invokes the model when it completes, so wait for the notification
+   exactly as written; never sleep-poll a file (`autopilot-mode.md` § Peer
+   ensembles). The step report the host takes when you end a turn to wait
+   is provisional: on the notification, finish Synthesize, settle the
+   attempt (Phase 2's `peer-runner.mjs settle`) and make the verb's last
+   write, then report again.
+
+2. Read the peer-runner JSON first. Its `status` (`completed`, `failed`
+   or `cancelled`), `error_kind` and `envelope_path` describe the run,
+   not the peer's answer. When `envelope_path` is null there is no
+   envelope to read, and the run degrades to local-only: `error_kind`
+   says why — `peer_cli_not_found` (no companion resolved),
+   `envelope_parse_error` (the companion's stdout was not JSON), or a
+   spawn, signal or cancel kind. Diagnose it from `stdout_path` /
+   `stderr_path`.
+3. Otherwise read `envelope_path` for the parsed companion envelope. Its
+   keys are pinned by `companions/contract.md` §4.2:
+   `{status, peer_host, peer_model, stdout, exit_code, [error, metadata]}`;
+   an envelope the runner marked `error_kind: envelope_shape_invalid`
+   breaks that contract (a missing or mistyped key, or a `status` that
+   disagrees with its `exit_code` or `error`) and is malformed, with no
+   answer to parse. Classify by the envelope's
+   `status`: `success` → parse the peer answer;
+   `peer_error` (`error.kind: peer_run_error`) → peer malformed/empty;
+   `companion_error` with `error.kind ∈ {peer_cli_not_found,
+   peer_unauthenticated, peer_invocation_error}` → degrade to local-only;
+   `companion_error` with `error.kind: companion_misuse` → adapter bug,
+   surface as a runtime error (not a degradation case).
+4. If the peer failed or returned empty output, proceed to Synthesize
+   with orchestrator-only results (graceful degradation, see *Failure
+   Handling*). Either way the finalize settles the attempt from its run
+   ledger (`peer-runner.mjs settle`), which records what the ledger shows:
+   verdict `failed` with its `error_kind`, `degraded` for a completed run
+   with no usable answer, or the synthesis verdict. The ledger shows an
+   empty or unreadable answer; for one that parses to nothing usable, only
+   structural shell, the synthesis verdict is `degraded`.
+<!-- pipeline:end ensemble-collect -->
 
 ### Step 3: Synthesize
 
-Classify every finding, recommendation, or conclusion from both
-sources into one of four base synthesis categories.
+<!-- pipeline:begin ensemble-synthesize-intro -->
+Classify every finding, recommendation, direction, or conclusion from
+both sources into one of four base synthesis categories.
+<!-- pipeline:end ensemble-synthesize-intro -->
 
 #### Base Synthesis Categories
 
-| Category   | Condition                                          | Presentation                                       |
-|------------|----------------------------------------------------|----------------------------------------------------|
+<!-- pipeline:begin ensemble-categories -->
+| Category   | Condition                                          | Presentation                                        |
+|------------|----------------------------------------------------|-----------------------------------------------------|
 | AGREED     | Both orchestrator and peer reached same conclusion | Present with elevated confidence. Label: **[Both]** |
-| LOCAL-ONLY | Orchestrator found it, peer did not                | Present normally. Label: **[Local]**               |
-| PEER-ONLY  | Peer found it, orchestrator did not                | Present normally. Label: **[Peer]**                |
-| CONFLICT   | Orchestrator and peer disagree                     | Present both with evidence. Ask user to decide     |
+| LOCAL-ONLY | Orchestrator found it, peer did not                | Present normally. Label: **[Local]**                |
+| PEER-ONLY  | Peer found it, orchestrator did not                | Present normally. Label: **[Peer]**                 |
+| CONFLICT   | Orchestrator and peer disagree                     | Present both with evidence. Ask the user to decide  |
 
-The four names — `AGREED`, `LOCAL-ONLY`, `PEER-ONLY`, `CONFLICT` —
-are the canonical public vocabulary of this protocol. Their
-semantics are schema-stable: renaming or removing any of the four
-is a breaking change; adding a fifth category is a non-breaking,
-schema-minor step.
+The four names — `AGREED`, `LOCAL-ONLY`, `PEER-ONLY`, `CONFLICT` — are
+the canonical public vocabulary of this protocol. Their semantics are
+schema-stable: renaming or removing any of the four is a breaking
+change; adding a fifth category is a non-breaking, schema-minor step.
 
-The labels (`[Local]` / `[Peer]`) are host-agnostic — they refer to
-*orchestrator* and *peer*, never specifically Claude or Codex. This
-reflects bidirectional symmetry: the same brief produced from
-Claude's side and from Codex's side should be structurally
-indistinguishable except for capability differences.
+The labels (`[Local]` / `[Peer]` / `[Both]`) are host-agnostic — they
+refer to *orchestrator* and *peer*, never specifically to one named host.
+This reflects bidirectional symmetry: the same synthesis produced from
+either side should be structurally indistinguishable except for
+capability differences.
+<!-- pipeline:end ensemble-categories -->
 
 Synthesis output replaces the standard single-model output. Follow
 the Presentation Mode Protocol (`presentation-protocol.md`) for the
 synthesized result.
 
-### State Bookkeeping (Stage 2.5+)
+### State Bookkeeping
 
-Ensemble dispatch and synthesis results are recorded in **two complementary
-locations**:
+<!-- pipeline:begin ensemble-bookkeeping -->
+Ensemble dispatch and synthesis are recorded in **two complementary
+locations**, both through engineer's `../../../../scripts/state.mjs`:
 
-1. **Frontmatter** — programmatic bookkeeping via the schema-1.1
-   `pending_ensemble` and `ensemble_results` fields (additive optional
-   keys per
-   [ADR-0017 §sub-decision 4](../../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)).
-   The reader in `plugins/engineer/scripts/state.mjs` accepts legacy
-   `schema: 1` (no 1.1 fields), `schema: '1.1'`, `schema: '1.2'`,
-   `schema: '1.3'`, and `schema: '1.4'` (with any subset of the additive optional keys
-   populated) — `SUPPORTED_SCHEMA_VERSIONS` documents the explicitly
-   known minors. ADR-0028 §Forward-compat (PR5) extends the gate to
-   open-ended `1.x` minors via the `isSupportedSchema()` predicate, so a
-   1.x reader meeting a 1.y file with `y > x` accepts the schema field
-   and silent-skips unknown scalar additive frontmatter keys (stashed
-   under the `FORWARD_COMPAT_UNKNOWNS` Symbol carrier so round-trip
-   writes preserve them). Closed-schema rejection still applies to
-   block-style unknown keys, non-additive type errors on known keys,
-   and unknown majors (e.g., `schema: '2.0'`). Cache-window note: the
-   marketplace-installed cache lags `main`; until release-please syncs,
-   cached older readers continue to gate via the closed `Set.has` check
-   and will reject future-minor files even though the source-of-truth
-   reader on `main` accepts them. All readers / writers in
-   this build go through the helpers in
-   `plugins/engineer/scripts/state.mjs`:
-   - `recordPendingEnsemble(...)` — idempotent on `run_id`; replaces
-     duplicate entries rather than appending.
-   - `commitEnsemble(...)` — three-step atomic mutation in a single file
-     lock window: (1) pop matching pending, (2) idempotent append result,
-     (3) prune to `ENSEMBLE_RESULTS_RETENTION_CAP` (default 20, FIFO by
-     `completed_at`).
-   - Equivalent CLI subcommands: `state.mjs ensemble-pending` /
-     `ensemble-commit`. Command-managed peer ensembles normally use
-     `peer-runner.mjs run --kind ensemble`, which calls
-     `recordPendingEnsemble(...)` before spawning the companion.
+1. **Frontmatter** — programmatic bookkeeping via the `pending_ensemble`
+   and `ensemble_results` schema fields. `ensemble-pending` records that
+   a dispatch began (idempotent on `run_id`); `ensemble-commit` performs
+   the atomic three-step mutation (pop matching pending → append result →
+   prune to the retention cap). Command-managed ensembles normally let
+   `peer-runner.mjs run --kind ensemble` record the pending row before
+   spawning the companion.
 2. **Markdown body** — human-readable phase notes appended via
    `state.mjs append --phase-note ...`:
-   - in-flight markers: `### Ensemble launched: <type> at <iso-utc>`
-     near the phase boundary
-   - synthesis results: `### Ensemble synthesis: <type> verdict=<...>`
+   - in-flight marker: `### Ensemble launched: <type> at <iso-utc>`
+   - synthesis result: `### Ensemble synthesis: <type> verdict=<...>`
      followed by the AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown
 
-The two channels carry distinct concerns: frontmatter is the
-machine-parsable retrospective surface (verdict-rate queries, retention,
-cross-workflow analytics); body is the human-readable narrative. Both are
-written under the per-file lock; the body update happens via
-`appendPhase`, the frontmatter update via the helpers above. They MAY be
-written in separate calls — neither requires the other.
+Frontmatter is the machine-parsable retrospective surface; the body is
+the human-readable narrative. Both are written under the per-file lock
+and MAY be written in separate calls.
 
-`ensemble_results` entries carry `{phase, ensemble_type, run_id, verdict,
-summary, completed_at, codex_session_id}`. `codex_session_id` is
-best-effort: if the orchestrator can extract a session id from the peer's
-stdout, it is recorded as a string. When unavailable, the JS-API caller
-passes `null`; the serializer **omits** the subkey from the on-disk
-entry rather than emitting an empty string. The reader treats absence
-and `null` as equivalent ("no session"). This matches the schema 1.1
-optional-subkey policy in
-`OPTIONAL_ENTRY_KEYS_BY_LIST_KEY` and avoids the
-empty-string-vs-null ambiguity in retrospective queries.
+**Each attempt is settled from its run ledger.** A verb's finalize runs
+`../../../../scripts/peer-runner.mjs settle` with the run id its dispatch
+generated (empty when no run launched) before its last write, and the
+ledger, not the agent, decides what the workflow records:
 
-`pending_ensemble` entries carry `{phase, ensemble_type, run_id,
-started_at}`. Stale entries (process killed between
-`recordPendingEnsemble` and `commitEnsemble`) are surfaced by the next
-`/engineer:resume` drift report; cleanup happens by the next
-`commitEnsemble` for the same `run_id`, or manually via a future
-ensemble-prune subcommand.
+- never launched (the verb ran local-only, so no dispatch ran):
+  nothing, and the phase note's first heading reads
+  `### Ensemble skipped: …`;
+- launched, then failed, cancelled or abandoned: an `ensemble_results`
+  entry with verdict `failed` and the ledger's `error_kind` in its summary;
+- completed: the synthesis verdict, or `degraded` when the answer was empty
+  or unreadable (the synthesis is then local-only). An answer that parses to
+  nothing usable, only structural shell, reads to `settle` like any other:
+  the synthesis judges it, and its verdict is then `degraded`.
+
+`settle` refuses while the run is still live (collect it first), and when an
+empty run id would hide a run that launched for the same workflow and phase.
+
+**`peer-now` is structurally excluded** from `ensemble_results`, by two
+independent mechanisms:
+
+1. `../../../../scripts/peer-runner.mjs` registers a `pending_ensemble` row
+   only when `kind === 'ensemble'` — the `handle.kind !== 'ensemble'`
+   early return. A `--kind peer-now` run cannot reach that write path.
+2. The `peer-now` meta skill omits the three ensemble-accounting flags:
+   `--workflow-path` / `--phase` / `--ensemble-type`. It **does** pass
+   `--run-id`, which is the peer-run **ledger** key (it names the
+   `peer-runs/<run_id>/` directory and lets `peer-runner.mjs status` /
+   `cancel` address the run), not an ensemble key. Passing it is correct
+   and does not create an ensemble record.
+
+`ensemble_results` stays reserved for verb-skill structured ensemble
+verdicts. A `[Peer]` label phase note in the workflow body is peer-now's
+only trace in the workflow; the run's own ledger under
+`peer-runs/<run_id>/` keeps its handle and logs.
+<!-- pipeline:end ensemble-bookkeeping -->
 
 ---
 
 ## Prompt Construction Rules
 
-All peer prompts are XML block structures passed to the companions
-`task` subcommand via `--prompt-file <path>`. The orchestrator
-materializes the prompt to a tempfile to keep it out of `ps aux` and
-avoid the `ARG_MAX` ceiling.
+<!-- pipeline:begin ensemble-prompt-intro -->
+All peer prompts are XML block structures passed to the companions `task`
+subcommand via `--prompt-file <path>`. The orchestrator materializes the
+prompt to a tempfile to keep it out of `ps aux` and avoid the `ARG_MAX`
+ceiling.
+<!-- pipeline:end ensemble-prompt-intro -->
 
 ### Required blocks for every ensemble prompt
 
@@ -256,7 +284,7 @@ avoid the `ARG_MAX` ceiling.
 
 ### Additional blocks by ensemble point type
 
-- **Investigate** (analysis profile): add `<research_mode>`
+- **Explore** (investigate phase, analysis profile): add `<research_mode>`
 - **Investigate** (root-cause profile): add `<verification_loop>`,
   `<missing_context_gating>`
 - **Brainstorm** (decide phase): optional `<axis_awareness>` per
@@ -287,9 +315,11 @@ user's global configuration.
 
 ## Independence Rule
 
-The peer must analyze independently. Do not include the
-orchestrator's in-progress findings, hypotheses, draft conclusions,
+<!-- pipeline:begin ensemble-independence -->
+The peer must analyze independently. Do not include the orchestrator's
+in-progress findings, hypotheses, draft conclusions, confidence ratings,
 or intermediate results in the peer prompt.
+<!-- pipeline:end ensemble-independence -->
 
 Both hosts receive the same raw context:
 
@@ -301,14 +331,23 @@ Both hosts receive the same raw context:
 orchestrator's draft plan as explicit input, because the task is to
 find gaps in that specific plan.
 
+<!-- pipeline:begin ensemble-independence-bidirectional -->
+The Independence Rule is explicitly **bidirectional**: when the local
+host is Claude, Claude does not leak its findings into the
+`codex-companion` prompt; when the local host is Codex, Codex does not
+leak its findings into the `claude-companion` prompt.
+<!-- pipeline:end ensemble-independence-bidirectional -->
+
 ---
 
 ## Ensemble Point Types
 
-Each `/engineer:<verb>` command's phases dispatch one or more of
-these point types. The verb→type mapping is in each command's body.
-All types use the companions `task --prompt-file <path>` subcommand
-per the Bidirectional invocation pattern above.
+<!-- pipeline:begin ensemble-point-types-intro -->
+Each `/engineer:<verb>` command's phases dispatch one or more of these
+point types. The verb→type mapping is in each command's body. All types
+use the companions `task --prompt-file <path>` subcommand per the
+Bidirectional invocation pattern above.
+<!-- pipeline:end ensemble-point-types-intro -->
 
 ### Frame (frame phase)
 
@@ -819,32 +858,44 @@ written files.
 
 ### Peer unavailable, not installed, or unauthenticated
 
-- **Detect**: companion discovery returns empty (the `companions`
-  plugin is not installed), or the peer companion exits with an
-  auth error.
-- **Action**: Skip the dispatch, log a stderr warning. Proceed with
-  orchestrator-only results.
-- **Present**: "Peer ensemble unavailable — results are
-  orchestrator-only. Install the `companions` plugin and ensure the
-  peer host CLI is authenticated."
+<!-- pipeline:begin ensemble-failure-unavailable -->
+- **Detect**: companion discovery returns empty (the `companions` plugin
+  is not installed), or `error.kind ∈ {peer_cli_not_found,
+  peer_unauthenticated, peer_invocation_error}`.
+- **Action**: Proceed with orchestrator-only analysis, silently. A run the
+  runner started settles as verdict `failed` with this `error_kind`
+  (`peer-runner.mjs settle`); with no run launched there is nothing to
+  settle.
+- **Surface**: Mention in the user-facing completion summary that the
+  ensemble was unavailable. Do NOT label findings inside the saved
+  artifact.
+<!-- pipeline:end ensemble-failure-unavailable -->
 
-### Peer timeout or error
+### Peer timeout or runtime error
 
-- **Detect**: background task returns error or empty output.
-- **Action**: Log error, proceed with orchestrator-only results.
-- **Present**: "Peer analysis did not complete — results are
-  orchestrator-only for this phase."
+<!-- pipeline:begin ensemble-failure-error -->
+- **Detect**: `status: peer_error` with `error.kind: peer_run_error`, or
+  the background dispatch exits unmappably.
+- **Action**: Proceed orchestrator-only; settling the attempt records
+  verdict `failed` with the ledger's `error_kind`.
+- **Surface**: Same as above.
+<!-- pipeline:end ensemble-failure-error -->
 
-### Peer returns malformed or incomplete output
+### Peer returns empty or malformed output
 
-- **Detect**: Output does not match the expected structure, or is
-  structurally valid but missing expected sections (e.g., only 2 of
-  4 required fields present).
-- **Action**: Include available output in the synthesis attempt.
-  For missing sections, record them as "Peer: not analyzed".
-- **Present**: "Peer output was partially parsed — some findings
-  may be missing." List which sections were present and which were
-  absent.
+<!-- pipeline:begin ensemble-failure-empty -->
+- **Detect**: Envelope `status: success` but `stdout` parses to no
+  findings, or is structurally valid but missing required fields for some
+  findings.
+- **Action**: Parse only the findings that pass structural validation;
+  discard the rest. Continue with the salvageable subset. A completed run
+  with no usable answer at all settles as verdict `degraded`. `settle` sees
+  an empty or unreadable answer itself; an answer that parses to no
+  findings, only structural shell, reads to it like any other, so pass
+  `degraded` as the synthesis verdict then.
+- **Surface**: Mention in the completion summary that ensemble coverage
+  was partial, and which sections the peer did not cover.
+<!-- pipeline:end ensemble-failure-empty -->
 
 ### Large change set / large area
 
@@ -862,6 +913,10 @@ written files.
 
 ### Graceful degradation principle
 
-Ensemble failure must never block the workflow. Orchestrator-only
-results are always sufficient to proceed. The peer adds value when
-available but is not required.
+<!-- pipeline:begin ensemble-graceful -->
+Ensemble failure must never block the workflow. Orchestrator-only results
+are always sufficient to proceed: on the local-only path the verb still
+assembles its brief, deliverable or critique report, and saves it
+where it saves one. The peer adds value when available but is not
+required, and a saved artifact never reveals whether the ensemble ran.
+<!-- pipeline:end ensemble-graceful -->

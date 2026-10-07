@@ -76,6 +76,7 @@ know this shape via the ADR-0010 §5 typed handoff prototype.
 
 ## Citation Conventions
 
+<!-- pipeline:begin brief-spec-citations -->
 ### Numbering
 
 - Citations use bracketed integers `[N]` inline, paired with entries in the Sources section.
@@ -92,14 +93,13 @@ and trailing-slash variations when comparing.
 
 ### Source Title Fallback
 
-If a source has no clear title:
-1. Use the page's `<title>` tag if available.
-2. Otherwise: `<hostname> — <last URL path segment>`.
-3. Last resort: full URL.
+If a source has no clear title: use the page `<title>`; otherwise
+`<hostname> — <last URL path segment>`; last resort the full URL.
 
 ### Access Date
 
 ISO format `YYYY-MM-DD`. Records when the source was fetched/read.
+<!-- pipeline:end brief-spec-citations -->
 
 ### Source Type Taxonomy (4 tiers)
 
@@ -153,6 +153,7 @@ divergence; the rule above governs both intra-corpus conflicts
 
 ## Ensemble Label Policy
 
+<!-- pipeline:begin brief-spec-label-policy -->
 When `engineer:investigate --profile=cited-brief` runs in command-mode,
 the bidirectional research-scan ensemble (per
 `cited-brief-ensemble.md`) may contribute claims and sources. The
@@ -160,17 +161,17 @@ brief artifact does NOT carry any source-of-discovery labels:
 
 - No host-named markers anywhere in the brief — none of `[Local]`,
   `[Peer]`, `[Both]`, or any host-specific equivalent.
-- Numeric `[N]` citations remain the only labeling format in
-  Findings and Sources.
-- The peer's internal citation labels are NEVER copied verbatim into
-  the brief — they are remapped to the brief's capture-order
-  numbering by Citation Remapping (canonical rule in
-  `cited-brief-ensemble.md`).
+- Numeric `[N]` citations remain the only labeling format in Findings
+  and Sources.
+- The peer's internal citation labels are NEVER copied verbatim into the
+  brief — they are remapped to capture-order numbering by Citation
+  Remapping (canonical rule in `cited-brief-ensemble.md`).
 
-The presence or absence of ensemble execution must NOT be inferable
-from reading the brief. Ensemble status (unavailable, partial,
-degraded) is communicated only in the user-facing completion summary
-that follows the save, never inside the brief artifact.
+The presence or absence of ensemble execution must NOT be inferable from
+reading the brief. Ensemble status (unavailable, partial, degraded) is
+communicated only in the user-facing completion summary that follows the
+save, never inside the brief artifact.
+<!-- pipeline:end brief-spec-label-policy -->
 
 **Note on engineer's wider label policy**: engineer's standard
 ensemble synthesis (in `_shared/references/ensemble-protocol.md`)

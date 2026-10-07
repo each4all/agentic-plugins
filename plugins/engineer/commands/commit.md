@@ -29,18 +29,20 @@ commit (ADR-0062); after a no-changes close, `/orchestrator:done <subtask>
 It is a meta command (ADR-0022 meta-skill category, ADR-0010 §3): it runs no
 cognitive verb and bootstraps no workflow. **Cognitive runbook lives in
 `${CLAUDE_PLUGIN_ROOT}/core/skills/commit/SKILL.md`**; this file owns the
-Claude-host bash below, and the Codex skill of the same name mirrors it.
+Claude-host bash below, and the Codex skill of the same name runs the same
+blocks.
 
 Under an autopilot run the whole step is one command, decided in code
 (`phase7-commit.mjs --mode autopilot`); the rules are in
 `${CLAUDE_PLUGIN_ROOT}/core/skills/_shared/references/autopilot-mode.md`.
 
+<!-- pipeline:begin plugin-root -->
 Plugin root: each shell block below opens by setting `$CLAUDE_PLUGIN_ROOT` —
 from `AGENTIC_ENGINEER_ROOT` when that is set, else from the plugin path
 Claude Code writes into this command when it loads it, else from the newest
-version in the plugin cache. Keep that opening line when you run a block: a
-shell variable does not outlive a Bash call, so every block below resolves
-the workflow again.
+version in the plugin cache. Keep those opening lines when you run a block: a
+shell variable does not outlive a Bash call.
+<!-- pipeline:end plugin-root -->
 
 Maintain one progress entry per phase and advance its status as you go — use the host's task-tracking tools when the session exposes them, and keep an inline checklist when it does not.
 
@@ -48,24 +50,29 @@ Maintain one progress entry per phase and advance its status as you go — use t
 
 ## Phase 0 — Resolve the workflow and the mode
 
+<!-- pipeline:begin commit-phase-0 -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 GIT_BRANCH="$(git branch --show-current)"
 if [ -z "$GIT_BRANCH" ]; then
-  echo "✗ Detached HEAD detected — engineer workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "✗ Detached HEAD detected — ${PERSONA} workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
   exit 1
 fi
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
 if [ -z "$ACTIVE" ]; then
-  echo "✗ No active engineer workflow on $GIT_BRANCH — nothing for /engineer:commit to commit or close." >&2
+  echo "✗ No active ${PERSONA} workflow on $GIT_BRANCH — nothing for /${PERSONA}:commit to commit or close." >&2
   exit 1
 fi
-WORKFLOW_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE" \
-  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.parse(d).workflow_type||"verb-chain")}catch{process.exit(1)}})')" || exit 1
+# The read is checked on its own: a read that fails stops the block, whatever
+# it printed, before the type is parsed.
+WF_JSON="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read --workflow-path "$ACTIVE")" || exit $?
+WORKFLOW_TYPE="$(printf '%s' "$WF_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(JSON.parse(d).workflow_type||"verb-chain")}catch{process.exit(1)}})')" || exit 1
 if [ "$WORKFLOW_TYPE" = "start" ]; then
-  echo "✗ $ACTIVE is an /engineer:start workflow; its own Phase 7 commits it — continue it with /engineer:start." >&2
+  echo "✗ $ACTIVE is an /${PERSONA}:start workflow; its own Phase 7 commits it — continue it with /${PERSONA}:start." >&2
   exit 1
 fi
 # ADR-0063 D4 — prints nothing in interactive mode; this command's autopilot
@@ -81,31 +88,34 @@ Then:
 - **The preflight printed the autopilot banner** → run the Autopilot block
   below and nothing else.
 - **It printed a pending `staging-set` gate** → the owner is here to confirm
-  the staging set an autopilot run stopped on. Continue with Phase 1; clear the
-  gate in Phase 2 once they confirm it.
+  the staging set an autopilot run stopped on.
+  Continue with Phase 1; clear the gate in Phase 2 once they confirm it.
 - **It printed any other pending gate** → stop and put it to the user. That
   gate is resolved by the surface the notice names, not by a commit; the
   driver's execute and close modes refuse while any gate is set.
 - **It printed nothing** → Phase 1.
+<!-- pipeline:end commit-phase-0 -->
 
 ---
 
 ## Autopilot — the whole step in one command
 
+<!-- pipeline:begin commit-autopilot -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
-[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch." >&2; exit 1; }
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # Recovers an interrupted commit, closes a done workflow with nothing to
 # commit, stops at the staging-set owner gate, or commits with plan mode's
 # suggested subjects and --strict-cc. The owner gate is also where it stops
 # when the workflow did not begin on a clean tree or the index is pre-staged:
 # only the owner can tell pre-existing hunks from the workflow's own. It takes
-# no confirm or bypass flag and refuses outside an autopilot run, on an
-# /engineer:start workflow, and while an owner gate or a peer ensemble is
-# pending.
+# no confirm or bypass flag and refuses outside an autopilot run, on a /start
+# workflow, and while an owner gate or a peer ensemble is pending.
 node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode autopilot \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}"
 ```
@@ -113,22 +123,26 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode autopilot \
 Report its JSON `action` in the Completion below. Never push or open a pull
 request afterwards: waiting for the landing is the owner's routine step, which
 the driver reads from state, and it is not an owner gate.
+<!-- pipeline:end commit-autopilot -->
 
 ---
 
 ## Phase 1 — Plan (interactive)
 
+<!-- pipeline:begin commit-plan -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
-[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch." >&2; exit 1; }
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode plan \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}"
 ```
 
-Read the plan JSON and follow `core/skills/commit/SKILL.md` § Phase 1:
+Read the plan JSON and follow `core/skills/commit/SKILL.md` § Phase 1 — Plan:
 
 - `branch: no-changes` → `no_changes.path` decides:
   - `recovery` → an earlier run's commits landed but its terminal write did
@@ -140,37 +154,47 @@ Read the plan JSON and follow `core/skills/commit/SKILL.md` § Phase 1:
 - Otherwise present the staging set and `commits[].suggested_subject`, with
   `ask_user`, `extras` and `requires_split`, exactly as `/engineer:start`
   Phase 7 does, and get the user's accept / edit / cancel.
+<!-- pipeline:end commit-plan -->
 
 ---
 
 ## Phase 2 — Commit (interactive)
 
+<!-- pipeline:begin commit-staging-clear -->
 When the preflight reported a pending `staging-set` gate and the user has now
 confirmed the staging set, clear it first:
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
-[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch." >&2; exit 1; }
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" awaiting-owner-clear \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --gate staging-set \
-  --next-step-kind commit --next-step-confidence HIGH
+  --next-action "Commit the confirmed staging set with /${PERSONA}:commit" \
+  --next-step-kind commit --next-step-confidence HIGH || exit $?
 ```
 
-The clear records the owner's resolution with the next step `commit` in the
-same write, so a commit that fails afterwards does not leave the
-`owner-decision` the gate had recorded.
+The clear records the owner's resolution with the next step `commit` and its
+next action in the same write, so a commit that fails afterwards leaves
+neither the `owner-decision` the gate had recorded nor the gate's
+`Owner: confirm the staging set …` next action.
+<!-- pipeline:end commit-staging-clear -->
 
+<!-- pipeline:begin commit-execute -->
 Then commit with what the user confirmed:
 
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
-[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch." >&2; exit 1; }
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # Subjects, one of:
 #   --suggested-subjects                   the user accepted every suggestion (single or split);
 #   --subject '<confirmed subject>'        one commit, edited;
@@ -187,10 +211,11 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode execute \
 
 The driver takes the workflow out of its terminal state before the first
 commit (`phase-7-commit`, no marker), so a split that fails halfway is never
-archived by a Stop that sees HEAD moved. On success it has already sent the
-parent note (P10) and written `set-terminal commit-complete` last. On failure
-it printed what landed and what did not; the workflow stays active, and
-rerunning `/engineer:commit` resumes from there.
+archived by a Stop that sees HEAD moved. On success it has
+already sent the parent note (P10) and
+written `set-terminal commit-complete` last. On failure it printed what
+landed and what did not; the workflow stays active, and rerunning
+`/engineer:commit` resumes from there.
 
 ARCHIVE TIMING — decide before running execute. On Claude the Stop hook fires
 at **every turn end**, so a successful commit's terminal write is evaluated
@@ -201,26 +226,31 @@ set-terminal's full flag set. On Codex the Stop hook runs only once the
 operator has trusted the plugin hooks (`/hooks`), so the archive waits for
 that. The close path archives the workflow itself. Full contract:
 `core/skills/_shared/references/session-handoff.md` § Archive timing.
+<!-- pipeline:end commit-execute -->
 
 ---
 
 ## Phase 3 — Close without a commit (interactive)
 
+<!-- pipeline:begin commit-close -->
 ```bash
-CLAUDE_PLUGIN_ROOT="${AGENTIC_ENGINEER_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
-[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/engineer -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+ROOT_OVERRIDE="$(printenv 'AGENTIC_ENGINEER_ROOT' || true)"
+CLAUDE_PLUGIN_ROOT="${ROOT_OVERRIDE:-${CLAUDE_PLUGIN_ROOT}}"
+[ -n "$CLAUDE_PLUGIN_ROOT" ] || CLAUDE_PLUGIN_ROOT="$(find ~/.claude/plugins/cache/agentic-plugins/'engineer' -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -E '/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' | sort -V | tail -1)"
+PERSONA='engineer'
 REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
 ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" find-active --repo-root "$REPO_ROOT")" || exit $?
-[ -n "$ACTIVE" ] || { echo "✗ No active engineer workflow on this branch." >&2; exit 1; }
+[ -n "$ACTIVE" ] || { echo "✗ No active ${PERSONA} workflow on this branch." >&2; exit 1; }
 # Re-checks everything: git status clean (index, working tree, untracked),
-# nothing committed since the workflow began, next_step_kind done, not an
-# /engineer:start workflow, no owner gate or pending ensemble. Writes
-# close-complete with the terminal marker, then archives the workflow (its
-# HEAD never moved, so the Stop hook would not). A close stopped between the
-# two is finished by running it again.
+# nothing committed since the workflow began, next_step_kind done, not a
+# /start workflow, no owner gate or pending ensemble. Writes close-complete
+# with the terminal marker, then archives the workflow (its HEAD never moved,
+# so the Stop hook would not). A close stopped between the two is finished by
+# running it again.
 node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" --mode close \
   --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" --host "${AGENTIC_HOST:-claude}"
 ```
+<!-- pipeline:end commit-close -->
 
 ---
 
@@ -256,6 +286,7 @@ for a macro subtask. After a no-changes close of a macro subtask it is
 is the verb that fixes the cause (`/engineer:refine` for a hook or subject
 failure). Derive it from the result; do not end with a fixed literal.
 
+<!-- pipeline:begin commit-completion-footer -->
 The runtime completion footer is **code-emitted** on the commit path
 (ADR-0039): the driver's terminal write fires the ADR-0031 session-handoff
 sidecar, which prints the footer on stderr. Do **not** hand-compose a second
@@ -263,3 +294,4 @@ one. The footer is advisory + pointer-only and fail-closed, and it never
 mutates host session context. The close path prints none — its projection
 would read the unmoved HEAD as a blocked archive and advise a commit — so the
 Completion above names the next step instead.
+<!-- pipeline:end commit-completion-footer -->
