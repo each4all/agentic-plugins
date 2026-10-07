@@ -1,7 +1,7 @@
 <!-- pipeline:begin routing-intro -->
 # Entry Routing and Decision Contract (founder)
 
-This contract applies whenever `founder:start` or a founder-facing
+This contract applies whenever `founder:start` or any founder-facing
 decision point asks the user whether to continue, split, defer, or change
 workflow shape. It exists to keep Claude Code and Codex CLI behavior
 equivalent by outcome, state, recovery path, and evidence rather than by
@@ -108,11 +108,11 @@ form (selected_next + one-line rationale + next_command); the fuller
 proposal (alternatives + evidence + confidence) belongs in the
 completion output and the phase note.
 
-**Closed-enum projection: `next_step` (ADR-0063 D6, ported by ADR-0066
-Stage 2).** A verb command's last write, `state.mjs finish-verb`, also
-records `selected_next` and `confidence` as three flat keys. `next_action`
-stays the free-text form for humans; a machine consumer reads the closed-enum
-keys and never parses `next_action`.
+**Closed-enum projection: `next_step` (ADR-0063 D6, amending ADR-0029
+§3; every persona since ADR-0066 Stage 2).** A verb command's last write,
+`state.mjs finish-verb`, also records `selected_next` and `confidence` as
+three flat keys. `next_action` stays the free-text form for humans; a machine
+consumer reads the closed-enum keys and never parses `next_action`.
 
 | `selected_next` | `next_step_kind` | `next_step_verb` |
 |---|---|---|
@@ -132,11 +132,13 @@ fields, only the compact core survives into durable state (the
 `next_action` string) and is therefore **code-emitted** at terminal
 completions — the runtime footer renders it as `recommended next work`,
 alongside the pointer-shaped evidence it also code-emits (the workflow
-path artifact and the `workflow checkpoint` line). `rejected_alternatives`,
-the full `rationale` and `confidence` have **no durable home** (ADR-0029 §3
-freezes the `next_action` schema) and thus **zero active triggers** (the
-ADR-0031 lesson): they render only because the completing surface follows
-this contract, and are pinned by shape tests, not by execution. The
+path artifact and the `workflow checkpoint` line). `rejected_alternatives`
+and the full `rationale` have **no durable home** (ADR-0029 §3 freezes the
+`next_action` schema) and thus **zero active triggers** (the ADR-0031
+lesson): they render only because the completing surface follows this
+contract, and are pinned by shape tests, not by execution. `confidence` had
+none either until ADR-0063 D6: it now persists as `next_step_confidence`
+beside `selected_next`'s closed-enum form (above). The
 canonical six-field template, the completion-flag minimum-content
 criteria, and the footer's generic-fallback visibility rules live in the
 runtime plugin's `docs/completion-output-contract.md`; every persona
@@ -163,9 +165,13 @@ the session handoff names the gate's resolving surface as the next action.
 | `scope-routing` | a verb concludes the request does not belong in this verb or workflow (another route in the Routing Recommendation fits) | `Routing recommendation` · `routing-recommendation` | the owner picks the route, then `awaiting-owner-clear` with the next step |
 
 `state.mjs awaiting-owner-clear --gate <gate> --resolution "<the decision>"
---next-step-kind … --next-step-confidence … [--next-step-verb …]` records the
-owner's decision, clears the gate and names the next step in one write; it
+--next-step-kind … --next-step-confidence … [--next-step-verb …] --next-action
+"<what comes next>"` records the owner's decision, clears the gate, names the
+next step and replaces the gate's `Owner: …` next action in one write; it
 refuses, writing nothing, when the gate set on the workflow is another one.
+Inside a `/founder:start` lifecycle, decide's Owner selection records no
+next step instead (`--clear-next-step true`): the lifecycle owns its phase
+order.
 `staging-set` belongs to a commit command, and founder declares
 `commit_surface` off, so `state.mjs` refuses to set it, naming the capability.
 `pr-handling` belongs to autopilot dispatch, and founder declares
@@ -218,8 +224,11 @@ runs (`session-handoff.md` § When it fires has the wiring):
   write (`state.mjs finish-verb`) fires the handoff sidecar, which prints the
   runtime footer with its continue-vs-fresh block, alongside (not inside) the
   Active Next-Action Proposal.
-- **The Stop hook backstop** — for a terminal workflow, the hook re-fires the
-  sidecar before the auto-archive move.
+- **The Stop hook backstop** — for the terminal workflow active on the
+  checked-out branch, the hook re-fires the sidecar before the auto-archive
+  move; the off-branch sweep archives a terminal workflow whose branch is not
+  checked out without another sidecar attempt (`session-handoff.md` § Fail-closed
+  baseline (ADR-0043 §2)).
 - **SessionStart (matcher: compact)** — re-surfaces a pending handoff once.
 
 founder does not fire it at `/founder:start` Phase 0, where engineer fires it
@@ -358,12 +367,14 @@ from a prior emit rather than let it be served (`session-handoff.md`
   context.
 - **Archive readiness is gate-driven and side-effect-free.** `archive_gate`
   comes from the owning plugin's **pure** evaluator, not the Stop runner. The
-  real archive happens only in the persona's Stop hook, preserving the
+  automatic archive happens in the persona's Stop hook, preserving the
   ADR-0017 auto-archive invariants: on the checked-out branch once every gate
   passes, HEAD movement past the baseline among them; and in the off-branch
   sweep, which judges a kept branch by its own tip and archives a terminal
   workflow whose branch was deleted with no HEAD-movement gate (a deleted
   branch has no tip to judge).
+  An owner archives a stale workflow on purpose with `/founder:resume
+  archive`.
 - **One projection per surface.** A completing surface projects **its own**
   workflow only; macro projection happens at the orchestrator surfaces. The
   two are never merged.
