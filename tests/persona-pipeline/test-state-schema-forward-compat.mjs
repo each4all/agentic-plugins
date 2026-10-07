@@ -550,9 +550,12 @@ for (const persona of personasFor('scripts/state.mjs')) {
     const src = await readFile(STATE_PATH, 'utf8');
     const keyOrderLine = new RegExp(`^  '(${SCHEMA_14_KEYS.join('|')})',\\n`, 'gm');
     const removed = (src.match(keyOrderLine) ?? []).map((l) => l.trim());
+    // Contract: the source rewrite below that builds the 1.3 reader — if the key
+    // lines drift, nothing is removed and the "1.3 reader" silently knows the 1.4 keys.
     deepStrictEqual(removed, SCHEMA_14_KEYS.map((k) => `'${k}',`),
       'the six keys must each appear once, one per line, in FRONTMATTER_KEY_ORDER');
     const emit = "export const SCHEMA_VERSION = '1.4';";
+    // Contract: the same rewrite — without this exact line the copy keeps emitting 1.4.
     ok(src.includes(emit), 'the build must emit 1.4');
     const reader = src.replace(keyOrderLine, '').replace(emit, "export const SCHEMA_VERSION = '1.3';");
     // A plugin-shaped copy: state.mjs reads its persona from the plugin's own

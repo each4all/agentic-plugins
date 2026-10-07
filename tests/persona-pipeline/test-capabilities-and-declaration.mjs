@@ -158,7 +158,6 @@ for (const persona of ALL_OFF_PERSONAS) {
     if (!P.capabilities.dispatch_target) {
       it('dispatch_target off: no generated surface but state.mjs reads AGENTIC_AUTOPILOT, and no runbook line expands it', () => {
         const readers = [];
-        let runbookMentions = 0;
         const walk = (dir) => {
           for (const e of readdirSync(dir, { withFileTypes: true })) {
             const full = join(dir, e.name);
@@ -168,16 +167,18 @@ for (const persona of ALL_OFF_PERSONAS) {
             if (!text.includes('AGENTIC_AUTOPILOT')) continue;
             if (/\.(mjs|js|sh|json)$/.test(e.name)) readers.push(rel);
             if (e.name.endsWith('.md')) {
-              runbookMentions += 1;
               for (const line of text.split('\n').filter((l) => l.includes('AGENTIC_AUTOPILOT'))) {
+                // Contract: the agent running a runbook block — a line that expands the variable
+                // lets an inherited autopilot run steer a persona that is no dispatch target.
                 ok(!/\$\{?AGENTIC_AUTOPILOT|printenv\s+'?AGENTIC_AUTOPILOT/.test(line), `${rel}: a line expands AGENTIC_AUTOPILOT: ${line.trim()}`);
               }
             }
           }
         };
         for (const sub of ['commands', 'core', 'scripts', 'adapters', 'hooks']) if (existsSync(P.path(sub))) walk(P.path(sub));
+        // Contract: Node, running the generated scripts — any script but state.mjs that names the
+        // variable can act on an inherited autopilot run with dispatch_target off.
         deepStrictEqual(readers, ['scripts/state.mjs'], 'only state.mjs reads the variable');
-        ok(runbookMentions >= 7, `only ${runbookMentions} documents mention the variable (the runbooks say it changes nothing)`);
       });
 
       it('dispatch_target off: the Stop hook archives the same with and without an inherited AGENTIC_AUTOPILOT', () => {
@@ -235,6 +236,8 @@ describe('imports: no generated file reaches a capability module statically', ()
     it(`${persona}`, () => {
       for (const unit of MANIFEST.units.filter((u) => u.personas.includes(persona) && u.dest.endsWith('.mjs'))) {
         const text = readFileSync(join(pluginRoot(persona), unit.dest), 'utf8');
+        // Contract: Node's module loader — a static import of a capability module fails the whole
+        // script at load in a persona that does not ship that module.
         ok(!/from ['"][^'"]*(parent-writeback|phase7-commit|start-args)\.mjs['"]/.test(text),
           `${persona}/${unit.dest} imports a capability module`);
       }

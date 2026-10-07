@@ -40,6 +40,8 @@ const GIT_ENV = {
 
 /** The ```bash blocks between `## <from>` and the next `## ` heading. */
 function phaseBlocks(text, from) {
+  // Contract: the tests below slice the blocks they run by these headings — a
+  // renamed heading or an empty phase must fail here, not run nothing.
   const start = text.indexOf(`## ${from}`);
   ok(start >= 0, `no "## ${from}" heading`);
   const end = text.indexOf('\n## ', start + 1);

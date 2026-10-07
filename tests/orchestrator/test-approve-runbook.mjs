@@ -3,7 +3,9 @@
 // ADR-0063 D6 — /orchestrator:approve, run as written: the bash block in
 // commands/approve.md, against real macro files, in bash and (when installed)
 // zsh. It resolves the macro, prints the table and hash it approves, and
-// approves exactly that hash.
+// approves exactly that hash. The /orchestrator:plan Phase 2 blocks (the
+// plan-set write with its verdict, then the note and ensemble commit) run the
+// same way.
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, notStrictEqual } from 'node:assert/strict';
@@ -24,6 +26,8 @@ const SHELLS = ['bash', 'zsh'].filter((sh) => spawnSync(sh, ['-c', 'true']).stat
 
 async function approveBlock() {
   const text = await readFile(resolve(ORCH_ROOT, 'commands/approve.md'), 'utf8');
+  // Contract: this test slices the block it runs by this heading — a renamed
+  // heading must fail here, not run some other block.
   const from = text.indexOf('## Phase 0 — Resolve the macro, show the plan, approve it');
   ok(from >= 0, 'approve.md carries its Phase 0');
   const m = /```bash\n([\s\S]*?)```/.exec(text.slice(from));
@@ -69,6 +73,9 @@ async function run(shell, dir, extraEnv = {}) {
 describe('/orchestrator:approve binds the approval to the hash it showed', () => {
   it('passes the shown plan_hash as --expect-hash', async () => {
     const block = await approveBlock();
+    // Contract: the agent running /orchestrator:approve — the hash it approves must be
+    // the one it showed; a second plan-hash read or no --expect-hash approves a plan
+    // that changed in between (no single-process run can show that race).
     ok(block.includes('SHOWN="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-hash --workflow-path "$MACRO_PATH")"'), 'the block reads plan-hash once');
     ok(/PLAN_HASH="\$\(printf '%s\\n' "\$SHOWN" \| node -e '[^']*JSON\.parse\(d\)\.plan_hash/.test(block), 'PLAN_HASH comes from what was shown');
     ok(block.includes('--expect-hash "$PLAN_HASH"'), 'plan-approve is bound to it');
@@ -170,6 +177,8 @@ for (const shell of SHELLS) {
 // ensemble result and must fail when either write fails.
 async function planPhase2Blocks() {
   const text = await readFile(resolve(ORCH_ROOT, 'commands/plan.md'), 'utf8');
+  // Contract: this test slices the blocks it runs by this heading — a renamed
+  // heading must fail here, not run some other block.
   const from = text.indexOf('## Phase 2 — State finalize');
   ok(from >= 0, 'plan.md carries Phase 2');
   const blocks = [...text.slice(from).matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
@@ -177,12 +186,12 @@ async function planPhase2Blocks() {
   return blocks;
 }
 
-describe('/orchestrator:plan passes its verdict to plan-set', () => {
-  it('the plan-set block carries --verdict "$VERDICT", and no later block sets a gate', async () => {
-    const [planSet, finalize] = await planPhase2Blocks();
-    ok(/state\.mjs" plan-set \\[\s\S]*--verdict "\$VERDICT"/.test(planSet), planSet);
+describe('/orchestrator:plan sets the gate in the plan write', () => {
+  it('no later block sets a gate', async () => {
+    const [, finalize] = await planPhase2Blocks();
+    // Contract: the agent running /orchestrator:plan — a separate gate write leaves the
+    // plan approvable between the two writes.
     ok(!finalize.includes('awaiting-owner-set'), 'the gate is not set in a separate write');
-    ok(finalize.includes('--verdict "$VERDICT"'), 'the ensemble commit records the same verdict');
   });
 });
 

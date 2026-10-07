@@ -59,6 +59,8 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { isSessionVariable } from './lib/session-env.mjs';
+
 export class MutationHarnessError extends Error {
   constructor(message) {
     super(message);
@@ -169,11 +171,15 @@ export function fileAt(repoRoot, copy, ref, file) {
  *
  * Measured, not assumed: before this scrub, the harness's own end-to-end gate
  * scored a mutation that broke the only assertion in its fixture as SURVIVED.
+ *
+ * The operator's agentic session is dropped too, as `npm test` drops it
+ * (`scripts/lib/session-env.mjs`): inherited, it fails the control under an
+ * autopilot worker, and the harness refuses to score anything.
  */
 export function childEnv(env = process.env) {
   const out = {};
   for (const [key, value] of Object.entries(env)) {
-    if (key.startsWith('NODE_TEST_')) continue;
+    if (key.startsWith('NODE_TEST_') || isSessionVariable(key)) continue;
     out[key] = value;
   }
   return out;

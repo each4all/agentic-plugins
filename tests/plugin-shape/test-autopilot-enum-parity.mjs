@@ -7,8 +7,8 @@
 // plugin and off in the other for the same environment. Tests are not
 // plugins, so this file reads both copies and holds them equal. The owner
 // gates are split between the plugins — the engineer workflow stores some,
-// the macro the others — so the two sets must not overlap, and together they
-// stay inside ADR-0063 D4's closed enum.
+// the macro the others — so the two sets must not overlap. The autopilot
+// driver's copies of engineer's closed enums are held equal to engineer's.
 //
 // Copies today: engineer (S1) and orchestrator (S2). Runtime's entry-brief
 // readers get theirs with S7; add it to COPIES then. founder and designer
@@ -41,6 +41,9 @@ function literalIn(name, pattern) {
 }
 
 describe('isAutopilotRun is the same predicate in every copy', () => {
+  // Contract: every plugin's isAutopilotRun parses AGENTIC_AUTOPILOT — a copy
+  // whose regex differs, or one that stops matching the run id the driver
+  // mints, turns autopilot on in one plugin and off in another for one run.
   it('the source line is identical', () => {
     const lines = Object.keys(COPIES).map((name) =>
       literalIn(name, String.raw`^\s*return /\^autopilot-.*\.test\(env\?\.AGENTIC_AUTOPILOT \?\? ''\);$`));
@@ -69,6 +72,8 @@ describe('isAutopilotRun is the same predicate in every copy', () => {
 });
 
 describe('awaiting_owner_pointer has one shape', () => {
+  // Contract: each plugin's state.mjs validates awaiting_owner_pointer with this
+  // (unexported) regex — copies that differ accept a pointer another rejects.
   it('the pointer regex literal is identical', () => {
     const lines = Object.keys(COPIES).map((name) =>
       literalIn(name, String.raw`^const AWAITING_OWNER_POINTER_RE = .*;$`));
@@ -77,18 +82,10 @@ describe('awaiting_owner_pointer has one shape', () => {
 });
 
 describe('owner gates are split between engineer and macro', () => {
-  it('the two sets do not overlap and stay inside the ADR-0063 D4 enum', async () => {
+  it('the two sets do not overlap', () => {
     const engineer = [...modules.engineer.VALID_WORKFLOW_OWNER_GATES];
     const macro = [...modules.orchestrator.VALID_MACRO_OWNER_GATES];
     deepStrictEqual(engineer.filter((g) => macro.includes(g)), []);
-
-    const adr = await readFile(resolve(REPO_ROOT, 'docs/adr/0063-autopilot-fresh-session-driver.md'), 'utf8');
-    const start = adr.indexOf('**`awaiting_owner.gate`** is a closed enum');
-    ok(start >= 0, 'ADR-0063 D4 states the gate enum');
-    const paragraph = adr.slice(start, adr.indexOf('\n\n', start));
-    const d4 = [...paragraph.matchAll(/`([a-z]+(?:-[a-z]+)+)`/g)].map((m) => m[1]);
-    ok(d4.length >= 9, `D4 lists the gates (${d4.join(', ')})`);
-    for (const gate of [...engineer, ...macro]) ok(d4.includes(gate), `${gate} is a D4 gate`);
   });
 });
 
@@ -105,6 +102,8 @@ describe('the persona plugins read the workflow-file contract engineer reads', a
     const source = await readFile(path, 'utf8');
 
     it(`${persona}: the isAutopilotRun source line is engineer's, and decides the same`, () => {
+      // Contract: as above — this persona's copy parses AGENTIC_AUTOPILOT for the
+      // same run.
       const pattern = String.raw`^\s*return /\^autopilot-.*\.test\(env\?\.AGENTIC_AUTOPILOT \?\? ''\);$`;
       const found = source.match(new RegExp(pattern, 'gm')) ?? [];
       strictEqual(found.length, 1, `${persona}: exactly one predicate line`);
@@ -116,6 +115,7 @@ describe('the persona plugins read the workflow-file contract engineer reads', a
     });
 
     it(`${persona}: the pointer regex literal is engineer's`, () => {
+      // Contract: as above — this persona's state.mjs validates the same pointer.
       const pattern = String.raw`^const AWAITING_OWNER_POINTER_RE = .*;$`;
       const found = source.match(new RegExp(pattern, 'gm')) ?? [];
       strictEqual(found.length, 1, `${persona}: exactly one match for ${pattern}`);
@@ -142,6 +142,8 @@ describe('the autopilot driver reads the engineer enums it was given', () => {
 
   it('verbs, next-step kinds, confidences, engineer gates and terminal phases match engineer', async () => {
     const policy = await import(policyPath);
+    // Contract: engineer's state.mjs validates --verb against VALID_VERBS, read
+    // here from its source because it is not exported.
     const verbs = sources.engineer.match(/^const VALID_VERBS = new Set\(\[([\s\S]*?)\]\);$/m);
     ok(verbs, 'engineer state.mjs declares VALID_VERBS');
     const engineerVerbs = [...verbs[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]);
@@ -151,15 +153,5 @@ describe('the autopilot driver reads the engineer enums it was given', () => {
     deepStrictEqual([...policy.ENGINEER_OWNER_GATES], [...modules.engineer.VALID_WORKFLOW_OWNER_GATES]);
     deepStrictEqual([...policy.ENGINEER_TERMINAL_PHASES], [...modules.engineer.terminalPhases()]);
     deepStrictEqual([...policy.MACRO_OWNER_GATES], [...modules.orchestrator.VALID_MACRO_OWNER_GATES]);
-  });
-
-  it('its halt reasons are ADR-0063 D4\'s closed set', async () => {
-    const policy = await import(policyPath);
-    const adr = await readFile(resolve(REPO_ROOT, 'docs/adr/0063-autopilot-fresh-session-driver.md'), 'utf8');
-    const start = adr.indexOf('**Halt** reason codes (closed set):');
-    ok(start >= 0, 'ADR-0063 D4 states the halt reasons');
-    const table = adr.slice(start, adr.indexOf('\n\n**', start + 10));
-    const d4 = [...table.matchAll(/^\| `([a-z-]+)(?::<gate>)?` \|/gm)].map((m) => m[1]);
-    deepStrictEqual([...policy.HALT_REASONS].sort(), d4.sort());
   });
 });

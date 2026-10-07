@@ -21,6 +21,8 @@ const { createWorkflow, setPlan, updateSubtask, parseWorkflowFile, assembleWorkf
 
 async function validationBlock() {
   const text = await readFile(resolve(ORCH_ROOT, 'commands/next.md'), 'utf8');
+  // Contract: the tests below run the bash block after this step title — a renamed
+  // step must fail here, not run some other block.
   const from = text.indexOf('Validate the resolved subtask is dispatch-ready');
   ok(from >= 0, 'next.md carries the validation step');
   const m = /```bash\n([\s\S]*?)```/.exec(text.slice(from));

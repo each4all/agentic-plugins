@@ -214,6 +214,8 @@ for (const persona of PERSONAS) {
     it('hooks/hooks.json wires SessionStart/PreCompact/Stop to the claude adapter scripts', async () => {
       const manifest = JSON.parse(await readFile(P.path('hooks/hooks.json'), 'utf8'));
       const commands = JSON.stringify(manifest);
+      // Contract: Claude Code runs the hook commands hooks.json names — a missing script never
+      // fires, and another persona's path runs that persona's hook.
       for (const script of ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs']) {
         ok(commands.includes(`adapters/claude/hooks/${script}`),
           `hooks/hooks.json must reference adapters/claude/hooks/${script}`);
@@ -225,6 +227,7 @@ for (const persona of PERSONAS) {
 
     it('adapters/codex/hooks/hooks.json wires the three events to the codex adapter scripts', async () => {
       const manifest = JSON.parse(await readFile(join(HOOKS_CODEX, 'hooks.json'), 'utf8'));
+      // Contract: Codex registers the events its hooks.json names, and runs the commands under them.
       deepStrictEqual(Object.keys(manifest.hooks).sort(), ['PreCompact', 'SessionStart', 'Stop']);
       for (const other of OTHER_PERSONAS) {
         ok(!JSON.stringify(manifest).includes(other),
@@ -236,6 +239,7 @@ for (const persona of PERSONAS) {
       const manifest = JSON.parse(
         await readFile(P.path('.codex-plugin/plugin.json'), 'utf8'),
       );
+      // Contract: Codex finds a plugin's hooks through the manifest's `hooks` path.
       strictEqual(manifest.hooks, './adapters/codex/hooks/hooks.json');
     });
   });

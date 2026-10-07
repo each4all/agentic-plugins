@@ -334,6 +334,8 @@ async function nextMd() {
 
 async function phase1Blocks() {
   const text = await nextMd();
+  // Contract: the tests below slice the blocks they run by these headings — a
+  // renamed heading must fail here, not run some other block.
   const from = text.indexOf('## Phase 1 — Subtask selection');
   const to = text.indexOf('## Phase 2 — Branch precondition');
   ok(from >= 0 && to > from, 'next.md carries Phase 1 and Phase 2');
@@ -342,6 +344,8 @@ async function phase1Blocks() {
 
 async function gateBlock() {
   const blocks = await phase1Blocks();
+  // Contract: the block the gate tests run is found by its call — one, or the
+  // test would run the wrong block.
   const gates = blocks.filter((b) => b.includes('approval-gate'));
   strictEqual(gates.length, 1, 'Phase 1 has one approval-gate block');
   return gates[0];
@@ -350,6 +354,8 @@ async function gateBlock() {
 // The Codex mirror's gate snippet, with its root placeholder filled in.
 async function codexGateBlock() {
   const text = await readFile(resolve(ORCH_ROOT, 'core/skills/next/SKILL.md'), 'utf8');
+  // Contract: the tests below slice the block they run by these headings and fill
+  // in this root placeholder — a renamed heading or placeholder must fail here.
   const from = text.indexOf('## Phase 1 - Resolve macro and subtask');
   const to = text.indexOf('## Phase 2 - Branch and ownership preconditions');
   ok(from >= 0 && to > from, 'SKILL.md carries Phase 1 and Phase 2');
@@ -363,14 +369,21 @@ async function codexGateBlock() {
 describe('/orchestrator:next runbook shape', () => {
   it('Phase 1 ends with the gate, after the dispatch-ready validation and before Phase 2', async () => {
     const blocks = await phase1Blocks();
+    // Contract: the agent running /orchestrator:next runs Phase 1 in this order — the
+    // gate last, after validation, so nothing is dispatched past a refusal. The
+    // end-to-end tests below take the three blocks in this order.
     strictEqual(blocks.length, 3, 'selection, validation, gate');
     ok(blocks[1].includes('case "$SUBTASK_STATUS" in'), 'the second block validates the subtask');
     ok(blocks[2].includes('approval-gate'), 'the last Phase 1 block is the gate');
+    // Contract: the gate call's arguments and stop — no run below shows a Claude block
+    // passing the wrong --host (which would name the Codex command in its refusal).
     ok(blocks[2].includes('--workflow-path "$MACRO_PATH" --host claude \\\n  --subtask-json "$SUBTASK_JSON" >/dev/null || exit 1'), blocks[2]);
   });
 
   it('the Codex mirror runs the same gate in its Phase 1, as codex', async () => {
     const block = await codexGateBlock();
+    // Contract: the Codex agent running $orchestrator:next — the gate call's arguments
+    // and stop, with its own --host.
     ok(block.includes('--workflow-path "$MACRO_PATH" --host codex \\\n  --subtask-json "$SUBTASK_JSON" >/dev/null || exit 1'), block);
   });
 });

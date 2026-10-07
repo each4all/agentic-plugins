@@ -1,10 +1,11 @@
-// Declaration format 1.1, the per-verb fields (ADR-0066 Decision 2), bound to
-// the runbooks that state the same facts. The investigate, frame, decide,
-// compose, critique and refine runbooks render these values from generated
-// regions (refine's convergence through a variant, PC2b U5b); start is still
-// authored, so its declared convergence is a copy of what its terminal block
-// does. These cases keep each declared value and its runbook text in step.
-// Each binding is to a site, with a nonzero count.
+// Declaration format 1.1 and later, the per-verb fields (ADR-0066 Decision 2),
+// bound to what the runbooks run or a host reads: the convergence flag to the
+// terminal write's guard, the profiles to each command's `argument-hint`
+// frontmatter and the default its bootstrap block assigns, the investigate
+// ensemble type to the dispatch and settle calls, the brief file and output
+// root to the output-file rules, the privacy scope to each runbook's gate,
+// and the next action to the `--next-action` the finalize records. Each
+// binding is to a site, with a nonzero count.
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -13,7 +14,7 @@ import { join } from 'node:path';
 
 import { derivedFields } from '../../scripts/lib/persona-pipeline.mjs';
 import { MANIFEST, declaration, pluginRoot } from './_personas.mjs';
-import { noteScaffold, shellBlocks, stripComments } from './_verb-runbooks.mjs';
+import { shellBlocks, stripComments } from './_verb-runbooks.mjs';
 
 const runbook = (persona, verb) => readFileSync(join(pluginRoot(persona), 'commands', `${verb}.md`), 'utf8');
 const count = (text, needle) => text.split(needle).length - 1;
@@ -62,9 +63,9 @@ function terminalGuardedByConvergence(text) {
   return verdicts[0];
 }
 
-// PC3 U7: engineer declares a verb once its runbook joins the regions (the
-// runbook holds the generated finalize, or start's generated bootstrap, PC3b
-// U2), so the declared set and the joined runbooks stay one set.
+// engineer declares a verb once its runbook holds the generated finalize (or
+// start's generated bootstrap), so the declared set and the joined runbooks
+// stay one set.
 const ENGINEER_JOINED_VERBS = [
   ...NOTE_VERBS.filter((verb) => runbook('engineer', verb).includes(`<!-- pipeline:begin ${verb}-finalize -->`)),
   ...(runbook('engineer', 'start').includes('<!-- pipeline:begin start-bootstrap -->') ? ['start'] : []),
@@ -77,6 +78,8 @@ describe('declaration 1.1: which personas declare verbs', () => {
     strictEqual(declaration('engineer').schema, 'persona-declaration-1.4');
     strictEqual(declaration('engineer').peer, undefined);
     ok(ENGINEER_JOINED_VERBS.length > 0, 'a joined engineer verb (guards a vacuous pass)');
+    // Contract: the generator's region markers — a declared verb whose runbook holds no
+    // generated region renders nothing from its declaration.
     deepStrictEqual(Object.keys(declaration('engineer').verbs).sort(), [...ENGINEER_JOINED_VERBS].sort());
   });
 
@@ -101,10 +104,11 @@ for (const persona of ['founder', 'designer']) {
       strictEqual(peer.images, false);
     });
     for (const verb of ALL_VERBS) {
-      it(`${verb}: the gate names the declared scope and cites the declared spec's Privacy Gate`, () => {
+      it(`${verb}: the gate names the declared scope`, () => {
         const flat = runbook(persona, verb).replace(/\s+/g, ' ');
+        // Contract: the agent before web search and peer dispatch — the gate names what this
+        // persona must genericize; a runbook without it sends the raw value to the peer.
         strictEqual(count(flat, `PRIVACY GATE: ${peer.privacy_scope} pass an explicit`), 1, 'scope');
-        strictEqual(count(flat, `See \`${peer.privacy_spec}\` § Privacy Gate.`), 1, 'spec');
       });
     }
   });
@@ -123,6 +127,8 @@ for (const persona of ['founder', 'designer', 'engineer']) {
       if (verb === 'start' && declaration(persona).capabilities.commit_surface) {
         it('start: commit_surface on — no convergence flag, and the terminal write is the Phase 7 driver, not finish-verb (PC3b U2)', () => {
           strictEqual(Object.hasOwn(verbs.start, 'terminal_requires_convergence'), false);
+          // Contract: the agent running start's blocks — the Phase 7 execute is the one terminal
+          // write; a finish-verb or set-terminal beside it closes the lifecycle twice.
           const code = shellBlocks(runbook(persona, 'start')).map((b) => stripComments(b.text)).join('\n');
           strictEqual(/state\.mjs" (set-terminal|finish-verb)\b/.test(code), false, 'no finish-verb or set-terminal');
           strictEqual(count(code, 'phase7-commit.mjs" \\\n  --mode execute'), 1, 'the Phase 7 execute');
@@ -130,40 +136,27 @@ for (const persona of ['founder', 'designer', 'engineer']) {
         continue;
       }
       it(`${verb}: terminal_requires_convergence is true exactly when the terminal write waits for CONVERGED (DD5)`, () => {
+        // Contract: the agent running the finalize block — its terminal write runs only under the
+        // CONVERGED guard exactly where the declaration says the verb waits for convergence.
         strictEqual(verbs[verb].terminal_requires_convergence, terminalGuardedByConvergence(runbook(persona, verb)));
       });
     }
 
-    // PC3b U2: start's request placeholder, named where the bootstrap takes the
-    // request: the prose above the block, or with commit_surface the args
-    // file's description.
-    if (declared('start')) it('start: the request placeholder is the one the bootstrap prose names', () => {
-      const flat = runbook(persona, 'start').replace(/\s+/g, ' ');
-      const { request_placeholder: placeholder } = verbs.start;
-      if (declaration(persona).capabilities.commit_surface) {
-        strictEqual(count(flat, `The arguments above are the ${placeholder}, with an optional \`--base-branch <ref>\` anywhere in it`), 1);
-        strictEqual(count(flat, '--original-request "$FEATURE"'), 1, 'create takes the description the args file held');
-      } else {
-        strictEqual(count(flat, `\`<the original request described above>\` with a ${placeholder};`), 1);
-      }
-    });
-
-    if (declared('compose')) it('compose: the Profiles list, its default, "Missing profile" and the argument hint name the declared profiles', () => {
+    if (declared('compose')) it('compose: the argument hint names the declared profiles', () => {
       const text = runbook(persona, 'compose');
-      const { profiles, default_profile: def } = verbs.compose;
-      const listed = [...text.matchAll(/^- `([a-z][a-z0-9-]*)`( \(default\))? — /gm)];
-      deepStrictEqual(listed.map((m) => m[1]), profiles);
-      deepStrictEqual(listed.filter((m) => m[2]).map((m) => m[1]), [def]);
-      strictEqual(count(text, `Missing profile → \`${def}\`.`), 1);
+      const { profiles } = verbs.compose;
+      // Contract: Claude Code reads `argument-hint` from the command's frontmatter and offers it
+      // to the user — a profile missing there is one the user is never shown.
       strictEqual(count(text, `\nargument-hint: --profile=${profiles.join('|')} | `), 1);
     });
 
     if (declared('investigate')) it('investigate: the argument hint names the declared profiles; the bootstrap placeholder names the default', () => {
       const text = runbook(persona, 'investigate');
       const { profiles, default_profile: def } = verbs.investigate;
+      // Contract: Claude Code reads `argument-hint` from the command's frontmatter.
       strictEqual(count(text, `\nargument-hint: --profile=${profiles.join('|')} | `), 1);
-      // Authored, the placeholder spells the default; generated (PC2a2 PD3),
-      // it reads DEFAULT_PROFILE, which the bootstrap block assigns.
+      // Contract: the --profile argument of the bootstrap's create — authored, the placeholder
+      // spells the default; generated, it reads DEFAULT_PROFILE, which the block assigns.
       const authored = count(text, `<profile from the arguments above — ${profiles.join(', ')}; default '${def}'>`);
       const generated = count(text, '<profile from the arguments above — default ${DEFAULT_PROFILE}>');
       strictEqual(authored + generated, 1, 'one profile placeholder');
@@ -177,59 +170,46 @@ for (const persona of ['founder', 'designer', 'engineer']) {
     if (declared('investigate')) it('investigate: the brief file and output-root variable the declaration implies are the ones its output-file rules name (PC3 U7)', () => {
       const { brief_file: brief, output_root_env: env } = derivedFields(declaration(persona));
       const rules = readFileSync(join(pluginRoot(persona), 'core/skills/investigate/references/output-file-rules.md'), 'utf8');
+      // Contract: the agent writing the brief — the file name it writes and the variable it reads
+      // for the output root are the ones the declaration renders into the runbooks.
       ok(count(rules, `\`${brief}\``) > 0, `output-file-rules.md names ${brief}`);
-      ok(count(rules, `## Output root override (\`${env}\`)`) === 1, `output-file-rules.md overrides the root with ${env}`);
+      ok(count(rules, `\`${env}\``) > 0, `output-file-rules.md overrides the root with ${env}`);
     });
 
     if (declared('critique')) it('critique: the argument hint names the declared profiles besides the default, which the bootstrap block assigns (PC2a3 QD6)', () => {
       const text = runbook(persona, 'critique');
       const { profiles, default_profile: def } = verbs.critique;
       ok(profiles.length > 1 && profiles.includes(def), 'the declared profiles');
-      // PC3 U7: a profile may name its optional sub-focus in brackets
-      // (engineer's full-codebase[:security|…]).
+      // A profile may name its optional sub-focus in brackets (engineer's
+      // full-codebase[:security|…]).
       const others = profiles.filter((p) => p !== def).join('|').replace(/[|]/g, '\\|');
+      // Contract: Claude Code reads `argument-hint` from the command's frontmatter.
       strictEqual((text.match(new RegExp(`\\nargument-hint: --profile=${others}(?:\\[:[^\\]\\n]+\\])? \\| `, 'g')) ?? []).length, 1, 'the argument hint');
+      // Contract: the --profile the bootstrap's create passes when the arguments name none.
       strictEqual(count(text, `\nDEFAULT_PROFILE='${def}'\n`), 1, 'the block assigns the declared default');
     });
 
     if (declared('investigate')) it('investigate: the ensemble type is the one its dispatch names; settle reads it from the run ledger (PC2b DD6)', () => {
       const text = runbook(persona, 'investigate');
       const type = verbs.investigate.ensemble_type;
-      // Bare as authored, single-quoted as generated (Decision 4).
+      // Contract: peer-runner.mjs run's --ensemble-type, which settle later reads back from the
+      // run ledger — so settle names the phase and run id, never the type again.
       strictEqual(text.split(`ENSEMBLE_TYPE='${type}'\n`).length - 1, 1, 'the dispatch assigns the type');
       strictEqual(text.split('--ensemble-type "$ENSEMBLE_TYPE" --run-id').length - 1, 1, 'and names it once');
       strictEqual(text.split(/--phase 'investigate' --run-id "\$RUN_ID" \\\n/).length - 1, 1, 'settle names the phase and the run id, no type');
-      // PC3 U7: with several profiles (engineer), the point type differs by
-      // profile, so both headings name the profile, as critique's do.
-      const several = verbs.investigate.profiles.length > 1;
-      const launched = several ? 'investigate (profile=<profile>)' : type;
-      const synthesis = several ? 'investigate (profile=<profile>)' : verbs.investigate.default_profile;
-      strictEqual(count(text, `### Ensemble launched: ${launched} at <iso-utc>`), 1);
-      strictEqual(count(text, `### Ensemble synthesis: ${synthesis} verdict=<`), 1);
     });
 
     for (const verb of NOTE_VERBS) {
       if (!declared(verb)) continue;
-      it(`${verb}: request placeholder, note artifact, rationale, evidence and next action`, () => {
+      it(`${verb}: the finalize records the declared next action`, () => {
         const text = runbook(persona, verb);
         const v = verbs[verb];
-        // An authored bootstrap holds the placeholder in the block; a generated
-        // one (PC2a2 PD3) names it in the prose above a persona-neutral one.
-        const inBlock = count(text, `--original-request "\${AGENTIC_TOPIC:-<${v.request_placeholder}>}"`);
-        const inProse = count(text.replace(/\s+/g, ' '), `\`<the original request described above>\` with a ${v.request_placeholder};`);
-        strictEqual(inBlock + inProse, 1, 'request placeholder');
-        if (inProse === 1) strictEqual(count(text, '--original-request "${AGENTIC_TOPIC:-<the original request described above>}"'), 1, 'the block names the prose');
-        const note = noteScaffold(text);
-        ok(note !== null, 'the finalize step holds a phase-note scaffold');
-        // The artifact sections are exactly the note text between the breakdown
-        // and the proposal heading: nothing left out, nothing added.
-        strictEqual(count(note, `<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>\n\n${v.artifact.join('\n')}\n\n### Active next-action proposal\n`), 1, 'artifact sections');
-        strictEqual(count(note, `- rationale:             <why best — ${v.rationale_gate}>\n`), 1, 'rationale');
-        strictEqual(count(note, `- evidence_pointers:     <${v.evidence_pointers} — pointers only>\n`), 1, 'evidence pointers');
         const listed = LISTED_CHANGES[`${persona}/${verb}/next_action`] ?? ((s) => s);
         // Double-quoted as authored, single-quoted as generated (Decision 4).
         const actions = [...text.matchAll(/--next-action (?:"([^"]*)"|'([^']*)') \\$/gm)].map((m) => listed(m[1] ?? m[2]));
-        // decide's Owner selection step finishes the verb a second way (PC2b DD7).
+        // Contract: the --next-action state.mjs records, which SessionStart and the footer show —
+        // the finalize append and the finish write (and decide's Owner selection) record the
+        // declared one.
         strictEqual(actions.filter((a) => a === v.next_action).length, verb === 'decide' ? 3 : 2, `the finalize append and finish write record ${JSON.stringify(v.next_action)}`);
       });
     }

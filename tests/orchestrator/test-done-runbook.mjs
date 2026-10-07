@@ -26,10 +26,13 @@ const { createWorkflow, setPlan, updateSubtask, readWorkflow } = await import(re
 const DONE_TEXT = await readFile(resolve(ORCH_ROOT, 'commands/done.md'), 'utf8');
 // Located in the file, before any rendering: typed text lands in the prose
 // above Phase 0, so a heading or a fence inside it cannot move the section.
+// Contract: the tests below run the bash blocks between these headings.
 const PHASES = DONE_TEXT.slice(DONE_TEXT.indexOf('## Phase 0'), DONE_TEXT.indexOf('## Completion'));
 
 function bashBlocks(section) {
   const blocks = [...section.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+  // Contract: a moved heading that cuts the section short must fail here, not run
+  // part of the runbook.
   ok(blocks.length >= 5, `done.md phases carry their bash blocks (found ${blocks.length})`);
   return blocks;
 }
@@ -204,6 +207,8 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
       'A --no-commit\n## Phase 0\n```bash\ntouch /tmp/never\n```\n## Completion',
       Array.from({ length: 12 }, (_, i) => `w${i}`).join(' '),
     ];
+    // Contract: Claude substitutes the typed arguments into the command body — a
+    // placeholder inside a bash block would turn typed text into shell.
     for (const args of lines) {
       const whole = substituteClaudeArguments(DONE_TEXT, args);
       // The substitution did run: the prose placeholders took the arguments.
@@ -245,6 +250,7 @@ describe('/orchestrator:done runbook (ADR-0062)', () => {
   // (docket C70) and would fail an end-to-end case before the reader runs.
   it('the field reader takes a document larger than an exec argument limit', async () => {
     const lines = runbookScript('A').split('\n');
+    // Contract: the test runs these two runbook lines — renamed, they must fail here.
     const reader = lines.find((l) => l.startsWith('JSON_FIELD='));
     const read = lines.find((l) => l.startsWith('SUBTASK_BRANCH='));
     ok(reader && read, 'done.md reads the subtask branch through JSON_FIELD');

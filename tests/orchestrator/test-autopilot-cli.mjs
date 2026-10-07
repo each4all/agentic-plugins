@@ -238,6 +238,9 @@ describe('the runbook, as written', () => {
   const start = blocks.find((b) => b.includes('MODELS='));
 
   it('has the preview and the start block, both reading the args file', () => {
+    // Contract: the runs below find the two blocks by these calls and fill in the
+    // ARGS_DIR placeholder — a block the agent must edit first, before the root is
+    // resolved and the CLI runs (args-file transport, then call order).
     ok(preview && start);
     for (const b of [preview, start]) {
       ok(b.startsWith("ARGS_DIR='<directory from step 1>'\n"), 'the args directory comes first');

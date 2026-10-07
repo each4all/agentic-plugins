@@ -323,6 +323,8 @@ describe('PC2a acceptance: the drift check fails on a hand edit inside a generat
       const root = repoSubsetCopy();
       const path = join(root, 'plugins', persona, rel);
       const good = readFileSync(path, 'utf8');
+      // Contract: this case's own edit site — without it once in the region, the hand edit lands
+      // nowhere (or elsewhere) and the drift check proves nothing.
       strictEqual(good.split(from).length, 2, `${rel} holds the edited text once`);
       writeFileSync(path, good.replace(from, to));
       const check = spawnSync(process.execPath, [SCRIPT, '--root', root], { encoding: 'utf8' });

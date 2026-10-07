@@ -25,13 +25,9 @@
 //      recommended OPTION LETTER MUST NOT change. The §1.3 rule remains
 //      the sole winner-picker.
 //
-// These invariants are enforced by the SKILL.md prose contract
+// These invariants are stated in the SKILL.md prose
 // (`core/skills/decide/SKILL.md` `@decide:weighting-sensitivity-output` +
-// `@decide:recommendation-rule`) and lint-checked by
-// `tests/plugin-shape/test-engineer-plugin.mjs` (invariant-phrase lint
-// added in PR4 refine M5). The smoke trace in the compose Phase 2
-// workflow phase note documents the expected rendered output as
-// authoritative reference.
+// `@decide:recommendation-rule`); no test pins that wording.
 
 import { test } from "node:test";
 import { strict as assert } from "node:assert";

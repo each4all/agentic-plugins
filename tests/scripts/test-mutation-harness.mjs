@@ -362,6 +362,14 @@ describe('childEnv — the nested runner must not inherit the test context', () 
     ok(!('NODE_TEST_CONTEXT' in childEnv()), 'the real ambient environment is scrubbed too');
   });
 
+  it('drops the operator\'s agentic session and keeps an opt-in switch (C88)', () => {
+    const env = childEnv({
+      AGENTIC_AUTOPILOT: 'autopilot-20261007T000000Z-abcdef', AGENTIC_ENGINEER_ROOT: '/planted',
+      AGENTIC_COMPANION_DEPTH: '1', AGENTIC_EGRESS_REAL_SMOKE: '1', PATH: '/bin',
+    });
+    deepStrictEqual(env, { AGENTIC_EGRESS_REAL_SMOKE: '1', PATH: '/bin' });
+  });
+
   it('a nested node --test reports failure through its exit status', () => {
     // The property the scrub buys, measured end to end rather than described:
     // with NODE_TEST_CONTEXT inherited, this same spawn exits 0 on a failing
