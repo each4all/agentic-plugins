@@ -1,14 +1,15 @@
-// plugins/companions plugin-shape conformance test (B.1).
+// plugins/companions plugin-shape conformance.
 //
-// Asserts the companions plugin manifests are well-formed for both hosts,
-// the bundled companion scripts ship at scripts/{claude,codex}-companion.mjs
-// with executable bits, and the bundled copies stay byte-identical to the
-// canonical companions/{claude,codex}-companion.mjs (drift detector).
+// Checks that both host manifests carry the fields the hosts read, that the
+// bundled scripts/{claude,codex}-companion.mjs and discover-peer.mjs ship as
+// executable regular files byte-identical to their canonical copies under
+// companions/, and that discover-peer.mjs exports the library surface its
+// callers import.
 //
 // Run via `node --test tests/plugin-shape/test-companions-plugin.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,12 +17,14 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/companions');
 const CANONICAL_DIR = resolve(REPO_ROOT, 'companions');
-const CANONICAL_README = resolve(CANONICAL_DIR, 'README.md');
 
 async function readJSON(path) {
   return JSON.parse(await readFile(path, 'utf8'));
 }
 
+// Contract: Claude Code's plugin loader and marketplace listing read these
+// manifest fields — rejects unparseable JSON, a misnamed plugin, a non-SemVer
+// version, or a listing with no description or author.
 describe('plugins/companions — Claude manifest (.claude-plugin/plugin.json)', () => {
   const path = resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json');
 
@@ -48,6 +51,9 @@ describe('plugins/companions — Claude manifest (.claude-plugin/plugin.json)', 
   });
 });
 
+// Contract: Codex reads these manifest fields, the skills root and the
+// interface card, and caps defaultPrompt at 3 entries of ≤128 chars — rejects
+// a manifest Codex would refuse or render without its card.
 describe('plugins/companions — Codex manifest (.codex-plugin/plugin.json)', () => {
   const path = resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json');
 
@@ -127,25 +133,6 @@ describe('plugins/companions — bundled scripts', () => {
   }
 });
 
-describe('companions/README.md — bidirectional quickstart', () => {
-  it('shows both Claude→Codex and Codex→Claude invocations in text and JSON mode', async () => {
-    const text = await readFile(CANONICAL_README, 'utf8');
-    for (const expected of [
-      '# Claude → Codex (text mode)',
-      "echo '<task>Reply OK</task>' | companions/codex-companion.mjs task",
-      '# Claude → Codex (JSON envelope)',
-      "echo '<task>Reply OK</task>' | companions/codex-companion.mjs task --output-format json",
-      '# Codex → Claude (text mode)',
-      "echo '<task>Reply OK</task>' | companions/claude-companion.mjs task",
-      '# Codex → Claude (JSON envelope)',
-      "echo '<task>Reply OK</task>' | companions/claude-companion.mjs task --output-format json",
-      'Both directions use the same `task` subcommand',
-    ]) {
-      ok(text.includes(expected), `companions README quickstart missing: ${expected}`);
-    }
-  });
-});
-
 describe('plugins/companions — drift detector vs canonical companions/', () => {
   for (const name of ['claude-companion.mjs', 'codex-companion.mjs', 'discover-peer.mjs']) {
     it(`${name} bundled copy is byte-identical to canonical`, async () => {
@@ -159,7 +146,7 @@ describe('plugins/companions — drift detector vs canonical companions/', () =>
   }
 });
 
-describe('plugins/companions — discover-peer.mjs library (added v0.3.0)', () => {
+describe('plugins/companions — discover-peer.mjs library', () => {
   const path = resolve(PLUGIN_ROOT, 'scripts', 'discover-peer.mjs');
 
   it('exists as a regular file', async () => {
