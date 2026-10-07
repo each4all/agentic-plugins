@@ -145,6 +145,9 @@ test('no fenced block in any plugin markdown runs rm or rmdir', async (t) => {
   });
 
   await t.test('none does', () => {
+    // Contract: Codex's exec policy and an owner's `Bash(rm:*)` ask rule — a
+    // block that runs rm (with a force flag, even quoted in a trap) is refused
+    // by `codex exec` and denied in a headless `claude -p` worker.
     const offenders = [];
     for (const f of FILES) {
       for (const block of fencedBlocks(readFileSync(f, 'utf8'))) {
@@ -185,6 +188,9 @@ test('every command block that uses the plugin root resolves it first', async (t
   });
 
   await t.test('each opens with the resolver for its own plugin', () => {
+    // Contract: the agent running a command block in a fresh Bash call — a
+    // block that uses the root before its own plugin's resolver lines runs
+    // `/scripts/…`, another plugin's scripts, or leaves the model to guess.
     deepStrictEqual(offenders, [],
       'open the block with its plugin\'s two resolver lines (AGENTIC_<PLUGIN>_ROOT, then the braced '
       + 'CLAUDE_PLUGIN_ROOT Claude Code writes in, then the newest cached version)');
@@ -204,6 +210,8 @@ test('no plugin markdown picks a cached version with a bare sort -V', () => {
   // Anywhere, prose included: the skills' host tables described the Claude
   // fallback as `find … | sort -V | tail -1`, which ranks a prerelease or a
   // stray directory name above the newest release.
+  // Contract: the agent taking the Claude cache fallback runs the pipeline the
+  // text shows — a bare `sort -V` picks that prerelease or stray directory.
   const offenders = [];
   for (const f of FILES) {
     readFileSync(f, 'utf8').split(/\r?\n/).forEach((line, i) => {
@@ -214,6 +222,9 @@ test('no plugin markdown picks a cached version with a bare sort -V', () => {
 });
 
 test('no command runbook tells the model to find the plugin root itself', () => {
+  // Contract: the agent in a headless `claude -p` run — told to find the root
+  // itself, it guessed a version-less path or decided the plugin was absent
+  // (probes B, E5, E6); the resolver lines are the instruction instead.
   const RETIRED = [
     /If unset[^.]*fall\s+back/i,
     /fallback as in\s+commands\//i,

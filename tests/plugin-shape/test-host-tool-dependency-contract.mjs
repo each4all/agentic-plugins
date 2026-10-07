@@ -136,6 +136,10 @@ describe('host-tool dependency contract', () => {
       const head = preamble(text);
       ok(head, `${rel} has an $ARGUMENTS preamble`);
       const squashed = squash(head);
+      // Contract: the agent running these runbooks — progress tracking uses a
+      // host task tool only when the session carries one, an inline checklist
+      // otherwise; a preamble that requires the tool, even under a name the
+      // sweep below cannot match, stalls a session without it.
       ok(
         squashed.includes(NEUTRAL_MARKER) || squashed.includes(NEUTRAL_MARKER_ASCII),
         `${rel} states the host-neutral progress-tracking phrasing in its preamble, not merely somewhere in the file`,
@@ -195,6 +199,10 @@ describe('host-tool dependency contract', () => {
       'every discovered plugin must have been measured for skill coverage',
     );
     ok(files.length > 0, 'the sweep found command/skill prompt files to check');
+    // Contract: the agent running a command, skill or agent prompt (the Claude
+    // command markdown is also Codex's behavioral source) — an instruction to
+    // call a tool the session does not carry fails or stalls the run, as
+    // /orchestrator:next did on 2026-08-16.
     for (const file of files) {
       const text = await readFile(file, 'utf8');
       for (const tool of WITHDRAWN_TOOLS) {

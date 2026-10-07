@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
-import { ok, strictEqual, throws } from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -685,6 +685,22 @@ describe('runtime footer', () => {
       }),
       /escapes repo root/,
     );
+  });
+
+  it('the completion-state enum is closed at the six states', async () => {
+    // Contract: parseArgs and resolveCompletion accept a --completion-state only
+    // from VALID_COMPLETION_STATES, and the persona sidecars and the footer's
+    // completion branches are written for these six — a seventh value is accepted
+    // and rendered with no branch that handles it. The set is module-private, so
+    // it is read from the source; the refusal above samples one outside value.
+    const source = await readFile(new URL('../../plugins/runtime/scripts/footer.mjs', import.meta.url), 'utf8');
+    const declared = source.match(/const VALID_COMPLETION_STATES = new Set\(\[([^\]]+)\]/);
+    ok(declared, 'footer.mjs declares VALID_COMPLETION_STATES');
+    const states = [...declared[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]).sort();
+    deepStrictEqual(states, ['blocked', 'cleanup-needed', 'closed', 'next-work-available', 'publish-needed', 'review-needed']);
+    for (const state of states) {
+      strictEqual(parseArgs(['render', '--completion-state', state]).completionState, state, `parseArgs accepts ${state}`);
+    }
   });
 });
 

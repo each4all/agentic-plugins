@@ -447,7 +447,7 @@ print these exact commands. It cannot detect its own Stage 0: if it is running,
 its own install is satisfied by definition — but **not** its marketplace
 registration, which can be removed after install and MUST still be probed (§1.2).
 
-`README.md` carries the same block. §11 pins that they agree.
+`README.md` carries the same block.
 
 ### Stage 1+ — post-runtime. Conducted by `runtime:bootstrap`.
 
@@ -1287,7 +1287,9 @@ hooks by install and exposes no `/hooks` review flow.
 **Retired step ids.** `lib/step-registry.mjs` keeps a `RETIRED_STEP_IDS` map, id
 to the ADR that retired it, and `deriveExpectedSteps` derives none of them. They
 are listed here as history, in prose and not as table rows, because the §6.1
-step table is held to the registry by `tests/runtime/test-step-registry.mjs`:
+step table lists what the registry derives (until 2026-10-07
+`tests/runtime/test-step-registry.mjs` held the table to the registry; it now
+pins the registry's stages and edges itself):
 
 - `permission.claude.applied` and `permission.codex.applied` (Stage 6) —
   ADR-0057;
@@ -2087,7 +2089,8 @@ before the demand exists is how unused modes get built. This is honest scope
 | `custom` | operator-enumerated via `--plugins`; MUST satisfy §9.1 |
 
 Membership is mirrored by the packaged `plugin-set.json` (§1.4), which is the
-machine-readable source of truth; §11 pins that the two agree.
+machine-readable source of truth: where the two disagree, `plugin-set.json` is
+right.
 
 ### 9.1 Dependency closure — behavioral, and host-qualified
 
@@ -2246,9 +2249,9 @@ and now says so.
 
 The contract is worthless if nothing holds it. `settings-report-contract.md` is
 cited by filename but **no test ever opens it**, so it can drift arbitrarily while
-CI stays green. This contract follows [`footer-contract.md`](footer-contract.md),
-which is asserted **by content** — and goes further, because content tokens prove a
-file exists, not that its schemas agree with the code.
+CI stays green. Content tokens would prove only that a file exists, not that its
+schemas agree with the code, so this contract's obligations are executable
+(§11.1).
 
 ### 11.1 Executable agreement, not prose tokens
 
@@ -2259,9 +2262,11 @@ Ship the schemas as **data**, and test the data:
 - JSON Schema for `runtime-bootstrap-run-1`. (`agentic-machine-profile-1` was
   the other until ADR-0064 Decision 3 removed it on 2026-10-04.)
 
-Tests MUST validate **real artifacts** against those schemas, and MUST assert the
-prose tables in §9 and §6 agree with `plugin-set.json` and the step registry. Prose
-tokens (§11.3) remain as a floor, not as the enforcement.
+Tests MUST validate **real artifacts** against those schemas. (Until 2026-10-07
+they also held the prose tables in §9 and §6 to `plugin-set.json` and the step
+registry, and §11.3 pinned this document by content. E1's rule, owner-approved
+2026-10-05, retired both: no program reads this document, so they protected its
+wording; the data and the registry are tested directly.)
 
 ### 11.2 `tests/runtime/test-bootstrap.mjs`
 
@@ -2428,16 +2433,11 @@ by number stay correct.
 
 ### 11.3 `tests/plugin-shape/test-runtime-plugin.mjs`
 
-Assert this document contains at minimum: `Machine Bootstrap Contract`,
-`runtime:bootstrap`, `scripts/bootstrap.mjs`, `runtime-bootstrap-run-1`,
-`configured-not-verified`, `Stage 0`, `probeMachineHostState`,
-`/artifact-only/i`, `/machine-scoped/i`, `/write-ahead/i`. (Two profile tokens,
-`agentic-machine-profile-1` and the profile's "never an input to any activation
-or config loader" invariant, left the list with the profile: ADR-0064
-Decision 3, 2026-10-04.)
-
-Also assert `README.md`'s Stage 0 block and §2's Stage 0 block carry the same
-commands.
+Retired 2026-10-07 (see §11.1): the content pins on this document and the
+check that `README.md`'s Stage 0 block matches §2's are gone. The Stage 0
+commands `runtime:bootstrap` prints come from `STAGE0_COMMANDS` in
+`scripts/bootstrap.mjs`, which this test holds to the catalog names, the
+plugin name and the canonical marketplace repository the host CLIs resolve.
 
 ---
 

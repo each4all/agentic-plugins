@@ -1,15 +1,12 @@
 // tests/runtime/test-step-registry.mjs — machine-bootstrap-contract.md §6.1, §11.1.
 //
-// §11.1: "Tests MUST ... assert the prose tables in §9 and §6 agree with
-// plugin-set.json and the step registry." So the contract's own §6.1 table is PARSED
-// out of the document and compared against what the registry derives. A test that
-// only checked the code would let the table drift into fiction while CI stayed green
-// — which is the precise failure §11 opens by naming.
+// The step registry is tested as code: what it derives, per bundle, with each
+// step's stage and edges pinned literally at the end of this file. The
+// contract's §6.1 prose tables follow it; no program reads them, so no test
+// holds them to it (E1, owner-approved 2026-10-05).
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 
 import { hardRequiredClosure, loadPluginSet, resolveBundle } from '../../plugins/runtime/scripts/lib/plugin-set.mjs';
 import {
@@ -23,8 +20,6 @@ import {
   validateStepGraph,
 } from '../../plugins/runtime/scripts/lib/step-registry.mjs';
 
-const CONTRACT = resolve(new URL('../../plugins/runtime/docs/machine-bootstrap-contract.md', import.meta.url).pathname);
-
 async function loadSet() {
   return loadPluginSet();
 }
@@ -32,20 +27,6 @@ async function loadSet() {
 async function derive(bundle, extra = {}) {
   const pluginSet = await loadSet();
   return deriveExpectedSteps({ pluginSet, selection: { plugins: resolveBundle(pluginSet, bundle) }, ...extra });
-}
-
-// The ONE §6.1 table parser. Shared so the three agreement tests cannot drift into
-// parsing the table three slightly different ways, and it throws rather than returning
-// [] — a vacuous parse passes every downstream assertion while proving nothing.
-async function parseStepTable() {
-  const doc = await readFile(CONTRACT, 'utf8');
-  const start = doc.indexOf('### 6.1 The expected-step registry');
-  const end = doc.indexOf('**`blocked_by` edges**');
-  if (start < 0 || end < 0 || end <= start) throw new Error('could not locate the §6.1 step table in the contract');
-  const rows = [...doc.slice(start, end).matchAll(/^\|\s*`([^`]+)`\s*\|\s*(\d)\s*\|([^|]*)\|([^|]*)\|/gm)]
-    .map(([, id, stage, applicability, declinable]) => ({ id, stage: Number(stage), applicability: applicability.trim(), declinable: declinable.trim() }));
-  if (rows.length < 17) throw new Error(`§6.1 table parsed only ${rows.length} rows — the parser has drifted from the table`);
-  return rows;
 }
 
 describe('runtime step registry — graph shape', () => {
@@ -279,123 +260,54 @@ describe('runtime step registry — reducer partition (§8)', () => {
   });
 });
 
-describe('runtime step registry — the §6.1 prose table agrees with the code (§11.1)', () => {
-  // Parse the contract's own table and hold the registry to it. Prose tokens are a
-  // floor (§11.3); THIS is the enforcement.
-  it('every step id in the §6.1 table is derivable, and every derived id is in the table', async () => {
-    const rows = await parseStepTable();
-    const steps = await derive('full');
-    const derived = new Set(steps.map((s) => s.id));
-
-    for (const row of rows) {
-      // Templated rows (`plugin.<name>.claude.installed`) expand per selected plugin.
-      if (row.id.includes('<name>')) {
-        const re = new RegExp(`^${row.id.replace('<name>', '[a-z-]+').replace(/\./g, '\\.')}$`);
-        ok([...derived].some((id) => re.test(id)), `${row.id} expands to at least one derived step`);
-        for (const id of [...derived].filter((d) => re.test(d))) {
-          strictEqual(steps.find((s) => s.id === id).stage, row.stage, `${id} stage matches the table`);
-        }
-        continue;
-      }
-      ok(derived.has(row.id), `${row.id} from the §6.1 table is derived`);
-      strictEqual(steps.find((s) => s.id === row.id).stage, row.stage, `${row.id} stage matches the table`);
-    }
-
-    // And the other direction: nothing the code invents is missing from the table.
-    const templates = rows.map((r) => new RegExp(`^${r.id.replace('<name>', '[a-z-]+').replace(/\./g, '\\.')}$`));
-    for (const id of derived) {
-      ok(templates.some((re) => re.test(id)), `derived step ${id} appears in the §6.1 table`);
-    }
-  });
-
-  it("the table's declinable column agrees with the registry", async () => {
-    const rows = await parseStepTable();
-    const steps = await derive('full');
-    const by = new Map(steps.map((s) => [s.id, s]));
-
-    for (const row of rows) {
-      if (row.id.includes('<name>')) continue; // per-plugin, covered by the declinability suite
-      const step = by.get(row.id);
-      if (!step) continue;
-      // The column is prose ("**yes**", "no (but `not-applicable` when ...)"), so read
-      // its LEAD token rather than pattern-matching the whole sentence.
-      const saysYes = /^\*\*yes\*\*/.test(row.declinable);
-      strictEqual(step.declinable, saysYes, `${row.id}: table says "${row.declinable}", registry says declinable=${step.declinable}`);
-    }
-  });
-
-  // The APPLICABILITY column, actually compared. Parsing a column and never asserting
-  // on it is how a table drifts into fiction with the test still green — the exact
-  // failure §11 opens by naming.
-  it("the table's applicability column agrees with the registry", async () => {
-    const rows = (await parseStepTable()).filter((r) => !r.id.includes('<name>'));
+describe('runtime step registry — stages and blocked_by edges', () => {
+  // Contract: bootstrap takes each step's stage and edges from the registry.
+  // The stage picks the step's applied_by (operator, h2-executor,
+  // agentic-config; a run-schema enum) and its [stage N] line, and an
+  // unresolved predecessor reports the step blocked — so a moved stage, or a
+  // dropped or invented edge, changes who applies a step and what the operator
+  // is told to do first. Until E1 retired it, the §6.1 table was the only
+  // oracle for these values; the oracle is now this literal.
+  it('derives every step of the full bundle at its stage, with exactly its edges', async () => {
     const pluginSet = await loadSet();
-
-    // Each prose phrasing is turned into a PREDICATE over a selection, then checked on
-    // bundles that make it true and false. "always" that is really conditional, or a
-    // condition naming the wrong plugin, fails here.
-    for (const bundle of ['base', 'engineering', 'full']) {
-      const plugins = resolveBundle(pluginSet, bundle);
-      const steps = deriveExpectedSteps({ pluginSet, selection: { plugins } });
-      const by = new Map(steps.map((s) => [s.id, s]));
-      for (const row of rows) {
-        const step = by.get(row.id);
-        if (!step) continue;
-        const prose = row.applicability;
-        let expected;
-        if (/^always$/i.test(prose)) expected = true;
-        else if (/iff any selected plugin has `hook_bearing.codex`/.test(prose)) expected = plugins.some((n) => pluginSet.plugins[n].hook_bearing.codex);
-        else if (/iff `engineer` ∈ selection/.test(prose)) expected = plugins.includes('engineer');
-        else throw new Error(`unrecognized applicability prose for ${row.id}: "${prose}" — teach this test the phrasing rather than letting it pass unchecked`);
-        strictEqual(step.applicable, expected, `${bundle}/${row.id}: table says "${prose}", registry says applicable=${step.applicable}`);
-      }
-    }
-  });
-
-  it('the §6.1 blocked_by table is PARSED and every documented edge is derived', async () => {
-    const doc = await readFile(CONTRACT, 'utf8');
-    ok(/An empty `blocked_by` is written \*\*explicitly\*\*/.test(doc), 'the explicit-empty rule is stated');
-    ok(/the registry — not `run\.steps\[\]` — is the authority/.test(doc), 'the forgery boundary is stated');
-
-    const start = doc.indexOf('**`blocked_by` edges**');
-    ok(start > 0, 'the contract defines the blocked_by edges §5 references');
-    const section = doc.slice(start, doc.indexOf('An empty `blocked_by` is written'));
-    const rows = [...section.matchAll(/^\|\s*`([^`]+)`(?:,\s*`([^`]+)`)?\s*\|\s*(.+?)\s*\|$/gm)]
-      .map(([, id, id2, edges]) => ({ ids: [id, id2].filter(Boolean), edges: edges.trim() }));
-    ok(rows.length >= 10, `parsed the blocked_by table (${rows.length} rows) — a vacuous parse would pass every assertion below`);
-
-    const steps = await derive('full');
-    const by = new Map(steps.map((s) => [s.id, s]));
-    const expand = (id) => (id.includes('<h>') ? ['claude', 'codex'].map((h) => id.replace('<h>', h)) : [id]);
-
-    let checked = 0;
-    for (const row of rows) {
-      for (const templated of row.ids.flatMap(expand)) {
-        if (templated.includes('<name>')) continue; // per-plugin rows: covered above
-        const step = by.get(templated);
-        if (!step) continue;
-        checked += 1;
-        if (row.edges.startsWith('—')) {
-          deepStrictEqual(step.blocked_by, [], `${templated}: the table says no predecessors, so the registry must write []`);
-          continue;
-        }
-        // Every step-id the row names in backticks must be an actual edge.
-        for (const named of [...row.edges.matchAll(/`([^`]+)`/g)].map((m) => m[1])) {
-          for (const edge of expand(named.replace('<h>', templated.split('.')[1]))) {
-            if (edge.includes('<name>') || !by.has(edge)) continue;
-            ok(step.blocked_by.includes(edge), `${templated}: the table names '${edge}' as a blocker; the registry derives [${step.blocked_by}]`);
-          }
-        }
-      }
-    }
-    ok(checked >= 6, `compared ${checked} documented rows against the registry`);
-
-    // And the specific edges the prose pins by name, in both directions.
-    deepStrictEqual(by.get('host.claude.authenticated').blocked_by, ['host.claude.present']);
-    ok(by.get('proof.permission').blocked_by.includes('host.codex.authenticated'));
-    ok(by.get('proof.permission').blocked_by.includes(stepIds.pluginInstalled('companions', 'claude')));
-    ok(by.get('proof.deep-peer-smoke').blocked_by.includes('host.codex.authenticated'));
-    ok(by.get('proof.deep-peer-smoke').blocked_by.includes(stepIds.pluginInstalled('companions', 'claude')));
-    ok(by.get('hooks.codex.attested').blocked_by.every((id) => id.startsWith('plugin.')));
+    const plugins = resolveBundle(pluginSet, 'full');
+    const proofPredecessors = [
+      'host.claude.authenticated', 'host.codex.authenticated',
+      'plugin.companions.claude.installed', 'plugin.companions.codex.installed', 'plugin.companions.codex.enabled',
+    ];
+    const expected = [
+      { id: 'host.claude.present', stage: 1, blocked_by: [] },
+      { id: 'host.claude.authenticated', stage: 1, blocked_by: ['host.claude.present'] },
+      { id: 'host.codex.present', stage: 1, blocked_by: [] },
+      { id: 'host.codex.authenticated', stage: 1, blocked_by: ['host.codex.present'] },
+      { id: 'marketplace.claude.registered', stage: 2, blocked_by: ['host.claude.present'] },
+      { id: 'marketplace.codex.registered', stage: 2, blocked_by: ['host.codex.present'] },
+      ...plugins.flatMap((name) => [
+        { id: `plugin.${name}.claude.installed`, stage: 3, blocked_by: ['marketplace.claude.registered'] },
+        { id: `plugin.${name}.codex.installed`, stage: 3, blocked_by: ['marketplace.codex.registered'] },
+        { id: `plugin.${name}.codex.enabled`, stage: 3, blocked_by: [`plugin.${name}.codex.installed`] },
+      ]),
+      { id: 'config.model_effort', stage: 4, blocked_by: [] },
+      { id: 'config.session', stage: 4, blocked_by: [] },
+      { id: 'statusline.claude.configured', stage: 5, blocked_by: ['host.claude.present'] },
+      { id: 'statusline.codex.configured', stage: 5, blocked_by: ['host.codex.present'] },
+      // The Codex-hook-bearing plugins: their hooks are what the operator reviews.
+      {
+        id: 'hooks.codex.attested',
+        stage: 7,
+        blocked_by: ['designer', 'engineer', 'founder', 'orchestrator']
+          .flatMap((name) => [`plugin.${name}.codex.installed`, `plugin.${name}.codex.enabled`]),
+      },
+      { id: 'proof.deep-peer-smoke', stage: 8, blocked_by: proofPredecessors },
+      { id: 'proof.permission', stage: 8, blocked_by: proofPredecessors },
+      {
+        id: 'proof.workflow-continuation',
+        stage: 8,
+        blocked_by: ['plugin.engineer.claude.installed', 'plugin.engineer.codex.installed', 'plugin.engineer.codex.enabled'],
+      },
+    ];
+    const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const derived = (await derive('full')).map(({ id, stage, blocked_by }) => ({ id, stage, blocked_by }));
+    deepStrictEqual(derived.sort(byId), expected.sort(byId));
   });
 });

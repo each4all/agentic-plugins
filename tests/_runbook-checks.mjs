@@ -308,6 +308,9 @@ export function argsFileRunbookProblems(text, label) {
   const problems = [];
   if (!text.includes(MKTEMP_STEP)) problems.push(`${label}: no mktemp step`);
   if (!text.includes('{"agentic_args": 1, "text": "…"}')) problems.push(`${label}: no file-writing step`);
+  // The shell would put the typed text back on a command line, where `;`,
+  // `$(…)` and `>` act on it: the file is written with the file tool.
+  if (!/with your file-(?:writing|editing) tool/i.test(text.replace(/\s+/g, ' '))) problems.push(`${label}: the file is not written with the file-writing tool`);
   if (!text.includes('--args-file "$ARGS_DIR/args.json"')) problems.push(`${label}: the CLI is not given the file`);
   return problems;
 }
@@ -324,11 +327,3 @@ export function argsFileTypedTextProblems(text, label) {
   return shown >= 0 && shown < rendered.indexOf(MKTEMP_STEP) ? [] : [`${label}: the typed text is not shown before the steps`];
 }
 
-/**
- * An investigate runbook's profile placeholder names the arguments above
- * rather than carrying host-substituted text. The finding is the label alone,
- * as the gate's message always was.
- */
-export function investigateProfilePlaceholderProblems(text, label) {
-  return text.includes('<profile from the arguments above — ') ? [] : [label];
-}

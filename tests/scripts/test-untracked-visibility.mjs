@@ -302,6 +302,11 @@ describe('drift-digest — structural: every git status producer carries --untra
   });
 
   it('finds no producer missing the flag', () => {
+    // Contract: the scripts' clean-baseline and digest code, and the agent
+    // running a runbook's STATUS_DIGEST / CURRENT_DIGEST line, whose digest
+    // state.mjs records and resume compares — a producer without
+    // --untracked-files=normal sees no untracked file under
+    // status.showUntrackedFiles=no, so a dirty tree passes as clean.
     assert.deepEqual(offenders, [], `producers blind to untracked files:\n${offenders.join('\n')}`);
   });
 

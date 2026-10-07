@@ -156,8 +156,9 @@ const EXIT_BY_STATE = Object.freeze({
 });
 
 // §2 — the exact Stage 0 blocks. README.md and the contract carry the same
-// commands; §11.3 pins the agreement, so these strings are the single in-code
-// copy both presentation paths render.
+// commands; these strings are the single in-code copy both presentation paths
+// render, and tests/plugin-shape/test-runtime-plugin.mjs holds them to the
+// catalog and plugin names and the canonical marketplace repository.
 export const STAGE0_COMMANDS = Object.freeze({
   claude: Object.freeze([
     'claude plugin marketplace add each4all/agentic-plugins',

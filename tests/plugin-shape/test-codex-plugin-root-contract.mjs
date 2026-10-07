@@ -44,8 +44,10 @@
 //     that starts in column 0, so nested bullets stay inside it and an
 //     unindented paragraph or sibling bullet of any marker does not. CRLF is
 //     normalized first.
-//   - Each table file carries exactly one command-resolution section, and its
-//     Plugin root row must sit inside that section.
+//   - A pointer names its target section by heading, so the checkpoint
+//     SKILL.md it resolves to must carry that heading with its Plugin root row
+//     inside. Other tables are not reached by heading, and their sections are
+//     not checked.
 //   - The skills root has moved before (ADR-0006, 2026-09-18). The suffix the
 //     cell tells readers to drop is taken from each plugin's declared skills
 //     root, not spelled into this file.
@@ -59,7 +61,6 @@
 
 import { describe, it } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { resolve, join, relative, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,9 +129,20 @@ const skillsRel = (persona) => relative(pluginDir(persona), resolveSkillsRoot(pl
 // tests/_plugin-root-cell.mjs, shared with the persona pipeline's skill
 // contracts, which run the cell check per document (PC2a3).
 const SECTION = /^#{2,}\s.*command resolution\s*$/im;
-const SECTION_ALL = /^#{2,}\s.*command resolution\s*$/gim;
 const HEADING = /^#{1,6}\s/m;
+const POINTED_SECTION = 'Claude/Codex command resolution';
 const POINTER = /(`[^`]*checkpoint\/SKILL\.md`) § Claude\/Codex command resolution/g;
+
+// The body of the first `##`+ section titled exactly `title`, up to the next
+// heading of any level; null when the file has no such heading.
+function sectionBody(raw, title) {
+  const lines = lf(raw).split('\n');
+  const at = lines.findIndex((line) => /^#{2,}\s/.test(line) && line.replace(/^#+\s+/, '').trim() === title);
+  if (at === -1) return null;
+  const rest = lines.slice(at + 1).join('\n');
+  const next = rest.search(HEADING);
+  return next === -1 ? rest : rest.slice(0, next);
+}
 
 function passage(text, { start, end }) {
   const from = text.indexOf(start);
@@ -166,6 +178,10 @@ describe('Codex plugin-root contract — engineer, designer, founder, orchestrat
         }
         if (SECTION.test(raw) || pluginRootRows(raw).length > 0) found.push(entry.name);
       }
+      // Contract: the Codex agent running any of these skills takes its root
+      // from the Plugin root row — a table the cell check below does not
+      // enumerate goes unchecked, and a command-resolution section that lost
+      // its row leaves the agent no root at all.
       deepStrictEqual(
         found.sort(),
         [...TABLES[persona]].sort(),
@@ -177,22 +193,23 @@ describe('Codex plugin-root contract — engineer, designer, founder, orchestrat
   it('every table has one Plugin root row whose Codex cell takes the root from the injected path and names the checkout only as the source', async () => {
     const normalized = [];
     for (const [persona, skills] of Object.entries(TABLES)) {
+      // Reads the plugin's .codex-plugin/plugin.json, which the cell tells the
+      // agent the root holds, and throws when it is missing.
       const rel = skillsRel(persona);
-      ok(existsSync(join(pluginDir(persona), '.codex-plugin', 'plugin.json')), `plugins/${persona} must ship .codex-plugin/plugin.json — the cell tells readers the root holds it`);
       for (const skill of skills) {
         const path = skillsPath(pluginDir(persona), skill, 'SKILL.md');
         const raw = await readFile(path, 'utf8');
-        const sections = [...raw.matchAll(SECTION_ALL)];
-        strictEqual(sections.length, 1, `${label(path)} must carry exactly one command-resolution section (found ${sections.length})`);
-        const after = raw.slice(sections[0].index + sections[0][0].length);
-        const next = after.search(HEADING);
-        const section = next === -1 ? after : after.slice(0, next);
         const rows = pluginRootRows(raw);
+        // Contract: the Codex agent deriving `<plugin-root>` reads one row — two
+        // can disagree, and cells that do not line up with the header put the
+        // Codex cell under another host.
         strictEqual(rows.length, 1, `${label(path)} must carry exactly one Plugin root row (found ${rows.length})`);
-        strictEqual(pluginRootRows(section).length, 1, `${label(path)} Plugin root row must sit inside its command-resolution section`);
         const [{ header, cells, codex }] = rows;
         ok(header.includes('Codex'), `${label(path)} Plugin root row must sit in a table with a Codex column`);
         strictEqual(cells.length, header.length, `${label(path)} Plugin root row must have as many cells as its header`);
+        // Contract: the Codex agent deriving `<plugin-root>` — the cell gives the
+        // directory every `<plugin-root>/scripts/…` call runs from; the
+        // marketplace checkout in its place runs main-branch code.
         deepStrictEqual(
           codexCellProblems(codex, persona, { skillsRel: rel, startMacro: START_MACRO.has(persona) }).map((p) => `${label(path)} ${p}`),
           [],
@@ -202,6 +219,9 @@ describe('Codex plugin-root contract — engineer, designer, founder, orchestrat
     }
     // Self-check on this file: every table above must have reached the push.
     strictEqual(normalized.length, Object.values(TABLES).flat().length, 'every enumerated table must contribute its Codex cell before the cells are compared');
+    // Contract: the Codex agent in each of these plugins — one copy that
+    // drifts by a sentence the cell check does not know (a fallback to some
+    // other directory) sends that plugin's agent there.
     strictEqual(
       new Set(normalized).size,
       1,
@@ -224,7 +244,17 @@ describe('Codex plugin-root contract — engineer, designer, founder, orchestrat
         const refs = [...flat.matchAll(POINTER)];
         strictEqual(refs.length, 1, `${label(path)} passage must point at the checkpoint command-resolution table exactly once`);
         const target = resolve(dirname(path), refs[0][1].slice(1, -1));
+        // Contract: the Codex agent follows this relative path, then the named
+        // section — a path to another file, a renamed heading, or a Plugin root
+        // row outside that section is not where the pointer leads.
         strictEqual(label(target), label(skillsPath(pluginDir(persona), 'checkpoint', 'SKILL.md')), `${label(path)} passage must name a path that resolves to its own plugin's checkpoint SKILL.md`);
+        const pointed = sectionBody(await readFile(target, 'utf8'), POINTED_SECTION);
+        ok(pointed !== null, `${label(target)} has no "${POINTED_SECTION}" heading, which ${label(path)} points at`);
+        strictEqual(pluginRootRows(pointed).length, 1, `${label(target)} Plugin root row must sit in its "${POINTED_SECTION}" section, where ${label(path)} points`);
+        // Contract: the Codex agent resolving a script path from this skill —
+        // without where the root comes from (the injected absolute path) and how
+        // to take it, it falls back to $CLAUDE_PLUGIN_ROOT, which reads empty
+        // in a Codex skill shell, or guesses.
         ok(flat.includes('injects the mentioned skill with its absolute path'), `${label(path)} passage must say where the root comes from — the absolute path Codex injects with the mentioned skill`);
         const claim = spec.claim.replace('<skills>', rel);
         ok(flat.includes(claim), `${label(path)} passage must keep the corrected claim: ${claim}`);
@@ -241,6 +271,10 @@ describe('Codex plugin-root contract — engineer, designer, founder, orchestrat
     // With the per-file counts below, a table file's one occurrence is the one
     // the cell test found, and a pointer file's one pointer is inside the
     // passage the pointer test extracted.
+    // Contract: the Codex agent reading any of these plugins' documents — a
+    // retired claim, or the checkout path outside its cell, tells it the root
+    // is the marketplace checkout; a pointer outside the listed passages
+    // escapes the mechanism check above.
     const tableFiles = PERSONAS.flatMap((p) => TABLES[p].map((s) => label(skillsPath(pluginDir(p), s, 'SKILL.md'))));
     const pointerFiles = PERSONAS.flatMap((p) => Object.keys(POINTERS[p]).map((f) => label(skillsPath(pluginDir(p), ...f.split('/')))));
     const naming = [];

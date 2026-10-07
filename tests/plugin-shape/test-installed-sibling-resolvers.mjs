@@ -250,6 +250,9 @@ for (const spec of LOCATORS) {
       if (spec.resolve) {
         const sink = capture();
         strictEqual(await spec.resolve(mod, { env, home, selfUrl, stderr: sink.stderr }), claudeRoot);
+        // Contract: the operator reading the caller's stderr — a resolver that
+        // returns a bare root says nothing else, so a silent fallback runs the
+        // other host's install unannounced.
         ok(/resolved from the claude plugin cache because the codex cache has no/.test(sink.text()), `the fallback must be reported: ${JSON.stringify(sink.text())}`);
       }
     });
