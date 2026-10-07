@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.5.1...plugin-founder-v0.5.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **plugin/founder:** resolve owner gates inside a start lifecycle without a terminal write (ADR-0066 Stage 3) ([ce3ce6a](https://github.com/each4all/agentic-plugins/commit/ce3ce6a95b87c8a1fa701a7d553623cf90b84778))
+
 ## [0.5.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.5.0...plugin-founder-v0.5.1) (2026-10-06)
 
 

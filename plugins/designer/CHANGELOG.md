@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.4.1...plugin-designer-v0.4.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **plugin/designer:** resolve owner gates inside a start lifecycle without a terminal write (ADR-0066 Stage 3) ([722d4bc](https://github.com/each4all/agentic-plugins/commit/722d4bc4234b95e76231258ca4b6733076abedab))
+
 ## [0.4.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.4.0...plugin-designer-v0.4.1) (2026-10-06)
 
 
